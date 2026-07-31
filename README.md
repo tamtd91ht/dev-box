@@ -26,6 +26,13 @@ npm run dev                    # → http://localhost:3000
 
 ## Các tab
 
+- **API Explorer** — engine **project-neutral**: project "cắm" API của mình vào bằng
+  **integration pack** — file `devbox.api.json` đặt trong repo của project (services + spec paths
+  + auth mode + flows). Đăng ký pack trong UI (trỏ folder repo, lưu per-máy
+  `.apiintegrations.json`); DevBox parse openapi và dựng Explore (endpoint → gửi request qua
+  proxy, curl preview) + Flows (chuỗi request với `{{var}}` capture). OMICX là pack đầu tiên
+  (manifest sống trong repo omicx-local-all-in-one). Auth: apikey / tool key+secret / JWT
+  (user/agent/admin, có mint agent token qua tool-service).
 - **Git** — multi-project (root cấu hình được), status/pull-all/history/commit + Review MR runner.
 - **Redis** — single/cluster, SCAN browser, value/TTL, delete typed-confirm, monitor INFO.
 - **Kafka** — topics/partitions/offsets, consumer groups + lag, peek, search theo time-window,

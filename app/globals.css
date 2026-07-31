@@ -2356,3 +2356,42 @@ pre.kafka-drawer-body {
 .kafka-gauge-fill.l-ok   { background: var(--ok); }
 .kafka-gauge-fill.l-warn { background: var(--warn, #d5a021); }
 .kafka-gauge-fill.l-crit { background: var(--err); }
+
+/* ── API Explorer (integration packs) ───────────────────────────────────── */
+.apix-layout {
+  display: grid; grid-template-columns: 280px minmax(0, 1fr);
+  gap: 14px; align-items: start; min-height: 0; height: 100%;
+}
+@media (max-width: 1100px) { .apix-layout { grid-template-columns: 1fr; } }
+.apix-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+.apix-subnav { display: flex; gap: 4px; flex-wrap: wrap; }
+.apix-subnav button {
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  padding: 5px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+}
+.apix-subnav button:hover { color: var(--text); background: var(--glass-bg); }
+.apix-subnav button.on { color: var(--text); background: var(--glass-bg); border-color: var(--glass-brd); font-weight: 600; }
+.apix-pack-row {
+  display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: 9px;
+  border: 1px solid transparent; cursor: pointer;
+}
+.apix-pack-row:hover { background: var(--glass-bg); }
+.apix-pack-row.active { background: var(--glass-bg); border-color: var(--glass-brd); }
+.apix-pack-name { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apix-svc-list { list-style: none; margin: 2px 0 4px; padding: 0 0 0 16px; }
+.apix-svc-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: none; border: none; color: var(--muted); font-size: 12.5px;
+  padding: 4px 6px; border-radius: 6px; cursor: pointer;
+}
+.apix-svc-item:hover { background: var(--glass-bg); color: var(--text); }
+.apix-svc-item.active { background: var(--glass-bg); color: var(--text); font-weight: 600; }
+.apix-svc-auth { margin-left: auto; font-size: 10px; color: var(--faint); font-family: var(--mono); }
+.apix-form { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
+.apix-form-row { display: flex; gap: 9px; flex-wrap: wrap; }
+.apix-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.apix-field > span { font-size: 11px; color: var(--muted); }
+.apix-settings {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px; background: var(--glass-bg);
+}

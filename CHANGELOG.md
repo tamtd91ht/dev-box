@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **API Explorer trở lại — dưới dạng engine generic + integration packs.** Tab **API Explorer**
+  mới hoàn toàn project-neutral: project tự "cắm" vào bằng manifest **`devbox.api.json`** đặt
+  trong repo của chính nó — khai báo `services[]` (id, label, authMode
+  `apikey|tool|jwt-user|jwt-agent|jwt-admin`, `spec` path tương đối repo, defaultBaseUrl,
+  apiPrefix) và `flows[]` (chuỗi request với `{{var}}` capture — model Flow cũ, giờ là JSON data).
+  Operator đăng ký pack trong UI (tên + folder; registry per-máy `.apiintegrations.json`,
+  gitignored, validate manifest tồn tại; spec path được **containment-check** không cho trỏ ra
+  ngoài pack root). Engine port từ bản gốc: `lib/openapi.ts` (parse spec từ file path),
+  `lib/types.ts`, `EndpointForm`/`FlowRunner`/`ResponseView`, route `/api/curl` +
+  `/api/agent-token` (mint agent token qua tool-service cấu hình ở tab Webhooks);
+  `lib/request.ts` khôi phục đầy đủ (callEndpoint/fetchCurl/interpolate/readPath) với auth-mode
+  metadata inline (không còn services.ts hardcode). Config kết nối per-(pack, service) lưu key
+  `"<pack>:<service>"` qua store chung; global vars API_KEY/JWT_TOKEN_* như cũ. Route mới:
+  `/api/api-integrations` (CRUD registry + đọc manifest), `/api/api-catalog` (parse spec).
+  **OMICX là pack đầu tiên** — manifest nằm trong repo `omicx/omicx-local-all-in-one`
+  (4 services: public/tool/ai/admin + 2 flows public-service).
+  (`lib/apiIntegrations.ts`, `lib/openapi.ts`, `lib/types.ts`, `lib/request.ts`,
+  `app/api/api-integrations/`, `app/api/api-catalog/`, `app/api/curl/`, `app/api/agent-token/`,
+  `components/ApiExplorerWorkspace.tsx`, `components/{EndpointForm,FlowRunner,ResponseView}.tsx`,
+  `app/page.tsx`, `app/globals.css`, `.gitignore`.)
+
 ### Changed
 
 - **Fork thành `vhs-dev-box` — infra toolbox trung lập dự án.** Tách từ

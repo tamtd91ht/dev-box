@@ -37,3 +37,6 @@ npm-debug.log*
 
 # local PostgreSQL connection list (holds passwords in plaintext — never commit)
 .pgconnections.json
+
+# local API integration pack registry (per-machine folder paths — never commit)
+.apiintegrations.json

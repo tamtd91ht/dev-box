@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import WebhookReceiver from '@/components/WebhookReceiver';
+import ApiExplorerWorkspace from '@/components/ApiExplorerWorkspace';
 import GitWorkspace from '@/components/GitWorkspace';
 import RedisWorkspace from '@/components/RedisWorkspace';
 import KafkaWorkspace from '@/components/KafkaWorkspace';
@@ -75,10 +76,11 @@ function resolvePublicBase(baseUrl: string, apiPrefix: string, override?: string
   return ov.replace(/\/+$/, '');
 }
 
-type Mode = 'webhooks' | 'git' | 'redis' | 'kafka' | 'rabbit' | 'mongo' | 'es' | 'pg';
+type Mode = 'webhooks' | 'git' | 'redis' | 'kafka' | 'rabbit' | 'mongo' | 'es' | 'pg' | 'api';
 
 const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'git', icon: '⎇', label: 'Git', badge: 'local' },
+  { key: 'api', icon: '▤', label: 'API Explorer', badge: 'packs' },
   { key: 'redis', icon: '◆', label: 'Redis', badge: 'local' },
   { key: 'kafka', icon: '≋', label: 'Kafka', badge: 'local' },
   { key: 'rabbit', icon: '🐇', label: 'RabbitMQ', badge: 'local' },
@@ -94,7 +96,7 @@ export default function Home() {
   // Lazy mount-and-keep per workspace: don't probe a tool's API until the user
   // opens it, then keep it mounted so its state survives tab switches.
   const [visited, setVisited] = useState<Record<Mode, boolean>>({
-    webhooks: false, git: false, redis: false, kafka: false, rabbit: false, mongo: false, es: false, pg: false,
+    webhooks: false, git: false, redis: false, kafka: false, rabbit: false, mongo: false, es: false, pg: false, api: false,
   });
   useEffect(() => {
     setVisited((v) => (v[mode] ? v : { ...v, [mode]: true }));
@@ -218,6 +220,11 @@ export default function Home() {
         {visited.pg && (
           <main className="workspace" style={{ gridColumn: '1 / -1', display: mode === 'pg' ? undefined : 'none' }} aria-hidden={mode !== 'pg'}>
             <PgWorkspace />
+          </main>
+        )}
+        {visited.api && (
+          <main className="workspace" style={{ gridColumn: '1 / -1', display: mode === 'api' ? undefined : 'none' }} aria-hidden={mode !== 'api'}>
+            <ApiExplorerWorkspace />
           </main>
         )}
 
