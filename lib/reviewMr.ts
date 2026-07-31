@@ -21,7 +21,12 @@ import path from 'path';
 const COMMAND_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
 const COMMAND_MAX_BUFFER = 64 * 1024 * 1024; // 64 MB — full multi-service report
 
-const SERVICE_PREFIX = 'cloud-saas-omicx-';
+/**
+ * Repo-folder prefix that marks a reviewable service in the workspace. Default
+ * fits the omicx layout (`cloud-saas-omicx-ai-service`); another project sets
+ * REVIEW_SERVICE_PREFIX to its own convention.
+ */
+export const SERVICE_PREFIX = process.env.REVIEW_SERVICE_PREFIX?.trim() || 'cloud-saas-omicx-';
 
 export interface CommandResult {
   output: string;

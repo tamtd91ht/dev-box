@@ -40,3 +40,7 @@ npm-debug.log*
 
 # local API integration pack registry (per-machine folder paths — never commit)
 .apiintegrations.json
+
+# Telegram review-bot local state (Telegram offset + dedup shas + status snapshot)
+bot/.state.json
+bot/.status.json

@@ -4,8 +4,10 @@
 hạ tầng dev/ops từ MỘT chỗ: **Redis · Kafka · RabbitMQ · MongoDB · Elasticsearch · PostgreSQL ·
 Git · Webhooks**.
 
-> Fork từ `omicx/omicx-local-all-in-one`, đã bỏ **OMICX API Explorer** và **Telegram review bot**
-> để thành sản phẩm trung lập dự án. Bản gốc vẫn sống trong repo omicx với đầy đủ hai tính năng đó.
+> Fork từ `omicx/omicx-local-all-in-one`. Hai tính năng vốn gắn chặt với OMICX đã được **viết lại
+> theo hướng project-neutral** và quay lại đây: **API Explorer** (giờ là *integration pack* — tab
+> ＋ Projects) và **Telegram MR-review bot** (`npm run bot` — workspace lấy từ project đã đăng ký).
+> Cả hai không hardcode đường dẫn hay tên service của dự án nào.
 
 ```bash
 npm install
@@ -53,6 +55,23 @@ npm run dev                    # → http://localhost:3000
 Chi tiết từng tool (giới hạn, lệnh dùng, model an toàn) xem `CHANGELOG.md` — mỗi tính năng có một
 entry mô tả đầy đủ.
 
+## Telegram MR-review bot (`npm run bot`)
+
+Tiến trình **riêng**, không thuộc web app và **không mở cổng nào**: long-poll một group Telegram,
+gặp `/review <service> <branch> <mô tả>` thì chạy engine read-only `/review-mr-dev` qua `claude`
+CLI trên máy này rồi reply kết quả (verdict + SCORE) vào group.
+
+```bash
+# .env.local: TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_CHAT_ID
+npm run bot           # chạy bot        npm run bot:status   # snapshot trạng thái
+npm run bot:test      # test parser offline
+```
+
+Workspace review **không hardcode**: bot đọc chính registry per-máy mà UI đã ghi
+(`.apiintegrations.json` của ＋ Projects, `.gitprojects.json` của tab Git) — đăng ký project một
+lần trong UI là bot dùng được ngay; nhiều project thì chọn bằng `BOT_PROJECT=<tên|id>`, hoặc ghi
+đè thẳng bằng `BOT_BASE_PATH`. Chi tiết + cách lấy chat id: `bot/README.md`.
+
 ## Layout
 
 ```
@@ -66,6 +85,7 @@ lib/mongoReport.ts          ← shared .xlsx report engine (ExcelJS dynamic impo
 lib/fsBrowse.ts             ← folder listing cho picker (dùng bởi Git + ＋ Projects)
 components/{Stack}Workspace.tsx + components/{stack}/*
 components/FolderPicker.tsx  ← folder picker dùng chung (📂 Browse)
+bot/                        ← Telegram MR-review bot (tiến trình riêng, `npm run bot`)
 ```
 
 ## Deployment

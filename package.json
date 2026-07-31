@@ -7,9 +7,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "bot": "tsx bot/index.ts",
+    "bot:status": "tsx bot/status-cli.ts",
+    "bot:test": "tsx bot/smoke.test.ts"
   },
   "dependencies": {
+    "dotenv": "^16.4.5",
     "eslint-config-next": "^15.5.9",
     "exceljs": "^4.4.0",
     "ioredis": "^5.4.1",
@@ -28,6 +32,7 @@
     "@types/pg": "^8.20.0",
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
+    "tsx": "^4.19.2",
     "typescript": "5.5.3"
   },
   "overrides": {

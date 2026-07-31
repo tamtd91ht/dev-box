@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Telegram MR-review bot trở lại — workspace lấy từ project đã đăng ký, không hardcode.**
+  Cụm `bot/` port từ `omicx-local-all-in-one` (long-poll Telegram → chạy engine read-only
+  `/review-mr-dev` qua `claude` CLI → reply verdict + SCORE vào group; dedup theo sha commit,
+  offset + trạng thái trong `bot/.state.json` / `bot/.status.json`, `npm run bot:status` để xem
+  snapshot, tùy chọn DM owner lúc START/DONE). Không mở cổng lắng nghe nào.
+  Điểm khác bản gốc: **cấu hình theo đúng mô hình integration pack** — bot không còn đòi
+  `OMICX_BASE_PATH`, mà đọc chính registry per-máy do UI ghi ra, theo thứ tự
+  `BOT_BASE_PATH` → `BOT_PROJECT=<id|tên>` → **đúng 1** pack trong `.apiintegrations.json` →
+  **đúng 1** project trong `.gitprojects.json` → thư mục cha của repo. Nhiều lựa chọn mà không
+  có `BOT_PROJECT` → **fail-fast kèm danh sách project đang có**, không đoán bừa; nguồn đã dùng
+  được in ở dòng log boot (`workspace lấy từ: project "OMICX" (.apiintegrations.json)`).
+  Prefix nhận diện service reviewable cũng thành env `REVIEW_SERVICE_PREFIX` (mặc định
+  `cloud-saas-omicx-`, export từ `lib/reviewMr.ts` để bot và Git tab dùng chung một định nghĩa).
+  Scripts mới: `npm run bot` · `bot:status` · `bot:test` (deps `tsx`, `dotenv`).
+  (`bot/*` (12 file), `lib/reviewMr.ts`, `package.json`, `.gitignore`, `.env.example`,
+  `README.md`, `bot/README.md`.)
+
 - **Nút 📂 Browse khi đăng ký integration pack — không còn gõ đường dẫn tay.** Ô "Folder chứa
   `devbox.api.json`" ở tab **＋ Projects** giờ có nút Browse mở folder picker chạy trên server
   (browser không bao giờ đọc được absolute path, nên server list thư mục cho user click). Picker
