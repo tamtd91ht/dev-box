@@ -1,0 +1,437 @@
+# Changelog
+
+All notable changes to VHS DevBox are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [Unreleased]
+
+### Changed
+
+- **Fork thành `vhs-dev-box` — infra toolbox trung lập dự án.** Tách từ
+  `omicx/omicx-local-all-in-one` (bản gốc giữ nguyên trong repo omicx): **bỏ OMICX API Explorer**
+  (endpoint catalog/openapi, Explore/Flows, Sidebar, SettingsDrawer, EnvManager, HealthDot,
+  `/api/spec` `/api/config` `/api/curl` `/api/agent-token`, `lib/{openapi,flows,services,types}`)
+  và **bỏ Telegram review bot** (`bot/`, scripts `bot`/`bot:status`, deps `dotenv`/`tsx`).
+  Giữ nguyên: Webhooks (vẫn dùng `/api/proxy` + tool auth), Git (gồm Review MR runner), Redis,
+  Kafka, RabbitMQ, MongoDB, Elasticsearch, PostgreSQL — đầy đủ quick-find/export/monitor.
+  `page.tsx` viết lại gọn (tabs data-driven, lazy mount-and-keep), `lib/request.ts` slim còn
+  auth helpers, rebrand **VHS DevBox**. Lịch sử bên dưới kế thừa từ bản gốc.
+
+### Changed
+
+- **Đổi tên hiển thị `OMICX DevBox` → `OMI DevBox`.** Tool giờ dùng chung cho toàn OMI (không riêng
+  OMICX) nên wordmark ở header, `<title>` trang, và dòng footer đổi sang **OMI DevBox**.
+  (`app/page.tsx`, `app/layout.tsx`.)
+
+### Added (monitor Redis · Mongo · Kafka — theo mô hình node monitor của Elastic)
+
+- **MongoDB: mục Monitor trong Tổng quan (auto 30s).** `serverStatus` + `dbStats` +
+  `replSetGetStatus` mỗi 30s (chỉ khi đang mở Tổng quan + browser tab visible, toggle tắt được):
+  **RAM resident/virtual** của mongod, **Disk data volume** (`fsUsedSize/fsTotalSize`, MongoDB ≥4.4),
+  **Connections** current/available (gauge %), **WiredTiger cache** used/max (gauge %), **ops/s**
+  theo từng opcounter (client tự diff 2 lần poll), và bảng **replica-set members** với state
+  (PRIMARY/SECONDARY) + **replication lag** (đỏ khi >10s). Gauge đổi màu ≥75%/≥90%.
+- **Redis: dải 📈 Monitor trong workspace (auto 30s khi mở).** INFO per node (single, hoặc **mỗi
+  master của cluster**): **memory used vs maxmemory** (fallback so với system RAM; gauge, card viền
+  đỏ khi ≥90%), clients, **ops/s** (instantaneous), **keyspace hit-rate**, **fragmentation ratio**
+  (vàng khi >1.5), uptime, role + số replica. Mặc định **thu gọn** — chỉ poll khi mở.
+- **Kafka: dải 📈 Cluster health (auto 60s khi mở).** Wire protocol Kafka không expose CPU/RAM/disk
+  (cần JMX/exporter) nên monitor tập trung đúng thứ làm operator mất ngủ: **brokers** (★ controller,
+  số partition leader mỗi broker — nhìn lệch tải), **under-replicated partitions** (ISR hụt) và
+  **offline partitions** (mất leader — producer đang fail), kèm danh sách **topic bị ảnh hưởng**;
+  panel viền đỏ khi có sự cố. Mặc định thu gọn — chỉ poll khi mở. **RAM/disk/CPU/load per broker
+  host** có được qua ô **Metrics URLs** (tuỳ chọn) trên connection: khai báo endpoint
+  **node_exporter** (`http://host:9100/metrics`, qua VPN không auth) → server fetch + parse
+  Prometheus text (5s timeout, lỗi per-URL hiện inline), render card per host với gauge **RAM**,
+  **Disk per mount** (bỏ tmpfs/overlay, top 3 theo size), **CPU %** (diff counter `node_cpu_seconds_total`
+  giữa 2 lần poll) và **load 1m·5m·15m**; card viền đỏ khi RAM/disk ≥90%. Không khai báo URL thì
+  strip hiện hint. (`lib/kafkaConnections.ts` (+`metricsUrls`), `lib/kafkaClient.ts`, `lib/kafka.ts`,
+  `app/api/kafka/route.ts`, `components/kafka/HealthStrip.tsx`, `components/KafkaWorkspace.tsx`.)
+- RabbitMQ đã có sẵn node monitor (RAM watermark / disk / fd / alarms, tự tải 10s opt-in) từ trước
+  — không đổi.
+  (`lib/mongoClient.ts`, `lib/mongo.ts`, `app/api/mongo/route.ts`, `components/mongo/OverviewView.tsx`,
+  `components/MongoWorkspace.tsx`, `lib/redisClient.ts`, `lib/redis.ts`, `app/api/redis/route.ts`,
+  `components/redis/MonitorStrip.tsx`, `components/RedisWorkspace.tsx`, `lib/kafkaClient.ts`,
+  `lib/kafka.ts`, `app/api/kafka/route.ts`, `components/kafka/HealthStrip.tsx`,
+  `components/KafkaWorkspace.tsx`, `app/globals.css`.)
+
+### Added (PostgreSQL manager)
+
+- **PostgreSQL manager (chạy local).** Tab **PostgreSQL** 🐘 hoàn thiện bộ datastore: cấu hình
+  nhiều server theo **project** (host:port + database mặc định + username/password + ssl, nút
+  **Test** báo version + latency; pool nhỏ max 3, key theo (connection, database) nên cây mở được
+  các database anh em). **Tổng quan** (version, ping, danh sách DB + size). **Dữ liệu**: cây
+  database → table (ước lượng rows + size), chọn bảng tự chạy `SELECT * … LIMIT 50`, editor SQL
+  tự do — **mọi query đọc chạy trong transaction `READ ONLY` + `statement_timeout` 15s** (database
+  tự từ chối write lén trong "read"), kết quả trần 500 dòng, render **bảng thật** cuộn ngang, click
+  dòng mở JSON; tab **Columns** + **Indexes** per table. **🔎 Tìm nhanh** preset như Mongo/ES nhưng
+  WHERE build **server-side dạng parameterized** (`= $n` / `= ANY($n)` cho list) — giá trị không
+  bao giờ nối chuỗi vào SQL; gợi ý cột lấy đúng từ `information_schema`; đủ UX thu gọn tóm tắt +
+  tab cột trả về + **📄 xuất .xlsx** (chung engine — timestamp ISO của PG thành date-cell thật).
+  **Ghi duy nhất: UPDATE-with-WHERE** qua 3 lớp khoá (env `PG_ALLOW_WRITE` mặc định OFF +
+  readOnly per-connection mặc định ON + typed-confirm modal với dry-run count); server luôn từ
+  chối WHERE rỗng, `;` trong WHERE (1 câu lệnh duy nhất), và **không tồn tại code path
+  insert/delete/DDL**; SET đi bằng bind parameter trên identifier đã validate; audit `PG_AUDIT …`.
+  Gate `PG_TOOL_ENABLED` (mặc định OFF → 403). Hồ sơ lưu per-máy `.pgconnections.json` (gitignored,
+  API chỉ trả `hasPassword`). Driver `pg` + `@types/pg`. Styles `.pg-*` tự sở hữu (clone `.mongo-*`).
+  Engine báo cáo mở rộng nhận **ISO date string** (PG serialize timestamp) → date-cell.
+  (`lib/pgConnections.ts`, `lib/pgClient.ts`, `lib/pg.ts`, `lib/pgQuickFinds.ts`,
+  `app/api/pg-connections/route.ts`, `app/api/pg/route.ts`, `components/PgWorkspace.tsx`,
+  `components/pg/*`, `lib/mongoReport.ts`, `app/page.tsx`, `app/globals.css`, `.gitignore`,
+  `.env.example`, `package.json`.)
+
+### Added (ES node monitor)
+
+- **Elastic: monitor node realtime (heap / disk / CPU / load).** Mục **Nodes** trong Tổng quan:
+  mỗi node 1 card với gauge **Heap %**, **Disk %** (kèm dung lượng còn trống), **CPU %** và
+  **Load 1m·5m·15m**; ★ đánh dấu elected master; gauge đổi màu theo ngưỡng (≥75% vàng, ≥90% đỏ)
+  và card viền đỏ khi heap/disk chạm 90%. **Tự fetch mỗi 10s** (`_cat/nodes` + `_cluster/health`)
+  — chỉ chạy khi đang mở Tổng quan **và** browser tab visible, có toggle `auto 10s` tắt được +
+  hiển thị thời điểm cập nhật gần nhất; refresh im lặng nên gauge trượt mượt không nháy.
+  Cột `_cat/nodes` dùng giống nhau trên ES 6.8 → 8.x.
+  (`lib/esClient.ts`, `app/api/es/route.ts`, `lib/es.ts`, `components/es/OverviewView.tsx`,
+  `components/EsWorkspace.tsx`, `app/globals.css`.)
+
+### Changed (export báo cáo — Mongo + ES)
+
+- **Bỏ nội dung query khỏi dòng phụ đề (hàng 2)** của file .xlsx — giờ chỉ còn
+  `namespace · số dòng · thời điểm xuất (· ghi chú cắt trần nếu có)`; filter nội bộ không lộ ra
+  file gửi đi nữa.
+- **Cột STT mặc định** (`__no` — số thứ tự 1..n, không phải giá trị document) luôn đứng đầu danh
+  sách cột, xoá được như cột thường.
+- **Trần 5 cột gợi ý mặc định** (chưa kể STT) để khung mapper vừa màn hình không phải cuộn;
+  field còn lại vẫn nằm trong datalist gợi ý khi thêm cột.
+- **Bề ngang tối thiểu cỡ A4**: báo cáo ít cột (2–5 cột) được **giãn cột theo tỷ lệ** cho tổng
+  bề ngang đạt ~1 trang A4 thay vì co cụm thành dải hẹp; kèm print setup **A4 + fit-to-width**
+  (dọc ≤6 cột, ngang >6 cột) nên in ra vừa đúng khổ giấy.
+  (`lib/mongoReport.ts`, `components/mongo/ExportModal.tsx`, `components/es/ExportModal.tsx`.)
+
+### Fixed
+
+- **Modal cao quá viewport bị cụt mất phần đầu (title).** `.modal` là flex item của backdrop nên
+  `min-height:auto` (= chiều cao nội dung) **thắng** `max-height:82vh` — modal xuất báo cáo với
+  collection nhiều field phình cao hơn màn hình, căn giữa làm header/ô tiêu đề văng khỏi viewport.
+  Sửa gốc: `.modal { min-height: 0; overflow: auto }` để `max-height` thực sự cap; đồng thời danh
+  sách cột trong modal xuất báo cáo (Mongo + ES) cuộn nội bộ (`.export-colscroll`, trần 44vh) nên
+  title + nút Xuất luôn nhìn thấy. (`app/globals.css`, `components/mongo/ExportModal.tsx`,
+  `components/es/ExportModal.tsx`.)
+
+### Added
+
+- **Elasticsearch manager (read-only, chạy local).** Tab **Elastic** mới, nhân bản trải nghiệm tab
+  MongoDB cho ES: cấu hình nhiều cluster theo **project** — mỗi cluster là **node list `host:port`**
+  (phẩy, mặc định :9200 — như brokers bên Kafka; server **failover node-to-node** khi lỗi kết nối,
+  HTTP response kể cả 5xx là authoritative không retry; record host+port cũ tự migrate). Hỗ trợ
+  **ES 6.8 → 8.x**: major version được dò 1 lần per cluster — `track_total_hits` chỉ gửi cho ≥7
+  (6.8 reject key lạ), `hits.total` chuẩn hoá cả dạng số (6.x) lẫn object (7+/8.x). Cluster qua VPN
+  không auth; nút **Test** báo cluster name · version · health · số node · latency), **Tổng quan**
+  (health xanh/vàng/đỏ, nodes, shards, **unassigned shards** nổi bật đỏ, danh sách indices với
+  docs/size/pri×rep — ẩn index hệ thống `.*`, click index nhảy vào browser), **Dữ liệu** (danh sách
+  index + query **DSL** phần `query`, sort/_source/size, phân trang from/size, **Count**, tab
+  **Mapping** pretty JSON + **Info**), **🔎 Tìm nhanh** preset giống Mongo (field checkbox → `bool.filter`,
+  kiểu **Exact(term) / Text(match) / Số / Boolean**, chế độ **single/list → terms**, thu gọn panel
+  thành tóm tắt `{tenantId:t_123}`, tab **Trường trả về** = `_source` chip từ sample docs), và
+  **📄 Xuất báo cáo .xlsx** styled (tái dùng engine `lib/mongoReport`). **Read-only tuyệt đối** —
+  không tồn tại code path ghi (chỉ `_search/_count/_mapping/_cat/_cluster/health`); mọi search bị
+  chặn `script`/`script_score`, size ≤200/trang, timeout 15s, giữ trong result window 10k. Gọi ES
+  bằng **fetch thuần** (không thêm dependency). Gate `ES_TOOL_ENABLED` (mặc định OFF → 403); hồ sơ
+  kết nối lưu per-máy `.esconnections.json` (gitignored). Styles `.es-*` tự sở hữu (clone từ
+  `.mongo-*`, đúng convention kafka/rabbit).
+  (`lib/esConnections.ts`, `lib/esClient.ts`, `lib/es.ts`, `lib/esQuickFinds.ts`,
+  `app/api/es-connections/route.ts`, `app/api/es/route.ts`, `components/EsWorkspace.tsx`,
+  `components/es/*`, `app/page.tsx`, `app/globals.css`, `.gitignore`, `.env.example`.)
+
+- **MongoDB: Xuất báo cáo .xlsx từ kết quả Tìm nhanh.** Nút **📄 Xuất báo cáo** hiện sau khi query
+  xong: đặt **tiêu đề báo cáo** (in đầu sheet + thành tên file slug), khai báo **cột** (tên cột ·
+  field code — có datalist gợi ý từ field đã dò · định dạng). Định dạng **Auto** tự nhận diện
+  từng giá trị: chữ → text, số → number (căn phải), **epoch timestamp** (giây hoặc mili — nhận theo
+  độ lớn) → **date-cell Excel thật** (sort/filter chuẩn, đã bù timezone máy); 2 định dạng thời gian
+  chọn tay per-cột: **Ngày** `dd/MM/yyyy` và **Ngày giờ** `HH:mm:ss dd/MM/yyyy`. File style chỉn
+  chu: dòng tiêu đề 16pt merge toàn bảng, dòng phụ (namespace · query · số dòng · thời điểm xuất),
+  header nền teal đậm chữ trắng, **zebra banding**, kẻ ô mảnh, freeze 3 dòng đầu, auto-filter,
+  độ rộng cột tự tính theo dữ liệu. Xuất **toàn bộ kết quả khớp filter** (re-query server theo trang
+  200, trần 5.000 dòng, projection chỉ các field trong cột nên nhẹ), không chỉ trang đang xem.
+  ExcelJS nạp bằng **dynamic import** — không phình bundle chính.
+  (`lib/mongoReport.ts`, `components/mongo/ExportModal.tsx`, `components/mongo/QuickFindView.tsx`,
+  `package.json` (+`exceljs`).)
+
+- **MongoDB: Tìm nhanh (quick-find preset, giống preset bên Kafka).** Sub-view **🔎 Tìm nhanh**
+  trong tab MongoDB: tạo **nút tìm kiếm đặt tên sẵn** (ví dụ “Tìm tenant”) trỏ tới 1 connection +
+  database + collection (có datalist gợi ý db/collection khi cấu hình) và khai báo sẵn **list field
+  được query** (tên hiển thị · field path · kiểu mặc định). Khi chạy: **tích chọn** field cần dùng,
+  điền giá trị — nhiều field = **AND** (equality per-field); mỗi field có **selector kiểu
+  Text / ObjectId / Number / Boolean** (mặc định theo cấu hình, đổi được lúc chạy) — chọn
+  **ObjectId** thì nhập hex 24 ký tự và tool tự convert sang ObjectId khi query (validate sớm ở
+  client, báo đúng field sai). Mỗi field còn có chế độ **= single / ∈ list ($in)**: chọn list thì
+  nhập nhiều giá trị cách nhau dấu phẩy (`quidn,tamtd`) → query `{domain: {$in: [...]}}`, từng phần
+  tử vẫn được convert theo kiểu (list ObjectId ra ObjectId thật); tóm tắt hiển thị
+  `domain:$in[quidn,tamtd]`. Row điều kiện layout **grid cột tường minh** (label · kiểu · chế độ ·
+  giá trị) — tên field dài tự ellipsis trong cột riêng, không đè lên select. Kết quả: **mỗi document 1 dòng plaintext** trong dải cuộn ngang,
+  **click mở modal JSON** pretty + copy (giống luồng tìm message bên Kafka). Bấm **Chạy** thì khung
+  chọn field **tự thu gọn** thành 1 dòng tóm tắt dạng `{domain:quidn, is_deleted:false}` (bấm ✎ mở
+  lại) để **kết quả chiếm tối đa màn hình** (72vh). Panel chạy có 2 tab: **Điều kiện** và **Trường
+  trả về** — tab projection chọn **lúc chạy** (không nằm trong cấu hình preset): field gợi ý dạng
+  chip được **tự dò từ documents thật** của collection (lấy mẫu 5 docs), tích để chọn, `_id` có
+  toggle giữ/loại riêng, thêm được nested path thủ công (vd. `profile.phone`); để trống = trả
+  nguyên document. Preset lưu
+  **localStorage** (convention `kafkaPresets`); query chạy qua đúng action `find` của `/api/mongo`
+  nên mọi giới hạn server (maxTimeMS, limit ≤200, chặn `$where`) áp dụng nguyên vẹn.
+  (`lib/mongoQuickFinds.ts`, `components/mongo/QuickFindView.tsx`, `components/MongoWorkspace.tsx`,
+  `app/globals.css`.)
+
+- **MongoDB manager (kiểu Robo3T-lite, chạy local).** Tab **MongoDB** mới: cấu hình nhiều cluster
+  theo từng **project** (standalone / replica set / `mongodb+srv`, TLS, authSource, có nút **Test**
+  báo version + topology + latency trước khi lưu — giống Redis/Rabbit), cây **database →
+  collection** kiểu Robo3T, truy vấn **find** (filter/projection/sort dạng JSON/EJSON — hỗ trợ
+  `$oid`/`$date`, limit trần 200/trang + phân trang Prev/Next), **Count**, **Aggregate read-only**
+  (chặn `$out`/`$merge`/`$where`/`$function`, tự gắn `$limit 500`, `allowDiskUse=false`), xem
+  **Indexes** (unique/sparse/TTL/partial) + **Stats** ($collStats) + **Tổng quan** server
+  (version, replica set, members, danh sách DB + size). **Đọc không giới hạn** phạm vi nhưng mọi
+  query đều bounded `maxTimeMS` server-side. **Ghi chỉ có đúng 1 thao tác: update-có-query** —
+  updateOne/updateMany bắt buộc **filter khác rỗng** (server từ chối `{}`), update doc chỉ nhận
+  **toán tử `$`** (chặn thay thế cả document), không upsert/insert/delete/drop; qua **3 lớp khoá
+  độc lập**: env `MONGO_ALLOW_WRITE` (mặc định OFF) + cờ **read-only per-connection** (mặc định
+  ON) + modal **typed-confirm** (gõ lại `db.collection`, có **dry-run count** xem khớp bao nhiêu
+  docs trước khi chạy); mọi update **audit** ra log server (`MONGO_AUDIT …`). Browser không nối
+  thẳng MongoDB — mọi thao tác qua route server (driver `mongodb`, cache client theo hồ sơ, evict
+  sau 10 phút idle). Toàn bộ tính năng **gate** bằng `MONGO_TOOL_ENABLED` (mặc định OFF →
+  `/api/mongo*` trả 403). Hồ sơ kết nối lưu **per-máy** trong `.mongoconnections.json` (đã
+  gitignore; API chỉ trả `hasPassword`, không trả password).
+  (`lib/mongoConnections.ts`, `lib/mongoClient.ts`, `lib/mongo.ts`,
+  `app/api/mongo-connections/route.ts`, `app/api/mongo/route.ts`,
+  `components/MongoWorkspace.tsx`, `components/mongo/*`, `app/page.tsx`, `app/globals.css`,
+  `package.json` (+`mongodb@^5` — driver v5 để nói chuyện được với server cũ MongoDB 3.6→7.0;
+  driver v6 đòi server ≥4.2, còn cụm 4.0 wire-version 7 sẽ bị từ chối; server <4.4 không có lệnh
+  `hello` nên có fallback `isMaster`), `.gitignore`, `.env.example`.)
+
+- **Redis manager (kiểu RedisInsight, chạy local).** Tab **Redis** mới: cấu hình nhiều Redis
+  **single-node** theo từng **project** (nhóm hiển thị theo project, badge màu theo môi trường
+  dev/staging/**prod**), **Ping** đo độ trễ, tìm key bằng **SCAN** cursor-based (KHÔNG dùng `KEYS`
+  để không block instance) + lọc theo kiểu + nút "Tải thêm" theo cursor, xem **value/type/TTL**
+  (list/set/zset/hash tải bounded ≤500 phần tử + cờ `truncated`), **đặt/đổi TTL 1 key** (chặn
+  `>30 ngày` cả ở UI lẫn server, không expose `PERSIST`), và **xoá 1 key** với **typed-confirm**
+  (gõ lại tên key) + banner cảnh báo đỏ khi key là `*:lock:*` hoặc kết nối `env=prod`; mọi lần xoá
+  đều **audit** ra log server. KHÔNG có bulk-delete/`FLUSHDB`/`FLUSHALL`. Browser không nối thẳng
+  Redis — mọi thao tác đi qua route server (`ioredis`, tái dùng socket theo hồ sơ). Toàn bộ tính
+  năng **gate** bằng `REDIS_TOOL_ENABLED` (mặc định OFF → `/api/redis*` trả 403, an toàn khi
+  deploy). Hồ sơ kết nối lưu **per-máy** trong `.redisconnections.json` (đã gitignore, password
+  plaintext như convention `.apitester-config.json`; API chỉ trả `hasPassword`, không trả password).
+  (`lib/redisConnections.ts`, `lib/redisClient.ts`, `lib/redis.ts`, `app/api/redis-connections/route.ts`,
+  `app/api/redis/route.ts`, `components/RedisWorkspace.tsx`, `app/page.tsx`, `app/globals.css`,
+  `package.json` (+`ioredis`), `.gitignore`, `.env.example`.)
+
+- **Git workspace: nhiều project (root folder cấu hình được) thay vì 1 root hard-code.** Trước đây
+  root chỉ đến từ env (`GIT_TOOL_ROOT`) → chỉ 1 nơi quét repo. Giờ mỗi **project = `{ name, root }`**
+  hiện thành 1 **tab** ở đầu Git workspace; đổi tab là đổi thư mục gốc → danh sách repo + toàn bộ
+  chức năng (status/overview/pull-all/history/commit) chạy theo root đó. Có khối **Quản lý** để
+  thêm/sửa/xóa project ngay trên UI. Config lưu **per-máy** trong `.gitprojects.json` (đã gitignore
+  — mỗi máy cấu trúc folder khác nhau, cấu hình 1 lần); chưa có file thì tự fallback về root
+  auto-detect như cũ (tab `auto`) nên không vỡ hành vi cũ. Root **không giới hạn base** (tool chạy
+  local, ai chạm được đã có filesystem của dev) — chỉ cần thư mục tồn tại; `GIT_TOOL_BASE`/
+  `GIT_TOOL_ROOT` chỉ là **điểm xuất phát** cho folder picker, có thể cấu hình. Lựa chọn repo được
+  nhớ **theo từng project**. Backend: `detectRepos/statusAll/pullAll` nhận `root` động,
+  `authorizeRepo` nhận danh sách root cho phép; thêm route `/api/git-projects` (GET/POST/PUT/DELETE)
+  + `lib/gitProjects.ts`. (`lib/gitProjects.ts`, `lib/gitCore.ts`, `app/api/git-projects/route.ts`,
+  `app/api/git/route.ts`, `lib/git.ts`, `components/GitWorkspace.tsx`, `app/globals.css`,
+  `.gitignore`.)
+- **Git workspace: nút Browse chọn thư mục gốc (server-backed folder picker).** Ô "Đường dẫn thư
+  mục gốc" có nút **📂 Browse** mở modal duyệt thư mục của máy host — vì trình duyệt không đọc được
+  absolute path, server liệt kê thư mục qua `/api/git-fs` (list ổ đĩa trên Windows + thư mục con,
+  gắn nhãn `⎇ repo` cho thư mục là git repo). Chỉ trả **danh sách thư mục**, không đọc nội dung
+  file; mọi path đều `path.resolve` (không nối chuỗi từ client). Chọn thư mục xong tự điền tên
+  project nếu đang trống. (`lib/gitFs.ts`, `app/api/git-fs/route.ts`, `lib/git.ts`,
+  `components/GitWorkspace.tsx`, `app/globals.css`.)
+- **Git workspace: dropdown báo repo cần pull + Pull từng repo tại chỗ.** Khi mở dropdown chọn
+  repo (mousedown/focus), tự chạy `status-all` (throttle 4s) và gắn glyph trạng thái ngay trước
+  tên mỗi option: `↓ repo (n)` = cần pull (behind/diverged, kèm số commit), `↑` = cần push,
+  `✎` = có thay đổi chưa commit, `•` = sạch, `?` = chưa rõ/không upstream/lỗi — do `<option>`
+  native không nhúng được markup nên dùng 1 ký tự dẫn. Overview này **dùng chung** với panel
+  `Tất cả repo` (một nguồn dữ liệu). Trong panel, mỗi dòng repo `cần pull`/`phân kỳ` có thêm nút
+  **↓ Pull** để pull lẻ ngay (gọi action `pull` đơn-repo, tự refresh overview sau đó); nút
+  **Pull tất cả** hiện kèm số repo pull được và disable khi không có repo nào cần pull.
+  (`components/GitWorkspace.tsx`, `app/globals.css`.)
+- **Git workspace: panel `Tất cả repo` — Status Check + Pull All.** Thêm khối tổng quan mọi repo
+  ở đầu Git workspace với 2 nút: **↻ Kiểm tra tất cả** (chạy `git status` song song mọi repo,
+  suy ra state từng repo: `sạch` / `cần commit` / `cần push` / `cần pull` / `phân kỳ` /
+  `chưa có upstream` / `lỗi`, kèm số file thay đổi + ahead/behind, màu-mã hóa) và **↓ Pull tất cả**
+  (`git pull --ff-only` song song; **bỏ qua** repo có thay đổi chưa commit / detached / chưa có
+  upstream để không làm hỏng, và **báo rõ repo xung đột** khi không fast-forward được). Bảng cho
+  click để mở nhanh repo tương ứng; có dòng summary + cảnh báo danh sách repo conflict. Backend
+  thêm 2 action `status-all` / `pull-all` (không throw — repo lỗi được report riêng).
+  (`lib/gitCore.ts`, `app/api/git/route.ts`, `lib/git.ts`, `components/GitWorkspace.tsx`,
+  `app/globals.css`.)
+- **Git workspace: tab `History` xem commit gần đây.** Bên cạnh tab **Thay đổi**, thêm sub-tab
+  **History** hiển thị tối đa 50 commit mới nhất của branch hiện tại — mỗi dòng gồm short-hash,
+  subject, ref (branch/tag) nếu có, tác giả + thời gian tương đối. Backend thêm action `log`
+  (`git log --pretty` với delimiter `%x1f`/`%x1e` để parse an toàn, giới hạn ≤200, chạy qua
+  `execFile` như các action khác). History chỉ tải khi mở tab, tự refresh khi đổi repo/branch,
+  có nút ↻. (`lib/gitCore.ts`, `app/api/git/route.ts`, `lib/git.ts`, `components/GitWorkspace.tsx`,
+  `app/globals.css`.)
+
+### Fixed
+
+- **Dropdown `<select>` chữ trắng trên nền trắng khi bung (không đọc được).** Popup option của
+  native select được OS vẽ trên nền riêng, bỏ qua `--glass-2` (translucent) nên option ra nền
+  trắng + chữ sáng. Thêm rule `select option, select optgroup` với nền **đục** theo theme
+  (`--bg-1`) + `color: var(--text)` — fix cho cả dark/light. (`app/globals.css`.)
+
+### Changed
+
+- **UI: đổi title hiển thị `OMICX All-in-One` → `OMICX DevBox`.** Cập nhật `<title>` tab, `<h1>`
+  appbar (wordmark `OMICX` đậm + `DevBox` nhẹ) và footer. (`app/page.tsx`, `app/layout.tsx`.)
+- **UI: trau chuốt lại wordmark brand `OMICX All-in-One`.** Tách thành 2 tông — `OMICX` đậm
+  (weight 800 + gradient nhấn), `All-in-One` nhẹ + muted (weight 500) — thay vì đổ gradient đều
+  cả chuỗi nhìn nhạt. (`app/page.tsx`, `app/globals.css`.)
+- **UI: đổi tên hiển thị `OMICX API Tester` → `OMICX All-in-One`.** Cập nhật `<title>` tab
+  (`app/layout.tsx`), `<h1>` trên appbar + dòng footer (`app/page.tsx`); subtitle appbar đổi
+  `flow-based backend testing` → `internal dev toolkit` cho đúng phạm vi all-in-one
+  (API Explorer + Webhooks + Git Workspace). Giữ nguyên localStorage key `apitester.theme` và
+  config literal `.apitester-config.json` (đổi sẽ reset theme / mất config của user).
+- **Đổi tên repo `cloud-saas-omicx-api-tester` → `omicx-local-all-in-one`.** Rename thư mục
+  local + git remote (`.../omicx/service/omicx-local-all-in-one.git`), `package.json` name
+  (`omicx-api-tester` → `omicx-local-all-in-one`), và các định danh k8s/Docker: Deployment/
+  Service/Ingress name + labels, image tag `ci/api-tester` → `ci/omicx-local-all-in-one`
+  (`Dockerfile`, `k8s/*.yaml`, `k8s/README.md`, `README.md`). Config literal
+  `.apitester-config.json` / `APITESTER_CONFIG_PATH` và command `/sync-api-tester` giữ nguyên.
+  ⚠️ Cần đổi path project trên GitLab để push/fetch hoạt động.
+
+- **Webhooks: gom cấu hình vào drawer ⚙ ở góc phải (giống PUBLIC API)** — hai khối
+  **“Kết nối tool-service”** (Base URL / API prefix / X-KEY / X-VALUE) và **“Realtime socket”**
+  (WS URL + Thử kết nối + Lưu & giữ kết nối) được chuyển khỏi thân trang vào một **drawer trượt
+  từ phải**, mở bằng nút bánh răng ⚙ trên appbar (chỉ hiện ở mode Webhooks) — dùng lại đúng
+  pattern `.drawer`/`.drawer-backdrop` của SettingsDrawer, đóng bằng Escape / backdrop. Thân
+  trang giờ chỉ còn khối **“URL webhook của bạn”** + danh sách link + luồng request live, gọn hơn.
+  Nút ⚙ có kdot báo trạng thái credential + host tool-service. Khi **lưu Base URL / API prefix**,
+  **URL webhook tự sinh cập nhật theo** (vì `publicBaseUrl` mặc định suy từ Base URL + API prefix —
+  trừ khi đã đặt Public base URL riêng). (`components/WebhookReceiver.tsx`, `app/page.tsx`.)
+
+### Fixed
+
+- **Webhooks: "Create failed: 200 OK" dù link đã tạo thành công.** `createLink` yêu cầu
+  `r.ok && r.bodyJson` — khi upstream trả 200 nhưng proxy không parse được body thành JSON
+  (thiếu/khác `application/json` content-type, hoặc body rỗng), `bodyJson` = undefined nên UI báo
+  lỗi nhầm dù link đã được tạo. Giờ chỉ báo lỗi khi `!r.ok`; nếu 200 mà không có object link trả về
+  thì coi là thành công và **reload danh sách từ server**. (`components/WebhookReceiver.tsx`.)
+- **Webhooks: link URL hiển thị/copy dùng `link.url` backend trả (kẹt `localhost:8080/tool-svc/api`).**
+  Danh sách link + nút copy + dòng "gửi request tới …" đang lấy thẳng `l.url` do tool-service sinh
+  (base của chính backend), nên không bám Base URL + API prefix đã config trên UI. Đổi cả 3 chỗ sang
+  `buildHookUrl(publicBaseUrl, l.id)` — giống hệt khối "URL webhook của bạn" (quick) — nên mọi link
+  đều dựng URL = `{Base URL + API prefix}/tools/hook/{id}`. (`components/WebhookReceiver.tsx`.)
+- **Webhooks: public URL không bám theo Base URL + API prefix đã cấu hình (kẹt ở localhost).**
+  Trước đây `toolPublicBase = toolCfg.publicBaseUrl || defaultPublicBase(...)` — một khi
+  `publicBaseUrl` đã từng được lưu (kể cả giá trị localhost cũ) thì nó **luôn thắng** và **âm thầm
+  che** Base URL + API prefix người dùng chỉnh sau đó, nên URL webhook không bao giờ khớp config.
+  Thêm `resolvePublicBase(baseUrl, apiPrefix, override)`: **Base URL + API prefix là source of truth**
+  (sửa là public URL đổi theo ngay); override `publicBaseUrl` **chỉ thắng khi trỏ tới host thật sự
+  KHÁC** (ingress riêng biệt) — cùng host với Base URL thì bị coi là stale và bỏ qua. (`app/page.tsx`.)
+
+### Added
+
+- **Git workspace (kiểu SourceTree) — chỉ chạy local.** Thêm mode thứ ba trên appbar
+  (**API Explorer · Webhooks · Git**) để thao tác Git trên các repo omicx ngay trong api-tester:
+  auto-detect mọi repo git anh em dưới thư mục omicx (dropdown chọn repo), xem **status** (branch,
+  ahead/behind, upstream), **stage/unstage từng file** (Staged / Chưa stage / Chưa theo dõi, có
+  "Stage all"/"Unstage all"), **discard** file working-tree, xem **diff từng file** (tô màu +/−),
+  **commit** phần đã stage (kèm message), **pull `--ff-only`**, **push** (tự `-u origin` khi branch
+  chưa có upstream), **checkout** + **tạo branch mới**. Cảnh báo (không chặn) khi commit vào branch
+  ≠ `dev` trên repo `cloud-saas-*` (theo quy ước branch_guard). **An ninh:** toàn bộ chạy server-side
+  qua `execFile('git', [...])` (không shell → không command-injection); mọi repo path phải nằm trong
+  Git root đã cấu hình (chống path traversal); tính năng **tắt mặc định**, chỉ bật khi đặt
+  `GIT_TOOL_ENABLED=true` — bản deploy/k8s không set nên feature không tồn tại ở đó (chống RCE). Root
+  auto-detect chỉnh qua `GIT_TOOL_ROOT`. (`app/api/git/route.ts`, `lib/gitCore.ts`, `lib/git.ts`,
+  `components/GitWorkspace.tsx`, `app/page.tsx`, `.env.example`.)
+- **Webhooks: URL webhook “quick” tự sinh theo trình duyệt (kiểu webhook.site)** — thêm khối
+  **“URL webhook của bạn”** ở đầu workspace Webhooks: trình duyệt tự gen 1 UUID (`crypto.randomUUID`),
+  cache ở `localStorage` (`omicx.tool.webhook.quickId`), và hiển thị full URL copy được ngay —
+  **không cần đăng nhập tool-service, không cần bấm “Create”**. Link tự sinh ở request đầu tiên (nhờ
+  backend auto-create trên `ANY /tools/hook/:token` khi token là UUID hợp lệ). Nút **Copy URL**,
+  **Xem live** (subscribe WS theo id để xem request đổ về ngay, kể cả khi link chưa tồn tại server-side),
+  **↻ Id mới** (đổi id + theo dõi id mới). Thêm field cấu hình **Public base URL** (persist theo
+  service, mặc định suy từ Base URL + API prefix) để URL khớp đúng ingress công khai (vd
+  `https://socket.xyz.com`) khi domain nhận webhook khác domain quản lý; URL =
+  `{publicBaseUrl}/tools/hook/{id}`. **Fix:** lịch sử capture đổi từ `GET .../requests` (đã bị backend
+  bỏ) sang `POST .../requests/search` theo search-envelope ADR-0007 (`{pagination:{page,size}}`,
+  1-based). **Fix:** default WS port `8091` → `9090` cho khớp `WEBHOOK_WS_PORT` mới của tool-service.
+  (`components/WebhookReceiver.tsx`, `app/page.tsx`, `lib/persist.ts`.)
+- **Deployment artifacts (Docker + k8s)** — the "deploy later" path is now real. Added a
+  multi-stage `Dockerfile` building the Next.js standalone output (`node:20-alpine`, runs as
+  the built-in non-root `node` user, serves on `:8080` via `PORT`/`HOSTNAME=0.0.0.0`, copies
+  `openapi/` for runtime spec reads), a `.dockerignore`, and reference k8s manifests under
+  `k8s/` (`deployment.yaml` Deployment+Service, `ingress.yaml` VPN-only template, `README.md`).
+  New `app/api/health` route returns `200 ok` as the readiness/liveness probe target (distinct
+  from the UI's backend-health concept). Image target `<your-registry>/ci/api-tester`.
+  **Internal, VPN-only** — never exposed publicly (the tool mints JWTs + holds API keys).
+- **Copy button on config inputs** — every field in the Settings drawer (the four
+  global variables, base URL, API prefix, and the per-service token/tool key/secret
+  overrides) shows an inline **Copy** button whenever it holds a value, copying the
+  underlying value to the clipboard — including password fields, where the value is
+  otherwise masked. Reusable `CopyButton` / `InputWithCopy` helpers in `SettingsDrawer`.
+- **admin-service** wired as a drivable service — spec synced to `openapi/admin-service.yaml`
+  (75 paths), registered in `AVAILABLE_SERVICES` / `SERVICE_CATALOG` (`authMode: jwt-admin`,
+  global var `JWT_TOKEN_ADMIN`) and `SERVICE_ENV` (`ADMIN_SERVICE_BASE_URL`, fallback
+  `http://localhost:8080/admin-svc`). Spec paths already carry `/api` (API prefix stays empty).
+- **Per-service API prefix** — each service gains an optional **API prefix** in Settings
+  (e.g. `/api`), **reconciled against each openapi path**: prepended to every request path
+  (proxy, curl export, and the `/tools/agent-token` call) **only when the path does not
+  already start with it** (segment-aware — `/api` won't match `/apix`), so a spec that
+  already carries the prefix is never doubled. This handles both conventions — ai-service's
+  spec bakes `/api` in (`/api/ai/jobs`, left as-is), tool-service's omits it
+  (`/tools/encrypt` → `/api/tools/encrypt`). Central join logic lives in `joinPath()`
+  (`lib/proxyCore.ts`). The **gateway routing prefix** (e.g. `/ai-svc`) is NOT this field —
+  it belongs in the Base URL. The health dot applies the API prefix to an openapi-declared
+  health path but falls back to the root `/health` (no prefix) when the spec declares none,
+  so ai-service (Base URL `…/ai-svc`) lights up via `…/ai-svc/health`. Persisted per service
+  in `.apitester-config.json`.
+- **ai-service** wired as a drivable service — spec synced to `openapi/ai-service.yaml`,
+  registered in `AVAILABLE_SERVICES` / `SERVICE_CATALOG` (`authMode: jwt-agent`, global var
+  `JWT_TOKEN_AGENT`) and `SERVICE_ENV` (`AI_SERVICE_BASE_URL`). Base URL fallback left blank —
+  set it in Settings (spec dev server hint: `https://api-dev.omicx.one/ai-svc`).
+- **Generate agent/admin JWT from a tenant** — `JWT_TOKEN_AGENT` and `JWT_TOKEN_ADMIN`
+  in the Settings drawer gain a **Tạo / Cập nhật** button that opens an inline input for a
+  `tenantId` or domain and mints the token via tool-service's `POST /tools/agent-token`
+  (new server route `app/api/agent-token`, which reads the tool-service base URL + `X-KEY`/
+  `X-VALUE` from the store server-side). No email/phone → the tenant's business-owner agent.
+  On success the returned `accessToken` overwrites the variable and is persisted; on failure
+  the upstream message is shown inline. (`JWT_TOKEN_USER` generation is deferred.)
+- **Copy as curl** — Explore endpoints gain a "Copy as curl" button that builds the
+  equivalent `curl` command (targeting the real backend) and copies it to the
+  clipboard. Headers are generated server-side by the proxy's own logic, extracted
+  to `lib/proxyCore.ts` and served via `/api/curl`, so the command matches the real
+  request — including the `tool`-mode `X-KEY` / `X-VALUE` static secrets. The proxy route
+  now imports `proxyCore` instead of duplicating the header/URL logic.
+- **Global variables + JWT auth modes** — the Settings drawer now holds four shared
+  global variables (`API_KEY`, `JWT_TOKEN_USER`, `JWT_TOKEN_AGENT`, `JWT_TOKEN_ADMIN`)
+  applied to every service unless it sets a per-service token override. Auth model
+  expanded to `apikey | tool | jwt-user | jwt-agent | jwt-admin`; the proxy sends
+  `X-Api-Key` (apikey) or `Authorization: Bearer <token>` (jwt-*), auto-prepending
+  `Bearer ` only when missing. Tokens are stored **without** the `Bearer ` prefix.
+  - Store gains a reserved `__global__` entry (`lib/persist.ts` `GlobalVars`,
+    `saveGlobalVars`); `/api/local-config` now returns `{ services, global }`.
+  - `resolveAuth` / `authReady` (`lib/request.ts`) resolve override → global var.
+- **`/sync-api-tester` command** — copies one/many/`all` services' `openapi.yaml` into
+  `openapi/<slug>.yaml` and registers each (`AVAILABLE_SERVICES`, `SERVICE_CATALOG`,
+  `<SLUG>_BASE_URL`). See `.claude/commands/sync-api-tester.md`.
+- **On-disk config persistence** — connection settings (per-service base URL +
+  credentials) are now saved to a local file `.apitester-config.json` (gitignored)
+  and auto-loaded on restart, so a browser/server restart re-maps them without
+  re-typing. Reconfiguring overwrites the stored values; clearing a field removes it.
+  - New server store `lib/localStore.ts` + route `app/api/local-config` (GET/PUT);
+    client helper `lib/persist.ts`. Path overridable via `APITESTER_CONFIG_PATH`.
+
+### Changed
+
+- Credentials and base-URL overrides moved from browser storage
+  (sessionStorage / localStorage) to the on-disk store above — survives browser
+  changes and incognito. `lib/creds.ts` now only carries the `ServiceCreds` type
+  (`token?` override + tool key/secret); the completeness check moved to
+  `authReady` in `lib/request.ts`.
+
+- **tool-service** support — now a real, drivable service alongside public-service,
+  configured the same way (base URL + credentials in Settings).
+  - Endpoint catalog from `openapi/tool-service.yaml` (`/tools/health` public;
+    encrypt / decrypt / agent-token / tenant-purge / platform-user-purge require auth).
+  - `TOOL_SERVICE_BASE_URL` config (default `http://localhost:8088/api`).
+  - Per-service auth-mode abstraction (`apikey` | `tool`) and per-service credentials.
+  - Proxy sends `X-KEY` + `X-VALUE` verbatim for tool mode — both are static shared
+    secrets that tool-service compares constant-time (no time token, no prefix).

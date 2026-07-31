@@ -1,0 +1,109 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# omicx-local-all-in-one — Deployment + Service
+#
+# Internal, VPN-only API testing tool (Next.js standalone). Port 8080.
+# Access: restricted ingress domain (VPN only) — see ingress.yaml.
+#
+# REFERENCE ONLY — real deployment is managed on Rancher UI; Jenkins only runs
+# `kubectl set image`. See k8s/README.md.
+#
+# [skip-resource-gate] Stateless Node proxy UI — ZERO infra deps (no Kafka/Mongo/
+# Redis/ES/MinIO/PG env, no Secret, no cluster A/B/C slot). Not a workload-placement
+# decision; nature matches tool-service (VPN-only ops tool). No infra env slot to assign.
+#
+# Apply (if applied directly):
+#   kubectl apply -f k8s/ -n prod
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omicx-local-all-in-one
+  labels:
+    app: omicx-local-all-in-one
+    part-of: omicx
+    env: prod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omicx-local-all-in-one
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: omicx-local-all-in-one
+        part-of: omicx
+        env: prod
+    spec:
+      terminationGracePeriodSeconds: 30
+      imagePullSecrets:
+        - name: harbor-registry
+      containers:
+        - name: omicx-local-all-in-one
+          image: <your-registry>/ci/omicx-local-all-in-one:latest
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+
+          # This app needs NO Java infra Secrets (mongo/kafka/encryption).
+          # All backend base URLs + credentials are entered at runtime in the UI
+          # (browser localStorage + optional .apitester-config.json), NOT via env.
+          env:
+            - name: PORT
+              value: "8080"
+            - name: HOSTNAME
+              value: "0.0.0.0"
+            # Optional: persist server-side config across restarts by mounting a
+            # volume and pointing APITESTER_CONFIG_PATH at it. Holds PLAINTEXT
+            # credentials — only enable with a private volume. Left unset = ephemeral.
+            # - name: APITESTER_CONFIG_PATH
+            #   value: "/data/.apitester-config.json"
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omicx-local-all-in-one
+  labels:
+    app: omicx-local-all-in-one
+    part-of: omicx
+    env: prod
+spec:
+  type: ClusterIP
+  selector:
+    app: omicx-local-all-in-one
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

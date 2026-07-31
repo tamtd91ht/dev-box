@@ -1,0 +1,2358 @@
+/* ── OMICX API Tester — glassmorphism app shell (dark default + light) ── */
+
+:root,
+:root[data-theme='dark'] {
+  --bg-0: #05060f;
+  --bg-1: #0b0f1e;
+  --grad-a: #6d28d9;   /* violet */
+  --grad-b: #2563eb;   /* blue   */
+  --grad-c: #0ea5e9;   /* cyan   */
+
+  --glass: rgba(255, 255, 255, 0.045);
+  --glass-2: rgba(255, 255, 255, 0.07);
+  --glass-brd: rgba(255, 255, 255, 0.1);
+  --glass-brd-hover: rgba(255, 255, 255, 0.22);
+
+  --text: #eef1f8;
+  --muted: #98a2b8;
+  --faint: #5c6680;
+
+  --accent: #8b9dff;
+  --accent-solid: #6366f1;
+  --ok: #34d399;
+  --ok-bg: rgba(52, 211, 153, 0.12);
+  --warn: #fbbf24;
+  --warn-bg: rgba(251, 191, 36, 0.1);
+  --err: #fb7185;
+  --err-bg: rgba(251, 113, 133, 0.12);
+
+  --shadow: 0 8px 40px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 4px 20px rgba(0, 0, 0, 0.35);
+  --grid-line: rgba(255, 255, 255, 0.05);
+  --grid-op: 0.5;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg-0: #eef1f9;
+  --bg-1: #dfe4f2;
+  --grad-a: #7c3aed;
+  --grad-b: #2563eb;
+  --grad-c: #0891b2;
+
+  --glass: rgba(255, 255, 255, 0.65);
+  --glass-2: rgba(255, 255, 255, 0.85);
+  --glass-brd: rgba(19, 30, 64, 0.1);
+  --glass-brd-hover: rgba(19, 30, 64, 0.24);
+
+  --text: #131a2e;
+  --muted: #55607a;
+  --faint: #8a93aa;
+
+  --accent: #5b52e0;
+  --accent-solid: #6366f1;
+  --ok: #059669;
+  --ok-bg: rgba(5, 150, 105, 0.12);
+  --warn: #b45309;
+  --warn-bg: rgba(180, 83, 9, 0.1);
+  --err: #e11d48;
+  --err-bg: rgba(225, 29, 72, 0.1);
+
+  --shadow: 0 8px 40px rgba(50, 60, 120, 0.16);
+  --shadow-sm: 0 4px 20px rgba(50, 60, 120, 0.12);
+  --grid-line: rgba(30, 41, 82, 0.06);
+  --grid-op: 0.7;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+  background: var(--bg-0);
+  -webkit-font-smoothing: antialiased;
+  transition: background-color .3s ease;
+}
+
+/* ── Layered background: aurora mesh + grid + noise ──────────── */
+/* Kept on fixed pseudo-elements so it never scrolls and never tints
+   the glass surfaces stacked above it. */
+body::before,
+body::after {
+  content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+}
+/* Aurora blobs — bright, large, soft. This is what gives the depth. */
+body::before {
+  background:
+    radial-gradient(60vw 55vh at 78% -8%, color-mix(in srgb, var(--grad-a) 62%, transparent), transparent 62%),
+    radial-gradient(55vw 50vh at -6% 4%, color-mix(in srgb, var(--grad-c) 52%, transparent), transparent 60%),
+    radial-gradient(52vw 55vh at 108% 78%, color-mix(in srgb, var(--grad-b) 48%, transparent), transparent 60%),
+    radial-gradient(46vw 46vh at 32% 116%, color-mix(in srgb, var(--grad-a) 40%, transparent), transparent 62%);
+  filter: blur(28px) saturate(125%);
+}
+/* Grid mesh + fine noise stacked together. */
+body::after {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  background-size: 46px 46px, 46px 46px, 140px 140px;
+  opacity: var(--grid-op);
+  -webkit-mask-image: radial-gradient(120vw 120vh at 50% 30%, #000 55%, transparent 100%);
+  mask-image: radial-gradient(120vw 120vh at 50% 30%, #000 55%, transparent 100%);
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── App shell: header / body / footer ──────────────────────── */
+.shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  overflow-x: hidden;
+}
+
+/* ── Header / top bar ────────────────────────────────────────── */
+.appbar {
+  position: sticky; top: 0; z-index: 40;
+  display: flex; align-items: center; gap: 22px;
+  padding: 12px 24px;
+  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
+  border-bottom: 1px solid var(--glass-brd);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+.brand { display: flex; align-items: center; gap: 12px; flex: none; }
+.brand-mark {
+  width: 38px; height: 38px; border-radius: 11px; flex: none;
+  background: linear-gradient(135deg, var(--grad-a), var(--grad-b) 55%, var(--grad-c));
+  box-shadow: 0 4px 18px color-mix(in srgb, var(--grad-b) 55%, transparent);
+  display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 17px;
+}
+.brand-text h1 {
+  font-size: 16px; margin: 0; line-height: 1.1;
+  /* "All-in-One" stays subtle so the OMICX wordmark leads */
+  font-weight: 500; color: var(--muted); letter-spacing: 0;
+  display: flex; align-items: baseline; gap: 6px; white-space: nowrap;
+}
+.brand-text h1 b {
+  font-weight: 800; letter-spacing: -0.02em;
+  background: linear-gradient(90deg, var(--text), color-mix(in srgb, var(--accent) 85%, var(--text)));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.brand-text .sub { color: var(--muted); font-size: 11.5px; }
+
+.crumbs {
+  display: flex; align-items: center; gap: 9px; font-size: 12.5px;
+  padding: 6px 14px; border-radius: 20px;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+  backdrop-filter: blur(12px);
+}
+.crumb { color: var(--muted); text-transform: capitalize; }
+.crumb.strong { color: var(--text); font-weight: 600; }
+.crumb-sep { color: var(--faint); }
+.crumb-ver {
+  font-family: var(--mono); font-size: 10.5px; color: var(--faint);
+  border: 1px solid var(--glass-brd); border-radius: 20px; padding: 1px 8px; margin-left: 4px;
+}
+
+.appbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+/* ── Top-level mode switcher (API Explorer ⇄ Webhooks) ───────── */
+.modeswitch {
+  display: inline-flex; align-items: center; gap: 3px; flex: none;
+  padding: 3px; border-radius: 12px;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+  backdrop-filter: blur(12px);
+}
+.modeswitch button {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 14px; border-radius: 9px; font-size: 12.5px; font-weight: 600;
+  color: var(--muted); background: transparent; border: none; box-shadow: none;
+  cursor: pointer; transition: color .15s, background .15s;
+}
+.modeswitch button:hover:not(.on) { color: var(--text); background: var(--glass-2); transform: none; box-shadow: none; }
+.modeswitch button.on {
+  color: #fff;
+  background: linear-gradient(135deg, var(--grad-a), var(--grad-b));
+  box-shadow: 0 3px 12px color-mix(in srgb, var(--grad-b) 40%, transparent);
+}
+.modeswitch .ms-ico { font-size: 13px; }
+.modeswitch .ms-badge {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 20px; text-transform: uppercase;
+  background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent);
+}
+.modeswitch button.on .ms-badge { background: rgba(255,255,255,.22); color: #fff; }
+
+/* Key + host chip button (opens settings) */
+.chip-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--glass); border: 1px solid var(--glass-brd); color: var(--text);
+  border-radius: 10px; padding: 7px 12px; font-size: 12px; font-weight: 500;
+  box-shadow: none; backdrop-filter: blur(12px); cursor: pointer;
+  transition: border-color .18s, background .18s, transform .15s;
+}
+.chip-btn:hover { border-color: var(--glass-brd-hover); background: var(--glass-2); transform: none; }
+.kdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.kdot.on { background: var(--ok); box-shadow: 0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
+.kdot.off { background: var(--faint); }
+.kdot-host { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.cog { color: var(--muted); font-size: 13px; }
+
+/* Health indicator */
+.health { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+.health-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+.health-up .health-dot { background: var(--ok); box-shadow: 0 0 9px color-mix(in srgb, var(--ok) 75%, transparent); }
+.health-down .health-dot { background: var(--err); box-shadow: 0 0 9px color-mix(in srgb, var(--err) 70%, transparent); }
+.health-checking .health-dot { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
+.health-label { white-space: nowrap; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .health-checking .health-dot { animation: none; } }
+
+/* Theme toggle + generic square glass button */
+.theme-toggle {
+  width: 38px; height: 38px; border-radius: 11px; padding: 0; font-size: 16px;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+  color: var(--text); backdrop-filter: blur(12px); cursor: pointer;
+  transition: border-color .2s, transform .15s, background .2s;
+}
+.theme-toggle:hover { border-color: var(--glass-brd-hover); transform: translateY(-1px); background: var(--glass-2); }
+
+/* ── Body layout: rail + workspace ───────────────────────────── */
+.body {
+  display: grid;
+  grid-template-columns: 256px minmax(0, 1fr);
+  gap: 22px;
+  width: 100%; min-height: 0;
+  padding: 22px clamp(24px, 4vw, 64px);
+  align-items: stretch;
+}
+
+/* ── Left rail (sidebar) ─────────────────────────────────────── */
+.rail {
+  display: flex; flex-direction: column; gap: 20px;
+  height: 100%; min-height: 0; overflow: auto;
+  background: var(--glass);
+  border: 1px solid var(--glass-brd);
+  border-radius: 18px;
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: var(--shadow);
+  padding: 16px 14px;
+}
+.rail::-webkit-scrollbar { width: 8px; }
+.rail::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 8px; }
+.rail-group { display: flex; flex-direction: column; gap: 8px; }
+.rail-label {
+  font-size: 10px; color: var(--faint); text-transform: uppercase;
+  letter-spacing: .09em; font-weight: 700; padding: 0 6px;
+}
+
+.svc-list { display: flex; flex-direction: column; gap: 4px; }
+.svc {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 9px 10px; border-radius: 12px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: var(--text);
+  box-shadow: none; font-weight: 500; font-size: 13px;
+  transition: background .15s, border-color .15s;
+}
+.svc:hover { background: var(--glass-2); transform: none; box-shadow: none; }
+.svc.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+.svc-mark {
+  width: 26px; height: 26px; border-radius: 8px; flex: none;
+  display: grid; place-items: center; font-weight: 700; font-size: 12px; color: #fff;
+  background: linear-gradient(135deg, var(--grad-a), var(--grad-b));
+}
+.svc-name { text-transform: capitalize; flex: 1; }
+.svc .health { margin-left: auto; }
+
+/* Coming-soon services: muted, with a small tag. */
+.svc.soon { opacity: .68; }
+.svc.soon:hover { opacity: 1; background: var(--glass-2); }
+.svc-mark.ghost {
+  background: var(--glass-2); color: var(--muted);
+  border: 1px solid var(--glass-brd);
+}
+.svc-tag {
+  margin-left: auto; font-size: 9px; font-weight: 700; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--faint);
+  border: 1px solid var(--glass-brd); border-radius: 20px; padding: 1px 7px;
+}
+
+.sec-nav { display: flex; flex-direction: column; gap: 4px; }
+.sec {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 9px 12px; border-radius: 11px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  box-shadow: none; font-weight: 600; font-size: 13px;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.sec:hover { background: var(--glass-2); color: var(--text); transform: none; box-shadow: none; }
+.sec.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--grad-a), var(--grad-b));
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--grad-b) 40%, transparent);
+}
+.sec-ico { font-size: 14px; width: 16px; text-align: center; }
+.sec span:nth-child(2) { flex: 1; }
+.sec-count {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+  min-width: 22px; text-align: center; padding: 1px 7px; border-radius: 20px;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+.sec.active .sec-count { background: rgba(255, 255, 255, 0.22); }
+
+.rail-foot { margin-top: auto; padding-top: 6px; }
+.rail-tip {
+  font-size: 11px; color: var(--muted); line-height: 1.5;
+  border-top: 1px dashed var(--glass-brd); padding: 12px 6px 2px;
+}
+.rail-tip b { color: var(--accent); }
+.rail-tip code { font-family: var(--mono); font-size: 10px; color: var(--text); }
+
+/* ── Workspace ───────────────────────────────────────────────── */
+.workspace { min-width: 0; height: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 60px 20px; text-align: center; color: var(--muted);
+}
+.empty-ico {
+  font-size: 30px; width: 64px; height: 64px; border-radius: 18px; display: grid; place-items: center;
+  background: var(--glass-2); border: 1px solid var(--glass-brd); color: var(--accent);
+}
+.empty p { max-width: 320px; margin: 0; font-size: 13px; }
+
+/* ── Glass surface primitive ─────────────────────────────────── */
+.panel, .env-table, .resp, .flow-step, .drawer {
+  background: var(--glass);
+  border: 1px solid var(--glass-brd);
+  border-radius: 16px;
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: var(--shadow);
+}
+.panel { padding: 18px; }
+.panel h3 {
+  margin: 0 0 14px; font-size: 12px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted);
+}
+
+label {
+  display: block; font-size: 10.5px; color: var(--muted); margin-bottom: 6px;
+  text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
+}
+
+/* ── Git sub-tabs (Changes ⇄ History) ────────────────────────── */
+.gitsub {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px; border-radius: 12px;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+}
+.gitsub button {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 8px; font-size: 12.5px; font-weight: 600;
+  color: var(--muted); background: transparent; border: none; box-shadow: none;
+  cursor: pointer; transition: color .15s, background .15s;
+}
+.gitsub button:hover:not(.on) { color: var(--text); background: var(--glass-2); transform: none; box-shadow: none; }
+.gitsub button.on {
+  color: #fff;
+  background: linear-gradient(135deg, var(--grad-a), var(--grad-b));
+  box-shadow: 0 3px 12px color-mix(in srgb, var(--grad-b) 40%, transparent);
+}
+.gitsub button.ghost.sm { padding: 5px 10px; }
+
+/* ── All-repos overview grid ─────────────────────────────────── */
+/* ── Git project tabs ────────────────────────────────────────── */
+.proj-tabs { display: flex; flex-direction: column; }
+.proj-tabbar {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--border, rgba(127,127,127,.2)); padding-bottom: 2px;
+}
+.proj-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 13px; border: none; background: transparent; cursor: pointer;
+  color: var(--muted); font-size: 13px; font-weight: 600; border-radius: 8px 8px 0 0;
+  border-bottom: 2px solid transparent; transition: color .12s, background .12s, border-color .12s;
+}
+.proj-tab:hover { color: var(--text); background: var(--glass-2); }
+.proj-tab.on {
+  color: var(--text);
+  border-bottom-color: color-mix(in srgb, var(--accent) 85%, var(--text));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.proj-tab-ico { font-size: 12px; opacity: .8; }
+.proj-tab-badge {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700;
+  color: var(--muted); border: 1px solid var(--border, rgba(127,127,127,.3));
+  border-radius: 4px; padding: 0 5px;
+}
+.proj-manage {
+  margin-left: auto; padding: 6px 11px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border, rgba(127,127,127,.25)); background: transparent;
+  color: var(--muted); font-size: 12px; font-weight: 600;
+}
+.proj-manage:hover, .proj-manage.on { color: var(--text); background: var(--glass-2); }
+.proj-list { display: flex; flex-direction: column; gap: 2px; }
+.proj-list-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 7px;
+}
+.proj-list-row:hover { background: var(--glass-2); }
+.proj-list-row.editing { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.proj-list-name { font-family: var(--mono); font-size: 12.5px; color: var(--text); white-space: nowrap; }
+.proj-list-root {
+  flex: 1; min-width: 0; color: var(--muted); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.repo-grid { display: flex; flex-direction: column; gap: 2px; }
+.repo-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-radius: 8px; cursor: pointer;
+  transition: background .12s;
+}
+.repo-row:hover { background: var(--glass-2); }
+.repo-row.active { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.repo-row .repo-name {
+  font-family: var(--mono); font-size: 12.5px; color: var(--text);
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.repo-row .repo-branch { color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+.repo-row .repo-counts { display: inline-flex; gap: 10px; font-family: var(--mono); white-space: nowrap; }
+.repo-row > button { padding: 2px 9px; font-size: 11px; flex: none; }
+
+/* ── Commit history list ─────────────────────────────────────── */
+.log-list { display: flex; flex-direction: column; }
+.log-row {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 9px 10px; border-radius: 9px;
+  border-bottom: 1px solid color-mix(in srgb, var(--glass-brd) 60%, transparent);
+}
+.log-row:last-child { border-bottom: none; }
+.log-row:hover { background: var(--glass-2); }
+.log-hash {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 700;
+  color: var(--accent); flex: none; padding-top: 1px;
+}
+.log-main { flex: 1; min-width: 0; }
+.log-subject {
+  font-size: 13px; color: var(--text); line-height: 1.35;
+  overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.log-refs {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: .03em;
+  color: var(--ok, #3fb950); border: 1px solid color-mix(in srgb, var(--ok, #3fb950) 55%, transparent);
+  border-radius: 5px; padding: 0 6px; margin-left: 8px; white-space: nowrap; vertical-align: middle;
+}
+.log-meta { color: var(--muted); margin-top: 3px; }
+
+/* ── Inputs ──────────────────────────────────────────────────── */
+input, textarea, select {
+  width: 100%; color: var(--text);
+  background: var(--glass-2);
+  border: 1px solid var(--glass-brd);
+  border-radius: 10px; padding: 9px 12px;
+  font-size: 13px; font-family: inherit;
+  transition: border-color .18s, box-shadow .18s, background .18s;
+}
+select { cursor: pointer; }
+/* Checkboxes/radios must NOT inherit the text-input chrome above — width:100%
+   + padding turns them into giant glass boxes that shove their label text out
+   of view (first seen in the Mongo quick-find field rows). */
+input[type='checkbox'], input[type='radio'] {
+  width: auto; height: auto; padding: 0;
+  accent-color: var(--accent); cursor: pointer;
+}
+/* Native dropdown popup: options render on an OS-painted surface that ignores
+   the translucent --glass-2, so give them an OPAQUE theme-aware background —
+   otherwise text is drawn light-on-white (invisible in dark theme). */
+select option, select optgroup {
+  background: var(--bg-1);
+  color: var(--text);
+}
+textarea { font-family: var(--mono); resize: vertical; min-height: 130px; line-height: 1.5; }
+input::placeholder, textarea::placeholder { color: var(--faint); }
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+button {
+  border: none; border-radius: 10px; padding: 9px 18px;
+  font-size: 13px; font-weight: 600; cursor: pointer; color: #fff;
+  background: linear-gradient(135deg, var(--grad-a), var(--grad-b));
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--grad-b) 40%, transparent);
+  transition: transform .15s, box-shadow .2s, opacity .2s;
+}
+button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 22px color-mix(in srgb, var(--grad-b) 55%, transparent); }
+button:active:not(:disabled) { transform: translateY(0); }
+button:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+button.ghost {
+  background: var(--glass-2); border: 1px solid var(--glass-brd); color: var(--text); box-shadow: none;
+}
+button.ghost:hover:not(:disabled) { border-color: var(--glass-brd-hover); background: var(--glass); transform: none; }
+button.sm { padding: 6px 12px; font-size: 12px; border-radius: 8px; }
+
+/* ── Layout (two-column: list + detail) ──────────────────────── */
+.layout {
+  display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 18px;
+  flex: 1; min-height: 0; align-items: stretch;
+}
+/* Both panels fill the workspace height and scroll internally. */
+.layout > .panel {
+  height: 100%; min-height: 0; overflow: auto; display: flex; flex-direction: column;
+}
+.layout > .panel::-webkit-scrollbar { width: 8px; }
+.layout > .panel::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 8px; }
+/* The list panel's scroller shouldn't double-scroll — it fills its panel. */
+.layout > .panel .endpoint-list { max-height: none; flex: 1; }
+
+/* ── Endpoint / flow list ────────────────────────────────────── */
+.endpoint-list { display: flex; flex-direction: column; gap: 3px; max-height: 74vh; overflow: auto; padding-right: 4px; }
+.endpoint-list::-webkit-scrollbar { width: 8px; }
+.endpoint-list::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 8px; }
+.group-title {
+  font-size: 10px; color: var(--faint); text-transform: uppercase;
+  letter-spacing: .08em; font-weight: 700; margin: 14px 4px 6px;
+}
+.ep-item {
+  display: flex; gap: 10px; align-items: center; padding: 9px 10px;
+  border-radius: 10px; cursor: pointer; border: 1px solid transparent;
+  transition: background .15s, border-color .15s;
+}
+.ep-item:hover { background: var(--glass-2); }
+.ep-item.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* ── Method chips ────────────────────────────────────────────── */
+.method {
+  font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .03em;
+  padding: 3px 8px; border-radius: 6px; min-width: 50px; text-align: center;
+  border: 1px solid transparent;
+}
+.method.GET { background: rgba(52, 211, 153, .14); color: #6ee7b7; border-color: rgba(52,211,153,.3); }
+.method.POST { background: rgba(96, 165, 250, .16); color: #93c5fd; border-color: rgba(96,165,250,.32); }
+.method.PUT { background: rgba(251, 191, 36, .15); color: #fcd34d; border-color: rgba(251,191,36,.32); }
+.method.DELETE { background: rgba(251, 113, 133, .15); color: #fda4af; border-color: rgba(251,113,133,.32); }
+:root[data-theme='light'] .method.GET { color: #047857; }
+:root[data-theme='light'] .method.POST { color: #1d4ed8; }
+:root[data-theme='light'] .method.PUT { color: #b45309; }
+:root[data-theme='light'] .method.DELETE { color: #be123c; }
+.ep-path { font-family: var(--mono); font-size: 12.5px; }
+
+/* ── Badges ──────────────────────────────────────────────────── */
+.badge {
+  font-size: 10px; padding: 2px 9px; border-radius: 20px;
+  border: 1px solid var(--glass-brd); color: var(--muted); font-weight: 600;
+}
+.badge.scope { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); background: var(--warn-bg); }
+.badge.noauth { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: var(--ok-bg); }
+.badge.info { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.badge.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: var(--ok-bg); }
+.badge.err { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, transparent); background: color-mix(in srgb, var(--err) 12%, transparent); }
+
+/* ── Endpoint detail header ──────────────────────────────────── */
+.ep-head {
+  padding-bottom: 16px; margin-bottom: 16px;
+  border-bottom: 1px solid var(--glass-brd);
+}
+.url-bar {
+  display: flex; align-items: center; gap: 0; margin-top: 12px;
+  border: 1px solid var(--glass-brd); border-radius: 10px; overflow: hidden;
+  background: color-mix(in srgb, var(--bg-0) 45%, transparent);
+}
+.url-verb {
+  font-family: var(--mono); font-size: 11px; font-weight: 700; color: #fff;
+  padding: 8px 12px; flex: none; letter-spacing: .03em;
+  background: linear-gradient(135deg, var(--grad-a), var(--grad-b));
+}
+.url-verb.GET { background: linear-gradient(135deg, #0d9488, #059669); }
+.url-verb.DELETE { background: linear-gradient(135deg, #e11d48, #be123c); }
+.url-verb.PUT { background: linear-gradient(135deg, #d97706, #b45309); }
+.url-text {
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+  padding: 8px 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ep-actions {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--glass-brd);
+}
+
+/* ── Form rows ───────────────────────────────────────────────── */
+.field-row { margin-bottom: 14px; }
+.field-row label { color: var(--muted); }
+.query-grid { display: grid; grid-template-columns: 170px 1fr; gap: 10px; align-items: center; }
+
+/* ── Response view ───────────────────────────────────────────── */
+.resp { margin-top: 18px; padding: 16px; }
+.status-line { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.status-code {
+  font-family: var(--mono); font-weight: 700; padding: 4px 12px; border-radius: 8px; font-size: 13px;
+}
+.status-2xx { background: var(--ok-bg); color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); }
+.status-4xx { background: var(--warn-bg); color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+.status-5xx, .status-0 { background: var(--err-bg); color: var(--err); border: 1px solid color-mix(in srgb, var(--err) 40%, transparent); }
+
+pre.code {
+  background: color-mix(in srgb, var(--bg-0) 55%, transparent);
+  border: 1px solid var(--glass-brd); border-radius: 12px; padding: 14px;
+  overflow: auto; font-family: var(--mono); font-size: 12px; max-height: 440px; margin: 0;
+}
+pre.code::-webkit-scrollbar { width: 8px; height: 8px; }
+pre.code::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 8px; }
+
+.warn-box {
+  background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  color: var(--warn); border-radius: 12px; padding: 12px 14px; font-size: 12.5px; margin-bottom: 14px;
+}
+.warn-box code { font-family: var(--mono); }
+.hint { color: var(--muted); font-size: 12.5px; margin: 6px 0 14px; }
+
+/* ── Flow steps ──────────────────────────────────────────────── */
+.flow-steps { display: flex; flex-direction: column; gap: 12px; }
+.flow-step { padding: 16px; transition: border-color .2s; }
+.flow-step.done { border-color: color-mix(in srgb, var(--ok) 55%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 20%, transparent), var(--shadow); }
+.flow-step.failed { border-color: color-mix(in srgb, var(--err) 55%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--err) 20%, transparent), var(--shadow); }
+.flow-step-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.flow-step-title { font-weight: 600; }
+
+.vars { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+.var-chip {
+  font-family: var(--mono); font-size: 11px; padding: 4px 12px; border-radius: 20px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.var-chip b { color: var(--accent); }
+
+audio { width: 100%; margin-top: 12px; }
+.small { font-size: 11px; color: var(--muted); }
+
+/* ── Env / domain manager ────────────────────────────────────── */
+.env-manager { margin: 0; }
+.env-table { padding: 16px 18px; margin-top: 10px; }
+.env-head, .env-row { display: grid; grid-template-columns: 120px 1fr 150px 70px; gap: 10px; align-items: center; }
+.env-head { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .07em; font-weight: 700; margin-bottom: 10px; }
+.env-row { margin-bottom: 10px; }
+.env-row code { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+
+/* ── Settings drawer ─────────────────────────────────────────── */
+.drawer-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(3, 5, 14, 0.5); backdrop-filter: blur(2px);
+  opacity: 0; pointer-events: none; transition: opacity .25s ease;
+}
+.drawer-backdrop.show { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: fixed; top: 0; right: 0; z-index: 60;
+  height: 100vh; width: 440px; max-width: 92vw;
+  border-radius: 0; border-left: 1px solid var(--glass-brd);
+  transform: translateX(100%); transition: transform .3s cubic-bezier(.22,.61,.36,1);
+  display: flex; flex-direction: column;
+  background: color-mix(in srgb, var(--bg-1) 88%, transparent);
+}
+.drawer.open { transform: translateX(0); }
+.drawer-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 20px; border-bottom: 1px solid var(--glass-brd);
+}
+.drawer-head h3 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+.drawer-body { padding: 20px; overflow: auto; flex: 1; }
+.drawer-divider { height: 1px; background: var(--glass-brd); margin: 20px 0; }
+
+/* ── Centered modal (folder picker) ──────────────────────────── */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(3, 5, 14, 0.5); backdrop-filter: blur(3px);
+  /* `safe center`: if a modal is ever taller than the viewport anyway, align it
+     to the TOP instead of centering — a clipped bottom is scrollable, a clipped
+     top is not. Second guard on top of .modal's min-height:0 + max-height. */
+  display: flex; align-items: safe center; justify-content: center; padding: 24px;
+  overflow: auto;
+}
+.modal {
+  width: 560px; max-width: 94vw; max-height: 82vh;
+  /* As a flex ITEM of the backdrop, min-height:auto (= content height) would WIN
+     over max-height and let a tall modal overflow the viewport, clipping its own
+     header off-screen (seen with the report-export column list). min-height:0
+     lets max-height actually cap; overflow:auto scrolls whatever still exceeds. */
+  min-height: 0; overflow: auto;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--glass-brd); border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-1) 92%, transparent);
+  backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: 0 24px 60px rgba(0,0,0,.35); padding: 16px;
+}
+.picker-path { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.picker-cwd {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-family: var(--mono);
+  background: var(--glass-2); padding: 5px 9px; border-radius: 7px;
+}
+.picker-list {
+  flex: 1; min-height: 120px; overflow: auto; margin: 4px 0;
+  border: 1px solid var(--border, rgba(127,127,127,.2)); border-radius: 10px; padding: 4px;
+}
+.picker-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 10px; border: none; background: transparent; cursor: pointer;
+  border-radius: 8px; color: var(--text); font-size: 13px; text-align: left;
+}
+.picker-row:hover { background: var(--glass-2); }
+.picker-ico { font-size: 14px; flex: none; }
+.picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-repo {
+  flex: none; font-size: 10.5px; font-weight: 700; color: var(--accent, #6c8cff);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); border-radius: 5px; padding: 0 6px;
+}
+.picker-into { flex: none; color: var(--muted); font-size: 15px; }
+.picker-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+/* ── Responsive ──────────────────────────────────────────────── */
+@media (max-width: 1080px) {
+  /* Below the split-view threshold, let the page scroll naturally instead of
+     locking full-height panels. */
+  .shell { height: auto; min-height: 100vh; overflow: visible; }
+  .body { grid-template-columns: 1fr; }
+  .rail { height: auto; overflow: visible; flex-direction: row; flex-wrap: wrap; }
+  .rail-group { flex: 1; min-width: 200px; }
+  .rail-foot { display: none; }
+  .workspace { height: auto; }
+  .layout { min-height: 0; }
+  .layout > .panel { height: auto; overflow: visible; }
+  .layout > .panel .endpoint-list { max-height: 60vh; }
+}
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  .brand-text .sub { display: none; }
+  .crumbs { display: none; }
+  .kdot-host { display: none; }
+  .env-head, .env-row { grid-template-columns: 1fr; gap: 6px; }
+}
+
+/* ── Footer ──────────────────────────────────────────────────── */
+.appfoot {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  padding: 16px 24px; font-size: 11.5px; color: var(--muted);
+  border-top: 1px solid var(--glass-brd);
+  background: color-mix(in srgb, var(--bg-0) 60%, transparent);
+  backdrop-filter: blur(12px);
+}
+.foot-right { display: flex; align-items: center; gap: 8px; }
+.foot-sep { color: var(--faint); }
+
+/* ── Coming-soon toast ───────────────────────────────────────── */
+.toast {
+  position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%);
+  z-index: 70; display: flex; align-items: flex-start; gap: 12px; cursor: pointer;
+  max-width: 420px; padding: 14px 18px; border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-1) 90%, transparent);
+  border: 1px solid var(--glass-brd-hover);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px) saturate(150%);
+  animation: toast-in .28s cubic-bezier(.22,.61,.36,1);
+}
+.toast-ico { font-size: 20px; line-height: 1.2; flex: none; }
+.toast-title { font-weight: 600; font-size: 13px; }
+.toast-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+
+/* ── Spinner + background-activity badge ─────────────────────── */
+.spinner {
+  display: inline-block; width: 1em; height: 1em; flex: none;
+  border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; vertical-align: -0.15em;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }
+
+/* Floating pill shown whenever an action is running in the background. */
+.activity-badge {
+  position: fixed; right: 24px; bottom: 24px; z-index: 80;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-1) 90%, transparent);
+  border: 1px solid var(--glass-brd-hover);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px) saturate(150%);
+  font-size: 12px; font-weight: 600;
+  animation: toast-in .28s cubic-bezier(.22,.61,.36,1);
+}
+.activity-badge .spinner { color: var(--accent, #6c8cff); width: 15px; height: 15px; }
+.activity-badge .activity-sub { color: var(--muted); font-weight: 400; }
+@media (prefers-reduced-motion: reduce) { .activity-badge { animation: none; } }
+
+/* ── Redis workspace ─────────────────────────────────────────── */
+/* Two columns: a fixed connection rail + a flexible key browser, both
+   full-height with internal scroll (mirrors .layout). */
+.redis-layout {
+  display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 18px;
+  flex: 1; min-height: 0; align-items: stretch;
+}
+.redis-layout > .panel { height: 100%; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.redis-layout > .panel::-webkit-scrollbar { width: 8px; }
+.redis-layout > .panel::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 8px; }
+
+/* Connection rail (left) */
+.redis-conn-group { margin-top: 6px; }
+.redis-conn-row {
+  display: flex; gap: 8px; align-items: center; padding: 8px 10px;
+  border-radius: 10px; cursor: pointer; border: 1px solid transparent;
+  transition: background .15s, border-color .15s;
+}
+.redis-conn-row:hover { background: var(--glass-2); }
+.redis-conn-row.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.redis-conn-main { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.redis-conn-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.redis-conn-host { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.redis-env { flex-shrink: 0; }
+.redis-type {
+  font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--accent);
+  min-width: 22px; text-align: center; opacity: .85;
+}
+/* Cluster marker — connection rows + browse header */
+.redis-badge-cluster {
+  display: inline-block; margin-right: 6px; padding: 1px 7px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; letter-spacing: .02em; white-space: nowrap;
+  color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Per-row ⋯ action menu (Sửa / Xoá right in the connection list) */
+.redis-conn-menu { flex: 0 0 auto; }
+.redis-menu-pop {
+  position: absolute; top: calc(100% + 3px); right: 0; z-index: 30;
+  min-width: 96px; padding: 3px; display: flex; flex-direction: column; gap: 1px;
+  background: var(--panel, var(--glass-1, #1b1b22));
+  border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.35);
+}
+.redis-menu-item {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  padding: 4px 8px; border: 0; background: transparent; border-radius: 6px;
+  font-size: 11px; line-height: 1.4; color: var(--fg, inherit); cursor: pointer; white-space: nowrap;
+}
+.redis-menu-item:hover { background: var(--glass-2); }
+.redis-menu-item.danger { color: var(--err); }
+.redis-menu-item.danger:hover { background: color-mix(in srgb, var(--err) 14%, transparent); }
+
+/* Connection manager list rows */
+.redis-conn-manage-list { display: flex; flex-direction: column; gap: 4px; }
+.redis-conn-manage-row {
+  display: flex; gap: 8px; align-items: center; padding: 6px 8px;
+  border-radius: 8px; border: 1px solid transparent;
+}
+.redis-conn-manage-row:hover { background: var(--glass-2); }
+.redis-conn-manage-row.editing { border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.redis-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+/* Key browser (right) */
+.redis-browser { min-width: 0; }
+.redis-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 16px; flex: 1; min-height: 0; margin-top: 6px; }
+.redis-keys { display: flex; flex-direction: column; min-height: 0; }
+.redis-keys .endpoint-list { flex: 1; max-height: 62vh; }
+.redis-value {
+  min-width: 0; border-left: 1px solid var(--border, rgba(127,127,127,.2)); padding-left: 16px;
+  overflow: auto;
+}
+@media (max-width: 900px) {
+  .redis-layout { grid-template-columns: 1fr; }
+  .redis-split { grid-template-columns: 1fr; }
+  .redis-value { border-left: none; padding-left: 0; border-top: 1px solid var(--border, rgba(127,127,127,.2)); padding-top: 12px; }
+}
+
+/* ── Kafka workspace ─────────────────────────────────────────── */
+/* Same skeleton as Redis: fixed connection rail + flexible browser, each
+   full-height with internal scroll. Reuses the shared .panel/.badge/.code/
+   .endpoint-list/.ep-item primitives; only Kafka-specific bits are here. */
+.kafka-layout {
+  display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 18px;
+  flex: 1; min-height: 0; align-items: stretch;
+  position: relative; /* anchor for the floating quick-search dock */
+}
+.kafka-layout > .panel { height: 100%; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.kafka-layout > .panel::-webkit-scrollbar { width: 8px; }
+.kafka-layout > .panel::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 8px; }
+
+/* Connection rail (left) */
+.kafka-conn-group { margin-top: 8px; }
+.kafka-group-label {
+  font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted); padding: 4px 10px 2px;
+}
+.kafka-conn-row {
+  display: flex; gap: 8px; align-items: center; padding: 8px 10px;
+  border-radius: 10px; cursor: pointer; border: 1px solid transparent;
+  transition: background .15s, border-color .15s;
+}
+.kafka-conn-row:hover { background: var(--glass-2); }
+.kafka-conn-row.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.kafka-conn-main { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.kafka-conn-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kafka-conn-host { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kafka-conn-menu { flex: 0 0 auto; }
+.kafka-menu-pop {
+  position: absolute; top: calc(100% + 3px); right: 0; z-index: 30;
+  min-width: 96px; padding: 3px; display: flex; flex-direction: column; gap: 1px;
+  background: var(--panel, var(--glass-1, #1b1b22));
+  border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.35);
+}
+.kafka-menu-item {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  padding: 4px 8px; border: 0; background: transparent; border-radius: 6px;
+  font-size: 11px; line-height: 1.4; color: var(--fg, inherit); cursor: pointer; white-space: nowrap;
+}
+.kafka-menu-item:hover { background: var(--glass-2); }
+.kafka-menu-item.danger { color: var(--err); }
+.kafka-menu-item.danger:hover { background: color-mix(in srgb, var(--err) 14%, transparent); }
+
+/* Add/edit connection form */
+.kafka-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px;
+  padding: 10px; border: 1px dashed var(--border, rgba(127,127,127,.3)); border-radius: 10px; }
+.kafka-field { display: flex; flex-direction: column; gap: 3px; }
+.kafka-field > span { font-size: 11px; color: var(--muted); }
+/* Datepicker wrapper stretches full width inside a stacked field (preset wizard). */
+.kafka-field .react-datepicker-wrapper { width: 100%; }
+.kafka-form textarea, .kafka-field textarea { min-height: unset; }
+
+/* Browser (right) */
+.kafka-browser { min-width: 0; }
+.kafka-subnav { display: flex; gap: 4px; }
+.kafka-subnav button {
+  padding: 5px 12px; font-size: 12px; border-radius: 8px; border: 1px solid transparent;
+  background: transparent; box-shadow: none;
+}
+.kafka-subnav button:hover:not(:disabled) { transform: none; box-shadow: none; background: var(--glass-2); }
+.kafka-subnav button.on {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent); color: var(--accent);
+}
+/* Single pane — replaces the old 2-column split. It fills the browser pane and
+   the message viewer inside it gets the lion's share of the room. */
+.kafka-pane { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 6px; }
+.kafka-scroll { overflow: auto; min-height: 0; }
+.kafka-pane .endpoint-list { min-height: 0; }
+
+/* Selected-topic header: back arrow + title + inline stats + produce */
+.kafka-topic-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kafka-topic-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: min(48ch, 55%); }
+
+.kafka-toolbar { display: flex; gap: 8px; align-items: center; }
+.kafka-toolbar .input, .kafka-toolbar input { flex: 1; }
+.kafka-check { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.kafka-check input { width: auto; }
+.kafka-meta { font-size: 11px; color: var(--muted); margin: 6px 2px; display: flex; align-items: center; gap: 6px; }
+.kafka-topic-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kafka-topic-meta { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.kafka-stat-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+
+/* Partition / lag tables */
+.kafka-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 6px 0; font-family: var(--mono); }
+.kafka-table th, .kafka-table td { text-align: right; padding: 3px 8px; border-bottom: 1px solid var(--border, rgba(127,127,127,.15)); }
+.kafka-table th:first-child, .kafka-table td:first-child { text-align: left; }
+.kafka-table th { color: var(--muted); font-weight: 600; }
+
+.kafka-hint { font-size: 11px; color: var(--faint); margin: 4px 0 0; }
+
+/* Compact one-line filter: [from] → [to] [keyword] [Tìm] · [n] [Mới nhất] */
+.kafka-filter {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin: 10px 0; padding: 7px 9px;
+  border: 1px solid var(--border, rgba(127,127,127,.2)); border-radius: 10px;
+  background: var(--glass-1, transparent);
+}
+/* react-datepicker wraps the input in `.react-datepicker-wrapper`, which becomes the
+   flex item here — size that wrapper (the .kafka-dt input inside fills 100%). */
+.kafka-filter .react-datepicker-wrapper:has(.kafka-dt) { width: 172px; flex: 0 0 auto; }
+.kafka-filter .kafka-dt { width: 100%; }
+.kafka-filter .kafka-kw { flex: 1 1 160px; min-width: 120px; }
+.kafka-filter .kafka-peekn { width: 56px; flex: 0 0 auto; }
+.kafka-filter-sep { color: var(--faint); font-size: 12px; }
+
+/* Inner tabs of a selected topic (Messages / Partitions) */
+.kafka-topic-tabs { margin: 8px 0 4px; flex: 0 0 auto; }
+
+/* Card list — consumer groups on a topic (collapsible lag rows) */
+.kafka-results { margin-top: 12px; }
+.kafka-msg { border: 1px solid var(--border, rgba(127,127,127,.18)); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; }
+.kafka-msg-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* Message viewer — one row per message, horizontal scroll (Kafka-HQ style) */
+.kafka-msg-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 6px; }
+.kafka-msg-table {
+  flex: 1; min-height: 0; overflow: auto;
+  border: 1px solid var(--border, rgba(127,127,127,.18)); border-radius: 10px;
+}
+.kafka-msg-row {
+  display: grid;
+  grid-template-columns: 40px 96px 168px 160px minmax(360px, 1fr);
+  align-items: center; gap: 0;
+  width: 100%; min-width: max-content;
+  font-family: var(--mono); font-size: 12px; text-align: left;
+  border: 0; background: transparent; border-radius: 0;
+  border-bottom: 1px solid var(--border, rgba(127,127,127,.12));
+}
+.kafka-msg-row > span { padding: 5px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kafka-msg-th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--glass-2, #1b1b22); color: var(--muted);
+  font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .03em;
+}
+.kafka-msg-item { cursor: pointer; box-shadow: none; }
+.kafka-msg-item:hover:not(:disabled) { background: var(--glass-2); transform: none; box-shadow: none; }
+.kafka-msg-item.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-left: 2px solid var(--accent);
+}
+.kafka-msg-row .c-part { color: var(--muted); }
+.kafka-msg-row .c-off { color: var(--accent); }
+.kafka-msg-row .c-time { color: var(--muted); }
+.kafka-msg-row .c-key { color: var(--text); }
+.kafka-msg-row .c-val { color: var(--text); }
+
+/* Message detail drawer (slides from the right) */
+.kafka-drawer-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0,0,0,.35);
+  display: flex; justify-content: flex-end;
+}
+.kafka-drawer {
+  width: min(560px, 46vw); max-width: 92vw;
+  height: 100vh; height: 100dvh;
+  background: var(--panel, var(--bg-1, #16161c));
+  border-left: 1px solid var(--border, rgba(127,127,127,.25));
+  box-shadow: -12px 0 32px rgba(0,0,0,.35);
+  display: flex; flex-direction: column; padding: 12px 16px;
+  animation: kafka-drawer-in .16s ease-out;
+}
+@keyframes kafka-drawer-in { from { transform: translateX(24px); opacity: .4; } to { transform: none; opacity: 1; } }
+.kafka-drawer-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex: 0 0 auto; }
+.kafka-drawer-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; flex: 0 0 auto; }
+.kafka-drawer-key { font-size: 11px; word-break: break-all; }
+.kafka-fmt-json { color: var(--ok); }
+.kafka-fmt-text { color: var(--muted); }
+/* `pre.kafka-drawer-body` matches `pre.code`'s specificity (0,1,1) AND comes later,
+   so it overrides the shared `pre.code { max-height: 440px }` cap — letting the body
+   flex-grow to the full drawer height instead of stopping at 440px. */
+pre.kafka-drawer-body {
+  flex: 1 1 auto; min-height: 0; max-height: none; margin: 8px 0 0; overflow: auto;
+  white-space: pre; word-break: normal; tab-size: 2;
+  border: 1px solid var(--border, rgba(127,127,127,.15)); border-radius: 8px; padding: 10px;
+}
+/* In-drawer find bar (Ctrl+F). Sits between meta and the JSON body. */
+.kafka-find {
+  display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  margin: 8px 0 0; padding: 5px 8px;
+  border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 8px;
+  background: var(--bg-2, rgba(127,127,127,.06));
+}
+.kafka-find input {
+  flex: 1 1 auto; min-width: 0; background: transparent; border: none; outline: none;
+  color: var(--text); font-size: 12px; font-family: var(--mono);
+}
+.kafka-find-count { font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.kafka-find button {
+  flex: 0 0 auto; width: 22px; height: 22px; padding: 0; line-height: 1;
+  border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 6px;
+  background: transparent; color: var(--text); cursor: pointer; font-size: 12px;
+}
+.kafka-find button:hover:not(:disabled) { background: var(--bg-1, rgba(127,127,127,.12)); }
+.kafka-find button:disabled { opacity: .4; cursor: default; }
+/* Match highlighting inside the JSON body */
+.kafka-drawer-body mark { background: rgba(250, 204, 21, .32); color: inherit; border-radius: 2px; }
+.kafka-drawer-body mark.kafka-find-active { background: var(--accent, #7c5cff); color: #fff; }
+.kafka-drawer-body.kafka-json { color: var(--text); }
+
+/* Consumer group state pill */
+.kafka-state { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+.kafka-state.s-stable { color: var(--ok); }
+.kafka-state.s-empty { color: var(--warn); }
+.kafka-state.s-dead { color: var(--err); }
+.kafka-state.s-preparingrebalance, .kafka-state.s-completingrebalance { color: var(--accent); }
+
+/* ── Quick-search preset dock (anchored to the Kafka workspace, bottom-left) ──
+   Absolute (not fixed) so it sits inside the Kafka panel area — it won't drift
+   over the sidebar/other tabs when the page scrolls or the layout changes. */
+.kafka-preset-dock {
+  position: absolute; left: 14px; bottom: 14px; z-index: 45;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+}
+.kafka-preset-fab {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 16px; border-radius: 24px; font-weight: 700; font-size: 13px;
+  color: #fff; border: none; cursor: pointer;
+  background: linear-gradient(135deg, var(--accent-solid), color-mix(in srgb, var(--accent-solid) 60%, #000));
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--accent-solid) 45%, transparent);
+}
+.kafka-preset-fab:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.kafka-preset-fab-ico { font-size: 15px; }
+.kafka-preset-fab-count {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; background: rgba(255,255,255,.28);
+}
+.kafka-preset-panel {
+  width: 340px; max-width: 86vw; max-height: 60vh; overflow: auto;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--glass-brd); border-radius: 14px; padding: 12px;
+  background: color-mix(in srgb, var(--bg-1) 94%, transparent);
+  backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: 0 20px 50px rgba(0,0,0,.35);
+}
+.kafka-preset-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.kafka-preset-list { display: flex; flex-direction: column; gap: 6px; }
+.kafka-preset-row { display: flex; align-items: stretch; gap: 4px; }
+.kafka-preset-run {
+  flex: 1; min-width: 0; text-align: left; cursor: pointer;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 10px; border-radius: 9px; color: var(--text);
+  border: 1px solid var(--border, rgba(127,127,127,.22)); background: var(--glass-2);
+}
+.kafka-preset-run:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.kafka-preset-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kafka-preset-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+
+@media (max-width: 900px) {
+  .kafka-layout { grid-template-columns: 1fr; }
+  .kafka-drawer { width: 92vw; }
+  .kafka-filter .react-datepicker-wrapper:has(.kafka-dt) { width: 150px; }
+  .kafka-preset-dock { left: 10px; bottom: 10px; }
+}
+
+/* ── RabbitMQ workspace (local dev) ─────────────────────────────────────────
+   Reuses .kafka-* structure (layout/split/table/msg). Only overview cards and
+   state pills are Rabbit-specific. */
+.rabbit-overview { margin-top: 10px; display: flex; flex-direction: column; gap: 12px; }
+.rabbit-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.rabbit-card {
+  border: 1px solid var(--border, rgba(127,127,127,.18)); border-radius: 12px;
+  padding: 12px 14px; background: color-mix(in srgb, var(--accent) 5%, transparent);
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+}
+.rabbit-card-label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); }
+.rabbit-card-value { font-size: 20px; font-weight: 700; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rabbit-card-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.rabbit-state { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; margin-left: 6px; }
+.rabbit-state.s-running { color: var(--ok); }
+.rabbit-state.s-idle { color: var(--muted); }
+.rabbit-state.s-flow { color: var(--accent); }
+.rabbit-state.s-blocked, .rabbit-state.s-blocking { color: var(--warn); }
+.rabbit-state.s-down, .rabbit-state.s-closed { color: var(--err); }
+
+@media (max-width: 900px) {
+  .rabbit-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Zalo OA chat — fallback launcher when the external SDK can't load. */
+.zalo-fallback {
+  position: fixed; right: 18px; bottom: 18px; z-index: 40;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 10px 16px; border-radius: 24px; font-weight: 700; font-size: 13px;
+  color: #fff; background: #0068ff; box-shadow: 0 6px 20px rgba(0,104,255,.4);
+  text-decoration: none;
+}
+.zalo-fallback:hover { background: #0058d6; color: #fff; }
+
+/* ── react-datepicker — themed to match the app (dark surface, accent) ───────── */
+/* The wrapper react-datepicker injects around the input must not break flex sizing. */
+.react-datepicker-wrapper { display: inline-block; min-width: 0; }
+.react-datepicker__input-container { display: block; }
+.react-datepicker__input-container input { width: 100%; }
+/* Clear "×" button sits inside the field. */
+.react-datepicker__close-icon { padding-right: 8px; }
+.react-datepicker__close-icon::after {
+  background: var(--muted); color: var(--bg-1); font-size: 13px; line-height: 1;
+}
+
+/* Popup (portal-free popper). Elevated above panels. */
+/* NOTE on !important here: react-datepicker's own stylesheet may be injected AFTER
+   globals.css by the dev bundler (import order is not guaranteed across chunks), and
+   its time-list rules use very deep selectors (up to 0,5,2). The theme must win in
+   both directions, so the contested longhands are forced. Scoped to .omi-datepicker. */
+.omi-datepicker-popper { z-index: 80 !important; }
+.omi-datepicker.react-datepicker {
+  font-family: var(--font, inherit); font-size: 12.5px;
+  border: 1px solid var(--glass-brd) !important; border-radius: 12px; overflow: hidden;
+  background-color: var(--bg-1, #0b0f1e) !important;
+  box-shadow: 0 20px 50px rgba(0,0,0,.4); color: var(--text) !important;
+}
+.omi-datepicker .react-datepicker__month-container { background: transparent !important; }
+.omi-datepicker .react-datepicker__triangle { display: none; }
+.omi-datepicker .react-datepicker__header {
+  background-color: color-mix(in srgb, var(--accent) 10%, var(--bg-1, #0b0f1e)) !important;
+  border-bottom: 1px solid var(--border, rgba(127,127,127,.2)) !important; padding-top: 10px;
+}
+.omi-datepicker .react-datepicker__current-month,
+.omi-datepicker .react-datepicker-time__header { color: var(--text) !important; }
+.omi-datepicker .react-datepicker__day-name { color: var(--muted) !important; }
+.omi-datepicker .react-datepicker__day,
+.omi-datepicker .react-datepicker__time-list-item { color: var(--text) !important; }
+.omi-datepicker .react-datepicker__day:hover,
+.omi-datepicker .react-datepicker__time-list-item:hover {
+  background-color: color-mix(in srgb, var(--accent) 18%, var(--bg-1, #0b0f1e)) !important; border-radius: 7px;
+}
+.omi-datepicker .react-datepicker__day--selected,
+.omi-datepicker .react-datepicker__day--keyboard-selected,
+.omi-datepicker .react-datepicker__time-list-item--selected {
+  background-color: var(--accent-solid) !important; color: #fff !important; border-radius: 7px;
+}
+.omi-datepicker .react-datepicker__day--today { font-weight: 700; color: var(--accent) !important; }
+.omi-datepicker .react-datepicker__day--outside-month { color: var(--faint) !important; }
+.omi-datepicker .react-datepicker__navigation-icon::before { border-color: var(--muted) !important; }
+.omi-datepicker .react-datepicker__navigation:hover .react-datepicker__navigation-icon::before { border-color: var(--text) !important; }
+/* Time column */
+.omi-datepicker .react-datepicker__time-container,
+.omi-datepicker .react-datepicker__time-container .react-datepicker__time,
+.omi-datepicker .react-datepicker__time-box {
+  background: transparent !important; border-left: 1px solid var(--border, rgba(127,127,127,.2));
+}
+.omi-datepicker .react-datepicker__time-list::-webkit-scrollbar { width: 6px; }
+.omi-datepicker .react-datepicker__time-list::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 6px; }
+
+:root[data-theme='light'] .omi-datepicker { color-scheme: light; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RabbitMQ workspace v2 — self-owned namespace, isolated from .kafka-*
+   ---------------------------------------------------------------------------
+   Everything the Rabbit tab needs lives here under `.rabbit-*`. It used to
+   borrow the `.kafka-*` layout classes, which meant a Kafka redesign silently
+   restyled this tab. Appended at EOF on purpose: a Kafka branch is editing the
+   middle of this file, so this block must not touch any earlier line.
+
+   NOTE: the older `.rabbit-card*` / `.rabbit-state*` block further up is now
+   dead — the same selectors are re-declared below and win on cascade order.
+   Delete the old block in a separate commit once the Kafka branch has merged.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Shell ─────────────────────────────────────────────────────────────── */
+.rabbit-layout {
+  display: grid; grid-template-columns: 300px minmax(0, 1fr);
+  gap: 14px; align-items: start; min-height: 0; height: 100%;
+}
+@media (max-width: 1100px) { .rabbit-layout { grid-template-columns: 1fr; } }
+
+.rabbit-browser { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+
+.rabbit-subnav { display: flex; gap: 4px; flex-wrap: wrap; }
+.rabbit-subnav button {
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  padding: 5px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+}
+.rabbit-subnav button:hover { color: var(--fg); background: var(--glass-bg); }
+.rabbit-subnav button.on {
+  color: var(--fg); background: var(--glass-bg); border-color: var(--glass-brd); font-weight: 600;
+}
+
+.rabbit-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.rabbit-actionbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.rabbit-meta { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.rabbit-hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 4px 0; }
+.rabbit-link {
+  background: none; border: none; padding: 0; color: var(--acc);
+  cursor: pointer; font: inherit; text-decoration: underline;
+}
+.rabbit-locked { font-size: 12px; color: var(--warn); }
+
+/* ── List + detail split ───────────────────────────────────────────────── */
+.rabbit-split {
+  display: grid; grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: 12px; min-height: 0; flex: 1;
+}
+@media (max-width: 900px) { .rabbit-split { grid-template-columns: 1fr; } }
+
+.rabbit-list-col, .rabbit-detail-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.rabbit-scroll { overflow: auto; min-height: 0; max-height: 62vh; }
+
+.rabbit-topic-name { font-size: 13px; font-weight: 600; word-break: break-all; }
+.rabbit-topic-meta { font-size: 11px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* ── Tables ────────────────────────────────────────────────────────────── */
+.rabbit-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.rabbit-table th, .rabbit-table td {
+  padding: 6px 8px; border-bottom: 1px solid var(--glass-brd); text-align: right; white-space: nowrap;
+}
+.rabbit-table th {
+  position: sticky; top: 0; z-index: 1; background: var(--panel, var(--bg));
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600;
+}
+.rabbit-table th:first-child, .rabbit-table td:first-child { text-align: left; }
+.rabbit-table tbody tr:hover { background: var(--glass-bg); }
+
+.rabbit-binding-row { cursor: default; }
+.rabbit-binding-row.hit { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+
+/* ── Cards (re-declared — wins over the older block on cascade order) ──── */
+.rabbit-overview { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.rabbit-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.rabbit-card {
+  background: var(--glass-bg); border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px 12px;
+}
+.rabbit-card.tone-warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--glass-brd)); }
+.rabbit-card.tone-err  { border-color: color-mix(in srgb, var(--err) 60%, var(--glass-brd)); }
+.rabbit-card-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.rabbit-card-value { font-size: 20px; font-weight: 700; margin-top: 2px; }
+.rabbit-card.tone-warn .rabbit-card-value { color: var(--warn); }
+.rabbit-card.tone-err  .rabbit-card-value { color: var(--err); }
+.rabbit-card-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+.rabbit-stat-row { display: flex; gap: 18px; flex-wrap: wrap; margin: 6px 0 10px; }
+.rabbit-stat-row > div { display: flex; flex-direction: column; }
+.rabbit-stat-row strong { font-size: 16px; }
+.rabbit-stat-row span { font-size: 11px; color: var(--muted); }
+
+/* ── State pills ───────────────────────────────────────────────────────── */
+.rabbit-state {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.rabbit-state.s-running, .rabbit-state.s-idle {
+  color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+.rabbit-state.s-flow { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.rabbit-state.s-blocked, .rabbit-state.s-blocking, .rabbit-state.s-down {
+  color: var(--err); border-color: color-mix(in srgb, var(--err) 50%, transparent);
+}
+
+/* ── Node health + gauges ──────────────────────────────────────────────── */
+.rabbit-node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.rabbit-node-card {
+  background: var(--glass-bg); border: 1px solid var(--glass-brd); border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.rabbit-node-card.alarm {
+  border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, var(--glass-bg));
+}
+.rabbit-node-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.rabbit-node-head strong { font-size: 13px; word-break: break-all; }
+
+.rabbit-gauge { display: flex; flex-direction: column; gap: 3px; }
+.rabbit-gauge-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 11px; }
+.rabbit-gauge-head > span:first-child { color: var(--muted); }
+.rabbit-gauge-num { font-variant-numeric: tabular-nums; }
+.rabbit-gauge-pct { font-weight: 700; font-variant-numeric: tabular-nums; }
+.rabbit-gauge-track { height: 6px; border-radius: 999px; background: var(--glass-brd); overflow: hidden; }
+.rabbit-gauge-fill { height: 100%; border-radius: 999px; transition: width .3s ease; }
+.rabbit-gauge-fill.l-ok   { background: var(--ok); }
+.rabbit-gauge-fill.l-warn { background: var(--warn); }
+.rabbit-gauge-fill.l-crit { background: var(--err); }
+
+/* ── Arguments / config as labelled fields (not raw JSON) ──────────────── */
+.rabbit-arg-row {
+  display: grid; grid-template-columns: minmax(180px, 40%) minmax(0, 1fr);
+  gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--glass-brd); font-size: 12.5px;
+}
+.rabbit-arg-row > span:first-child { color: var(--muted); }
+.rabbit-arg-row code { word-break: break-all; }
+
+/* ── Danger / warning blocks ───────────────────────────────────────────── */
+.rabbit-danger {
+  border: 1px solid color-mix(in srgb, var(--err) 55%, var(--glass-brd));
+  background: color-mix(in srgb, var(--err) 8%, transparent);
+  border-radius: 10px; padding: 9px 12px; font-size: 12.5px; line-height: 1.55;
+}
+.rabbit-danger strong { color: var(--err); }
+.rabbit-danger.warn {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--glass-brd));
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+.rabbit-danger.warn strong { color: var(--warn); }
+
+/* ── Route tester ──────────────────────────────────────────────────────── */
+.rabbit-route { display: flex; flex-direction: column; gap: 8px; }
+.rabbit-route-hit {
+  display: flex; justify-content: space-between; gap: 10px; align-items: baseline;
+  padding: 6px 10px; border-radius: 8px; font-size: 12.5px;
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
+}
+.rabbit-route-hit span:last-child { color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+/* ── Peek results ──────────────────────────────────────────────────────── */
+.rabbit-results { display: flex; flex-direction: column; gap: 8px; }
+.rabbit-msg { border: 1px solid var(--glass-brd); border-radius: 8px; overflow: hidden; }
+.rabbit-msg-head {
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline;
+  padding: 5px 10px; background: var(--glass-bg); font-size: 11px; color: var(--muted);
+}
+.rabbit-msg-val { padding: 8px 10px; margin: 0; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+
+/* ── Broker rail ───────────────────────────────────────────────────────── */
+.rabbit-conn-group { margin-top: 10px; }
+.rabbit-group-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 0 0 4px 2px;
+}
+.rabbit-conn-row {
+  display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: 9px;
+  border: 1px solid transparent; cursor: pointer;
+}
+.rabbit-conn-row:hover { background: var(--glass-bg); }
+.rabbit-conn-row.active { background: var(--glass-bg); border-color: var(--glass-brd); }
+.rabbit-conn-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.rabbit-conn-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; flex-wrap: wrap; }
+.rabbit-conn-host {
+  font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rabbit-conn-menu { flex: none; }
+.rabbit-menu-pop {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 168px;
+  background: var(--panel, var(--bg)); border: 1px solid var(--glass-brd);
+  border-radius: 9px; padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+}
+.rabbit-menu-item {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--fg); font-size: 12.5px; padding: 6px 9px; border-radius: 6px; cursor: pointer;
+}
+.rabbit-menu-item:hover { background: var(--glass-bg); }
+.rabbit-menu-item.danger { color: var(--err); }
+
+/* ── Forms ─────────────────────────────────────────────────────────────── */
+.rabbit-form { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
+.rabbit-form-row { display: flex; gap: 9px; flex-wrap: wrap; }
+.rabbit-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.rabbit-field > span { font-size: 11px; color: var(--muted); }
+.rabbit-inline-field { display: flex; flex-direction: column; gap: 3px; min-width: 130px; }
+.rabbit-inline-field > span { font-size: 11px; color: var(--muted); }
+.rabbit-check { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.45; cursor: pointer; }
+.rabbit-check input { margin-top: 2px; flex: none; }
+
+.rabbit-readonly-toggle {
+  border: 1px solid var(--glass-brd); border-radius: 9px; padding: 8px 10px; background: var(--glass-bg);
+}
+.rabbit-readonly-toggle.armed {
+  border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, transparent);
+}
+.rabbit-readonly-toggle em { color: var(--err); font-style: normal; }
+
+/* ── Bindings section wrapper ──────────────────────────────────────────── */
+.rabbit-bindings { display: flex; flex-direction: column; gap: 10px; min-height: 0; flex: 1; }
+
+/* ── Focus mode: list OR detail, never both ────────────────────────────────
+   Selecting a queue/exchange unmounts the list and gives the detail the whole
+   pane. `.rabbit-split` / `.rabbit-list-col` / `.rabbit-detail-col` above are
+   still used by BindingsView, so they stay. */
+.rabbit-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1; }
+
+.rabbit-focus { gap: 10px; }
+
+.rabbit-focus-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding-bottom: 8px; border-bottom: 1px solid var(--glass-brd);
+}
+/* Back button first and visually distinct — it's the only way out of focus. */
+.rabbit-back { flex: 0 0 auto; white-space: nowrap; }
+
+.rabbit-focus-id {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1;
+}
+.rabbit-focus-id > strong { font-size: 14px; word-break: break-all; }
+
+.rabbit-focus-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* Taller than .rabbit-scroll's 62vh: with the list gone there's no second
+   column to keep aligned, so the detail can use the height it needs. */
+.rabbit-focus-body { flex: 1; max-height: 74vh; }
+
+@media (max-width: 700px) {
+  .rabbit-focus-id { order: 3; flex-basis: 100%; }
+}
+
+/* ── MongoDB workspace (local dev) ──────────────────────────────────────────
+   Self-owned styles for the Mongo tab (Robo3T-lite: connection rail →
+   db/collection tree → query + results). Mirrors the .rabbit-* conventions but
+   deliberately does not reuse those classes, so a Rabbit redesign can't change
+   this tab's appearance by accident. */
+.mongo-layout {
+  display: grid; grid-template-columns: 300px minmax(0, 1fr);
+  gap: 14px; align-items: start; min-height: 0; height: 100%;
+}
+@media (max-width: 1100px) { .mongo-layout { grid-template-columns: 1fr; } }
+
+.mongo-workspace-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+
+.mongo-subnav { display: flex; gap: 4px; flex-wrap: wrap; }
+.mongo-subnav button {
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  padding: 5px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+}
+.mongo-subnav button:hover { color: var(--text); background: var(--glass-bg); }
+.mongo-subnav button.on {
+  color: var(--text); background: var(--glass-bg); border-color: var(--glass-brd); font-weight: 600;
+}
+
+/* ── Connection rail ───────────────────────────────────────────────────── */
+.mongo-conn-group { margin-top: 10px; }
+.mongo-group-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 0 0 4px 2px;
+}
+.mongo-conn-row {
+  display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: 9px;
+  border: 1px solid transparent; cursor: pointer;
+}
+.mongo-conn-row:hover { background: var(--glass-bg); }
+.mongo-conn-row.active { background: var(--glass-bg); border-color: var(--glass-brd); }
+.mongo-conn-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.mongo-conn-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; flex-wrap: wrap; }
+.mongo-conn-host {
+  font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mongo-conn-menu { flex: none; }
+.mongo-menu-pop {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 168px;
+  background: var(--panel, var(--bg)); border: 1px solid var(--glass-brd);
+  border-radius: 9px; padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+}
+.mongo-menu-item {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--text); font-size: 12.5px; padding: 6px 9px; border-radius: 6px; cursor: pointer;
+}
+.mongo-menu-item:hover { background: var(--glass-bg); }
+.mongo-menu-item.danger { color: var(--err); }
+
+/* ── Forms ─────────────────────────────────────────────────────────────── */
+.mongo-form { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
+.mongo-form-row { display: flex; gap: 9px; flex-wrap: wrap; }
+.mongo-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.mongo-field > span { font-size: 11px; color: var(--muted); }
+.mongo-check { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.45; cursor: pointer; }
+.mongo-check input { margin-top: 2px; flex: none; }
+
+.mongo-readonly-toggle {
+  border: 1px solid var(--glass-brd); border-radius: 9px; padding: 8px 10px; background: var(--glass-bg);
+}
+.mongo-readonly-toggle.armed {
+  border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, transparent);
+}
+.mongo-readonly-toggle em { color: var(--err); font-style: normal; }
+
+.input.mono { font-family: var(--mono); font-size: 12px; }
+
+/* ── Overview ──────────────────────────────────────────────────────────── */
+.mongo-overview { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.mongo-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.mongo-kpi {
+  background: var(--glass-bg); border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+}
+.mongo-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.mongo-kpi b { font-size: 13.5px; word-break: break-word; }
+
+.mongo-link {
+  background: none; border: none; padding: 0; color: var(--accent);
+  cursor: pointer; font: inherit; text-decoration: underline;
+}
+
+/* ── Tables (databases / indexes / stats) ──────────────────────────────── */
+.mongo-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.mongo-table th, .mongo-table td {
+  padding: 6px 8px; border-bottom: 1px solid var(--glass-brd); text-align: right; white-space: nowrap;
+}
+.mongo-table th {
+  position: sticky; top: 0; z-index: 1; background: var(--panel, var(--bg));
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600;
+}
+.mongo-table th:first-child, .mongo-table td:first-child { text-align: left; }
+.mongo-table tbody tr:hover { background: var(--glass-bg); }
+
+/* ── Data browser: tree + main ─────────────────────────────────────────── */
+.mongo-browser {
+  display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 12px; min-height: 0; flex: 1;
+}
+@media (max-width: 900px) { .mongo-browser { grid-template-columns: 1fr; } }
+
+.mongo-tree { display: flex; flex-direction: column; min-width: 0; min-height: 0; max-height: 74vh; overflow: auto; }
+.mongo-db-list { list-style: none; margin: 0; padding: 0; }
+.mongo-db-item {
+  display: flex; align-items: center; gap: 4px; width: 100%; text-align: left;
+  background: none; border: none; color: var(--text); font-size: 13px; font-weight: 600;
+  padding: 5px 6px; border-radius: 7px; cursor: pointer;
+}
+.mongo-db-item:hover { background: var(--glass-bg); }
+.mongo-db-item.open { color: var(--accent); }
+.mongo-db-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mongo-tree-caret { flex: none; font-size: 10px; color: var(--muted); width: 12px; }
+.mongo-coll-list { list-style: none; margin: 0 0 4px; padding: 0 0 0 18px; }
+.mongo-coll-item {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--muted); font-size: 12.5px; font-family: var(--mono);
+  padding: 4px 6px; border-radius: 6px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mongo-coll-item:hover { background: var(--glass-bg); color: var(--text); }
+.mongo-coll-item.active { background: var(--glass-bg); color: var(--text); font-weight: 600; }
+
+.mongo-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+.mongo-ns { font-family: var(--mono); font-size: 13.5px; word-break: break-all; }
+
+.mongo-querybar {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px; background: var(--glass-bg);
+}
+
+/* ── Results: collapsible document cards ───────────────────────────────── */
+.mongo-results { display: flex; flex-direction: column; gap: 6px; overflow: auto; min-height: 0; max-height: 58vh; }
+.mongo-doc { border: 1px solid var(--glass-brd); border-radius: 8px; overflow: hidden; }
+.mongo-doc-head {
+  display: flex; gap: 8px; align-items: center; padding: 5px 8px;
+  background: var(--glass-bg); cursor: pointer; min-width: 0;
+}
+.mongo-doc-idx { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.mongo-doc-preview {
+  flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mongo-doc-body { margin: 0; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; }
+
+/* ── Danger block (update modal) ───────────────────────────────────────── */
+.mongo-danger {
+  border: 1px solid color-mix(in srgb, var(--err) 55%, var(--glass-brd));
+  background: color-mix(in srgb, var(--err) 8%, transparent);
+  border-radius: 10px; padding: 9px 12px; font-size: 12.5px; line-height: 1.55; margin-bottom: 8px;
+}
+
+/* ── Quick-find (preset buttons + run panel + row results) ─────────────── */
+.mongo-qf { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+
+.mongo-qf-dock { display: flex; gap: 8px; flex-wrap: wrap; }
+.mongo-qf-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  border: 1px solid var(--glass-brd); border-radius: 999px; padding: 2px 6px 2px 2px;
+  background: var(--glass-bg);
+}
+.mongo-qf-chip.active { border-color: var(--accent); }
+.mongo-qf-chip-main {
+  background: none; border: none; color: var(--text); font-size: 12.5px; font-weight: 600;
+  padding: 5px 8px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+}
+.mongo-qf-chip-main:hover { color: var(--accent); }
+
+.mongo-qf-form { border: 1px solid var(--glass-brd); border-radius: 10px; padding: 12px; background: var(--glass-bg); }
+
+.mongo-qf-run {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0;
+  border: 1px solid var(--glass-brd); border-radius: 10px; padding: 12px;
+}
+.mongo-qf-fields { display: flex; flex-direction: column; gap: 6px; }
+/* Explicit grid columns — label block, type, single/list mode, value — so long
+   field names/paths truncate inside their own column and can never overlap the
+   selects (the old flex layout let the label spill over the type select). */
+.mongo-qf-field {
+  display: grid;
+  grid-template-columns: minmax(180px, 230px) 110px 120px minmax(0, 1fr);
+  align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px;
+  border: 1px solid transparent; opacity: .65;
+}
+@media (max-width: 900px) {
+  .mongo-qf-field { grid-template-columns: minmax(140px, 1fr) 110px 120px; }
+  .mongo-qf-field > .input.mono, .mongo-qf-field > select.input:last-child { grid-column: 1 / -1; }
+}
+.mongo-qf-field.on { opacity: 1; background: var(--glass-bg); border-color: var(--glass-brd); }
+.mongo-qf-pick {
+  display: flex; align-items: center; gap: 7px; cursor: pointer; min-width: 0;
+}
+.mongo-qf-pick input { flex: none; }
+.mongo-qf-labeltext { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.mongo-qf-labeltext b {
+  font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mongo-qf-labeltext code {
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mongo-qf-type, .mongo-qf-mode { min-width: 0; }
+
+/* One document per row, single-line plaintext; the WRAPPER scrolls horizontally
+   so every row moves together (the whole strip is one scroll surface). */
+.mongo-qf-rows {
+  overflow: auto; min-height: 0; max-height: 56vh;
+  border: 1px solid var(--glass-brd); border-radius: 8px;
+}
+.mongo-qf-row {
+  display: flex; align-items: center; gap: 8px; width: max-content; min-width: 100%;
+  background: none; border: none; border-bottom: 1px solid var(--glass-brd);
+  padding: 6px 10px; cursor: pointer; text-align: left;
+}
+.mongo-qf-row:last-child { border-bottom: none; }
+.mongo-qf-row:hover { background: var(--glass-bg); }
+.mongo-qf-row-text {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text); white-space: nowrap;
+}
+
+/* ── Quick-find v2: collapsed query summary + projection picker ──────────── */
+.mongo-qf-summary {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border: 1px solid var(--glass-brd); border-radius: 9px; padding: 7px 10px;
+  background: var(--glass-bg);
+}
+.mongo-qf-summary-q {
+  flex: 1; min-width: 200px; font-family: var(--mono); font-size: 12px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Results strip grows when the setup panel is collapsed. */
+.mongo-qf-rows.expanded { max-height: 72vh; }
+
+.mongo-qf-hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 0; }
+
+.mongo-qf-proj { display: flex; flex-direction: column; gap: 8px; }
+.mongo-qf-projgrid { display: flex; gap: 6px; flex-wrap: wrap; max-height: 30vh; overflow: auto; }
+.mongo-qf-projchip {
+  background: none; border: 1px solid var(--glass-brd); border-radius: 999px;
+  color: var(--muted); font-size: 12px; font-family: var(--mono);
+  padding: 4px 10px; cursor: pointer; white-space: nowrap;
+}
+.mongo-qf-projchip:hover { color: var(--text); background: var(--glass-bg); }
+.mongo-qf-projchip.on { color: var(--text); border-color: var(--accent); background: var(--glass-bg); font-weight: 600; }
+.mongo-qf-projchip.special { border-style: dashed; }
+
+/* ── Elasticsearch workspace (local dev) ──────────────────────────────────────────
+   Self-owned .es-* styles — cloned from the .mongo-* block so an ES redesign
+   never bleeds into the Mongo tab (same convention as kafka/rabbit). */
+.es-layout {
+  display: grid; grid-template-columns: 300px minmax(0, 1fr);
+  gap: 14px; align-items: start; min-height: 0; height: 100%;
+}
+@media (max-width: 1100px) { .es-layout { grid-template-columns: 1fr; } }
+
+.es-workspace-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+
+.es-subnav { display: flex; gap: 4px; flex-wrap: wrap; }
+.es-subnav button {
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  padding: 5px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+}
+.es-subnav button:hover { color: var(--text); background: var(--glass-bg); }
+.es-subnav button.on {
+  color: var(--text); background: var(--glass-bg); border-color: var(--glass-brd); font-weight: 600;
+}
+
+/* ── Connection rail ───────────────────────────────────────────────────── */
+.es-conn-group { margin-top: 10px; }
+.es-group-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 0 0 4px 2px;
+}
+.es-conn-row {
+  display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: 9px;
+  border: 1px solid transparent; cursor: pointer;
+}
+.es-conn-row:hover { background: var(--glass-bg); }
+.es-conn-row.active { background: var(--glass-bg); border-color: var(--glass-brd); }
+.es-conn-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.es-conn-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; flex-wrap: wrap; }
+.es-conn-host {
+  font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.es-conn-menu { flex: none; }
+.es-menu-pop {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 168px;
+  background: var(--panel, var(--bg)); border: 1px solid var(--glass-brd);
+  border-radius: 9px; padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+}
+.es-menu-item {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--text); font-size: 12.5px; padding: 6px 9px; border-radius: 6px; cursor: pointer;
+}
+.es-menu-item:hover { background: var(--glass-bg); }
+.es-menu-item.danger { color: var(--err); }
+
+/* ── Forms ─────────────────────────────────────────────────────────────── */
+.es-form { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
+.es-form-row { display: flex; gap: 9px; flex-wrap: wrap; }
+.es-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.es-field > span { font-size: 11px; color: var(--muted); }
+.es-check { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.45; cursor: pointer; }
+.es-check input { margin-top: 2px; flex: none; }
+
+.es-readonly-toggle {
+  border: 1px solid var(--glass-brd); border-radius: 9px; padding: 8px 10px; background: var(--glass-bg);
+}
+.es-readonly-toggle.armed {
+  border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, transparent);
+}
+.es-readonly-toggle em { color: var(--err); font-style: normal; }
+
+
+/* ── Overview ──────────────────────────────────────────────────────────── */
+.es-overview { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.es-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.es-kpi {
+  background: var(--glass-bg); border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+}
+.es-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.es-kpi b { font-size: 13.5px; word-break: break-word; }
+
+.es-link {
+  background: none; border: none; padding: 0; color: var(--accent);
+  cursor: pointer; font: inherit; text-decoration: underline;
+}
+
+/* ── Tables (databases / indexes / stats) ──────────────────────────────── */
+.es-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.es-table th, .es-table td {
+  padding: 6px 8px; border-bottom: 1px solid var(--glass-brd); text-align: right; white-space: nowrap;
+}
+.es-table th {
+  position: sticky; top: 0; z-index: 1; background: var(--panel, var(--bg));
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600;
+}
+.es-table th:first-child, .es-table td:first-child { text-align: left; }
+.es-table tbody tr:hover { background: var(--glass-bg); }
+
+/* ── Data browser: tree + main ─────────────────────────────────────────── */
+.es-browser {
+  display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 12px; min-height: 0; flex: 1;
+}
+@media (max-width: 900px) { .es-browser { grid-template-columns: 1fr; } }
+
+.es-tree { display: flex; flex-direction: column; min-width: 0; min-height: 0; max-height: 74vh; overflow: auto; }
+.es-db-list { list-style: none; margin: 0; padding: 0; }
+.es-db-item {
+  display: flex; align-items: center; gap: 4px; width: 100%; text-align: left;
+  background: none; border: none; color: var(--text); font-size: 13px; font-weight: 600;
+  padding: 5px 6px; border-radius: 7px; cursor: pointer;
+}
+.es-db-item:hover { background: var(--glass-bg); }
+.es-db-item.open { color: var(--accent); }
+.es-db-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.es-tree-caret { flex: none; font-size: 10px; color: var(--muted); width: 12px; }
+.es-coll-list { list-style: none; margin: 0 0 4px; padding: 0 0 0 18px; }
+.es-coll-item {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--muted); font-size: 12.5px; font-family: var(--mono);
+  padding: 4px 6px; border-radius: 6px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.es-coll-item:hover { background: var(--glass-bg); color: var(--text); }
+.es-coll-item.active { background: var(--glass-bg); color: var(--text); font-weight: 600; }
+
+.es-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+.es-ns { font-family: var(--mono); font-size: 13.5px; word-break: break-all; }
+
+.es-querybar {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px; background: var(--glass-bg);
+}
+
+/* ── Results: collapsible document cards ───────────────────────────────── */
+.es-results { display: flex; flex-direction: column; gap: 6px; overflow: auto; min-height: 0; max-height: 58vh; }
+.es-doc { border: 1px solid var(--glass-brd); border-radius: 8px; overflow: hidden; }
+.es-doc-head {
+  display: flex; gap: 8px; align-items: center; padding: 5px 8px;
+  background: var(--glass-bg); cursor: pointer; min-width: 0;
+}
+.es-doc-idx { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.es-doc-preview {
+  flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.es-doc-body { margin: 0; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; }
+
+/* ── Danger block (update modal) ───────────────────────────────────────── */
+.es-danger {
+  border: 1px solid color-mix(in srgb, var(--err) 55%, var(--glass-brd));
+  background: color-mix(in srgb, var(--err) 8%, transparent);
+  border-radius: 10px; padding: 9px 12px; font-size: 12.5px; line-height: 1.55; margin-bottom: 8px;
+}
+
+/* ── Quick-find (preset buttons + run panel + row results) ─────────────── */
+.es-qf { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+
+.es-qf-dock { display: flex; gap: 8px; flex-wrap: wrap; }
+.es-qf-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  border: 1px solid var(--glass-brd); border-radius: 999px; padding: 2px 6px 2px 2px;
+  background: var(--glass-bg);
+}
+.es-qf-chip.active { border-color: var(--accent); }
+.es-qf-chip-main {
+  background: none; border: none; color: var(--text); font-size: 12.5px; font-weight: 600;
+  padding: 5px 8px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+}
+.es-qf-chip-main:hover { color: var(--accent); }
+
+.es-qf-form { border: 1px solid var(--glass-brd); border-radius: 10px; padding: 12px; background: var(--glass-bg); }
+
+.es-qf-run {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0;
+  border: 1px solid var(--glass-brd); border-radius: 10px; padding: 12px;
+}
+.es-qf-fields { display: flex; flex-direction: column; gap: 6px; }
+/* Explicit grid columns — label block, type, single/list mode, value — so long
+   field names/paths truncate inside their own column and can never overlap the
+   selects (the old flex layout let the label spill over the type select). */
+.es-qf-field {
+  display: grid;
+  grid-template-columns: minmax(180px, 230px) 110px 120px minmax(0, 1fr);
+  align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px;
+  border: 1px solid transparent; opacity: .65;
+}
+@media (max-width: 900px) {
+  .es-qf-field { grid-template-columns: minmax(140px, 1fr) 110px 120px; }
+}
+.es-qf-field.on { opacity: 1; background: var(--glass-bg); border-color: var(--glass-brd); }
+.es-qf-pick {
+  display: flex; align-items: center; gap: 7px; cursor: pointer; min-width: 0;
+}
+.es-qf-pick input { flex: none; }
+.es-qf-labeltext { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.es-qf-labeltext b {
+  font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.es-qf-labeltext code {
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.es-qf-type, .es-qf-mode { min-width: 0; }
+
+/* One document per row, single-line plaintext; the WRAPPER scrolls horizontally
+   so every row moves together (the whole strip is one scroll surface). */
+.es-qf-rows {
+  overflow: auto; min-height: 0; max-height: 56vh;
+  border: 1px solid var(--glass-brd); border-radius: 8px;
+}
+.es-qf-row {
+  display: flex; align-items: center; gap: 8px; width: max-content; min-width: 100%;
+  background: none; border: none; border-bottom: 1px solid var(--glass-brd);
+  padding: 6px 10px; cursor: pointer; text-align: left;
+}
+.es-qf-row:last-child { border-bottom: none; }
+.es-qf-row:hover { background: var(--glass-bg); }
+.es-qf-row-text {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text); white-space: nowrap;
+}
+
+/* ── Quick-find v2: collapsed query summary + projection picker ──────────── */
+.es-qf-summary {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border: 1px solid var(--glass-brd); border-radius: 9px; padding: 7px 10px;
+  background: var(--glass-bg);
+}
+.es-qf-summary-q {
+  flex: 1; min-width: 200px; font-family: var(--mono); font-size: 12px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Results strip grows when the setup panel is collapsed. */
+.es-qf-rows.expanded { max-height: 72vh; }
+
+.es-qf-hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 0; }
+
+.es-qf-proj { display: flex; flex-direction: column; gap: 8px; }
+.es-qf-projgrid { display: flex; gap: 6px; flex-wrap: wrap; max-height: 30vh; overflow: auto; }
+.es-qf-projchip {
+  background: none; border: 1px solid var(--glass-brd); border-radius: 999px;
+  color: var(--muted); font-size: 12px; font-family: var(--mono);
+  padding: 4px 10px; cursor: pointer; white-space: nowrap;
+}
+.es-qf-projchip:hover { color: var(--text); background: var(--glass-bg); }
+.es-qf-projchip.on { color: var(--text); border-color: var(--accent); background: var(--glass-bg); font-weight: 600; }
+.es-qf-projchip.special { border-style: dashed; }
+
+/* ── ES-only additions ─────────────────────────────────────────────────── */
+.es-scroll { overflow: auto; min-height: 0; max-height: 60vh; }
+.es-hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 0; }
+.es-idx-list { list-style: none; margin: 0; padding: 0; }
+.es-idx-item {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--muted); font-size: 12.5px; font-family: var(--mono);
+  padding: 4px 6px; border-radius: 6px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.es-idx-item:hover { background: var(--glass-bg); color: var(--text); }
+.es-idx-item.active { background: var(--glass-bg); color: var(--text); font-weight: 600; }
+
+/* Export-report modal: the column-mapper list scrolls INSIDE the modal so a
+   collection/index with many fields never pushes the title/footer off-screen.
+   Shared by the Mongo and ES export modals. */
+.export-colscroll {
+  display: flex; flex-direction: column; gap: 6px;
+  overflow: auto; min-height: 0; max-height: 44vh;
+  padding-right: 4px;
+}
+
+/* ── ES node monitor (heap/disk/cpu/load, 10s live) ─────────────────────── */
+.es-node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+.es-node-card {
+  background: var(--glass-bg); border: 1px solid var(--glass-brd); border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.es-node-card.alarm {
+  border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, var(--glass-bg));
+}
+.es-node-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.es-node-head strong { font-size: 13px; word-break: break-all; }
+
+.es-gauge { display: flex; flex-direction: column; gap: 3px; }
+.es-gauge-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 11px; }
+.es-gauge-head > span:first-child { color: var(--muted); }
+.es-gauge-num { font-variant-numeric: tabular-nums; margin-left: auto; }
+.es-gauge-pct { font-weight: 700; font-variant-numeric: tabular-nums; }
+.es-gauge-track { height: 6px; border-radius: 999px; background: var(--glass-brd); overflow: hidden; }
+.es-gauge-fill { height: 100%; border-radius: 999px; transition: width .5s ease; }
+.es-gauge-fill.l-ok   { background: var(--ok); }
+.es-gauge-fill.l-warn { background: var(--warn, #d5a021); }
+.es-gauge-fill.l-crit { background: var(--err); }
+
+/* ── PostgreSQL workspace (local dev) ──────────────────────────────────────────
+   Self-owned .pg-* styles — cloned from the .mongo-* block (same per-tab convention). */
+.pg-layout {
+  display: grid; grid-template-columns: 300px minmax(0, 1fr);
+  gap: 14px; align-items: start; min-height: 0; height: 100%;
+}
+@media (max-width: 1100px) { .pg-layout { grid-template-columns: 1fr; } }
+
+.pg-workspace-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+
+.pg-subnav { display: flex; gap: 4px; flex-wrap: wrap; }
+.pg-subnav button {
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  padding: 5px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+}
+.pg-subnav button:hover { color: var(--text); background: var(--glass-bg); }
+.pg-subnav button.on {
+  color: var(--text); background: var(--glass-bg); border-color: var(--glass-brd); font-weight: 600;
+}
+
+/* ── Connection rail ───────────────────────────────────────────────────── */
+.pg-conn-group { margin-top: 10px; }
+.pg-group-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 0 0 4px 2px;
+}
+.pg-conn-row {
+  display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: 9px;
+  border: 1px solid transparent; cursor: pointer;
+}
+.pg-conn-row:hover { background: var(--glass-bg); }
+.pg-conn-row.active { background: var(--glass-bg); border-color: var(--glass-brd); }
+.pg-conn-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.pg-conn-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; flex-wrap: wrap; }
+.pg-conn-host {
+  font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pg-conn-menu { flex: none; }
+.pg-menu-pop {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 168px;
+  background: var(--panel, var(--bg)); border: 1px solid var(--glass-brd);
+  border-radius: 9px; padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+}
+.pg-menu-item {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--text); font-size: 12.5px; padding: 6px 9px; border-radius: 6px; cursor: pointer;
+}
+.pg-menu-item:hover { background: var(--glass-bg); }
+.pg-menu-item.danger { color: var(--err); }
+
+/* ── Forms ─────────────────────────────────────────────────────────────── */
+.pg-form { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
+.pg-form-row { display: flex; gap: 9px; flex-wrap: wrap; }
+.pg-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.pg-field > span { font-size: 11px; color: var(--muted); }
+.pg-check { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.45; cursor: pointer; }
+.pg-check input { margin-top: 2px; flex: none; }
+
+.pg-readonly-toggle {
+  border: 1px solid var(--glass-brd); border-radius: 9px; padding: 8px 10px; background: var(--glass-bg);
+}
+.pg-readonly-toggle.armed {
+  border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, transparent);
+}
+.pg-readonly-toggle em { color: var(--err); font-style: normal; }
+
+.input.mono { font-family: var(--mono); font-size: 12px; }
+
+/* ── Overview ──────────────────────────────────────────────────────────── */
+.pg-overview { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.pg-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.pg-kpi {
+  background: var(--glass-bg); border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+}
+.pg-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.pg-kpi b { font-size: 13.5px; word-break: break-word; }
+
+.pg-link {
+  background: none; border: none; padding: 0; color: var(--accent);
+  cursor: pointer; font: inherit; text-decoration: underline;
+}
+
+/* ── Tables (databases / indexes / stats) ──────────────────────────────── */
+.pg-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pg-table th, .pg-table td {
+  padding: 6px 8px; border-bottom: 1px solid var(--glass-brd); text-align: right; white-space: nowrap;
+}
+.pg-table th {
+  position: sticky; top: 0; z-index: 1; background: var(--panel, var(--bg));
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600;
+}
+.pg-table th:first-child, .pg-table td:first-child { text-align: left; }
+.pg-table tbody tr:hover { background: var(--glass-bg); }
+
+/* ── Data browser: tree + main ─────────────────────────────────────────── */
+.pg-browser {
+  display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 12px; min-height: 0; flex: 1;
+}
+@media (max-width: 900px) { .pg-browser { grid-template-columns: 1fr; } }
+
+.pg-tree { display: flex; flex-direction: column; min-width: 0; min-height: 0; max-height: 74vh; overflow: auto; }
+.pg-db-list { list-style: none; margin: 0; padding: 0; }
+.pg-db-item {
+  display: flex; align-items: center; gap: 4px; width: 100%; text-align: left;
+  background: none; border: none; color: var(--text); font-size: 13px; font-weight: 600;
+  padding: 5px 6px; border-radius: 7px; cursor: pointer;
+}
+.pg-db-item:hover { background: var(--glass-bg); }
+.pg-db-item.open { color: var(--accent); }
+.pg-db-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-tree-caret { flex: none; font-size: 10px; color: var(--muted); width: 12px; }
+.pg-coll-list { list-style: none; margin: 0 0 4px; padding: 0 0 0 18px; }
+.pg-coll-item {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--muted); font-size: 12.5px; font-family: var(--mono);
+  padding: 4px 6px; border-radius: 6px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pg-coll-item:hover { background: var(--glass-bg); color: var(--text); }
+.pg-coll-item.active { background: var(--glass-bg); color: var(--text); font-weight: 600; }
+
+.pg-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+.pg-ns { font-family: var(--mono); font-size: 13.5px; word-break: break-all; }
+
+.pg-querybar {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px; background: var(--glass-bg);
+}
+
+/* ── Results: collapsible document cards ───────────────────────────────── */
+.pg-results { display: flex; flex-direction: column; gap: 6px; overflow: auto; min-height: 0; max-height: 58vh; }
+.pg-doc { border: 1px solid var(--glass-brd); border-radius: 8px; overflow: hidden; }
+.pg-doc-head {
+  display: flex; gap: 8px; align-items: center; padding: 5px 8px;
+  background: var(--glass-bg); cursor: pointer; min-width: 0;
+}
+.pg-doc-idx { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pg-doc-preview {
+  flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pg-doc-body { margin: 0; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; }
+
+/* ── Danger block (update modal) ───────────────────────────────────────── */
+.pg-danger {
+  border: 1px solid color-mix(in srgb, var(--err) 55%, var(--glass-brd));
+  background: color-mix(in srgb, var(--err) 8%, transparent);
+  border-radius: 10px; padding: 9px 12px; font-size: 12.5px; line-height: 1.55; margin-bottom: 8px;
+}
+
+/* ── Quick-find (preset buttons + run panel + row results) ─────────────── */
+.pg-qf { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+
+.pg-qf-dock { display: flex; gap: 8px; flex-wrap: wrap; }
+.pg-qf-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  border: 1px solid var(--glass-brd); border-radius: 999px; padding: 2px 6px 2px 2px;
+  background: var(--glass-bg);
+}
+.pg-qf-chip.active { border-color: var(--accent); }
+.pg-qf-chip-main {
+  background: none; border: none; color: var(--text); font-size: 12.5px; font-weight: 600;
+  padding: 5px 8px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+}
+.pg-qf-chip-main:hover { color: var(--accent); }
+
+.pg-qf-form { border: 1px solid var(--glass-brd); border-radius: 10px; padding: 12px; background: var(--glass-bg); }
+
+.pg-qf-run {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0;
+  border: 1px solid var(--glass-brd); border-radius: 10px; padding: 12px;
+}
+.pg-qf-fields { display: flex; flex-direction: column; gap: 6px; }
+/* Explicit grid columns — label block, type, single/list mode, value — so long
+   field names/paths truncate inside their own column and can never overlap the
+   selects (the old flex layout let the label spill over the type select). */
+.pg-qf-field {
+  display: grid;
+  grid-template-columns: minmax(180px, 230px) 110px 120px minmax(0, 1fr);
+  align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px;
+  border: 1px solid transparent; opacity: .65;
+}
+@media (max-width: 900px) {
+  .pg-qf-field { grid-template-columns: minmax(140px, 1fr) 110px 120px; }
+  .pg-qf-field > .input.mono, .pg-qf-field > select.input:last-child { grid-column: 1 / -1; }
+}
+.pg-qf-field.on { opacity: 1; background: var(--glass-bg); border-color: var(--glass-brd); }
+.pg-qf-pick {
+  display: flex; align-items: center; gap: 7px; cursor: pointer; min-width: 0;
+}
+.pg-qf-pick input { flex: none; }
+.pg-qf-labeltext { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.pg-qf-labeltext b {
+  font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pg-qf-labeltext code {
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pg-qf-type, .pg-qf-mode { min-width: 0; }
+
+/* One document per row, single-line plaintext; the WRAPPER scrolls horizontally
+   so every row moves together (the whole strip is one scroll surface). */
+.pg-qf-rows {
+  overflow: auto; min-height: 0; max-height: 56vh;
+  border: 1px solid var(--glass-brd); border-radius: 8px;
+}
+.pg-qf-row {
+  display: flex; align-items: center; gap: 8px; width: max-content; min-width: 100%;
+  background: none; border: none; border-bottom: 1px solid var(--glass-brd);
+  padding: 6px 10px; cursor: pointer; text-align: left;
+}
+.pg-qf-row:last-child { border-bottom: none; }
+.pg-qf-row:hover { background: var(--glass-bg); }
+.pg-qf-row-text {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text); white-space: nowrap;
+}
+
+/* ── Quick-find v2: collapsed query summary + projection picker ──────────── */
+.pg-qf-summary {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border: 1px solid var(--glass-brd); border-radius: 9px; padding: 7px 10px;
+  background: var(--glass-bg);
+}
+.pg-qf-summary-q {
+  flex: 1; min-width: 200px; font-family: var(--mono); font-size: 12px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Results strip grows when the setup panel is collapsed. */
+.pg-qf-rows.expanded { max-height: 72vh; }
+
+.pg-qf-hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 0; }
+
+.pg-qf-proj { display: flex; flex-direction: column; gap: 8px; }
+.pg-qf-projgrid { display: flex; gap: 6px; flex-wrap: wrap; max-height: 30vh; overflow: auto; }
+.pg-qf-projchip {
+  background: none; border: 1px solid var(--glass-brd); border-radius: 999px;
+  color: var(--muted); font-size: 12px; font-family: var(--mono);
+  padding: 4px 10px; cursor: pointer; white-space: nowrap;
+}
+.pg-qf-projchip:hover { color: var(--text); background: var(--glass-bg); }
+.pg-qf-projchip.on { color: var(--text); border-color: var(--accent); background: var(--glass-bg); font-weight: 600; }
+.pg-qf-projchip.special { border-style: dashed; }
+
+
+/* ── PG-only additions ─────────────────────────────────────────────────── */
+.pg-hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 0; }
+/* Tabular result grid: wrapper scrolls both ways, cells stay single-line. */
+.pg-results { overflow: auto; min-height: 0; max-height: 58vh; border: 1px solid var(--glass-brd); border-radius: 8px; }
+.pg-grid { width: max-content; min-width: 100%; }
+.pg-grid td, .pg-grid th { white-space: nowrap; }
+.pg-rownum { color: var(--muted); font-variant-numeric: tabular-nums; }
+.pg-cell { font-family: var(--mono); font-size: 11.5px; }
+
+/* ── Mongo live monitor (RAM/disk/connections/cache/ops + repl lag) ──────── */
+.mongo-node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.mongo-node-card {
+  background: var(--glass-bg); border: 1px solid var(--glass-brd); border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.mongo-node-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.mongo-node-head strong { font-size: 13px; }
+.mongo-gauge { display: flex; flex-direction: column; gap: 3px; }
+.mongo-gauge-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 11px; }
+.mongo-gauge-head > span:first-child { color: var(--muted); }
+.mongo-gauge-num { font-variant-numeric: tabular-nums; margin-left: auto; }
+.mongo-gauge-pct { font-weight: 700; font-variant-numeric: tabular-nums; }
+.mongo-gauge-track { height: 6px; border-radius: 999px; background: var(--glass-brd); overflow: hidden; }
+.mongo-gauge-fill { height: 100%; border-radius: 999px; transition: width .5s ease; }
+.mongo-gauge-fill.l-ok   { background: var(--ok); }
+.mongo-gauge-fill.l-warn { background: var(--warn, #d5a021); }
+.mongo-gauge-fill.l-crit { background: var(--err); }
+
+/* ── Redis monitor strip (INFO per node) ─────────────────────────────────── */
+.redis-monitor { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.redis-monitor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.redis-monitor-card {
+  background: var(--glass-bg); border: 1px solid var(--glass-brd); border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 7px;
+}
+.redis-monitor-card.alarm { border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, var(--glass-bg)); }
+.redis-monitor-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.redis-monitor-head strong { font-size: 12.5px; font-family: var(--mono); word-break: break-all; }
+.redis-monitor-gauge { display: flex; flex-direction: column; gap: 3px; }
+.redis-monitor-gauge-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 11px; }
+.redis-monitor-gauge-head > span:first-child { color: var(--muted); }
+.redis-monitor-track { height: 6px; border-radius: 999px; background: var(--glass-brd); overflow: hidden; }
+.redis-monitor-fill { height: 100%; border-radius: 999px; transition: width .5s ease; }
+.redis-monitor-fill.l-ok   { background: var(--ok); }
+.redis-monitor-fill.l-warn { background: var(--warn, #d5a021); }
+.redis-monitor-fill.l-crit { background: var(--err); }
+.redis-monitor-stats { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+.redis-monitor-stats b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* ── Kafka cluster-health strip (brokers / URP / offline) ────────────────── */
+.kafka-health { display: flex; flex-direction: column; gap: 8px; }
+.kafka-health-body {
+  border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px 12px;
+  background: var(--glass-bg); display: flex; flex-direction: column; gap: 8px;
+}
+.kafka-health-body.alarm { border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, var(--glass-bg)); }
+.kafka-health-kpis { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.kafka-health-kpis b { color: var(--text); font-variant-numeric: tabular-nums; }
+.kafka-health-brokers { display: flex; gap: 6px; flex-wrap: wrap; }
+.kafka-health-affected { font-size: 11.5px; color: var(--err); word-break: break-all; }
+
+/* ── Kafka host metrics (node_exporter) ─────────────────────────────────── */
+.kafka-health-hint { font-size: 12px; color: var(--muted); margin: 0; }
+.kafka-health-hosts { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.kafka-host-card {
+  background: var(--glass-bg); border: 1px solid var(--glass-brd); border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 7px;
+}
+.kafka-host-card.alarm { border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, var(--glass-bg)); }
+.kafka-gauge { display: flex; flex-direction: column; gap: 3px; }
+.kafka-gauge-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 11px; }
+.kafka-gauge-head > span:first-child { color: var(--muted); }
+.kafka-gauge-num { font-variant-numeric: tabular-nums; margin-left: auto; }
+.kafka-gauge-track { height: 6px; border-radius: 999px; background: var(--glass-brd); overflow: hidden; }
+.kafka-gauge-fill { height: 100%; border-radius: 999px; transition: width .5s ease; }
+.kafka-gauge-fill.l-ok   { background: var(--ok); }
+.kafka-gauge-fill.l-warn { background: var(--warn, #d5a021); }
+.kafka-gauge-fill.l-crit { background: var(--err); }

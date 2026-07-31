@@ -1,0 +1,39 @@
+# Next.js / Node
+node_modules/
+.next/
+out/
+build/
+next-env.d.ts
+
+# env & logs
+.env*.local
+*.log
+npm-debug.log*
+
+# local persisted connection config (holds API keys/secrets in plaintext)
+.apitester-config.json
+
+# local per-machine Git project list (name + root folder — machine-specific paths)
+.gitprojects.json
+
+# local Redis connection list (holds Redis passwords in plaintext — never commit)
+.redisconnections.json
+
+# OS / editor
+.DS_Store
+*.tsbuildinfo
+
+# local Kafka connection list (broker addresses — never commit)
+.kafkaconnections.json
+
+# local RabbitMQ connection list (holds passwords in plaintext — never commit)
+.rabbitconnections.json
+
+# local MongoDB connection list (holds passwords in plaintext — never commit)
+.mongoconnections.json
+
+# local Elasticsearch connection list (host lists, per-machine — never commit)
+.esconnections.json
+
+# local PostgreSQL connection list (holds passwords in plaintext — never commit)
+.pgconnections.json

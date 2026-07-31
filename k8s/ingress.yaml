@@ -1,0 +1,43 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# omicx-local-all-in-one — Ingress (VPN-only internal domain)
+#
+# [skip-resource-gate] Ingress routing only — no infra/cluster placement change.
+#
+# TEMPLATE — confirm ingressClassName + TLS mechanism with ops. Reuse the SAME
+# setup tool-service already uses for its VPN-only domain. On Rancher this is
+# usually configured via the UI; this file is the version-controlled reference.
+#
+# MUST be VPN-only / IP-whitelisted: this tool mints JWTs and holds API keys.
+# NEVER expose it publicly.
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omicx-local-all-in-one
+  labels:
+    app: omicx-local-all-in-one
+    part-of: omicx
+  annotations:
+    # Restrict to VPN CIDR(s) — mirror tool-service's annotation. Example for
+    # ingress-nginx (replace with your VPN ranges):
+    # nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8"
+    # If TLS via cert-manager, add e.g.:
+    # cert-manager.io/cluster-issuer: "<issuer-used-by-tool-service>"
+    {}
+spec:
+  ingressClassName: <ask-ops>          # same class tool-service uses
+  tls:
+    - hosts:
+        - omicx-local-all-in-one.<internal-domain>
+      secretName: omicx-local-all-in-one-tls        # or drop if cert-manager auto-provisions
+  rules:
+    - host: omicx-local-all-in-one.<internal-domain>
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: omicx-local-all-in-one
+                port:
+                  number: 8080

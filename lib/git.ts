@@ -1,0 +1,234 @@
+// Client-side helpers + shared types for the Git workspace. All calls go to the
+// same-origin /api/git route (server runs the actual git commands, local only).
+
+export type FileGroup = 'staged' | 'unstaged' | 'untracked';
+
+export interface ChangedFile {
+  path: string;
+  code: string;
+  group: FileGroup;
+  origPath?: string;
+}
+
+export interface RepoStatus {
+  branch: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  detached: boolean;
+  files: ChangedFile[];
+}
+
+export interface BranchInfo {
+  current: string;
+  branches: string[];
+}
+
+export interface RepoInfo {
+  path: string;
+  name: string;
+}
+
+export interface CommitLog {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  relDate: string;
+  subject: string;
+  refs: string;
+}
+
+export type RepoState =
+  | 'clean'
+  | 'dirty'
+  | 'ahead'
+  | 'behind'
+  | 'diverged'
+  | 'no-upstream'
+  | 'error';
+
+export interface RepoOverview {
+  name: string;
+  path: string;
+  branch: string;
+  detached: boolean;
+  state: RepoState;
+  ahead: number;
+  behind: number;
+  changes: number;
+  error?: string;
+}
+
+export type PullOutcome = 'pulled' | 'up-to-date' | 'skipped' | 'conflict' | 'error';
+
+export interface PullResult {
+  name: string;
+  path: string;
+  outcome: PullOutcome;
+  message: string;
+}
+
+export interface GitCapabilities {
+  enabled: boolean;
+  repos: RepoInfo[];
+}
+
+/** Result of the `review-mr` action — buffered output + process exit code. */
+export interface ReviewMrResult {
+  output: string;
+  exitCode: number;
+}
+
+/** One open GitLab merge request (client-safe projection). */
+export interface MergeRequestSummary {
+  iid: number;
+  title: string;
+  sourceBranch: string;
+  targetBranch: string;
+  author: string;
+  webUrl: string;
+  mergeStatus: string;
+  draft: boolean;
+  hasConflicts: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Response of the `list-mrs` action. */
+export interface ListMrsResult {
+  targetBranch: string;
+  project: string;
+  baseUrl: string;
+  mrs: MergeRequestSummary[];
+}
+
+/** Response of the `merge-mr` action. */
+export interface MergeMrResult {
+  iid: number;
+  state: string;
+  mergeCommitSha?: string;
+  webUrl: string;
+}
+
+/** A configured Git project — a named root folder that holds sibling repos. */
+export interface GitProject {
+  id: string;
+  name: string;
+  root: string;
+}
+
+export interface GitProjectsResponse {
+  enabled: boolean;
+  /** True when the user has saved their own projects; false = auto fallback. */
+  configured: boolean;
+  /** Safe base every project root must live under (shown as UI hint). */
+  base: string;
+  projects: GitProject[];
+}
+
+/** GET the configured project list — never throws; returns disabled on any error. */
+export async function fetchGitProjects(): Promise<GitProjectsResponse> {
+  try {
+    const r = await fetch('/api/git-projects');
+    if (!r.ok) return { enabled: false, configured: false, base: '', projects: [] };
+    return (await r.json()) as GitProjectsResponse;
+  } catch {
+    return { enabled: false, configured: false, base: '', projects: [] };
+  }
+}
+
+/** One directory entry from the folder-browse picker. */
+export interface DirEntry {
+  name: string;
+  path: string;
+  isRepo: boolean;
+}
+
+export interface BrowseResult {
+  path: string;
+  parent: string | null;
+  entries: DirEntry[];
+  isDriveList: boolean;
+}
+
+/**
+ * Browse the host filesystem for the folder picker. `path` semantics:
+ *   undefined → the configured start folder; "" → drive list (Windows);
+ *   an absolute path → that directory's sub-folders. Throws on non-2xx.
+ */
+export async function browseFolders(path?: string): Promise<BrowseResult> {
+  const r = await fetch('/api/git-fs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(path === undefined ? {} : { path }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
+  return data as BrowseResult;
+}
+
+/** POST/PUT/DELETE a project mutation. Throws Error(message) on non-2xx. */
+export async function mutateGitProject(
+  method: 'POST' | 'PUT' | 'DELETE',
+  body: Record<string, unknown>,
+): Promise<GitProject[]> {
+  const r = await fetch('/api/git-projects', {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
+  return (data as { projects: GitProject[] }).projects;
+}
+
+/** GET capability probe — never throws; returns disabled on any error. */
+export async function fetchGitCapabilities(): Promise<GitCapabilities> {
+  try {
+    const r = await fetch('/api/git');
+    if (!r.ok) return { enabled: false, repos: [] };
+    return (await r.json()) as GitCapabilities;
+  } catch {
+    return { enabled: false, repos: [] };
+  }
+}
+
+/** POST one git action. Throws Error(message) on a non-2xx (surfaces git stderr). */
+export async function gitAction<T = unknown>(
+  action: string,
+  params: Record<string, unknown> = {},
+): Promise<T> {
+  const r = await fetch('/api/git', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action, ...params }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
+  return data as T;
+}
+
+/** Short human label for a porcelain XY code. */
+export function codeLabel(code: string): string {
+  if (code === '??') return 'new';
+  const x = code[0];
+  const y = code[1];
+  const c = x !== '.' && x !== '?' ? x : y; // prefer the meaningful side
+  switch (c) {
+    case 'M':
+      return 'modified';
+    case 'A':
+      return 'added';
+    case 'D':
+      return 'deleted';
+    case 'R':
+      return 'renamed';
+    case 'C':
+      return 'copied';
+    case 'U':
+      return 'conflict';
+    default:
+      return 'changed';
+  }
+}

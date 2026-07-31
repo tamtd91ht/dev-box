@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.gitignore
+.apitester-config.json
+.env
+.env.*
+*.md
+k8s
+Dockerfile
+.dockerignore
+tsconfig.tsbuildinfo
