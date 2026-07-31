@@ -8,7 +8,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import WebhookReceiver from '@/components/WebhookReceiver';
-import ApiExplorerWorkspace from '@/components/ApiExplorerWorkspace';
+import ApiExplorerWorkspace, { type IntegrationView } from '@/components/ApiExplorerWorkspace';
+import PackManager from '@/components/PackManager';
 import GitWorkspace from '@/components/GitWorkspace';
 import RedisWorkspace from '@/components/RedisWorkspace';
 import KafkaWorkspace from '@/components/KafkaWorkspace';
@@ -76,11 +77,12 @@ function resolvePublicBase(baseUrl: string, apiPrefix: string, override?: string
   return ov.replace(/\/+$/, '');
 }
 
-type Mode = 'webhooks' | 'git' | 'redis' | 'kafka' | 'rabbit' | 'mongo' | 'es' | 'pg' | 'api';
+/** Core (project-neutral) tool tabs. Project packs render as their OWN tabs in
+ *  the header's "Projects" zone — mode `pack:<id>` — plus ＋ (packs manager). */
+type Mode = string;
 
 const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'git', icon: '⎇', label: 'Git', badge: 'local' },
-  { key: 'api', icon: '▤', label: 'API Explorer', badge: 'packs' },
   { key: 'redis', icon: '◆', label: 'Redis', badge: 'local' },
   { key: 'kafka', icon: '≋', label: 'Kafka', badge: 'local' },
   { key: 'rabbit', icon: '🐇', label: 'RabbitMQ', badge: 'local' },
@@ -93,11 +95,18 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
 export default function Home() {
   const [mode, setMode] = useState<Mode>('git');
 
+  // Registered integration packs — each one is a top-level "Projects" tab.
+  const [packs, setPacks] = useState<IntegrationView[]>([]);
+  useEffect(() => {
+    fetch('/api/api-integrations')
+      .then((r) => r.json())
+      .then((d) => setPacks((d.integrations ?? []) as IntegrationView[]))
+      .catch(() => {});
+  }, []);
+
   // Lazy mount-and-keep per workspace: don't probe a tool's API until the user
   // opens it, then keep it mounted so its state survives tab switches.
-  const [visited, setVisited] = useState<Record<Mode, boolean>>({
-    webhooks: false, git: false, redis: false, kafka: false, rabbit: false, mongo: false, es: false, pg: false, api: false,
-  });
+  const [visited, setVisited] = useState<Record<string, boolean>>({});
   useEffect(() => {
     setVisited((v) => (v[mode] ? v : { ...v, [mode]: true }));
   }, [mode]);
@@ -167,6 +176,33 @@ export default function Home() {
               <span className="ms-badge">{t.badge}</span>
             </button>
           ))}
+
+          {/* ── Projects zone: one tab per registered integration pack ── */}
+          <span className="ms-divider" aria-hidden />
+          <span className="ms-zone-label" aria-hidden>Projects</span>
+          {packs.map((p) => (
+            <button
+              key={p.id}
+              role="tab"
+              aria-selected={mode === `pack:${p.id}`}
+              className={`${mode === `pack:${p.id}` ? 'on ' : ''}ms-pack`}
+              title={p.manifestError ? `manifest lỗi: ${p.manifestError}` : p.root}
+              onClick={() => setMode(`pack:${p.id}`)}
+            >
+              <span className="ms-ico" aria-hidden>▤</span>
+              {p.manifest?.name ?? p.name}
+              <span className="ms-badge">{p.manifestError ? '⚠' : 'pack'}</span>
+            </button>
+          ))}
+          <button
+            role="tab"
+            aria-selected={mode === 'packs'}
+            className={mode === 'packs' ? 'on' : ''}
+            onClick={() => setMode('packs')}
+            title="Đăng ký / quản lý integration packs"
+          >
+            <span className="ms-ico" aria-hidden>＋</span>
+          </button>
         </div>
 
         <div className="appbar-right">
@@ -222,9 +258,25 @@ export default function Home() {
             <PgWorkspace />
           </main>
         )}
-        {visited.api && (
-          <main className="workspace" style={{ gridColumn: '1 / -1', display: mode === 'api' ? undefined : 'none' }} aria-hidden={mode !== 'api'}>
-            <ApiExplorerWorkspace />
+        {/* Project packs — one mounted workspace per visited pack. */}
+        {packs.map((p) => visited[`pack:${p.id}`] && (
+          <main
+            key={p.id}
+            className="workspace"
+            style={{ gridColumn: '1 / -1', display: mode === `pack:${p.id}` ? undefined : 'none' }}
+            aria-hidden={mode !== `pack:${p.id}`}
+          >
+            <ApiExplorerWorkspace packId={p.id} />
+          </main>
+        ))}
+
+        {mode === 'packs' && (
+          <main className="workspace" style={{ gridColumn: '1 / -1' }}>
+            <PackManager
+              packs={packs}
+              onChanged={setPacks}
+              onOpen={(id) => setMode(`pack:${id}`)}
+            />
           </main>
         )}
 

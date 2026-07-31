@@ -1,13 +1,15 @@
 'use client';
 
-// API Explorer — project-NEUTRAL engine. Everything project-specific comes from
-// registered integration packs (devbox.api.json in the project's own repo):
-// service list, spec paths, auth modes, flows. The operator registers packs by
-// folder in the rail; per-(pack, service) connection config persists through
-// the same on-disk store the Webhooks tab uses (key "<pack>:<service>").
+// API Explorer — ONE PROJECT's personalized surface inside the toolbox. Each
+// registered integration pack gets its OWN top-level tab (the header's
+// "Projects" zone) and mounts this workspace with a fixed packId; the shared
+// tools (Redis/Git/…) stay project-neutral. Pack registration/removal lives in
+// components/PackManager.tsx (the ＋ tab).
 //
-// Explore = pick endpoint → EndpointForm (proxy call, curl preview).
-// Flows   = manifest-defined chained requests with {{var}} capture (FlowRunner).
+// Everything project-specific comes from the pack's devbox.api.json manifest:
+// service list, spec paths, auth modes, flows. Per-(pack, service) connection
+// config persists through the same on-disk store the Webhooks tab uses
+// (key "<pack>:<service>").
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Endpoint, Flow, ServiceCatalog } from '@/lib/types';
@@ -28,8 +30,6 @@ import {
   type GlobalVars,
 } from '@/lib/persist';
 
-const LAST_PACK_KEY = 'devbox.api.lastPack';
-
 interface ManifestService {
   id: string;
   label: string;
@@ -40,7 +40,7 @@ interface ManifestService {
   apiPrefix?: string;
 }
 
-interface IntegrationView {
+export interface IntegrationView {
   id: string;
   name: string;
   root: string;
@@ -48,29 +48,13 @@ interface IntegrationView {
   manifestError?: string;
 }
 
-async function mutateIntegration(method: 'POST' | 'PUT' | 'DELETE', body: Record<string, unknown>): Promise<IntegrationView[]> {
-  const r = await fetch('/api/api-integrations', {
-    method,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
-  return (data as { integrations: IntegrationView[] }).integrations;
-}
-
-export default function ApiExplorerWorkspace() {
-  const [integrations, setIntegrations] = useState<IntegrationView[] | null>(null);
-  const [activePackId, setActivePackId] = useState('');
+export default function ApiExplorerWorkspace({ packId }: { packId: string }) {
+  const [pack, setPack] = useState<IntegrationView | null | undefined>(undefined);
   const [activeServiceId, setActiveServiceId] = useState('');
   const [section, setSection] = useState<'explore' | 'flows'>('explore');
-  const [manageOpen, setManageOpen] = useState(false);
-  const [formName, setFormName] = useState('');
-  const [formRoot, setFormRoot] = useState('');
-  const [formBusy, setFormBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Catalog per (pack, service)
+  // Catalog per service
   const [catalog, setCatalog] = useState<ServiceCatalog | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedOp, setSelectedOp] = useState<string | null>(null);
@@ -88,36 +72,26 @@ export default function ApiExplorerWorkspace() {
     fetchFullConfig().then((cfg) => { setSaved(cfg.services); setGlobal(cfg.global); }).catch(() => {});
   }, []);
 
-  const loadIntegrations = useCallback(async () => {
+  const loadPack = useCallback(async () => {
     try {
       const r = await fetch('/api/api-integrations');
       const data = await r.json();
       const list = (data.integrations ?? []) as IntegrationView[];
-      setIntegrations(list);
-      setActivePackId((cur) => {
-        const remembered = typeof window !== 'undefined' ? window.localStorage.getItem(LAST_PACK_KEY) ?? '' : '';
-        const pick = [cur, remembered].find((id) => id && list.some((i) => i.id === id));
-        return pick || list[0]?.id || '';
-      });
-    } catch (e) { setError((e as Error).message); setIntegrations([]); }
-  }, []);
+      setPack(list.find((i) => i.id === packId) ?? null);
+    } catch (e) { setError((e as Error).message); setPack(null); }
+  }, [packId]);
 
-  useEffect(() => { void loadIntegrations(); }, [loadIntegrations]);
-  useEffect(() => {
-    if (activePackId && typeof window !== 'undefined') window.localStorage.setItem(LAST_PACK_KEY, activePackId);
-  }, [activePackId]);
+  useEffect(() => { void loadPack(); }, [loadPack]);
 
-  const pack = useMemo(() => integrations?.find((i) => i.id === activePackId) ?? null, [integrations, activePackId]);
   const services = pack?.manifest?.services ?? [];
   const service = services.find((s) => s.id === activeServiceId) ?? services[0] ?? null;
 
-  // Keep activeServiceId valid when the pack changes.
   useEffect(() => {
     if (!pack) return;
     const svcs = pack.manifest?.services ?? [];
     if (!svcs.some((s) => s.id === activeServiceId)) setActiveServiceId(svcs[0]?.id ?? '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePackId, integrations]);
+  }, [pack]);
 
   // ── Per-(pack, service) connection config ──────────────────────────────────
   const cfgKey = pack && service ? `${pack.id}:${service.id}` : '';
@@ -188,104 +162,65 @@ export default function ApiExplorerWorkspace() {
         : authMode === 'jwt-agent' ? 'JWT_TOKEN_AGENT'
           : authMode === 'jwt-admin' ? 'JWT_TOKEN_ADMIN' : null;
 
-  if (integrations === null) {
+  if (pack === undefined) {
     return <div className="panel" style={{ margin: 'auto' }}><span className="spinner" /> Đang tải…</div>;
+  }
+  if (pack === null) {
+    return (
+      <div className="panel" style={{ margin: 'auto', maxWidth: 560, textAlign: 'center' }}>
+        <div className="empty-ico" aria-hidden>▤</div>
+        <h3>Pack không còn trong registry</h3>
+        <p className="empty">Pack “{packId}” đã bị xoá hoặc registry đổi. Mở tab ＋ Projects để đăng ký lại.</p>
+      </div>
+    );
+  }
+  if (pack.manifestError) {
+    return (
+      <div className="panel" style={{ margin: 'auto', maxWidth: 620 }}>
+        <h3>▤ {pack.name} — manifest lỗi</h3>
+        <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{pack.manifestError}</pre>
+        <p className="empty">Sửa <code>devbox.api.json</code> trong <code>{pack.root}</code> rồi <button className="chip-btn" onClick={() => void loadPack()}>↻ thử lại</button></p>
+      </div>
+    );
   }
 
   return (
     <div className="apix-layout">
-      {/* ── Rail: integration packs + services ─────────────────────────── */}
+      {/* ── Rail: THIS pack's identity + services ───────────────────────── */}
       <aside className="panel">
-        <div className="status-line" style={{ justifyContent: 'space-between' }}>
-          <strong>API packs</strong>
-          <button className="chip-btn" onClick={() => { setManageOpen((v) => !v); setFormName(''); setFormRoot(''); }}>
-            {manageOpen ? '✕ Đóng' : '+ Thêm'}
-          </button>
+        <div className="apix-pack-head">
+          <strong>▤ {pack.manifest?.name ?? pack.name}</strong>
+          <span className="badge">integration pack</span>
         </div>
+        <div className="apix-pack-root" title={pack.root}>{pack.root}</div>
 
-        {integrations.length === 0 && !manageOpen && (
-          <p className="empty" style={{ marginTop: 10 }}>
-            Chưa có integration pack nào. Bấm “+ Thêm” và trỏ tới folder repo có <code>devbox.api.json</code>
-            (ví dụ omicx-local-all-in-one).
-          </p>
-        )}
-
-        {integrations.map((i) => (
-          <div key={i.id} style={{ marginTop: 8 }}>
-            <div
-              className={`apix-pack-row${i.id === activePackId ? ' active' : ''}`}
-              onClick={() => setActivePackId(i.id)}
-              title={i.root}
-            >
-              <span className="apix-pack-name">▤ {i.manifest?.name ?? i.name}</span>
-              {i.manifestError
-                ? <span className="badge" style={{ color: 'var(--err)' }} title={i.manifestError}>manifest lỗi</span>
-                : <span className="badge">{i.manifest?.services.length ?? 0} svc</span>}
+        <div className="group-title" style={{ marginTop: 10 }}>Services</div>
+        <ul className="apix-svc-list" style={{ paddingLeft: 0 }}>
+          {services.map((s) => (
+            <li key={s.id}>
               <button
-                className="chip-btn"
-                title="Xoá pack khỏi registry"
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  try { setIntegrations(await mutateIntegration('DELETE', { id: i.id })); }
-                  catch (err) { setError((err as Error).message); }
-                }}
-              >✕</button>
-            </div>
-            {i.id === activePackId && !i.manifestError && (
-              <ul className="apix-svc-list">
-                {(i.manifest?.services ?? []).map((s) => (
-                  <li key={s.id}>
-                    <button
-                      className={`apix-svc-item${service?.id === s.id ? ' active' : ''}`}
-                      title={s.blurb ?? s.id}
-                      onClick={() => setActiveServiceId(s.id)}
-                    >
-                      {s.label}
-                      <span className="apix-svc-auth">{s.authMode}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        ))}
+                className={`apix-svc-item${service?.id === s.id ? ' active' : ''}`}
+                title={s.blurb ?? s.id}
+                onClick={() => setActiveServiceId(s.id)}
+              >
+                {s.label}
+                <span className="apix-svc-auth">{s.authMode}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
 
-        {manageOpen && (
-          <div className="apix-form">
-            <label className="apix-field"><span>Tên</span>
-              <input className="input" value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="OMICX" />
-            </label>
-            <label className="apix-field"><span>Folder chứa devbox.api.json</span>
-              <input className="input mono" value={formRoot} onChange={(e) => setFormRoot(e.target.value)}
-                placeholder="D:/works/vihat/sources/omicx/omicx-local-all-in-one" />
-            </label>
-            <div className="status-line" style={{ justifyContent: 'flex-end', gap: 8 }}>
-              <button className="ghost sm" onClick={() => setManageOpen(false)}>Huỷ</button>
-              <button
-                className="sm"
-                disabled={formBusy || !formName.trim() || !formRoot.trim()}
-                onClick={async () => {
-                  setFormBusy(true); setError(null);
-                  try {
-                    const list = await mutateIntegration('POST', { name: formName, root: formRoot });
-                    setIntegrations(list);
-                    setActivePackId(list[list.length - 1]?.id ?? '');
-                    setManageOpen(false);
-                  } catch (e) { setError((e as Error).message); }
-                  finally { setFormBusy(false); }
-                }}
-              >Thêm</button>
-            </div>
-          </div>
-        )}
+        <button className="ghost sm" style={{ marginTop: 8 }} onClick={() => void loadPack()} title="Đọc lại manifest + spec">
+          ↻ Reload manifest
+        </button>
       </aside>
 
       {/* ── Main: settings + explore/flows ─────────────────────────────── */}
       <main className="panel apix-main">
         {error && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{error}</pre>}
 
-        {!pack || !service ? (
-          <p className="empty" style={{ margin: 'auto' }}>Chọn (hoặc thêm) một pack + service để bắt đầu.</p>
+        {!service ? (
+          <p className="empty" style={{ margin: 'auto' }}>Manifest chưa khai service nào.</p>
         ) : (
           <>
             <div className="status-line" style={{ justifyContent: 'space-between' }}>

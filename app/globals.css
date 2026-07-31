@@ -2395,3 +2395,16 @@ pre.kafka-drawer-body {
   display: flex; flex-direction: column; gap: 8px;
   border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px; background: var(--glass-bg);
 }
+
+/* ── Header "Projects" zone (integration-pack tabs) ─────────────────────── */
+.ms-divider {
+  width: 1px; align-self: stretch; margin: 4px 6px;
+  background: var(--glass-brd); flex: none;
+}
+.ms-zone-label {
+  align-self: center; font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--faint); margin-right: 2px; flex: none;
+}
+.modeswitch button.ms-pack {
+  border-style: dashed; /* dashed border = plugged-in, not core */
+}
