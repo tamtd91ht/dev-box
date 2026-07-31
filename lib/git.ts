@@ -138,35 +138,8 @@ export async function fetchGitProjects(): Promise<GitProjectsResponse> {
   }
 }
 
-/** One directory entry from the folder-browse picker. */
-export interface DirEntry {
-  name: string;
-  path: string;
-  isRepo: boolean;
-}
-
-export interface BrowseResult {
-  path: string;
-  parent: string | null;
-  entries: DirEntry[];
-  isDriveList: boolean;
-}
-
-/**
- * Browse the host filesystem for the folder picker. `path` semantics:
- *   undefined → the configured start folder; "" → drive list (Windows);
- *   an absolute path → that directory's sub-folders. Throws on non-2xx.
- */
-export async function browseFolders(path?: string): Promise<BrowseResult> {
-  const r = await fetch('/api/git-fs', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(path === undefined ? {} : { path }),
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
-  return data as BrowseResult;
-}
+// Folder browsing now lives in components/FolderPicker.tsx (shared by the Git
+// workspace and ＋ Projects) and talks to /api/fs-browse.
 
 /** POST/PUT/DELETE a project mutation. Throws Error(message) on non-2xx. */
 export async function mutateGitProject(

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchGitProjects,
   mutateGitProject,
-  browseFolders,
   gitAction,
   codeLabel,
   type RepoInfo,
@@ -16,12 +15,12 @@ import {
   type RepoState,
   type PullResult,
   type GitProject,
-  type BrowseResult,
   type ReviewMrResult,
   type MergeRequestSummary,
   type ListMrsResult,
   type MergeMrResult,
 } from '@/lib/git';
+import FolderPicker from './FolderPicker';
 
 /** localStorage keys remembering the last-selected project + repo. */
 const LAST_REPO_KEY = 'omicx.git.lastRepo';
@@ -1330,6 +1329,8 @@ function ProjectTabs({
       {pickerOpen && (
         <FolderPicker
           initial={root.trim() || undefined}
+          title="Chọn thư mục gốc"
+          hint="Bấm vào thư mục để đi vào; “Chọn thư mục này” để lấy thư mục đang mở làm gốc."
           onPick={(picked) => {
             setRoot(picked);
             // Prefill a name from the folder if empty, for convenience.
@@ -1339,104 +1340,6 @@ function ProjectTabs({
           onClose={() => setPickerOpen(false)}
         />
       )}
-    </div>
-  );
-}
-
-// ── Folder picker (server-backed) ───────────────────────────────────────────────
-
-interface FolderPickerProps {
-  /** Optional starting path; falls back to the server's configured start folder. */
-  initial?: string;
-  onPick: (path: string) => void;
-  onClose: () => void;
-}
-
-/** Modal that walks the host filesystem (via /api/git-fs) so the user can click to
- *  choose a project root — browsers can't read absolute paths, so the server lists
- *  folders. Shows a ⎇ hint on directories that are themselves git repos. */
-function FolderPicker({ initial, onPick, onClose }: FolderPickerProps) {
-  const [data, setData] = useState<BrowseResult | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  // `undefined` on first load → server start folder; thereafter an explicit path
-  // (including "" for the Windows drive list).
-  const load = useCallback(async (target?: string) => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const r = await browseFolders(target);
-      setData(r);
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load(initial);
-  }, [load, initial]);
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal picker" onClick={(e) => e.stopPropagation()}>
-        <div className="status-line" style={{ marginBottom: 10 }}>
-          <h3 style={{ margin: 0, flex: 1 }}>Chọn thư mục gốc</h3>
-          <button className="ghost sm" onClick={onClose}>✕</button>
-        </div>
-
-        {/* Current path + up navigation */}
-        <div className="picker-path">
-          <button
-            className="ghost sm"
-            onClick={() => data && data.parent !== null && load(data.parent)}
-            disabled={!data || data.parent === null || loading}
-            title="Lên thư mục cha"
-          >
-            ↑ Lên
-          </button>
-          <code className="small picker-cwd" title={data?.path || ''}>
-            {data?.isDriveList ? '(chọn ổ đĩa)' : data?.path || '…'}
-          </code>
-        </div>
-
-        {err && <pre className="code" style={{ color: 'var(--err)', margin: '8px 0 0' }}>{err}</pre>}
-
-        <div className="picker-list">
-          {loading ? (
-            <div className="empty" style={{ padding: '20px 8px' }}><p className="small">Đang tải…</p></div>
-          ) : data && data.entries.length > 0 ? (
-            data.entries.map((e) => (
-              <button key={e.path} className="picker-row" onClick={() => load(e.path)} title={e.path}>
-                <span className="picker-ico" aria-hidden>{data.isDriveList ? '🖴' : '📁'}</span>
-                <span className="picker-name">{e.name}</span>
-                {e.isRepo && <span className="picker-repo" title="thư mục này là git repo">⎇ repo</span>}
-                <span className="picker-into" aria-hidden>›</span>
-              </button>
-            ))
-          ) : (
-            <div className="empty" style={{ padding: '20px 8px' }}>
-              <p className="small">Không có thư mục con.</p>
-            </div>
-          )}
-        </div>
-
-        <div className="picker-actions">
-          <span className="small" style={{ color: 'var(--muted)', flex: 1 }}>
-            Bấm vào thư mục để đi vào; “Chọn thư mục này” để lấy thư mục đang mở làm gốc.
-          </span>
-          <button className="ghost sm" onClick={onClose}>Hủy</button>
-          <button
-            className="sm"
-            onClick={() => data && !data.isDriveList && data.path && onPick(data.path)}
-            disabled={!data || data.isDriveList || !data.path || loading}
-            title={data?.isDriveList ? 'Hãy vào một ổ đĩa trước' : 'Dùng thư mục đang mở làm gốc'}
-          >
-            ✓ Chọn thư mục này
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

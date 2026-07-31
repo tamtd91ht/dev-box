@@ -6,6 +6,7 @@
 
 import { useState } from 'react';
 import type { IntegrationView } from './ApiExplorerWorkspace';
+import FolderPicker from './FolderPicker';
 
 export interface PackManagerProps {
   packs: IntegrationView[];
@@ -29,6 +30,19 @@ export default function PackManager({ packs, onChanged, onOpen }: PackManagerPro
   const [root, setRoot] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const register = async () => {
+    setBusy(true); setError(null);
+    try {
+      const list = await mutateIntegration('POST', { name, root });
+      onChanged(list);
+      setName(''); setRoot('');
+      const added = list[list.length - 1];
+      if (added) onOpen(added.id);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
 
   return (
     <div className="panel" style={{ margin: '0 auto', maxWidth: 760, width: '100%' }}>
@@ -69,31 +83,41 @@ export default function PackManager({ packs, onChanged, onOpen }: PackManagerPro
       <div className="apix-form" style={{ marginTop: 4 }}>
         <div className="apix-form-row">
           <label className="apix-field" style={{ flex: 1 }}><span>Tên</span>
-            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="OMICX" />
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="OMICX"
+              onKeyDown={(e) => { if (e.key === 'Enter' && name.trim() && root.trim() && !busy) register(); }} />
           </label>
           <label className="apix-field" style={{ flex: 2 }}><span>Folder chứa devbox.api.json</span>
-            <input className="input mono" value={root} onChange={(e) => setRoot(e.target.value)}
-              placeholder="D:/works/vihat/sources/omicx" />
+            <div className="apix-pick-row">
+              <input className="input mono" value={root} onChange={(e) => setRoot(e.target.value)}
+                placeholder="Bấm “📂 Browse” hoặc dán đường dẫn"
+                onKeyDown={(e) => { if (e.key === 'Enter' && name.trim() && root.trim() && !busy) register(); }} />
+              <button className="ghost sm" disabled={busy} onClick={() => setPickerOpen(true)}
+                title="Chọn thư mục ngay trên máy — không cần gõ đường dẫn">📂 Browse</button>
+            </div>
           </label>
         </div>
         <div className="status-line" style={{ justifyContent: 'flex-end' }}>
-          <button
-            className="sm"
-            disabled={busy || !name.trim() || !root.trim()}
-            onClick={async () => {
-              setBusy(true); setError(null);
-              try {
-                const list = await mutateIntegration('POST', { name, root });
-                onChanged(list);
-                setName(''); setRoot('');
-                const added = list[list.length - 1];
-                if (added) onOpen(added.id);
-              } catch (e) { setError((e as Error).message); }
-              finally { setBusy(false); }
-            }}
-          >{busy ? <span className="spinner" aria-hidden /> : '+'} Đăng ký</button>
+          <button className="sm" disabled={busy || !name.trim() || !root.trim()} onClick={register}>
+            {busy ? <span className="spinner" aria-hidden /> : '+'} Đăng ký
+          </button>
         </div>
       </div>
+
+      {pickerOpen && (
+        <FolderPicker
+          initial={root.trim() || undefined}
+          title="Chọn folder chứa devbox.api.json"
+          marker="devbox.api.json"
+          hint="Thư mục có manifest được đánh dấu ▤ pack — đi vào repo project rồi bấm “Chọn thư mục này”."
+          onPick={(picked) => {
+            setRoot(picked);
+            // Prefill the name from the folder when empty, same as the Git picker.
+            setName((n) => n || picked.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '');
+            setPickerOpen(false);
+          }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
     </div>
   );
 }

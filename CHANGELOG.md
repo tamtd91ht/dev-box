@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Nút 📂 Browse khi đăng ký integration pack — không còn gõ đường dẫn tay.** Ô "Folder chứa
+  `devbox.api.json`" ở tab **＋ Projects** giờ có nút Browse mở folder picker chạy trên server
+  (browser không bao giờ đọc được absolute path, nên server list thư mục cho user click). Picker
+  được **tách thành component dùng chung** `components/FolderPicker.tsx` (Git workspace và ＋
+  Projects dùng chung một bản), thêm khả năng **đánh dấu marker**: thư mục nào có
+  `devbox.api.json` hiện badge `▤ pack`, thư mục đang mở hiện `✓ devbox.api.json` /
+  `⚠ chưa có devbox.api.json` → thấy đúng repo cần chọn thay vì thử-sai. Ô text vẫn giữ (dán
+  đường dẫn / Enter để đăng ký), tên pack tự điền từ tên thư mục nếu còn trống.
+  Route mới `/api/fs-browse` (project-neutral, nhận `marker` — chỉ là tên file, không cho path
+  fragment; trả listing thư mục, không bao giờ trả nội dung file; bật sẵn, tắt bằng
+  `FS_BROWSE_ENABLED=0`); implementation chuyển sang `lib/fsBrowse.ts`. `/api/git-fs` +
+  `lib/gitFs.ts` giữ lại làm alias deprecated cho script cũ.
+  (`components/FolderPicker.tsx`, `components/PackManager.tsx`, `components/GitWorkspace.tsx`,
+  `lib/fsBrowse.ts`, `lib/gitFs.ts`, `lib/git.ts`, `app/api/fs-browse/`, `app/api/git-fs/`,
+  `app/globals.css`, `.env.example`, `README.md`.)
+
 - **API Explorer trở lại — dưới dạng engine generic + integration packs.** Tab **API Explorer**
   mới hoàn toàn project-neutral: project tự "cắm" vào bằng manifest **`devbox.api.json`** đặt
   trong repo của chính nó — khai báo `services[]` (id, label, authMode

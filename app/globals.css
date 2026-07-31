@@ -2391,6 +2391,10 @@ pre.kafka-drawer-body {
 .apix-form-row { display: flex; gap: 9px; flex-wrap: wrap; }
 .apix-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .apix-field > span { font-size: 11px; color: var(--muted); }
+/* path input + 📂 Browse side by side — the input must still be able to shrink */
+.apix-pick-row { display: flex; gap: 6px; align-items: stretch; min-width: 0; }
+.apix-pick-row > input { flex: 1 1 auto; min-width: 0; }
+.apix-pick-row > button { flex: 0 0 auto; white-space: nowrap; }
 .apix-settings {
   display: flex; flex-direction: column; gap: 8px;
   border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px; background: var(--glass-bg);

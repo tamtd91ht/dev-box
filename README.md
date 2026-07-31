@@ -26,13 +26,16 @@ npm run dev                    # → http://localhost:3000
 
 ## Các tab
 
-- **API Explorer** — engine **project-neutral**: project "cắm" API của mình vào bằng
-  **integration pack** — file `devbox.api.json` đặt trong repo của project (services + spec paths
-  + auth mode + flows). Đăng ký pack trong UI (trỏ folder repo, lưu per-máy
-  `.apiintegrations.json`); DevBox parse openapi và dựng Explore (endpoint → gửi request qua
-  proxy, curl preview) + Flows (chuỗi request với `{{var}}` capture). OMICX là pack đầu tiên
-  (manifest sống trong repo omicx-local-all-in-one). Auth: apikey / tool key+secret / JWT
-  (user/agent/admin, có mint agent token qua tool-service).
+- **＋ Projects (integration packs)** — engine API Explorer **project-neutral**: project "cắm" API
+  của mình vào bằng **integration pack** — file `devbox.api.json` đặt trong repo của project
+  (services + spec paths + auth mode + flows). Đăng ký pack trong UI bằng nút **📂 Browse** (folder
+  picker chạy server-side, thư mục có manifest hiện badge `▤ pack`; registry per-máy
+  `.apiintegrations.json`); mỗi pack thành **một tab riêng** ở phân vùng Projects trên header.
+  DevBox parse openapi và dựng Explore (endpoint → gửi request qua proxy, curl preview) + Flows
+  (chuỗi request với `{{var}}` capture). OMICX là pack đầu tiên — manifest ở root workspace
+  `omicx/devbox.api.json`, spec đọc thẳng từ `cloud-saas-omicx-*/src/main/resources/openapi.yaml`
+  nên không cần bước sync. Auth: apikey / tool key+secret / JWT (user/agent/admin, có mint agent
+  token qua tool-service).
 - **Git** — multi-project (root cấu hình được), status/pull-all/history/commit + Review MR runner.
 - **Redis** — single/cluster, SCAN browser, value/TTL, delete typed-confirm, monitor INFO.
 - **Kafka** — topics/partitions/offsets, consumer groups + lag, peek, search theo time-window,
@@ -54,12 +57,15 @@ entry mô tả đầy đủ.
 
 ```
 app/api/{redis,kafka,rabbit,mongo,es,pg}[-connections]/  ← dispatch routes (gated by env)
-app/api/{git,git-fs,git-projects,local-config,proxy,health}/
+app/api/{git,git-projects,fs-browse,local-config,proxy,health}/
+app/api/{api-integrations,api-catalog,curl,agent-token}/   ← integration packs (API Explorer)
 lib/{stack}Client.ts        ← server-only ops + safety bounds
 lib/{stack}Connections.ts   ← connection registry (JSON per-máy, gitignored)
 lib/{stack}QuickFinds.ts    ← quick-find presets (localStorage)
 lib/mongoReport.ts          ← shared .xlsx report engine (ExcelJS dynamic import)
+lib/fsBrowse.ts             ← folder listing cho picker (dùng bởi Git + ＋ Projects)
 components/{Stack}Workspace.tsx + components/{stack}/*
+components/FolderPicker.tsx  ← folder picker dùng chung (📂 Browse)
 ```
 
 ## Deployment

@@ -1,10 +1,11 @@
-// /api/git-fs — server-side folder browser for the project-root picker.
+// /api/git-fs — DEPRECATED alias of /api/fs-browse (kept so existing scripts /
+// bookmarks keep working). The UI's folder picker now calls /api/fs-browse,
+// which is project-neutral and understands `marker`.
 //
 //   POST { path?: string } → { path, parent, entries[], isDriveList }
 //
-// Local tool only — gated by GIT_TOOL_ENABLED (403 otherwise; nothing on disk is
-// read on a k8s/prod deploy). Returns directory listings only, never file
-// contents. `path === ""` requests the drive list on Windows.
+// Gated by GIT_TOOL_ENABLED (403 otherwise). Returns directory listings only,
+// never file contents. `path === ""` requests the drive list on Windows.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { GIT_ENABLED } from '@/lib/gitCore';
