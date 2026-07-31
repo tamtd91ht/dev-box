@@ -167,8 +167,12 @@ export async function loadManifest(integration: ApiIntegration): Promise<ApiMani
 
 /** Resolve a manifest-relative spec path INSIDE the pack root (traversal-safe). */
 export function resolveSpecPath(integration: ApiIntegration, relSpec: string): string {
-  const abs = path.resolve(integration.root, relSpec);
-  const rootWithSep = integration.root.endsWith(path.sep) ? integration.root : integration.root + path.sep;
+  // Normalize BOTH sides through path.resolve — a registry root saved with
+  // forward slashes ("D:/works/…") would otherwise never prefix-match the
+  // backslash form Windows' path.resolve produces.
+  const rootAbs = path.resolve(integration.root);
+  const abs = path.resolve(rootAbs, relSpec);
+  const rootWithSep = rootAbs.endsWith(path.sep) ? rootAbs : rootAbs + path.sep;
   if (!abs.startsWith(rootWithSep)) {
     throw new Error(`spec path "${relSpec}" trỏ ra ngoài pack root — bị từ chối`);
   }
