@@ -8,6 +8,140 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Tab 🤖 Automation — một engine cấu hình được cho cả tin nhắn lẫn hạ tầng (không hardcode).**
+  Mọi nguồn được chuẩn hoá về **một** kiểu sự kiện rồi chạy qua đúng một pipeline
+  `nguồn → trigger → phạm vi → khung giờ → điều kiện → giới hạn → hành động`, nên quy tắc viết cho
+  Zalo và quy tắc "Redis RAM > 80%" dùng chung code. Chia **nhóm tính năng**: 💬 **social**
+  (`message.received` từ tab Workspace — Zalo/Telegram/WhatsApp) · 📡 **infrastructure**
+  (`infra.metric`/`infra.recovered` từ watch trên chính registry kết nối Redis/Mongo/ES/Kafka/
+  Rabbit/PG) · ⚙ **system** (dành sẵn). **Hành động**: `notify` (toast trong app + OS
+  notification, mức urgent không tự tắt) · `webhook` (chạy **server-side** → không dính CORS,
+  header auth không lọt vào network log của browser, timeout 10s) · `log` (JSON-lines) ·
+  `kafka` (produce qua connection đã lưu) · `reply` (**không bao giờ tự gửi** — chỉ
+  `pending-approval` cho người duyệt). Điều kiện có 15 toán tử (contains/regex/anyOf/gt/lt/
+  empty…), body/key/value hỗ trợ `{{template}}` đọc mọi field của sự kiện. Chống bão bằng
+  `dedupeSec` + `cooldownSec` + `maxPerHour`, thứ tự quy tắc sắp xếp được vì `stopOnMatch`.
+  **Theo dõi hạ tầng**: watch = `stack + kết nối + metric op ngưỡng`, poll tối thiểu 15s, phải giữ
+  vi phạm đủ `forSec` mới bắn (debounce), nhắc lại theo cooldown, tự bắn "đã hồi phục"; runner
+  dùng **một** tick 2s với `nextDue` riêng từng watch (không đẻ N timer), đổi ngưỡng là xoá lịch
+  sử vi phạm; probe **không bao giờ throw** (hỏng → `up=0`, nên mất kết nối vẫn cảnh báo được) và
+  **thiếu metric ≠ vi phạm** (im lặng còn hơn báo động giả); 6 adapter gộp cụm theo hướng "xấu
+  nhất thắng" (gauge lấy max, hit rate lấy min, khối lượng lấy sum, alarm Rabbit một node = chặn
+  cả cluster). **An toàn mặc định**: đọc tin nhắn OFF · theo dõi hạ tầng OFF · cho phép gửi OFF ·
+  quy tắc mới luôn `dryRun` (dry-run vẫn hiện toast — đó chính là mục đích), và mọi công tắc an
+  toàn áp dụng ngay bằng một cú click chứ không kẹt trong bản nháp. UI dựng **từ catalog dữ liệu**
+  (thêm metric/trigger/nhóm = thêm entry, không sửa editor), 4 tab con Quy tắc / Theo dõi hạ tầng /
+  Hoạt động / Thử — Hoạt động hiện cả sự kiện **không** khớp kèm lý do bỏ qua của từng quy tắc,
+  Thử dựng sự kiện tay và chạy trên state vứt đi nên không ăn mất cooldown thật. Cấu hình + log
+  lưu per-máy (`.automation.json`, `.automation-log.jsonl`) và **đã gitignore** vì có thể chứa
+  webhook URL kèm token và nội dung tin nhắn. (`lib/automation/*` · `lib/workspace/capture.ts` ·
+  `components/automation/*` · `components/AutomationHost.tsx` ·
+  `app/api/automation/{route,dispatch/route}.ts` · `app/page.tsx` · `app/globals.css` ·
+  `.gitignore` · `lib/automation/README.md`.)
+
+- **Workspace: thêm Telegram + nhận diện thương hiệu ngay trên rail.** Telegram Web A
+  (`web.telegram.org/a/`) thành plugin thứ hai, cũng `multiAccount` — nhiều tài khoản Telegram và
+  Zalo đăng nhập song song, mỗi tài khoản một phiên độc lập (`persist:ws-{plugin}-{account}`),
+  không chia sẻ cookie/storage. Không tách phân vùng riêng cho từng app: chỉ cần **nhìn là biết**,
+  nên mỗi plugin khai báo `brand: { color, logo }` và UI vẽ **logo vector thật**
+  (`components/BrandMark.tsx` — zalo · telegram · whatsapp, fallback emoji) ở hàng plugin, ở từng
+  chip tài khoản và trên toolbar, kèm màu nhận diện tô viền hàng đang mở / vòng avatar / bong bóng
+  chưa đọc. Bộ thu gom về **một script generic** hook cả `new Notification()` lẫn
+  `ServiceWorkerRegistration.showNotification()` (PWA như Telegram/WhatsApp dùng dạng service
+  worker) + quét badge DOM + đọc `(N)` trên title; plugin chỉ khai báo `capture: { genericTitles,
+  bodySenderSeparator, extraScript, disableBadgeScan }` chứ không fork script. Nội dung tin chỉ
+  được ghi khi cờ `window.__wsCap` bật (renderer đặt theo công tắc "đọc tin nhắn" — mặc định tắt).
+  WhatsApp Web để sẵn dạng comment, bật là chạy. (`lib/workspace/{plugins,types,capture,accounts}.ts`
+  · `components/{BrandMark,BrowserWorkspace,WorkspaceView}.tsx` · `app/globals.css` ·
+  `lib/workspace/README.md`.)
+
+- **Tab 🗂 Office — nút ＋ Tạo file mới (Excel/CSV/Word) + Esc thoát hộp thoại chọn file.**
+  Cả hai editor nay tạo được file trống ngay trong DevBox: modal dùng chung nhập tên file
+  (tự thêm đuôi, chọn `.xlsx`/`.csv` cho Bảng tính, `.docx` cho Văn bản), chọn thư mục lưu bằng
+  FolderPicker (folder mode, pre-fill theo file đang mở / mở gần đây) rồi "Tạo & mở" — file
+  được tạo xong mở luôn vào editor. Server: action `create` trên `/api/sheet` + `/api/word`,
+  CREATE-ONLY (`wx`, không bao giờ ghi đè file trùng tên), tên file bị lọc ký tự cấm Windows
+  (`\ / : * ? " < > |`…), cùng gate `OFFICE_ALLOW_WRITE` với Lưu và audit-log
+  `SHEET_AUDIT`/`WORD_AUDIT operation=CREATE`; `.xlsx` mới có sẵn "Sheet1", `.docx` mới là
+  skeleton OOXML tối thiểu hợp lệ (1 đoạn trống + trang A4, Word/LibreOffice mở được).
+  Kèm sửa UX: phím **Esc** giờ đóng được FolderPicker (mọi chỗ dùng chung: Office, Git,
+  ＋ Projects) và modal tạo file (đang mở picker con thì Esc đóng picker trước).
+  (`lib/{officeFiles,sheet,sheetClient,word,wordClient}.ts` · `app/api/{sheet,word}/route.ts` ·
+  `components/{OfficeNewFileModal,SheetWorkspace,WordWorkspace,FolderPicker}.tsx`.)
+
+- **Tab Ⓖ Google — quản lý tài liệu Drive theo dự án (READ-ONLY, MULTI-ACCOUNT).** Dành cho
+  dev/techlead nhiều dự án, nhiều tài khoản: đăng nhập **nhiều tài khoản Google song song**
+  (chip chuyển tài khoản trên toolbar, ✕ đăng xuất từng cái, "＋ Tài khoản" chạy lại consent
+  với `select_account`; tài khoản đang chọn nhớ theo máy). Ba phân vùng theo tài khoản đang
+  chọn: **📁 Dự án** (dán link thư mục Drive gốc của từng dự án → `.googleroots.json` per-máy,
+  gắn per-tài-khoản; duyệt cây thư mục con với breadcrumb, folder trước file sau, mở file là
+  nhảy sang Drive), **📝 Docs** và **📊 Sheets** (danh sách toàn Drive — My Drive + Shared
+  Drives — mới sửa trước, tìm theo tên, lọc ⭐ đã gắn sao của chính Drive, phân trang "Tải
+  thêm"; mỗi dòng hiện owner + thời gian sửa tương đối). Đăng nhập OAuth loopback: tạo OAuth
+  client Web trên Google Cloud một lần (dùng chung mọi tài khoản), bỏ `GOOGLE_CLIENT_ID/SECRET`
+  vào `.env.local` (UI có hướng dẫn từng bước khi chưa cấu hình), bấm Đăng nhập → consent →
+  token lưu per-máy `.googleauth.json` (gitignored, `{ accounts: [...] }`), tự refresh
+  per-tài-khoản; Đăng xuất = revoke + gỡ khỏi danh sách. An toàn: scope `drive.readonly`,
+  server chỉ gọi `files.list`/`files.get` — không tồn tại code path ghi lên Drive; browser
+  không bao giờ thấy token; mọi API call phải chỉ định `accountId` tường minh. Không thêm
+  dependency (gọi thẳng REST v3 bằng fetch). Gate: `GOOGLE_TOOL_ENABLED`.
+  (`lib/{google,googleAuth,googleDrive,googleRoots}.ts` ·
+  `app/api/google/{route,callback/route}.ts` · `components/GoogleWorkspace.tsx` · `app/page.tsx` ·
+  `app/globals.css` · `.env.example` · `.gitignore`.)
+
+- **Tab 🗂 Office — đọc & sửa Excel (.xlsx) / CSV / Word (.docx) ngay trong DevBox.** Một tab, hai
+  phân vùng (mount-and-keep, file đang mở sống sót khi chuyển qua lại): **▦ Bảng tính** — lưới
+  cột A/B/C… + số dòng sticky, nhiều sheet, ô công thức gắn badge ƒ (sửa sẽ ghi đè công thức bằng
+  giá trị — có cảnh báo), sửa ô (click → gõ → Enter/Tab), thêm/xóa dòng; **🗎 Văn bản** — tài liệu
+  hiện theo đoạn văn đúng cấp heading/bullet, click ¶ chọn đoạn, click chữ để sửa (textarea,
+  Ctrl+Enter/blur), thêm/xóa đoạn; bảng chỉ-xem, đoạn chứa ảnh/link/field bị KHÓA sửa (server
+  cũng từ chối) để không phá nội dung đó. Cả hai dùng chung mô hình OP LOG: server đọc lại file
+  và replay từng thao tác — Excel qua ExcelJS (ô không đụng giữ style/độ rộng cột/merge/công
+  thức), Word sửa thẳng `word/document.xml` qua JSZip + xmldom (đoạn không sửa giữ nguyên
+  100%, đoạn sửa giữ định dạng run đầu), CSV qua papaparse (tự nhận delimiter, giữ BOM UTF-8
+  kiểu Excel Việt, giữ CRLF/LF). Lưu = ghi đè sau modal xác nhận, LUÔN sao lưu `<file>.bak`
+  (ghi tạm + rename atomic), từ chối khi file đổi từ lúc mở (so mtime); `.xlsm`/`.doc`/`.docm`
+  bị từ chối. Nút 📂 Browse mở file picker server-side (FolderPicker dùng chung nay liệt kê FILE
+  theo đuôi + dải quick-access Desktop/Documents/Downloads/Home/Ổ đĩa như hộp thoại Windows —
+  Git tab và ＋ Projects hưởng chung), "Mở gần đây" nhớ theo máy. Trần 20 MB; hiển thị tối đa
+  5.000 dòng × 256 cột/sheet · 5.000 đoạn. Gates: `OFFICE_TOOL_ENABLED` + `OFFICE_ALLOW_WRITE`
+  (tên cũ SHEET_* vẫn nhận) — audit-log `SHEET_AUDIT`/`WORD_AUDIT`.
+  (`lib/{officeFlags,officeFiles,sheet,sheetClient,word,wordClient,fsBrowse}.ts` ·
+  `app/api/{sheet,word,fs-browse}/route.ts` ·
+  `components/{OfficeWorkspace,SheetWorkspace,WordWorkspace,FolderPicker}.tsx` · `app/page.tsx` ·
+  `app/globals.css` · `.env.example` · `package.json` (papaparse, jszip, @xmldom/xmldom).)
+
+- **Nhiều tài khoản Zalo cùng lúc + báo tin nhắn mới trên menu.** (1) Plugin có thể bật
+  `multiAccount` (Zalo đã bật): mỗi tài khoản là một phiên trình duyệt độc lập với partition riêng
+  (`persist:ws-zalo-<account>`) nên 2 Zalo đăng nhập song song không đụng nhau. Thêm/đổi tên/xoá tài
+  khoản ngay trên rail; danh sách nhớ theo máy (`localStorage`), xoá tài khoản là xoá luôn phiên trên
+  đĩa. (2) Mỗi workspace báo số tin chưa đọc (đọc từ tiêu đề trang, Zalo đặt `(N) Zalo`) → bong bóng
+  đỏ trên tài khoản **và** trên tab 🧭 Workspace (thấy được từ tab khác), cập nhật tiêu đề cửa sổ
+  (`(N) VHS DevBox`), và **kêu chuông** khi tổng tăng. Nút 🔔/🔕 ở đầu rail để tắt/bật chuông (nhớ).
+  Guest ẩn không bị throttle (`backgroundThrottling=false`) nên báo kịp khi đang ở tab khác; thông báo
+  OS gốc của Zalo vẫn chạy nhờ quyền `notifications`.
+  (`lib/workspace/{types,plugins,accounts}.ts` · `lib/workspace/config.ts` ·
+  `components/{BrowserWorkspace,WorkspaceView}.tsx` · `app/page.tsx` · `app/globals.css` ·
+  `electron/main.cjs`.)
+
+- **Browser Workspace Framework — nhúng web app thật (Zalo cá nhân, Grafana, Kibana…) làm
+  workspace hạng nhất trong tab 🧭 Workspace.** Framework plugin-based, generic: mỗi workspace là
+  một cửa sổ trình duyệt thật (Electron `<webview>`, KHÔNG phải iframe, không reverse-engineer) với
+  **phiên đăng nhập riêng lưu trên máy** (cookies/localStorage/IndexedDB/cache tại `data/browser/`),
+  nên đăng nhập một lần (quét QR) là dùng được qua nhiều lần khởi động. Thêm/bớt workspace chỉ cần
+  khai báo trong `lib/workspace/plugins.ts` (`{id, name, icon, url, permissions, keepAlive}`) — không
+  đụng code engine. Zalo chỉ là plugin đầu tiên, không phải trung tâm. Engine/Manager/UI tách rời:
+  Browser Engine + hardening (permission allow-list, chặn/nới download theo config, popup mở ra
+  trình duyệt ngoài, log lifecycle created/navigate/fail/crash) ở `electron/main.cjs`; Workspace
+  Manager (chọn active, mount-and-keep, LRU theo `maxActiveWorkspace`, `keepAlive`, `lazyLoad`) +
+  UI (rail plugin, toolbar back/forward/reload/home/devtools/logout/mở-ngoài, trạng thái
+  loading/failed/crashed + tự reload 1 lần khi treo) ở `components/BrowserWorkspace.tsx` +
+  `components/WorkspaceView.tsx`. Chạy: `npm run dev` rồi `npm run desktop`; ngoài app desktop tab
+  hiện hướng dẫn thay vì lỗi. Không ảnh hưởng module cũ.
+  (`electron/main.cjs` · `electron/preload.cjs` · `lib/workspace/{types,plugins,config}.ts` ·
+  `components/{BrowserWorkspace,WorkspaceView}.tsx` · `app/page.tsx` · `app/globals.css` ·
+  `package.json` · `.gitignore` · `.env.local`.)
+
 - **Telegram MR-review bot trở lại — workspace lấy từ project đã đăng ký, không hardcode.**
   Cụm `bot/` port từ `omicx-local-all-in-one` (long-poll Telegram → chạy engine read-only
   `/review-mr-dev` qua `claude` CLI → reply verdict + SCORE vào group; dedup theo sha commit,

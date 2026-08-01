@@ -51,6 +51,14 @@ npm run dev                    # → http://localhost:3000
 - **PostgreSQL** — tree database→table, SQL editor trong transaction READ ONLY + timeout,
   columns/indexes, UPDATE-with-WHERE (3 khoá), quick-find parameterized, export.
 - **Webhooks** — nhận webhook realtime qua tool-service (cấu hình base URL + X-KEY/X-VALUE trong UI).
+- **🧭 Workspace** *(cần app desktop)* — nhúng web app thật làm workspace: Zalo + Telegram (nhiều
+  tài khoản song song, mỗi tài khoản một phiên riêng trên máy), mỗi app có màu + logo riêng trên
+  rail nên nhìn là biết ngay. Báo tin chưa đọc lên tận tab. `lib/workspace/README.md`.
+- **🤖 Automation** — một engine cho mọi nhóm: 💬 *social* (tin nhắn từ tab Workspace) và
+  📡 *infrastructure* (watch chỉ số Redis/Mongo/ES/Kafka/Rabbit/PG từ chính registry kết nối).
+  Sự kiện → điều kiện → hành động (notify · webhook · log · kafka · reply-chờ-duyệt). Mặc định an
+  toàn: đọc tin nhắn OFF, theo dõi hạ tầng OFF, cho phép gửi OFF, quy tắc mới luôn chạy thử.
+  `lib/automation/README.md`.
 
 Chi tiết từng tool (giới hạn, lệnh dùng, model an toàn) xem `CHANGELOG.md` — mỗi tính năng có một
 entry mô tả đầy đủ.
@@ -83,8 +91,11 @@ lib/{stack}Connections.ts   ← connection registry (JSON per-máy, gitignored)
 lib/{stack}QuickFinds.ts    ← quick-find presets (localStorage)
 lib/mongoReport.ts          ← shared .xlsx report engine (ExcelJS dynamic import)
 lib/fsBrowse.ts             ← folder listing cho picker (dùng bởi Git + ＋ Projects)
+lib/workspace/*             ← Browser Workspace Framework (plugin Zalo/Telegram + collector)
+lib/automation/*            ← Automation engine (types · catalog · engine · watcher · sources)
 components/{Stack}Workspace.tsx + components/{stack}/*
 components/FolderPicker.tsx  ← folder picker dùng chung (📂 Browse)
+components/AutomationHost.tsx ← runner + toast, sống ngoài mọi tab
 bot/                        ← Telegram MR-review bot (tiến trình riêng, `npm run bot`)
 ```
 

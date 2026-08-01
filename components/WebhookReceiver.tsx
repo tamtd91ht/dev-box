@@ -53,10 +53,23 @@ interface Props {
    *  The copyable webhook URL is `{publicBaseUrl}/tools/hook/{id}`. */
   publicBaseUrl: string;
   onPublicBaseUrl: (url: string) => void;
-  /** Settings drawer (connection + socket) open state — controlled by the parent
-   *  so the gear button can live in the shared appbar, like API Explorer mode. */
+  /** Settings drawer (connection + socket) open state — kept in the parent so
+   *  it survives this pane unmounting on tab switches. The TRIGGER lives here:
+   *  connection config is webhooks-scoped, so its chip belongs inside this pane,
+   *  never in the global appbar (a mode-dependent chip there makes the header
+   *  jump and can push the tab strip out of view). */
   settingsOpen: boolean;
+  onOpenSettings: () => void;
   onCloseSettings: () => void;
+}
+
+/** Trim a base URL to host[:port] for the compact connection chip. */
+function chipHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url.replace(/^https?:\/\//, '');
+  }
 }
 
 /** localStorage key holding this browser's quick webhook id (client-generated). */
@@ -140,6 +153,7 @@ export default function WebhookReceiver({
   publicBaseUrl,
   onPublicBaseUrl,
   settingsOpen,
+  onOpenSettings,
   onCloseSettings,
 }: Props) {
   const [links, setLinks] = useState<WebhookLink[]>([]);
@@ -575,6 +589,17 @@ export default function WebhookReceiver({
         <div className="status-line" style={{ marginBottom: 10 }}>
           <h3 style={{ margin: 0, flex: 1 }}>URL webhook của bạn</h3>
           <span className="badge info" title="Id lưu theo trình duyệt này">theo trình duyệt</span>
+          {/* Connection chip — webhooks-scoped config, so it lives in this pane
+              (moved out of the global appbar where it destabilized the tab strip). */}
+          <button
+            className="chip-btn"
+            onClick={onOpenSettings}
+            title="Cài đặt kết nối tool-service + realtime socket"
+          >
+            <span className={`kdot ${authReady ? 'on' : 'off'}`} />
+            <span className="kdot-host">{chipHost(baseUrl)}</span>
+            <span className="cog" aria-hidden>⚙</span>
+          </button>
         </div>
 
         <div className="small" style={{ color: 'var(--muted)', marginBottom: 10 }}>

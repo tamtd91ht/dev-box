@@ -113,15 +113,25 @@ a:hover { text-decoration: underline; }
 
 /* ── App shell: header / body / footer ──────────────────────── */
 .shell {
-  min-height: 100vh;
+  /* Desktop-app frame: EXACTLY the viewport, never page-scrollable. Every pane
+     scrolls internally (.workspace has overflow-y:auto). Without this clamp the
+     page kept a small vertical overflow, and Chromium bubbles unconsumed wheel
+     events out of the Zalo <webview> (long history at its scroll edge) into the
+     outer page — the whole frame drifted instead of just the chat. */
+  height: 100vh;
   display: grid;
-  grid-template-rows: auto 1fr auto;
-  overflow-x: hidden;
+  /* minmax(0,·) on BOTH axes: without it a track grows to the content's
+     min-content (appbar min-width / tall pane) and the frame silently overflows
+     the window — clipped right edge, page scrollbar. */
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
+  overflow: hidden;
 }
 
 /* ── Header / top bar ────────────────────────────────────────── */
 .appbar {
   position: sticky; top: 0; z-index: 40;
+  min-width: 0; /* let the tab strip shrink instead of widening the page */
   display: flex; align-items: center; gap: 22px;
   padding: 12px 24px;
   background: color-mix(in srgb, var(--bg-0) 72%, transparent);
@@ -167,13 +177,18 @@ a:hover { text-decoration: underline; }
 
 /* ── Top-level mode switcher (API Explorer ⇄ Webhooks) ───────── */
 .modeswitch {
-  display: inline-flex; align-items: center; gap: 3px; flex: none;
+  display: inline-flex; align-items: center; gap: 3px;
+  /* Shrinkable + WRAPPING: when the strip runs out of width (many tabs, or the
+     webhooks host chip appearing on the right), extra tabs move to a second
+     row. Tabs must NEVER become invisible — hidden-scroll amputated the last
+     tab (Workspace, the one carrying the unread bell). */
+  flex: 0 1 auto; min-width: 0; flex-wrap: wrap;
   padding: 3px; border-radius: 12px;
   background: var(--glass); border: 1px solid var(--glass-brd);
   backdrop-filter: blur(12px);
 }
 .modeswitch button {
-  display: inline-flex; align-items: center; gap: 7px;
+  display: inline-flex; align-items: center; gap: 7px; flex: none; white-space: nowrap;
   padding: 6px 14px; border-radius: 9px; font-size: 12.5px; font-weight: 600;
   color: var(--muted); background: transparent; border: none; box-shadow: none;
   cursor: pointer; transition: color .15s, background .15s;
@@ -230,6 +245,10 @@ a:hover { text-decoration: underline; }
 .body {
   display: grid;
   grid-template-columns: 256px minmax(0, 1fr);
+  /* One shared row exactly the body's height: all workspace panes stack in this
+     cell (see paneStyle in page.tsx) and scroll internally, so a tall hidden
+     pane can never stretch the visible one. */
+  grid-template-rows: minmax(0, 1fr);
   gap: 22px;
   width: 100%; min-height: 0;
   padding: 22px clamp(24px, 4vw, 64px);
@@ -723,6 +742,19 @@ audio { width: 100%; margin-top: 12px; }
 }
 .picker-into { flex: none; color: var(--muted); font-size: 15px; }
 .picker-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.picker-quick { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.picker-quick-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--muted); cursor: pointer;
+  background: var(--glass-2); border: 1px solid var(--glass-brd);
+  border-radius: 999px; padding: 4px 11px;
+}
+.picker-quick-btn:hover { color: var(--text); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.picker-quick-btn.on {
+  color: var(--accent); font-weight: 600;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
 
 /* ── Responsive ──────────────────────────────────────────────── */
 @media (max-width: 1080px) {
@@ -2411,4 +2443,713 @@ pre.kafka-drawer-body {
 }
 .modeswitch button.ms-pack {
   border-style: dashed; /* dashed border = plugged-in, not core */
+}
+
+/* ══ Browser Workspace Framework (Workspace tab) ═══════════════════════
+   Plugin rail + stacked <webview> guests. Generic — no per-site styles. */
+.ws-shell {
+  flex: 1; min-height: 0; display: flex; gap: 14px;
+}
+.ws-rail {
+  flex: none; width: 180px; display: flex; flex-direction: column; gap: 6px;
+  overflow-y: auto; padding-right: 2px;
+}
+.ws-rail-item {
+  position: relative; display: flex; align-items: center; gap: 9px;
+  padding: 9px 11px; border-radius: 12px; text-align: left;
+  background: var(--glass); border: 1px solid var(--glass-brd); color: var(--text);
+  cursor: pointer; font-size: 13px; transition: background .15s, border-color .15s;
+}
+.ws-rail-item:hover { background: var(--glass-2); border-color: var(--glass-brd-hover); }
+.ws-rail-item.is-active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.ws-rail-ico { font-size: 16px; flex: none; }
+.ws-rail-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-rail-badge {
+  font-family: var(--mono); font-size: 8.5px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--muted);
+  border: 1px solid var(--glass-brd); border-radius: 20px; padding: 1px 6px; flex: none;
+}
+.ws-rail-live {
+  width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ok);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--ok) 70%, transparent);
+}
+.ws-rail-live.is-bg { background: var(--muted); box-shadow: none; } /* alive but backgrounded */
+
+/* All account views stack in ONE cell; the non-selected ones stay laid out but
+   invisible (visibility, not display:none) so their <webview> guests keep a
+   real size — a 0-sized guest misrenders and can drop background activity. */
+.ws-stage { flex: 1; min-width: 0; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+.ws-stage > * { grid-area: 1 / 1; min-width: 0; min-height: 0; }
+
+/* ── One workspace: toolbar + webview canvas ── */
+.ws-view {
+  flex: 1; min-width: 0; flex-direction: column;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+  border-radius: 14px; overflow: hidden;
+}
+.ws-toolbar {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-bottom: 1px solid var(--glass-brd);
+  background: var(--glass);
+}
+.ws-nav, .ws-actions { display: flex; align-items: center; gap: 3px; }
+.ws-toolbar button {
+  width: 30px; height: 30px; display: grid; place-items: center;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  color: var(--text); cursor: pointer; font-size: 15px; line-height: 1;
+}
+.ws-toolbar button:hover:not(:disabled) { background: var(--glass-2); }
+.ws-toolbar button:disabled { opacity: .35; cursor: default; }
+.ws-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.ws-title-text {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px; color: var(--muted);
+}
+.ws-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.ws-dot--ready { background: var(--ok); box-shadow: 0 0 7px color-mix(in srgb, var(--ok) 70%, transparent); }
+.ws-dot--loading { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
+.ws-dot--failed, .ws-dot--crashed { background: var(--err); }
+
+.ws-canvas { position: relative; flex: 1; min-height: 0; }
+.ws-webview { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+
+.ws-overlay {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px; text-align: center;
+  background: color-mix(in srgb, var(--bg-1) 88%, transparent); color: var(--muted);
+  backdrop-filter: blur(2px); padding: 24px;
+}
+.ws-overlay h3 { margin: 0; color: var(--text); font-size: 15px; }
+.ws-overlay-ico { font-size: 34px; }
+.ws-muted { color: var(--muted); font-size: 12.5px; margin: 0; max-width: 360px; }
+.ws-retry {
+  padding: 8px 18px; border-radius: 10px; cursor: pointer; font-size: 13px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); color: var(--accent);
+}
+.ws-retry:hover { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+.ws-spinner {
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 3px solid var(--glass-brd); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+
+/* ── Workspace rail: header, plugin groups, accounts, unread badges ── */
+.ws-rail-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 2px 6px 6px; margin-bottom: 2px;
+}
+.ws-rail-head-t {
+  font-size: 10px; color: var(--faint); text-transform: uppercase;
+  letter-spacing: .09em; font-weight: 700;
+}
+.ws-icon-btn {
+  width: 26px; height: 26px; display: grid; place-items: center;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  color: var(--muted); cursor: pointer; font-size: 14px;
+}
+.ws-icon-btn:hover { background: var(--glass-2); color: var(--text); }
+
+.ws-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
+.ws-group-head {
+  display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 10px;
+  font-size: 13px; color: var(--text);
+}
+.ws-group.is-multi .ws-group-head { color: var(--muted); font-size: 11.5px; font-weight: 600; }
+.ws-acct-list { display: flex; flex-direction: column; gap: 3px; }
+.ws-group.is-multi .ws-acct-list { padding-left: 10px; border-left: 1px solid var(--glass-brd); margin-left: 14px; }
+
+.ws-acct {
+  position: relative; display: flex; align-items: center; gap: 7px;
+  padding: 7px 10px; border-radius: 10px; cursor: pointer; font-size: 12.5px;
+  background: var(--glass); border: 1px solid var(--glass-brd); color: var(--text);
+}
+.ws-acct:hover { background: var(--glass-2); border-color: var(--glass-brd-hover); }
+.ws-acct.is-active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.ws-acct-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-acct-input {
+  flex: 1; min-width: 0; font: inherit; color: var(--text);
+  background: var(--bg-1); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 7px; padding: 3px 7px; outline: none;
+}
+.ws-acct-btn {
+  width: 20px; height: 20px; display: none; place-items: center; flex: none;
+  background: transparent; border: 0; border-radius: 6px; cursor: pointer;
+  color: var(--muted); font-size: 13px; line-height: 1;
+}
+.ws-acct:hover .ws-acct-btn { display: grid; }
+.ws-acct-btn:hover { background: var(--glass-2); color: var(--text); }
+.ws-acct-btn.danger:hover { color: var(--err); }
+.ws-acct-add {
+  text-align: left; padding: 6px 10px; margin-top: 1px; border-radius: 10px;
+  background: transparent; border: 1px dashed var(--glass-brd); color: var(--muted);
+  cursor: pointer; font-size: 12px;
+}
+.ws-acct-add:hover { border-color: var(--glass-brd-hover); color: var(--text); background: var(--glass); }
+
+/* ── App identity: every account carries its app's mark + hue ──────────────
+   With Zalo and Telegram side by side, the label alone is not enough — each
+   group owns a colour (--brand, set inline from the plugin) and a vector mark
+   whose SILHOUETTE differs too, so the distinction survives greyscale. */
+.brand-mark { flex: none; display: block; }
+.brand-mark.is-faded { opacity: .5; filter: saturate(.5); }
+.brand-mark--emoji { display: inline-grid; place-items: center; border-radius: 6px; }
+
+.ws-group { --brand: var(--accent); }
+.ws-group-head {
+  background: color-mix(in srgb, var(--brand) 11%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 24%, transparent);
+}
+.ws-group.is-multi .ws-group-head { color: var(--text); font-size: 12px; font-weight: 600; }
+.ws-group.is-multi .ws-acct-list {
+  border-left: 2px solid color-mix(in srgb, var(--brand) 38%, transparent);
+  margin-left: 15px;
+}
+.ws-acct.is-active {
+  background: color-mix(in srgb, var(--brand) 16%, transparent);
+  border-color: color-mix(in srgb, var(--brand) 46%, transparent);
+}
+.ws-group-count {
+  font-family: var(--mono); font-size: 9.5px; color: var(--faint); flex: none;
+}
+
+/* Unread bubble — rail groups/accounts + the header Workspace tab. */
+.ws-unread, .ms-unread {
+  flex: none; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700; line-height: 1;
+  color: #fff; background: var(--err);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--err) 55%, transparent);
+}
+.ws-unread.sm { min-width: 16px; height: 16px; font-size: 9.5px; }
+.ms-unread { margin-left: 4px; }
+
+/* New-message alert on the Workspace tab — a red bell + count, visible while
+   you are on any OTHER tab so an incoming Zalo message can't be missed. */
+.ms-bell { gap: 3px; padding-left: 4px; }
+.ms-bell-ico { font-size: 11px; line-height: 1; }
+/* The bell rings (shakes) while the Workspace tab is NOT the active one. */
+.ms-bell.ringing .ms-bell-ico { animation: ms-bell-swing .9s ease-in-out infinite; transform-origin: 50% 12%; }
+.ms-bell.ringing { animation: ms-badge-pulse 1.4s ease-in-out infinite; }
+/* The whole tab nudges + glows so peripheral vision catches it. */
+.modeswitch button.ms-alert { animation: ms-tab-shake 1.4s ease-in-out infinite; }
+.modeswitch button.ms-alert .ms-ico { color: var(--err); }
+
+@keyframes ms-bell-swing {
+  0%, 100% { transform: rotate(0deg); }
+  15% { transform: rotate(16deg); }
+  30% { transform: rotate(-13deg); }
+  45% { transform: rotate(9deg); }
+  60% { transform: rotate(-6deg); }
+  75% { transform: rotate(3deg); }
+}
+@keyframes ms-badge-pulse {
+  0%, 100% { box-shadow: 0 0 8px color-mix(in srgb, var(--err) 55%, transparent); }
+  50% { box-shadow: 0 0 15px color-mix(in srgb, var(--err) 90%, transparent); }
+}
+@keyframes ms-tab-shake {
+  0%, 88%, 100% { transform: translateX(0); }
+  90% { transform: translateX(-2px); }
+  92% { transform: translateX(2px); }
+  94% { transform: translateX(-2px); }
+  96% { transform: translateX(2px); }
+  98% { transform: translateX(-1px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ms-bell.ringing .ms-bell-ico,
+  .ms-bell.ringing,
+  .modeswitch button.ms-alert { animation: none; }
+}
+
+/* ── Sheet workspace (Excel/CSV editor) ─────────────────────────── */
+.sheet-panel {
+  display: flex; flex-direction: column; min-height: 0; height: 100%;
+  gap: 8px; overflow: hidden;
+}
+/* Shared Office empty state — hero card + recent files (Sheet + Word) */
+.office-hero-panel { padding: 26px 26px 18px; }
+.office-hero {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  text-align: center; padding: 14px 0 10px;
+}
+.office-hero-ico {
+  font-size: 30px; width: 64px; height: 64px; border-radius: 18px;
+  display: grid; place-items: center; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--accent) 18%, transparent);
+  margin-bottom: 2px;
+}
+.office-hero-title { font-size: 18px; font-weight: 700; letter-spacing: .01em; }
+.office-hero-sub {
+  margin: 0; max-width: 460px; font-size: 13px; line-height: 1.6; color: var(--muted);
+}
+.office-hero-points { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+.office-point {
+  font-size: 11.5px; color: var(--muted); white-space: nowrap;
+  border: 1px solid var(--glass-brd); background: var(--glass-2);
+  border-radius: 999px; padding: 4px 11px;
+}
+.office-cta { margin-top: 10px; padding: 9px 22px; font-size: 13.5px; }
+.office-recent-wrap { border-top: 1px solid var(--glass-brd); margin-top: 14px; padding-top: 12px; }
+.office-recent { display: flex; flex-direction: column; gap: 2px; }
+.office-recent-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 7px 10px; border: none; background: transparent; cursor: pointer;
+  border-radius: 8px; color: var(--text); text-align: left;
+}
+.office-recent-row:hover { background: var(--glass-2); }
+.office-recent-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.office-recent-base {
+  font-size: 13px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.office-recent-dir {
+  font-size: 10.5px; color: var(--muted); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.sheet-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sheet-toolbar .picker-cwd { flex: 0 1 auto; max-width: 42%; }
+.sheet-dirty-badge { color: var(--warn); font-weight: 700; }
+
+.sheet-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--glass-brd); padding-bottom: 6px; }
+.sheet-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; border: 1px solid var(--glass-brd); border-radius: 8px;
+  color: var(--muted); font-size: 12.5px; padding: 4px 10px; cursor: pointer;
+}
+.sheet-tab:hover { background: var(--glass-2); color: var(--text); }
+.sheet-tab.on { color: var(--text); border-color: var(--accent); font-weight: 600; }
+.sheet-tab-dot { color: var(--warn); font-size: 10px; }
+
+.sheet-banner {
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border-radius: 8px; padding: 6px 10px; font-size: 12px;
+}
+
+.sheet-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--glass-brd); border-radius: 10px; }
+.sheet-table { border-collapse: collapse; font-size: 12.5px; font-family: var(--mono); }
+.sheet-grid { width: max-content; min-width: 100%; }
+.sheet-grid td, .sheet-grid th { white-space: nowrap; }
+.sheet-table th, .sheet-table td {
+  padding: 4px 8px; border-bottom: 1px solid var(--glass-brd); border-right: 1px solid var(--glass-brd);
+  text-align: left; max-width: 420px; overflow: hidden; text-overflow: ellipsis;
+}
+.sheet-table thead th {
+  position: sticky; top: 0; z-index: 2; background: var(--bg-1, var(--bg));
+  font-size: 11px; text-transform: none; color: var(--muted); font-weight: 600; text-align: center;
+}
+.sheet-table td.num { text-align: right; }
+.sheet-rownum, .sheet-rownum-h {
+  position: sticky; left: 0; z-index: 1; background: var(--bg-1, var(--bg));
+  color: var(--muted); font-weight: 600; text-align: right; cursor: pointer; min-width: 44px;
+  user-select: none;
+}
+.sheet-table thead .sheet-rownum-h { z-index: 3; cursor: default; }
+.sheet-rownum:hover { color: var(--text); }
+.sheet-rownum.sel { color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--bg-1)); }
+.sheet-grid tbody tr:hover td { background: var(--glass-bg); }
+.sheet-grid tbody tr.sel td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+.sheet-cell { cursor: cell; }
+.sheet-cell-dirty { background: color-mix(in srgb, var(--warn) 14%, transparent) !important; }
+.sheet-cell input {
+  width: 100%; min-width: 80px; border: 1px solid var(--accent); border-radius: 4px;
+  background: var(--bg-1, var(--bg)); color: var(--text);
+  font: inherit; padding: 1px 4px; outline: none;
+}
+.sheet-fx {
+  display: inline-block; margin-right: 5px; padding: 0 4px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.sheet-save-summary { margin: 0 0 10px; padding-left: 20px; font-size: 12.5px; }
+.sheet-save-summary li { margin: 2px 0; }
+.sheet-save-note {
+  font-size: 12px; color: var(--muted); border: 1px solid var(--glass-brd);
+  border-radius: 8px; padding: 8px 10px; margin-bottom: 8px;
+}
+.sheet-save-warn {
+  font-size: 12px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border-radius: 8px; padding: 6px 10px; margin-bottom: 8px;
+}
+
+/* ── Office workspace shell (▦ Bảng tính · 🗎 Văn bản) ──────────────── */
+.office-layout { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
+.office-subnav { display: flex; gap: 6px; flex-wrap: wrap; }
+.office-subnav-btn {
+  display: inline-flex; align-items: center; gap: 9px; cursor: pointer;
+  padding: 7px 14px; border-radius: 11px; text-align: left;
+  background: var(--glass); border: 1px solid var(--glass-brd); color: var(--muted);
+  transition: background .15s, border-color .15s, color .15s;
+}
+.office-subnav-btn:hover { color: var(--text); background: var(--glass-2); }
+.office-subnav-btn.on {
+  color: var(--text); font-weight: 600;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.office-subnav-btn.on .office-subnav-ico { color: var(--accent); }
+.office-subnav-ico { font-size: 16px; }
+.office-subnav-text { display: flex; flex-direction: column; gap: 1px; font-size: 13px; line-height: 1.15; }
+.office-subnav-hint { font-size: 10px; font-weight: 400; color: var(--faint); letter-spacing: .02em; }
+.office-body { display: grid; flex: 1; min-height: 0; }
+
+/* ── Word editor (đoạn văn) ─────────────────────────────────────────── */
+.word-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--glass-brd); border-radius: 10px; }
+.word-doc {
+  max-width: 820px; margin: 14px auto; padding: 28px 34px;
+  background: color-mix(in srgb, var(--bg-1) 70%, transparent);
+  border: 1px solid var(--glass-brd); border-radius: 12px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.word-row { display: flex; gap: 10px; align-items: flex-start; border-radius: 8px; }
+.word-row.sel { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.word-row.dirty { background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.word-row.sel.dirty { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.word-gutter {
+  flex: none; width: 34px; padding: 6px 4px; text-align: right; cursor: pointer;
+  background: none; border: none; border-radius: 6px;
+  color: var(--faint); font-size: 10.5px; font-family: var(--mono); line-height: 1.6;
+  user-select: none;
+}
+.word-gutter:hover { color: var(--text); background: var(--glass-2); }
+.word-row.sel .word-gutter { color: var(--accent); font-weight: 700; }
+.word-p {
+  flex: 1; min-width: 0; padding: 5px 8px; border-radius: 6px; cursor: text;
+  font-size: 13.5px; line-height: 1.65; white-space: pre-wrap; word-break: break-word;
+}
+.word-p:hover { background: var(--glass-2); }
+.word-p.locked { cursor: not-allowed; color: var(--muted); }
+.word-p-title { font-size: 22px; font-weight: 700; line-height: 1.3; }
+.word-p-h1 { font-size: 18px; font-weight: 700; line-height: 1.35; }
+.word-p-h2 { font-size: 16px; font-weight: 700; line-height: 1.4; }
+.word-p-h3 { font-size: 14px; font-weight: 700; line-height: 1.45; }
+.word-p-empty { color: var(--faint); font-family: var(--mono); }
+.word-bullet { margin-right: 8px; color: var(--accent); }
+.word-lock-badge {
+  display: inline-block; margin-right: 8px; padding: 0 7px; border-radius: 5px;
+  font-size: 10px; font-weight: 700; color: var(--muted); white-space: nowrap;
+  border: 1px solid var(--glass-brd); background: var(--glass-2); vertical-align: 2px;
+}
+.word-tbl {
+  flex: 1; min-width: 0; padding: 8px 10px; border-radius: 6px;
+  border: 1px dashed var(--glass-brd); background: var(--glass-bg);
+  font-size: 12px; color: var(--muted);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.word-tbl-preview {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px;
+}
+.word-edit {
+  flex: 1; min-width: 0; padding: 5px 8px; border-radius: 6px; resize: vertical;
+  border: 1px solid var(--accent); background: var(--bg-1, var(--bg)); color: var(--text);
+  font: inherit; font-size: 13.5px; line-height: 1.65; outline: none;
+}
+
+/* ── Google workspace (Drive · Docs · Sheets) ───────────────────────── */
+.g-setup { margin: 4px 12px 8px; padding-left: 22px; font-size: 13px; line-height: 1.7; }
+.g-setup li { margin: 6px 0; }
+.g-setup a { color: var(--accent); }
+.g-setup pre.code { margin: 6px 0 0; }
+
+.g-list-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.g-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.g-search { flex: 1; min-width: 0; }
+.chip-btn.on {
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.g-list {
+  flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 2px;
+  border: 1px solid var(--glass-brd); border-radius: 10px; padding: 4px;
+}
+.g-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 7px 10px; border: none; background: transparent; cursor: pointer;
+  border-radius: 8px; color: var(--text); text-align: left; text-decoration: none;
+}
+.g-row:hover { background: var(--glass-2); }
+.g-ico { font-size: 15px; flex: none; }
+.g-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.g-base {
+  font-size: 13px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.g-star { margin-right: 6px; font-size: 11px; }
+.g-meta {
+  font-size: 10.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.g-open { flex: none; color: var(--muted); font-size: 14px; }
+
+.g-projects {
+  display: grid; grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: 12px; flex: 1; min-height: 0;
+}
+@media (max-width: 900px) { .g-projects { grid-template-columns: 1fr; } }
+.g-rail { display: flex; flex-direction: column; gap: 3px; min-height: 0; overflow: auto; }
+.g-root { display: flex; align-items: center; gap: 2px; border-radius: 8px; }
+.g-root.on { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.g-root-btn {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border: none; background: transparent; cursor: pointer;
+  border-radius: 8px; color: var(--text); font-size: 13px; text-align: left;
+}
+.g-root:hover { background: var(--glass-2); }
+.g-root.on .g-root-btn { font-weight: 600; }
+.g-root-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-root-act { flex: none; text-decoration: none; }
+.g-add { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 10px;
+  border: 1px dashed var(--glass-brd); border-radius: 10px; }
+.g-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; gap: 8px; }
+.g-crumbs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.g-crumb-wrap { display: inline-flex; align-items: center; gap: 4px; }
+.g-crumb {
+  background: none; border: none; padding: 3px 7px; border-radius: 6px; cursor: pointer;
+  color: var(--muted); font-size: 12.5px;
+}
+.g-crumb:hover { background: var(--glass-2); color: var(--text); }
+.g-crumb.on { color: var(--text); font-weight: 600; }
+.g-crumb-sep { color: var(--faint); font-size: 13px; }
+
+/* Account switcher — multi-account chips on the Google toolbar */
+.g-accounts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.g-acc {
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--glass-brd); border-radius: 999px; background: var(--glass-2);
+}
+.g-acc.on {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.g-acc-btn {
+  background: none; border: none; cursor: pointer; color: var(--muted);
+  font-size: 11.5px; padding: 4px 10px; border-radius: 999px; white-space: nowrap;
+}
+.g-acc.on .g-acc-btn { color: var(--accent); font-weight: 600; }
+.g-acc-x {
+  background: none; border: none; cursor: pointer; color: var(--muted);
+  font-size: 10px; padding: 4px 8px 4px 0;
+}
+.g-acc-x:hover { color: var(--err); }
+
+/* ══════════════════════════════════════════════════════════════
+   Automation tab — rules · watches · activity · test
+   ═══════════════════════════════════════════════════════════ */
+.auto-root { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.auto-top {
+  display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
+  padding-bottom: 12px; border-bottom: 1px solid var(--glass-brd);
+}
+.auto-top-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.auto-dirty {
+  font-size: 11.5px; font-weight: 600; color: var(--warn, #d29922);
+  border: 1px solid color-mix(in srgb, var(--warn, #d29922) 45%, transparent);
+  border-radius: 6px; padding: 3px 8px;
+}
+.auto-switches { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.auto-toggle {
+  display: inline-flex; align-items: center; gap: 8px; margin: 0;
+  padding: 7px 11px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--glass-brd); background: var(--glass-2);
+  text-transform: none; letter-spacing: 0; font-weight: 400;
+}
+.auto-toggle:hover { border-color: var(--glass-brd-hover); }
+.auto-toggle.off { opacity: .5; cursor: not-allowed; }
+.auto-toggle:has(input:checked) { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.auto-toggle.risk:has(input:checked) {
+  border-color: color-mix(in srgb, var(--warn, #d29922) 55%, transparent);
+  background: color-mix(in srgb, var(--warn, #d29922) 12%, transparent);
+}
+.auto-toggle-text { display: flex; flex-direction: column; gap: 1px; }
+.auto-toggle-text b { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.auto-toggle-text em { font-size: 10.5px; font-style: normal; color: var(--muted); }
+
+/* ── Sub-tabs ─────────────────────────────────────────────── */
+.auto-tabs { align-self: flex-start; }
+.auto-count {
+  margin-left: 6px; font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+  color: var(--muted); background: var(--glass-2); border-radius: 5px; padding: 0 5px;
+}
+.gitsub button.on .auto-count { color: #fff; background: rgba(255, 255, 255, .22); }
+
+/* ── List + detail split ──────────────────────────────────── */
+.auto-split {
+  display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr);
+  gap: 12px; align-items: start; min-height: 0;
+}
+@media (max-width: 1080px) { .auto-split { grid-template-columns: 1fr; } }
+.auto-split > .panel { padding: 14px; }
+.auto-list-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.auto-list-head > button:last-child { margin-left: auto; }
+.auto-runstate { font-size: 11.5px; color: var(--muted); }
+.auto-runstate.on { color: var(--ok, #3fb950); }
+
+.auto-rules { display: flex; flex-direction: column; gap: 3px; max-height: 62vh; overflow: auto; }
+.auto-rule {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border-radius: 9px; cursor: pointer; border: 1px solid transparent;
+}
+.auto-rule:hover { background: var(--glass-2); }
+.auto-rule.on {
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.auto-rule.off .auto-rule-main { opacity: .5; }
+.auto-rule-ico { font-size: 15px; flex: none; }
+.auto-rule-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.auto-rule-name {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.auto-rule-sub {
+  font-size: 10.5px; color: var(--muted); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.auto-rule-sub .ok { color: var(--ok, #3fb950); }
+.auto-rule-sub .bad { color: var(--bad, #f85149); }
+.auto-rule-ops { display: flex; align-items: center; gap: 3px; flex: none; }
+.auto-rule-ops button { padding: 2px 7px; font-size: 11px; }
+.auto-dry, .auto-stop, .auto-firing {
+  margin-left: 7px; font-style: normal; font-size: 9.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .04em; border-radius: 4px; padding: 1px 5px;
+}
+.auto-dry { color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); }
+.auto-stop { color: var(--muted); border: 1px solid var(--glass-brd); }
+.auto-firing { color: var(--bad, #f85149); border: 1px solid color-mix(in srgb, var(--bad, #f85149) 55%, transparent); }
+
+/* ── Editors ──────────────────────────────────────────────── */
+.auto-editor { display: flex; flex-direction: column; gap: 14px; }
+.auto-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.auto-field { min-width: 0; }
+.auto-field.wide { grid-column: 1 / -1; }
+.auto-hint { display: block; margin-top: 4px; font-size: 10.5px; color: var(--muted); }
+.auto-sec {
+  border: 1px solid var(--glass-brd); border-radius: 12px; padding: 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.auto-sec h4 {
+  margin: 0; font-size: 10.5px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted);
+  display: flex; align-items: center; gap: 10px;
+}
+.auto-sec h4 .auto-mode { width: auto; padding: 3px 8px; font-size: 11px; }
+.auto-sec > button { align-self: flex-start; }
+
+.auto-checks { display: flex; flex-wrap: wrap; gap: 5px; }
+.auto-chip {
+  padding: 4px 10px; border-radius: 20px; font-size: 11.5px; font-weight: 600;
+  border: 1px solid var(--glass-brd); background: var(--glass-2); color: var(--muted);
+  box-shadow: none; cursor: pointer;
+}
+.auto-chip:hover:not(:disabled) {
+  transform: none; box-shadow: none; color: var(--text); border-color: var(--glass-brd-hover);
+}
+.auto-chip.on {
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.auto-cond { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.auto-cond select { width: auto; min-width: 130px; flex: none; }
+.auto-cond input { flex: 1; min-width: 120px; }
+.auto-cond-custom { max-width: 160px; }
+.auto-cond > button { flex: none; }
+
+.auto-action {
+  border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px;
+  background: var(--glass-2); display: flex; flex-direction: column; gap: 10px;
+}
+.auto-action-head { display: flex; align-items: center; gap: 8px; }
+.auto-action-head select { width: auto; flex: 1; }
+
+.auto-probe {
+  margin: 0; padding: 10px; border-radius: 10px; max-height: 220px; overflow: auto;
+  background: var(--glass-2); border: 1px solid var(--glass-brd);
+  font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: pre-wrap;
+}
+
+/* ── Activity ─────────────────────────────────────────────── */
+.auto-activity { display: flex; flex-direction: column; gap: 2px; }
+.auto-act {
+  display: flex; align-items: flex-start; gap: 10px; padding: 8px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--glass-brd) 60%, transparent);
+}
+.auto-act:last-child { border-bottom: none; }
+.auto-act-time { font-family: var(--mono); font-size: 11px; color: var(--faint); flex: none; padding-top: 2px; }
+.auto-act-ico { flex: none; }
+.auto-act-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.auto-act-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.auto-act-src { margin-left: 8px; font-style: normal; font-size: 10.5px; font-family: var(--mono); color: var(--faint); }
+.auto-act-text { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.auto-act-meta { display: flex; flex-wrap: wrap; gap: 5px; }
+.auto-out, .auto-act-dec {
+  font-style: normal; font-size: 10px; font-weight: 700; letter-spacing: .03em;
+  border-radius: 4px; padding: 1px 6px; border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.auto-out.st-ok { color: var(--ok, #3fb950); border-color: color-mix(in srgb, var(--ok, #3fb950) 45%, transparent); }
+.auto-out.st-error { color: var(--bad, #f85149); border-color: color-mix(in srgb, var(--bad, #f85149) 45%, transparent); }
+.auto-out.st-dry-run { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.auto-out.st-pending-approval {
+  color: var(--warn, #d29922); border-color: color-mix(in srgb, var(--warn, #d29922) 45%, transparent);
+}
+
+/* ── Test console ─────────────────────────────────────────── */
+.auto-test { display: flex; flex-direction: column; gap: 14px; }
+.auto-result { display: flex; flex-direction: column; gap: 8px; }
+.auto-result h4 {
+  margin: 0; font-size: 10.5px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted);
+}
+.auto-dec { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+.auto-dec li.ok { color: var(--ok, #3fb950); }
+
+.auto-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 34px 16px; color: var(--muted); font-size: 12.5px; text-align: center;
+}
+.auto-empty span { font-size: 26px; opacity: .75; }
+
+/* ── Toasts (rendered by AutomationHost, outside every pane) ── */
+.auto-toasts {
+  position: fixed; right: 18px; bottom: 18px; z-index: 9000;
+  display: flex; flex-direction: column; gap: 8px; max-width: min(380px, 92vw);
+}
+.auto-toast {
+  display: flex; align-items: flex-start; gap: 10px; text-align: left;
+  padding: 11px 13px; border-radius: 12px; cursor: pointer;
+  background: var(--glass); border: 1px solid var(--glass-brd); color: var(--text);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: var(--shadow); animation: auto-toast-in .18s ease-out;
+}
+.auto-toast:hover:not(:disabled) { transform: none; box-shadow: var(--shadow); border-color: var(--glass-brd-hover); }
+.auto-toast.lv-warn { border-color: color-mix(in srgb, var(--warn, #d29922) 55%, transparent); }
+.auto-toast.lv-urgent { border-color: color-mix(in srgb, var(--bad, #f85149) 65%, transparent); }
+.auto-toast.dry { border-style: dashed; }
+.at-ico { font-size: 16px; flex: none; }
+.at-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.at-title { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.at-text { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.at-meta { font-size: 10px; color: var(--faint); }
+.at-dry {
+  margin-right: 6px; font-style: normal; font-weight: 700; color: var(--accent);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+@keyframes auto-toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
 }

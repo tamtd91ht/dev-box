@@ -1,0 +1,126 @@
+'use client';
+
+// The Automation tab.
+//
+//   ┌ safety strip — the switches that decide what the engine may touch
+//   ├ Quy tắc          rules, grouped by feature (social · infra · system)
+//   ├ Theo dõi hạ tầng watches that turn a metric into an event
+//   ├ Hoạt động        what the engine did, with skip reasons
+//   └ Thử              hand-written events, dry or live
+//
+// Edits live in a local draft until saved: the engine keeps running the last
+// saved config, so a half-finished rule never fires.
+
+import { useState } from 'react';
+import { useAutomation } from '@/lib/automation/useAutomation';
+import { automation } from '@/lib/automation/runtime';
+import type { AutomationConfig } from '@/lib/automation/types';
+import ActivityPanel from './ActivityPanel';
+import RulesPanel from './RulesPanel';
+import TestPanel from './TestPanel';
+import WatchesPanel from './WatchesPanel';
+import { Toggle } from './parts';
+
+type Tab = 'rules' | 'watches' | 'activity' | 'test';
+
+const TABS: { key: Tab; label: string; icon: string }[] = [
+  { key: 'rules', label: 'Quy tắc', icon: '⚙' },
+  { key: 'watches', label: 'Theo dõi hạ tầng', icon: '📡' },
+  { key: 'activity', label: 'Hoạt động', icon: '🕓' },
+  { key: 'test', label: 'Thử', icon: '🧪' },
+];
+
+export default function AutomationWorkspace() {
+  const snap = useAutomation();
+  const [tab, setTab] = useState<Tab>('rules');
+  const [draft, setDraft] = useState<AutomationConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const cfg = draft ?? snap.config;
+  const dirty = draft !== null;
+
+  // While a draft exists it WINS over the store: a config saved from elsewhere
+  // must never overwrite the user's unsaved edits under their hands.
+  const edit = (next: AutomationConfig) => setDraft(next);
+
+  /** Safety switches apply at once when clean; otherwise they join the draft. */
+  const flip = (patch: Partial<AutomationConfig>) => {
+    if (dirty) setDraft({ ...cfg, ...patch });
+    else void automation.patch(patch);
+  };
+
+  const save = async () => {
+    if (!draft) return;
+    setSaving(true);
+    await automation.save(draft);
+    setDraft(null);
+    setSaving(false);
+  };
+
+  return (
+    <div className="panel auto-root">
+      <div className="auto-top">
+        <div className="auto-switches">
+          <Toggle
+            checked={cfg.enabled}
+            onChange={(v) => flip({ enabled: v })}
+            label="Engine"
+            hint="tắt = không quy tắc nào chạy"
+          />
+          <Toggle
+            checked={cfg.captureEnabled}
+            onChange={(v) => flip({ captureEnabled: v })}
+            label="Đọc tin nhắn"
+            hint="social: bật mới lấy được nội dung tin"
+            tone="risk"
+          />
+          <Toggle
+            checked={cfg.storeMessageText}
+            onChange={(v) => flip({ storeMessageText: v })}
+            label="Lưu nội dung"
+            hint="tắt = nhật ký chỉ giữ ••••"
+            disabled={!cfg.captureEnabled}
+          />
+          <Toggle
+            checked={cfg.watchEnabled}
+            onChange={(v) => flip({ watchEnabled: v })}
+            label="Theo dõi hạ tầng"
+            hint="chạy các poller đo chỉ số"
+          />
+          <Toggle
+            checked={cfg.allowSend}
+            onChange={(v) => flip({ allowSend: v })}
+            label="Cho phép gửi"
+            hint="mở khoá hành động trả lời — vẫn phải duyệt tay"
+            tone="risk"
+          />
+        </div>
+
+        <div className="auto-top-right">
+          {dirty ? <span className="auto-dirty">có thay đổi chưa lưu</span> : null}
+          <button type="button" className="ghost sm" disabled={!dirty} onClick={() => setDraft(null)}>
+            Hoàn tác
+          </button>
+          <button type="button" className="sm" disabled={!dirty || saving} onClick={() => void save()}>
+            {saving ? 'Đang lưu…' : 'Lưu'}
+          </button>
+        </div>
+      </div>
+
+      <div className="gitsub auto-tabs">
+        {TABS.map((t) => (
+          <button key={t.key} type="button" className={tab === t.key ? 'on' : ''} onClick={() => setTab(t.key)}>
+            <span aria-hidden>{t.icon}</span> {t.label}
+            {t.key === 'rules' ? <span className="auto-count">{cfg.rules.length}</span> : null}
+            {t.key === 'watches' ? <span className="auto-count">{cfg.watches.length}</span> : null}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'rules' ? <RulesPanel config={cfg} onChange={edit} /> : null}
+      {tab === 'watches' ? <WatchesPanel config={cfg} onChange={edit} /> : null}
+      {tab === 'activity' ? <ActivityPanel activity={snap.activity} /> : null}
+      {tab === 'test' ? <TestPanel /> : null}
+    </div>
+  );
+}

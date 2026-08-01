@@ -41,6 +41,22 @@ npm-debug.log*
 # local API integration pack registry (per-machine folder paths — never commit)
 .apiintegrations.json
 
+# Google tab — OAuth tokens (refresh token = full drive.readonly access) + per-
+# machine Drive folder registry — never commit
+.googleauth.json
+.googleroots.json
+
 # Telegram review-bot local state (Telegram offset + dedup shas + status snapshot)
 bot/.state.json
 bot/.status.json
+
+# Automation engine — local rules/watches (may embed webhook URLs + tokens) and
+# the default log-action sink (captured message text lands there) — never commit
+.automation.json
+.automation-log.jsonl
+
+# Electron desktop shell — build output + per-workspace browser profiles
+# (cookies/localStorage/IndexedDB/cache live here; machine-specific, never commit)
+dist/
+data/browser/
+electron/dist/

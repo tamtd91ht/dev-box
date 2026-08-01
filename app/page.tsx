@@ -6,7 +6,7 @@
 // RabbitMQ · MongoDB · Elastic · PostgreSQL). Each workspace mounts lazily and
 // stays mounted (hidden) across tab switches so long-running state survives.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import WebhookReceiver from '@/components/WebhookReceiver';
 import ApiExplorerWorkspace, { type IntegrationView } from '@/components/ApiExplorerWorkspace';
 import PackManager from '@/components/PackManager';
@@ -17,6 +17,11 @@ import RabbitWorkspace from '@/components/RabbitWorkspace';
 import MongoWorkspace from '@/components/MongoWorkspace';
 import EsWorkspace from '@/components/EsWorkspace';
 import PgWorkspace from '@/components/PgWorkspace';
+import OfficeWorkspace from '@/components/OfficeWorkspace';
+import GoogleWorkspace from '@/components/GoogleWorkspace';
+import BrowserWorkspace from '@/components/BrowserWorkspace';
+import AutomationWorkspace from '@/components/automation/AutomationWorkspace';
+import AutomationHost from '@/components/AutomationHost';
 import ThemeToggle from '@/components/ThemeToggle';
 import { resolveAuth, authReady as isAuthReady } from '@/lib/request';
 import {
@@ -28,13 +33,30 @@ import {
 
 const DEFAULT_BASE_URL = 'http://localhost:8090';
 
-/** Trim a base URL to host[:port] for a compact header chip. */
-function shortHost(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url.replace(/^https?:\/\//, '');
+/** Style for a mounted-and-kept workspace pane. All panes occupy the SAME grid
+ *  cell; the inactive ones stay fully laid out but hidden.
+ *
+ *  Hiding strategy depends on the content:
+ *  - Plain HTML panes → `visibility: hidden` (keeps layout + scroll state).
+ *  - Panes hosting Electron <webview> guests (`hostsWebviews`) → move OFFSCREEN.
+ *    A guest paints in its own native layer which IGNORES ancestor visibility
+ *    (it kept covering other tabs) and breaks inside display:none (no layout →
+ *    black surface, misfit viewport). Offscreen keeps it alive, full-size and
+ *    genuinely invisible. */
+function paneStyle(on: boolean, hostsWebviews = false): CSSProperties {
+  if (on) return { gridColumn: '1 / -1', gridRow: '1' };
+  if (!hostsWebviews) {
+    return { gridColumn: '1 / -1', gridRow: '1', visibility: 'hidden', pointerEvents: 'none' };
   }
+  return {
+    position: 'fixed',
+    top: 0,
+    left: '-200vw',
+    width: '100vw',
+    height: '100vh',
+    overflow: 'hidden',
+    pointerEvents: 'none',
+  };
 }
 
 /** Default webhook WS URL: derive host from the tool-service base URL, use the
@@ -89,11 +111,22 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'mongo', icon: '🍃', label: 'MongoDB', badge: 'local' },
   { key: 'es', icon: '🔍', label: 'Elastic', badge: 'local' },
   { key: 'pg', icon: '🐘', label: 'PostgreSQL', badge: 'local' },
+  { key: 'office', icon: '🗂', label: 'Office', badge: 'local' },
+  { key: 'google', icon: 'Ⓖ', label: 'Google', badge: 'cloud' },
   { key: 'webhooks', icon: '⚡', label: 'Webhooks', badge: 'tool' },
+  { key: 'workspace', icon: '🧭', label: 'Workspace', badge: 'browser' },
+  { key: 'automation', icon: '🤖', label: 'Automation', badge: 'engine' },
 ];
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>('git');
+
+  // Unread messages across all browser workspaces (Zalo, …) — badges the
+  // Workspace tab + the window title so new messages are visible from any tab.
+  const [wsUnread, setWsUnread] = useState(0);
+  useEffect(() => {
+    document.title = wsUnread > 0 ? `(${wsUnread}) VHS DevBox` : 'VHS DevBox';
+  }, [wsUnread]);
 
   // Registered integration packs — each one is a top-level "Projects" tab.
   const [packs, setPacks] = useState<IntegrationView[]>([]);
@@ -106,7 +139,10 @@ export default function Home() {
 
   // Lazy mount-and-keep per workspace: don't probe a tool's API until the user
   // opens it, then keep it mounted so its state survives tab switches.
-  const [visited, setVisited] = useState<Record<string, boolean>>({});
+  // Exception: the browser Workspace mounts from startup — its whole point is
+  // alerting about new messages (Zalo) while you work on OTHER tabs, so its
+  // guests must be running before the tab is ever clicked.
+  const [visited, setVisited] = useState<Record<string, boolean>>({ workspace: true });
   useEffect(() => {
     setVisited((v) => (v[mode] ? v : { ...v, [mode]: true }));
   }, [mode]);
@@ -128,6 +164,13 @@ export default function Home() {
   useEffect(() => { savedRef.current = saved; }, [saved]);
 
   const [webhookSettingsOpen, setWebhookSettingsOpen] = useState(false);
+  // Switching tabs must never resurrect a stale settings drawer: the open-state
+  // lives HERE (survives WebhookReceiver unmount), so without this reset an
+  // abandoned drawer + its fullscreen backdrop instantly cover the pane every
+  // time the Webhooks tab is reopened.
+  useEffect(() => {
+    setWebhookSettingsOpen(false);
+  }, [mode]);
 
   // ── Webhooks workspace (targets tool-service, config persisted on disk) ─────
   const TOOL = 'tool-service';
@@ -168,12 +211,26 @@ export default function Home() {
               key={t.key}
               role="tab"
               aria-selected={mode === t.key}
-              className={mode === t.key ? 'on' : ''}
+              className={[
+                mode === t.key ? 'on' : '',
+                // Alert the Workspace tab while you're viewing ANY other tab.
+                t.key === 'workspace' && wsUnread > 0 && mode !== 'workspace' ? 'ms-alert' : '',
+              ].filter(Boolean).join(' ')}
               onClick={() => setMode(t.key)}
             >
               <span className="ms-ico" aria-hidden>{t.icon}</span>
               {t.label}
-              <span className="ms-badge">{t.badge}</span>
+              {t.key === 'workspace' && wsUnread > 0 ? (
+                <span
+                  className={`ms-unread ms-bell${mode !== 'workspace' ? ' ringing' : ''}`}
+                  title={`${wsUnread} tin nhắn mới`}
+                >
+                  <span className="ms-bell-ico" aria-hidden>🔔</span>
+                  {wsUnread > 99 ? '99+' : wsUnread}
+                </span>
+              ) : (
+                <span className="ms-badge">{t.badge}</span>
+              )}
             </button>
           ))}
 
@@ -205,18 +262,11 @@ export default function Home() {
           </button>
         </div>
 
+        {/* Global bar carries ONLY stable, app-wide controls. Mode-scoped config
+            (e.g. the webhooks connection chip) lives inside its own pane —
+            anything conditional here resizes the header and can push the tab
+            strip (with the Workspace bell) out of view. */}
         <div className="appbar-right">
-          {mode === 'webhooks' && (
-            <button
-              className="chip-btn"
-              onClick={() => setWebhookSettingsOpen(true)}
-              title="Cài đặt kết nối tool-service + realtime socket"
-            >
-              <span className={`kdot ${toolAuthReady ? 'on' : 'off'}`} />
-              <span className="kdot-host">{shortHost(toolBaseUrl)}</span>
-              <span className="cog" aria-hidden>⚙</span>
-            </button>
-          )}
           <ThemeToggle />
         </div>
       </header>
@@ -224,38 +274,58 @@ export default function Home() {
       {/* ── Body: workspaces (mount-and-keep) ───────────────────────── */}
       <div className="body">
         {visited.git && (
-          <main className="workspace" style={{ gridColumn: '1 / -1', display: mode === 'git' ? undefined : 'none' }} aria-hidden={mode !== 'git'}>
+          <main className="workspace" style={paneStyle(mode === 'git')} aria-hidden={mode !== 'git'}>
             <GitWorkspace />
           </main>
         )}
         {visited.redis && (
-          <main className="workspace" style={{ gridColumn: '1 / -1', display: mode === 'redis' ? undefined : 'none' }} aria-hidden={mode !== 'redis'}>
+          <main className="workspace" style={paneStyle(mode === 'redis')} aria-hidden={mode !== 'redis'}>
             <RedisWorkspace />
           </main>
         )}
         {visited.kafka && (
-          <main className="workspace" style={{ gridColumn: '1 / -1', display: mode === 'kafka' ? undefined : 'none' }} aria-hidden={mode !== 'kafka'}>
+          <main className="workspace" style={paneStyle(mode === 'kafka')} aria-hidden={mode !== 'kafka'}>
             <KafkaWorkspace />
           </main>
         )}
         {visited.rabbit && (
-          <main className="workspace" style={{ gridColumn: '1 / -1', display: mode === 'rabbit' ? undefined : 'none' }} aria-hidden={mode !== 'rabbit'}>
+          <main className="workspace" style={paneStyle(mode === 'rabbit')} aria-hidden={mode !== 'rabbit'}>
             <RabbitWorkspace />
           </main>
         )}
         {visited.mongo && (
-          <main className="workspace" style={{ gridColumn: '1 / -1', display: mode === 'mongo' ? undefined : 'none' }} aria-hidden={mode !== 'mongo'}>
+          <main className="workspace" style={paneStyle(mode === 'mongo')} aria-hidden={mode !== 'mongo'}>
             <MongoWorkspace />
           </main>
         )}
         {visited.es && (
-          <main className="workspace" style={{ gridColumn: '1 / -1', display: mode === 'es' ? undefined : 'none' }} aria-hidden={mode !== 'es'}>
+          <main className="workspace" style={paneStyle(mode === 'es')} aria-hidden={mode !== 'es'}>
             <EsWorkspace />
           </main>
         )}
         {visited.pg && (
-          <main className="workspace" style={{ gridColumn: '1 / -1', display: mode === 'pg' ? undefined : 'none' }} aria-hidden={mode !== 'pg'}>
+          <main className="workspace" style={paneStyle(mode === 'pg')} aria-hidden={mode !== 'pg'}>
             <PgWorkspace />
+          </main>
+        )}
+        {visited.office && (
+          <main className="workspace" style={paneStyle(mode === 'office')} aria-hidden={mode !== 'office'}>
+            <OfficeWorkspace />
+          </main>
+        )}
+        {visited.google && (
+          <main className="workspace" style={paneStyle(mode === 'google')} aria-hidden={mode !== 'google'}>
+            <GoogleWorkspace />
+          </main>
+        )}
+        {visited.workspace && (
+          <main className="workspace" style={paneStyle(mode === 'workspace', true)} aria-hidden={mode !== 'workspace'}>
+            <BrowserWorkspace onUnread={setWsUnread} visible={mode === 'workspace'} />
+          </main>
+        )}
+        {visited.automation && (
+          <main className="workspace" style={paneStyle(mode === 'automation')} aria-hidden={mode !== 'automation'}>
+            <AutomationWorkspace />
           </main>
         )}
         {/* Project packs — one mounted workspace per visited pack. */}
@@ -263,7 +333,7 @@ export default function Home() {
           <main
             key={p.id}
             className="workspace"
-            style={{ gridColumn: '1 / -1', display: mode === `pack:${p.id}` ? undefined : 'none' }}
+            style={paneStyle(mode === `pack:${p.id}`)}
             aria-hidden={mode !== `pack:${p.id}`}
           >
             <ApiExplorerWorkspace packId={p.id} />
@@ -271,7 +341,7 @@ export default function Home() {
         ))}
 
         {mode === 'packs' && (
-          <main className="workspace" style={{ gridColumn: '1 / -1' }}>
+          <main className="workspace" style={paneStyle(true)}>
             <PackManager
               packs={packs}
               onChanged={setPacks}
@@ -281,7 +351,7 @@ export default function Home() {
         )}
 
         {mode === 'webhooks' && (
-          <main className="workspace" style={{ gridColumn: '1 / -1' }}>
+          <main className="workspace" style={paneStyle(true)}>
             <WebhookReceiver
               baseUrl={toolBaseUrl}
               onBaseUrl={(u) => setToolConfig({ baseUrl: u })}
@@ -297,17 +367,22 @@ export default function Home() {
               publicBaseUrl={toolPublicBase}
               onPublicBaseUrl={(u) => setToolConfig({ publicBaseUrl: u })}
               settingsOpen={webhookSettingsOpen}
+              onOpenSettings={() => setWebhookSettingsOpen(true)}
               onCloseSettings={() => setWebhookSettingsOpen(false)}
             />
           </main>
         )}
       </div>
 
+      {/* Engine presence: infra watch runner + notification toasts. Lives
+          outside every pane so it keeps working on any tab. */}
+      <AutomationHost />
+
       {/* ── Footer ───────────────────────────────────────────────────── */}
       <footer className="appfoot">
         <span>VHS DevBox · infra toolbox dùng chung cho mọi dự án</span>
         <span className="foot-right">
-          Redis · Kafka · RabbitMQ · MongoDB · Elastic · PostgreSQL · Git · Webhooks
+          Redis · Kafka · RabbitMQ · MongoDB · Elastic · PostgreSQL · Office · Google · Git · Webhooks · Automation
         </span>
       </footer>
     </div>
