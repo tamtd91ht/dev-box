@@ -34,6 +34,12 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         }
       };
 
+      // Reset màn hình client TRƯỚC khi replay — EventSource tự reconnect khi
+      // đứt mạng/HMR, không có reset thì buffer replay vẽ CHỒNG lên nội dung
+      // cũ → chữ đè nhau nhòe nhoẹt.
+      try {
+        controller.enqueue(enc.encode('event: reset\ndata: {}\n\n'));
+      } catch { /* đã đóng */ }
       // Replay những gì phiên đã in ra từ trước.
       if (session.buffer.length) send(session.buffer.join(''));
       if (session.exited) {

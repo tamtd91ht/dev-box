@@ -45,10 +45,20 @@ const DARCULA_THEME = {
 };
 
 /** One live xterm bound to one server session. */
-function XTermView({ id, active, visible }: { id: string; active: boolean; visible: boolean }) {
+function XTermView({
+  id, active, visible, onDead,
+}: {
+  id: string;
+  active: boolean;
+  visible: boolean;
+  /** Phiên server không còn (exit / server restart) — để tab báo ⚠ và chặn gõ vô vọng. */
+  onDead: (id: string) => void;
+}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const onDeadRef = useRef(onDead);
+  onDeadRef.current = onDead;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -68,17 +78,35 @@ function XTermView({ id, active, visible }: { id: string; active: boolean; visib
     termRef.current = term;
     fitRef.current = fit;
 
-    try {
-      fit.fit();
-    } catch { /* host 0×0 khi chưa hiển thị */ }
+    const doFit = () => {
+      try {
+        fit.fit();
+      } catch { /* host 0×0 khi chưa hiển thị */ }
+    };
+    doFit();
+    // Font monospace load xong metric đổi → phải fit lại, không thì cols tính
+    // sai lúc đầu, PTY wrap lệch → dòng chữ vỡ/đè nhau.
+    document.fonts?.ready.then(doFit).catch(() => {});
 
-    // Gõ phím → server. Fire-and-forget: lệnh kế tiếp vẫn theo thứ tự vì cùng
-    // một kết nối HTTP keep-alive, độ trễ local không đáng kể.
-    const dataSub = term.onData((d) => void cTermWrite(id, d).catch(() => {}));
+    let dead = false;
+    const markDead = (msg: string) => {
+      if (dead) return;
+      dead = true;
+      term.write(`\r\n\x1b[31m${msg}\x1b[0m\r\n`);
+      onDeadRef.current(id);
+    };
+
+    // Gõ phím → server. Phiên chết thì báo rõ thay vì nuốt lỗi im lặng.
+    const dataSub = term.onData((d) =>
+      void cTermWrite(id, d).catch(() => markDead('[phiên không còn trên server — mở terminal mới bằng nút ＋]')),
+    );
     const resizeSub = term.onResize(({ cols, rows }) => void cTermResize(id, cols, rows).catch(() => {}));
 
-    // Output stream: SSE, mỗi chunk base64.
+    // Output stream: SSE, mỗi chunk base64. Server gửi event 'reset' trước mỗi
+    // lần replay buffer (kết nối mới/reconnect) → clear màn hình trước khi vẽ
+    // lại, không bao giờ vẽ chồng.
     const es = new EventSource(`/api/code/term/${id}`);
+    es.addEventListener('reset', () => term.reset());
     es.onmessage = (ev) => {
       try {
         const bin = atob(ev.data as string);
@@ -86,15 +114,22 @@ function XTermView({ id, active, visible }: { id: string; active: boolean; visib
         term.write(new TextDecoder().decode(bytes));
       } catch { /* chunk hỏng — bỏ qua */ }
     };
-    es.addEventListener('exit', () => es.close());
-    es.onerror = () => { /* EventSource tự reconnect; buffer replay đảm bảo không mất nội dung */ };
+    es.addEventListener('exit', () => {
+      es.close();
+      markDead('[shell đã thoát — mở terminal mới bằng nút ＋]');
+    });
+    es.onerror = () => {
+      // CLOSED = server trả 404/403 (phiên mất sau khi dev server restart) —
+      // EventSource sẽ KHÔNG tự reconnect nữa. CONNECTING = đứt tạm, cứ để nó thử lại.
+      if (es.readyState === EventSource.CLOSED) {
+        markDead('[mất kết nối phiên (server khởi động lại?) — mở terminal mới bằng nút ＋]');
+      }
+    };
 
     // Fit theo kích thước thật của host.
     const ro = new ResizeObserver(() => {
       if (host.clientWidth < 40 || host.clientHeight < 40) return;
-      try {
-        fit.fit();
-      } catch { /* ignore */ }
+      doFit();
     });
     ro.observe(host);
 
@@ -119,7 +154,14 @@ function XTermView({ id, active, visible }: { id: string; active: boolean; visib
     return () => clearTimeout(t);
   }, [active, visible]);
 
-  return <div className="cs-xterm" ref={hostRef} style={{ display: active ? 'block' : 'none' }} />;
+  return (
+    <div
+      className="cs-xterm"
+      ref={hostRef}
+      style={{ display: active ? 'block' : 'none' }}
+      onClick={() => termRef.current?.focus()}
+    />
+  );
 }
 
 export default function TerminalPane({
@@ -127,7 +169,12 @@ export default function TerminalPane({
 }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [deadIds, setDeadIds] = useState<Set<string>>(new Set());
   const seq = useRef(1);
+
+  const markDead = useCallback((id: string) => {
+    setDeadIds((s) => (s.has(id) ? s : new Set(s).add(id)));
+  }, []);
 
   const create = useCallback(async (shell: TermTab['shell'], cwd = '') => {
     setCreating(true);
@@ -159,6 +206,24 @@ export default function TerminalPane({
     if (activeId === t.id) onActive(left.length ? left[left.length - 1].id : null);
   };
 
+  /** Đóng tab chết + mở phiên mới cùng shell trong MỘT thao tác (tránh 2 lần
+   *  setTabs với closure cũ đè nhau). */
+  const relaunch = async (t: TermTab) => {
+    setCreating(true);
+    setErr(null);
+    await cTermKill(t.id).catch(() => {});
+    try {
+      const { id, pty } = await cTermCreate(projectId, '', t.shell);
+      const label = `${t.shell === 'powershell' ? 'PS' : t.shell} ${seq.current++}`;
+      onTabs([...tabs.filter((x) => x.id !== t.id), { id, label, shell: t.shell, pty }]);
+      onActive(id);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const activePty = tabs.find((t) => t.id === activeId)?.pty;
 
   return (
@@ -166,9 +231,13 @@ export default function TerminalPane({
       <div className="cs-term-bar">
         <span className="cs-term-title" aria-hidden>⌨ Terminal</span>
         {tabs.map((t) => (
-          <span key={t.id} className={`cs-term-tab${t.id === activeId ? ' on' : ''}`}>
-            <button className="cs-term-tab-main" onClick={() => onActive(t.id)} title={t.pty ? 'PTY (ConPTY) — TUI OK' : 'pipes fallback'}>
-              {t.label}
+          <span key={t.id} className={`cs-term-tab${t.id === activeId ? ' on' : ''}${deadIds.has(t.id) ? ' dead' : ''}`}>
+            <button
+              className="cs-term-tab-main"
+              onClick={() => onActive(t.id)}
+              title={deadIds.has(t.id) ? 'Phiên đã chết — đóng rồi mở lại' : t.pty ? 'PTY (ConPTY) — TUI OK' : 'pipes fallback'}
+            >
+              {deadIds.has(t.id) && <span aria-hidden>⚠ </span>}{t.label}
             </button>
             <button className="cs-term-tab-x" title="Đóng phiên" onClick={() => void close(t)}>✕</button>
           </span>
@@ -185,8 +254,22 @@ export default function TerminalPane({
             Bấm ＋ để mở PowerShell tại gốc project — chạy <code>mvn</code>/<code>gradle</code>/<code>git</code>… hay cả <code>claude</code> (Claude Code) ngay tại đây.
           </div>
         )}
+        {activeId && deadIds.has(activeId) && (
+          <div className="cs-term-deadbar">
+            Phiên này đã chết (shell thoát hoặc dev server khởi động lại).
+            <button
+              disabled={creating}
+              onClick={() => {
+                const t = tabs.find((x) => x.id === activeId);
+                if (t) void relaunch(t);
+              }}
+            >
+              ⟳ Mở lại {tabs.find((x) => x.id === activeId)?.shell === 'bash' ? 'Git Bash' : 'PowerShell'}
+            </button>
+          </div>
+        )}
         {tabs.map((t) => (
-          <XTermView key={t.id} id={t.id} active={t.id === activeId} visible={visible} />
+          <XTermView key={t.id} id={t.id} active={t.id === activeId} visible={visible} onDead={markDead} />
         ))}
       </div>
     </div>
