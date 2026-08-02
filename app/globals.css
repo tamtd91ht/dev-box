@@ -2816,6 +2816,40 @@ pre.kafka-drawer-body {
 
 .sheet-cell { cursor: cell; }
 .sheet-cell-dirty { background: color-mix(in srgb, var(--warn) 14%, transparent) !important; }
+
+/* Ô đang chọn — viền đậm kiểu Excel (inset để không xô layout). */
+.sheet-cell.selc {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.sheet-grid thead th.on {
+  background: color-mix(in srgb, var(--accent) 20%, var(--bg-1));
+  color: var(--accent);
+}
+/* Container lưới nhận focus để bắt phím — không cần viền focus mặc định. */
+.sheet-scroll:focus { outline: none; }
+.sheet-scroll:focus-visible { outline: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); }
+
+/* Name box + thanh giá trị (ƒx) + nút thao tác dòng/cột */
+.sheet-fxbar {
+  flex: none; display: flex; align-items: center; gap: 6px;
+  padding: 4px 2px;
+}
+.sheet-namebox {
+  min-width: 56px; text-align: center; font-family: var(--mono); font-size: 12.5px;
+  font-weight: 700; color: var(--accent);
+  border: 1px solid var(--glass-brd); border-radius: 8px; padding: 5px 8px;
+  background: var(--glass);
+}
+.sheet-fx-ico { color: var(--muted); font-size: 12px; font-style: italic; }
+.sheet-fx-input {
+  flex: 1; min-width: 120px;
+  background: var(--glass); color: var(--text);
+  border: 1px solid var(--glass-brd); border-radius: 8px;
+  padding: 5px 10px; font-size: 12.5px; font-family: var(--mono); outline: none;
+}
+.sheet-fx-input:focus { border-color: var(--accent); }
+.sheet-fxbar-sep { width: 1px; height: 22px; background: var(--glass-brd); margin: 0 4px; }
 .sheet-cell input {
   width: 100%; min-width: 80px; border: 1px solid var(--accent); border-radius: 4px;
   background: var(--bg-1, var(--bg)); color: var(--text);

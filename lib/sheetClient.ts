@@ -259,6 +259,12 @@ function sanitizeOps(raw: unknown): SheetOp[] {
   if (!Array.isArray(raw)) throw new Error('ops phải là mảng.');
   return raw.map((o): SheetOp => {
     const op = (o ?? {}) as Record<string, unknown>;
+    // Col ops không có r — validate riêng từng nhánh.
+    if (op.op === 'insertCol' || op.op === 'deleteCol') {
+      const c = Number(op.c);
+      if (!Number.isInteger(c) || c < 1 || c > 16_384) throw new Error(`op ${op.op} có c không hợp lệ: ${op.c}`);
+      return { op: op.op, c };
+    }
     const r = Number(op.r);
     if (!Number.isInteger(r) || r < 1 || r > 1_048_576) throw new Error(`op có r không hợp lệ: ${op.r}`);
     if (op.op === 'set') {
@@ -304,8 +310,16 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
         row[op.c - 1] = op.value; // CSV cells are text as-is, no coercion
       } else if (op.op === 'insertRow') {
         doc.grid.splice(Math.min(op.r - 1, doc.grid.length), 0, []);
-      } else {
+      } else if (op.op === 'deleteRow') {
         doc.grid.splice(op.r - 1, 1);
+      } else if (op.op === 'insertCol') {
+        for (const row of doc.grid) {
+          if (row.length >= op.c) row.splice(op.c - 1, 0, '');
+        }
+      } else {
+        for (const row of doc.grid) {
+          if (row.length >= op.c) row.splice(op.c - 1, 1);
+        }
       }
     }
     outBuf = encodeCsv(doc);
@@ -323,8 +337,13 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
           // and merged ranges are NOT rewritten/moved (verified: a merge can be
           // dropped when rows shift) — the UI warns before saving row ops.
           ws.insertRow(op.r, []);
-        } else {
+        } else if (op.op === 'deleteRow') {
           ws.spliceRows(op.r, 1);
+        } else if (op.op === 'insertCol') {
+          // Same caveat as row ops: formulas/merges are not shifted (ExcelJS).
+          ws.spliceColumns(op.c, 0, []);
+        } else {
+          ws.spliceColumns(op.c, 1);
         }
       }
     }
@@ -337,7 +356,9 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
     const set = s.ops.filter((o) => o.op === 'set').length;
     const ins = s.ops.filter((o) => o.op === 'insertRow').length;
     const del = s.ops.filter((o) => o.op === 'deleteRow').length;
-    return `${s.name}(set=${set},ins=${ins},del=${del})`;
+    const insC = s.ops.filter((o) => o.op === 'insertCol').length;
+    const delC = s.ops.filter((o) => o.op === 'deleteCol').length;
+    return `${s.name}(set=${set},insRow=${ins},delRow=${del},insCol=${insC},delCol=${delC})`;
   }).join(' ');
   // Audit line → server stdout (same convention as PG_AUDIT / MONGO_AUDIT).
   // eslint-disable-next-line no-console

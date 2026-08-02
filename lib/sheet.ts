@@ -43,7 +43,9 @@ export interface SheetOpenResult {
 export type SheetOp =
   | { op: 'set'; r: number; c: number; value: string; hadFormula?: boolean }
   | { op: 'insertRow'; r: number }
-  | { op: 'deleteRow'; r: number };
+  | { op: 'deleteRow'; r: number }
+  | { op: 'insertCol'; c: number }
+  | { op: 'deleteCol'; c: number };
 
 export interface SheetSaveResult {
   backupPath: string;

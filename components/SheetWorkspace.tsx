@@ -1,15 +1,18 @@
 'use client';
 
 // Sheet editor (Office tab) — Excel (.xlsx) / CSV viewer-editor, local dev
-// only (server gates on OFFICE_TOOL_ENABLED). Pick a file with the shared
-// FolderPicker (file mode), view it as a grid, edit cells / add / delete rows,
-// then save.
+// only (server gates on OFFICE_TOOL_ENABLED).
 //
-// Editing model: the grid is a local working copy + an OP LOG per sheet
-// (set / insertRow / deleteRow, 1-based). Save ships the ops; the server
-// re-reads the file and replays them, so untouched cells keep styles and
-// formulas. Save = the ONLY write, behind OFFICE_ALLOW_WRITE (server) + a
-// confirm modal here, and always backs up to `<file>.bak` first.
+// GRID KIỂU EXCEL: lưới luôn đệm sẵn ô trống quanh vùng dữ liệu (file mới =
+// lưới trống 12 cột × 30 dòng, tự nở khi đi tới mép) — click ô nào gõ ô đó,
+// KHÔNG phải "thêm dòng" từng dòng nữa. Điều hướng bàn phím như Excel: mũi
+// tên/Tab/Enter di chuyển, gõ chữ là sửa luôn, F2 sửa tại chỗ, Delete xóa nội
+// dung. Name box (B7) + thanh giá trị phía trên. Thêm/xóa cả DÒNG lẫn CỘT.
+//
+// Editing model giữ nguyên: working copy + OP LOG per sheet (set / insertRow /
+// deleteRow / insertCol / deleteCol, 1-based). Save ships the ops; server
+// re-reads file rồi replay — ô không đụng giữ nguyên style/công thức. Save
+// luôn backup `<file>.bak` trước, gated bởi OFFICE_ALLOW_WRITE.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import FolderPicker from './FolderPicker';
@@ -29,6 +32,12 @@ import {
 
 const RECENT_KEY = 'sheet.recent';
 const RENDER_STEP = 500; // rows rendered at a time (the DOM, not the data, is the bottleneck)
+const MIN_COLS = 12;     // lưới trống tối thiểu — như mở Excel mới
+const MIN_ROWS = 30;
+const PAD_COLS = 4;      // ô trống đệm quanh vùng dữ liệu
+const PAD_ROWS = 12;
+
+const EMPTY_CELL: WireCell = { v: '', t: 's' };
 
 function loadRecent(): string[] {
   try {
@@ -46,7 +55,12 @@ function saveRecent(list: string[]) {
   } catch { /* quota/private mode — recents are a nicety */ }
 }
 
-interface EditPos { r: number; c: number; } // 1-based
+interface Pos { r: number; c: number } // 1-based
+
+interface Editing extends Pos {
+  /** Ký tự vừa gõ để bắt đầu sửa (thay nội dung cũ, kiểu Excel). */
+  seed?: string;
+}
 
 /** Folder part of an absolute path (for pre-filling the create-new dialog). */
 function dirOf(p: string): string {
@@ -64,9 +78,14 @@ export default function SheetWorkspace() {
   const [ops, setOps] = useState<SheetOp[][]>([]);
   const [active, setActive] = useState(0);
 
-  const [selRow, setSelRow] = useState<number | null>(null);
-  const [editing, setEditing] = useState<EditPos | null>(null);
+  const [sel, setSel] = useState<Pos | null>(null);
+  const [editing, setEditing] = useState<Editing | null>(null);
   const [rowLimit, setRowLimit] = useState(RENDER_STEP);
+  /** Lưới nở thêm khi đi tới mép (giữ cảm giác "vô tận" của Excel). */
+  const [padR, setPadR] = useState(0);
+  const [padC, setPadC] = useState(0);
+
+  const gridRef = useRef<HTMLDivElement | null>(null);
 
   const [recent, setRecent] = useState<string[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -96,15 +115,20 @@ export default function SheetWorkspace() {
 
   const dirtyCount = ops.reduce((n, o) => n + o.length, 0);
 
+  const resetView = useCallback(() => {
+    setSel(null); setEditing(null); setRowLimit(RENDER_STEP); setPadR(0); setPadC(0);
+  }, []);
+
   const applyOpen = useCallback((res: SheetOpenResult) => {
     setFile(res);
     setGrids(res.sheets.map((s) => s.rows.map((row) => row.slice())));
     setOps(res.sheets.map(() => []));
-    setActive(0); setSelRow(null); setEditing(null); setRowLimit(RENDER_STEP);
+    setActive(0);
+    resetView();
     setPickerOpen(false);
     const list = [res.path, ...loadRecent().filter((x) => x !== res.path)];
     saveRecent(list); setRecent(list.slice(0, 10));
-  }, []);
+  }, [resetView]);
 
   const openPath = useCallback(async (p: string) => {
     setBusy(true); setErr(null);
@@ -137,8 +161,9 @@ export default function SheetWorkspace() {
   }, [dirtyCount]);
 
   const switchSheet = useCallback((i: number) => {
-    setActive(i); setSelRow(null); setEditing(null); setRowLimit(RENDER_STEP);
-  }, []);
+    setActive(i);
+    resetView();
+  }, [resetView]);
 
   const reload = useCallback(() => {
     if (!file) return;
@@ -146,53 +171,95 @@ export default function SheetWorkspace() {
     void openPath(file.path);
   }, [file, dirtyCount, openPath]);
 
+  // ── Grid dimensions (data extent + padding = "lưới Excel") ─────────────────
+
+  const grid = grids[active] ?? [];
+  const usedRows = grid.length;
+  const usedCols = grid.reduce((m, row) => Math.max(m, row.length), 0);
+  const dispCols = Math.max(MIN_COLS, usedCols + PAD_COLS, padC);
+  const dispRows = Math.max(MIN_ROWS, usedRows + PAD_ROWS, padR);
+  const shownRows = Math.min(dispRows, rowLimit);
+
+  const cellAt = useCallback((r: number, c: number): WireCell => grid[r - 1]?.[c - 1] ?? EMPTY_CELL, [grid]);
+
   // ── Edit ops (all r/c are 1-based, matching what the server replays) ────────
 
   const commitEdit = useCallback((r: number, c: number, value: string) => {
     setEditing(null);
-    const grid = grids[active];
-    const cell = grid?.[r - 1]?.[c - 1];
-    if (!cell || cell.v === value) return; // no-op edit
+    const cur = grids[active]?.[r - 1]?.[c - 1];
+    if ((cur?.v ?? '') === value) return; // no-op edit (kể cả ô đệm để trống)
     setGrids((gs) => gs.map((g, i) => {
       if (i !== active) return g;
       const ng = g.slice();
+      // Nở working copy tới đúng ô (r,c) — gõ vào vùng đệm là hợp lệ.
+      while (ng.length < r) ng.push([]);
       const row = ng[r - 1].slice();
+      while (row.length < c) row.push({ ...EMPTY_CELL });
       row[c - 1] = { v: value, t: 's', d: true };
       ng[r - 1] = row;
       return ng;
     }));
     setOps((os) => os.map((o, i) => (
-      i === active ? [...o, { op: 'set', r, c, value, ...(cell.t === 'f' ? { hadFormula: true } : {}) }] : o
+      i === active ? [...o, { op: 'set', r, c, value, ...(cur?.t === 'f' ? { hadFormula: true } : {}) }] : o
     )));
   }, [grids, active]);
 
-  const colCount = Math.max(1, grids[active]?.[0]?.length ?? 0);
-
-  const insertRow = useCallback((at: number) => {
-    const empty: WireCell[] = Array.from({ length: colCount }, () => ({ v: '', t: 's' as const, d: true }));
+  const insertRowAt = useCallback((at: number) => {
     setGrids((gs) => gs.map((g, i) => {
       if (i !== active) return g;
       const ng = g.slice();
-      ng.splice(Math.min(at - 1, ng.length), 0, empty);
+      ng.splice(Math.min(at - 1, ng.length), 0, []);
       return ng;
     }));
     setOps((os) => os.map((o, i) => (i === active ? [...o, { op: 'insertRow', r: at }] : o)));
-    setSelRow(at); setEditing(null);
-    setRowLimit((l) => (at > l ? at : l));
-  }, [active, colCount]);
+    setSel({ r: at, c: sel?.c ?? 1 });
+    setEditing(null);
+    setRowLimit((l) => (at > l ? at + RENDER_STEP : l));
+  }, [active, sel]);
 
-  const deleteRow = useCallback(() => {
-    if (selRow === null) return;
-    const at = selRow;
+  const deleteRowAt = useCallback((at: number) => {
+    const row = grid[at - 1];
+    if (row?.some((c) => c.v !== '') && !window.confirm(`Xóa dòng ${at} (đang có dữ liệu)?`)) return;
     setGrids((gs) => gs.map((g, i) => {
       if (i !== active) return g;
       const ng = g.slice();
-      ng.splice(at - 1, 1);
+      if (at - 1 < ng.length) ng.splice(at - 1, 1);
       return ng;
     }));
     setOps((os) => os.map((o, i) => (i === active ? [...o, { op: 'deleteRow', r: at }] : o)));
-    setSelRow(null); setEditing(null);
-  }, [active, selRow]);
+    setEditing(null);
+  }, [active, grid]);
+
+  const insertColAt = useCallback((at: number) => {
+    setGrids((gs) => gs.map((g, i) => {
+      if (i !== active) return g;
+      return g.map((row) => {
+        if (row.length < at) return row; // dòng ngắn: cột ảo phía sau tự dịch
+        const nr = row.slice();
+        nr.splice(at - 1, 0, { ...EMPTY_CELL });
+        return nr;
+      });
+    }));
+    setOps((os) => os.map((o, i) => (i === active ? [...o, { op: 'insertCol', c: at }] : o)));
+    setSel({ r: sel?.r ?? 1, c: at });
+    setEditing(null);
+  }, [active, sel]);
+
+  const deleteColAt = useCallback((at: number) => {
+    const hasData = grid.some((row) => (row[at - 1]?.v ?? '') !== '');
+    if (hasData && !window.confirm(`Xóa cột ${colLetter(at - 1)} (đang có dữ liệu)?`)) return;
+    setGrids((gs) => gs.map((g, i) => {
+      if (i !== active) return g;
+      return g.map((row) => {
+        if (row.length < at) return row;
+        const nr = row.slice();
+        nr.splice(at - 1, 1);
+        return nr;
+      });
+    }));
+    setOps((os) => os.map((o, i) => (i === active ? [...o, { op: 'deleteCol', c: at }] : o)));
+    setEditing(null);
+  }, [active, grid]);
 
   const doSave = useCallback(async () => {
     if (!file) return;
@@ -217,6 +284,58 @@ export default function SheetWorkspace() {
     }
   }, [file, ops, flash]);
 
+  // ── Selection / keyboard (Excel-style) ──────────────────────────────────────
+
+  const moveSel = useCallback((dr: number, dc: number) => {
+    setSel((s) => {
+      const r = Math.max(1, (s?.r ?? 1) + dr);
+      const c = Math.max(1, (s?.c ?? 1) + dc);
+      // Đi tới mép → lưới nở thêm (cảm giác lưới vô tận của Excel).
+      if (r >= dispRows - 1) setPadR(r + PAD_ROWS);
+      if (c >= dispCols - 1) setPadC(c + PAD_COLS);
+      if (r > rowLimit - 3) setRowLimit(r + RENDER_STEP);
+      return { r, c };
+    });
+  }, [dispRows, dispCols, rowLimit]);
+
+  const onGridKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (editing || !sel) return;
+    const k = e.key;
+    if (k === 'ArrowDown') { e.preventDefault(); moveSel(1, 0); }
+    else if (k === 'ArrowUp') { e.preventDefault(); moveSel(-1, 0); }
+    else if (k === 'ArrowRight') { e.preventDefault(); moveSel(0, 1); }
+    else if (k === 'ArrowLeft') { e.preventDefault(); moveSel(0, -1); }
+    else if (k === 'Tab') { e.preventDefault(); moveSel(0, e.shiftKey ? -1 : 1); }
+    else if (k === 'Enter' || k === 'F2') { e.preventDefault(); setEditing({ ...sel }); }
+    else if (k === 'Delete' || k === 'Backspace') {
+      e.preventDefault();
+      if (cellAt(sel.r, sel.c).v !== '') commitEdit(sel.r, sel.c, '');
+    }
+    else if (k === 'Home' && e.ctrlKey) { e.preventDefault(); setSel({ r: 1, c: 1 }); }
+    else if (k === 'PageDown') { e.preventDefault(); moveSel(20, 0); }
+    else if (k === 'PageUp') { e.preventDefault(); moveSel(-20, 0); }
+    else if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Gõ chữ/số là sửa luôn, thay nội dung cũ — đúng thói quen Excel.
+      e.preventDefault();
+      setEditing({ ...sel, seed: k });
+    }
+  }, [editing, sel, moveSel, cellAt, commitEdit]);
+
+  // Giữ ô chọn trong khung nhìn.
+  useEffect(() => {
+    if (!sel) return;
+    gridRef.current?.querySelector('.sheet-cell.selc')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [sel]);
+
+  /** Commit từ ô đang sửa rồi di chuyển (Enter ↓ / Tab → / mũi tên). */
+  const commitAndMove = useCallback((value: string, dr: number, dc: number) => {
+    if (!editing) return;
+    commitEdit(editing.r, editing.c, value);
+    setSel({ r: editing.r, c: editing.c });
+    if (dr !== 0 || dc !== 0) moveSel(dr, dc);
+    gridRef.current?.focus();
+  }, [editing, commitEdit, moveSel]);
+
   // ── Gate / loading states ───────────────────────────────────────────────────
 
   if (enabled === false) {
@@ -238,7 +357,6 @@ export default function SheetWorkspace() {
   }
 
   const sheet = file?.sheets[active];
-  const grid = grids[active] ?? [];
   const allowWrite = flags?.allowWrite === true;
 
   // ── Empty state: recents + Browse ───────────────────────────────────────────
@@ -250,13 +368,13 @@ export default function SheetWorkspace() {
           <div className="office-hero-ico" aria-hidden>▦</div>
           <div className="office-hero-title">Excel / CSV Editor</div>
           <p className="office-hero-sub">
-            Mở file <code>.xlsx</code> hoặc <code>.csv</code> trên máy — xem dạng bảng,
-            sửa trực tiếp rồi lưu ghi đè an toàn.
+            Mở file <code>.xlsx</code> hoặc <code>.csv</code> trên máy — lưới ô như Excel,
+            click ô nào gõ ô đó, điều hướng bằng phím, rồi lưu ghi đè an toàn.
           </p>
           <div className="office-hero-points">
-            <span className="office-point">✎ Sửa ô ngay trên lưới</span>
-            <span className="office-point">▦ Nhiều sheet</span>
-            <span className="office-point">➕ Thêm / xóa dòng</span>
+            <span className="office-point">▦ Lưới ô kiểu Excel</span>
+            <span className="office-point">⌨ Mũi tên / Tab / Enter</span>
+            <span className="office-point">➕ Thêm dòng &amp; cột</span>
             <span className="office-point">🛟 Tự backup .bak khi lưu</span>
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
@@ -321,9 +439,9 @@ export default function SheetWorkspace() {
 
   // ── Main editor ─────────────────────────────────────────────────────────────
 
-  const activeOps = ops[active] ?? [];
-  const totalRowOps = ops.flat().filter((o) => o.op !== 'set').length;
+  const totalRowColOps = ops.flat().filter((o) => o.op !== 'set').length;
   const totalFormulaHits = ops.flat().filter((o) => o.op === 'set' && o.hadFormula).length;
+  const selCell = sel ? cellAt(sel.r, sel.c) : null;
 
   return (
     <div className="panel sheet-panel">
@@ -346,18 +464,6 @@ export default function SheetWorkspace() {
         <span style={{ flex: 1 }} />
         {dirtyCount > 0 && <span className="badge sheet-dirty-badge">● {dirtyCount} thay đổi</span>}
         <button
-          className="ghost sm"
-          onClick={() => selRow !== null ? insertRow(selRow + 1) : insertRow(grid.length + 1)}
-          disabled={busy}
-          title={selRow !== null ? `Thêm dòng mới dưới dòng ${selRow}` : 'Thêm dòng mới ở cuối'}
-        >
-          ＋ Thêm dòng
-        </button>
-        <button className="ghost sm" onClick={deleteRow} disabled={busy || selRow === null}
-          title={selRow === null ? 'Bấm vào số dòng bên trái để chọn dòng cần xóa' : `Xóa dòng ${selRow}`}>
-          ✕ Xóa dòng
-        </button>
-        <button
           className="sm"
           onClick={() => setSaveOpen(true)}
           disabled={busy || dirtyCount === 0 || !allowWrite}
@@ -367,6 +473,40 @@ export default function SheetWorkspace() {
         >
           💾 Lưu (ghi đè)
         </button>
+      </div>
+
+      {/* ── Name box + thanh giá trị + thao tác dòng/cột (kiểu Excel) ── */}
+      <div className="sheet-fxbar">
+        <span className="sheet-namebox" title="Ô đang chọn">
+          {sel ? `${colLetter(sel.c - 1)}${sel.r}` : '—'}
+        </span>
+        <span className="sheet-fx-ico" aria-hidden>ƒx</span>
+        <input
+          className="sheet-fx-input"
+          placeholder={sel ? 'Nhập giá trị cho ô đang chọn…' : 'Chọn một ô để sửa'}
+          disabled={!sel}
+          // key đổi theo ô chọn → input tự nhận defaultValue của ô mới.
+          key={sel ? `${active}:${sel.r}:${sel.c}:${selCell?.v}` : 'none'}
+          defaultValue={selCell?.t === 'f' ? `= ${selCell.f ?? ''} → ${selCell.v}` : selCell?.v ?? ''}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && sel) {
+              commitEdit(sel.r, sel.c, e.currentTarget.value);
+              gridRef.current?.focus();
+            } else if (e.key === 'Escape') {
+              gridRef.current?.focus();
+            }
+          }}
+          title={selCell?.t === 'f' ? 'Ô công thức — sửa sẽ ghi đè công thức bằng giá trị mới' : undefined}
+        />
+        <span className="sheet-fxbar-sep" aria-hidden />
+        <button className="ghost sm" disabled={busy || !sel} onClick={() => sel && insertRowAt(sel.r + 1)}
+          title={sel ? `Chèn dòng mới dưới dòng ${sel.r}` : 'Chọn một ô trước'}>＋ Dòng</button>
+        <button className="ghost sm" disabled={busy || !sel || (sel?.r ?? 0) > usedRows} onClick={() => sel && deleteRowAt(sel.r)}
+          title={sel ? `Xóa dòng ${sel.r}` : 'Chọn một ô trước'}>✕ Dòng</button>
+        <button className="ghost sm" disabled={busy || !sel} onClick={() => sel && insertColAt(sel.c + 1)}
+          title={sel ? `Chèn cột mới bên phải cột ${colLetter(sel.c - 1)}` : 'Chọn một ô trước'}>＋ Cột</button>
+        <button className="ghost sm" disabled={busy || !sel || (sel?.c ?? 0) > usedCols} onClick={() => sel && deleteColAt(sel.c)}
+          title={sel ? `Xóa cột ${colLetter(sel.c - 1)}` : 'Chọn một ô trước'}>✕ Cột</button>
       </div>
 
       {file.sheets.length > 1 && (
@@ -382,58 +522,70 @@ export default function SheetWorkspace() {
 
       {sheet?.truncated && (
         <div className="sheet-banner">
-          ⚠ Hiển thị {Math.min(sheet.rowCount, grid.length).toLocaleString('vi')} / {sheet.rowCount.toLocaleString('vi')} dòng
-          {sheet.colCount > colCount ? ` và ${colCount} / ${sheet.colCount} cột` : ''} —
+          ⚠ Hiển thị {Math.min(sheet.rowCount, usedRows).toLocaleString('vi')} / {sheet.rowCount.toLocaleString('vi')} dòng
+          {sheet.colCount > usedCols ? ` và ${usedCols} / ${sheet.colCount} cột` : ''} —
           sửa trong vùng hiển thị vẫn an toàn cho phần còn lại của file.
         </div>
       )}
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '6px 0' }}>{err}</pre>}
       {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '6px 0' }}>{notice}</div>}
 
-      <div className="sheet-scroll">
+      <div className="sheet-scroll" ref={gridRef} tabIndex={0} onKeyDown={onGridKeyDown}>
         <table className="sheet-table sheet-grid">
           <thead>
             <tr>
               <th className="sheet-rownum-h">#</th>
-              {Array.from({ length: colCount }, (_, c) => <th key={c}>{colLetter(c)}</th>)}
+              {Array.from({ length: dispCols }, (_, c) => (
+                <th key={c} className={sel?.c === c + 1 ? 'on' : undefined}>{colLetter(c)}</th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {grid.slice(0, rowLimit).map((row, ri) => {
+            {Array.from({ length: shownRows }, (_, ri) => {
               const r = ri + 1;
               return (
-                <tr key={r} className={selRow === r ? 'sel' : undefined}>
+                <tr key={r}>
                   <th
-                    className={`sheet-rownum${selRow === r ? ' sel' : ''}`}
-                    onClick={() => setSelRow(selRow === r ? null : r)}
-                    title="Bấm để chọn / bỏ chọn dòng"
+                    className={`sheet-rownum${sel?.r === r ? ' sel' : ''}`}
+                    onClick={() => { setSel({ r, c: 1 }); gridRef.current?.focus(); }}
+                    title={`Chọn dòng ${r}`}
                   >
                     {r}
                   </th>
-                  {row.map((cell, ci) => {
+                  {Array.from({ length: dispCols }, (_, ci) => {
                     const c = ci + 1;
+                    const cell = cellAt(r, c);
+                    const isSel = sel?.r === r && sel?.c === c;
                     const isEditing = editing?.r === r && editing?.c === c;
                     return (
                       <td
                         key={c}
-                        className={`sheet-cell${cell.d ? ' sheet-cell-dirty' : ''}${cell.t === 'n' ? ' num' : ''}`}
-                        onClick={() => { if (!isEditing) setEditing({ r, c }); }}
+                        className={[
+                          'sheet-cell',
+                          cell.d ? 'sheet-cell-dirty' : '',
+                          cell.t === 'n' ? 'num' : '',
+                          isSel ? 'selc' : '',
+                        ].filter(Boolean).join(' ')}
+                        onClick={() => {
+                          if (isEditing) return;
+                          setSel({ r, c });
+                          gridRef.current?.focus();
+                        }}
+                        onDoubleClick={() => { setSel({ r, c }); setEditing({ r, c }); }}
                         title={cell.t === 'f' ? `= ${cell.f}` : undefined}
                       >
                         {isEditing ? (
                           <input
                             autoFocus
-                            defaultValue={cell.v}
-                            onFocus={(e) => e.currentTarget.select()}
+                            defaultValue={editing.seed ?? cell.v}
+                            onFocus={(e) => { if (!editing.seed) e.currentTarget.select(); }}
                             onBlur={(e) => commitEdit(r, c, e.currentTarget.value)}
                             onKeyDown={(e) => {
-                              if (e.key === 'Enter') commitEdit(r, c, e.currentTarget.value);
-                              else if (e.key === 'Escape') setEditing(null);
-                              else if (e.key === 'Tab') {
-                                e.preventDefault();
-                                commitEdit(r, c, e.currentTarget.value);
-                                if (c < colCount) setEditing({ r, c: c + 1 });
-                              }
+                              if (e.key === 'Enter') commitAndMove(e.currentTarget.value, 1, 0);
+                              else if (e.key === 'Tab') { e.preventDefault(); commitAndMove(e.currentTarget.value, 0, e.shiftKey ? -1 : 1); }
+                              else if (e.key === 'ArrowDown') commitAndMove(e.currentTarget.value, 1, 0);
+                              else if (e.key === 'ArrowUp') commitAndMove(e.currentTarget.value, -1, 0);
+                              else if (e.key === 'Escape') { setEditing(null); gridRef.current?.focus(); }
                             }}
                           />
                         ) : (
@@ -450,19 +602,14 @@ export default function SheetWorkspace() {
             })}
           </tbody>
         </table>
-        {grid.length > rowLimit && (
+        {dispRows > rowLimit && (
           <div style={{ padding: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
             <button className="ghost sm" onClick={() => setRowLimit((l) => l + RENDER_STEP)}>
               ↓ Hiện thêm {RENDER_STEP} dòng
             </button>
             <span className="small" style={{ color: 'var(--muted)' }}>
-              đang hiện {rowLimit.toLocaleString('vi')} / {grid.length.toLocaleString('vi')} dòng
+              đang hiện {rowLimit.toLocaleString('vi')} / {dispRows.toLocaleString('vi')} dòng
             </span>
-          </div>
-        )}
-        {grid.length === 0 && (
-          <div className="empty" style={{ padding: 20 }}>
-            <p className="small">Sheet trống — bấm “＋ Thêm dòng” để bắt đầu.</p>
           </div>
         )}
       </div>
@@ -508,15 +655,14 @@ export default function SheetWorkspace() {
               {file.sheets.map((s, i) => {
                 const so = ops[i] ?? [];
                 if (so.length === 0) return null;
-                const set = so.filter((o) => o.op === 'set').length;
-                const ins = so.filter((o) => o.op === 'insertRow').length;
-                const del = so.filter((o) => o.op === 'deleteRow').length;
-                return (
-                  <li key={s.name}>
-                    <b>{s.name}</b>: {set > 0 && `${set} ô sửa`}{set > 0 && (ins > 0 || del > 0) && ' · '}
-                    {ins > 0 && `${ins} dòng thêm`}{ins > 0 && del > 0 && ' · '}{del > 0 && `${del} dòng xóa`}
-                  </li>
-                );
+                const parts: string[] = [];
+                const n = (k: SheetOp['op']) => so.filter((o) => o.op === k).length;
+                if (n('set') > 0) parts.push(`${n('set')} ô sửa`);
+                if (n('insertRow') > 0) parts.push(`${n('insertRow')} dòng thêm`);
+                if (n('deleteRow') > 0) parts.push(`${n('deleteRow')} dòng xóa`);
+                if (n('insertCol') > 0) parts.push(`${n('insertCol')} cột thêm`);
+                if (n('deleteCol') > 0) parts.push(`${n('deleteCol')} cột xóa`);
+                return <li key={s.name}><b>{s.name}</b>: {parts.join(' · ')}</li>;
               })}
             </ul>
 
@@ -528,9 +674,9 @@ export default function SheetWorkspace() {
             {totalFormulaHits > 0 && (
               <div className="sheet-save-warn">⚠ {totalFormulaHits} ô có công thức sẽ bị ghi đè bằng giá trị bạn nhập.</div>
             )}
-            {totalRowOps > 0 && file.kind === 'xlsx' && (
+            {totalRowColOps > 0 && file.kind === 'xlsx' && (
               <div className="sheet-save-warn">
-                ⚠ Có thêm/xóa dòng: công thức tham chiếu tới các dòng bị dịch chuyển và các vùng merge cell
+                ⚠ Có thêm/xóa dòng hoặc cột: công thức tham chiếu tới vùng bị dịch chuyển và các vùng merge cell
                 sẽ KHÔNG được dịch theo tự động (giới hạn ExcelJS) — kiểm tra lại file sau khi lưu.
               </div>
             )}
