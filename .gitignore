@@ -60,3 +60,7 @@ bot/.status.json
 dist/
 data/browser/
 electron/dist/
+
+# IDE config + ad-hoc screenshots dropped into the repo root
+.idea/
+*.png
