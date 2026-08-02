@@ -17,7 +17,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import FileTree from './code/FileTree';
 import TerminalPane, { type TermTab } from './code/TerminalPane';
-import type { OpenFile } from './code/EditorPane';
+import SearchPalette from './code/SearchPalette';
+import type { OpenFile, RevealTarget } from './code/EditorPane';
 import { cProjects, cRead, cWrite, type CodeProject, type TreeEntry } from '@/lib/code';
 
 // Monaco chỉ chạy client — tránh SSR đụng window.
@@ -49,6 +50,11 @@ function ProjectWorkspace({
   const [activeRel, setActiveRel] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Navigation state
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [reveal, setReveal] = useState<RevealTarget | null>(null);
+  const revealSeq = useRef(0);
 
   // Terminal state
   const [termTabs, setTermTabs] = useState<TermTab[]>([]);
@@ -117,6 +123,27 @@ function ProjectWorkspace({
     });
   }, []);
 
+  /** Mở file (fetch nếu chưa mở) rồi nhảy tới dòng — dùng bởi palette,
+   *  Ctrl+Click definition (EditorOpener) và panel Find Usages. */
+  const openAt = useCallback(async (rel: string, line?: number) => {
+    await openFile({ name: rel.split('/').pop() ?? rel, rel, type: 'file' });
+    if (line) setReveal({ rel, line, seq: ++revealSeq.current });
+  }, [openFile]);
+
+  // Ctrl+Shift+N mở Search Everywhere — chỉ khi workspace này đang hiển thị.
+  // (Trong Monaco cũng có binding riêng vì editor nuốt phím khi focus.)
+  useEffect(() => {
+    if (!visible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        setPaletteOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [visible]);
+
   // Kéo thanh chia.
   useEffect(() => {
     const move = (e: MouseEvent) => {
@@ -150,6 +177,9 @@ function ProjectWorkspace({
   return (
     <div className={`cs-ws${visible ? ' on' : ''}`} aria-hidden={!visible}>
       <div className="cs-toolbar">
+        <button className="cs-term-toggle" title="Tìm class / method / file (Ctrl+Shift+N)" onClick={() => setPaletteOpen(true)}>
+          🔍
+        </button>
         <span className="cs-path" title={project.root}>{project.root}</span>
         <span className="cs-path sep" aria-hidden>·</span>
         <span className="cs-path file" title={activeRel ?? ''}>{activeRel ?? ''}</span>
@@ -182,14 +212,26 @@ function ProjectWorkspace({
         />
         <div className="cs-divider v" onMouseDown={startDrag('side')} title="Kéo để đổi cỡ" />
         <EditorPane
+          projectId={project.id}
           files={files}
           activeRel={activeRel}
+          reveal={reveal}
           onSelect={setActiveRel}
           onClose={closeFile}
           onChange={changeFile}
           onSave={(rel) => void saveFile(rel)}
+          onOpenAt={(rel, line) => void openAt(rel, line)}
+          onOpenPalette={() => setPaletteOpen(true)}
         />
       </div>
+
+      {paletteOpen && (
+        <SearchPalette
+          projectId={project.id}
+          onOpen={(rel, line) => void openAt(rel, line)}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
 
       {termOpen && (
         <>

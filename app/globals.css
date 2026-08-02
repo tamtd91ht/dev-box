@@ -3360,6 +3360,69 @@ pre.kafka-drawer-body {
 .cs-ask-actions button.ok { background: #365880; color: #bbd6f5; border-color: #4a88c7; }
 .cs-ask-actions button:hover { filter: brightness(1.15); }
 
+/* ── Search Everywhere palette (Ctrl+Shift+N) ── */
+.cs-pal {
+  margin-top: 48px; width: min(640px, 94%); max-height: 70%;
+  display: flex; flex-direction: column;
+  background: #3c3f41; border: 1px solid #5e6060; border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0,0,0,.6); overflow: hidden;
+}
+.cs-pal-head {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid #515151;
+}
+.cs-pal-input {
+  flex: 1; background: #45494a; color: #fff; border: 1px solid #4a88c7;
+  border-radius: 8px; padding: 8px 10px; font-size: 13.5px; outline: none;
+}
+.cs-pal-list { flex: 1; overflow: auto; padding: 4px 6px 10px; }
+.cs-pal-section {
+  padding: 8px 8px 3px; font-size: 11px; font-weight: 700; letter-spacing: .4px;
+  text-transform: uppercase; color: #808080;
+}
+.cs-pal-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 8px; background: transparent; border: 0; border-radius: 6px;
+  color: #a9b7c6; font-size: 13px; cursor: pointer; text-align: left;
+}
+.cs-pal-row.on { background: #2d5177; color: #fff; }
+.cs-pal-ico { flex: none; width: 18px; text-align: center; color: #ffc66d; }
+.cs-pal-name { flex: none; font-weight: 600; font-family: 'JetBrains Mono', Consolas, monospace; }
+.cs-pal-detail {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #808080; font-size: 11.5px; text-align: right;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+.cs-pal-empty { padding: 18px 12px; color: #808080; font-size: 12.5px; text-align: center; }
+
+/* ── Find Usages panel ── */
+.cs-usages {
+  flex: none; max-height: 40%; display: flex; flex-direction: column;
+  border-top: 2px solid #4a88c7; background: #313335;
+}
+.cs-usages-head {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; font-size: 12.5px; color: #bbbbbb; border-bottom: 1px solid #2b2b2b;
+}
+.cs-usages-list { flex: 1; overflow: auto; padding: 2px 4px 8px; }
+.cs-usage-row {
+  display: flex; align-items: baseline; gap: 10px; width: 100%;
+  padding: 3px 8px; background: transparent; border: 0; border-radius: 5px;
+  cursor: pointer; text-align: left;
+}
+.cs-usage-row:hover { background: #2d5177; }
+.cs-usage-loc {
+  flex: none; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #6897bb; font-size: 12px; font-family: 'JetBrains Mono', Consolas, monospace;
+}
+.cs-usage-prev {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #a9b7c6; font-size: 12px; font-family: 'JetBrains Mono', Consolas, monospace;
+}
+
+/* Dòng đích flash sau khi nhảy tới (reveal). */
+.cs-flash-line { background: rgba(74, 136, 199, .35) !important; transition: background .4s; }
+
 /* ── Editor ── */
 .cs-editor { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #2b2b2b; }
 .cs-tabs {

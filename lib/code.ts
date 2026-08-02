@@ -61,6 +61,48 @@ export const cRename = (projectId: string, rel: string, newName: string) =>
 export const cRemove = (projectId: string, rel: string) =>
   call<{ done: true }>('remove', { projectId, rel });
 
+// ── Search / navigation ─────────────────────────────────────────────────────
+
+export type SymbolKind =
+  | 'class' | 'interface' | 'enum' | 'record' | 'object' | 'trait'
+  | 'method' | 'constant';
+
+export interface SymbolHit {
+  name: string;
+  kind: SymbolKind;
+  rel: string;
+  line: number;
+  sig: string;
+}
+
+export interface TextHit {
+  rel: string;
+  line: number;
+  col: number;
+  preview: string;
+}
+
+export interface NavResult {
+  classes: SymbolHit[];
+  symbols: SymbolHit[];
+  files: { name: string; rel: string }[];
+}
+
+export const cNav = (projectId: string, q: string) => call<NavResult>('nav', { projectId, q });
+export const cUsages = (projectId: string, word: string, startRel?: string) =>
+  call<{ hits: TextHit[]; truncated: boolean; scanned: number }>('usages', { projectId, word, startRel });
+export const cDefs = (projectId: string, word: string) => call<{ defs: SymbolHit[] }>('defs', { projectId, word });
+export const cCompletions = (projectId: string) =>
+  call<{ symbols: { name: string; kind: SymbolKind }[] }>('completions', { projectId });
+
+export function symbolIcon(kind: SymbolKind): string {
+  const map: Record<SymbolKind, string> = {
+    class: 'Ⓒ', interface: 'Ⓘ', enum: 'Ⓔ', record: 'Ⓡ', object: 'Ⓞ', trait: 'Ⓣ',
+    method: 'ⓜ', constant: 'ⓕ',
+  };
+  return map[kind] ?? '◦';
+}
+
 export const cTermCreate = (
   projectId: string,
   rel: string,

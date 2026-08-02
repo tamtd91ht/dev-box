@@ -13,6 +13,11 @@
 //     'termResize' { id, cols, rows }                  → { done }
 //     'termKill'   { id }                              → { done }
 //     'termList'   { projectId? }                      → { sessions }
+//     'nav'        { projectId, q }                    → NavResult                (Search Everywhere: class+symbol+file)
+//     'usages'     { projectId, word, startRel? }      → { hits, truncated, scanned }
+//     'defs'       { projectId, word }                 → { defs: SymbolHit[] }    (index exact → heuristic)
+//     'symbol'     { projectId, word }                 → { symbols }              (exact-name lookup)
+//     'completions'{ projectId }                       → { symbols }              (autocomplete cross-file)
 //
 // Output của terminal stream qua GET /api/code/term/<id> (SSE).
 // Gated by CODE_TOOL_ENABLED — local dev tool, arbitrary shell access by design.
@@ -23,6 +28,9 @@ import {
   listDir, readFileSafe, writeFileSafe, createEntry, renameEntry, deleteEntry, resolveInside,
 } from '@/lib/codeFs';
 import { createSession, getSession, killSession, listSessions, type ShellKind } from '@/lib/termSessions';
+import {
+  searchNav, searchText, findDefs, exactSymbols, completionSymbols, invalidateSearchCache,
+} from '@/lib/codeSearch';
 
 export const runtime = 'nodejs';
 
@@ -61,24 +69,49 @@ export async function POST(req: NextRequest) {
       case 'read':
         result = await readFileSafe(await needRoot(), rel);
         break;
-      case 'write':
-        result = await writeFileSafe(
-          await needRoot(),
-          rel,
-          String(body.content ?? ''),
-          typeof body.mtime === 'number' ? body.mtime : undefined,
-        );
+      case 'write': {
+        const root = await needRoot();
+        result = await writeFileSafe(root, rel, String(body.content ?? ''), typeof body.mtime === 'number' ? body.mtime : undefined);
+        invalidateSearchCache(root);
         break;
-      case 'create':
-        await createEntry(await needRoot(), rel, body.kind === 'dir' ? 'dir' : 'file');
+      }
+      case 'create': {
+        const root = await needRoot();
+        await createEntry(root, rel, body.kind === 'dir' ? 'dir' : 'file');
+        invalidateSearchCache(root);
         result = { done: true };
         break;
-      case 'rename':
-        result = await renameEntry(await needRoot(), rel, String(body.newName ?? ''));
+      }
+      case 'rename': {
+        const root = await needRoot();
+        result = await renameEntry(root, rel, String(body.newName ?? ''));
+        invalidateSearchCache(root);
         break;
-      case 'remove':
-        await deleteEntry(await needRoot(), rel);
+      }
+      case 'remove': {
+        const root = await needRoot();
+        await deleteEntry(root, rel);
+        invalidateSearchCache(root);
         result = { done: true };
+        break;
+      }
+      case 'nav':
+        result = await searchNav(await needRoot(), String(body.q ?? ''));
+        break;
+      case 'usages':
+        result = await searchText(await needRoot(), String(body.word ?? ''), {
+          maxResults: 300,
+          startRel: typeof body.startRel === 'string' ? body.startRel : undefined,
+        });
+        break;
+      case 'defs':
+        result = { defs: await findDefs(await needRoot(), String(body.word ?? '')) };
+        break;
+      case 'symbol':
+        result = { symbols: await exactSymbols(await needRoot(), String(body.word ?? '')) };
+        break;
+      case 'completions':
+        result = { symbols: await completionSymbols(await needRoot()) };
         break;
       case 'termCreate': {
         const root = await needRoot();
