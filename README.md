@@ -15,6 +15,17 @@ cp .env.example .env.local     # bật các tab cần dùng (mặc định TẤT
 npm run dev                    # → http://localhost:3000
 ```
 
+## App desktop (Electron)
+
+```bash
+npm run desktop            # mở app desktop (tự chạy next dev nếu :3000 chưa có gì)
+npm run desktop:install    # Windows: tạo shortcut Desktop + Start Menu — máy mới chạy 1 lần là xong
+```
+
+Shortcut chạy thẳng `electron.exe` của repo (không mở cửa sổ console); log của shell + `next dev`
+xem ngay trong app bằng nút **⌨ Console** ở footer (ẩn mặc định). Sau khi cài, mở app bằng
+double-click icon ngoài Desktop hoặc nhấn nút Windows gõ "VHS DevBox".
+
 ## Nguyên tắc chung của mọi tab
 
 | Nguyên tắc | Cụ thể |
