@@ -96,22 +96,50 @@ function XTermView({
       onDeadRef.current(id);
     };
 
-    // Gõ phím → server. Phiên chết thì báo rõ thay vì nuốt lỗi im lặng.
-    const dataSub = term.onData((d) =>
-      void cTermWrite(id, d).catch(() => markDead('[phiên không còn trên server — mở terminal mới bằng nút ＋]')),
-    );
+    // INPUT: hàng đợi tuần tự — TUYỆT ĐỐI không bắn mỗi phím một POST song
+    // song: fetch không đảm bảo thứ tự đến, escape sequence (mũi tên, F-key)
+    // mà đảo phím là TUI (claude, vim) nhận input rác. Queue còn tự gộp các
+    // phím gõ nhanh thành một request.
+    const pending: string[] = [];
+    let sending = false;
+    const flush = async () => {
+      if (sending || dead) return;
+      sending = true;
+      while (pending.length) {
+        const data = pending.splice(0, pending.length).join('');
+        try {
+          await cTermWrite(id, data);
+        } catch {
+          markDead('[phiên không còn trên server — mở terminal mới bằng nút ＋]');
+          break;
+        }
+      }
+      sending = false;
+    };
+    const dataSub = term.onData((d) => {
+      pending.push(d);
+      void flush();
+    });
     const resizeSub = term.onResize(({ cols, rows }) => void cTermResize(id, cols, rows).catch(() => {}));
 
-    // Output stream: SSE, mỗi chunk base64. Server gửi event 'reset' trước mỗi
-    // lần replay buffer (kết nối mới/reconnect) → clear màn hình trước khi vẽ
-    // lại, không bao giờ vẽ chồng.
+    // OUTPUT: SSE, mỗi chunk base64. Decoder DÙNG CHUNG + {stream:true} để ký
+    // tự UTF-8/ký tự vẽ khung bị cắt đôi giữa 2 chunk vẫn ghép lại đúng —
+    // decoder mới cho mỗi chunk là khung TUI vỡ ngay. Server gửi 'reset' trước
+    // mỗi lần replay buffer → clear màn hình, không vẽ chồng.
+    let decoder = new TextDecoder();
     const es = new EventSource(`/api/code/term/${id}`);
-    es.addEventListener('reset', () => term.reset());
+    es.addEventListener('reset', () => {
+      term.reset();
+      decoder = new TextDecoder(); // bỏ state dở dang của kết nối trước
+      // Đồng bộ lại size PTY ↔ xterm ngay khi (re)connect — TUI khởi động với
+      // size lệch là vẽ sai cột, chữ đè nhau.
+      void cTermResize(id, term.cols, term.rows).catch(() => {});
+    });
     es.onmessage = (ev) => {
       try {
         const bin = atob(ev.data as string);
         const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-        term.write(new TextDecoder().decode(bytes));
+        term.write(decoder.decode(bytes, { stream: true }));
       } catch { /* chunk hỏng — bỏ qua */ }
     };
     es.addEventListener('exit', () => {
