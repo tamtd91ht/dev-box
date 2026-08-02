@@ -2822,6 +2822,11 @@ pre.kafka-drawer-body {
   box-shadow: inset 0 0 0 2px var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
+/* Vùng đang được quét làm THAM CHIẾU trong công thức (point mode). */
+.sheet-cell.inref {
+  box-shadow: inset 0 0 0 2px var(--ok);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
 .sheet-grid thead th.on {
   background: color-mix(in srgb, var(--accent) 20%, var(--bg-1));
   color: var(--accent);

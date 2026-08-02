@@ -88,6 +88,16 @@ export default function SheetWorkspace() {
 
   const gridRef = useRef<HTMLDivElement | null>(null);
 
+  // ── Point mode (chèn tham chiếu bằng chuột khi đang gõ công thức) ──────────
+  // Gõ "=" rồi CLICK ô → chèn "A1"; gõ "+" click ô khác → "=A1+B1"; gõ
+  // "=SUM(" rồi QUÉT chuột qua vùng → "=SUM(A2:D9". Giống hệt Excel.
+  const cellInputRef = useRef<HTMLInputElement | null>(null);
+  const fxInputRef = useRef<HTMLInputElement | null>(null);
+  const pointDragRef = useRef<{ anchor: Pos; input: HTMLInputElement } | null>(null);
+  /** Chặn onClick chọn ô ngay sau một mousedown đã dùng cho point mode. */
+  const pointGuardRef = useRef(false);
+  const [pointRange, setPointRange] = useState<{ r1: number; c1: number; r2: number; c2: number } | null>(null);
+
   const [recent, setRecent] = useState<string[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -200,6 +210,7 @@ export default function SheetWorkspace() {
 
   const commitEdit = useCallback((r: number, c: number, value: string) => {
     setEditing(null);
+    setPointRange(null);
     const cur = grids[active]?.[r - 1]?.[c - 1];
     // So với TEXT SỬA hiện tại: ô công thức là "=f", ô thường là v.
     const curText = cur?.t === 'f' && cur.f ? `=${cur.f}` : cur?.v ?? '';
@@ -356,6 +367,69 @@ export default function SheetWorkspace() {
     gridRef.current?.focus();
   }, [editing, commitEdit, moveSel]);
 
+  // ── Point mode helpers ───────────────────────────────────────────────────
+
+  const refText = useCallback((r: number, c: number) => `${colLetter(c - 1)}${r}`, []);
+
+  /** Tham chiếu (A1 hoặc A1:B5) đứng CUỐI công thức — để replace khi click/quét tiếp. */
+  const REF_TAIL = /(\$?[A-Z]{1,3}\$?\d{1,7})(:\$?[A-Z]{1,3}\$?\d{1,7})?$/;
+
+  /** Input công thức đang focus (in-cell editor hoặc thanh fx), nếu có. */
+  const activeFormulaInput = useCallback((): HTMLInputElement | null => {
+    const el = typeof document !== 'undefined' ? document.activeElement : null;
+    for (const inp of [cellInputRef.current, fxInputRef.current]) {
+      if (inp && el === inp && inp.value.startsWith('=')) return inp;
+    }
+    return null;
+  }, []);
+
+  const placeRef = useCallback((input: HTMLInputElement, text: string) => {
+    const v = input.value;
+    input.value = REF_TAIL.test(v) ? v.replace(REF_TAIL, text) : v + text;
+    const L = input.value.length;
+    input.setSelectionRange(L, L);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** mousedown trên một ô khi đang gõ công thức → chèn ref, GIỮ focus input. */
+  const onCellMouseDown = useCallback((r: number, c: number, e: React.MouseEvent) => {
+    const input = activeFormulaInput();
+    if (!input) return;
+    const v = input.value;
+    // Chỉ chèn khi vị trí đang "chờ tham chiếu": cuối là toán tử/(,=… hoặc là
+    // một ref vừa chèn (click tiếp là ĐỔI ref, như Excel). Ngoài ra — ví dụ
+    // "=A1+B1)" — thì để mặc định: blur → commit → chọn ô như thường.
+    const ready = REF_TAIL.test(v) || /[=+\-*/(,%^&<>:;]\s*$/.test(v);
+    if (!ready) return;
+    e.preventDefault(); // giữ focus input → không blur-commit
+    pointGuardRef.current = true;
+    placeRef(input, refText(r, c));
+    pointDragRef.current = { anchor: { r, c }, input };
+    setPointRange({ r1: r, c1: c, r2: r, c2: c });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFormulaInput, placeRef, refText]);
+
+  /** Quét chuột (giữ phím trái) qua các ô → ref cuối thành range A1:B5. */
+  const onCellMouseEnter = useCallback((r: number, c: number) => {
+    const d = pointDragRef.current;
+    if (!d) return;
+    const r1 = Math.min(d.anchor.r, r); const r2 = Math.max(d.anchor.r, r);
+    const c1 = Math.min(d.anchor.c, c); const c2 = Math.max(d.anchor.c, c);
+    placeRef(d.input, r1 === r2 && c1 === c2 ? refText(r1, c1) : `${refText(r1, c1)}:${refText(r2, c2)}`);
+    setPointRange({ r1, c1, r2, c2 });
+  }, [placeRef, refText]);
+
+  useEffect(() => {
+    const up = () => { pointDragRef.current = null; };
+    window.addEventListener('mouseup', up);
+    return () => window.removeEventListener('mouseup', up);
+  }, []);
+
+  // Hết phiên sửa (commit/Escape) → tắt highlight vùng đã quét.
+  useEffect(() => {
+    if (!editing) setPointRange(null);
+  }, [editing]);
+
   // ── Gate / loading states ───────────────────────────────────────────────────
 
   if (enabled === false) {
@@ -502,8 +576,9 @@ export default function SheetWorkspace() {
         </span>
         <span className="sheet-fx-ico" aria-hidden>ƒx</span>
         <input
+          ref={fxInputRef}
           className="sheet-fx-input"
-          placeholder={sel ? 'Nhập giá trị hoặc công thức =SUM(A1:B2)…' : 'Chọn một ô để sửa'}
+          placeholder={sel ? 'Nhập giá trị hoặc công thức =SUM(A1:B2)… (gõ = rồi click/quét ô để chèn tham chiếu)' : 'Chọn một ô để sửa'}
           disabled={!sel}
           // key đổi theo ô chọn → input tự nhận defaultValue của ô mới.
           key={sel ? `${active}:${sel.r}:${sel.c}:${editText(sel.r, sel.c)}` : 'none'}
@@ -577,6 +652,9 @@ export default function SheetWorkspace() {
                     const cell = cellAt(r, c);
                     const isSel = sel?.r === r && sel?.c === c;
                     const isEditing = editing?.r === r && editing?.c === c;
+                    const inRef = pointRange
+                      && r >= pointRange.r1 && r <= pointRange.r2
+                      && c >= pointRange.c1 && c <= pointRange.c2;
                     return (
                       <td
                         key={c}
@@ -585,9 +663,14 @@ export default function SheetWorkspace() {
                           cell.d ? 'sheet-cell-dirty' : '',
                           cell.t === 'n' ? 'num' : '',
                           isSel ? 'selc' : '',
+                          inRef ? 'inref' : '',
                         ].filter(Boolean).join(' ')}
+                        onMouseDown={(e) => { if (!isEditing) onCellMouseDown(r, c, e); }}
+                        onMouseEnter={() => onCellMouseEnter(r, c)}
                         onClick={() => {
                           if (isEditing) return;
+                          // mousedown vừa chèn ref vào công thức → không đổi ô chọn.
+                          if (pointGuardRef.current) { pointGuardRef.current = false; return; }
                           setSel({ r, c });
                           gridRef.current?.focus();
                         }}
@@ -597,14 +680,18 @@ export default function SheetWorkspace() {
                         {isEditing ? (
                           <input
                             autoFocus
+                            ref={cellInputRef}
                             defaultValue={editing.seed ?? editText(r, c)}
                             onFocus={(e) => { if (!editing.seed) e.currentTarget.select(); }}
                             onBlur={(e) => commitEdit(r, c, e.currentTarget.value)}
                             onKeyDown={(e) => {
+                              const isFormula = e.currentTarget.value.startsWith('=');
                               if (e.key === 'Enter') commitAndMove(e.currentTarget.value, 1, 0);
                               else if (e.key === 'Tab') { e.preventDefault(); commitAndMove(e.currentTarget.value, 0, e.shiftKey ? -1 : 1); }
-                              else if (e.key === 'ArrowDown') commitAndMove(e.currentTarget.value, 1, 0);
-                              else if (e.key === 'ArrowUp') commitAndMove(e.currentTarget.value, -1, 0);
+                              // Đang gõ công thức thì mũi tên di chuyển CON TRỎ CHỮ,
+                              // không commit — kẻo đứt tay giữa chừng "=A1+".
+                              else if (e.key === 'ArrowDown' && !isFormula) commitAndMove(e.currentTarget.value, 1, 0);
+                              else if (e.key === 'ArrowUp' && !isFormula) commitAndMove(e.currentTarget.value, -1, 0);
                               else if (e.key === 'Escape') { setEditing(null); gridRef.current?.focus(); }
                             }}
                           />
