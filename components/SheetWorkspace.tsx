@@ -14,9 +14,10 @@
 // re-reads file rồi replay — ô không đụng giữ nguyên style/công thức. Save
 // luôn backup `<file>.bak` trước, gated bởi OFFICE_ALLOW_WRITE.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import FolderPicker from './FolderPicker';
 import OfficeNewFileModal from './OfficeNewFileModal';
+import { evaluateGrid } from '@/lib/formulaEval';
 import {
   fetchSheetFlags,
   openSheetFile,
@@ -180,14 +181,30 @@ export default function SheetWorkspace() {
   const dispRows = Math.max(MIN_ROWS, usedRows + PAD_ROWS, padR);
   const shownRows = Math.min(dispRows, rowLimit);
 
-  const cellAt = useCallback((r: number, c: number): WireCell => grid[r - 1]?.[c - 1] ?? EMPTY_CELL, [grid]);
+  // Ô công thức hiển thị KẾT QUẢ tính live (engine client) — derivation thuần,
+  // working copy + op log vẫn giữ công thức gốc.
+  const displayGrid = useMemo(() => evaluateGrid(grid), [grid]);
+
+  const cellAt = useCallback(
+    (r: number, c: number): WireCell => displayGrid[r - 1]?.[c - 1] ?? EMPTY_CELL,
+    [displayGrid],
+  );
+  /** Text để SỬA một ô: công thức thì trả "=..." (như Excel), thường thì giá trị. */
+  const editText = useCallback((r: number, c: number): string => {
+    const cell = grid[r - 1]?.[c - 1];
+    if (!cell) return '';
+    return cell.t === 'f' && cell.f ? `=${cell.f}` : cell.v;
+  }, [grid]);
 
   // ── Edit ops (all r/c are 1-based, matching what the server replays) ────────
 
   const commitEdit = useCallback((r: number, c: number, value: string) => {
     setEditing(null);
     const cur = grids[active]?.[r - 1]?.[c - 1];
-    if ((cur?.v ?? '') === value) return; // no-op edit (kể cả ô đệm để trống)
+    // So với TEXT SỬA hiện tại: ô công thức là "=f", ô thường là v.
+    const curText = cur?.t === 'f' && cur.f ? `=${cur.f}` : cur?.v ?? '';
+    if (curText === value) return; // no-op edit (kể cả ô đệm để trống)
+    const isFormula = value.startsWith('=') && value.trim().length > 1;
     setGrids((gs) => gs.map((g, i) => {
       if (i !== active) return g;
       const ng = g.slice();
@@ -195,12 +212,15 @@ export default function SheetWorkspace() {
       while (ng.length < r) ng.push([]);
       const row = ng[r - 1].slice();
       while (row.length < c) row.push({ ...EMPTY_CELL });
-      row[c - 1] = { v: value, t: 's', d: true };
+      row[c - 1] = isFormula
+        ? { v: '', t: 'f', f: value.slice(1).trim(), d: true } // v do engine tính khi hiển thị
+        : { v: value, t: 's', d: true };
       ng[r - 1] = row;
       return ng;
     }));
     setOps((os) => os.map((o, i) => (
-      i === active ? [...o, { op: 'set', r, c, value, ...(cur?.t === 'f' ? { hadFormula: true } : {}) }] : o
+      // hadFormula = ghi đè công thức CŨ bằng GIÁ TRỊ thường (để cảnh báo lúc lưu).
+      i === active ? [...o, { op: 'set', r, c, value, ...(cur?.t === 'f' && !isFormula ? { hadFormula: true } : {}) }] : o
     )));
   }, [grids, active]);
 
@@ -483,11 +503,11 @@ export default function SheetWorkspace() {
         <span className="sheet-fx-ico" aria-hidden>ƒx</span>
         <input
           className="sheet-fx-input"
-          placeholder={sel ? 'Nhập giá trị cho ô đang chọn…' : 'Chọn một ô để sửa'}
+          placeholder={sel ? 'Nhập giá trị hoặc công thức =SUM(A1:B2)…' : 'Chọn một ô để sửa'}
           disabled={!sel}
           // key đổi theo ô chọn → input tự nhận defaultValue của ô mới.
-          key={sel ? `${active}:${sel.r}:${sel.c}:${selCell?.v}` : 'none'}
-          defaultValue={selCell?.t === 'f' ? `= ${selCell.f ?? ''} → ${selCell.v}` : selCell?.v ?? ''}
+          key={sel ? `${active}:${sel.r}:${sel.c}:${editText(sel.r, sel.c)}` : 'none'}
+          defaultValue={sel ? editText(sel.r, sel.c) : ''}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && sel) {
               commitEdit(sel.r, sel.c, e.currentTarget.value);
@@ -496,7 +516,7 @@ export default function SheetWorkspace() {
               gridRef.current?.focus();
             }
           }}
-          title={selCell?.t === 'f' ? 'Ô công thức — sửa sẽ ghi đè công thức bằng giá trị mới' : undefined}
+          title={selCell?.t === 'f' ? `Kết quả: ${selCell.v}` : undefined}
         />
         <span className="sheet-fxbar-sep" aria-hidden />
         <button className="ghost sm" disabled={busy || !sel} onClick={() => sel && insertRowAt(sel.r + 1)}
@@ -577,7 +597,7 @@ export default function SheetWorkspace() {
                         {isEditing ? (
                           <input
                             autoFocus
-                            defaultValue={editing.seed ?? cell.v}
+                            defaultValue={editing.seed ?? editText(r, c)}
                             onFocus={(e) => { if (!editing.seed) e.currentTarget.select(); }}
                             onBlur={(e) => commitEdit(r, c, e.currentTarget.value)}
                             onKeyDown={(e) => {

@@ -246,10 +246,13 @@ export async function createFile(input: CreateSheetInput): Promise<SheetOpenResu
 
 // ── save ─────────────────────────────────────────────────────────────────────
 
-/** '' → clear · canonical numbers → number · true/false → boolean · else text.
+/** '' → clear · "=…" → CÔNG THỨC Excel thật · canonical numbers → number ·
+ *  true/false → boolean · else text.
  *  "012"/"1.10" stay TEXT on purpose (leading/trailing zeros carry meaning). */
-function parseInput(s: string): string | number | boolean | null {
+function parseInput(s: string): string | number | boolean | null | { formula: string } {
   if (s === '') return null;
+  // Không ghi kèm result — fullCalcOnLoad (set lúc save) bắt Excel tự tính lại.
+  if (s.startsWith('=') && s.trim().length > 1) return { formula: s.slice(1).trim() };
   if (/^-?(0|[1-9]\d*)(\.\d+)?$/.test(s) && String(Number(s)) === s) return Number(s);
   if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';
   return s;
@@ -347,6 +350,9 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
         }
       }
     }
+    // Có công thức mới ghi vào (không kèm cached result) → bắt Excel tính lại
+    // toàn bộ khi mở file, kẻo ô công thức hiện trống.
+    wb.calcProperties.fullCalcOnLoad = true;
     outBuf = Buffer.from(await wb.xlsx.writeBuffer());
   }
 
