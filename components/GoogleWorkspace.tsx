@@ -18,6 +18,15 @@ import {
   mimeIcon, fmtRel, G_MIME,
   type GFile, type GList as GListT, type GoogleAccount, type GoogleStatus, type GRoot,
 } from '@/lib/google';
+import GoogleDocViewer from './GoogleDocViewer';
+
+/** What the in-app viewer is currently showing (desktop shell only). */
+interface ViewerTarget { name: string; url: string }
+
+/** Mở file/folder Drive: trong desktop shell → viewer nhúng (editor đầy đủ của
+ *  Google ngay trong app); chạy trên browser thường (không có <webview>) →
+ *  fallback tab mới như cũ. */
+type OpenInApp = (name: string, url: string) => void;
 
 type Section = 'projects' | 'docs' | 'sheets';
 
@@ -29,24 +38,44 @@ const SECTIONS: { key: Section; icon: string; label: string; hint: string }[] = 
   { key: 'sheets', icon: '📊', label: 'Sheets', hint: 'toàn bộ Google Sheets' },
 ];
 
-/** Row for one Drive file — name + owner + modified, opens in a new tab. */
-function FileRow({ f }: { f: GFile }) {
+/** Row for one Drive file — name + owner + modified. Click = mở TRONG APP
+ *  (viewer nhúng); nút ↗ = mở browser ngoài như trước. */
+function FileRow({ f, onOpen }: { f: GFile; onOpen: OpenInApp }) {
   const owner = f.owners?.[0]?.displayName ?? f.owners?.[0]?.emailAddress ?? '';
   return (
-    <a className="g-row" href={f.webViewLink} target="_blank" rel="noreferrer" title={`${f.name} — mở trong Drive`}>
+    <a
+      className="g-row"
+      href={f.webViewLink}
+      onClick={(e) => {
+        if (!f.webViewLink) return;
+        e.preventDefault();
+        onOpen(f.name, f.webViewLink);
+      }}
+      title={`${f.name} — mở trong app`}
+    >
       <span className="g-ico" aria-hidden>{mimeIcon(f.mimeType)}</span>
       <span className="g-name">
         <span className="g-base">{f.starred && <span className="g-star" aria-hidden>⭐</span>}{f.name}</span>
         <span className="g-meta">{owner}{owner && f.modifiedTime ? ' · ' : ''}{fmtRel(f.modifiedTime)}</span>
       </span>
-      <span className="g-open" aria-hidden>↗</span>
+      <span
+        className="g-open"
+        title="Mở bằng trình duyệt ngoài"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (f.webViewLink) window.open(f.webViewLink, '_blank');
+        }}
+      >
+        ↗
+      </span>
     </a>
   );
 }
 
 /** 📝/📊 section — self-contained list with search + ⭐ filter + pagination.
  *  Mounted with key=accountId, so switching accounts starts a fresh list. */
-function KindList({ accountId, kind }: { accountId: string; kind: 'docs' | 'sheets' }) {
+function KindList({ accountId, kind, onOpen }: { accountId: string; kind: 'docs' | 'sheets'; onOpen: OpenInApp }) {
   const [q, setQ] = useState('');
   const [starred, setStarred] = useState(false);
   const [files, setFiles] = useState<GFile[]>([]);
@@ -97,7 +126,7 @@ function KindList({ accountId, kind }: { accountId: string; kind: 'docs' | 'shee
       </div>
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
       <div className="g-list">
-        {files.map((f) => <FileRow key={f.id} f={f} />)}
+        {files.map((f) => <FileRow key={f.id} f={f} onOpen={onOpen} />)}
         {!loading && files.length === 0 && !err && (
           <div className="empty" style={{ padding: '24px 8px' }}><p className="small">Không có kết quả.</p></div>
         )}
@@ -114,7 +143,7 @@ function KindList({ accountId, kind }: { accountId: string; kind: 'docs' | 'shee
 }
 
 /** 📁 section — one account's registered roots (left) + folder browser (right). */
-function ProjectsView({ accountId }: { accountId: string }) {
+function ProjectsView({ accountId, onOpen }: { accountId: string; onOpen: OpenInApp }) {
   const [roots, setRoots] = useState<GRoot[]>([]);
   const [activeRoot, setActiveRoot] = useState<GRoot | null>(null);
   /** Breadcrumb path inside the active root; [0] is the root itself. */
@@ -227,6 +256,17 @@ function ProjectsView({ accountId }: { accountId: string }) {
                 </span>
               ))}
               {loading && <span className="spinner" aria-hidden />}
+              <span style={{ flex: 1 }} />
+              <button
+                className="ghost sm"
+                title="Mở thư mục này bằng giao diện Drive trong app — upload / tạo mới / đổi tên / xóa"
+                onClick={() => {
+                  const cur = trail[trail.length - 1];
+                  if (cur) onOpen(cur.name, `https://drive.google.com/drive/folders/${cur.id}`);
+                }}
+              >
+                🗂 Quản lý trong Drive
+              </button>
             </div>
             <div className="g-list">
               {folders.map((f) => (
@@ -236,7 +276,7 @@ function ProjectsView({ accountId }: { accountId: string }) {
                   <span className="g-open" aria-hidden>›</span>
                 </button>
               ))}
-              {files.map((f) => <FileRow key={f.id} f={f} />)}
+              {files.map((f) => <FileRow key={f.id} f={f} onOpen={onOpen} />)}
               {!loading && listing && listing.files.length === 0 && (
                 <div className="empty" style={{ padding: '24px 8px' }}><p className="small">Thư mục trống.</p></div>
               )}
@@ -261,7 +301,13 @@ export default function GoogleWorkspace() {
   const [section, setSection] = useState<Section>('projects');
   const [err, setErr] = useState<string | null>(null);
   const [waiting, setWaiting] = useState(false);
+  const [viewer, setViewer] = useState<ViewerTarget | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const openInApp = useCallback<OpenInApp>((name, url) => {
+    if (typeof window !== 'undefined' && window.workspace?.isDesktop) setViewer({ name, url });
+    else window.open(url, '_blank'); // plain browser — <webview> không tồn tại
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -434,10 +480,12 @@ export default function GoogleWorkspace() {
 
       {/* key=account id → đổi tài khoản là remount sạch dữ liệu của account đó */}
       <div className="office-body">
-        {section === 'projects' && <ProjectsView key={`p-${active.id}`} accountId={active.id} />}
-        {section === 'docs' && <KindList key={`d-${active.id}`} accountId={active.id} kind="docs" />}
-        {section === 'sheets' && <KindList key={`s-${active.id}`} accountId={active.id} kind="sheets" />}
+        {section === 'projects' && <ProjectsView key={`p-${active.id}`} accountId={active.id} onOpen={openInApp} />}
+        {section === 'docs' && <KindList key={`d-${active.id}`} accountId={active.id} kind="docs" onOpen={openInApp} />}
+        {section === 'sheets' && <KindList key={`s-${active.id}`} accountId={active.id} kind="sheets" onOpen={openInApp} />}
       </div>
+
+      {viewer && <GoogleDocViewer name={viewer.name} url={viewer.url} onClose={() => setViewer(null)} />}
     </div>
   );
 }

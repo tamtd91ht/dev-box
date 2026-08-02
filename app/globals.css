@@ -2712,6 +2712,20 @@ pre.kafka-drawer-body {
 .sheet-panel {
   display: flex; flex-direction: column; min-height: 0; height: 100%;
   gap: 8px; overflow: hidden;
+  position: relative; /* anchor cho .g-viewer (viewer Google nhúng) */
+}
+
+/* In-app Google viewer — phủ kín panel của tab Google, bên trong là một
+   .ws-view (toolbar + <webview>) tái dùng nguyên style của Browser Workspace. */
+.g-viewer {
+  position: absolute; inset: 0; z-index: 6;
+  display: flex; background: var(--bg-1);
+}
+.g-viewer .ws-view { border-radius: 0; border: 0; }
+.g-viewer-hint {
+  flex: none; padding: 6px 12px; font-size: 12px;
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 25%, transparent);
 }
 /* Shared Office empty state — hero card + recent files (Sheet + Word) */
 .office-hero-panel { padding: 26px 26px 18px; }
