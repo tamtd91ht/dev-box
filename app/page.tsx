@@ -11,6 +11,7 @@ import WebhookReceiver from '@/components/WebhookReceiver';
 import ApiExplorerWorkspace, { type IntegrationView } from '@/components/ApiExplorerWorkspace';
 import PackManager from '@/components/PackManager';
 import GitWorkspace from '@/components/GitWorkspace';
+import CodeStudio from '@/components/CodeStudio';
 import RedisWorkspace from '@/components/RedisWorkspace';
 import KafkaWorkspace from '@/components/KafkaWorkspace';
 import RabbitWorkspace from '@/components/RabbitWorkspace';
@@ -106,6 +107,7 @@ type Mode = string;
 
 const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'git', icon: '⎇', label: 'Git', badge: 'local' },
+  { key: 'code', icon: '⌨', label: 'Code', badge: 'ide' },
   { key: 'redis', icon: '◆', label: 'Redis', badge: 'local' },
   { key: 'kafka', icon: '≋', label: 'Kafka', badge: 'local' },
   { key: 'rabbit', icon: '🐇', label: 'RabbitMQ', badge: 'local' },
@@ -277,6 +279,11 @@ export default function Home() {
         {visited.git && (
           <main className="workspace" style={paneStyle(mode === 'git')} aria-hidden={mode !== 'git'}>
             <GitWorkspace />
+          </main>
+        )}
+        {visited.code && (
+          <main className="workspace" style={paneStyle(mode === 'code')} aria-hidden={mode !== 'code'}>
+            <CodeStudio />
           </main>
         )}
         {visited.redis && (

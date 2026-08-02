@@ -3208,3 +3208,181 @@ pre.kafka-drawer-body {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: none; }
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Code Studio — mini-IDE (IntelliJ Darcula). Pane tự chọn màu tối cố định
+   như một IDE thật, không theo theme sáng/tối của app.
+   ════════════════════════════════════════════════════════════════════════ */
+.cs-root {
+  display: flex; flex-direction: column; flex: 1 1 auto; height: 100%; min-height: 0;
+  background: #2b2b2b; color: #a9b7c6;
+  border: 1px solid #1e1e1e; border-radius: 12px; overflow: hidden;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+.cs-toolbar {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; background: #3c3f41; border-bottom: 1px solid #2b2b2b;
+}
+.cs-logo { color: #ffc66d; font-weight: 700; font-family: Consolas, monospace; }
+.cs-project {
+  background: #45494a; color: #a9b7c6; border: 1px solid #5e6060;
+  border-radius: 6px; padding: 4px 8px; font-size: 12.5px; max-width: 260px;
+}
+.cs-path {
+  font-size: 12px; color: #808080; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 40%;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+.cs-toolbar-err { color: #f0524f; font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-save {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #365880; color: #bbd6f5; border: 1px solid #4a88c7;
+  border-radius: 6px; padding: 4px 10px; font-size: 12.5px; cursor: pointer;
+}
+.cs-save:hover:not(:disabled) { background: #3d6491; }
+.cs-term-toggle {
+  width: 30px; height: 28px; background: transparent; color: #a9b7c6;
+  border: 1px solid transparent; border-radius: 6px; cursor: pointer; font-size: 14px;
+}
+.cs-term-toggle:hover { background: #4b5052; }
+.cs-term-toggle.on { background: #365880; border-color: #4a88c7; }
+
+/* ── Main split ── */
+.cs-main { flex: 1; min-height: 0; display: grid; }
+.cs-divider { background: #323232; }
+.cs-divider:hover { background: #4a88c7; }
+.cs-divider.v { cursor: col-resize; }
+.cs-divider.h { height: 5px; flex: none; cursor: row-resize; }
+
+/* ── File tree ── */
+.cs-tree {
+  min-width: 0; min-height: 0; display: flex; flex-direction: column;
+  background: #3c3f41; position: relative;
+}
+.cs-tree-head {
+  flex: none; display: flex; align-items: center; gap: 6px;
+  padding: 7px 10px; font-size: 12.5px; font-weight: 600; color: #bbbbbb;
+  border-bottom: 1px solid #323232;
+}
+.cs-tree-refresh {
+  margin-left: auto; width: 24px; height: 24px; background: transparent;
+  color: #a9b7c6; border: 0; border-radius: 5px; cursor: pointer;
+}
+.cs-tree-refresh:hover { background: #4b5052; }
+.cs-tree-err { color: #f0524f; font-size: 12px; padding: 6px 10px; overflow: hidden; text-overflow: ellipsis; }
+.cs-tree-scroll { flex: 1; overflow: auto; padding: 4px 0 12px; }
+.cs-node {
+  display: flex; align-items: center; gap: 5px; width: 100%;
+  padding: 3px 8px; background: transparent; border: 0; cursor: pointer;
+  color: #a9b7c6; font-size: 13px; text-align: left; white-space: nowrap;
+}
+.cs-node:hover { background: #4b5052; }
+.cs-node.on { background: #2d5177; color: #ffffff; }
+.cs-node-arrow { width: 12px; flex: none; color: #808080; font-size: 10px; }
+.cs-node-ico { flex: none; font-size: 13px; }
+.cs-node-name { overflow: hidden; text-overflow: ellipsis; }
+
+/* Context menu */
+.cs-menu {
+  position: absolute; z-index: 30; min-width: 180px;
+  background: #3c3f41; border: 1px solid #5e6060; border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); padding: 4px; display: flex; flex-direction: column;
+}
+.cs-menu button {
+  display: block; width: 100%; text-align: left; padding: 6px 12px;
+  background: transparent; border: 0; border-radius: 5px;
+  color: #a9b7c6; font-size: 12.5px; cursor: pointer;
+}
+.cs-menu button:hover { background: #2d5177; color: #fff; }
+.cs-menu button.danger:hover { background: #6e2b2b; }
+.cs-menu hr { border: 0; border-top: 1px solid #515151; margin: 4px 6px; }
+
+/* Inline name dialog (Electron không có window.prompt) */
+.cs-ask-backdrop {
+  position: absolute; inset: 0; z-index: 40;
+  background: rgba(0,0,0,.35); display: flex; align-items: flex-start; justify-content: center;
+}
+.cs-ask {
+  margin-top: 60px; width: min(320px, 92%);
+  background: #3c3f41; border: 1px solid #5e6060; border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.55); padding: 12px;
+}
+.cs-ask-title { font-size: 12.5px; color: #bbbbbb; margin-bottom: 8px; }
+.cs-ask-input {
+  width: 100%; background: #45494a; color: #fff; border: 1px solid #4a88c7;
+  border-radius: 6px; padding: 6px 8px; font-size: 13px; outline: none;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+.cs-ask-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+.cs-ask-actions button {
+  padding: 4px 14px; border-radius: 6px; font-size: 12.5px; cursor: pointer;
+  background: #45494a; color: #a9b7c6; border: 1px solid #5e6060;
+}
+.cs-ask-actions button.ok { background: #365880; color: #bbd6f5; border-color: #4a88c7; }
+.cs-ask-actions button:hover { filter: brightness(1.15); }
+
+/* ── Editor ── */
+.cs-editor { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #2b2b2b; }
+.cs-tabs {
+  flex: none; display: flex; align-items: stretch; overflow-x: auto;
+  background: #3c3f41; border-bottom: 1px solid #323232; scrollbar-width: thin;
+}
+.cs-tab { display: inline-flex; align-items: center; border-right: 1px solid #323232; }
+.cs-tab.on { background: #2b2b2b; box-shadow: inset 0 2px 0 #4a88c7; }
+.cs-tab-main {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 6px 7px 12px;
+  background: transparent; border: 0; color: #a9b7c6; font-size: 12.5px; cursor: pointer; white-space: nowrap;
+}
+.cs-tab.on .cs-tab-main { color: #ffffff; }
+.cs-tab-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.cs-dirty { color: #ffc66d; font-size: 10px; }
+.cs-tab-x {
+  width: 22px; height: 22px; margin: 0 6px 0 0; background: transparent; border: 0;
+  border-radius: 4px; color: #808080; font-size: 11px; cursor: pointer;
+}
+.cs-tab-x:hover { background: #4b5052; color: #fff; }
+.cs-monaco { flex: 1; min-height: 0; }
+.cs-editor-empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; color: #808080; font-size: 13px; background: #2b2b2b; min-width: 0;
+}
+.cs-empty-logo { font-size: 42px; color: #4a5052; font-family: Consolas, monospace; font-weight: 700; }
+.cs-empty-hint { font-size: 12px; color: #5e6060; }
+
+/* ── Terminal ── */
+.cs-term { height: 100%; min-height: 0; display: flex; flex-direction: column; background: #2b2b2b; }
+.cs-term-bar {
+  flex: none; display: flex; align-items: center; gap: 4px;
+  padding: 4px 8px; background: #3c3f41; border-bottom: 1px solid #323232; overflow-x: auto;
+}
+.cs-term-title { font-size: 12px; color: #bbbbbb; font-weight: 600; margin-right: 6px; white-space: nowrap; }
+.cs-term-tab { display: inline-flex; align-items: center; border-radius: 6px; background: transparent; }
+.cs-term-tab.on { background: #2d5177; }
+.cs-term-tab-main {
+  padding: 4px 4px 4px 10px; background: transparent; border: 0; color: #a9b7c6;
+  font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.cs-term-tab.on .cs-term-tab-main { color: #fff; }
+.cs-term-tab-x {
+  width: 20px; height: 20px; margin-right: 4px; background: transparent; border: 0;
+  border-radius: 4px; color: #808080; font-size: 10px; cursor: pointer;
+}
+.cs-term-tab-x:hover { background: #4b5052; color: #fff; }
+.cs-term-new {
+  width: 26px; height: 24px; background: transparent; color: #a9b7c6;
+  border: 1px solid #5e6060; border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.cs-term-new.alt { width: auto; padding: 0 8px; font-size: 11.5px; }
+.cs-term-new:hover:not(:disabled) { background: #4b5052; }
+.cs-term-mode {
+  font-size: 11px; color: #e5bf00; border: 1px solid #7a6a00; border-radius: 5px; padding: 1px 6px;
+}
+.cs-term-err { color: #f0524f; font-size: 12px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-term-body { flex: 1; min-height: 0; position: relative; padding: 4px 6px 6px; }
+.cs-term-hint {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #808080; font-size: 13px; text-align: center; padding: 20px;
+}
+.cs-term-hint code { color: #ffc66d; background: #3c3f41; padding: 1px 5px; border-radius: 4px; }
+.cs-xterm { width: 100%; height: 100%; }
+.cs-xterm .xterm { height: 100%; }
