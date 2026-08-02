@@ -1,12 +1,17 @@
 'use client';
 
-// Code Studio — mini-IDE trong DevBox (mô phỏng IntelliJ, theme Darcula):
-//   trái  = cây file project (lazy, context menu CRUD)
-//   phải  = editor Monaco nhiều tab, Ctrl+S lưu
-//   dưới  = terminal thật (node-pty/ConPTY + xterm) — chạy mvn/gradle/git/claude
-// Project lấy từ CÙNG registry với tab Git (.gitprojects.json): đăng ký một lần
-// bên tab Git là Code Studio thấy ngay. Kéo được 2 thanh chia (sidebar/terminal),
-// kích thước nhớ trong localStorage.
+// Code Studio — mini-IDE trong DevBox (mô phỏng IntelliJ, theme Darcula).
+//
+// NHIỀU PROJECT SONG SONG: thanh project phía trên là các tab (như IntelliJ mở
+// nhiều window) — mỗi project mở là MỘT <ProjectWorkspace> mount-and-keep:
+// cây file, tab editor, phiên terminal của project nào giữ nguyên project đó,
+// chuyển tab không mất state (giống cách app giữ các workspace tab chính —
+// stacked cùng một ô, cái không active chỉ visibility:hidden nên Monaco/xterm
+// vẫn giữ nguyên kích thước, không cần re-layout).
+//
+// Mỗi workspace: trái = cây file (context menu CRUD), phải = Monaco nhiều tab
+// (Ctrl+S lưu), dưới = terminal thật (node-pty + xterm). Project lấy từ CÙNG
+// registry với tab Git (.gitprojects.json).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
@@ -21,30 +26,37 @@ const EditorPane = dynamic(() => import('./code/EditorPane'), {
   loading: () => <div className="cs-editor-empty"><span className="spinner" /> Đang tải editor…</div>,
 });
 
-const LS_PROJECT = 'code.activeProject';
+const LS_OPEN = 'code.openProjects';
+const LS_ACTIVE = 'code.activeProject';
 const LS_SIDE = 'code.sideWidth';
 const LS_TERM = 'code.termHeight';
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-export default function CodeStudio() {
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [projects, setProjects] = useState<CodeProject[]>([]);
-  const [projectId, setProjectId] = useState<string>('');
-  const [err, setErr] = useState<string | null>(null);
-
+/** Toàn bộ IDE của MỘT project — mount-and-keep khi mở nhiều project. */
+function ProjectWorkspace({
+  project,
+  visible,
+  onDirty,
+}: {
+  project: CodeProject;
+  visible: boolean;
+  /** Báo số file chưa lưu lên tab project (chấm ● + confirm khi đóng). */
+  onDirty: (n: number) => void;
+}) {
   // Editor state
   const [files, setFiles] = useState<OpenFile[]>([]);
   const [activeRel, setActiveRel] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  // Terminal state (per project — đổi project là bộ tab terminal riêng).
+  // Terminal state
   const [termTabs, setTermTabs] = useState<TermTab[]>([]);
   const [termActive, setTermActive] = useState<string | null>(null);
   const [termOpen, setTermOpen] = useState(true);
   const [pendingCwd, setPendingCwd] = useState<string | null>(null);
 
-  // Layout (px) + drag
+  // Layout (px) + drag — dùng chung LS key cho mọi project (cảm giác một IDE).
   const [sideW, setSideW] = useState(280);
   const [termH, setTermH] = useState(260);
   const dragRef = useRef<null | { kind: 'side' | 'term'; start: number; base: number }>(null);
@@ -54,42 +66,10 @@ export default function CodeStudio() {
     setTermH(clamp(Number(localStorage.getItem(LS_TERM)) || 260, 120, 640));
   }, []);
 
+  const dirtyCount = files.filter((f) => f.content !== f.savedContent).length;
   useEffect(() => {
-    cProjects()
-      .then(({ projects: list }) => {
-        setProjects(list);
-        setEnabled(true);
-        const remembered = localStorage.getItem(LS_PROJECT) ?? '';
-        setProjectId((cur) => {
-          const pick = [cur, remembered].find((id) => id && list.some((p) => p.id === id));
-          return pick || list[0]?.id || '';
-        });
-      })
-      .catch((e) => {
-        if ((e as Error & { status?: number }).status === 403) setEnabled(false);
-        else {
-          setEnabled(true);
-          setErr((e as Error).message);
-        }
-      });
-  }, []);
-
-  useEffect(() => {
-    if (projectId) localStorage.setItem(LS_PROJECT, projectId);
-  }, [projectId]);
-
-  // Đổi project → dọn editor + terminal (phiên server cứ để chạy nền, tab Code
-  // của project kia quay lại sẽ tạo phiên mới; kill hàng loạt là việc của nút ✕).
-  const switchProject = (id: string) => {
-    if (id === projectId) return;
-    const dirty = files.some((f) => f.content !== f.savedContent);
-    if (dirty && !window.confirm('Có file chưa lưu — đổi project và bỏ thay đổi?')) return;
-    setProjectId(id);
-    setFiles([]);
-    setActiveRel(null);
-    setTermTabs([]);
-    setTermActive(null);
-  };
+    onDirty(dirtyCount);
+  }, [dirtyCount, onDirty]);
 
   const openFile = useCallback(async (entry: TreeEntry) => {
     setErr(null);
@@ -99,7 +79,7 @@ export default function CodeStudio() {
       return;
     }
     try {
-      const r = await cRead(projectId, entry.rel);
+      const r = await cRead(project.id, entry.rel);
       setFiles((cur) => [
         ...cur,
         { rel: entry.rel, name: entry.name, content: r.content, savedContent: r.content, mtime: r.mtime, binary: r.binary },
@@ -108,7 +88,7 @@ export default function CodeStudio() {
     } catch (e) {
       setErr((e as Error).message);
     }
-  }, [files, projectId]);
+  }, [files, project.id]);
 
   const changeFile = useCallback((rel: string, content: string) => {
     setFiles((cur) => cur.map((f) => (f.rel === rel ? { ...f, content } : f)));
@@ -120,14 +100,14 @@ export default function CodeStudio() {
     setSaving(true);
     setErr(null);
     try {
-      const { mtime } = await cWrite(projectId, rel, f.content, f.mtime);
+      const { mtime } = await cWrite(project.id, rel, f.content, f.mtime);
       setFiles((cur) => cur.map((x) => (x.rel === rel ? { ...x, savedContent: x.content, mtime } : x)));
     } catch (e) {
       setErr((e as Error).message);
     } finally {
       setSaving(false);
     }
-  }, [files, projectId]);
+  }, [files, project.id]);
 
   const closeFile = useCallback((rel: string) => {
     setFiles((cur) => {
@@ -137,7 +117,7 @@ export default function CodeStudio() {
     });
   }, []);
 
-  // Kéo thanh chia — mousedown trên divider, move trên window.
+  // Kéo thanh chia.
   useEffect(() => {
     const move = (e: MouseEvent) => {
       const d = dragRef.current;
@@ -167,6 +147,142 @@ export default function CodeStudio() {
     document.body.style.userSelect = 'none';
   };
 
+  return (
+    <div className={`cs-ws${visible ? ' on' : ''}`} aria-hidden={!visible}>
+      <div className="cs-toolbar">
+        <span className="cs-path" title={project.root}>{project.root}</span>
+        <span className="cs-path sep" aria-hidden>·</span>
+        <span className="cs-path file" title={activeRel ?? ''}>{activeRel ?? ''}</span>
+        <span style={{ flex: 1 }} />
+        {err && <span className="cs-toolbar-err" title={err}>{err}</span>}
+        {dirtyCount > 0 && (
+          <button className="cs-save" disabled={saving || !activeRel} onClick={() => activeRel && void saveFile(activeRel)}>
+            {saving ? <span className="spinner" aria-hidden /> : '💾'} Lưu (Ctrl+S){dirtyCount > 1 ? ` · ${dirtyCount} file chưa lưu` : ''}
+          </button>
+        )}
+        <button
+          className={`cs-term-toggle${termOpen ? ' on' : ''}`}
+          onClick={() => setTermOpen((v) => !v)}
+          title={termOpen ? 'Ẩn terminal' : 'Hiện terminal'}
+        >
+          ⌨
+        </button>
+      </div>
+
+      <div className="cs-main" style={{ gridTemplateColumns: `${sideW}px 5px 1fr` }}>
+        <FileTree
+          projectId={project.id}
+          projectName={project.name}
+          onOpenFile={(e) => void openFile(e)}
+          onTerminalHere={(rel) => {
+            setTermOpen(true);
+            setPendingCwd(rel);
+          }}
+          activeRel={activeRel ?? undefined}
+        />
+        <div className="cs-divider v" onMouseDown={startDrag('side')} title="Kéo để đổi cỡ" />
+        <EditorPane
+          files={files}
+          activeRel={activeRel}
+          onSelect={setActiveRel}
+          onClose={closeFile}
+          onChange={changeFile}
+          onSave={(rel) => void saveFile(rel)}
+        />
+      </div>
+
+      {termOpen && (
+        <>
+          <div className="cs-divider h" onMouseDown={startDrag('term')} title="Kéo để đổi cỡ" />
+          <div style={{ height: termH, flex: 'none', minHeight: 0 }}>
+            <TerminalPane
+              projectId={project.id}
+              tabs={termTabs}
+              activeId={termActive}
+              onTabs={setTermTabs}
+              onActive={setTermActive}
+              pendingCwd={pendingCwd}
+              onPendingConsumed={() => setPendingCwd(null)}
+              visible={visible && termOpen}
+            />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export default function CodeStudio() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [projects, setProjects] = useState<CodeProject[]>([]);
+  /** Project ids đang MỞ (mỗi cái một workspace mounted). */
+  const [openIds, setOpenIds] = useState<string[]>([]);
+  const [activeId, setActiveId] = useState<string>('');
+  const [dirtyByProject, setDirtyByProject] = useState<Record<string, number>>({});
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    cProjects()
+      .then(({ projects: list }) => {
+        setProjects(list);
+        setEnabled(true);
+        // Khôi phục các project đã mở phiên trước (lọc id còn tồn tại).
+        let open: string[] = [];
+        try {
+          open = (JSON.parse(localStorage.getItem(LS_OPEN) ?? '[]') as string[]).filter((id) =>
+            list.some((p) => p.id === id),
+          );
+        } catch { /* hỏng thì thôi */ }
+        const remembered = localStorage.getItem(LS_ACTIVE) ?? '';
+        if (open.length === 0) {
+          const first = [remembered, list[0]?.id ?? ''].find((id) => id && list.some((p) => p.id === id));
+          if (first) open = [first];
+        }
+        setOpenIds(open);
+        setActiveId(open.includes(remembered) ? remembered : open[0] ?? '');
+      })
+      .catch((e) => {
+        if ((e as Error & { status?: number }).status === 403) setEnabled(false);
+        else {
+          setEnabled(true);
+          setErr((e as Error).message);
+        }
+      });
+  }, []);
+
+  useEffect(() => {
+    if (enabled) localStorage.setItem(LS_OPEN, JSON.stringify(openIds));
+  }, [openIds, enabled]);
+  useEffect(() => {
+    if (activeId) localStorage.setItem(LS_ACTIVE, activeId);
+  }, [activeId]);
+
+  const openProject = (id: string) => {
+    if (!id) return;
+    setOpenIds((cur) => (cur.includes(id) ? cur : [...cur, id]));
+    setActiveId(id);
+  };
+
+  const closeProject = (id: string) => {
+    const dirty = dirtyByProject[id] ?? 0;
+    const name = projects.find((p) => p.id === id)?.name ?? id;
+    if (dirty > 0 && !window.confirm(`"${name}" còn ${dirty} file chưa lưu — đóng project và bỏ thay đổi?`)) return;
+    setOpenIds((cur) => {
+      const left = cur.filter((x) => x !== id);
+      setActiveId((a) => (a === id ? (left[left.length - 1] ?? '') : a));
+      return left;
+    });
+    setDirtyByProject((m) => {
+      const n = { ...m };
+      delete n[id];
+      return n;
+    });
+  };
+
+  const reportDirty = useCallback((id: string, n: number) => {
+    setDirtyByProject((m) => (m[id] === n ? m : { ...m, [id]: n }));
+  }, []);
+
   if (enabled === false) {
     return (
       <div className="panel" style={{ margin: 'auto', width: 'min(560px, 94%)' }}>
@@ -184,90 +300,59 @@ export default function CodeStudio() {
     return <div className="panel" style={{ margin: 'auto' }}><span className="spinner" /> Đang tải…</div>;
   }
 
-  const project = projects.find((p) => p.id === projectId);
-  const dirtyCount = files.filter((f) => f.content !== f.savedContent).length;
+  const openProjects = openIds
+    .map((id) => projects.find((p) => p.id === id))
+    .filter((p): p is CodeProject => !!p);
+  const closable = projects.filter((p) => !openIds.includes(p.id));
 
   return (
     <div className="cs-root">
-      {/* ── Toolbar ── */}
-      <div className="cs-toolbar">
+      {/* ── Project tabs (nhiều project song song) ── */}
+      <div className="cs-projbar">
         <span className="cs-logo" aria-hidden>{'</>'}</span>
-        <select
-          className="cs-project"
-          value={projectId}
-          onChange={(e) => switchProject(e.target.value)}
-          title={project?.root ?? ''}
-        >
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
-        </select>
-        <span className="cs-path" title={activeRel ?? ''}>{activeRel ?? ''}</span>
+        {openProjects.map((p) => (
+          <span key={p.id} className={`cs-proj-tab${p.id === activeId ? ' on' : ''}`} title={p.root}>
+            <button className="cs-proj-main" onClick={() => setActiveId(p.id)}>
+              <span aria-hidden>🗀</span> {p.name}
+              {(dirtyByProject[p.id] ?? 0) > 0 && <span className="cs-dirty" title="Có file chưa lưu">●</span>}
+            </button>
+            <button className="cs-proj-x" title="Đóng project (terminal của nó vẫn bị đóng)" onClick={() => closeProject(p.id)}>✕</button>
+          </span>
+        ))}
+        {closable.length > 0 && (
+          <select
+            className="cs-proj-add"
+            value=""
+            onChange={(e) => openProject(e.target.value)}
+            title="Mở thêm project song song"
+          >
+            <option value="" disabled>＋ Mở project…</option>
+            {closable.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        )}
         <span style={{ flex: 1 }} />
         {err && <span className="cs-toolbar-err" title={err}>{err}</span>}
-        {dirtyCount > 0 && (
-          <button className="cs-save" disabled={saving || !activeRel} onClick={() => activeRel && void saveFile(activeRel)}>
-            {saving ? <span className="spinner" aria-hidden /> : '💾'} Lưu (Ctrl+S){dirtyCount > 1 ? ` · ${dirtyCount} file chưa lưu` : ''}
-          </button>
-        )}
-        <button
-          className={`cs-term-toggle${termOpen ? ' on' : ''}`}
-          onClick={() => setTermOpen((v) => !v)}
-          title={termOpen ? 'Ẩn terminal' : 'Hiện terminal'}
-        >
-          ⌨
-        </button>
       </div>
 
-      {/* ── Main: tree | editor ── */}
-      <div className="cs-main" style={{ gridTemplateColumns: `${sideW}px 5px 1fr` }}>
-        {project ? (
-          <FileTree
-            key={project.id}
-            projectId={project.id}
-            projectName={project.name}
-            onOpenFile={(e) => void openFile(e)}
-            onTerminalHere={(rel) => {
-              setTermOpen(true);
-              setPendingCwd(rel);
-            }}
-            activeRel={activeRel ?? undefined}
+      {/* ── Stacked workspaces: mount-and-keep, cái không active chỉ ẩn ── */}
+      <div className="cs-stack">
+        {openProjects.length === 0 && (
+          <div className="cs-editor-empty">
+            <div className="cs-empty-logo" aria-hidden>{'</>'}</div>
+            <p>{projects.length ? 'Chọn "＋ Mở project…" để bắt đầu.' : 'Chưa có project nào — sang tab Git đăng ký thư mục project trước.'}</p>
+          </div>
+        )}
+        {openProjects.map((p) => (
+          <ProjectWorkspace
+            key={p.id}
+            project={p}
+            visible={p.id === activeId}
+            onDirty={(n) => reportDirty(p.id, n)}
           />
-        ) : (
-          <div className="cs-tree">
-            <p className="cs-tree-err">Chưa có project nào — sang tab Git đăng ký thư mục project trước.</p>
-          </div>
-        )}
-        <div className="cs-divider v" onMouseDown={startDrag('side')} title="Kéo để đổi cỡ" />
-        <EditorPane
-          files={files}
-          activeRel={activeRel}
-          onSelect={setActiveRel}
-          onClose={closeFile}
-          onChange={changeFile}
-          onSave={(rel) => void saveFile(rel)}
-        />
+        ))}
       </div>
-
-      {/* ── Terminal (collapsible) ── */}
-      {termOpen && project && (
-        <>
-          <div className="cs-divider h" onMouseDown={startDrag('term')} title="Kéo để đổi cỡ" />
-          <div style={{ height: termH, flex: 'none', minHeight: 0 }}>
-            <TerminalPane
-              key={project.id}
-              projectId={project.id}
-              tabs={termTabs}
-              activeId={termActive}
-              onTabs={setTermTabs}
-              onActive={setTermActive}
-              pendingCwd={pendingCwd}
-              onPendingConsumed={() => setPendingCwd(null)}
-              visible={termOpen}
-            />
-          </div>
-        </>
-      )}
     </div>
   );
 }

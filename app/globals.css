@@ -3223,6 +3223,45 @@ pre.kafka-drawer-body {
   flex: none; display: flex; align-items: center; gap: 8px;
   padding: 6px 10px; background: #3c3f41; border-bottom: 1px solid #2b2b2b;
 }
+
+/* ── Project tab bar (nhiều project song song) ── */
+.cs-projbar {
+  flex: none; display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px 0; background: #313335; overflow-x: auto; scrollbar-width: thin;
+}
+.cs-proj-tab {
+  display: inline-flex; align-items: center; flex: none;
+  background: #3c3f41; border: 1px solid #2b2b2b; border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+}
+.cs-proj-tab.on { background: #4b5052; box-shadow: inset 0 2px 0 #4a88c7; }
+.cs-proj-main {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 6px 6px 12px; background: transparent; border: 0;
+  color: #a9b7c6; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.cs-proj-tab.on .cs-proj-main { color: #ffffff; }
+.cs-proj-x {
+  width: 20px; height: 20px; margin: 0 6px 0 0; background: transparent; border: 0;
+  border-radius: 4px; color: #808080; font-size: 10px; cursor: pointer;
+}
+.cs-proj-x:hover { background: #5a5f61; color: #fff; }
+.cs-proj-add {
+  flex: none; background: transparent; color: #808080; border: 1px dashed #5e6060;
+  border-radius: 8px 8px 0 0; padding: 5px 8px; font-size: 12px; cursor: pointer; margin-bottom: 1px;
+}
+.cs-proj-add:hover { color: #a9b7c6; border-color: #a9b7c6; }
+.cs-proj-add option { background: #3c3f41; color: #a9b7c6; }
+
+/* Stacked workspaces — cái không active giữ layout, chỉ ẩn (Monaco/xterm giữ size). */
+.cs-stack { position: relative; flex: 1; min-height: 0; }
+.cs-ws {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  visibility: hidden; pointer-events: none;
+}
+.cs-ws.on { visibility: visible; pointer-events: auto; }
+.cs-path.sep { color: #5e6060; }
+.cs-path.file { color: #a9b7c6; }
 .cs-logo { color: #ffc66d; font-weight: 700; font-family: Consolas, monospace; }
 .cs-project {
   background: #45494a; color: #a9b7c6; border: 1px solid #5e6060;
