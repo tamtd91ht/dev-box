@@ -25,3 +25,16 @@ contextBridge.exposeInMainWorld('workspace', {
   /** Wipe cookies + storage + cache for a partition (the "Logout" action). */
   clearSession: (partition) => ipcRenderer.invoke('workspace:clearSession', partition),
 });
+
+// In-app console: the shell + `next dev` log stream the main process buffers
+// (see pushLog in electron/main.cjs). Rendered by components/DesktopConsole.tsx.
+contextBridge.exposeInMainWorld('desktopConsole', {
+  /** Full ring-buffer history: [{ id, ts, source, line }]. */
+  getAll: () => ipcRenderer.invoke('desktop:getLogs'),
+  /** Subscribe to live lines. Returns the unsubscribe function. */
+  onLine: (cb) => {
+    const handler = (_evt, entry) => cb(entry);
+    ipcRenderer.on('desktop:log', handler);
+    return () => ipcRenderer.removeListener('desktop:log', handler);
+  },
+});

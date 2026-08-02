@@ -25,6 +25,30 @@ const path = require('path');
 
 const APP_URL = process.env.DESKTOP_URL || 'http://localhost:3000';
 
+// ── In-app console ────────────────────────────────────────────────────────
+// Every line the desktop shell prints (its own lifecycle log + the output of
+// the `next dev` server it spawns) is mirrored into this ring buffer and
+// streamed to the renderer over IPC. The UI shows it in a hidden-by-default
+// Console drawer (components/DesktopConsole.tsx), so the app no longer needs
+// a separate terminal window to be inspectable.
+const LOG_LIMIT = 2000;
+const logBuffer = [];
+let logSeq = 0;
+
+function pushLog(source, line) {
+  const entry = { id: ++logSeq, ts: Date.now(), source, line };
+  logBuffer.push(entry);
+  if (logBuffer.length > LOG_LIMIT) logBuffer.splice(0, logBuffer.length - LOG_LIMIT);
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('desktop:log', entry);
+  }
+  // Still echo to the terminal when launched from one. When launched from the
+  // desktop shortcut there is no console attached — swallow the write error.
+  try {
+    process.stdout.write(`[${source} ${new Date(entry.ts).toISOString()}] ${line}\n`);
+  } catch {}
+}
+
 // Keep every workspace's browser profile (cookies/localStorage/IndexedDB/cache)
 // inside the project at data/browser/ — machine-specific, gitignored — so
 // logins persist across restarts and are easy to locate/wipe. Must run before
@@ -53,8 +77,7 @@ const ALLOWED_PERMISSIONS = new Set([
 ]);
 
 function log(tag, msg) {
-  const ts = new Date().toISOString();
-  console.log(`[workspace ${ts}] ${tag}${msg ? ' — ' + msg : ''}`);
+  pushLog('shell', `${tag}${msg ? ' — ' + msg : ''}`);
 }
 
 /** Merge userData/workspace.config.json over the defaults. Missing file = defaults. */
@@ -207,9 +230,29 @@ async function ensureDevServer() {
   devServer = spawn(process.execPath, [nextBin, 'dev'], {
     cwd: appPath,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-    stdio: ['ignore', 'inherit', 'inherit'], // Next logs land in this terminal
+    stdio: ['ignore', 'pipe', 'pipe'], // captured → in-app Console drawer
     detached: process.platform !== 'win32',  // own process group on POSIX
   });
+  // Split the streams into lines and mirror them into the in-app console.
+  const forwardStream = (stream) => {
+    let acc = '';
+    stream.setEncoding('utf8');
+    stream.on('data', (chunk) => {
+      acc += chunk;
+      let nl;
+      while ((nl = acc.indexOf('\n')) !== -1) {
+        const line = acc.slice(0, nl).replace(/\r$/, '');
+        acc = acc.slice(nl + 1);
+        if (line.trim()) pushLog('next', line);
+      }
+    });
+    stream.on('end', () => {
+      if (acc.trim()) pushLog('next', acc.trimEnd());
+      acc = '';
+    });
+  };
+  forwardStream(devServer.stdout);
+  forwardStream(devServer.stderr);
   devServer.on('exit', (code) => {
     log('DevServerExited', String(code));
     devServer = null;
@@ -305,6 +348,10 @@ ipcMain.handle('workspace:clearSession', async (_evt, partition) => {
     return { ok: false, error: err && err.message };
   }
 });
+
+// Full log history for the renderer's Console drawer (it then subscribes to
+// the `desktop:log` push stream for live lines).
+ipcMain.handle('desktop:getLogs', () => logBuffer);
 
 app.whenReady().then(async () => {
   CONFIG = loadConfig();

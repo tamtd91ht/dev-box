@@ -23,6 +23,7 @@ import BrowserWorkspace from '@/components/BrowserWorkspace';
 import AutomationWorkspace from '@/components/automation/AutomationWorkspace';
 import AutomationHost from '@/components/AutomationHost';
 import ThemeToggle from '@/components/ThemeToggle';
+import DesktopConsole from '@/components/DesktopConsole';
 import { resolveAuth, authReady as isAuthReady } from '@/lib/request';
 import {
   fetchFullConfig,
@@ -383,6 +384,8 @@ export default function Home() {
         <span>VHS DevBox · infra toolbox dùng chung cho mọi dự án</span>
         <span className="foot-right">
           Redis · Kafka · RabbitMQ · MongoDB · Elastic · PostgreSQL · Office · Google · Git · Webhooks · Automation
+          {/* Desktop only: log của shell + next dev, ẩn mặc định. */}
+          <DesktopConsole />
         </span>
       </footer>
     </div>
