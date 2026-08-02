@@ -3259,7 +3259,10 @@ pre.kafka-drawer-body {
   position: absolute; inset: 0; display: flex; flex-direction: column;
   visibility: hidden; pointer-events: none;
 }
-.cs-ws.on { visibility: visible; pointer-events: auto; }
+/* 'inherit' chứ KHÔNG PHẢI 'visible': pane Code bị page.tsx ẩn bằng
+   visibility:hidden khi sang tab khác — con mà set visible là đè ngược tổ
+   tiên, cả IDE vẽ xuyên lên tab Office/Redis/… */
+.cs-ws.on { visibility: inherit; pointer-events: auto; }
 .cs-path.sep { color: #5e6060; }
 .cs-path.file { color: #a9b7c6; }
 .cs-logo { color: #ffc66d; font-weight: 700; font-family: Consolas, monospace; }
