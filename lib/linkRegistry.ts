@@ -11,6 +11,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { configPath } from './configDir';
 
 export interface SavedLink {
   id: string;
@@ -61,7 +62,12 @@ export function normTags(tags: unknown): string[] {
   return out;
 }
 
-const REG_PATH = path.join(process.cwd(), process.env.LINKS_PATH || '.links.json');
+// configPath tự migrate .links.json (hoặc .googlelinks.json cũ) từ repo-root
+// sang configs/. LEGACY_PATH giữ lại để đọc file .googlelinks.json còn sót
+// ngoài root (trường hợp cả hai cùng tồn tại) — an toàn, không mất dữ liệu.
+const REG_PATH = process.env.LINKS_PATH
+  ? path.resolve(process.cwd(), process.env.LINKS_PATH)
+  : configPath('links.json', ['.links.json', '.googlelinks.json']);
 const LEGACY_PATH = path.join(process.cwd(), '.googlelinks.json');
 
 async function readAll(): Promise<SavedLink[]> {

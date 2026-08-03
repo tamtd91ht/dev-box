@@ -15,13 +15,14 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { ConfigPatch } from './persist';
+import { configPath } from './configDir';
 
 /** Raw on-disk shape: every entry is a flat string map (service config or globals). */
 export type RawStore = Record<string, Record<string, string>>;
 
 const CONFIG_FILE = process.env.APITESTER_CONFIG_PATH
   ? path.resolve(process.cwd(), process.env.APITESTER_CONFIG_PATH)
-  : path.join(process.cwd(), '.apitester-config.json');
+  : configPath('apitester-config.json', ['.apitester-config.json']);
 
 /** Read the whole store. Returns {} when the file is missing or unparseable. */
 export async function readStore(): Promise<RawStore> {

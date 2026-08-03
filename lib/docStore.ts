@@ -5,6 +5,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { configPath } from './configDir';
 
 export type DocKind = 'json' | 'text';
 
@@ -16,7 +17,7 @@ export interface SavedDoc {
   updatedAt: string;
 }
 
-const REG_PATH = path.join(process.cwd(), process.env.DOCS_PATH || '.docs.json');
+const REG_PATH = process.env.DOCS_PATH ? path.resolve(process.cwd(), process.env.DOCS_PATH) : configPath('docs.json', ['.docs.json']);
 
 async function readAll(): Promise<SavedDoc[]> {
   try {

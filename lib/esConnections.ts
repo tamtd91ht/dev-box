@@ -17,6 +17,7 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
+import { configPath } from './configDir';
 
 export interface EsConnection {
   /** Stable opaque id (used as the list key + api param). */
@@ -37,7 +38,7 @@ export type PublicEsConnection = EsConnection;
 /** File holding the connection list. Overridable via ES_CONNECTIONS_PATH. */
 const CONNECTIONS_FILE = process.env.ES_CONNECTIONS_PATH
   ? path.resolve(process.cwd(), process.env.ES_CONNECTIONS_PATH)
-  : path.join(process.cwd(), '.esconnections.json');
+  : configPath('esconnections.json', ['.esconnections.json']);
 
 /** Read the persisted list. Returns [] on missing/bad file. */
 async function readRaw(): Promise<EsConnection[]> {

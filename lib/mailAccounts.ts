@@ -10,6 +10,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { configPath } from './configDir';
 
 export interface MailEndpoint {
   host: string;
@@ -38,7 +39,7 @@ export function toPublic(a: MailAccount): MailAccountPublic {
   return pub;
 }
 
-const REG_PATH = path.join(process.cwd(), process.env.MAIL_ACCOUNTS_PATH || '.mailaccounts.json');
+const REG_PATH = process.env.MAIL_ACCOUNTS_PATH ? path.resolve(process.cwd(), process.env.MAIL_ACCOUNTS_PATH) : configPath('mailaccounts.json', ['.mailaccounts.json']);
 
 async function readAll(): Promise<MailAccount[]> {
   try {

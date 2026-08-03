@@ -18,6 +18,7 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
+import { configPath } from './configDir';
 
 export interface PgConnection {
   /** Stable opaque id (used as the list key + api param). */
@@ -44,7 +45,7 @@ export type PublicPgConnection = Omit<PgConnection, 'password'> & { hasPassword:
 /** File holding the connection list. Overridable via PG_CONNECTIONS_PATH. */
 const CONNECTIONS_FILE = process.env.PG_CONNECTIONS_PATH
   ? path.resolve(process.cwd(), process.env.PG_CONNECTIONS_PATH)
-  : path.join(process.cwd(), '.pgconnections.json');
+  : configPath('pgconnections.json', ['.pgconnections.json']);
 
 export function toPublic(c: PgConnection): PublicPgConnection {
   const { password, ...rest } = c;

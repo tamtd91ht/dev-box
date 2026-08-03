@@ -23,6 +23,7 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
+import { configPath } from './configDir';
 
 export type MongoScheme = 'mongodb' | 'mongodb+srv';
 
@@ -61,7 +62,7 @@ export type PublicMongoConnection = Omit<MongoConnection, 'password'> & { hasPas
 /** File holding the connection list. Overridable via MONGO_CONNECTIONS_PATH. */
 const CONNECTIONS_FILE = process.env.MONGO_CONNECTIONS_PATH
   ? path.resolve(process.cwd(), process.env.MONGO_CONNECTIONS_PATH)
-  : path.join(process.cwd(), '.mongoconnections.json');
+  : configPath('mongoconnections.json', ['.mongoconnections.json']);
 
 /** Strip the password before a connection is sent to the browser. */
 export function toPublic(c: MongoConnection): PublicMongoConnection {

@@ -6,6 +6,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { configPath } from './configDir';
 
 export interface AppEntry {
   id: string;
@@ -21,7 +22,7 @@ export interface AppEntry {
 
 export type AppMeta = Partial<Omit<AppEntry, 'id'>>;
 
-const REG_PATH = path.join(process.cwd(), process.env.APPS_PATH || '.apps.json');
+const REG_PATH = process.env.APPS_PATH ? path.resolve(process.cwd(), process.env.APPS_PATH) : configPath('apps.json', ['.apps.json']);
 
 async function readAll(): Promise<AppEntry[]> {
   try {

@@ -21,6 +21,7 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
+import { configPath } from './configDir';
 
 /** A single Redis Cluster seed node. */
 export interface RedisNode {
@@ -54,7 +55,7 @@ export type PublicRedisConnection = Omit<RedisConnection, 'password'> & { hasPas
 /** File holding the connection list. Overridable via REDIS_CONNECTIONS_PATH. */
 const CONNECTIONS_FILE = process.env.REDIS_CONNECTIONS_PATH
   ? path.resolve(process.cwd(), process.env.REDIS_CONNECTIONS_PATH)
-  : path.join(process.cwd(), '.redisconnections.json');
+  : configPath('redisconnections.json', ['.redisconnections.json']);
 
 /** Strip the password before a connection is sent to the browser. */
 export function toPublic(c: RedisConnection): PublicRedisConnection {

@@ -6,6 +6,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { configPath } from './configDir';
 
 export interface Bookmark {
   id: string;
@@ -21,7 +22,7 @@ export interface Bookmark {
 
 export type BookmarkMeta = Partial<Omit<Bookmark, 'id' | 'addedAt'>>;
 
-const REG_PATH = path.join(process.cwd(), process.env.BOOKMARKS_PATH || '.bookmarks.json');
+const REG_PATH = process.env.BOOKMARKS_PATH ? path.resolve(process.cwd(), process.env.BOOKMARKS_PATH) : configPath('bookmarks.json', ['.bookmarks.json']);
 
 async function readAll(): Promise<Bookmark[]> {
   try {

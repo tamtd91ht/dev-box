@@ -5,6 +5,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { configPath } from './configDir';
 
 export interface ApiHeader { key: string; value: string; on?: boolean }
 
@@ -29,7 +30,7 @@ export interface ApiEnvironment {
 
 interface ApiData { requests: ApiRequest[]; environments: ApiEnvironment[]; activeEnvId?: string }
 
-const REG_PATH = path.join(process.cwd(), process.env.API_COLLECTIONS_PATH || '.apicollections.json');
+const REG_PATH = process.env.API_COLLECTIONS_PATH ? path.resolve(process.cwd(), process.env.API_COLLECTIONS_PATH) : configPath('apicollections.json', ['.apicollections.json']);
 
 async function readAll(): Promise<ApiData> {
   try {

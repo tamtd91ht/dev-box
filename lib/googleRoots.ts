@@ -6,6 +6,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { configPath } from './configDir';
 
 export interface GoogleRoot {
   id: string;
@@ -19,7 +20,7 @@ export interface GoogleRoot {
   url: string;
 }
 
-const REG_PATH = path.join(process.cwd(), process.env.GOOGLE_ROOTS_PATH || '.googleroots.json');
+const REG_PATH = process.env.GOOGLE_ROOTS_PATH ? path.resolve(process.cwd(), process.env.GOOGLE_ROOTS_PATH) : configPath('googleroots.json', ['.googleroots.json']);
 
 async function readAll(): Promise<GoogleRoot[]> {
   try {

@@ -18,6 +18,7 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
+import { configPath } from './configDir';
 
 export interface GitProject {
   /** Stable opaque id (used as the tab key + api param). */
@@ -31,7 +32,7 @@ export interface GitProject {
 /** File holding the project list. Overridable via GIT_PROJECTS_PATH. */
 const PROJECTS_FILE = process.env.GIT_PROJECTS_PATH
   ? path.resolve(process.cwd(), process.env.GIT_PROJECTS_PATH)
-  : path.join(process.cwd(), '.gitprojects.json');
+  : configPath('gitprojects.json', ['.gitprojects.json']);
 
 /**
  * A sensible STARTING folder for the browse picker (not a restriction). Priority:

@@ -14,10 +14,11 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { normalizeConfig } from './normalize';
 import { DEFAULT_AUTOMATION_CONFIG, type AutomationConfig } from './types';
+import { configPath } from '../configDir';
 
 const CONFIG_FILE = process.env.AUTOMATION_CONFIG_PATH
   ? path.resolve(process.cwd(), process.env.AUTOMATION_CONFIG_PATH)
-  : path.join(process.cwd(), '.automation.json');
+  : configPath('automation.json', ['.automation.json']);
 
 export const DEFAULT_LOG_FILE = '.automation-log.jsonl';
 

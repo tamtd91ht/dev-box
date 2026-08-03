@@ -24,6 +24,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import type { Flow } from './types';
 import type { AuthMode } from './request';
+import { configPath } from './configDir';
 
 export interface ApiIntegration {
   /** Stable opaque id (used as the registry key + api param). */
@@ -55,7 +56,7 @@ const MANIFEST_FILE = 'devbox.api.json';
 
 const REGISTRY_FILE = process.env.API_INTEGRATIONS_PATH
   ? path.resolve(process.cwd(), process.env.API_INTEGRATIONS_PATH)
-  : path.join(process.cwd(), '.apiintegrations.json');
+  : configPath('apiintegrations.json', ['.apiintegrations.json']);
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 

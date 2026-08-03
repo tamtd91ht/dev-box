@@ -20,6 +20,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { configPath } from './configDir';
 
 const on = (v: string | undefined) => /^(1|true|yes|on)$/i.test(v ?? '');
 
@@ -32,7 +33,7 @@ export const GOOGLE_CONFIGURED = CLIENT_ID.length > 0 && CLIENT_SECRET.length > 
 
 const SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/drive.readonly'];
 
-const TOKEN_PATH = path.join(process.cwd(), process.env.GOOGLE_TOKEN_PATH || '.googleauth.json');
+const TOKEN_PATH = process.env.GOOGLE_TOKEN_PATH ? path.resolve(process.cwd(), process.env.GOOGLE_TOKEN_PATH) : configPath('googleauth.json', ['.googleauth.json']);
 
 interface AccountTokens {
   id: string;

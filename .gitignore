@@ -10,6 +10,13 @@ next-env.d.ts
 *.log
 npm-debug.log*
 
+# ── Local registries / state (secrets, machine paths) ──────────────────────
+# TẤT CẢ file cấu hình local giờ nằm trong configs/ — ignore cả thư mục là an
+# toàn nhất (khỏi phải nhớ liệt kê từng file mỗi khi thêm tính năng mới).
+configs/
+# Các dòng .xxx.json bên dưới là DI SẢN: file cũ ở repo-root, tự động được
+# migrate vào configs/ khi chạy. Giữ lại phòng máy nào chưa migrate xong.
+
 # local persisted connection config (holds API keys/secrets in plaintext)
 .apitester-config.json
 

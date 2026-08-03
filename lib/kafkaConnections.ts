@@ -16,6 +16,7 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
+import { configPath } from './configDir';
 
 export interface KafkaConnection {
   /** Stable opaque id (used as the list key + api param). */
@@ -45,7 +46,7 @@ export type PublicKafkaConnection = KafkaConnection;
 /** File holding the connection list. Overridable via KAFKA_CONNECTIONS_PATH. */
 const CONNECTIONS_FILE = process.env.KAFKA_CONNECTIONS_PATH
   ? path.resolve(process.cwd(), process.env.KAFKA_CONNECTIONS_PATH)
-  : path.join(process.cwd(), '.kafkaconnections.json');
+  : configPath('kafkaconnections.json', ['.kafkaconnections.json']);
 
 /** Projection sent to the browser (identity today — see PublicKafkaConnection). */
 export function toPublic(c: KafkaConnection): PublicKafkaConnection {

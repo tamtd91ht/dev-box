@@ -19,6 +19,7 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
+import { configPath } from './configDir';
 
 const DEFAULT_PORT = 15672;
 
@@ -64,7 +65,7 @@ export interface PublicRabbitConnection {
 /** File holding the connection list. Overridable via RABBIT_CONNECTIONS_PATH. */
 const CONNECTIONS_FILE = process.env.RABBIT_CONNECTIONS_PATH
   ? path.resolve(process.cwd(), process.env.RABBIT_CONNECTIONS_PATH)
-  : path.join(process.cwd(), '.rabbitconnections.json');
+  : configPath('rabbitconnections.json', ['.rabbitconnections.json']);
 
 export function toPublic(c: RabbitConnection): PublicRabbitConnection {
   return {
