@@ -18,7 +18,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Editor, { type Monaco } from '@monaco-editor/react';
 import type { editor as MonacoEditorNs, Position as MonacoPosition, Uri as MonacoUri, IRange } from 'monaco-editor';
 import {
-  monacoLang, fileIcon, symbolIcon, cDefs, cUsages, cCompletions,
+  monacoLang, fileIcon, symbolIcon, cDefs, cUsages, cCallGraph, cCompletions,
   type SymbolKind, type TextHit,
 } from '@/lib/code';
 
@@ -226,6 +226,14 @@ interface UsagesState {
   loading: boolean;
 }
 
+interface CallGraphState {
+  word: string;
+  loading: boolean;
+  callers: { enclosing: string; enclosingType?: string; rel: string; line: number; preview: string }[];
+  callees: { name: string; rel: string; line: number; sig: string; callLine: number }[];
+  truncated: boolean;
+}
+
 export default function EditorPane({
   projectId, files, activeRel, reveal, onSelect, onClose, onChange, onSave, onOpenAt, onOpenPalette,
 }: Props) {
@@ -233,12 +241,14 @@ export default function EditorPane({
   const editorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
   const [usages, setUsages] = useState<UsagesState | null>(null);
+  const [callg, setCallg] = useState<CallGraphState | null>(null);
 
   // Refs cho handler gắn 1 lần trong onMount.
   const saveRef = useRef<() => void>(() => {});
   const paletteRef = useRef(onOpenPalette);
   paletteRef.current = onOpenPalette;
   const usagesRef = useRef<(word: string) => void>(() => {});
+  const callgRef = useRef<(word: string) => void>(() => {});
 
   useEffect(() => {
     saveRef.current = () => {
@@ -265,6 +275,18 @@ export default function EditorPane({
   }, [projectId, activeRel]);
   usagesRef.current = (w) => void runUsages(w);
 
+  const runCallGraph = useCallback(async (word: string) => {
+    setUsages(null); // hai panel dùng chung chỗ — mở call graph thì đóng usages
+    setCallg({ word, loading: true, callers: [], callees: [], truncated: false });
+    try {
+      const r = await cCallGraph(projectId, word);
+      setCallg({ word, loading: false, callers: r.callers, callees: r.callees, truncated: r.truncated });
+    } catch {
+      setCallg((c) => (c && c.word === word ? { ...c, loading: false } : c));
+    }
+  }, [projectId]);
+  callgRef.current = (w) => void runCallGraph(w);
+
   // Reveal: nhảy tới dòng khi file active khớp target (mở từ palette/usages/defs).
   useEffect(() => {
     if (!reveal || !active || active.rel !== reveal.rel) return;
@@ -290,7 +312,7 @@ export default function EditorPane({
       <div className="cs-editor-empty">
         <div className="cs-empty-logo" aria-hidden>{'</>'}</div>
         <p>Chọn file bên trái để mở — hoặc Ctrl+Shift+N tìm class/file.</p>
-        <p className="cs-empty-hint">Ctrl+S lưu · Ctrl+Click đến khai báo · Alt+F7 find usages</p>
+        <p className="cs-empty-hint">Ctrl+S lưu · Ctrl+Click đến khai báo · Alt+F7 find usages · Ctrl+Alt+H call hierarchy</p>
       </div>
     );
   }
@@ -358,6 +380,19 @@ export default function EditorPane({
                   if (w) usagesRef.current(w.word);
                 },
               });
+              // Call Hierarchy: đứng ở tên hàm → thấy ai gọi + nó gọi ai.
+              editor.addAction({
+                id: 'cs-call-hierarchy',
+                label: 'Call Hierarchy — ai gọi / gọi ai',
+                keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyH],
+                contextMenuGroupId: 'navigation',
+                contextMenuOrder: 1.6,
+                run: (ed) => {
+                  const pos = ed.getPosition();
+                  const w = pos && ed.getModel()?.getWordAtPosition(pos);
+                  if (w) callgRef.current(w.word);
+                },
+              });
             }}
             onChange={(v) => onChange(active.rel, v ?? '')}
             options={{
@@ -402,6 +437,44 @@ export default function EditorPane({
             ))}
             {!usages.loading && usages.hits.length === 0 && (
               <div className="cs-pal-empty">Không thấy usage nào.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Panel Call Hierarchy (callers / callees) ── */}
+      {callg && (
+        <div className="cs-usages">
+          <div className="cs-usages-head">
+            <span>
+              🔗 Call hierarchy: <b>{callg.word}()</b>
+              {callg.loading ? ' — đang phân tích…' : ` — ${callg.callers.length} nơi gọi · ${callg.callees.length} hàm được gọi${callg.truncated ? ' (cắt bớt)' : ''}`}
+            </span>
+            {callg.loading && <span className="spinner" aria-hidden />}
+            <span style={{ flex: 1 }} />
+            <button className="cs-tab-x" title="Đóng" onClick={() => setCallg(null)}>✕</button>
+          </div>
+          <div className="cs-usages-list">
+            {!callg.loading && (
+              <>
+                <div className="cs-ch-section">⬆ Được gọi từ (callers)</div>
+                {callg.callers.map((c, i) => (
+                  <button key={`cr-${c.rel}:${c.line}:${i}`} className="cs-usage-row" onClick={() => onOpenAt(c.rel, c.line)} title={`${c.rel}:${c.line}`}>
+                    <span className="cs-usage-loc">{c.enclosingType ? `${c.enclosingType}.` : ''}{c.enclosing}</span>
+                    <span className="cs-usage-prev">{c.rel}:{c.line} · {c.preview}</span>
+                  </button>
+                ))}
+                {callg.callers.length === 0 && <div className="cs-pal-empty">Không thấy nơi gọi (có thể gọi động/qua interface).</div>}
+
+                <div className="cs-ch-section">⬇ Gọi tới (callees)</div>
+                {callg.callees.map((c, i) => (
+                  <button key={`ce-${c.rel}:${c.line}:${i}`} className="cs-usage-row" onClick={() => onOpenAt(c.rel, c.line)} title={`${c.rel}:${c.line}`}>
+                    <span className="cs-usage-loc">{c.name}()</span>
+                    <span className="cs-usage-prev">{c.rel}:{c.line} · {c.sig}</span>
+                  </button>
+                ))}
+                {callg.callees.length === 0 && <div className="cs-pal-empty">Không rút được lời gọi nào trong thân hàm.</div>}
+              </>
             )}
           </div>
         </div>

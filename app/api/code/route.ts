@@ -29,7 +29,7 @@ import {
 } from '@/lib/codeFs';
 import { createSession, getSession, killSession, listSessions, type ShellKind } from '@/lib/termSessions';
 import {
-  searchNav, searchText, findDefs, exactSymbols, completionSymbols, invalidateSearchCache,
+  searchNav, searchText, findDefs, callGraph, exactSymbols, completionSymbols, invalidateSearchCache,
 } from '@/lib/codeSearch';
 
 export const runtime = 'nodejs';
@@ -106,6 +106,9 @@ export async function POST(req: NextRequest) {
         break;
       case 'defs':
         result = { defs: await findDefs(await needRoot(), String(body.word ?? '')) };
+        break;
+      case 'callgraph':
+        result = await callGraph(await needRoot(), String(body.word ?? ''));
         break;
       case 'symbol':
         result = { symbols: await exactSymbols(await needRoot(), String(body.word ?? '')) };

@@ -92,6 +92,13 @@ export const cNav = (projectId: string, q: string) => call<NavResult>('nav', { p
 export const cUsages = (projectId: string, word: string, startRel?: string) =>
   call<{ hits: TextHit[]; truncated: boolean; scanned: number }>('usages', { projectId, word, startRel });
 export const cDefs = (projectId: string, word: string) => call<{ defs: SymbolHit[] }>('defs', { projectId, word });
+
+/** Call graph một-cấp: nơi gọi tới hàm (callers) + hàm mà nó gọi (callees). */
+export interface CallSite { enclosing: string; enclosingType?: string; rel: string; line: number; preview: string }
+export interface Callee { name: string; rel: string; line: number; sig: string; callLine: number }
+export interface CallGraph { callers: CallSite[]; callees: Callee[]; truncated: boolean }
+export const cCallGraph = (projectId: string, word: string) =>
+  call<CallGraph>('callgraph', { projectId, word });
 export const cCompletions = (projectId: string) =>
   call<{ symbols: { name: string; kind: SymbolKind }[] }>('completions', { projectId });
 

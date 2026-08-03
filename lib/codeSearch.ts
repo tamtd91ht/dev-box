@@ -336,6 +336,169 @@ export async function searchText(
   return { hits, truncated, scanned };
 }
 
+// ── Call graph (callers / callees) ──────────────────────────────────────────
+// Không language server: dùng index method sẵn có + heuristic một-cấp, lazy
+// theo yêu cầu. Cân bằng hiệu năng/tiện dụng cho điều hướng hằng ngày; không
+// phân giải overload/type như IntelliJ (tên trùng nhau ở 2 class sẽ gộp).
+
+export interface CallSite {
+  /** Hàm/khối chứa lời gọi (nơi gọi) — 'method' name hoặc '(top-level)'. */
+  enclosing: string;
+  /** Class/type bao ngoài enclosing, nếu suy ra được. */
+  enclosingType?: string;
+  rel: string;
+  line: number;
+  preview: string;
+}
+
+export interface CallGraph {
+  /** Nơi GỌI tới hàm này. */
+  callers: CallSite[];
+  /** Các hàm mà thân hàm này GỌI (khớp được với index → có đích để nhảy). */
+  callees: { name: string; rel: string; line: number; sig: string; callLine: number }[];
+  truncated: boolean;
+}
+
+const CALL_KW = new Set([
+  ...JAVA_KEYWORDS, 'function', 'fun', 'val', 'var', 'let', 'const', 'class',
+  'interface', 'enum', 'record', 'import', 'package', 'public', 'private',
+  'protected', 'static', 'void', 'get', 'set', 'and', 'or', 'in', 'is', 'as',
+]);
+
+/** Với mỗi file, danh sách (line, methodName, typeName) các khai báo method/type,
+ *  để suy ra "lời gọi ở dòng X nằm trong hàm nào". */
+function declMap(text: string, ext: string): { line: number; method?: string; type?: string }[] {
+  const lines = text.split('\n');
+  const decls: { line: number; method?: string; type?: string }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.length > 400) continue;
+    TYPE_DECL.lastIndex = 0;
+    const tm = TYPE_DECL.exec(line);
+    if (tm) decls.push({ line: i + 1, type: tm[2] });
+    const fun = FUN_DECL.exec(line);
+    if (fun && !JAVA_KEYWORDS.has(fun[1])) { decls.push({ line: i + 1, method: fun[1] }); continue; }
+    if (['java', 'kt', 'kts', 'scala', 'groovy', 'cs'].includes(ext)) {
+      const md = METHOD_DECL.exec(line);
+      if (md && !JAVA_KEYWORDS.has(md[1])) {
+        const eq = line.indexOf('='); const namePos = line.indexOf(md[1]);
+        if (eq === -1 || eq > namePos) decls.push({ line: i + 1, method: md[1] });
+      }
+    }
+  }
+  return decls;
+}
+
+/** Hàm bao gần nhất PHÍA TRÊN dòng `atLine` + type bao gần nhất trên nó. */
+function enclosingOf(decls: { line: number; method?: string; type?: string }[], atLine: number) {
+  let method: string | undefined; let type: string | undefined;
+  for (const d of decls) {
+    if (d.line > atLine) break;
+    if (d.method) method = d.method;
+    if (d.type) type = d.type;
+  }
+  return { method: method ?? '(top-level)', type };
+}
+
+/** Trích tên hàm được gọi trong một đoạn text: pattern `name(` không phải khai báo. */
+function extractCalls(text: string): { name: string; line: number }[] {
+  const lines = text.split('\n');
+  const out: { name: string; line: number }[] = [];
+  const CALL = /(?:^|[^\w$.])([A-Za-z_$][\w$]*)\s*\(/g;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.length > 400) continue;
+    const t = line.trimStart();
+    if (t.startsWith('//') || t.startsWith('*')) continue;
+    CALL.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CALL.exec(line)) !== null) {
+      const name = m[1];
+      if (CALL_KW.has(name)) continue;
+      out.push({ name, line: i + 1 });
+    }
+  }
+  return out;
+}
+
+/** Cắt thân một hàm bắt đầu ở dòng declLine (1-based) theo cân bằng ngoặc {}. */
+function sliceBody(text: string, declLine: number): string {
+  const lines = text.split('\n');
+  let depth = 0; let started = false; const body: string[] = [];
+  for (let i = declLine - 1; i < lines.length; i++) {
+    const line = lines[i];
+    body.push(line);
+    for (const ch of line) {
+      if (ch === '{') { depth++; started = true; }
+      else if (ch === '}') { depth--; }
+    }
+    if (started && depth <= 0) break;
+    if (i - (declLine - 1) > 800) break; // guard hàm khổng lồ
+  }
+  return body.join('\n');
+}
+
+/** Callers + callees của một tên hàm. maxCallers giới hạn grep. */
+export async function callGraph(root: string, word: string, maxCallers = 200): Promise<CallGraph> {
+  const w = word.trim();
+  const idx = await buildIndex(root);
+  const empty: CallGraph = { callers: [], callees: [], truncated: false };
+  if (!/^[\w$]+$/.test(w)) return empty;
+
+  // ── Callers: grep `word(` trên toàn repo, quy về hàm bao ──
+  const files = (await walk(root)).filter((f) => CODE_EXT.has(f.ext));
+  const callRe = new RegExp(`(?:^|[^\\w$.])${escapeRe(w)}\\s*\\(`);
+  const declLineSet = new Set(idx.symbols.filter((s) => s.name === w && s.kind === 'method').map((s) => `${s.rel}:${s.line}`));
+  const callers: CallSite[] = [];
+  let truncated = false;
+
+  await mapPool(files, 16, async (f) => {
+    if (callers.length >= maxCallers) return;
+    const text = await readText(f);
+    if (text === null || !text.includes(w)) return;
+    const lines = text.split('\n');
+    let decls: ReturnType<typeof declMap> | null = null;
+    for (let i = 0; i < lines.length; i++) {
+      if (!callRe.test(lines[i])) continue;
+      if (declLineSet.has(`${f.rel}:${i + 1}`)) continue; // chính dòng khai báo, không phải call
+      // Loại dòng khai báo method trùng tên (đề phòng chưa vào index).
+      const t = lines[i].trimStart();
+      if (new RegExp(`\\b(fun|function)\\s+${escapeRe(w)}\\b`).test(t)) continue;
+      if (callers.length >= maxCallers) { truncated = true; return; }
+      decls ||= declMap(text, f.ext);
+      const enc = enclosingOf(decls, i + 1);
+      callers.push({
+        enclosing: enc.method, enclosingType: enc.type,
+        rel: f.rel, line: i + 1, preview: lines[i].trim().slice(0, 200),
+      });
+    }
+  });
+
+  // ── Callees: đọc thân hàm `word`, rút lời gọi, khớp index ──
+  const calleeMap = new Map<string, { name: string; rel: string; line: number; sig: string; callLine: number }>();
+  const defs = idx.symbols.filter((s) => s.name === w && s.kind === 'method');
+  for (const def of defs.slice(0, 4)) {
+    const f = files.find((x) => x.rel === def.rel);
+    if (!f) continue;
+    const text = await readText(f);
+    if (!text) continue;
+    const body = sliceBody(text, def.line);
+    for (const call of extractCalls(body)) {
+      if (call.name === w || calleeMap.has(call.name)) continue;
+      const target = (idx.byName.get(call.name) ?? []).find((s) => s.kind === 'method');
+      if (target) {
+        calleeMap.set(call.name, {
+          name: call.name, rel: target.rel, line: target.line, sig: target.sig,
+          callLine: def.line + call.line - 1,
+        });
+      }
+    }
+  }
+
+  callers.sort((a, b) => a.rel.localeCompare(b.rel) || a.line - b.line);
+  return { callers, callees: [...calleeMap.values()], truncated };
+}
+
 /** Go to declaration: index exact-name trước, fallback heuristic pattern. */
 export async function findDefs(root: string, word: string): Promise<SymbolHit[]> {
   const exact = await exactSymbols(root, word);
