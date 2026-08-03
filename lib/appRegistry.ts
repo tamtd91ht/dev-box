@@ -15,6 +15,9 @@ export interface AppEntry {
   root: string;
   /** Hậu tố script: chạy `npm run <cmd>` trong root. */
   cmd: string;
+  /** Cổng mong muốn (optional) — DevBox set PORT + -p khi start, tự dò cổng
+   *  trống kế tiếp nếu cổng này đang bận. Trống = để app tự quyết. */
+  port?: number;
   project?: string;
   description?: string;
   tags?: string[];
@@ -32,6 +35,12 @@ async function readAll(): Promise<AppEntry[]> {
 }
 async function writeAll(apps: AppEntry[]): Promise<void> {
   await fs.writeFile(REG_PATH, JSON.stringify({ apps }, null, 2), 'utf8');
+}
+
+/** Cổng hợp lệ 1..65535, ngoài khoảng → undefined (để app tự quyết). */
+function normPort(p: unknown): number | undefined {
+  const n = Number(p);
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : undefined;
 }
 
 const normTags = (t: unknown) =>
@@ -56,6 +65,7 @@ export async function addApp(input: AppMeta): Promise<AppEntry[]> {
     id: randomUUID(),
     name: (input.name ?? '').trim() || path.basename(root),
     root, cmd,
+    port: normPort(input.port),
     project: (input.project ?? '').trim() || undefined,
     description: (input.description ?? '').trim() || undefined,
     tags: normTags(input.tags).length ? normTags(input.tags) : undefined,
@@ -71,6 +81,7 @@ export async function updateApp(id: string, patch: AppMeta): Promise<AppEntry[]>
   if (patch.name !== undefined) a.name = patch.name.trim() || a.name;
   if (patch.root !== undefined && patch.root.trim()) a.root = patch.root.trim();
   if (patch.cmd !== undefined && patch.cmd.trim()) a.cmd = patch.cmd.trim();
+  if (patch.port !== undefined) a.port = normPort(patch.port);
   if (patch.project !== undefined) a.project = patch.project.trim() || undefined;
   if (patch.description !== undefined) a.description = patch.description.trim() || undefined;
   if (patch.tags !== undefined) { const t = normTags(patch.tags); a.tags = t.length ? t : undefined; }

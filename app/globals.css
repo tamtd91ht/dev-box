@@ -3956,3 +3956,10 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .mc-addr-item:hover, .mc-addr-item.on { background: var(--glass-2); }
 .mc-addr-email { font-weight: 600; }
 .mc-addr-name { color: var(--muted); font-size: 12px; }
+
+/* Apps: badge cảnh báo app chưa cài node_modules */
+.app-need-install { background: color-mix(in srgb, var(--warn, #d90) 18%, transparent); color: var(--warn, #b80); }
+
+/* Apps: badge cổng đang chạy (link mở) */
+.app-port { text-decoration: none; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.app-port:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }

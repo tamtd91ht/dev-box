@@ -10,10 +10,14 @@ import { fmtRel } from '@/lib/google';
 import FolderPicker from './FolderPicker';
 
 interface AppEntry {
-  id: string; name: string; root: string; cmd: string;
+  id: string; name: string; root: string; cmd: string; port?: number;
   project?: string; description?: string; tags?: string[];
 }
-interface ListResult { apps: AppEntry[]; running: Record<string, { pid: number; startedAt: number }> }
+interface ListResult {
+  apps: AppEntry[];
+  running: Record<string, { pid: number; startedAt: number; port?: number }>;
+  installed?: Record<string, boolean>;
+}
 
 async function api<T>(action: string, params: Record<string, unknown> = {}): Promise<T> {
   const r = await fetch('/api/apps', {
@@ -25,7 +29,7 @@ async function api<T>(action: string, params: Record<string, unknown> = {}): Pro
   return (data as { result: T }).result;
 }
 
-type Draft = { name?: string; root?: string; cmd?: string; project?: string; description?: string; tagsText?: string };
+type Draft = { name?: string; root?: string; cmd?: string; port?: string; project?: string; description?: string; tagsText?: string };
 const splitTags = (s?: string) => (s ?? '').split(',').map((t) => t.trim()).filter(Boolean);
 
 function Fields({ d, onChange }: { d: Draft; onChange: (d: Draft) => void }) {
@@ -37,8 +41,11 @@ function Fields({ d, onChange }: { d: Draft; onChange: (d: Draft) => void }) {
           onChange={(e) => onChange({ ...d, root: e.target.value })} />
         <button className="ghost sm" style={{ flex: 'none' }} onClick={() => setPicking(true)}
           title="Duyệt chọn thư mục project trên máy">📂 Chọn…</button>
-        <input className="input mail-port" style={{ width: 160 }} placeholder="lệnh: dev/start/abc *" value={d.cmd ?? ''}
+        <input className="input mail-port" style={{ width: 130 }} placeholder="lệnh *" value={d.cmd ?? ''}
           onChange={(e) => onChange({ ...d, cmd: e.target.value })} title="Hậu tố: chạy `npm run <lệnh>`" />
+        <input className="input mail-port" style={{ width: 90 }} type="number" placeholder="Port" value={d.port ?? ''}
+          onChange={(e) => onChange({ ...d, port: e.target.value })}
+          title="Cổng mong muốn (optional). DevBox set PORT + -p khi start; nếu cổng bận sẽ tự nhảy sang cổng trống kế tiếp. Bỏ trống = để app tự quyết." />
       </div>
       {picking && (
         <FolderPicker
@@ -91,6 +98,7 @@ function LogPane({ id }: { id: string }) {
 export default function AppsWorkspace() {
   const [apps, setApps] = useState<AppEntry[]>([]);
   const [running, setRunning] = useState<ListResult['running']>({});
+  const [installed, setInstalled] = useState<Record<string, boolean>>({});
   const [err, setErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -101,7 +109,7 @@ export default function AppsWorkspace() {
   const [fProject, setFProject] = useState<string | null>(null);
   const [fTag, setFTag] = useState<string | null>(null);
 
-  const apply = (r: ListResult) => { setApps(r.apps); setRunning(r.running); };
+  const apply = (r: ListResult) => { setApps(r.apps); setRunning(r.running); setInstalled(r.installed ?? {}); };
   const reload = useCallback(async () => {
     try { apply(await api<ListResult>('list')); } catch (e) { setErr((e as Error).message); }
   }, []);
@@ -159,6 +167,8 @@ export default function AppsWorkspace() {
         <div className="g-list">
           {shown.map((a) => {
             const run = running[a.id];
+            // installed chưa nạp (undefined) → coi như đã cài, khỏi nhấp nháy cảnh báo.
+            const ready = installed[a.id] !== false;
             return (
               <div key={a.id}>
                 <div className="g-row" style={{ cursor: 'default' }}>
@@ -169,18 +179,31 @@ export default function AppsWorkspace() {
                       {a.project && <span className="glink-badge">📁 {a.project}</span>}
                       {(a.tags ?? []).map((t) => <span key={t} className="glink-tag">#{t}</span>)}
                       {run && <span className="glink-badge glink-profile">▶ {fmtRel(new Date(run.startedAt).toISOString())}</span>}
+                      {run?.port && (
+                        <a className="glink-badge app-port" href={`http://localhost:${run.port}`} target="_blank" rel="noreferrer"
+                          title={`Đang chạy ở cổng ${run.port}${a.port && run.port !== a.port ? ` (cổng ${a.port} bận nên nhảy sang)` : ''} — bấm để mở`}>
+                          🌐 :{run.port}{a.port && run.port !== a.port ? ' ⚠' : ''}
+                        </a>
+                      )}
+                      {!ready && <span className="glink-badge app-need-install" title="Project chưa có node_modules">⚠ chưa cài</span>}
                     </span>
-                    <span className="g-meta">{a.description ? `${a.description} · ` : ''}{a.root} · npm run {a.cmd}</span>
+                    <span className="g-meta">{a.description ? `${a.description} · ` : ''}{a.root} · npm run {a.cmd}{a.port ? ` · port ${a.port}` : ''}</span>
                   </span>
                   {run ? (
                     <button className="ghost sm" disabled={busyId === a.id} onClick={() => void act('stop', { id: a.id }, a.id)} title="Dừng (kill cả cây process)">■ Stop</button>
-                  ) : (
+                  ) : ready ? (
                     <button className="ghost sm" disabled={busyId === a.id} onClick={() => void act('start', { id: a.id }, a.id)} title={`npm run ${a.cmd}`}>▶ Start</button>
+                  ) : (
+                    <button className="sm" disabled={busyId === a.id}
+                      onClick={() => { setLogId(a.id); void act('install', { id: a.id }, a.id); }}
+                      title="Project chưa cài dependencies — chạy npm install (xem tiến trình ở log)">
+                      📦 npm install
+                    </button>
                   )}
                   <button className="ghost sm" onClick={() => setLogId(logId === a.id ? null : a.id)} title="Xem log">📜</button>
                   <button className="ghost sm" onClick={() => {
                     if (editId === a.id) setEditId(null);
-                    else { setEditId(a.id); setEditDraft({ name: a.name, root: a.root, cmd: a.cmd, project: a.project ?? '', description: a.description ?? '', tagsText: (a.tags ?? []).join(', ') }); }
+                    else { setEditId(a.id); setEditDraft({ name: a.name, root: a.root, cmd: a.cmd, port: a.port ? String(a.port) : '', project: a.project ?? '', description: a.description ?? '', tagsText: (a.tags ?? []).join(', ') }); }
                   }} title="Sửa cấu hình">✎</button>
                   <button className="ghost sm" onClick={() => {
                     if (window.confirm(`Bỏ app "${a.name}" khỏi danh sách? (không đụng tới project)`)) void act('remove', { id: a.id });
