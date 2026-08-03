@@ -25,3 +25,5 @@ export const dList = () => docsAction<SavedDoc[]>('list');
 export const dSave = (input: { id?: string; name: string; kind: DocKind; content: string }) =>
   docsAction<SavedDoc[]>('save', { ...input });
 export const dRemove = (id: string) => docsAction<SavedDoc[]>('remove', { id });
+export const dSaveFile = (dir: string, filename: string, content: string) =>
+  docsAction<{ path: string }>('saveFile', { dir, filename, content });

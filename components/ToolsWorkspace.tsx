@@ -11,8 +11,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import type { editor as MonacoEditorNs } from 'monaco-editor';
 import { formatText, minifyJson, monacoLangFor, type FormatKind } from '@/lib/format';
-import { dList, dSave, dRemove, type SavedDoc } from '@/lib/docs';
+import { dList, dSave, dRemove, dSaveFile, type SavedDoc } from '@/lib/docs';
 import { fmtRel } from '@/lib/google';
+import FolderPicker from './FolderPicker';
 
 const KINDS: { key: FormatKind; label: string }[] = [
   { key: 'json', label: 'JSON' },
@@ -29,6 +30,11 @@ export default function ToolsWorkspace() {
   const [openId, setOpenId] = useState<string | null>(null); // snippet đang mở (để Lưu đè)
   const [dirty, setDirty] = useState(false);
   const edRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null);
+  // Modal: 'store' = đặt tên lưu vào kho; 'file' = chọn thư mục + tên ghi file thật.
+  const [modal, setModal] = useState<null | 'store' | 'file'>(null);
+  const [nameInput, setNameInput] = useState('');
+  const [pickDir, setPickDir] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
 
   const reloadDocs = useCallback(() => { dList().then(setDocs).catch((e) => setErr((e as Error).message)); }, []);
   useEffect(() => { reloadDocs(); }, [reloadDocs]);
@@ -51,18 +57,31 @@ export default function ToolsWorkspace() {
   // ── Store snippet (JSON/text) ─────────────────────────────────────────────
   const newDoc = () => { setText(''); setErr(null); setOpenId(null); setDirty(false); setPreview(false); };
 
-  const save = async () => {
-    const cur = openId ? docs.find((d) => d.id === openId) : undefined;
-    const name = window.prompt('Tên tài liệu:', cur?.name ?? '');
-    if (name === null) return;
-    // Lưu 'json' nếu đang ở tab JSON, còn lại lưu dạng 'text' thô.
-    const docKind = kind === 'json' ? 'json' : 'text';
+  const defaultExt = kind === 'json' ? '.json' : kind === 'xml' ? '.xml' : kind === 'html' ? '.html' : '.txt';
+
+  /** Mở modal đặt tên. Đang mở snippet cũ → Lưu đè thẳng khỏi hỏi tên. */
+  const openStoreModal = async () => {
+    if (openId) { await saveStore(docs.find((d) => d.id === openId)?.name ?? ''); return; }
+    setNameInput(''); setModal('store');
+  };
+
+  const saveStore = async (name: string) => {
+    const docKind = kind === 'json' ? 'json' : 'text'; // XML/HTML lưu dạng text thô
     try {
       const before = new Set(docs.map((d) => d.id));
       const list = await dSave({ id: openId ?? undefined, name, kind: docKind, content: text });
       setDocs(list);
       if (!openId) setOpenId(list.find((d) => !before.has(d.id))?.id ?? null);
-      setDirty(false);
+      setDirty(false); setModal(null);
+    } catch (e) { setErr((e as Error).message); }
+  };
+
+  const saveToFile = async () => {
+    if (!pickDir || !nameInput.trim()) return;
+    try {
+      const { path } = await dSaveFile(pickDir, nameInput.trim(), text);
+      setErr(null); setModal(null);
+      window.alert(`Đã lưu: ${path}`);
     } catch (e) { setErr((e as Error).message); }
   };
 
@@ -97,8 +116,12 @@ export default function ToolsWorkspace() {
         <button className="ghost sm" onClick={copy} title="Copy toàn bộ">⧉ Copy</button>
         <span className="glink-filter-sep" aria-hidden />
         <button className="ghost sm" onClick={newDoc} title="Tạo tài liệu mới (trống)">＋ Mới</button>
-        <button className="ghost sm" onClick={() => void save()} title="Lưu tài liệu (JSON hoặc text)">
-          💾 {openId ? 'Lưu' : 'Lưu mới'}
+        <button className="ghost sm" onClick={() => void openStoreModal()} title="Lưu vào kho trong app (JSON/text)">
+          💾 {openId ? 'Lưu' : 'Lưu kho'}
+        </button>
+        <button className="ghost sm" onClick={() => { setNameInput(`untitled${defaultExt}`); setPickDir(null); setModal('file'); }}
+          title="Lưu ra file thật — chọn thư mục trên máy">
+          📁 Lưu ra file…
         </button>
       </div>
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '4px 0' }}>{err}</pre>}
@@ -143,6 +166,54 @@ export default function ToolsWorkspace() {
         </div>
       </div>
       {dirty && openId && <span className="small" style={{ color: 'var(--muted)', padding: '2px 6px' }}>• có thay đổi chưa lưu</span>}
+
+      {/* Modal: đặt tên lưu vào kho */}
+      {modal === 'store' && (
+        <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && setModal(null)}>
+          <div className="mail-compose panel" style={{ width: 'min(440px, 92vw)' }}>
+            <div className="mail-compose-head"><b>💾 Lưu vào kho</b><span style={{ flex: 1 }} />
+              <button className="ghost sm" onClick={() => setModal(null)}>✕</button></div>
+            <input className="input" autoFocus placeholder="Tên tài liệu" value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void saveStore(nameInput)} />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => void saveStore(nameInput)}>💾 Lưu</button>
+              <button className="ghost" onClick={() => setModal(null)}>Hủy</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: lưu ra file thật — chọn thư mục + tên file */}
+      {modal === 'file' && (
+        <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && setModal(null)}>
+          <div className="mail-compose panel" style={{ width: 'min(560px, 92vw)' }}>
+            <div className="mail-compose-head"><b>📁 Lưu ra file</b><span style={{ flex: 1 }} />
+              <button className="ghost sm" onClick={() => setModal(null)}>✕</button></div>
+            <div className="glink-meta-pair">
+              <input className="input" placeholder="Thư mục đích" value={pickDir ?? ''}
+                onChange={(e) => setPickDir(e.target.value)} />
+              <button className="ghost sm" style={{ flex: 'none' }} onClick={() => setPicking(true)}>📂 Chọn…</button>
+            </div>
+            <input className="input" placeholder="Tên file (kèm đuôi)" value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void saveToFile()} />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button disabled={!pickDir || !nameInput.trim()} onClick={() => void saveToFile()}>💾 Lưu ra file</button>
+              <button className="ghost" onClick={() => setModal(null)}>Hủy</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {picking && (
+        <FolderPicker
+          initial={pickDir ?? undefined}
+          title="Chọn thư mục lưu file"
+          onPick={(p) => { setPickDir(p); setPicking(false); }}
+          onClose={() => setPicking(false)}
+        />
+      )}
     </div>
   );
 }
