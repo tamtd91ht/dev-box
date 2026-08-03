@@ -98,10 +98,39 @@ let CONFIG = { ...DEFAULT_CONFIG };
 const configuredPartitions = new Set();
 
 /** Attach permission / download / popup policy to a guest partition once. */
+// Google chan dang nhap trong embedded browser ("This browser or app may not
+// be secure") bang cach soi User-Agent/headers o FLOW DANG NHAP. Workaround
+// pho bien: rieng cac host dang nhap Google, trinh UA Firefox (Google khong
+// ap heuristic "embedded Chrome" cho Firefox) va bo header Sec-CH-UA* (Firefox
+// khong gui client hints nen giu lai la tu mau thuan). Moi trang khac giu
+// nguyen UA Chrome cua guest. Dang nhap lot mot lan la cookie luu ben trong
+// partition — tu do Docs/Sheets editor day du chay ngay trong app.
+const GOOGLE_LOGIN_HOSTS = /(^|\.)accounts\.google\.com$|(^|\.)gds\.google\.com$/;
+const FIREFOX_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0';
+
 function configurePartition(part) {
   if (!part || configuredPartitions.has(part)) return;
   configuredPartitions.add(part);
   const ses = session.fromPartition(part);
+
+  ses.webRequest.onBeforeSendHeaders((details, callback) => {
+    try {
+      const host = new URL(details.url).hostname;
+      if (GOOGLE_LOGIN_HOSTS.test(host)) {
+        const headers = { ...details.requestHeaders };
+        headers['User-Agent'] = FIREFOX_UA;
+        for (const k of Object.keys(headers)) {
+          if (/^sec-ch-ua/i.test(k)) delete headers[k];
+        }
+        callback({ requestHeaders: headers });
+        return;
+      }
+    } catch {
+      /* URL la ve (chrome-extension:, data:, ...) — bo qua */
+    }
+    callback({ requestHeaders: details.requestHeaders });
+  });
 
   ses.setPermissionRequestHandler((_wc, permission, callback) => {
     const ok = ALLOWED_PERMISSIONS.has(permission);
@@ -345,6 +374,21 @@ ipcMain.handle('workspace:clearSession', async (_evt, partition) => {
     return { ok: true };
   } catch (err) {
     log('LogoutError', `${partition} · ${err && err.message}`);
+    return { ok: false, error: err && err.message };
+  }
+});
+
+// Tra focus ve host page — workaround Electron bug: huy <webview> dang giu
+// focus xong host van tuong guest giu focus, moi input tren trang chet (nhin
+// nhu bi disable) cho toi khi user click ra ngoai cua so. UI goi sau khi dong
+// viewer nhung (GoogleDocViewer.onClose).
+ipcMain.handle('workspace:focusHost', (evt) => {
+  try {
+    const win = BrowserWindow.fromWebContents(evt.sender);
+    if (win) win.focus();
+    evt.sender.focus();
+    return { ok: true };
+  } catch (err) {
     return { ok: false, error: err && err.message };
   }
 });

@@ -103,6 +103,9 @@ export interface WorkspaceBridge {
   readonly config: WorkspaceConfig;
   /** Wipe cookies + storage + cache for a partition (the "Logout" action). */
   clearSession(partition: string): Promise<{ ok: boolean; error?: string }>;
+  /** Kéo focus về host page sau khi hủy <webview> giữ focus (fix input "chết").
+   *  Optional: preload cũ (trước khi có handler này) chưa expose. */
+  focusHost?(): Promise<{ ok: boolean; error?: string }>;
 }
 
 /** Minimal surface of an Electron <webview> element we actually drive. */

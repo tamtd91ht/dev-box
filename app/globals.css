@@ -3543,3 +3543,156 @@ pre.kafka-drawer-body {
 .cs-term-hint code { color: #ffc66d; background: #3c3f41; padding: 1px 5px; border-radius: 4px; }
 .cs-xterm { width: 100%; height: 100%; }
 .cs-xterm .xterm { height: 100%; }
+
+/* ── Mail tab ──────────────────────────────────────────────────────────── */
+/* Tái dùng khung g-projects/g-rail/g-list của tab Google; dưới đây chỉ là
+   phần riêng: hàng mail 3 cột, khung đọc mail, composer overlay. */
+
+.mail-row { display: flex; align-items: center; gap: 10px; }
+.mail-row.unread .g-base, .mail-row.unread .mail-from { font-weight: 700; }
+.mail-from {
+  flex: none; width: 180px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--text); text-align: left;
+}
+.mail-date { flex: none; width: 110px; text-align: right; color: var(--muted); font-size: 12px; }
+
+.mail-detail { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.mail-detail-bar { display: flex; align-items: center; gap: 6px; }
+.mail-detail-subject { margin: 0 0 4px; font-size: 16px; }
+.mail-detail-meta { display: flex; flex-direction: column; gap: 2px; }
+.mail-atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.mail-atts .chip-btn { text-decoration: none; }
+.mail-detail-body { flex: 1; min-height: 0; display: flex; }
+.mail-frame {
+  flex: 1; width: 100%; border: 1px solid var(--glass-brd); border-radius: 10px;
+  background: #fff;
+}
+.mail-plain {
+  flex: 1; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap;
+  word-break: break-word; border: 1px solid var(--glass-brd); border-radius: 10px;
+  font: 13px/1.55 var(--mono, ui-monospace, monospace);
+}
+
+/* Composer + add-account overlay */
+.mail-compose-backdrop {
+  position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center;
+}
+.mail-compose {
+  width: min(720px, 94vw); max-height: 90vh; overflow: auto;
+  display: flex; flex-direction: column; gap: 8px; padding: 14px;
+}
+.mail-compose-head { display: flex; align-items: center; gap: 8px; }
+.mail-compose-body { min-height: 260px; resize: vertical; font: 13px/1.5 var(--mono, ui-monospace, monospace); }
+
+/* Add-account form */
+.mail-add { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.mail-add-presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.mail-add-grid { display: flex; flex-direction: column; gap: 6px; }
+.mail-add-pair { display: flex; gap: 6px; }
+.mail-add-pair .input { flex: 1; }
+.mail-port { flex: none !important; width: 90px; }
+
+/* ── Google tab: 🔗 Liên kết — metadata + filter ───────────────────────── */
+.glink-meta-form {
+  display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;
+  padding: 10px; border: 1px dashed var(--glass-brd); border-radius: 10px;
+}
+.glink-edit { margin: 2px 0 8px 30px; }
+.glink-meta-pair { display: flex; gap: 6px; }
+.glink-meta-pair .input { flex: 1; }
+.glink-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.glink-filter-sep { width: 1px; height: 18px; background: var(--glass-brd); }
+.glink-badge {
+  margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+}
+.glink-tag {
+  margin-left: 6px; padding: 1px 6px; border-radius: 999px; font-size: 11px;
+  background: var(--glass-2); color: var(--muted);
+}
+
+/* Mail: phân biệt đã/chưa đọc + badge 🔔 số chưa đọc trên rail thư mục */
+.mail-dot {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+}
+.mail-dot.off { background: transparent; }
+.mail-row.unread { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.mail-folder-unread { font-weight: 700; }
+.mail-unseen {
+  flex: none; margin-left: auto; padding: 1px 7px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; white-space: nowrap;
+  background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent);
+}
+
+/* Links tab: badge profile phiên đăng nhập (🔑) — nền vàng nhạt phân biệt với dự án */
+.glink-profile {
+  background: color-mix(in srgb, var(--warn, #d90) 14%, transparent);
+  color: var(--warn, #b80);
+}
+
+/* Google tab: API-preview panel (GoogleFilePreview) */
+.gp-canvas { background: var(--bg-1, var(--bg)); }
+.gp-frame { width: 100%; height: 100%; border: 0; background: #fff; }
+.gp-imgwrap { width: 100%; height: 100%; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 16px; }
+.gp-img { max-width: 100%; height: auto; border-radius: 6px; }
+.gp-dl {
+  display: inline-flex; align-items: center; justify-content: center;
+  text-decoration: none; padding: 4px 10px; border-radius: 8px; color: var(--text);
+}
+.gp-dl:hover { background: var(--glass-2); }
+
+/* Google preview: thanh tab chuyển sheet (Sheets/xlsx nhiều sheet) */
+.gp-sheets { display: flex; flex-direction: column; width: 100%; height: 100%; }
+.gp-sheettabs {
+  display: flex; gap: 2px; flex-wrap: wrap; padding: 4px 6px;
+  background: var(--bg-1, var(--bg)); border-bottom: 1px solid var(--glass-brd);
+}
+.gp-sheettab {
+  padding: 4px 12px; border: none; border-radius: 6px 6px 0 0; cursor: pointer;
+  background: transparent; color: var(--muted); font-size: 12px;
+}
+.gp-sheettab:hover { background: var(--glass-2); color: var(--text); }
+.gp-sheettab.on {
+  background: #fff; color: #1a73e8; font-weight: 600;
+  box-shadow: 0 -1px 0 var(--glass-brd) inset;
+}
+
+/* Apps tab: khung log live */
+.app-log {
+  margin: 2px 0 8px 30px; padding: 10px; max-height: 320px; overflow: auto;
+  background: #101418; color: #d6dde6; border-radius: 10px;
+  font: 11.5px/1.5 var(--mono, ui-monospace, Consolas, monospace);
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* Links tab: chế độ nhiều tab viewer — thanh tab + vùng chứa các LinkViewer */
+.lv-wrap { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; background: var(--bg-1); }
+.lv-tabbar {
+  flex: none; display: flex; align-items: center; gap: 2px; padding: 4px 6px;
+  border-bottom: 1px solid var(--glass-brd); overflow-x: auto;
+}
+.lv-tab { display: inline-flex; align-items: center; border-radius: 7px; max-width: 240px; }
+.lv-tab.on { background: var(--glass-2); }
+.lv-tab-btn {
+  border: none; background: transparent; cursor: pointer; color: var(--muted);
+  padding: 4px 4px 4px 10px; font-size: 12px; max-width: 200px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lv-tab.on .lv-tab-btn { color: var(--text); font-weight: 600; }
+.lv-tab-x {
+  border: none; background: transparent; cursor: pointer; color: var(--faint);
+  padding: 4px 8px 4px 4px; font-size: 11px;
+}
+.lv-tab-x:hover { color: var(--err, #e55); }
+.lv-body { flex: 1; min-height: 0; position: relative; }
+.lv-body .g-viewer { position: absolute; inset: 0; }
+
+/* Links tabs — chế độ thu nhỏ: chỉ còn thanh tab dưới đáy, list nhận chuột */
+.lv-wrap.lv-min { background: transparent; pointer-events: none; }
+.lv-wrap.lv-min .lv-body { pointer-events: none; order: 1; }
+.lv-wrap.lv-min .lv-tabbar {
+  pointer-events: auto; order: 2; background: var(--bg-1);
+  border-top: 1px solid var(--glass-brd); border-bottom: none;
+}

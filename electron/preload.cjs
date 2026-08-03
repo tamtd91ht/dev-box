@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('workspace', {
   config: readConfig(),
   /** Wipe cookies + storage + cache for a partition (the "Logout" action). */
   clearSession: (partition) => ipcRenderer.invoke('workspace:clearSession', partition),
+  /** Kéo focus về host page sau khi hủy <webview> (fix input "chết"). */
+  focusHost: () => ipcRenderer.invoke('workspace:focusHost'),
 });
 
 // In-app console: the shell + `next dev` log stream the main process buffers

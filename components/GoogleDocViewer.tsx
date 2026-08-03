@@ -35,9 +35,11 @@ interface Props {
   /** Drive webViewLink / folder URL to load. */
   url: string;
   onClose: () => void;
+  /** Lưu URL đang xem vào danh sách link (mục 🔗 Liên kết). Ẩn nút khi absent. */
+  onSaveLink?: (name: string, url: string) => Promise<void>;
 }
 
-export default function GoogleDocViewer({ name, url, onClose }: Props) {
+export default function GoogleDocViewer({ name, url, onClose, onSaveLink }: Props) {
   const ref = useRef<WebviewElement | null>(null);
   const [status, setStatus] = useState<Status>('loading');
   const [failInfo, setFailInfo] = useState('');
@@ -84,6 +86,14 @@ export default function GoogleDocViewer({ name, url, onClose }: Props) {
     };
   }, []);
 
+  // Electron bug: hủy <webview> đang giữ focus xong, host page vẫn tưởng guest
+  // giữ focus → mọi input trên trang "chết" (nhìn như bị disable) cho tới khi
+  // click ra ngoài cửa sổ. Khi viewer unmount, chủ động kéo focus về host qua
+  // main process (window.focus + webContents.focus).
+  useEffect(() => () => {
+    void window.workspace?.focusHost?.().catch(() => {});
+  }, []);
+
   // Esc đóng viewer. Phím bấm BÊN TRONG guest không bubble ra host document,
   // nên gõ Esc khi đang soạn trong Docs không vô tình đóng khung.
   useEffect(() => {
@@ -111,6 +121,29 @@ export default function GoogleDocViewer({ name, url, onClose }: Props) {
     }
     window.open(cur, '_blank');
   }, [url]);
+
+  // 'idle' → chưa bấm; 'saving' → đang gọi API; 'done' → vừa lưu xong (✓ vài giây).
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'done'>('idle');
+  const saveLink = useCallback(async () => {
+    if (!onSaveLink) return;
+    let cur = url;
+    let title = name;
+    try {
+      cur = ref.current?.getURL() || url;
+      title = ref.current?.getTitle?.() || name;
+    } catch {
+      /* not attached yet — save the original url */
+    }
+    setSaveState('saving');
+    try {
+      await onSaveLink(title, cur);
+      setSaveState('done');
+      setTimeout(() => setSaveState('idle'), 2500);
+    } catch (e) {
+      setSaveState('idle');
+      window.alert((e as Error).message);
+    }
+  }, [onSaveLink, url, name]);
 
   const logout = useCallback(async () => {
     if (!window.workspace) return;
@@ -143,6 +176,18 @@ export default function GoogleDocViewer({ name, url, onClose }: Props) {
             <span className="ws-title-text" title={name}>{name}</span>
           </div>
           <div className="ws-actions">
+            <button
+              onClick={() => { setStatus('loading'); void ref.current?.loadURL('https://accounts.google.com/'); }}
+              title="Đăng nhập Google trong khung này — một lần là phiên lưu bền, file private + editor mở thẳng trong app"
+            >
+              Ⓖ
+            </button>
+            {onSaveLink && (
+              <button onClick={() => void saveLink()} disabled={saveState === 'saving'}
+                title="Lưu link đang xem vào mục 🔗 Liên kết">
+                {saveState === 'done' ? '✓' : '💾'}
+              </button>
+            )}
             <button onClick={openExternal} title="Mở bằng trình duyệt ngoài">↗</button>
             <button onClick={() => void logout()} title="Đăng xuất phiên Google nhúng">⎋</button>
             <button onClick={onClose} title="Đóng (Esc)">✕</button>

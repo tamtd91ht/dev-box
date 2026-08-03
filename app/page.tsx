@@ -20,6 +20,9 @@ import EsWorkspace from '@/components/EsWorkspace';
 import PgWorkspace from '@/components/PgWorkspace';
 import OfficeWorkspace from '@/components/OfficeWorkspace';
 import GoogleWorkspace from '@/components/GoogleWorkspace';
+import MailWorkspace from '@/components/MailWorkspace';
+import LinksWorkspace from '@/components/LinksWorkspace';
+import AppsWorkspace from '@/components/AppsWorkspace';
 import BrowserWorkspace from '@/components/BrowserWorkspace';
 import AutomationWorkspace from '@/components/automation/AutomationWorkspace';
 import AutomationHost from '@/components/AutomationHost';
@@ -116,6 +119,9 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'pg', icon: '🐘', label: 'PostgreSQL', badge: 'local' },
   { key: 'office', icon: '🗂', label: 'Office', badge: 'local' },
   { key: 'google', icon: 'Ⓖ', label: 'Google', badge: 'cloud' },
+  { key: 'mail', icon: '✉️', label: 'Mail', badge: 'imap' },
+  { key: 'links', icon: '🔗', label: 'Links', badge: 'web' },
+  { key: 'apps', icon: '⚙', label: 'Apps', badge: 'run' },
   { key: 'webhooks', icon: '⚡', label: 'Webhooks', badge: 'tool' },
   { key: 'workspace', icon: '🧭', label: 'Workspace', badge: 'browser' },
   { key: 'automation', icon: '🤖', label: 'Automation', badge: 'engine' },
@@ -326,6 +332,24 @@ export default function Home() {
             <GoogleWorkspace />
           </main>
         )}
+        {visited.mail && (
+          <main className="workspace" style={paneStyle(mode === 'mail')} aria-hidden={mode !== 'mail'}>
+            <MailWorkspace />
+          </main>
+        )}
+        {visited.links && (
+          /* hostsWebviews: viewer nhúng (LinkViewer) có thể đang mở khi chuyển
+             tab — webview vẽ ở native layer, phải đưa offscreen chứ không
+             visibility:hidden được. */
+          <main className="workspace" style={paneStyle(mode === 'links', true)} aria-hidden={mode !== 'links'}>
+            <LinksWorkspace />
+          </main>
+        )}
+        {visited.apps && (
+          <main className="workspace" style={paneStyle(mode === 'apps')} aria-hidden={mode !== 'apps'}>
+            <AppsWorkspace />
+          </main>
+        )}
         {visited.workspace && (
           <main className="workspace" style={paneStyle(mode === 'workspace', true)} aria-hidden={mode !== 'workspace'}>
             <BrowserWorkspace onUnread={setWsUnread} visible={mode === 'workspace'} />
@@ -390,7 +414,7 @@ export default function Home() {
       <footer className="appfoot">
         <span>VHS DevBox · infra toolbox dùng chung cho mọi dự án</span>
         <span className="foot-right">
-          Redis · Kafka · RabbitMQ · MongoDB · Elastic · PostgreSQL · Office · Google · Git · Webhooks · Automation
+          Redis · Kafka · RabbitMQ · MongoDB · Elastic · PostgreSQL · Office · Google · Mail · Links · Git · Webhooks · Automation
           {/* Desktop only: log của shell + next dev, ẩn mặc định. */}
           <DesktopConsole />
         </span>

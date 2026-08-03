@@ -45,6 +45,12 @@ npm-debug.log*
 # machine Drive folder registry — never commit
 .googleauth.json
 .googleroots.json
+.googlelinks.json
+# Links tab — bookmark registry (ke thua du lieu tu .googlelinks.json)
+.links.json
+
+# Mail tab — IMAP/SMTP credentials (password plaintext!) — never commit
+.mailaccounts.json
 
 # Telegram review-bot local state (Telegram offset + dedup shas + status snapshot)
 bot/.state.json
@@ -64,3 +70,6 @@ electron/dist/
 # IDE config + ad-hoc screenshots dropped into the repo root
 .idea/
 *.png
+
+# Apps tab — app run registry (duong dan local — never commit)
+.apps.json
