@@ -133,8 +133,26 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'automation', icon: '🤖', label: 'Automation', badge: 'engine' },
 ];
 
+type NavPos = 'top' | 'left' | 'right';
+const NAV_KEY = 'devbox.navPos';
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>('git');
+
+  // Vị trí thanh menu tính năng: ngang trên (mặc định) / dọc trái / dọc phải.
+  // Menu dọc trả nhiều chiều cao cho vùng làm việc — lưu localStorage.
+  const [navPos, setNavPos] = useState<NavPos>('top');
+  useEffect(() => {
+    const saved = typeof window !== 'undefined' ? window.localStorage.getItem(NAV_KEY) : null;
+    if (saved === 'left' || saved === 'right' || saved === 'top') setNavPos(saved);
+  }, []);
+  const cycleNav = () => {
+    setNavPos((cur) => {
+      const next: NavPos = cur === 'top' ? 'left' : cur === 'left' ? 'right' : 'top';
+      if (typeof window !== 'undefined') window.localStorage.setItem(NAV_KEY, next);
+      return next;
+    });
+  };
 
   // Unread messages across all browser workspaces (Zalo, …) — badges the
   // Workspace tab + the window title so new messages are visible from any tab.
@@ -209,7 +227,7 @@ export default function Home() {
   }
 
   return (
-    <div className="shell">
+    <div className="shell" data-nav={navPos}>
       {/* ── Header / top bar ─────────────────────────────────────────── */}
       <header className="appbar">
         <div className="brand">
@@ -218,6 +236,10 @@ export default function Home() {
             <h1><b>VHS</b> DevBox</h1>
             <span className="sub">infra toolbox — mọi dự án</span>
           </div>
+          {/* Nút đổi vị trí menu: ngang trên → dọc trái → dọc phải → … */}
+          <button className="nav-pos-btn" onClick={cycleNav} title={`Menu đang ${navPos === 'top' ? 'ngang trên' : navPos === 'left' ? 'dọc trái' : 'dọc phải'} — bấm để đổi (menu dọc cho thêm chiều cao)`}>
+            {navPos === 'top' ? '⬍' : navPos === 'left' ? '⬅' : '➡'}
+          </button>
         </div>
 
         <div className="modeswitch" role="tablist" aria-label="Workspace">

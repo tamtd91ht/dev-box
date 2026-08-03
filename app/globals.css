@@ -3807,11 +3807,135 @@ pre.kafka-drawer-body {
 select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, select.input.api-m--patch, select.input.api-m--delete { font-weight: 700; }
 
 /* ── Browser tab (trình duyệt đa tab) ──────────────────────────────────── */
-.bt-bar { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
-.bt-marks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--glass-brd); }
+/* Root flex full-height: KHÔNG dùng .panel (padding+border ăn chiều cao) — mọi
+   khoảng trống dồn cho webview. Thanh điều khiển gọn 1 hàng; dấu trang gập. */
+.bt-root { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 6px; padding: 6px; }
+/* Tràn viền: thoát khỏi pane, phủ kín cửa sổ — che luôn header/footer app. */
+.bt-root.bt-full {
+  position: fixed; inset: 0; z-index: 100; background: var(--bg-1); padding: 6px;
+}
+.bt-marks { flex: none; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--glass-brd); }
+
+/* Thanh tab khi đã có tab: tab + ＋ + ⋯. Không còn ô địa chỉ chiếm chỗ. */
+.bt-tabbar { flex: none; }
+.bt-newtab {
+  flex: none; border: none; background: transparent; color: var(--muted);
+  cursor: pointer; font-size: 16px; width: 28px; height: 26px; border-radius: 7px;
+}
+.bt-newtab:hover { background: var(--glass-2); color: var(--accent); }
+
+/* Ô nhập địa chỉ — dùng chung trang new-tab + panel ＋. */
+.bt-addr { display: flex; gap: 6px; align-items: center; width: 100%; }
+.bt-addr-input { flex: 1; min-width: 120px; }
+
+/* Panel ＋ new tab: đè xuống ngay dưới thanh tab. */
+.bt-newtab-panel {
+  flex: none; padding: 8px; margin-bottom: 4px;
+  background: var(--bg-1); border: 1px solid var(--glass-brd); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+
+/* Menu ⋯ */
+.bt-menu-wrap { position: relative; flex: none; }
+.bt-menu-backdrop { position: fixed; inset: 0; z-index: 20; }
+.bt-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 21; min-width: 190px;
+  display: flex; flex-direction: column; padding: 5px;
+  background: var(--bg-1); border: 1px solid var(--glass-brd); border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0,0,0,.45);
+}
+.bt-menu button {
+  text-align: left; border: none; background: transparent; color: var(--text);
+  padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 13px;
+}
+.bt-menu button:hover { background: var(--glass-2); }
+.bt-menu-sep { height: 1px; background: var(--glass-brd); margin: 4px 2px; }
+
+/* Trang "new tab" (chưa có tab nào): căn giữa, ô nhập to, dấu trang lưới. */
+.bt-home { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px;
+  align-items: center; justify-content: center; padding: 24px; }
+.bt-home-title { font-size: 18px; font-weight: 700; }
+.bt-home .bt-addr { max-width: 640px; }
+.bt-home-marks { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 720px; }
+/* Vùng viewer chiếm hết phần còn lại; lv-body giãn tối đa cho webview. */
+.bt-viewer { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.bt-viewer .lv-tabbar { flex: none; }
+.bt-viewer .lv-body { flex: 1; min-height: 0; position: relative; }
 .bt-mark { display: inline-flex; align-items: center; border-radius: 8px; background: var(--glass-2); border: 1px solid var(--glass-brd); }
 .bt-mark-go { border: none; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; padding: 5px 8px; display: inline-flex; align-items: center; gap: 6px; }
 .bt-mark-go:hover { color: var(--accent); }
 .bt-mark-prof { font-size: 10px; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--warn, #d90) 16%, transparent); color: var(--warn, #b80); }
 .bt-mark-act { border: none; background: transparent; color: var(--faint); cursor: pointer; padding: 4px 6px; font-size: 11px; }
 .bt-mark-act:hover { color: var(--accent); }
+
+/* Code: nhãn phân nhóm trong panel Call Hierarchy */
+.cs-ch-section {
+  font-size: 11px; font-weight: 700; color: var(--accent);
+  padding: 6px 10px 3px; text-transform: uppercase; letter-spacing: .3px;
+  position: sticky; top: 0; background: var(--bg-1, var(--bg));
+}
+
+/* ── Nút đổi vị trí menu + menu dọc trái/phải ──────────────────────────── */
+.nav-pos-btn {
+  margin-left: 6px; flex: none; width: 30px; height: 30px; border-radius: 9px;
+  border: 1px solid var(--glass-brd); background: var(--glass); color: var(--muted);
+  cursor: pointer; font-size: 14px; line-height: 1;
+}
+.nav-pos-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+/* MENU DỌC (data-nav=left | right): appbar thành CỘT bên cạnh body, không còn
+   thanh ngang trên → trả toàn bộ chiều cao ngang cho vùng làm việc. */
+.shell[data-nav='left'],
+.shell[data-nav='right'] {
+  grid-template-rows: minmax(0, 1fr) auto;   /* body + footer */
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.shell[data-nav='left'] { grid-template-areas: 'nav body' 'nav foot'; }
+.shell[data-nav='right'] {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'body nav' 'foot nav';
+}
+.shell[data-nav='left'] .appbar,
+.shell[data-nav='right'] .appbar {
+  grid-area: nav; position: static;
+  flex-direction: column; align-items: stretch; gap: 12px;
+  width: 216px; height: 100vh; overflow-y: auto; overflow-x: hidden;
+  padding: 14px 10px; border-bottom: none;
+}
+.shell[data-nav='right'] .appbar { border-right: none; border-left: 1px solid var(--glass-brd); }
+.shell[data-nav='left'] .appbar { border-right: 1px solid var(--glass-brd); }
+.shell[data-nav='left'] .body,
+.shell[data-nav='right'] .body { grid-area: body; }
+
+/* Brand xuống dòng gọn; nút đổi vị trí đẩy sang phải trong hàng brand. */
+.shell[data-nav='left'] .brand,
+.shell[data-nav='right'] .brand { flex: none; }
+
+/* modeswitch xếp DỌC, mỗi tab một hàng đầy chiều rộng sidebar. */
+.shell[data-nav='left'] .modeswitch,
+.shell[data-nav='right'] .modeswitch {
+  flex-direction: column; align-items: stretch; flex-wrap: nowrap;
+  gap: 2px; background: transparent; border: none; padding: 0;
+  overflow-y: auto; min-height: 0;
+}
+.shell[data-nav='left'] .modeswitch button,
+.shell[data-nav='right'] .modeswitch button {
+  justify-content: flex-start; width: 100%; text-align: left;
+}
+/* Divider + zone label + appbar-right về dạng khối dọc. */
+.shell[data-nav='left'] .ms-divider,
+.shell[data-nav='right'] .ms-divider { width: 100%; height: 1px; margin: 6px 0; }
+.shell[data-nav='left'] .appbar-right,
+.shell[data-nav='right'] .appbar-right { margin-left: 0; margin-top: auto; }
+
+/* Màn hẹp: menu dọc thu bớt bề rộng. */
+@media (max-width: 720px) {
+  .shell[data-nav='left'] .appbar, .shell[data-nav='right'] .appbar { width: 168px; }
+}
+
+/* Menu dọc: body sát sidebar hơn, bớt padding phí + không cần cột 256px đệm. */
+.shell[data-nav='left'] .body,
+.shell[data-nav='right'] .body {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 16px clamp(16px, 2.5vw, 32px); gap: 12px;
+}
