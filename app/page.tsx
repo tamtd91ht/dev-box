@@ -24,6 +24,7 @@ import MailWorkspace from '@/components/MailWorkspace';
 import LinksWorkspace from '@/components/LinksWorkspace';
 import AppsWorkspace from '@/components/AppsWorkspace';
 import ToolsWorkspace from '@/components/ToolsWorkspace';
+import ApiWorkspace from '@/components/ApiWorkspace';
 import BrowserWorkspace from '@/components/BrowserWorkspace';
 import AutomationWorkspace from '@/components/automation/AutomationWorkspace';
 import AutomationHost from '@/components/AutomationHost';
@@ -124,6 +125,7 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'links', icon: '🔗', label: 'Links', badge: 'web' },
   { key: 'apps', icon: '⚙', label: 'Apps', badge: 'run' },
   { key: 'tools', icon: '🧰', label: 'Tools', badge: 'fmt' },
+  { key: 'api', icon: '📮', label: 'API', badge: 'http' },
   { key: 'webhooks', icon: '⚡', label: 'Webhooks', badge: 'tool' },
   { key: 'workspace', icon: '🧭', label: 'Workspace', badge: 'browser' },
   { key: 'automation', icon: '🤖', label: 'Automation', badge: 'engine' },
@@ -355,6 +357,11 @@ export default function Home() {
         {visited.tools && (
           <main className="workspace" style={paneStyle(mode === 'tools')} aria-hidden={mode !== 'tools'}>
             <ToolsWorkspace />
+          </main>
+        )}
+        {visited.api && (
+          <main className="workspace" style={paneStyle(mode === 'api')} aria-hidden={mode !== 'api'}>
+            <ApiWorkspace />
           </main>
         )}
         {visited.workspace && (

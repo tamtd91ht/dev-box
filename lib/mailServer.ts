@@ -61,6 +61,13 @@ export interface MailDetail {
   references: string[];
 }
 
+export interface SendAttachment {
+  filename: string;
+  /** Nội dung base64 (client đọc file → base64). */
+  contentBase64: string;
+  contentType?: string;
+}
+
 export interface SendInput {
   to: string;
   cc?: string;
@@ -70,6 +77,7 @@ export interface SendInput {
   /** Reply: message-id của mail gốc + chuỗi references của nó. */
   inReplyTo?: string;
   references?: string[];
+  attachments?: SendAttachment[];
 }
 
 // ── IMAP helpers ────────────────────────────────────────────────────────────
@@ -271,6 +279,11 @@ export async function sendMail(account: MailAccount, input: SendInput): Promise<
     text: input.text,
     inReplyTo: input.inReplyTo || undefined,
     references: input.references?.length ? input.references.join(' ') : undefined,
+    attachments: input.attachments?.map((a) => ({
+      filename: a.filename,
+      content: Buffer.from(a.contentBase64, 'base64'),
+      contentType: a.contentType || undefined,
+    })),
   }).compile();
   const envelope = composed.getEnvelope();
   const raw = await composed.build();

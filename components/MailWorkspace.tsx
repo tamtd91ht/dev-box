@@ -141,19 +141,38 @@ export interface ComposeDraft {
   references?: string[];
 }
 
-function Composer({ accountId, draft, onClose, onSent }: {
-  accountId: string;
+interface PendingAttachment { filename: string; contentBase64: string; contentType: string; size: number }
+
+/** Đọc file → base64 (bỏ tiền tố data:*;base64,). */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] ?? '');
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+const ATTACH_LIMIT = 20 * 1024 * 1024; // tổng ~20MB — cảnh báo khi vượt
+
+function Composer({ account, draft, onClose, onSent }: {
+  account: MailAccountPub;
   draft: ComposeDraft;
   onClose: () => void;
   onSent: () => void;
 }) {
   const [to, setTo] = useState(draft.to);
   const [cc, setCc] = useState(draft.cc);
+  const [showCc, setShowCc] = useState(!!draft.cc);
   const [subject, setSubject] = useState(draft.subject);
   const [body, setBody] = useState(draft.body);
+  const [atts, setAtts] = useState<PendingAttachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  const isReply = !!draft.inReplyTo;
 
   // Reply: caret đặt ở ĐẦU body (trên phần quote) — gõ được ngay.
   useEffect(() => {
@@ -161,12 +180,31 @@ function Composer({ accountId, draft, onClose, onSent }: {
     if (el) { el.focus(); el.setSelectionRange(0, 0); }
   }, []);
 
+  const addFiles = async (files: FileList | null) => {
+    if (!files?.length) return;
+    setErr(null);
+    try {
+      const next: PendingAttachment[] = [];
+      for (const f of Array.from(files)) {
+        next.push({ filename: f.name, contentBase64: await fileToBase64(f), contentType: f.type || 'application/octet-stream', size: f.size });
+      }
+      const merged = [...atts, ...next];
+      const total = merged.reduce((s, a) => s + a.size, 0);
+      if (total > ATTACH_LIMIT) setErr(`Tổng đính kèm ${fmtSize(total)} vượt ~20MB — nhiều mail server sẽ từ chối.`);
+      setAtts(merged);
+    } catch (e) {
+      setErr('Không đọc được file: ' + (e as Error).message);
+    }
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
   const send = async () => {
     setBusy(true); setErr(null);
     try {
       await mSend({
-        accountId, to: to.trim(), cc: cc.trim() || undefined, subject, text: body,
+        accountId: account.id, to: to.trim(), cc: cc.trim() || undefined, subject, text: body,
         inReplyTo: draft.inReplyTo, references: draft.references,
+        attachments: atts.map(({ filename, contentBase64, contentType }) => ({ filename, contentBase64, contentType })),
       });
       onSent();
     } catch (e) {
@@ -176,26 +214,70 @@ function Composer({ accountId, draft, onClose, onSent }: {
     }
   };
 
+  const attTotal = atts.reduce((s, a) => s + a.size, 0);
+
   return (
-    <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="mail-compose panel">
-        <div className="mail-compose-head">
-          <b>{draft.inReplyTo ? '↩ Trả lời' : '✉️ Soạn thư'}</b>
-          <span style={{ flex: 1 }} />
-          <button className="ghost sm" onClick={onClose} title="Đóng">✕</button>
+    <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && !busy && onClose()}>
+      <div className="mail-compose"
+        onDragOver={(e) => { e.preventDefault(); }}
+        onDrop={(e) => { e.preventDefault(); void addFiles(e.dataTransfer.files); }}>
+        {/* Header gradient — phân biệt reply / soạn mới */}
+        <div className="mc-head">
+          <span className="mc-head-ico" aria-hidden>{isReply ? '↩' : '✉'}</span>
+          <span className="mc-head-title">{isReply ? 'Trả lời' : 'Thư mới'}</span>
+          <span className="mc-head-from">từ {account.email}</span>
+          <button className="mc-x" onClick={onClose} disabled={busy} title="Đóng">✕</button>
         </div>
-        <input className="input" placeholder="Tới (To) — nhiều địa chỉ cách nhau dấu phẩy" value={to}
-          onChange={(e) => setTo(e.target.value)} />
-        <input className="input" placeholder="Cc" value={cc} onChange={(e) => setCc(e.target.value)} />
-        <input className="input" placeholder="Tiêu đề" value={subject} onChange={(e) => setSubject(e.target.value)} />
-        <textarea ref={bodyRef} className="input mail-compose-body" value={body}
-          onChange={(e) => setBody(e.target.value)} placeholder="Nội dung…" />
-        {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => void send()} disabled={busy || !to.trim()}>
-            {busy ? <span className="spinner" aria-hidden /> : '📨'} {busy ? 'Đang gửi…' : 'Gửi'}
+
+        {/* Field rows kiểu Gmail: label bên trái, input liền mạch */}
+        <div className="mc-fields">
+          <label className="mc-row">
+            <span className="mc-label">Tới</span>
+            <input className="mc-input" placeholder="nhiều địa chỉ cách nhau dấu phẩy" value={to}
+              onChange={(e) => setTo(e.target.value)} autoFocus={!isReply} />
+            {!showCc && <button className="mc-cc-toggle" onClick={() => setShowCc(true)}>Cc</button>}
+          </label>
+          {showCc && (
+            <label className="mc-row">
+              <span className="mc-label">Cc</span>
+              <input className="mc-input" placeholder="Cc" value={cc} onChange={(e) => setCc(e.target.value)} />
+            </label>
+          )}
+          <label className="mc-row">
+            <span className="mc-label">Tiêu đề</span>
+            <input className="mc-input" placeholder="(không tiêu đề)" value={subject}
+              onChange={(e) => setSubject(e.target.value)} />
+          </label>
+        </div>
+
+        <textarea ref={bodyRef} className="mc-body" value={body}
+          onChange={(e) => setBody(e.target.value)} placeholder="Viết nội dung… (kéo-thả file vào đây để đính kèm)" />
+
+        {atts.length > 0 && (
+          <div className="mc-atts">
+            {atts.map((a, i) => (
+              <span key={i} className="mc-att" title={`${a.contentType} · ${fmtSize(a.size)}`}>
+                📎 <span className="mc-att-name">{a.filename}</span>
+                <span className="mc-att-size">{fmtSize(a.size)}</span>
+                <button className="mc-att-x" onClick={() => setAtts(atts.filter((_, j) => j !== i))} title="Bỏ">✕</button>
+              </span>
+            ))}
+            <span className="mc-att-total">Tổng {fmtSize(attTotal)}</span>
+          </div>
+        )}
+
+        {err && <div className="mc-err">{err}</div>}
+
+        <div className="mc-foot">
+          <button className="mc-send" onClick={() => void send()} disabled={busy || !to.trim()}>
+            {busy ? <span className="spinner" aria-hidden /> : '➤'} {busy ? 'Đang gửi…' : 'Gửi'}
           </button>
-          <button className="ghost" onClick={onClose} disabled={busy}>Hủy</button>
+          <button className="mc-tool" onClick={() => fileRef.current?.click()} disabled={busy} title="Đính kèm tệp">
+            📎 Đính kèm
+          </button>
+          <input ref={fileRef} type="file" multiple hidden onChange={(e) => void addFiles(e.target.files)} />
+          <span style={{ flex: 1 }} />
+          <button className="mc-tool" onClick={onClose} disabled={busy}>Hủy</button>
         </div>
       </div>
     </div>
@@ -555,7 +637,7 @@ export default function MailWorkspace() {
 
       {compose && (
         <Composer
-          accountId={active.id}
+          account={active}
           draft={compose}
           onClose={() => setCompose(null)}
           onSent={() => {

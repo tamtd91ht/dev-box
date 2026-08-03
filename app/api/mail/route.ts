@@ -99,6 +99,13 @@ export async function POST(req: NextRequest) {
           text: String(body.text ?? ''),
           inReplyTo: typeof body.inReplyTo === 'string' ? body.inReplyTo : undefined,
           references: Array.isArray(body.references) ? body.references.map(String) : undefined,
+          attachments: Array.isArray(body.attachments)
+            ? body.attachments.map((a: Record<string, unknown>) => ({
+                filename: String(a.filename ?? 'attachment'),
+                contentBase64: String(a.contentBase64 ?? ''),
+                contentType: typeof a.contentType === 'string' ? a.contentType : undefined,
+              }))
+            : undefined,
         });
         break;
       }

@@ -68,6 +68,12 @@ export interface AccountAddInput {
   smtpSecure?: boolean;
 }
 
+export interface SendAttachment {
+  filename: string;
+  contentBase64: string;
+  contentType?: string;
+}
+
 export interface SendInput {
   accountId: string;
   to: string;
@@ -77,6 +83,7 @@ export interface SendInput {
   text: string;
   inReplyTo?: string;
   references?: string[];
+  attachments?: SendAttachment[];
 }
 
 async function mailAction<T>(action: string, params: Record<string, unknown> = {}): Promise<T> {
