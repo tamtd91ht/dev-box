@@ -3696,3 +3696,11 @@ pre.kafka-drawer-body {
   pointer-events: auto; order: 2; background: var(--bg-1);
   border-top: 1px solid var(--glass-brd); border-bottom: none;
 }
+
+/* Tools tab: editor + preview + rail snippet */
+.tools-body { display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); gap: 12px; flex: 1; min-height: 0; }
+@media (max-width: 900px) { .tools-body { grid-template-columns: 1fr; } }
+.tools-rail { min-height: 0; overflow: auto; }
+.tools-main { display: flex; gap: 10px; min-width: 0; min-height: 0; }
+.tools-editor { flex: 1; min-width: 0; border: 1px solid var(--glass-brd); border-radius: 10px; overflow: hidden; }
+.tools-preview { flex: 1; min-width: 0; border: 1px solid var(--glass-brd); border-radius: 10px; background: #fff; }

@@ -1,0 +1,148 @@
+'use client';
+
+// Tools workspace — format + xem JSON / XML / HTML cho đẹp (Monaco highlight,
+// folding), và riêng JSON/text có tạo mới + lưu trữ snippet (store .docs.json).
+//
+// Trái: editor Monaco (nhập/dán, hoặc mở snippet đã lưu). Phải khi kind=html:
+// preview render trong iframe sandbox. Nút Format/Minify gọi lib/format.ts;
+// nút Lưu/Mới/Xóa gọi store qua lib/docs.ts.
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import Editor, { type OnMount } from '@monaco-editor/react';
+import type { editor as MonacoEditorNs } from 'monaco-editor';
+import { formatText, minifyJson, monacoLangFor, type FormatKind } from '@/lib/format';
+import { dList, dSave, dRemove, type SavedDoc } from '@/lib/docs';
+import { fmtRel } from '@/lib/google';
+
+const KINDS: { key: FormatKind; label: string }[] = [
+  { key: 'json', label: 'JSON' },
+  { key: 'xml', label: 'XML' },
+  { key: 'html', label: 'HTML' },
+];
+
+export default function ToolsWorkspace() {
+  const [kind, setKind] = useState<FormatKind>('json');
+  const [text, setText] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [preview, setPreview] = useState(false); // HTML: xem render
+  const [docs, setDocs] = useState<SavedDoc[]>([]);
+  const [openId, setOpenId] = useState<string | null>(null); // snippet đang mở (để Lưu đè)
+  const [dirty, setDirty] = useState(false);
+  const edRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null);
+
+  const reloadDocs = useCallback(() => { dList().then(setDocs).catch((e) => setErr((e as Error).message)); }, []);
+  useEffect(() => { reloadDocs(); }, [reloadDocs]);
+
+  const onMount: OnMount = (ed) => { edRef.current = ed; };
+
+  const format = () => {
+    const r = formatText(kind, text);
+    setErr(r.ok ? null : r.error ?? 'Lỗi định dạng');
+    if (r.ok) { setText(r.text); setDirty(true); }
+  };
+  const minify = () => {
+    const r = minifyJson(text);
+    setErr(r.ok ? null : r.error ?? null);
+    if (r.ok) { setText(r.text); setDirty(true); }
+  };
+
+  const copy = async () => { try { await navigator.clipboard.writeText(text); } catch { /* ignore */ } };
+
+  // ── Store snippet (JSON/text) ─────────────────────────────────────────────
+  const newDoc = () => { setText(''); setErr(null); setOpenId(null); setDirty(false); setPreview(false); };
+
+  const save = async () => {
+    const cur = openId ? docs.find((d) => d.id === openId) : undefined;
+    const name = window.prompt('Tên tài liệu:', cur?.name ?? '');
+    if (name === null) return;
+    // Lưu 'json' nếu đang ở tab JSON, còn lại lưu dạng 'text' thô.
+    const docKind = kind === 'json' ? 'json' : 'text';
+    try {
+      const before = new Set(docs.map((d) => d.id));
+      const list = await dSave({ id: openId ?? undefined, name, kind: docKind, content: text });
+      setDocs(list);
+      if (!openId) setOpenId(list.find((d) => !before.has(d.id))?.id ?? null);
+      setDirty(false);
+    } catch (e) { setErr((e as Error).message); }
+  };
+
+  const openDoc = (d: SavedDoc) => {
+    // Snippet JSON mở ở tab JSON (format được); text mở ở tab JSON để xem/sửa
+    // nhưng người dùng cứ để nguyên — không bắt buộc format.
+    setKind('json');
+    setText(d.content); setOpenId(d.id); setDirty(false); setErr(null); setPreview(false);
+  };
+
+  const removeDoc = async (d: SavedDoc) => {
+    if (!window.confirm(`Xóa "${d.name}"?`)) return;
+    try { setDocs(await dRemove(d.id)); if (openId === d.id) setOpenId(null); } catch (e) { setErr((e as Error).message); }
+  };
+
+  return (
+    <div className="panel sheet-panel">
+      <div className="g-toolbar">
+        <div className="office-subnav" role="tablist" aria-label="Format kind">
+          {KINDS.map((k) => (
+            <button key={k.key} role="tab" aria-selected={kind === k.key}
+              className={`office-subnav-btn${kind === k.key ? ' on' : ''}`}
+              onClick={() => { setKind(k.key); setErr(null); if (k.key !== 'html') setPreview(false); }}>
+              <span className="office-subnav-text">{k.label}</span>
+            </button>
+          ))}
+        </div>
+        <span style={{ flex: 1 }} />
+        <button className="sm" onClick={format} title="Định dạng đẹp (Format / Beautify)">✨ Format</button>
+        {kind === 'json' && <button className="ghost sm" onClick={minify} title="Rút gọn một dòng">Minify</button>}
+        {kind === 'html' && <button className={`chip-btn${preview ? ' on' : ''}`} onClick={() => setPreview((v) => !v)}>👁 Preview</button>}
+        <button className="ghost sm" onClick={copy} title="Copy toàn bộ">⧉ Copy</button>
+        <span className="glink-filter-sep" aria-hidden />
+        <button className="ghost sm" onClick={newDoc} title="Tạo tài liệu mới (trống)">＋ Mới</button>
+        <button className="ghost sm" onClick={() => void save()} title="Lưu tài liệu (JSON hoặc text)">
+          💾 {openId ? 'Lưu' : 'Lưu mới'}
+        </button>
+      </div>
+      {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '4px 0' }}>{err}</pre>}
+
+      <div className="tools-body">
+        {/* Rail trái: snippet đã lưu */}
+        <aside className="g-rail tools-rail">
+          <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', gap: 6 }}>
+            <span style={{ flex: 1 }}>Đã lưu</span>
+            <button className="ghost sm" onClick={reloadDocs} title="Tải lại">↻</button>
+          </div>
+          {docs.map((d) => (
+            <div key={d.id} className={`g-root${openId === d.id ? ' on' : ''}`}>
+              <button className="g-root-btn" onClick={() => openDoc(d)} title={`${d.name} · ${fmtRel(d.updatedAt)}`}>
+                <span aria-hidden>{d.kind === 'json' ? '🧾' : '📄'}</span>
+                <span className="g-root-name">{d.name}</span>
+              </button>
+              <button className="ghost sm g-root-act" onClick={() => void removeDoc(d)} title="Xóa">✕</button>
+            </div>
+          ))}
+          {docs.length === 0 && <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px' }}>Chưa có tài liệu. Gõ nội dung rồi 💾 Lưu.</p>}
+        </aside>
+
+        {/* Editor + (HTML) preview */}
+        <div className="tools-main">
+          <div className="tools-editor">
+            <Editor
+              language={monacoLangFor(kind)}
+              theme="vs-dark"
+              value={text}
+              onChange={(v) => { setText(v ?? ''); setDirty(true); }}
+              onMount={onMount}
+              options={{
+                minimap: { enabled: false }, fontSize: 13, wordWrap: 'on',
+                scrollBeyondLastLine: false, automaticLayout: true, tabSize: 2,
+              }}
+            />
+          </div>
+          {kind === 'html' && preview && (
+            <iframe className="tools-preview" sandbox="allow-same-origin" srcDoc={text} title="HTML preview" />
+          )}
+        </div>
+      </div>
+      {dirty && openId && <span className="small" style={{ color: 'var(--muted)', padding: '2px 6px' }}>• có thay đổi chưa lưu</span>}
+    </div>
+  );
+}

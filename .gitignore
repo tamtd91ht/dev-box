@@ -73,3 +73,6 @@ electron/dist/
 
 # Apps tab — app run registry (duong dan local — never commit)
 .apps.json
+
+# Tools tab — snippet JSON/text da luu (never commit)
+.docs.json
