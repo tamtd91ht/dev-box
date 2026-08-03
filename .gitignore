@@ -76,3 +76,6 @@ electron/dist/
 
 # Tools tab — snippet JSON/text da luu (never commit)
 .docs.json
+
+# API tab — collection + environment (co the chua token) — never commit
+.apicollections.json
