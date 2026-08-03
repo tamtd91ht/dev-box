@@ -111,8 +111,11 @@ export default function LinksWorkspace() {
   /** Mở link đang gõ — KHÔNG lưu, nhưng MANG THEO metadata đang gõ dở để nút
    *  💾 trong viewer lưu đầy đủ (flow: dán link → gõ chi tiết → Mở → 💾). */
   const open = () => {
-    const u = url.trim();
-    if (!u) return;
+    const raw = url.trim();
+    if (!raw) return;
+    // Thêm https:// nếu gõ thiếu scheme — nếu không webview hiểu là đường dẫn
+    // tương đối → 404 (vd gõ "sso.example.com").
+    const u = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
     openInApp(addMeta.name?.trim() || nameFor(u), u, addMeta.profile, {
       ...addMeta,
       tags: splitTags(addMeta.tagsText),

@@ -3805,3 +3805,13 @@ pre.kafka-drawer-body {
 .api-m--patch { color: #8b5cf6; } .api-m--delete { color: var(--err, #e55); }
 .api-m--head, .api-m--options { color: var(--muted); }
 select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, select.input.api-m--patch, select.input.api-m--delete { font-weight: 700; }
+
+/* ── Browser tab (trình duyệt đa tab) ──────────────────────────────────── */
+.bt-bar { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.bt-marks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--glass-brd); }
+.bt-mark { display: inline-flex; align-items: center; border-radius: 8px; background: var(--glass-2); border: 1px solid var(--glass-brd); }
+.bt-mark-go { border: none; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; padding: 5px 8px; display: inline-flex; align-items: center; gap: 6px; }
+.bt-mark-go:hover { color: var(--accent); }
+.bt-mark-prof { font-size: 10px; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--warn, #d90) 16%, transparent); color: var(--warn, #b80); }
+.bt-mark-act { border: none; background: transparent; color: var(--faint); cursor: pointer; padding: 4px 6px; font-size: 11px; }
+.bt-mark-act:hover { color: var(--accent); }

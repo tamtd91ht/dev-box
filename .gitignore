@@ -79,3 +79,6 @@ electron/dist/
 
 # API tab — collection + environment (co the chua token) — never commit
 .apicollections.json
+
+# Browser tab — bookmark + credentials — never commit
+.bookmarks.json
