@@ -22,6 +22,18 @@ export default function BrowserTabWorkspace() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [edit, setEdit] = useState<Bookmark | null>(null); // dấu trang đang sửa/tạo
+  const [full, setFull] = useState(false); // tràn viền: che header app, webview cao tối đa
+  const [showMarks, setShowMarks] = useState(false); // dải dấu trang gập lại mặc định
+  const [menuOpen, setMenuOpen] = useState(false); // menu ⋯ (lưu/dấu trang/tràn viền)
+  const [newTabOpen, setNewTabOpen] = useState(false); // panel nhập URL khi đã có tab
+
+  // Esc thoát tràn viền (chỉ host document; phím trong guest không bubble ra).
+  useEffect(() => {
+    if (!full) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFull(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [full]);
 
   const reload = useCallback(() => { bmList().then(setBookmarks).catch((e) => setErr((e as Error).message)); }, []);
   useEffect(() => { reload(); }, [reload]);
@@ -54,11 +66,13 @@ export default function BrowserTabWorkspace() {
   const go = () => {
     if (!addr.trim()) return;
     openTab(addr, { profile });
-    setAddr('');
+    setAddr(''); setNewTabOpen(false);
   };
 
-  const openBookmark = (b: Bookmark) =>
+  const openBookmark = (b: Bookmark) => {
     openTab(b.url, { name: b.name, profile: b.profile, creds: { username: b.username, password: b.password } });
+    setNewTabOpen(false); setShowMarks(false);
+  };
 
   const saveEdit = async () => {
     if (!edit) return;
@@ -75,52 +89,83 @@ export default function BrowserTabWorkspace() {
     try { setBookmarks(await bmRemove(b.id)); } catch (e) { setErr((e as Error).message); }
   };
 
+  const hasTabs = tabs.length > 0;
+  // Panel nhập URL hiện khi: chưa có tab nào, HOẶC người dùng bấm ＋ (new tab).
+  const showAddress = !hasTabs || newTabOpen;
+
+  /** Ô nhập URL + profile — dùng cho cả trang new-tab lẫn panel ＋. */
+  const addressForm = (
+    <div className="bt-addr">
+      <input className="input bt-addr-input" placeholder="Gõ địa chỉ web (vd sso.example.com) rồi Enter…"
+        value={addr} autoFocus onChange={(e) => setAddr(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape' && hasTabs) setNewTabOpen(false); }} />
+      <input className="input" style={{ width: 130 }} list="bt-profiles" placeholder="Profile"
+        value={profile} onChange={(e) => setProfile(e.target.value)}
+        title="Cùng profile = chung phiên đăng nhập. Hai tài khoản SSO khác nhau → hai profile." />
+      <datalist id="bt-profiles">{profiles.map((p) => <option key={p} value={p} />)}</datalist>
+      <button onClick={go} disabled={!addr.trim()}>▶ Mở</button>
+      {hasTabs && <button className="ghost sm" onClick={() => setNewTabOpen(false)}>Hủy</button>}
+    </div>
+  );
+
   return (
-    <div className="panel sheet-panel">
-      {/* Thanh địa chỉ + profile + dấu trang chọn nhanh */}
-      <div className="bt-bar">
-        <input className="input" style={{ flex: 1 }} placeholder="Gõ địa chỉ web (vd sso.example.com) rồi Enter…"
-          value={addr} onChange={(e) => setAddr(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && go()} />
-        <input className="input" style={{ width: 150 }} list="bt-profiles" placeholder="Profile (optional)"
-          value={profile} onChange={(e) => setProfile(e.target.value)}
-          title="Cùng profile = chung phiên đăng nhập. Hai tài khoản SSO khác nhau → hai profile." />
-        <datalist id="bt-profiles">{profiles.map((p) => <option key={p} value={p} />)}</datalist>
-        <button onClick={go} disabled={!addr.trim()}>▶ Mở</button>
-        <button className="ghost sm" onClick={() => setEdit({ id: '', name: '', url: addr.trim(), profile: profile.trim(), addedAt: '' })}
-          title="Thêm dấu trang mới">☆ Lưu trang</button>
-      </div>
-
-      {/* Dải dấu trang — chọn nhanh khỏi gõ */}
-      <div className="bt-marks">
-        {bookmarks.map((b) => (
-          <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${b.profile}` : ''}`}>
-            <button className="bt-mark-go" onClick={() => openBookmark(b)}>
-              🔖 {b.name}{b.profile && <span className="bt-mark-prof">{b.profile}</span>}
-            </button>
-            <button className="bt-mark-act" onClick={() => setEdit(structuredClone(b))} title="Sửa">✎</button>
-            <button className="bt-mark-act" onClick={() => void removeBookmark(b)} title="Xóa">✕</button>
-          </span>
-        ))}
-        {bookmarks.length === 0 && <span className="small" style={{ color: 'var(--muted)', padding: '4px 6px' }}>Chưa có dấu trang — mở một trang rồi bấm ☆ Lưu trang.</span>}
-      </div>
-
+    <div className={`bt-root${full ? ' bt-full' : ''}`}>
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '4px 0' }}>{err}</pre>}
 
-      {/* Vùng tab viewer */}
-      {tabs.length > 0 ? (
-        <div className="lv-wrap" style={{ position: 'relative', flex: 1, minHeight: 0 }}>
-          <div className="lv-tabbar" role="tablist">
-            {tabs.map((t) => (
-              <span key={t.id} className={`lv-tab${t.id === activeId ? ' on' : ''}`} title={t.url}>
-                <button className="lv-tab-btn" onClick={() => setActiveId(t.id)}>
-                  {t.name}{t.profile && <span className="bt-mark-prof">{t.profile}</span>}
-                </button>
-                <button className="lv-tab-x" onClick={() => closeTab(t.id)} title="Đóng tab">✕</button>
-              </span>
-            ))}
-            <span style={{ flex: 1 }} />
-            <button className="ghost sm" onClick={() => { setTabs([]); setActiveId(null); }}>✕ Đóng hết</button>
+      {/* ── Có tab: thanh tab + ＋ new tab + ⋯ menu (KHÔNG còn ô địa chỉ thừa) ── */}
+      {hasTabs && (
+        <div className="lv-tabbar bt-tabbar" role="tablist">
+          {tabs.map((t) => (
+            <span key={t.id} className={`lv-tab${t.id === activeId ? ' on' : ''}`} title={t.url}>
+              <button className="lv-tab-btn" onClick={() => { setActiveId(t.id); setNewTabOpen(false); }}>
+                {t.name}{t.profile && <span className="bt-mark-prof">{t.profile}</span>}
+              </button>
+              <button className="lv-tab-x" onClick={() => closeTab(t.id)} title="Đóng tab">✕</button>
+            </span>
+          ))}
+          <button className="bt-newtab" onClick={() => { setNewTabOpen(true); setAddr(''); }} title="Tab mới (mở ô nhập địa chỉ)">＋</button>
+          <span style={{ flex: 1 }} />
+          {/* Menu ⋯ gom các nút phụ như trình duyệt thật */}
+          <div className="bt-menu-wrap">
+            <button className={`ghost sm${menuOpen ? ' on' : ''}`} onClick={() => setMenuOpen((v) => !v)} title="Thêm">⋯</button>
+            {menuOpen && (
+              <>
+                <div className="bt-menu-backdrop" onClick={() => setMenuOpen(false)} />
+                <div className="bt-menu">
+                  <button onClick={() => { setShowMarks((v) => !v); setMenuOpen(false); }}>🔖 Dấu trang ({bookmarks.length})</button>
+                  <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t?.profile ?? '', addedAt: '' }); setMenuOpen(false); }}>☆ Lưu trang hiện tại</button>
+                  <button onClick={() => { setFull((v) => !v); setMenuOpen(false); }}>{full ? '🗕 Thoát tràn viền' : '🗖 Tràn viền'}</button>
+                  <div className="bt-menu-sep" />
+                  <button onClick={() => { setTabs([]); setActiveId(null); setMenuOpen(false); }}>✕ Đóng tất cả tab</button>
+                </div>
+              </>
+            )}
           </div>
+        </div>
+      )}
+
+      {/* Panel new-tab (＋) — ô nhập địa chỉ đè lên trên, đóng lại khi mở xong. */}
+      {hasTabs && newTabOpen && <div className="bt-newtab-panel">{addressForm}</div>}
+
+      {/* Dải dấu trang — bật từ menu ⋯ */}
+      {showMarks && (
+        <div className="bt-marks">
+          {bookmarks.map((b) => (
+            <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${b.profile}` : ''}`}>
+              <button className="bt-mark-go" onClick={() => openBookmark(b)}>
+                🔖 {b.name}{b.profile && <span className="bt-mark-prof">{b.profile}</span>}
+              </button>
+              <button className="bt-mark-act" onClick={() => setEdit(structuredClone(b))} title="Sửa">✎</button>
+              <button className="bt-mark-act" onClick={() => void removeBookmark(b)} title="Xóa">✕</button>
+            </span>
+          ))}
+          {bookmarks.length === 0 && <span className="small" style={{ color: 'var(--muted)', padding: '4px 6px' }}>Chưa có dấu trang — mở trang rồi ☆ Lưu trang.</span>}
+        </div>
+      )}
+
+      {/* ── Vùng nội dung ── */}
+      {hasTabs ? (
+        <div className="lv-wrap bt-viewer">
           <div className="lv-body">
             {tabs.map((t) => (
               <BrowserTab key={t.id} tab={t} hidden={t.id !== activeId} onClose={() => closeTab(t.id)}
@@ -132,8 +177,24 @@ export default function BrowserTabWorkspace() {
           </div>
         </div>
       ) : (
-        <div className="empty" style={{ margin: 'auto', textAlign: 'center' }}>
-          <p className="small">Gõ địa chỉ ở trên hoặc chọn một 🔖 dấu trang để mở tab.</p>
+        /* CHƯA có tab: trang "new tab" — ô nhập địa chỉ + dấu trang chọn nhanh. */
+        <div className="bt-home">
+          <div className="bt-home-title">🌐 Mở một trang web</div>
+          {addressForm}
+          {bookmarks.length > 0 && (
+            <div className="bt-home-marks">
+              <div className="small" style={{ color: 'var(--muted)', width: '100%', marginBottom: 4 }}>Dấu trang</div>
+              {bookmarks.map((b) => (
+                <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${b.profile}` : ''}`}>
+                  <button className="bt-mark-go" onClick={() => openBookmark(b)}>
+                    🔖 {b.name}{b.profile && <span className="bt-mark-prof">{b.profile}</span>}
+                  </button>
+                  <button className="bt-mark-act" onClick={() => setEdit(structuredClone(b))} title="Sửa">✎</button>
+                  <button className="bt-mark-act" onClick={() => void removeBookmark(b)} title="Xóa">✕</button>
+                </span>
+              ))}
+            </div>
+          )}
           <p className="small" style={{ color: 'var(--muted)' }}>Nhiều tab mở song song; mỗi profile giữ phiên đăng nhập riêng.</p>
         </div>
       )}
