@@ -96,10 +96,7 @@ class AutomationRuntime {
   load(): Promise<AutomationConfig> {
     if (this.loaded) return Promise.resolve(this.config);
     if (this.loading) return this.loading;
-    this.loading = fetch('/api/automation')
-      .then((r) => r.json())
-      .then((raw) => normalizeConfig(raw))
-      .catch(() => this.config) // offline / route missing → safe defaults
+    this.loading = this.fetchConfig()
       .then((cfg) => {
         this.config = cfg;
         this.loaded = true;
@@ -110,10 +107,52 @@ class AutomationRuntime {
     return this.loading;
   }
 
-  /** Persist a whole config and adopt whatever the server normalized it to. */
-  async save(next: AutomationConfig): Promise<AutomationConfig> {
+  /** Fetch + normalize the on-disk config; falls back to the current copy on
+   *  network/route error so a transient failure never wipes local state. */
+  private fetchConfig(): Promise<AutomationConfig> {
+    return fetch('/api/automation')
+      .then((r) => r.json())
+      .then((raw) => normalizeConfig(raw))
+      .catch(() => this.config);
+  }
+
+  /** Force a re-read from disk and adopt it — the Automation tab calls this on
+   *  mount so a config another window/device wrote is picked up, instead of
+   *  the stale copy this session loaded once at startup. */
+  async reload(): Promise<AutomationConfig> {
+    const cfg = await this.fetchConfig();
+    this.config = cfg;
+    this.loaded = true;
+    this.emit();
+    return cfg;
+  }
+
+  /**
+   * Persist a whole config (the editor's explicit "write everything").
+   *
+   * Lost-update guard: re-read the disk copy right before writing and, when it
+   * changed under us since this session loaded, MERGE rather than clobber —
+   * fields the caller did not touch keep the newer disk value. `rules`/
+   * `watches`/top-level switches the caller changed still win (that is the
+   * point of Save), but a rule another window added in the meantime is not
+   * silently dropped. onConflict fires so the UI can tell the user a refresh
+   * happened underneath them.
+   */
+  async save(next: AutomationConfig, onConflict?: (disk: AutomationConfig) => void): Promise<AutomationConfig> {
+    const desired = normalizeConfig(next);
+    const base = this.config; // what this session believed was current
+
+    let toWrite = desired;
+    const disk = await this.fetchConfig();
+    if (JSON.stringify(disk) !== JSON.stringify(base)) {
+      // Someone else wrote since we loaded. Start from THEIR copy and lay only
+      // the fields we actually intended to change on top.
+      toWrite = normalizeConfig(this.mergeChanges(base, desired, disk));
+      onConflict?.(disk);
+    }
+
     // Adopt locally first so the UI never feels laggy…
-    this.config = normalizeConfig(next);
+    this.config = toWrite;
     this.loaded = true;
     this.emit();
     try {
@@ -131,9 +170,34 @@ class AutomationRuntime {
     return this.config;
   }
 
-  /** Convenience for toggles: patch a few top-level switches. */
-  patch(patch: Partial<AutomationConfig>): Promise<AutomationConfig> {
-    return this.save({ ...this.config, ...patch });
+  /** Take `disk` as the base and apply only the keys the caller changed
+   *  (base → desired). rules/watches are whole-array replacements when the
+   *  caller touched them; otherwise disk's newer arrays are kept. */
+  private mergeChanges(
+    base: AutomationConfig,
+    desired: AutomationConfig,
+    disk: AutomationConfig,
+  ): AutomationConfig {
+    const merged = { ...disk } as unknown as Record<string, unknown>;
+    const d = desired as unknown as Record<string, unknown>;
+    const b = base as unknown as Record<string, unknown>;
+    for (const key of Object.keys(d)) {
+      if (JSON.stringify(d[key]) !== JSON.stringify(b[key])) {
+        // Caller changed this key relative to what they loaded → their value wins.
+        merged[key] = d[key];
+      }
+    }
+    return merged as unknown as AutomationConfig;
+  }
+
+  /**
+   * Convenience for toggles: flip a few top-level switches WITHOUT risking the
+   * rules/watches arrays. Always re-reads disk first so a toggle can never
+   * carry a stale rule list back over a concurrent edit.
+   */
+  async patch(patch: Partial<AutomationConfig>): Promise<AutomationConfig> {
+    const disk = await this.fetchConfig();
+    return this.save({ ...disk, ...patch });
   }
 
   get current(): AutomationConfig {

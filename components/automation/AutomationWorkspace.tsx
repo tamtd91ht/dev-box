@@ -11,7 +11,7 @@
 // Edits live in a local draft until saved: the engine keeps running the last
 // saved config, so a half-finished rule never fires.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAutomation } from '@/lib/automation/useAutomation';
 import { automation } from '@/lib/automation/runtime';
 import type { AutomationConfig } from '@/lib/automation/types';
@@ -35,9 +35,18 @@ export default function AutomationWorkspace() {
   const [tab, setTab] = useState<Tab>('rules');
   const [draft, setDraft] = useState<AutomationConfig | null>(null);
   const [saving, setSaving] = useState(false);
+  const [conflict, setConflict] = useState(false);
 
   const cfg = draft ?? snap.config;
   const dirty = draft !== null;
+
+  // Nạp lại config từ đĩa mỗi lần MỞ tab — cửa sổ/thiết bị khác vừa sửa thì
+  // thấy ngay, thay vì bản cũ session này load một lần lúc khởi động (nguồn
+  // gốc của lost-update). Không đè lên draft đang sửa dở.
+  useEffect(() => {
+    if (!dirty) void automation.reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // While a draft exists it WINS over the store: a config saved from elsewhere
   // must never overwrite the user's unsaved edits under their hands.
@@ -52,7 +61,10 @@ export default function AutomationWorkspace() {
   const save = async () => {
     if (!draft) return;
     setSaving(true);
-    await automation.save(draft);
+    setConflict(false);
+    // onConflict: đĩa đã đổi từ lúc mở tab → save() đã tự merge (rule người
+    // khác thêm không bị mất, thay đổi của mình vẫn được ghi). Chỉ báo để biết.
+    await automation.save(draft, () => setConflict(true));
     setDraft(null);
     setSaving(false);
   };
@@ -97,6 +109,11 @@ export default function AutomationWorkspace() {
         </div>
 
         <div className="auto-top-right">
+          {conflict ? (
+            <span className="auto-dirty" style={{ color: 'var(--warn)' }} title="Cấu hình trên đĩa đã thay đổi từ lúc mở tab — thay đổi của bạn đã được gộp lên bản mới nhất, không đè mất phần người khác sửa.">
+              ⚠ đã gộp với thay đổi bên ngoài
+            </span>
+          ) : null}
           {dirty ? <span className="auto-dirty">có thay đổi chưa lưu</span> : null}
           <button type="button" className="ghost sm" disabled={!dirty} onClick={() => setDraft(null)}>
             Hoàn tác
