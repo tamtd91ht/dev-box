@@ -1,7 +1,11 @@
 // Server-only Google Drive REST v3 client for the Google tab. No SDK — the
-// three calls we need are plain GETs with a bearer token (googleapis would add
+// calls we need are plain GETs with a bearer token (googleapis would add
 // ~30 MB of deps for this). Read-only by scope AND by code: only files.list /
-// files.get are ever called.
+// files.get / files.export are ever called.
+//
+// downloadContent/exportContent phục vụ API-PREVIEW: file private không mở
+// được trong <webview> (Google chặn đăng nhập embedded browser) → tải nội
+// dung qua API rồi hiển thị ngay trong app; sửa thì mở browser ngoài.
 
 import { getAccessToken } from './googleAuth';
 
@@ -96,6 +100,44 @@ export async function getFile(accountId: string, id: string): Promise<DriveFile>
     supportsAllDrives: 'true',
     fields: FILE_FIELDS,
   });
+}
+
+/** Trần dung lượng preview — quá cỡ này thì bảo người dùng mở browser. */
+const MAX_CONTENT = 30 * 1024 * 1024;
+
+async function driveGetBinary(
+  accountId: string,
+  pathname: string,
+  params: Record<string, string>,
+): Promise<{ buf: Buffer; contentType: string }> {
+  const token = await getAccessToken(accountId);
+  const u = new URL(`https://www.googleapis.com/drive/v3/${pathname}`);
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  const r = await fetch(u, { headers: { authorization: `Bearer ${token}` } });
+  if (!r.ok) {
+    const data = (await r.json().catch(() => ({}))) as { error?: { message?: string } };
+    const msg = data.error?.message ?? `HTTP ${r.status}`;
+    if (r.status === 401) throw new Error(`Google từ chối token (${msg}) — thử Đăng xuất rồi đăng nhập lại.`);
+    throw new Error(`Google Drive API: ${msg}`);
+  }
+  const ab = await r.arrayBuffer();
+  if (ab.byteLength > MAX_CONTENT) {
+    throw new Error(`File quá lớn để xem trong app (${(ab.byteLength / 1024 / 1024).toFixed(1)} MB > 30 MB) — mở trên browser.`);
+  }
+  return { buf: Buffer.from(ab), contentType: r.headers.get('content-type') ?? 'application/octet-stream' };
+}
+
+/** Tải nguyên văn nội dung một file thường (xlsx/pdf/ảnh/text…): alt=media. */
+export async function downloadContent(accountId: string, id: string) {
+  return driveGetBinary(accountId, `files/${encodeURIComponent(id)}`, {
+    alt: 'media',
+    supportsAllDrives: 'true',
+  });
+}
+
+/** Export một file Google-native (Docs/Sheets/Slides) sang mimeType khác. */
+export async function exportContent(accountId: string, id: string, mimeType: string) {
+  return driveGetBinary(accountId, `files/${encodeURIComponent(id)}/export`, { mimeType });
 }
 
 /**
