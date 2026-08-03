@@ -3939,3 +3939,20 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   grid-template-columns: minmax(0, 1fr);
   padding: 16px clamp(16px, 2.5vw, 32px); gap: 12px;
 }
+
+/* Composer: gợi ý địa chỉ (address book) */
+.mc-addr-wrap { position: relative; flex: 1; display: flex; }
+.mc-addr-wrap .mc-input { flex: 1; }
+.mc-addr-menu {
+  position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 5;
+  background: var(--bg-1); border: 1px solid var(--glass-brd); border-radius: 9px;
+  box-shadow: 0 12px 30px rgba(0,0,0,.45); overflow: hidden; max-height: 240px; overflow-y: auto;
+}
+.mc-addr-item {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left;
+  border: none; background: transparent; color: var(--text); cursor: pointer;
+  padding: 7px 12px; font-size: 13px;
+}
+.mc-addr-item:hover, .mc-addr-item.on { background: var(--glass-2); }
+.mc-addr-email { font-weight: 600; }
+.mc-addr-name { color: var(--muted); font-size: 12px; }

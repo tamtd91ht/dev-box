@@ -111,6 +111,11 @@ export const mMessage = (accountId: string, path: string, uid: number) =>
   mailAction<MailDetail>('message', { accountId, path, uid });
 export const mSend = (input: SendInput) => mailAction<{ messageId: string }>('send', { ...input });
 
+export interface MailContact { email: string; name?: string; count: number; lastSeen: string }
+export const mContacts = () => mailAction<MailContact[]>('contacts');
+export const mContactAdd = (address: string) => mailAction<MailContact[]>('contactAdd', { address });
+export const mContactRemove = (email: string) => mailAction<MailContact[]>('contactRemove', { email });
+
 export const attachmentUrl = (accountId: string, path: string, uid: number, idx: number) =>
   `/api/mail?attachment&accountId=${encodeURIComponent(accountId)}&path=${encodeURIComponent(path)}&uid=${uid}&idx=${idx}`;
 

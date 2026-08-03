@@ -89,3 +89,8 @@ electron/dist/
 
 # Browser tab — bookmark + credentials — never commit
 .bookmarks.json
+
+# Backup thu cong cua configs/ — KHONG commit (chua secret)
+configs.*
+configs.rar
+*.rar

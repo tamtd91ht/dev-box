@@ -23,6 +23,7 @@ import { listAccounts, getAccount, addAccount, removeAccount, toPublic } from '@
 import {
   verifyImap, listFolders, listMessages, getMessage, getAttachment, sendMail,
 } from '@/lib/mailServer';
+import { listContacts, recordAddresses, removeContact, domainOf } from '@/lib/mailContacts';
 
 export const runtime = 'nodejs';
 
@@ -85,9 +86,19 @@ export async function POST(req: NextRequest) {
           typeof body.beforeSeq === 'number' ? body.beforeSeq : undefined,
         );
         break;
-      case 'message':
-        result = await getMessage(await needAccount(), String(body.path ?? 'INBOX'), Number(body.uid));
+      case 'message': {
+        const acc = await needAccount();
+        const detail = await getMessage(acc, String(body.path ?? 'INBOX'), Number(body.uid));
+        // Thu người GỬI vào address book NẾU cùng domain với tài khoản (đồng
+        // nghiệp nội bộ). Domain khác → không tự lưu (UI có nút thủ công).
+        const from = detail.from;
+        if (from?.address && domainOf(from.address) === domainOf(acc.email)) {
+          const label = from.name ? `${from.name} <${from.address}>` : from.address;
+          void recordAddresses([label]).catch(() => {});
+        }
+        result = detail;
         break;
+      }
       case 'send': {
         const to = String(body.to ?? '').trim();
         if (!to) throw new Error('Thiếu người nhận (To).');
@@ -107,8 +118,20 @@ export async function POST(req: NextRequest) {
               }))
             : undefined,
         });
+        // Thu MỌI địa chỉ đã gửi tới (To + Cc) — người mình chủ động liên hệ.
+        void recordAddresses([...to.split(','), ...String(body.cc ?? '').split(',')].filter(Boolean)).catch(() => {});
         break;
       }
+      case 'contacts':
+        result = await listContacts();
+        break;
+      case 'contactAdd':
+        // Lưu thủ công một địa chỉ bất kỳ (kể cả domain khác).
+        result = await recordAddresses([String(body.address ?? '')]);
+        break;
+      case 'contactRemove':
+        result = await removeContact(String(body.email ?? ''));
+        break;
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
     }

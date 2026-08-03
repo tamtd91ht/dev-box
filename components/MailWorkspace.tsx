@@ -14,9 +14,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  mAccounts, mAccountAdd, mAccountRemove, mFolders, mList, mMessage, mSend,
+  mAccounts, mAccountAdd, mAccountRemove, mFolders, mList, mMessage, mSend, mContacts, mContactAdd,
   attachmentUrl, folderIcon, fmtAddr, fmtSize,
   type MailAccountPub, type MailFolder, type MailListItem, type MailDetail, type AccountAddInput,
+  type MailContact,
 } from '@/lib/mail';
 import { fmtRel } from '@/lib/google';
 
@@ -155,6 +156,59 @@ function fileToBase64(file: File): Promise<string> {
 
 const ATTACH_LIMIT = 20 * 1024 * 1024; // tổng ~20MB — cảnh báo khi vượt
 
+/** Ô nhập địa chỉ có gợi ý từ address book. Nhiều địa chỉ cách nhau dấu phẩy;
+ *  gợi ý lọc theo token ĐANG gõ (sau dấu phẩy cuối), chọn thì thay token đó. */
+function AddrInput({ value, onChange, placeholder, contacts, autoFocus }: {
+  value: string; onChange: (v: string) => void; placeholder: string;
+  contacts: MailContact[]; autoFocus?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [hi, setHi] = useState(0);
+
+  // Token đang gõ = phần sau dấu phẩy cuối cùng.
+  const cut = value.lastIndexOf(',');
+  const head = cut >= 0 ? value.slice(0, cut + 1) : '';
+  const token = (cut >= 0 ? value.slice(cut + 1) : value).trim().toLowerCase();
+
+  const matches = token
+    ? contacts.filter((c) => c.email.includes(token) || (c.name ?? '').toLowerCase().includes(token)).slice(0, 8)
+    : [];
+
+  const pick = (c: MailContact) => {
+    onChange(`${head}${head ? ' ' : ''}${c.email}, `);
+    setOpen(false); setHi(0);
+  };
+
+  return (
+    <div className="mc-addr-wrap">
+      <input className="mc-input" placeholder={placeholder} value={value} autoFocus={autoFocus}
+        autoComplete="off"
+        onChange={(e) => { onChange(e.target.value); setOpen(true); setHi(0); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 120)}
+        onKeyDown={(e) => {
+          if (!open || !matches.length) return;
+          if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(h + 1, matches.length - 1)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)); }
+          else if (e.key === 'Enter' || e.key === 'Tab') {
+            if (matches[hi]) { e.preventDefault(); pick(matches[hi]); }
+          } else if (e.key === 'Escape') { setOpen(false); }
+        }} />
+      {open && matches.length > 0 && (
+        <div className="mc-addr-menu">
+          {matches.map((c, i) => (
+            <button key={c.email} type="button" className={`mc-addr-item${i === hi ? ' on' : ''}`}
+              onMouseDown={(e) => { e.preventDefault(); pick(c); }}>
+              <span className="mc-addr-email">{c.email}</span>
+              {c.name && <span className="mc-addr-name">{c.name}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Composer({ account, draft, onClose, onSent }: {
   account: MailAccountPub;
   draft: ComposeDraft;
@@ -171,6 +225,8 @@ function Composer({ account, draft, onClose, onSent }: {
   const [err, setErr] = useState<string | null>(null);
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const [contacts, setContacts] = useState<MailContact[]>([]);
+  useEffect(() => { mContacts().then(setContacts).catch(() => {}); }, []);
 
   const isReply = !!draft.inReplyTo;
 
@@ -231,17 +287,17 @@ function Composer({ account, draft, onClose, onSent }: {
 
         {/* Field rows kiểu Gmail: label bên trái, input liền mạch */}
         <div className="mc-fields">
-          <label className="mc-row">
+          <div className="mc-row">
             <span className="mc-label">Tới</span>
-            <input className="mc-input" placeholder="nhiều địa chỉ cách nhau dấu phẩy" value={to}
-              onChange={(e) => setTo(e.target.value)} autoFocus={!isReply} />
+            <AddrInput value={to} onChange={setTo} contacts={contacts} autoFocus={!isReply}
+              placeholder="nhiều địa chỉ cách nhau dấu phẩy — gõ để gợi ý" />
             {!showCc && <button className="mc-cc-toggle" onClick={() => setShowCc(true)}>Cc</button>}
-          </label>
+          </div>
           {showCc && (
-            <label className="mc-row">
+            <div className="mc-row">
               <span className="mc-label">Cc</span>
-              <input className="mc-input" placeholder="Cc" value={cc} onChange={(e) => setCc(e.target.value)} />
-            </label>
+              <AddrInput value={cc} onChange={setCc} contacts={contacts} placeholder="Cc" />
+            </div>
           )}
           <label className="mc-row">
             <span className="mc-label">Tiêu đề</span>
@@ -307,7 +363,14 @@ function DetailView({ accountId, path, detail, onBack, onReply }: {
   onReply: (all: boolean) => void;
 }) {
   const [allowRemote, setAllowRemote] = useState(false);
+  const [saved, setSaved] = useState(false);
   const hasRemote = !!detail.html && /src\s*=\s*["']?https?:/i.test(detail.html);
+
+  const saveSender = async () => {
+    if (!detail.from?.address) return;
+    const label = detail.from.name ? `${detail.from.name} <${detail.from.address}>` : detail.from.address;
+    try { await mContactAdd(label); setSaved(true); setTimeout(() => setSaved(false), 2500); } catch { /* ignore */ }
+  };
 
   return (
     <div className="mail-detail">
@@ -315,6 +378,12 @@ function DetailView({ accountId, path, detail, onBack, onReply }: {
         <button className="ghost sm" onClick={onBack} title="Quay lại danh sách">←</button>
         <button className="ghost sm" onClick={() => onReply(false)} title="Trả lời người gửi">↩ Trả lời</button>
         <button className="ghost sm" onClick={() => onReply(true)} title="Trả lời tất cả (To + Cc)">↩ Tất cả</button>
+        {detail.from?.address && (
+          <button className="ghost sm" onClick={() => void saveSender()}
+            title="Lưu địa chỉ người gửi vào gợi ý (dùng khi khác domain — không tự lưu)">
+            {saved ? '✓ Đã lưu' : '👤 Lưu địa chỉ'}
+          </button>
+        )}
         {hasRemote && !allowRemote && (
           <button className="ghost sm" onClick={() => setAllowRemote(true)}
             title="Ảnh/nội dung remote đang bị chặn (tránh tracking) — bấm để tải">
