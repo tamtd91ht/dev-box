@@ -362,7 +362,9 @@ export async function pullAll(root: string = GIT_ROOT): Promise<PullResult[]> {
           name: r.name,
           path: r.path,
           outcome: conflict ? 'conflict' : 'error',
-          message: msg.split('\n')[0],
+          // stderr của git mở đầu bằng dòng "hint: …" vô nghĩa với người đọc —
+          // conflict thì nói thẳng bằng lời người.
+          message: conflict ? 'lịch sử phân nhánh với remote — cần merge/rebase thủ công' : msg.split('\n')[0],
         };
       }
     }),

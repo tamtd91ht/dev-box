@@ -72,6 +72,23 @@ export default function GitAutoPullHost() {
             source: 'git auto-pull',
           });
         }
+
+        // Repo ĐƯỢC PULL thật → ghi hòm mức info (không toast): vừa là bằng
+        // chứng tiến trình 10 phút đang chạy, vừa biết code mới về lúc nào.
+        const pulled = (snap.projects ?? []).flatMap((p) =>
+          p.results
+            .filter((r) => r.outcome === 'pulled')
+            .map((r) => `${p.projectName}/${r.name}: ${r.message}`),
+        );
+        if (pulled.length) {
+          notices.add({
+            tab: 'git',
+            level: 'info',
+            title: `⎇ Git auto-pull: ${pulled.length} repo được cập nhật`,
+            body: pulled.join('\n'),
+            source: 'git auto-pull',
+          });
+        }
       } catch {
         /* server đang khởi động / offline — thử lại ở tick sau */
       }
