@@ -11,8 +11,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import '@/lib/monacoSetup'; // Monaco local /monaco/vs — phải config trước lần init đầu
 import Editor, { type OnMount } from '@monaco-editor/react';
 import type { editor as MonacoEditorNs } from 'monaco-editor';
-import { formatText, minifyJson, monacoLangFor, type FormatKind } from '@/lib/format';
-import { dList, dSave, dRemove, dSaveFile, type SavedDoc } from '@/lib/docs';
+import { formatText, minifyJson, monacoLangFor, detectKind, type FormatKind } from '@/lib/format';
+import { dList, dSave, dRemove, dSaveFile, dReadFile, type SavedDoc } from '@/lib/docs';
 import { fmtRel } from '@/lib/google';
 import FolderPicker from './FolderPicker';
 
@@ -20,7 +20,14 @@ const KINDS: { key: FormatKind; label: string }[] = [
   { key: 'json', label: 'JSON' },
   { key: 'xml', label: 'XML' },
   { key: 'html', label: 'HTML' },
+  { key: 'text', label: 'Text' },
 ];
+
+/** Đuôi file media → phát trong player thay vì mở editor. */
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'oga', 'm4a', 'aac', 'flac', 'opus']);
+const VIDEO_EXTS = new Set(['mp4', 'm4v', 'webm', 'mov', 'mkv', 'avi']);
+
+interface MediaOpen { path: string; name: string; video: boolean; url: string }
 
 export default function ToolsWorkspace() {
   const [kind, setKind] = useState<FormatKind>('json');
@@ -35,7 +42,12 @@ export default function ToolsWorkspace() {
   const [modal, setModal] = useState<null | 'store' | 'file'>(null);
   const [nameInput, setNameInput] = useState('');
   const [pickDir, setPickDir] = useState<string | null>(null);
-  const [picking, setPicking] = useState(false);
+  /** 'dir' = chọn thư mục lưu · 'open' = chọn FILE trên máy để mở vào editor. */
+  const [picking, setPicking] = useState<null | 'dir' | 'open'>(null);
+  /** File local đang mở (hiện tên trên toolbar; Lưu ra file sẽ prefill lại nó). */
+  const [openFilePath, setOpenFilePath] = useState<string | null>(null);
+  /** File media đang phát (thay editor bằng player tới khi đóng). */
+  const [media, setMedia] = useState<MediaOpen | null>(null);
 
   const reloadDocs = useCallback(() => { dList().then(setDocs).catch((e) => setErr((e as Error).message)); }, []);
   useEffect(() => { reloadDocs(); }, [reloadDocs]);
@@ -56,7 +68,7 @@ export default function ToolsWorkspace() {
   const copy = async () => { try { await navigator.clipboard.writeText(text); } catch { /* ignore */ } };
 
   // ── Store snippet (JSON/text) ─────────────────────────────────────────────
-  const newDoc = () => { setText(''); setErr(null); setOpenId(null); setDirty(false); setPreview(false); };
+  const newDoc = () => { setText(''); setErr(null); setOpenId(null); setOpenFilePath(null); setDirty(false); setPreview(false); };
 
   const defaultExt = kind === 'json' ? '.json' : kind === 'xml' ? '.xml' : kind === 'html' ? '.html' : '.txt';
 
@@ -86,11 +98,38 @@ export default function ToolsWorkspace() {
     } catch (e) { setErr((e as Error).message); }
   };
 
+  /** Mở file từ máy: media → phát luôn; json/xml/html (đuôi hoặc nội dung)
+   *  → render đúng tab; còn lại → mở full text. */
+  const openLocalFile = async (p: string) => {
+    setPicking(null);
+    const name = p.split(/[\\/]/).pop() ?? p;
+    const ext = (name.split('.').pop() ?? '').toLowerCase();
+    if (AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext)) {
+      setMedia({
+        path: p,
+        name,
+        video: VIDEO_EXTS.has(ext),
+        url: `/api/docs?media&path=${encodeURIComponent(p)}`,
+      });
+      setErr(null); setPreview(false);
+      return;
+    }
+    try {
+      const { path: full, content } = await dReadFile(p);
+      setKind(detectKind(full, content));
+      setText(content);
+      setOpenId(null);
+      setOpenFilePath(full);
+      setMedia(null);
+      setDirty(false); setErr(null); setPreview(false);
+    } catch (e) { setErr((e as Error).message); }
+  };
+
   const openDoc = (d: SavedDoc) => {
     // Snippet JSON mở ở tab JSON (format được); text mở ở tab JSON để xem/sửa
     // nhưng người dùng cứ để nguyên — không bắt buộc format.
     setKind('json');
-    setText(d.content); setOpenId(d.id); setDirty(false); setErr(null); setPreview(false);
+    setText(d.content); setOpenId(d.id); setOpenFilePath(null); setDirty(false); setErr(null); setPreview(false);
   };
 
   const removeDoc = async (d: SavedDoc) => {
@@ -111,19 +150,40 @@ export default function ToolsWorkspace() {
           ))}
         </div>
         <span style={{ flex: 1 }} />
-        <button className="sm" onClick={format} title="Định dạng đẹp (Format / Beautify)">✨ Format</button>
+        {kind !== 'text' && <button className="sm" onClick={format} title="Định dạng đẹp (Format / Beautify)">✨ Format</button>}
         {kind === 'json' && <button className="ghost sm" onClick={minify} title="Rút gọn một dòng">Minify</button>}
         {kind === 'html' && <button className={`chip-btn${preview ? ' on' : ''}`} onClick={() => setPreview((v) => !v)}>👁 Preview</button>}
         <button className="ghost sm" onClick={copy} title="Copy toàn bộ">⧉ Copy</button>
         <span className="glink-filter-sep" aria-hidden />
         <button className="ghost sm" onClick={newDoc} title="Tạo tài liệu mới (trống)">＋ Mới</button>
+        <button className="ghost sm" onClick={() => setPicking('open')}
+          title="Mở file trên máy (json/xml/html/txt/log/yaml…) vào editor">
+          📂 Mở file…
+        </button>
         <button className="ghost sm" onClick={() => void openStoreModal()} title="Lưu vào kho trong app (JSON/text)">
           💾 {openId ? 'Lưu' : 'Lưu kho'}
         </button>
-        <button className="ghost sm" onClick={() => { setNameInput(`untitled${defaultExt}`); setPickDir(null); setModal('file'); }}
-          title="Lưu ra file thật — chọn thư mục trên máy">
+        <button
+          className="ghost sm"
+          onClick={() => {
+            // Đang mở file local → prefill lại đúng thư mục + tên file đó.
+            if (openFilePath) {
+              const base = openFilePath.split(/[\\/]/).pop() ?? `untitled${defaultExt}`;
+              setNameInput(base);
+              setPickDir(openFilePath.slice(0, openFilePath.length - base.length).replace(/[\\/]$/, ''));
+            } else {
+              setNameInput(`untitled${defaultExt}`);
+              setPickDir(null);
+            }
+            setModal('file');
+          }}
+          title="Lưu ra file thật — chọn thư mục trên máy"
+        >
           📁 Lưu ra file…
         </button>
+        {openFilePath && (
+          <span className="badge" title={openFilePath}>📄 {openFilePath.split(/[\\/]/).pop()}</span>
+        )}
       </div>
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '4px 0' }}>{err}</pre>}
 
@@ -146,8 +206,25 @@ export default function ToolsWorkspace() {
           {docs.length === 0 && <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px' }}>Chưa có tài liệu. Gõ nội dung rồi 💾 Lưu.</p>}
         </aside>
 
-        {/* Editor + (HTML) preview */}
+        {/* Editor + (HTML) preview — hoặc player khi mở file media */}
         <div className="tools-main">
+          {media ? (
+            <div className="tools-media">
+              <div className="tools-media-head">
+                <b>{media.video ? '🎬' : '🎵'} {media.name}</b>
+                <span className="small" style={{ color: 'var(--muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={media.path}>{media.path}</span>
+                <button className="ghost sm" onClick={() => setMedia(null)} title="Đóng player, về editor">✕</button>
+              </div>
+              {media.video ? (
+                <video key={media.url} className="tools-media-el" src={media.url} controls autoPlay />
+              ) : (
+                <div className="tools-media-audio">
+                  <span className="tools-media-ico" aria-hidden>🎵</span>
+                  <audio key={media.url} src={media.url} controls autoPlay style={{ width: '100%' }} />
+                </div>
+              )}
+            </div>
+          ) : (
           <div className="tools-editor">
             <Editor
               language={monacoLangFor(kind)}
@@ -161,7 +238,8 @@ export default function ToolsWorkspace() {
               }}
             />
           </div>
-          {kind === 'html' && preview && (
+          )}
+          {!media && kind === 'html' && preview && (
             <iframe className="tools-preview" sandbox="allow-same-origin" srcDoc={text} title="HTML preview" />
           )}
         </div>
@@ -194,7 +272,7 @@ export default function ToolsWorkspace() {
             <div className="glink-meta-pair">
               <input className="input" placeholder="Thư mục đích" value={pickDir ?? ''}
                 onChange={(e) => setPickDir(e.target.value)} />
-              <button className="ghost sm" style={{ flex: 'none' }} onClick={() => setPicking(true)}>📂 Chọn…</button>
+              <button className="ghost sm" style={{ flex: 'none' }} onClick={() => setPicking('dir')}>📂 Chọn…</button>
             </div>
             <input className="input" placeholder="Tên file (kèm đuôi)" value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
@@ -207,12 +285,27 @@ export default function ToolsWorkspace() {
         </div>
       )}
 
-      {picking && (
+      {picking === 'dir' && (
         <FolderPicker
           initial={pickDir ?? undefined}
           title="Chọn thư mục lưu file"
-          onPick={(p) => { setPickDir(p); setPicking(false); }}
-          onClose={() => setPicking(false)}
+          onPick={(p) => { setPickDir(p); setPicking(null); }}
+          onClose={() => setPicking(null)}
+        />
+      )}
+
+      {picking === 'open' && (
+        <FolderPicker
+          title="Mở file từ máy (text mở editor, media phát luôn)"
+          fileExts={[
+            'json', 'xml', 'svg', 'html', 'htm', 'txt', 'log', 'md', 'yml', 'yaml', 'csv',
+            'env', 'conf', 'ini', 'properties', 'sql', 'js', 'ts', 'sh', 'ps1', 'bat',
+            'mp3', 'wav', 'ogg', 'oga', 'm4a', 'aac', 'flac', 'opus',
+            'mp4', 'm4v', 'webm', 'mov', 'mkv', 'avi',
+          ]}
+          onPickFile={(p) => void openLocalFile(p)}
+          onPick={() => {}}
+          onClose={() => setPicking(null)}
         />
       )}
     </div>

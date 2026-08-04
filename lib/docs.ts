@@ -27,3 +27,6 @@ export const dSave = (input: { id?: string; name: string; kind: DocKind; content
 export const dRemove = (id: string) => docsAction<SavedDoc[]>('remove', { id });
 export const dSaveFile = (dir: string, filename: string, content: string) =>
   docsAction<{ path: string }>('saveFile', { dir, filename, content });
+/** Mở file text thật từ máy local (cap 10MB). */
+export const dReadFile = (path: string) =>
+  docsAction<{ path: string; content: string }>('readFile', { path });

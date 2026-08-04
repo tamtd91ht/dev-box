@@ -6,7 +6,7 @@
 //   cây DOM (tránh @xmldom nuốt lỗi + đổi ngữ nghĩa HTML), giữ nguyên text,
 //   chỉ xuống dòng + thụt lề giữa các tag. Đủ đẹp để đọc; không phải chuẩn hoá.
 
-export type FormatKind = 'json' | 'xml' | 'html';
+export type FormatKind = 'json' | 'xml' | 'html' | 'text';
 
 export interface FormatResult {
   ok: boolean;
@@ -102,8 +102,25 @@ function formatMarkup(src: string, isHtml: boolean): FormatResult {
 }
 
 export function formatText(kind: FormatKind, src: string): FormatResult {
+  if (kind === 'text') return { ok: true, text: src }; // plain text — không format
   if (kind === 'json') return formatJson(src);
   return formatMarkup(src, kind === 'html');
+}
+
+/** Đoán kind từ ĐUÔI FILE + NỘI DUNG (khi mở file local): json/xml/html rõ ràng
+ *  thì render đúng tab, còn lại là full text. */
+export function detectKind(filename: string, content: string): FormatKind {
+  const ext = (filename.split('.').pop() ?? '').toLowerCase();
+  if (ext === 'json') return 'json';
+  if (ext === 'xml' || ext === 'svg') return 'xml';
+  if (ext === 'html' || ext === 'htm') return 'html';
+  const s = content.trimStart().slice(0, 4096);
+  if (s.startsWith('{') || s.startsWith('[')) {
+    try { JSON.parse(content); return 'json'; } catch { /* không phải JSON */ }
+  }
+  if (/^<!doctype html/i.test(s) || /^<html[\s>]/i.test(s)) return 'html';
+  if (s.startsWith('<')) return 'xml';
+  return 'text';
 }
 
 /** Rút gọn JSON về một dòng (minify) — tiện đối chiếu / copy. */
@@ -119,4 +136,4 @@ export function minifyJson(src: string): FormatResult {
 
 /** Ngôn ngữ Monaco theo kind (để highlight). */
 export const monacoLangFor = (kind: FormatKind): string =>
-  kind === 'json' ? 'json' : kind === 'html' ? 'html' : 'xml';
+  kind === 'json' ? 'json' : kind === 'html' ? 'html' : kind === 'text' ? 'plaintext' : 'xml';

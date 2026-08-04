@@ -4152,3 +4152,16 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-filter { flex: none; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .wk-results { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .wk-overdue { color: var(--err); font-weight: 700; }
+
+/* Tools: player media (mở file mp3/mp4/wav... từ máy là phát luôn) */
+.tools-media {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px;
+  border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px;
+  background: var(--glass);
+}
+.tools-media-head { flex: none; display: flex; align-items: center; gap: 10px; }
+.tools-media-el { flex: 1; min-height: 0; width: 100%; background: #000; border-radius: 8px; object-fit: contain; }
+.tools-media-audio {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+}
+.tools-media-ico { font-size: 56px; opacity: .7; }
