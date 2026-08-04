@@ -20,6 +20,12 @@ import {
   type MailContact,
 } from '@/lib/mail';
 import { fmtRel } from '@/lib/google';
+import { MAIL_REFRESH_EVENT } from './MailWatchHost';
+
+/** Báo cho MailWatchHost đếm lại số mail chưa đọc NGAY (badge tab Mail). */
+function pingMailWatch() {
+  try { window.dispatchEvent(new Event(MAIL_REFRESH_EVENT)); } catch { /* SSR/không có window */ }
+}
 
 const ACTIVE_ACCOUNT_KEY = 'mail.activeAccount';
 
@@ -572,6 +578,7 @@ function MailboxView({ account, onCompose }: {
       if (!m.seen) {
         setItems((cur) => cur.map((x) => (x.uid === m.uid ? { ...x, seen: true } : x)));
         setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - 1) } : f)));
+        pingMailWatch(); // badge tab Mail giảm ngay, khỏi chờ chu kỳ 10 phút
       }
     } catch (e) {
       setErr((e as Error).message);
@@ -599,6 +606,7 @@ function MailboxView({ account, onCompose }: {
       setTotal((t) => Math.max(0, t - 1));
       if (!m.seen) {
         setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - 1) } : f)));
+        pingMailWatch(); // xóa mail chưa đọc cũng phải giảm badge ngay
       }
       setDetail((d) => (d?.uid === m.uid ? null : d));
     } catch (e) {
