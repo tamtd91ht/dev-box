@@ -15,6 +15,7 @@
 // openAt của workspace mình vào registry theo projectId.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import '@/lib/monacoSetup'; // Monaco local /monaco/vs — phải config trước lần init đầu
 import Editor, { type Monaco } from '@monaco-editor/react';
 import type { editor as MonacoEditorNs, Position as MonacoPosition, Uri as MonacoUri, IRange } from 'monaco-editor';
 import {

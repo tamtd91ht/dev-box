@@ -8,6 +8,7 @@
 // nút Lưu/Mới/Xóa gọi store qua lib/docs.ts.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import '@/lib/monacoSetup'; // Monaco local /monaco/vs — phải config trước lần init đầu
 import Editor, { type OnMount } from '@monaco-editor/react';
 import type { editor as MonacoEditorNs } from 'monaco-editor';
 import { formatText, minifyJson, monacoLangFor, type FormatKind } from '@/lib/format';

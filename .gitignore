@@ -94,3 +94,6 @@ electron/dist/
 configs.*
 configs.rar
 *.rar
+
+# Monaco editor tu-host (copy tu node_modules boi scripts/copy-monaco.cjs)
+/public/monaco/

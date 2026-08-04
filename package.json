@@ -5,6 +5,9 @@
   "description": "VHS DevBox — infra toolbox dung chung (Redis, Kafka, RabbitMQ, MongoDB, Elasticsearch, PostgreSQL, Git, Webhooks).",
   "main": "electron/main.cjs",
   "scripts": {
+    "postinstall": "node scripts/copy-monaco.cjs",
+    "predev": "node scripts/copy-monaco.cjs",
+    "prebuild": "node scripts/copy-monaco.cjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
