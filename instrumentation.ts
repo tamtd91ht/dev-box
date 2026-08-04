@@ -9,5 +9,7 @@ export async function register() {
     ensureAutoPull();
     const { ensureMailWatch } = await import('./lib/mailWatch');
     ensureMailWatch();
+    const { ensureWorkWatch } = await import('./lib/workWatch');
+    ensureWorkWatch();
   }
 }

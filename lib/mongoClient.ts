@@ -102,6 +102,15 @@ function getClient(conn: MongoConnection): MongoClient {
   return client;
 }
 
+/** Truy cập MongoClient thô (tái dùng pool cache ở trên) cho các TÍNH NĂNG NỘI
+ *  BỘ khác của DevBox — hiện là kho Công việc (lib/workTasks): ghi vào một
+ *  collection riêng do người dùng chủ đích cấu hình, KHÔNG đi qua gate
+ *  readOnly của tool duyệt Mongo (gate đó bảo vệ thao tác sửa DỮ LIỆU CỦA
+ *  CỤM từ UI duyệt, không áp cho kho lưu trữ riêng của app). */
+export function internalClient(conn: MongoConnection): MongoClient {
+  return getClient(conn);
+}
+
 // ── EJSON parsing + safety scans ──────────────────────────────────────────────
 
 /** Parse a client-supplied EJSON/JSON string (or pass through an object). */

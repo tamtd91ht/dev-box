@@ -31,6 +31,8 @@ import AutomationWorkspace from '@/components/automation/AutomationWorkspace';
 import AutomationHost from '@/components/AutomationHost';
 import GitAutoPullHost from '@/components/GitAutoPullHost';
 import MailWatchHost from '@/components/MailWatchHost';
+import WorkWorkspace from '@/components/WorkWorkspace';
+import WorkAlertHost from '@/components/WorkAlertHost';
 import NotificationCenter from '@/components/NotificationCenter';
 import { notices } from '@/lib/noticeStore';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -116,6 +118,7 @@ function resolvePublicBase(baseUrl: string, apiPrefix: string, override?: string
 type Mode = string;
 
 const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
+  { key: 'work', icon: '📋', label: 'Công việc', badge: 'todo' },
   { key: 'git', icon: '⎇', label: 'Git', badge: 'local' },
   { key: 'code', icon: '⌨', label: 'Code', badge: 'ide' },
   { key: 'redis', icon: '◆', label: 'Redis', badge: 'local' },
@@ -354,6 +357,11 @@ export default function Home() {
 
       {/* ── Body: workspaces (mount-and-keep) ───────────────────────── */}
       <div className="body">
+        {visited.work && (
+          <main className="workspace" style={paneStyle(mode === 'work')} aria-hidden={mode !== 'work'}>
+            <WorkWorkspace />
+          </main>
+        )}
         {visited.git && (
           <main className="workspace" style={paneStyle(mode === 'git')} aria-hidden={mode !== 'git'}>
             <GitWorkspace />
@@ -503,6 +511,9 @@ export default function Home() {
 
       {/* Tiến trình nền: server đếm mail chưa đọc 10 phút/lần → badge tab Mail. */}
       <MailWatchHost onUnread={setMailUnread} />
+
+      {/* Cảnh báo Công việc (ngày bắt đầu + gần deadline) → toast + hòm thông báo. */}
+      <WorkAlertHost />
 
       {/* ── Footer ───────────────────────────────────────────────────── */}
       <footer className="appfoot">
