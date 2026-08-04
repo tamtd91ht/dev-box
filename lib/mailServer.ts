@@ -103,6 +103,11 @@ export async function verifyImap(account: MailAccount): Promise<void> {
   await withImap(account, async () => undefined);
 }
 
+/** STATUS INBOX {unseen} — số mail đến chưa đọc, cho tiến trình nền mailWatch. */
+export async function inboxUnseen(account: MailAccount): Promise<number> {
+  return withImap(account, async (client) => (await client.status('INBOX', { unseen: true })).unseen ?? 0);
+}
+
 const FOLDER_ORDER: Record<string, number> = {
   '\\Inbox': 0, '\\Sent': 1, '\\Drafts': 2, '\\Junk': 3, '\\Trash': 4, '\\Archive': 5,
 };

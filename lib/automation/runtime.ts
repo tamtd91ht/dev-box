@@ -333,6 +333,22 @@ class AutomationRuntime {
     for (const l of this.toastListeners) l(t);
   }
 
+  /** Toast + OS notification phát từ một host hệ thống NGOÀI rule engine
+   *  (vd: tiến trình tự pull Git). Dùng chung kênh với action `notify` nên
+   *  hiển thị y hệt trong AutomationHost. */
+  systemNotify(level: NotifyAction['level'], title: string, body: string, source = 'hệ thống'): void {
+    this.toast({
+      id: `sys-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      level,
+      title,
+      body,
+      ruleName: source,
+      dryRun: false,
+      at: Date.now(),
+    });
+    this.osNotify(title, body, { type: 'notify', level, sound: level !== 'info' });
+  }
+
   private osNotify(title: string, body: string, action: NotifyAction): void {
     try {
       if (typeof Notification === 'undefined') return;

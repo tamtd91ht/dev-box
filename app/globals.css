@@ -3963,3 +3963,48 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* Apps: badge cổng đang chạy (link mở) */
 .app-port { text-decoration: none; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 .app-port:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+
+/* ── Notification Center (chuông appbar + panel hòm thông báo local) ── */
+.ntc { position: relative; flex: none; }
+.ntc-bell {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 5px 9px; border-radius: 10px; cursor: pointer; font-size: 14px;
+  background: var(--glass); border: 1px solid var(--glass-brd); color: var(--text);
+}
+.ntc-bell:hover { border-color: var(--glass-brd-hover); }
+.ntc-bell.has-unread { animation: ms-badge-pulse 1.4s ease-in-out infinite; }
+.ntc-panel {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 9100;
+  width: min(420px, 92vw); max-height: min(60vh, 520px);
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 12px;
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: var(--shadow);
+}
+.ntc-head {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--glass-brd);
+}
+.ntc-title { font-size: 13px; font-weight: 700; }
+.ntc-hint { flex: 1 1 auto; font-size: 10.5px; color: var(--faint); }
+.ntc-clear {
+  flex: none; padding: 4px 10px; border-radius: 8px; cursor: pointer; font-size: 11.5px;
+  background: transparent; border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.ntc-clear:hover:not(:disabled) { color: var(--err); border-color: color-mix(in srgb, var(--err) 55%, transparent); }
+.ntc-clear:disabled { opacity: .5; cursor: default; }
+.ntc-list { flex: 1 1 auto; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.ntc-empty { padding: 22px 12px; text-align: center; font-size: 12.5px; color: var(--faint); }
+.ntc-item {
+  display: flex; align-items: flex-start; gap: 9px; padding: 9px 10px;
+  border-radius: 10px; border: 1px solid transparent;
+}
+.ntc-item:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.ntc-item.lv-warn { border-color: color-mix(in srgb, var(--warn, #d29922) 40%, transparent); }
+.ntc-item.lv-urgent { border-color: color-mix(in srgb, var(--bad, #f85149) 50%, transparent); }
+.ntc-ico { flex: none; font-size: 15px; }
+.ntc-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ntc-item-title { font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.ntc-text { font-size: 11.5px; color: var(--muted); white-space: pre-line; overflow-wrap: anywhere; }
+.ntc-meta { font-size: 10px; color: var(--faint); }

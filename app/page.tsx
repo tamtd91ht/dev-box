@@ -6,7 +6,7 @@
 // RabbitMQ · MongoDB · Elastic · PostgreSQL). Each workspace mounts lazily and
 // stays mounted (hidden) across tab switches so long-running state survives.
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import WebhookReceiver from '@/components/WebhookReceiver';
 import ApiExplorerWorkspace, { type IntegrationView } from '@/components/ApiExplorerWorkspace';
 import PackManager from '@/components/PackManager';
@@ -29,6 +29,10 @@ import BrowserTabWorkspace from '@/components/BrowserTabWorkspace';
 import BrowserWorkspace from '@/components/BrowserWorkspace';
 import AutomationWorkspace from '@/components/automation/AutomationWorkspace';
 import AutomationHost from '@/components/AutomationHost';
+import GitAutoPullHost from '@/components/GitAutoPullHost';
+import MailWatchHost from '@/components/MailWatchHost';
+import NotificationCenter from '@/components/NotificationCenter';
+import { notices } from '@/lib/noticeStore';
 import ThemeToggle from '@/components/ThemeToggle';
 import DesktopConsole from '@/components/DesktopConsole';
 import { resolveAuth, authReady as isAuthReady } from '@/lib/request';
@@ -154,6 +158,18 @@ export default function Home() {
     });
   };
 
+  // Hòm thông báo local (lib/noticeStore) — badge đỏ trên tab đích ('git', …)
+  // như thư đến. Mở đúng tab là đã đọc thư của tab đó.
+  const noticeSnap = useSyncExternalStore(notices.subscribe, notices.getSnapshot, notices.getServerSnapshot);
+  useEffect(() => {
+    notices.markTabRead(mode);
+  }, [mode, noticeSnap.unreadTotal]);
+
+  // Mail đến chưa đọc (server đếm INBOX UNSEEN 10 phút/lần — lib/mailWatch).
+  // Bộ đếm SỐNG trên tab Mail: chỉ về 0 khi mail thực sự được đọc, không phải
+  // khi mở tab (khác hòm thông báo noticeStore).
+  const [mailUnread, setMailUnread] = useState(0);
+
   // Unread messages across all browser workspaces (Zalo, …) — badges the
   // Workspace tab + the window title so new messages are visible from any tab.
   const [wsUnread, setWsUnread] = useState(0);
@@ -243,7 +259,11 @@ export default function Home() {
         </div>
 
         <div className="modeswitch" role="tablist" aria-label="Workspace">
-          {TABS.map((t) => (
+          {TABS.map((t) => {
+            // Thông báo chưa đọc gắn với tab này (hòm thư local) — badge đỏ
+            // kiểu "có thư đến" trên đúng menu mục tiêu (vd Git khi có conflict).
+            const nUnread = noticeSnap.unreadByTab[t.key] ?? 0;
+            return (
             <button
               key={t.key}
               role="tab"
@@ -252,6 +272,9 @@ export default function Home() {
                 mode === t.key ? 'on' : '',
                 // Alert the Workspace tab while you're viewing ANY other tab.
                 t.key === 'workspace' && wsUnread > 0 && mode !== 'workspace' ? 'ms-alert' : '',
+                // Mail đến chưa đọc — nháy khi đang ở tab khác.
+                t.key === 'mail' && mailUnread > 0 && mode !== 'mail' ? 'ms-alert' : '',
+                nUnread > 0 && mode !== t.key ? 'ms-alert' : '',
               ].filter(Boolean).join(' ')}
               onClick={() => setMode(t.key)}
             >
@@ -265,11 +288,30 @@ export default function Home() {
                   <span className="ms-bell-ico" aria-hidden>🔔</span>
                   {wsUnread > 99 ? '99+' : wsUnread}
                 </span>
+              ) : t.key === 'mail' && mailUnread > 0 ? (
+                // Bộ đếm sống: hiện cả khi ĐANG ở tab Mail (như hòm thư thật),
+                // chỉ về 0 khi mail được đọc trên server.
+                <span
+                  className={`ms-unread ms-bell${mode !== 'mail' ? ' ringing' : ''}`}
+                  title={`${mailUnread} email chưa đọc`}
+                >
+                  <span className="ms-bell-ico" aria-hidden>✉️</span>
+                  {mailUnread > 99 ? '99+' : mailUnread}
+                </span>
+              ) : nUnread > 0 ? (
+                <span
+                  className={`ms-unread ms-bell${mode !== t.key ? ' ringing' : ''}`}
+                  title={`${nUnread} thông báo mới`}
+                >
+                  <span className="ms-bell-ico" aria-hidden>🔔</span>
+                  {nUnread > 99 ? '99+' : nUnread}
+                </span>
               ) : (
                 <span className="ms-badge">{t.badge}</span>
               )}
             </button>
-          ))}
+            );
+          })}
 
           {/* ── Projects zone: one tab per registered integration pack ── */}
           <span className="ms-divider" aria-hidden />
@@ -304,6 +346,8 @@ export default function Home() {
             anything conditional here resizes the header and can push the tab
             strip (with the Workspace bell) out of view. */}
         <div className="appbar-right">
+          {/* Hòm thông báo: xem lại lịch sử (local, 2 ngày) + xóa tất cả. */}
+          <NotificationCenter />
           <ThemeToggle />
         </div>
       </header>
@@ -452,6 +496,13 @@ export default function Home() {
       {/* Engine presence: infra watch runner + notification toasts. Lives
           outside every pane so it keeps working on any tab. */}
       <AutomationHost />
+
+      {/* Tiến trình nền: server tự pull mọi Git project 10 phút/lần; host này
+          poll kết quả và báo urgent khi có repo conflict. */}
+      <GitAutoPullHost />
+
+      {/* Tiến trình nền: server đếm mail chưa đọc 10 phút/lần → badge tab Mail. */}
+      <MailWatchHost onUnread={setMailUnread} />
 
       {/* ── Footer ───────────────────────────────────────────────────── */}
       <footer className="appfoot">

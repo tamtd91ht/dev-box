@@ -335,6 +335,11 @@ export async function pullAll(root: string = GIT_ROOT): Promise<PullResult[]> {
         // unpulled server commits looks "up-to-date" (behind === 0) and is skipped.
         await fetchRepo(r.path);
         const st = await status(r.path);
+        // A repo sitting mid-merge/rebase (unmerged entries: UU, AA, DD, …) IS
+        // the conflict case — report it as such, not as a generic "dirty" skip.
+        if (st.files.some((f) => f.code.includes('U') || f.code === 'AA' || f.code === 'DD')) {
+          return { name: r.name, path: r.path, outcome: 'conflict', message: 'đang có conflict chưa xử lý' };
+        }
         if (st.files.length > 0) {
           return { name: r.name, path: r.path, outcome: 'skipped', message: 'có thay đổi chưa commit' };
         }
