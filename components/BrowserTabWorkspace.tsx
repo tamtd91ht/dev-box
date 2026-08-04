@@ -1,7 +1,8 @@
 'use client';
 
-// Browser workspace — trình duyệt web đa tab TRONG app: gõ URL bất kỳ (tự thêm
-// https:// nếu thiếu → tránh 404), mở nhiều tab song song, mỗi tab gán PROFILE
+// Browser workspace — trình duyệt web đa tab TRONG app: ô địa chỉ kiểu trình
+// duyệt thật (URL thì tự thêm https://, KHÔNG phải URL thì tìm Google luôn),
+// mở nhiều tab song song, mỗi tab gán PROFILE
 // để đăng nhập nhiều tài khoản SSO/SaaS khác nhau. Dấu trang (bookmark) để
 // chọn nhanh khỏi gõ lại + nhớ user/pass (nút 🔑 tự điền form login).
 //
@@ -96,7 +97,7 @@ export default function BrowserTabWorkspace() {
   /** Ô nhập URL + profile — dùng cho cả trang new-tab lẫn panel ＋. */
   const addressForm = (
     <div className="bt-addr">
-      <input className="input bt-addr-input" placeholder="Gõ địa chỉ web (vd sso.example.com) rồi Enter…"
+      <input className="input bt-addr-input" placeholder="Gõ địa chỉ web hoặc từ khóa tìm Google rồi Enter…"
         value={addr} autoFocus onChange={(e) => setAddr(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape' && hasTabs) setNewTabOpen(false); }} />
       <input className="input" style={{ width: 130 }} list="bt-profiles" placeholder="Profile"
