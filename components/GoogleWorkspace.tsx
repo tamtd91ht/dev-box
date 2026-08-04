@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   gStatus, gAuthUrl, gLogout, gRoots, gRootAdd, gRootRemove, gBrowse, gList,
-  mimeIcon, fmtRel, withAuthuser, G_MIME,
+  mimeIcon, fmtRel, withAuthuser, gDownload, gCanDownload, G_MIME,
   type GFile, type GList as GListT, type GoogleAccount, type GoogleStatus, type GRoot,
 } from '@/lib/google';
 import { lAdd } from '@/lib/links';
@@ -47,8 +47,8 @@ const SECTIONS: { key: Section; icon: string; label: string; hint: string }[] = 
 ];
 
 /** Row for one Drive file — name + owner + modified. Click = xem TRONG APP
- *  (API-preview, chỉ đọc); nút ↗ = mở browser ngoài (editor thật). */
-function FileRow({ f, onOpen }: { f: GFile; onOpen: OpenFile }) {
+ *  (API-preview, chỉ đọc); ⬇ = tải về máy; ↗ = mở browser ngoài (editor thật). */
+function FileRow({ accountId, f, onOpen }: { accountId: string; f: GFile; onOpen: OpenFile }) {
   const owner = f.owners?.[0]?.displayName ?? f.owners?.[0]?.emailAddress ?? '';
   return (
     <a
@@ -65,6 +65,19 @@ function FileRow({ f, onOpen }: { f: GFile; onOpen: OpenFile }) {
         <span className="g-base">{f.starred && <span className="g-star" aria-hidden>⭐</span>}{f.name}</span>
         <span className="g-meta">{owner}{owner && f.modifiedTime ? ' · ' : ''}{fmtRel(f.modifiedTime)}</span>
       </span>
+      {gCanDownload(f.mimeType) && (
+        <span
+          className="g-open"
+          title="Tải về máy (Docs→.docx, Sheets→.xlsx, Slides→.pdf) — tự lưu vào thư mục Downloads"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            gDownload(accountId, f.id);
+          }}
+        >
+          ⬇
+        </span>
+      )}
       <span
         className="g-open"
         title="Mở bằng trình duyệt ngoài"
@@ -136,7 +149,7 @@ function KindList({ accountId, kind, onOpen }: { accountId: string; kind: 'docs'
       </div>
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
       <div className="g-list">
-        {files.map((f) => <FileRow key={f.id} f={f} onOpen={onOpen} />)}
+        {files.map((f) => <FileRow key={f.id} accountId={accountId} f={f} onOpen={onOpen} />)}
         {!loading && files.length === 0 && !err && (
           <div className="empty" style={{ padding: '24px 8px' }}><p className="small">Không có kết quả.</p></div>
         )}
@@ -307,7 +320,7 @@ function ProjectsView({ accountId, onOpen, onOpenUrl }: {
                   <span className="g-open" aria-hidden>›</span>
                 </button>
               ))}
-              {files.map((f) => <FileRow key={f.id} f={f} onOpen={onOpen} />)}
+              {files.map((f) => <FileRow key={f.id} accountId={accountId} f={f} onOpen={onOpen} />)}
               {!loading && listing && listing.files.length === 0 && (
                 <div className="empty" style={{ padding: '24px 8px' }}><p className="small">Thư mục trống.</p></div>
               )}

@@ -15,7 +15,7 @@
 // ghi chú). Chỉ để XEM — nút ✏️ mở editor thật.
 
 import { useEffect, useState } from 'react';
-import { gPreview, gContentUrl, withAuthuser, type GPreview, type GoogleAccount } from '@/lib/google';
+import { gPreview, gDownloadUrl, withAuthuser, type GPreview, type GoogleAccount } from '@/lib/google';
 
 interface Props {
   /** Account đang chọn trên toolbar — thử đầu tiên. */
@@ -112,7 +112,7 @@ export default function GoogleFilePreview({ accountId, accounts, fileId, name, w
                 ↗ Browser
               </button>
             )}
-            <a className="gp-dl" href={gContentUrl(usedId, fileId)} download title="Tải file gốc về máy">⬇</a>
+            <a className="gp-dl" href={gDownloadUrl(usedId, fileId)} download title="Tải về máy (Docs→.docx, Sheets→.xlsx, Slides→.pdf; file thường tải nguyên gốc) — tự lưu vào thư mục Downloads">⬇</a>
             <button onClick={onClose} title="Đóng (Esc)">✕</button>
           </div>
         </div>
@@ -176,7 +176,7 @@ export default function GoogleFilePreview({ accountId, accounts, fileId, name, w
               <p className="ws-muted">{preview.mimeType}</p>
               <div style={{ display: 'flex', gap: 8 }}>
                 {editUrl && <button className="ws-retry" onClick={() => window.open(editUrl, '_blank')}>Mở trên browser</button>}
-                <a className="ws-retry" href={gContentUrl(usedId, fileId)} download style={{ textDecoration: 'none' }}>⬇ Tải về</a>
+                <a className="ws-retry" href={gDownloadUrl(usedId, fileId)} download style={{ textDecoration: 'none' }}>⬇ Tải về</a>
               </div>
             </div>
           )}

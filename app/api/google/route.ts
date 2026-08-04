@@ -119,7 +119,10 @@ export async function POST(req: NextRequest) {
 //       { kind: 'img',    name, src }                 (ảnh)
 //       { kind: 'none',   name, mimeType }            (không hỗ trợ xem trước)
 //   GET ?content&accountId=&fileId=[&export=<mime>]  → stream bytes inline
-//       (nguồn cho iframe/img/⬇ tải về).
+//       (nguồn cho iframe/img).
+//   GET ?content&download&accountId=&fileId=  → TẢI VỀ: attachment kèm đúng tên
+//       file; định dạng Google-native tự export (Docs→.docx, Sheets→.xlsx,
+//       Slides→.pdf, Drawing→.png), file thường tải nguyên gốc.
 
 const MIME_XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const MIME_DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -222,6 +225,37 @@ export async function GET(req: NextRequest) {
     if (sp.has('content')) {
       if (!accountId || !fileId) throw new Error('Thiếu accountId/fileId.');
       const exportMime = sp.get('export');
+
+      // ── Chế độ TẢI VỀ: attachment + đúng tên file, Google-native tự export ──
+      if (sp.has('download')) {
+        try {
+          const meta = await resolveFile(accountId, fileId);
+          const EXPORT_BY_MIME: Record<string, { mime: string; ext: string }> = {
+            [MIME.doc]: { mime: MIME_DOCX, ext: '.docx' },
+            [MIME.sheet]: { mime: MIME_XLSX, ext: '.xlsx' },
+            [MIME_SLIDES]: { mime: 'application/pdf', ext: '.pdf' },
+            'application/vnd.google-apps.drawing': { mime: 'image/png', ext: '.png' },
+          };
+          const isNative = meta.mimeType.startsWith('application/vnd.google-apps');
+          const exp = EXPORT_BY_MIME[meta.mimeType];
+          if (isNative && !exp) {
+            throw new Error(`Định dạng Google "${meta.mimeType}" không hỗ trợ tải về qua API — mở bằng browser (↗).`);
+          }
+          const { buf, contentType } = exp
+            ? await exportContent(accountId, meta.id, exp.mime)
+            : await downloadContent(accountId, meta.id);
+          const filename = exp && !meta.name.toLowerCase().endsWith(exp.ext) ? meta.name + exp.ext : meta.name;
+          return new NextResponse(new Uint8Array(buf), {
+            headers: {
+              'content-type': contentType,
+              'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+            },
+          });
+        } catch (err) {
+          throw new Error(friendly((err as Error).message));
+        }
+      }
+
       const { buf, contentType } = exportMime
         ? await exportContent(accountId, fileId, exportMime)
         : await downloadContent(accountId, fileId);

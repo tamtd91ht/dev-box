@@ -98,9 +98,26 @@ export async function gPreview(accountId: string, fileId: string): Promise<GPrev
   return (data as { result: GPreview }).result;
 }
 
-/** URL tải nguyên văn nội dung file (⬇ tải về). */
+/** URL stream nội dung file inline (nguồn cho iframe/img). */
 export const gContentUrl = (accountId: string, fileId: string) =>
   `/api/google?content&accountId=${encodeURIComponent(accountId)}&fileId=${encodeURIComponent(fileId)}`;
+
+/** URL tải file về máy (⬇) — attachment kèm đúng tên; Google-native tự export
+ *  (Docs→.docx, Sheets→.xlsx, Slides→.pdf). */
+export const gDownloadUrl = (accountId: string, fileId: string) =>
+  `${gContentUrl(accountId, fileId)}&download`;
+
+/** Kích download bằng anchor ẩn (download='' → giữ tên file server đặt).
+ *  KHÔNG dùng location.assign: lỡ server trả lỗi JSON inline là SPA bị điều
+ *  hướng mất; anchor có thuộc tính download thì mọi response đều thành file. */
+export function gDownload(accountId: string, fileId: string): void {
+  const a = document.createElement('a');
+  a.href = gDownloadUrl(accountId, fileId);
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
 
 export const G_MIME = {
   folder: 'application/vnd.google-apps.folder',
@@ -109,6 +126,17 @@ export const G_MIME = {
   slides: 'application/vnd.google-apps.presentation',
   shortcut: 'application/vnd.google-apps.shortcut',
 } as const;
+
+/** Loại file tải về được qua API: mọi file thường + các Google-native có
+ *  export mapping trong /api/google (Docs/Sheets/Slides/Drawing + shortcut
+ *  tự giải về đích). Forms/Sites/… thì không — ẩn nút ⬇, mở bằng ↗. */
+const G_EXPORTABLE = new Set<string>([
+  G_MIME.doc, G_MIME.sheet, G_MIME.slides, G_MIME.shortcut,
+  'application/vnd.google-apps.drawing',
+]);
+export const gCanDownload = (mimeType: string): boolean =>
+  mimeType !== G_MIME.folder &&
+  (!mimeType.startsWith('application/vnd.google-apps') || G_EXPORTABLE.has(mimeType));
 
 export function mimeIcon(mime: string): string {
   switch (mime) {

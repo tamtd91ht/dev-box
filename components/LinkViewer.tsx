@@ -219,6 +219,12 @@ export default function LinkViewer({ name, url, partition, onClose, onSaveLink, 
             {(creds?.username || creds?.password) && (
               <button onClick={() => void fillLogin()} title="Điền username/password đã lưu vào form login">🔑</button>
             )}
+            <button
+              onClick={() => { try { ref.current?.openDevTools(); } catch { /* guest chưa sẵn sàng */ } }}
+              title="DevTools của trang đang xem (Network/Console/Elements) — hoặc F12 / chuột phải → Inspect ngay trong trang"
+            >
+              🔧
+            </button>
             <button onClick={openExternal} title="Mở bằng trình duyệt ngoài">↗</button>
             <button onClick={() => void logout()} title="Đăng xuất phiên của profile này">⎋</button>
             <button onClick={onClose} title="Đóng (Esc)">✕</button>

@@ -17,7 +17,7 @@
 // It knows NOTHING about Zalo specifically — plugins are declared in the
 // renderer (lib/workspace/plugins.ts). Nothing here is hardcoded per website.
 
-const { app, BrowserWindow, session, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, session, ipcMain, shell, Menu } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -143,14 +143,45 @@ function configurePartition(part) {
   // read "denied" and never show notifications.
   ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
 
-  ses.on('will-download', (event, item) => {
+  wireDownloadPolicy(ses, part);
+}
+
+/**
+ * Download policy for ONE session — dùng chung cho session mặc định (UI DevBox,
+ * vd nút ⬇ tab Google) lẫn partition của từng webview guest.
+ *
+ * LUÔN đặt savePath tường minh (tự lưu vào Downloads của máy, tên trùng thì
+ * đánh số " (n)"): không đặt thì Electron bật hộp thoại Save native — download
+ * không có handler/savePath từng làm app crash văng ra ngoài. Lưu xong mở
+ * Explorer trỏ đúng file để người dùng biết nó nằm đâu.
+ */
+const wiredDownloadSessions = new WeakSet();
+function wireDownloadPolicy(ses, label) {
+  if (wiredDownloadSessions.has(ses)) return;
+  wiredDownloadSessions.add(ses);
+  ses.on('will-download', (_event, item) => {
     if (!CONFIG.allowDownload) {
       log('DownloadBlocked', item.getFilename());
       item.cancel();
       return;
     }
-    log('DownloadStarted', item.getFilename());
-    item.once('done', (_e, state) => log('DownloadDone', `${item.getFilename()} · ${state}`));
+    try {
+      const dir = app.getPath('downloads');
+      const file = item.getFilename() || 'download';
+      const ext = path.extname(file);
+      const base = path.basename(file, ext);
+      let target = path.join(dir, file);
+      for (let i = 1; fs.existsSync(target); i++) target = path.join(dir, `${base} (${i})${ext}`);
+      item.setSavePath(target);
+      log('DownloadStarted', `${label || 'default'} · ${target}`);
+      item.once('done', (_e, state) => {
+        log('DownloadDone', `${path.basename(target)} · ${state}`);
+        if (state === 'completed') shell.showItemInFolder(target);
+      });
+    } catch (err) {
+      log('DownloadError', err && err.message);
+      item.cancel();
+    }
   });
 }
 
@@ -202,6 +233,35 @@ function wireWebviewHardening(win) {
     // the gesture out to the host page and drift the whole DevBox frame.
     guest.on('dom-ready', () => {
       guest.insertCSS('html,body{overscroll-behavior:none}').catch(() => {});
+    });
+
+    // DevTools cho guest — debug trang đang xem (Network/Console/Elements):
+    //   · F12 (hoặc Ctrl+Shift+I) NGAY TRONG webview → toggle DevTools của guest
+    //     (phím trong guest không bubble ra host nên phải bắt ở before-input-event).
+    //   · Chuột phải → menu Cut/Copy/Paste + "Inspect element" đúng vị trí click
+    //     (webview mặc định không có context menu nào).
+    guest.on('before-input-event', (_e, input) => {
+      if (input.type !== 'keyDown') return;
+      if (input.key === 'F12' || (input.control && input.shift && (input.key === 'I' || input.key === 'i'))) {
+        guest.toggleDevTools();
+      }
+    });
+    guest.on('context-menu', (_e, params) => {
+      const menu = Menu.buildFromTemplate([
+        { label: 'Cắt', role: 'cut', enabled: params.editFlags.canCut },
+        { label: 'Sao chép', role: 'copy', enabled: params.editFlags.canCopy },
+        { label: 'Dán', role: 'paste', enabled: params.editFlags.canPaste },
+        { type: 'separator' },
+        ...(params.linkURL ? [{
+          label: 'Sao chép địa chỉ liên kết',
+          click: () => { require('electron').clipboard.writeText(params.linkURL); },
+        }, { type: 'separator' }] : []),
+        {
+          label: '🔍 Inspect element (DevTools)',
+          click: () => { guest.inspectElement(params.x, params.y); },
+        },
+      ]);
+      menu.popup();
     });
 
     guest.on('did-navigate', (_e, url) => log('Navigate', url));
@@ -399,6 +459,9 @@ ipcMain.handle('desktop:getLogs', () => logBuffer);
 
 app.whenReady().then(async () => {
   CONFIG = loadConfig();
+  // Cửa sổ chính (UI DevBox) chạy trên session mặc định — download từ đó
+  // (vd nút ⬇ tab Google) cũng phải đi qua policy tự-lưu, không dialog native.
+  wireDownloadPolicy(session.defaultSession, 'default');
   await ensureDevServer(); // start next dev if nothing is serving :3000 yet
   createWindow();
   app.on('activate', () => {

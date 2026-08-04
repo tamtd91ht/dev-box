@@ -2996,7 +2996,8 @@ pre.kafka-drawer-body {
   font-size: 10.5px; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.g-open { flex: none; color: var(--muted); font-size: 14px; }
+.g-open { flex: none; color: var(--muted); font-size: 14px; border-radius: 6px; padding: 2px 4px; }
+.g-row .g-open:hover { color: var(--text); background: var(--glass-brd); }
 
 .g-projects {
   display: grid; grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
@@ -3841,9 +3842,13 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* Panel ＋ new tab: đè xuống ngay dưới thanh tab. */
 .bt-newtab-panel {
   flex: none; padding: 8px; margin-bottom: 4px;
+  display: flex; flex-direction: column; gap: 8px;
   background: var(--bg-1); border: 1px solid var(--glass-brd); border-radius: 10px;
   box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  max-height: 40vh; overflow-y: auto;
 }
+/* Trong panel ＋ dấu trang canh trái (không giữa như trang home). */
+.bt-newtab-panel .bt-home-marks { justify-content: flex-start; max-width: none; }
 
 /* Menu ⋯ */
 .bt-menu-wrap { position: relative; flex: none; }
@@ -3937,6 +3942,12 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .shell[data-nav='right'] .ms-divider { width: 100%; height: 1px; margin: 6px 0; }
 .shell[data-nav='left'] .appbar-right,
 .shell[data-nav='right'] .appbar-right { margin-left: 0; margin-top: auto; }
+/* Chuông 🔔 + theme ở đáy sidebar phải NÉ indicator "N" của Next dev tools —
+   nút đó do `next dev` tự vẽ, fixed ở góc trái dưới MÀN HÌNH (mở ra là panel
+   route/Turbopack/issues, chỉ tồn tại khi chạy dev, không phải của app).
+   Menu TRÁI: dồn cụm nút sang mép phải sidebar, chừa góc trái cho N.
+   Menu PHẢI: sidebar nằm mép phải màn hình, N không đụng — giữ nguyên. */
+.shell[data-nav='left'] .appbar-right { justify-content: flex-end; padding-left: 48px; }
 
 /* Màn hẹp: menu dọc thu bớt bề rộng. */
 @media (max-width: 720px) {
@@ -3983,9 +3994,20 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .ntc-bell:hover { border-color: var(--glass-brd-hover); }
 .ntc-bell.has-unread { animation: ms-badge-pulse 1.4s ease-in-out infinite; }
+/* Panel = overlay XEM NHANH nổi giữa màn hình (không bám theo nút chuông —
+   chuông có thể nằm cuối sidebar, panel absolute sẽ rơi ra ngoài viewport).
+   Che nội dung phía sau là chấp nhận được: mở xem → đóng liền (✕ / click
+   ra ngoài / Esc). */
+.ntc-scrim {
+  position: fixed; inset: 0; z-index: 9090;
+  background: rgba(3, 5, 14, 0.45);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
 .ntc-panel {
-  position: absolute; right: 0; top: calc(100% + 8px); z-index: 9100;
-  width: min(420px, 92vw); max-height: min(60vh, 520px);
+  position: fixed; left: 50%; top: clamp(16px, 12vh, 120px);
+  transform: translateX(-50%); z-index: 9100;
+  width: min(520px, 94vw); max-height: min(70vh, 640px);
   display: flex; flex-direction: column; overflow: hidden;
   background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 12px;
   backdrop-filter: blur(16px) saturate(140%);
@@ -4004,6 +4026,13 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .ntc-clear:hover:not(:disabled) { color: var(--err); border-color: color-mix(in srgb, var(--err) 55%, transparent); }
 .ntc-clear:disabled { opacity: .5; cursor: default; }
+.ntc-x {
+  flex: none; width: 26px; height: 26px; padding: 0; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--glass-brd);
+  color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1;
+}
+.ntc-x:hover { color: var(--text); border-color: var(--glass-brd-hover); }
 .ntc-list { flex: 1 1 auto; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
 .ntc-empty { padding: 22px 12px; text-align: center; font-size: 12.5px; color: var(--faint); }
 .ntc-item {

@@ -94,6 +94,22 @@ export default function BrowserTabWorkspace() {
   // Panel nhập URL hiện khi: chưa có tab nào, HOẶC người dùng bấm ＋ (new tab).
   const showAddress = !hasTabs || newTabOpen;
 
+  /** Danh sách dấu trang chọn nhanh — dùng cho cả trang new-tab lẫn panel ＋. */
+  const marksList = bookmarks.length > 0 && (
+    <div className="bt-home-marks">
+      <div className="small" style={{ color: 'var(--muted)', width: '100%', marginBottom: 4 }}>Dấu trang</div>
+      {bookmarks.map((b) => (
+        <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${b.profile}` : ''}`}>
+          <button className="bt-mark-go" onClick={() => openBookmark(b)}>
+            🔖 {b.name}{b.profile && <span className="bt-mark-prof">{b.profile}</span>}
+          </button>
+          <button className="bt-mark-act" onClick={() => setEdit(structuredClone(b))} title="Sửa">✎</button>
+          <button className="bt-mark-act" onClick={() => void removeBookmark(b)} title="Xóa">✕</button>
+        </span>
+      ))}
+    </div>
+  );
+
   /** Ô nhập URL + profile — dùng cho cả trang new-tab lẫn panel ＋. */
   const addressForm = (
     <div className="bt-addr">
@@ -145,8 +161,14 @@ export default function BrowserTabWorkspace() {
         </div>
       )}
 
-      {/* Panel new-tab (＋) — ô nhập địa chỉ đè lên trên, đóng lại khi mở xong. */}
-      {hasTabs && newTabOpen && <div className="bt-newtab-panel">{addressForm}</div>}
+      {/* Panel new-tab (＋) — ô nhập địa chỉ + DẤU TRANG chọn nhanh (như trang
+          new-tab của trình duyệt thật), đóng lại khi mở xong. */}
+      {hasTabs && newTabOpen && (
+        <div className="bt-newtab-panel">
+          {addressForm}
+          {marksList}
+        </div>
+      )}
 
       {/* Dải dấu trang — bật từ menu ⋯ */}
       {showMarks && (
@@ -182,20 +204,7 @@ export default function BrowserTabWorkspace() {
         <div className="bt-home">
           <div className="bt-home-title">🌐 Mở một trang web</div>
           {addressForm}
-          {bookmarks.length > 0 && (
-            <div className="bt-home-marks">
-              <div className="small" style={{ color: 'var(--muted)', width: '100%', marginBottom: 4 }}>Dấu trang</div>
-              {bookmarks.map((b) => (
-                <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${b.profile}` : ''}`}>
-                  <button className="bt-mark-go" onClick={() => openBookmark(b)}>
-                    🔖 {b.name}{b.profile && <span className="bt-mark-prof">{b.profile}</span>}
-                  </button>
-                  <button className="bt-mark-act" onClick={() => setEdit(structuredClone(b))} title="Sửa">✎</button>
-                  <button className="bt-mark-act" onClick={() => void removeBookmark(b)} title="Xóa">✕</button>
-                </span>
-              ))}
-            </div>
-          )}
+          {marksList}
           <p className="small" style={{ color: 'var(--muted)' }}>Nhiều tab mở song song; mỗi profile giữ phiên đăng nhập riêng.</p>
         </div>
       )}
