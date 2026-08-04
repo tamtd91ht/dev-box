@@ -19,7 +19,8 @@
 import { promises as fs } from 'fs';
 import ExcelJS from 'exceljs';
 import Papa from 'papaparse';
-import type { CellType, SheetOp, SheetOpenResult, SheetSaveResult, WireCell, WireSheet } from './sheet';
+import type { CellType, SheetOp, SheetOpenResult, SheetSaveResult, WireCell, WireMerge, WireSheet, WireStyle } from './sheet';
+import { formatNumFmt, isDateFmt } from './numFmt';
 import { OFFICE_ALLOW_WRITE } from './officeFlags';
 import {
   MAX_FILE_BYTES,
@@ -79,23 +80,169 @@ function plainText(v: unknown): string {
   return String(v);
 }
 
-function toWire(cell: ExcelJS.Cell): WireCell {
+// ── Styles: màu / border / font → CSS-ready wire ────────────────────────────
+
+/** Bảng theme màu Office mặc định (index như trong xlsx <clrScheme>). */
+const THEME_COLORS = [
+  'FFFFFF', '000000', 'E7E6E6', '44546A', // lt1 dk1 lt2 dk2
+  '4472C4', 'ED7D31', 'A5A5A5', 'FFC000', '5B9BD5', '70AD47', // accent1-6
+];
+
+/** Palette indexed legacy (đủ dải 0-63 hay gặp trong file cũ). */
+const INDEXED_COLORS = [
+  '000000', 'FFFFFF', 'FF0000', '00FF00', '0000FF', 'FFFF00', 'FF00FF', '00FFFF',
+  '000000', 'FFFFFF', 'FF0000', '00FF00', '0000FF', 'FFFF00', 'FF00FF', '00FFFF',
+  '800000', '008000', '000080', '808000', '800080', '008080', 'C0C0C0', '808080',
+  '9999FF', '993366', 'FFFFCC', 'CCFFFF', '660066', 'FF8080', '0066CC', 'CCCCFF',
+  '000080', 'FF00FF', 'FFFF00', '00FFFF', '800080', '800000', '008080', '0000FF',
+  '00CCFF', 'CCFFFF', 'CCFFCC', 'FFFF99', '99CCFF', 'FF99CC', 'CC99FF', 'FFCC99',
+  '3366FF', '33CCCC', '99CC00', 'FFCC00', 'FF9900', 'FF6600', '666699', '969696',
+  '003366', '339966', '003300', '333300', '993300', '993366', '333399', '333333',
+];
+
+/** Tint của theme color: >0 sáng dần về trắng, <0 tối dần về đen. */
+function applyTint(hex: string, tint: number): string {
+  const ch = (i: number) => parseInt(hex.slice(i, i + 2), 16);
+  const mix = (c: number) => {
+    const v = tint > 0 ? c + (255 - c) * tint : c * (1 + tint);
+    return Math.max(0, Math.min(255, Math.round(v)));
+  };
+  return [ch(0), ch(2), ch(4)].map((c) => mix(c).toString(16).padStart(2, '0')).join('');
+}
+
+/** ExcelJS color ({argb} | {theme,tint} | {indexed}) → CSS #rrggbb. */
+function resolveColor(c: unknown): string | undefined {
+  if (!c || typeof c !== 'object') return undefined;
+  const o = c as { argb?: string; theme?: number; tint?: number; indexed?: number };
+  if (typeof o.argb === 'string' && o.argb.length >= 6) {
+    const rgb = o.argb.slice(-6);
+    // Alpha 00 = "no color" (auto).
+    if (o.argb.length === 8 && o.argb.slice(0, 2) === '00') return undefined;
+    return `#${rgb.toLowerCase()}`;
+  }
+  if (typeof o.theme === 'number') {
+    const base = THEME_COLORS[o.theme];
+    if (!base) return undefined;
+    const rgb = typeof o.tint === 'number' && o.tint !== 0 ? applyTint(base, o.tint) : base;
+    return `#${rgb.toLowerCase()}`;
+  }
+  if (typeof o.indexed === 'number') {
+    const rgb = INDEXED_COLORS[o.indexed];
+    return rgb ? `#${rgb.toLowerCase()}` : undefined;
+  }
+  return undefined;
+}
+
+const BORDER_CSS: Record<string, string> = {
+  hair: '1px solid', thin: '1px solid', dotted: '1px dotted', dashed: '1px dashed',
+  dashDot: '1px dashed', dashDotDot: '1px dotted', slantDashDot: '1px dashed',
+  medium: '2px solid', mediumDashed: '2px dashed', mediumDashDot: '2px dashed',
+  mediumDashDotDot: '2px dotted', thick: '3px solid', double: '3px double',
+};
+
+function borderCss(b: unknown): string | undefined {
+  if (!b || typeof b !== 'object') return undefined;
+  const o = b as { style?: string; color?: unknown };
+  const base = o.style ? BORDER_CSS[o.style] : undefined;
+  if (!base) return undefined;
+  return `${base} ${resolveColor(o.color) ?? '#666666'}`;
+}
+
+const H_ALIGN: Record<string, WireStyle['ha']> = {
+  left: 'l', center: 'c', centerContinuous: 'c', right: 'r', justify: 'j', distributed: 'j',
+};
+const V_ALIGN: Record<string, WireStyle['va']> = {
+  top: 't', middle: 'm', center: 'm', bottom: 'b', justify: 'm', distributed: 'm',
+};
+
+/** Style hiệu dụng của ExcelJS → WireStyle. Trả null khi không có gì đáng ship. */
+function styleWire(st: Partial<ExcelJS.Style>, nf: string | undefined): WireStyle | null {
+  const w: WireStyle = {};
+  const f = st.font;
+  if (f) {
+    if (f.bold) w.b = 1;
+    if (f.italic) w.i = 1;
+    if (f.underline) w.u = 1;
+    if (f.strike) w.st = 1;
+    const fc = resolveColor(f.color);
+    if (fc) w.fc = fc;
+    if (typeof f.size === 'number' && f.size !== 11) w.fs = f.size;
+    if (f.name && f.name !== 'Calibri') w.ff = f.name;
+  }
+  const fill = st.fill as { type?: string; pattern?: string; fgColor?: unknown } | undefined;
+  if (fill?.type === 'pattern' && fill.pattern && fill.pattern !== 'none') {
+    const bg = resolveColor(fill.fgColor);
+    if (bg && bg !== '#ffffff') w.bg = bg;
+  }
+  const al = st.alignment;
+  if (al) {
+    const ha = al.horizontal ? H_ALIGN[al.horizontal] : undefined;
+    if (ha) w.ha = ha;
+    const va = al.vertical ? V_ALIGN[al.vertical] : undefined;
+    if (va && va !== 'b') w.va = va; // bottom là mặc định Excel
+    if (al.wrapText) w.wr = 1;
+    if (typeof al.indent === 'number' && al.indent > 0) w.in = al.indent;
+  }
+  const bd = st.border;
+  if (bd) {
+    const bt = borderCss(bd.top); if (bt) w.bt = bt;
+    const br = borderCss(bd.right); if (br) w.br = br;
+    const bb = borderCss(bd.bottom); if (bb) w.bb = bb;
+    const bl = borderCss(bd.left); if (bl) w.bl = bl;
+  }
+  if (nf && !/^general$/i.test(nf)) w.nf = nf;
+  // Chữ đen là MẶC ĐỊNH của Excel — không ship khi ô không có nền màu, để
+  // dark theme của app vẫn tự chọn màu chữ đọc được.
+  if (w.fc === '#000000' && !w.bg) delete w.fc;
+  return Object.keys(w).length > 0 ? w : null;
+}
+
+/** Cell value → wire, ÁP numFmt cho hiển thị (v) và giữ raw để sửa. */
+function toWire(cell: ExcelJS.Cell, nf: string | undefined): WireCell {
   const raw = cell.value;
   if (raw === null || raw === undefined) return { v: '', t: 's' };
-  if (raw instanceof Date) return { v: fmtDate(raw), t: 'd' };
-  if (typeof raw === 'number') return { v: String(raw), t: 'n' };
+  if (raw instanceof Date) {
+    const plain = fmtDate(raw);
+    if (nf && isDateFmt(nf)) {
+      const d = formatNumFmt(raw, nf);
+      return { v: d.text, t: 'd', ...(d.text !== plain ? { raw: plain } : {}), ...(d.color ? { nc: d.color } : {}) };
+    }
+    return { v: plain, t: 'd' };
+  }
+  if (typeof raw === 'number') {
+    if (nf) {
+      const d = formatNumFmt(raw, nf);
+      return { v: d.text, t: 'n', ...(d.text !== String(raw) ? { raw: String(raw) } : {}), ...(d.color ? { nc: d.color } : {}) };
+    }
+    return { v: String(raw), t: 'n' };
+  }
   if (typeof raw === 'boolean') return { v: raw ? 'TRUE' : 'FALSE', t: 'b' };
   if (typeof raw === 'string') return { v: raw, t: 's' };
   if (typeof raw === 'object') {
     const o = raw as unknown as Record<string, unknown>;
     if ('formula' in o || 'sharedFormula' in o) {
       const f = typeof o.formula === 'string' ? o.formula : (cell.formula ?? '');
-      return { v: plainText((o as { result?: unknown }).result), t: 'f', f: String(f) };
+      const res = (o as { result?: unknown }).result;
+      // Kết quả cache là số/ngày → cũng áp numFmt như ô thường (SUM ra "1,234").
+      if (nf && (typeof res === 'number' || res instanceof Date)) {
+        const d = formatNumFmt(res, nf);
+        return { v: d.text, t: 'f', f: String(f), ...(d.color ? { nc: d.color } : {}) };
+      }
+      return { v: plainText(res), t: 'f', f: String(f) };
     }
     // Rich text / hyperlink / error → flattened text; editing turns it into plain text.
     return { v: plainText(raw), t: 'x' };
   }
   return { v: String(raw), t: 'x' };
+}
+
+/** "BC12" → {r:12, c:55} (1-based). */
+function decodeAddr(addr: string): { r: number; c: number } | null {
+  const m = addr.match(/^\$?([A-Z]+)\$?(\d+)$/i);
+  if (!m) return null;
+  let c = 0;
+  for (const ch of m[1].toUpperCase()) c = c * 26 + (ch.charCodeAt(0) - 64);
+  return { r: Number(m[2]), c };
 }
 
 function sheetToWire(ws: ExcelJS.Worksheet): WireSheet {
@@ -105,19 +252,86 @@ function sheetToWire(ws: ExcelJS.Worksheet): WireSheet {
   const totalCols = ws.columnCount ?? 0;
   const rc = Math.min(totalRows, MAX_ROWS);
   const cc = Math.min(totalCols, MAX_COLS);
+
+  // Style cột (fallback khi ô/dòng không có style riêng) + độ rộng + ẩn.
+  const colStyles: (Partial<ExcelJS.Style> | undefined)[] = [];
+  const colW: (number | null)[] = [];
+  const hiddenCols: number[] = [];
+  for (let c = 1; c <= cc; c++) {
+    const col = ws.getColumn(c);
+    colStyles[c] = col?.style;
+    // Excel width tính theo ký tự font mặc định ≈ 7px/char + 5px padding.
+    colW.push(typeof col?.width === 'number' ? Math.round(col.width * 7 + 5) : null);
+    if (col?.hidden) hiddenCols.push(c);
+  }
+
+  const styles: WireStyle[] = [];
+  const styleIdx = new Map<string, number>();
   const rows: WireCell[][] = [];
+  const rowH: (number | null)[] = [];
+  const hiddenRows: number[] = [];
+
   for (let r = 1; r <= rc; r++) {
     const row = ws.getRow(r);
+    rowH.push(typeof row.height === 'number' ? Math.round((row.height * 4) / 3) : null);
+    if (row.hidden) hiddenRows.push(r);
+    // ExcelJS Row có .style ở runtime nhưng typings không khai — cast hẹp.
+    const rowStyle = (row as unknown as { style?: Partial<ExcelJS.Style> }).style;
     const cells: WireCell[] = [];
-    for (let c = 1; c <= cc; c++) cells.push(toWire(row.getCell(c)));
+    for (let c = 1; c <= cc; c++) {
+      const cell = row.getCell(c);
+      const cs = cell.style;
+      // Ưu tiên: ô → dòng → cột (mỗi thuộc tính top-level).
+      const eff: Partial<ExcelJS.Style> = {
+        font: cs?.font ?? rowStyle?.font ?? colStyles[c]?.font,
+        fill: cs?.fill ?? rowStyle?.fill ?? colStyles[c]?.fill,
+        border: cs?.border ?? rowStyle?.border ?? colStyles[c]?.border,
+        alignment: cs?.alignment ?? rowStyle?.alignment ?? colStyles[c]?.alignment,
+      };
+      const nf = cs?.numFmt ?? rowStyle?.numFmt ?? colStyles[c]?.numFmt;
+      const wire = toWire(cell, nf);
+      const sw = styleWire(eff, nf);
+      if (sw) {
+        const key = JSON.stringify(sw);
+        let idx = styleIdx.get(key);
+        if (idx === undefined) {
+          idx = styles.length;
+          styles.push(sw);
+          styleIdx.set(key, idx);
+        }
+        wire.s = idx;
+      }
+      cells.push(wire);
+    }
     rows.push(cells);
   }
+
+  // Merge ranges — clamp vào cửa sổ hiển thị, bỏ vùng 1×1.
+  const merges: WireMerge[] = [];
+  const rawMerges = (ws.model as { merges?: string[] }).merges ?? [];
+  for (const m of rawMerges) {
+    const [a, b] = String(m).split(':');
+    const p1 = decodeAddr(a ?? '');
+    const p2 = decodeAddr(b ?? '');
+    if (!p1 || !p2) continue;
+    const r1 = Math.min(p1.r, p2.r); const r2 = Math.min(Math.max(p1.r, p2.r), rc);
+    const c1 = Math.min(p1.c, p2.c); const c2 = Math.min(Math.max(p1.c, p2.c), cc);
+    if (r1 > rc || c1 > cc || (r1 === r2 && c1 === c2)) continue;
+    merges.push({ r1, c1, r2, c2 });
+  }
+
   return {
     name: ws.name,
     rows,
     rowCount: totalRows,
     colCount: totalCols,
     truncated: totalRows > MAX_ROWS || totalCols > MAX_COLS,
+    ...(styles.length > 0 ? { styles } : {}),
+    ...(merges.length > 0 ? { merges } : {}),
+    colW,
+    rowH,
+    ...(hiddenRows.length > 0 ? { hiddenRows } : {}),
+    ...(hiddenCols.length > 0 ? { hiddenCols } : {}),
   };
 }
 

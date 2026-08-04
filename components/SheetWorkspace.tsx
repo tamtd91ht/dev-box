@@ -14,7 +14,7 @@
 // re-reads file rồi replay — ô không đụng giữ nguyên style/công thức. Save
 // luôn backup `<file>.bak` trước, gated bởi OFFICE_ALLOW_WRITE.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import FolderPicker from './FolderPicker';
 import OfficeNewFileModal from './OfficeNewFileModal';
 import { evaluateGrid } from '@/lib/formulaEval';
@@ -29,6 +29,7 @@ import {
   type SheetOp,
   type SheetOpenResult,
   type WireCell,
+  type WireStyle,
 } from '@/lib/sheet';
 
 const RECENT_KEY = 'sheet.recent';
@@ -58,6 +59,43 @@ function saveRecent(list: string[]) {
 
 interface Pos { r: number; c: number } // 1-based
 
+interface SelRange { r1: number; c1: number; r2: number; c2: number } // 1-based, inclusive
+
+function normRange(a: Pos, b: Pos): SelRange {
+  return {
+    r1: Math.min(a.r, b.r), r2: Math.max(a.r, b.r),
+    c1: Math.min(a.c, b.c), c2: Math.max(a.c, b.c),
+  };
+}
+
+/** WireStyle (server đọc từ xlsx) → CSS inline cho <td>. nc = màu từ numFmt. */
+function cellCss(st: WireStyle | undefined, nc: string | undefined): CSSProperties | undefined {
+  if (!st && !nc) return undefined;
+  const css: CSSProperties = {};
+  if (st) {
+    if (st.b) css.fontWeight = 700;
+    if (st.i) css.fontStyle = 'italic';
+    const deco = [st.u ? 'underline' : '', st.st ? 'line-through' : ''].filter(Boolean).join(' ');
+    if (deco) css.textDecoration = deco;
+    if (st.fc) css.color = st.fc;
+    if (st.bg) css.background = st.bg;
+    if (st.fs) css.fontSize = `${st.fs}pt`;
+    if (st.ff) css.fontFamily = `'${st.ff}', var(--mono)`;
+    if (st.ha) css.textAlign = st.ha === 'l' ? 'left' : st.ha === 'c' ? 'center' : st.ha === 'r' ? 'right' : 'justify';
+    if (st.va) css.verticalAlign = st.va === 't' ? 'top' : st.va === 'm' ? 'middle' : 'bottom';
+    if (st.wr) css.whiteSpace = 'pre-wrap';
+    if (st.in) css.paddingLeft = 8 + st.in * 10;
+    if (st.bt) css.borderTop = st.bt;
+    if (st.br) css.borderRight = st.br;
+    if (st.bb) css.borderBottom = st.bb;
+    if (st.bl) css.borderLeft = st.bl;
+  }
+  if (nc) css.color = nc; // [Red] số âm… thắng màu font tĩnh
+  return css;
+}
+
+const DEFAULT_COL_PX = 96;
+
 interface Editing extends Pos {
   /** Ký tự vừa gõ để bắt đầu sửa (thay nội dung cũ, kiểu Excel). */
   seed?: string;
@@ -80,6 +118,9 @@ export default function SheetWorkspace() {
   const [active, setActive] = useState(0);
 
   const [sel, setSel] = useState<Pos | null>(null);
+  // Vùng chọn nhiều ô (kéo chuột / Shift+click) — cho thanh Sum/Avg/Count.
+  const [selRange, setSelRange] = useState<SelRange | null>(null);
+  const selDragRef = useRef<Pos | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [rowLimit, setRowLimit] = useState(RENDER_STEP);
   /** Lưới nở thêm khi đi tới mép (giữ cảm giác "vô tận" của Excel). */
@@ -127,7 +168,7 @@ export default function SheetWorkspace() {
   const dirtyCount = ops.reduce((n, o) => n + o.length, 0);
 
   const resetView = useCallback(() => {
-    setSel(null); setEditing(null); setRowLimit(RENDER_STEP); setPadR(0); setPadC(0);
+    setSel(null); setSelRange(null); setEditing(null); setRowLimit(RENDER_STEP); setPadR(0); setPadC(0);
   }, []);
 
   const applyOpen = useCallback((res: SheetOpenResult) => {
@@ -192,19 +233,71 @@ export default function SheetWorkspace() {
   const shownRows = Math.min(dispRows, rowLimit);
 
   // Ô công thức hiển thị KẾT QUẢ tính live (engine client) — derivation thuần,
-  // working copy + op log vẫn giữ công thức gốc.
-  const displayGrid = useMemo(() => evaluateGrid(grid), [grid]);
+  // working copy + op log vẫn giữ công thức gốc. numFmt của ô công thức được
+  // truyền vào để kết quả hiện đúng định dạng (SUM tiền → "2,079,568").
+  const nfTable = file?.sheets[active]?.styles;
+  const displayGrid = useMemo(
+    () => evaluateGrid(grid, (r, c) => {
+      const si = grid[r - 1]?.[c - 1]?.s;
+      return si !== undefined ? nfTable?.[si]?.nf : undefined;
+    }),
+    [grid, nfTable],
+  );
 
   const cellAt = useCallback(
     (r: number, c: number): WireCell => displayGrid[r - 1]?.[c - 1] ?? EMPTY_CELL,
     [displayGrid],
   );
-  /** Text để SỬA một ô: công thức thì trả "=..." (như Excel), thường thì giá trị. */
+  /** Text để SỬA một ô: công thức "=...", số/ngày đã format → giá trị THÔ. */
   const editText = useCallback((r: number, c: number): string => {
     const cell = grid[r - 1]?.[c - 1];
     if (!cell) return '';
-    return cell.t === 'f' && cell.f ? `=${cell.f}` : cell.v;
+    return cell.t === 'f' && cell.f ? `=${cell.f}` : (cell.raw ?? cell.v);
   }, [grid]);
+
+  // ── Metadata trình bày từ file: style / merge / kích thước / ẩn ────────────
+  const sheetMeta = file?.sheets[active];
+  const styleTable = sheetMeta?.styles;
+
+  /** Đã thêm/xóa dòng-cột trong phiên → dữ liệu dịch chỗ, vùng merge của file
+   *  không còn khớp toạ độ — TẮT render merge để không vẽ sai (widths giữ). */
+  const structShifted = (ops[active] ?? []).some((o) => o.op !== 'set');
+
+  const mergeInfo = useMemo(() => {
+    const master = new Map<string, { rs: number; cs: number }>();
+    const covered = new Set<string>();
+    if (!structShifted) {
+      for (const m of sheetMeta?.merges ?? []) {
+        master.set(`${m.r1}:${m.c1}`, { rs: m.r2 - m.r1 + 1, cs: m.c2 - m.c1 + 1 });
+        for (let r = m.r1; r <= m.r2; r++) {
+          for (let c = m.c1; c <= m.c2; c++) {
+            if (r !== m.r1 || c !== m.c1) covered.add(`${r}:${c}`);
+          }
+        }
+      }
+    }
+    return { master, covered };
+  }, [sheetMeta, structShifted]);
+
+  const hiddenRowSet = useMemo(() => new Set(structShifted ? [] : sheetMeta?.hiddenRows ?? []), [sheetMeta, structShifted]);
+  const hiddenColSet = useMemo(() => new Set(structShifted ? [] : sheetMeta?.hiddenCols ?? []), [sheetMeta, structShifted]);
+
+  /** Thống kê vùng chọn — Sum/Avg/Count như status bar Excel. */
+  const rangeStats = useMemo(() => {
+    if (!selRange) return null;
+    let count = 0; let nums = 0; let sum = 0;
+    for (let r = selRange.r1; r <= selRange.r2; r++) {
+      for (let c = selRange.c1; c <= selRange.c2; c++) {
+        const cell = displayGrid[r - 1]?.[c - 1];
+        if (!cell || cell.v === '') continue;
+        count++;
+        const src = cell.raw ?? cell.v;
+        const n = Number(src.replace(/,/g, ''));
+        if (Number.isFinite(n) && /\d/.test(src) && !/[^\d\s.,%+-eE]/.test(src)) { nums++; sum += n; }
+      }
+    }
+    return { count, nums, sum, avg: nums > 0 ? sum / nums : 0 };
+  }, [selRange, displayGrid]);
 
   // ── Edit ops (all r/c are 1-based, matching what the server replays) ────────
 
@@ -212,10 +305,12 @@ export default function SheetWorkspace() {
     setEditing(null);
     setPointRange(null);
     const cur = grids[active]?.[r - 1]?.[c - 1];
-    // So với TEXT SỬA hiện tại: ô công thức là "=f", ô thường là v.
-    const curText = cur?.t === 'f' && cur.f ? `=${cur.f}` : cur?.v ?? '';
+    // So với TEXT SỬA hiện tại: ô công thức là "=f", ô số/ngày format là raw.
+    const curText = cur?.t === 'f' && cur.f ? `=${cur.f}` : cur?.raw ?? cur?.v ?? '';
     if (curText === value) return; // no-op edit (kể cả ô đệm để trống)
     const isFormula = value.startsWith('=') && value.trim().length > 1;
+    // Giữ style index — server chỉ set value nên format của ô vẫn nguyên trong file.
+    const keepS = cur?.s !== undefined ? { s: cur.s } : {};
     setGrids((gs) => gs.map((g, i) => {
       if (i !== active) return g;
       const ng = g.slice();
@@ -224,8 +319,8 @@ export default function SheetWorkspace() {
       const row = ng[r - 1].slice();
       while (row.length < c) row.push({ ...EMPTY_CELL });
       row[c - 1] = isFormula
-        ? { v: '', t: 'f', f: value.slice(1).trim(), d: true } // v do engine tính khi hiển thị
-        : { v: value, t: 's', d: true };
+        ? { v: '', t: 'f', f: value.slice(1).trim(), d: true, ...keepS } // v do engine tính khi hiển thị
+        : { v: value, t: 's', d: true, ...keepS };
       ng[r - 1] = row;
       return ng;
     }));
@@ -304,7 +399,9 @@ export default function SheetWorkspace() {
       setOps(file.sheets.map(() => []));
       // Drop the dirty highlights — the file now matches what's on screen.
       setGrids((gs) => gs.map((g) => g.map((row) => (
-        row.some((c) => c.d) ? row.map((c) => (c.d ? { v: c.v, t: c.t, ...(c.f ? { f: c.f } : {}) } : c)) : row
+        row.some((c) => c.d)
+          ? row.map((c) => (c.d ? { v: c.v, t: c.t, ...(c.f ? { f: c.f } : {}), ...(c.s !== undefined ? { s: c.s } : {}) } : c))
+          : row
       ))));
       setSaveOpen(false);
       flash(`Đã lưu ✓ backup: ${res.backupPath}`);
@@ -317,7 +414,25 @@ export default function SheetWorkspace() {
 
   // ── Selection / keyboard (Excel-style) ──────────────────────────────────────
 
+  /** Góc "xa" của vùng chọn khi mở rộng bằng Shift (anchor luôn là sel). */
+  const selExtentRef = useRef<Pos | null>(null);
+
+  const clearRange = useCallback(() => {
+    selExtentRef.current = null;
+    setSelRange(null);
+  }, []);
+
+  /** Shift+mũi tên: nới vùng chọn từ anchor (sel) — như Excel. */
+  const extendSel = useCallback((dr: number, dc: number) => {
+    if (!sel) return;
+    const base = selExtentRef.current ?? sel;
+    const ext = { r: Math.max(1, base.r + dr), c: Math.max(1, base.c + dc) };
+    selExtentRef.current = ext;
+    setSelRange(normRange(sel, ext));
+  }, [sel]);
+
   const moveSel = useCallback((dr: number, dc: number) => {
+    clearRange();
     setSel((s) => {
       const r = Math.max(1, (s?.r ?? 1) + dr);
       const c = Math.max(1, (s?.c ?? 1) + dc);
@@ -332,10 +447,11 @@ export default function SheetWorkspace() {
   const onGridKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (editing || !sel) return;
     const k = e.key;
-    if (k === 'ArrowDown') { e.preventDefault(); moveSel(1, 0); }
-    else if (k === 'ArrowUp') { e.preventDefault(); moveSel(-1, 0); }
-    else if (k === 'ArrowRight') { e.preventDefault(); moveSel(0, 1); }
-    else if (k === 'ArrowLeft') { e.preventDefault(); moveSel(0, -1); }
+    if (k === 'ArrowDown') { e.preventDefault(); if (e.shiftKey) extendSel(1, 0); else moveSel(1, 0); }
+    else if (k === 'ArrowUp') { e.preventDefault(); if (e.shiftKey) extendSel(-1, 0); else moveSel(-1, 0); }
+    else if (k === 'ArrowRight') { e.preventDefault(); if (e.shiftKey) extendSel(0, 1); else moveSel(0, 1); }
+    else if (k === 'ArrowLeft') { e.preventDefault(); if (e.shiftKey) extendSel(0, -1); else moveSel(0, -1); }
+    else if (k === 'Escape') { clearRange(); }
     else if (k === 'Tab') { e.preventDefault(); moveSel(0, e.shiftKey ? -1 : 1); }
     else if (k === 'Enter' || k === 'F2') { e.preventDefault(); setEditing({ ...sel }); }
     else if (k === 'Delete' || k === 'Backspace') {
@@ -350,7 +466,7 @@ export default function SheetWorkspace() {
       e.preventDefault();
       setEditing({ ...sel, seed: k });
     }
-  }, [editing, sel, moveSel, cellAt, commitEdit]);
+  }, [editing, sel, moveSel, extendSel, clearRange, cellAt, commitEdit]);
 
   // Giữ ô chọn trong khung nhìn.
   useEffect(() => {
@@ -391,10 +507,18 @@ export default function SheetWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** mousedown trên một ô khi đang gõ công thức → chèn ref, GIỮ focus input. */
+  /** mousedown trên một ô: đang gõ công thức → chèn ref (GIỮ focus input);
+   *  bình thường → bắt đầu kéo-chọn vùng. */
   const onCellMouseDown = useCallback((r: number, c: number, e: React.MouseEvent) => {
     const input = activeFormulaInput();
-    if (!input) return;
+    if (!input) {
+      // Bắt đầu drag-select; click đơn thuần vẫn đi qua onClick đặt sel.
+      if (!e.shiftKey) {
+        selDragRef.current = { r, c };
+        clearRange();
+      }
+      return;
+    }
     const v = input.value;
     // Chỉ chèn khi vị trí đang "chờ tham chiếu": cuối là toán tử/(,=… hoặc là
     // một ref vừa chèn (click tiếp là ĐỔI ref, như Excel). Ngoài ra — ví dụ
@@ -407,20 +531,28 @@ export default function SheetWorkspace() {
     pointDragRef.current = { anchor: { r, c }, input };
     setPointRange({ r1: r, c1: c, r2: r, c2: c });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFormulaInput, placeRef, refText]);
+  }, [activeFormulaInput, placeRef, refText, clearRange]);
 
-  /** Quét chuột (giữ phím trái) qua các ô → ref cuối thành range A1:B5. */
+  /** Quét chuột (giữ phím trái) qua các ô: point mode → nới ref công thức;
+   *  bình thường → nới vùng chọn (Sum/Avg/Count). */
   const onCellMouseEnter = useCallback((r: number, c: number) => {
     const d = pointDragRef.current;
-    if (!d) return;
-    const r1 = Math.min(d.anchor.r, r); const r2 = Math.max(d.anchor.r, r);
-    const c1 = Math.min(d.anchor.c, c); const c2 = Math.max(d.anchor.c, c);
-    placeRef(d.input, r1 === r2 && c1 === c2 ? refText(r1, c1) : `${refText(r1, c1)}:${refText(r2, c2)}`);
-    setPointRange({ r1, c1, r2, c2 });
+    if (d) {
+      const r1 = Math.min(d.anchor.r, r); const r2 = Math.max(d.anchor.r, r);
+      const c1 = Math.min(d.anchor.c, c); const c2 = Math.max(d.anchor.c, c);
+      placeRef(d.input, r1 === r2 && c1 === c2 ? refText(r1, c1) : `${refText(r1, c1)}:${refText(r2, c2)}`);
+      setPointRange({ r1, c1, r2, c2 });
+      return;
+    }
+    const anchor = selDragRef.current;
+    if (anchor) {
+      selExtentRef.current = { r, c };
+      setSelRange(normRange(anchor, { r, c }));
+    }
   }, [placeRef, refText]);
 
   useEffect(() => {
-    const up = () => { pointDragRef.current = null; };
+    const up = () => { pointDragRef.current = null; selDragRef.current = null; };
     window.addEventListener('mouseup', up);
     return () => window.removeEventListener('mouseup', up);
   }, []);
@@ -626,7 +758,19 @@ export default function SheetWorkspace() {
       {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '6px 0' }}>{notice}</div>}
 
       <div className="sheet-scroll" ref={gridRef} tabIndex={0} onKeyDown={onGridKeyDown}>
-        <table className="sheet-table sheet-grid">
+        {/* xlsx: nền "giấy trắng" như Excel thật — màu chữ/nền của file vốn
+            thiết kế cho giấy trắng, render trên dark theme sẽ chìm nghỉm. */}
+        <table className={`sheet-table sheet-grid${file.kind === 'xlsx' ? ' fixed paper' : ''}`}>
+          {/* Độ rộng cột THẬT của file (table-layout fixed) — cột ẩn → width 0. */}
+          {file.kind === 'xlsx' && (
+            <colgroup>
+              <col style={{ width: 44 }} />
+              {Array.from({ length: dispCols }, (_, ci) => {
+                const w = hiddenColSet.has(ci + 1) ? 0 : sheetMeta?.colW?.[ci] ?? DEFAULT_COL_PX;
+                return <col key={ci} style={{ width: w ?? DEFAULT_COL_PX }} />;
+              })}
+            </colgroup>
+          )}
           <thead>
             <tr>
               <th className="sheet-rownum-h">#</th>
@@ -638,8 +782,15 @@ export default function SheetWorkspace() {
           <tbody>
             {Array.from({ length: shownRows }, (_, ri) => {
               const r = ri + 1;
+              const rh = sheetMeta?.rowH?.[ri] ?? null;
               return (
-                <tr key={r}>
+                <tr
+                  key={r}
+                  style={{
+                    ...(rh !== null ? { height: rh } : {}),
+                    ...(hiddenRowSet.has(r) ? { display: 'none' } : {}),
+                  }}
+                >
                   <th
                     className={`sheet-rownum${sel?.r === r ? ' sel' : ''}`}
                     onClick={() => { setSel({ r, c: 1 }); gridRef.current?.focus(); }}
@@ -649,33 +800,50 @@ export default function SheetWorkspace() {
                   </th>
                   {Array.from({ length: dispCols }, (_, ci) => {
                     const c = ci + 1;
+                    // Ô bị merge che → không render (ô master span qua).
+                    if (mergeInfo.covered.has(`${r}:${c}`)) return null;
+                    const span = mergeInfo.master.get(`${r}:${c}`);
                     const cell = cellAt(r, c);
                     const isSel = sel?.r === r && sel?.c === c;
                     const isEditing = editing?.r === r && editing?.c === c;
                     const inRef = pointRange
                       && r >= pointRange.r1 && r <= pointRange.r2
                       && c >= pointRange.c1 && c <= pointRange.c2;
+                    const inSel = !isSel && selRange
+                      && r >= selRange.r1 && r <= selRange.r2
+                      && c >= selRange.c1 && c <= selRange.c2;
                     return (
                       <td
                         key={c}
+                        {...(span ? { rowSpan: span.rs, colSpan: span.cs } : {})}
+                        style={cellCss(cell.s !== undefined ? styleTable?.[cell.s] : undefined, cell.nc)}
                         className={[
                           'sheet-cell',
                           cell.d ? 'sheet-cell-dirty' : '',
                           cell.t === 'n' ? 'num' : '',
                           isSel ? 'selc' : '',
                           inRef ? 'inref' : '',
+                          inSel ? 'insel' : '',
                         ].filter(Boolean).join(' ')}
                         onMouseDown={(e) => { if (!isEditing) onCellMouseDown(r, c, e); }}
                         onMouseEnter={() => onCellMouseEnter(r, c)}
-                        onClick={() => {
+                        onClick={(e) => {
                           if (isEditing) return;
                           // mousedown vừa chèn ref vào công thức → không đổi ô chọn.
                           if (pointGuardRef.current) { pointGuardRef.current = false; return; }
+                          // Shift+click: nới vùng chọn từ anchor như Excel.
+                          if (e.shiftKey && sel) {
+                            selExtentRef.current = { r, c };
+                            setSelRange(normRange(sel, { r, c }));
+                            gridRef.current?.focus();
+                            return;
+                          }
+                          clearRange();
                           setSel({ r, c });
                           gridRef.current?.focus();
                         }}
                         onDoubleClick={() => { setSel({ r, c }); setEditing({ r, c }); }}
-                        title={cell.t === 'f' ? `= ${cell.f}` : undefined}
+                        title={cell.t === 'f' ? `= ${cell.f}` : (cell.s !== undefined && styleTable?.[cell.s]?.nf ? `Định dạng: ${styleTable[cell.s].nf}` : undefined)}
                       >
                         {isEditing ? (
                           <input
@@ -697,8 +865,10 @@ export default function SheetWorkspace() {
                           />
                         ) : (
                           <>
-                            {cell.t === 'f' && <span className="sheet-fx" aria-hidden>ƒ</span>}
                             {cell.v}
+                            {/* Ô công thức: chỉ một tam giác bé ở góc, hover mới hiện ƒ
+                                (nội dung là KẾT QUẢ, không phải cái badge). */}
+                            {cell.t === 'f' && <span className="sheet-fx-mark" aria-hidden />}
                           </>
                         )}
                       </td>
@@ -720,6 +890,22 @@ export default function SheetWorkspace() {
           </div>
         )}
       </div>
+
+      {/* Status bar kiểu Excel: quét vùng là thấy Sum/Avg/Count ngay. */}
+      {rangeStats && rangeStats.count > 0 && (
+        <div className="sheet-statusbar">
+          <span title="Vùng đang chọn">
+            {colLetter(selRange!.c1 - 1)}{selRange!.r1}:{colLetter(selRange!.c2 - 1)}{selRange!.r2}
+          </span>
+          {rangeStats.nums > 0 && (
+            <>
+              <span><b>Sum:</b> {rangeStats.sum.toLocaleString('vi-VN', { maximumFractionDigits: 6 })}</span>
+              <span><b>Avg:</b> {rangeStats.avg.toLocaleString('vi-VN', { maximumFractionDigits: 6 })}</span>
+            </>
+          )}
+          <span><b>Count:</b> {rangeStats.count}</span>
+        </div>
+      )}
 
       {pickerOpen && (
         <FolderPicker

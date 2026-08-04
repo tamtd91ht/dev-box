@@ -6,12 +6,38 @@
  *  hyperlink / error — displayed read-flattened, editing turns it into text). */
 export type CellType = 'n' | 's' | 'b' | 'd' | 'f' | 'x';
 
+/** Style hiển thị của một ô — đã convert sẵn sang giá trị CSS-ready ở server
+ *  (màu #rrggbb, border là chuỗi CSS). Dedupe qua bảng styles của sheet. */
+export interface WireStyle {
+  /** bold / italic / underline / strikethrough */
+  b?: 1; i?: 1; u?: 1; st?: 1;
+  /** font color / fill background — CSS #rrggbb */
+  fc?: string; bg?: string;
+  /** font size (pt) / font family */
+  fs?: number; ff?: string;
+  /** align ngang l|c|r|j · dọc t|m|b · wrap text · indent */
+  ha?: 'l' | 'c' | 'r' | 'j'; va?: 't' | 'm' | 'b'; wr?: 1; in?: number;
+  /** border 4 cạnh — chuỗi CSS hoàn chỉnh, vd "1px solid #9ca3af" */
+  bt?: string; br?: string; bb?: string; bl?: string;
+  /** numFmt gốc (tooltip / debug) */
+  nf?: string;
+}
+
+/** Vùng merge (1-based, inclusive). */
+export interface WireMerge { r1: number; c1: number; r2: number; c2: number }
+
 export interface WireCell {
-  /** Display text ('' = empty cell). For formulas this is the computed result. */
+  /** Display text ('' = empty cell) — ĐÃ áp numFmt (1234.5 → "1,234.50"). */
   v: string;
   t: CellType;
   /** Formula source (without '='), present when t === 'f'. */
   f?: string;
+  /** Giá trị THÔ để sửa, khi khác v (số/ngày đã format). */
+  raw?: string;
+  /** Index vào WireSheet.styles. */
+  s?: number;
+  /** Màu chữ từ numFmt section ([Red] số âm…) — đè lên style.fc. */
+  nc?: string;
   /** Client-only: cell was edited in this session (dirty highlight). */
   d?: boolean;
 }
@@ -25,6 +51,17 @@ export interface WireSheet {
   colCount: number;
   /** True when the view was capped at the server's MAX_ROWS/MAX_COLS. */
   truncated: boolean;
+  /** Bảng style dedupe — cell.s trỏ vào đây. */
+  styles?: WireStyle[];
+  /** Các vùng merge trong cửa sổ hiển thị. */
+  merges?: WireMerge[];
+  /** Độ rộng cột (px, null = mặc định) — theo cửa sổ cột đã ship. */
+  colW?: (number | null)[];
+  /** Chiều cao dòng (px, null = mặc định). */
+  rowH?: (number | null)[];
+  /** Dòng/cột ẩn (1-based) trong cửa sổ hiển thị. */
+  hiddenRows?: number[];
+  hiddenCols?: number[];
 }
 
 export interface SheetOpenResult {

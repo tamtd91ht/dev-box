@@ -2860,10 +2860,20 @@ pre.kafka-drawer-body {
   background: var(--bg-1, var(--bg)); color: var(--text);
   font: inherit; padding: 1px 4px; outline: none;
 }
-.sheet-fx {
-  display: inline-block; margin-right: 5px; padding: 0 4px; border-radius: 4px;
-  font-size: 10px; font-weight: 700; color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+/* Đánh dấu ô CÔNG THỨC: tam giác bé xíu ở góc trên-phải (kiểu marker của
+   Excel), hover vào ô mới hiện chip ƒ — nội dung ô là kết quả, marker chỉ phụ. */
+.sheet-cell { position: relative; }
+.sheet-fx-mark { position: absolute; top: 0; right: 0; pointer-events: none; }
+.sheet-fx-mark::before {
+  content: ''; position: absolute; top: 0; right: 0;
+  border-top: 5px solid color-mix(in srgb, var(--accent) 65%, transparent);
+  border-left: 5px solid transparent;
+}
+.sheet-cell:hover .sheet-fx-mark::after {
+  content: 'ƒ'; position: absolute; top: 0; right: 6px;
+  font-size: 9px; line-height: 1.3; font-weight: 700; font-style: italic;
+  padding: 0 3px; border-radius: 3px; color: #fff;
+  background: color-mix(in srgb, var(--accent) 85%, #000);
 }
 
 .sheet-save-summary { margin: 0 0 10px; padding-left: 20px; font-size: 12.5px; }
@@ -4008,3 +4018,49 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .ntc-item-title { font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
 .ntc-text { font-size: 11.5px; color: var(--muted); white-space: pre-line; overflow-wrap: anywhere; }
 .ntc-meta { font-size: 10px; color: var(--faint); }
+
+/* ── Mail: nút xóa nhanh (không cần mở mail — dùng cho mail nghi lừa đảo) ── */
+.mail-row-del {
+  flex: none; width: 28px; height: 24px; padding: 0; margin-left: 2px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: 7px; background: transparent;
+  cursor: pointer; font-size: 13px; line-height: 1; color: var(--muted);
+  opacity: 0; transition: opacity .12s ease;
+}
+.mail-row:hover .mail-row-del, .mail-row-del:focus-visible, .mail-row-del:disabled { opacity: 1; }
+.mail-row-del:hover:not(:disabled) {
+  color: var(--err); border-color: color-mix(in srgb, var(--err) 55%, transparent);
+  background: color-mix(in srgb, var(--err) 10%, transparent);
+}
+.mail-del-btn:hover:not(:disabled) { color: var(--err); border-color: color-mix(in srgb, var(--err) 55%, transparent); }
+
+/* ── Sheet: nâng cấp hiển thị đúng chuẩn Excel ── */
+/* Lưới xlsx dùng độ rộng cột thật của file (colgroup + fixed). */
+.sheet-grid.fixed { table-layout: fixed; }
+.sheet-grid.fixed td { max-width: none; }
+
+/* Chế độ "giấy trắng" cho xlsx: style trong file (chữ đen, nền màu nhạt,
+   border xám) được thiết kế cho nền giấy Excel — vẽ trên dark theme là chữ
+   chìm, border trắng lóa. Vùng ô luôn là giấy trắng như mọi viewer bảng tính
+   (Google Sheets/Office web), khung app xung quanh vẫn theo theme. */
+.sheet-grid.paper { background: #ffffff; }
+.sheet-grid.paper td {
+  background: #ffffff; color: #1f2933;
+  border-bottom: 1px solid #e2e6ea; border-right: 1px solid #e2e6ea;
+}
+.sheet-grid.paper tbody tr:hover td { background: #f4f7fa; }
+.sheet-grid.paper td.selc { background: color-mix(in srgb, var(--accent) 10%, #fff); }
+.sheet-grid.paper td.insel { background: color-mix(in srgb, var(--accent) 14%, #fff); }
+.sheet-grid.paper td.inref { background: color-mix(in srgb, var(--ok) 12%, #fff); }
+.sheet-grid.paper td.sheet-cell-dirty { background: color-mix(in srgb, var(--warn) 22%, #fff) !important; }
+.sheet-grid.paper .sheet-cell input { background: #fff; color: #1f2933; }
+/* Vùng đang chọn (kéo chuột / Shift) — nhạt hơn ô active. */
+.sheet-cell.insel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* Status bar Sum/Avg/Count như Excel. */
+.sheet-statusbar {
+  flex: none; display: flex; align-items: center; gap: 16px;
+  padding: 5px 12px; margin-top: 4px; border-radius: 8px;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+}
+.sheet-statusbar b { color: var(--text); font-weight: 600; }

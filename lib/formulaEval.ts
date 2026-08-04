@@ -11,6 +11,7 @@
 
 import FormulaParser from 'fast-formula-parser';
 import type { WireCell } from './sheet';
+import { formatNumFmt } from './numFmt';
 
 const SHEET = 'S';
 const MAX_PASSES = 5;
@@ -47,8 +48,16 @@ function formatResult(res: unknown): string {
 /**
  * Trả về grid MỚI trong đó mọi ô công thức (t==='f') có v = kết quả tính được.
  * Grid không có công thức nào → trả lại chính tham chiếu cũ (useMemo rẻ).
+ *
+ * `nfOf(r,c)` (1-based, optional): numFmt của ô — engine ĐỌC giá trị thô qua
+ * cell.raw (ô số đã format "1,234,568" vẫn tính đúng) và format LẠI kết quả
+ * công thức theo numFmt của chính ô đó (SUM tiền ra "2,079,568" chứ không
+ * phải "2079567.5").
  */
-export function evaluateGrid(grid: WireCell[][]): WireCell[][] {
+export function evaluateGrid(
+  grid: WireCell[][],
+  nfOf?: (r: number, c: number) => string | undefined,
+): WireCell[][] {
   const formulas: { r: number; c: number; f: string }[] = [];
   for (let r = 0; r < grid.length && formulas.length < MAX_FORMULAS; r++) {
     const row = grid[r];
@@ -65,7 +74,9 @@ export function evaluateGrid(grid: WireCell[][]): WireCell[][] {
   const rawAt = (r: number, c: number): unknown => {
     const k = key(r, c);
     if (values.has(k)) return values.get(k);
-    return nativeValue(grid[r - 1]?.[c - 1]?.v ?? '');
+    const cell = grid[r - 1]?.[c - 1];
+    // Ô số/ngày đã format hiển thị → tính bằng giá trị THÔ (cell.raw).
+    return nativeValue(cell?.raw ?? cell?.v ?? '');
   };
 
   const parser = new FormulaParser({
@@ -101,7 +112,8 @@ export function evaluateGrid(grid: WireCell[][]): WireCell[][] {
       const norm = formatResult(res);
       const native = nativeValue(norm);
       const k = key(r, c);
-      const prev = values.has(k) ? values.get(k) : nativeValue(grid[r - 1]?.[c - 1]?.v ?? '');
+      const seedCell = grid[r - 1]?.[c - 1];
+      const prev = values.has(k) ? values.get(k) : nativeValue(seedCell?.raw ?? seedCell?.v ?? '');
       if (prev !== native) {
         values.set(k, native);
         changed = true;
@@ -119,9 +131,12 @@ export function evaluateGrid(grid: WireCell[][]): WireCell[][] {
           const k = key(ri + 1, ci + 1);
           if (!values.has(k)) return cell; // vượt trần MAX_FORMULAS → giữ cache
           const v = values.get(k);
-          const text = v === null || v === undefined
+          let text = v === null || v === undefined
             ? ''
             : typeof v === 'boolean' ? (v ? 'TRUE' : 'FALSE') : String(v);
+          // Kết quả số → format theo numFmt của Ô CÔNG THỨC (SUM tiền ra "2,079,568").
+          const nf = nfOf?.(ri + 1, ci + 1);
+          if (nf && typeof v === 'number') text = formatNumFmt(v, nf).text;
           return text === cell.v ? cell : { ...cell, v: text };
         })
       : row,
