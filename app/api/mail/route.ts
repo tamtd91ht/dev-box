@@ -13,15 +13,21 @@
 //     'folders'       { accountId }                   → { ok, result: MailFolder[] }
 //     'list'          { accountId, path, beforeSeq? } → { ok, result: MailListPage }
 //     'message'       { accountId, path, uid }        → { ok, result: MailDetail } (đánh dấu \Seen)
+//     'delete'        { accountId, path, uid }        → { ok, result: { mode: 'trash'|'purged' } }
+//                     (move vào Trash; đang ở Trash → xóa vĩnh viễn — không đọc nội dung)
 //     'send'          { accountId, to, cc?, bcc?, subject, text, inReplyTo?, references? }
 //                     → { ok, result: { messageId } }         (best-effort copy vào Sent)
 //
 //   GET ?attachment&accountId=&path=&uid=&idx=  → stream file đính kèm.
+//   GET ?fetch&mode=probe|download&url=         → link "Tải về" TRONG BODY mail:
+//       probe = xem URL trả về file hay trang web (đọc header rồi hủy body);
+//       download = stream file về client với content-disposition attachment,
+//       để tải ngay trong app thay vì văng ra trình duyệt ngoài.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { listAccounts, getAccount, addAccount, removeAccount, toPublic } from '@/lib/mailAccounts';
 import {
-  verifyImap, listFolders, listMessages, getMessage, getAttachment, sendMail,
+  verifyImap, listFolders, listMessages, getMessage, getAttachment, sendMail, deleteMessage,
 } from '@/lib/mailServer';
 import { listContacts, recordAddresses, removeContact, domainOf } from '@/lib/mailContacts';
 
@@ -99,6 +105,14 @@ export async function POST(req: NextRequest) {
         result = detail;
         break;
       }
+      case 'delete':
+        // Xóa theo UID — không tải/parse nội dung nên an toàn với mail lừa đảo.
+        result = await deleteMessage(
+          await needAccount(),
+          String(body.path ?? 'INBOX'),
+          Number(body.uid),
+        );
+        break;
       case 'send': {
         const to = String(body.to ?? '').trim();
         if (!to) throw new Error('Thiếu người nhận (To).');
@@ -142,9 +156,79 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/** Tải file đính kèm: /api/mail?attachment&accountId=&path=&uid=&idx= */
+/** Rút filename từ Content-Disposition (filename* ưu tiên) hoặc path của URL. */
+function filenameFrom(cd: string | null, finalUrl: string): string {
+  if (cd) {
+    const star = cd.match(/filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i);
+    if (star) {
+      try { return decodeURIComponent(star[1].trim().replace(/^"|"$/g, '')); } catch { /* giữ fallback */ }
+    }
+    const plain = cd.match(/filename\s*=\s*"?([^";]+)"?/i);
+    if (plain) return plain[1].trim();
+  }
+  try {
+    const seg = decodeURIComponent(new URL(finalUrl).pathname.split('/').filter(Boolean).pop() ?? '');
+    if (seg) return seg;
+  } catch { /* URL lạ */ }
+  return 'download';
+}
+
+/**
+ * Link trong body mail: server fetch hộ (http/https, follow redirect).
+ *   probe    → chỉ đọc header, hủy body: URL này là FILE hay trang web?
+ *   download → stream nguyên body về client như một file đính kèm.
+ * Lưu ý: fetch không mang cookie đăng nhập của user — link cần session sẽ trả
+ * trang login (probe nhận diện là trang web → client mở trình duyệt như cũ).
+ */
+async function fetchBodyLink(sp: URLSearchParams): Promise<NextResponse> {
+  const url = sp.get('url') ?? '';
+  if (!/^https?:\/\//i.test(url)) {
+    return NextResponse.json({ ok: false, error: 'Chỉ hỗ trợ URL http/https.' }, { status: 400 });
+  }
+  const mode = sp.get('mode') === 'download' ? 'download' : 'probe';
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      // probe nhanh gọn; download cho phép file lớn/đường truyền chậm.
+      signal: AbortSignal.timeout(mode === 'probe' ? 20_000 : 600_000),
+      headers: { 'user-agent': 'VHS-DevBox mail viewer' },
+    });
+    const ct = res.headers.get('content-type') ?? '';
+    const cd = res.headers.get('content-disposition');
+    // File = server tự khai attachment, hoặc content-type không phải trang web.
+    const isFile = /attachment/i.test(cd ?? '') || (!!ct && !/text\/html|application\/xhtml/i.test(ct));
+    const filename = filenameFrom(cd, res.url || url);
+
+    if (mode === 'probe') {
+      void res.body?.cancel().catch(() => {});
+      return NextResponse.json({
+        ok: true,
+        result: {
+          file: res.ok && isFile,
+          filename,
+          contentType: ct,
+          size: Number(res.headers.get('content-length')) || null,
+        },
+      });
+    }
+    if (!res.ok) {
+      return NextResponse.json({ ok: false, error: `HTTP ${res.status} khi tải ${url}` }, { status: 502 });
+    }
+    return new NextResponse(res.body, {
+      headers: {
+        'content-type': ct || 'application/octet-stream',
+        'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      },
+    });
+  } catch (err) {
+    return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 502 });
+  }
+}
+
+/** Tải file đính kèm / fetch link body: xem doc đầu file. */
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
+  if (sp.has('fetch')) return fetchBodyLink(sp);
   if (!sp.has('attachment')) {
     return NextResponse.json({ ok: false, error: 'Unknown GET' }, { status: 400 });
   }

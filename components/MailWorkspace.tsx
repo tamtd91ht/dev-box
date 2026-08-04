@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  mAccounts, mAccountAdd, mAccountRemove, mFolders, mList, mMessage, mSend, mContacts, mContactAdd,
+  mAccounts, mAccountAdd, mAccountRemove, mFolders, mList, mMessage, mSend, mDelete, mContacts, mContactAdd,
   attachmentUrl, folderIcon, fmtAddr, fmtSize,
   type MailAccountPub, type MailFolder, type MailListItem, type MailDetail, type AccountAddInput,
   type MailContact,
@@ -355,16 +355,68 @@ function buildSrcDoc(html: string, allowRemote: boolean): string {
 </head><body>${html}</body></html>`;
 }
 
-function DetailView({ accountId, path, detail, onBack, onReply }: {
+function DetailView({ accountId, path, detail, onBack, onReply, onDelete, deleting }: {
   accountId: string;
   path: string;
   detail: MailDetail;
   onBack: () => void;
   onReply: (all: boolean) => void;
+  onDelete: () => void;
+  deleting: boolean;
 }) {
   const [allowRemote, setAllowRemote] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [linkMsg, setLinkMsg] = useState<string | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
   const hasRemote = !!detail.html && /src\s*=\s*["']?https?:/i.test(detail.html);
+
+  /** Link trong body mail: probe qua server — URL là FILE thì tải NGAY TRONG
+   *  APP (stream qua /api/mail?fetch), là trang web thì mở trình duyệt như cũ.
+   *  Probe lỗi (mạng/site chặn server) → fallback mở trình duyệt, không kẹt. */
+  const handleBodyLink = useCallback(async (url: string) => {
+    setLinkBusy(true); setLinkMsg('Đang kiểm tra link…');
+    try {
+      const r = await fetch(`/api/mail?fetch&mode=probe&url=${encodeURIComponent(url)}`);
+      const data = await r.json();
+      if (!r.ok || !data.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      const info = data.result as { file: boolean; filename: string };
+      if (info.file) {
+        const a = document.createElement('a');
+        a.href = `/api/mail?fetch&mode=download&url=${encodeURIComponent(url)}`;
+        a.download = info.filename || '';
+        document.body.appendChild(a); a.click(); a.remove();
+        setLinkMsg(`⬇ Đang tải ${info.filename}`);
+        setTimeout(() => setLinkMsg(null), 5000);
+      } else {
+        setLinkMsg(null);
+        window.open(url, '_blank', 'noopener');
+      }
+    } catch {
+      setLinkMsg(null);
+      window.open(url, '_blank', 'noopener'); // không chặn người dùng khi probe lỗi
+    } finally {
+      setLinkBusy(false);
+    }
+  }, []);
+
+  /** Gắn listener bắt click <a> trong iframe mỗi lần nó load lại (đổi
+   *  allowRemote → srcDoc mới). Truy cập được contentDocument nhờ sandbox có
+   *  allow-same-origin — vẫn AN TOÀN vì KHÔNG có allow-scripts và CSP chặn
+   *  script: HTML của mail không thể chạy code, chỉ mình ta sờ được DOM. */
+  const wireFrameLinks = useCallback(() => {
+    const doc = frameRef.current?.contentDocument;
+    if (!doc) return;
+    doc.addEventListener('click', (e) => {
+      const a = (e.target as Element | null)?.closest?.('a[href]');
+      if (!a) return;
+      const href = a.getAttribute('href') ?? '';
+      if (!/^https?:/i.test(href)) return; // mailto:, cid:, … → hành vi mặc định
+      e.preventDefault();
+      e.stopPropagation();
+      void handleBodyLink(href);
+    }, true);
+  }, [handleBodyLink]);
 
   const saveSender = async () => {
     if (!detail.from?.address) return;
@@ -390,6 +442,17 @@ function DetailView({ accountId, path, detail, onBack, onReply }: {
             🖼 Hiện ảnh
           </button>
         )}
+        {(linkBusy || linkMsg) && (
+          <span className="small" style={{ color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {linkBusy && <span className="spinner" aria-hidden />}
+            {linkMsg}
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        <button className="ghost sm mail-del-btn" onClick={onDelete} disabled={deleting}
+          title="Xóa mail này (chuyển vào Thùng rác; đang ở Thùng rác thì xóa vĩnh viễn)">
+          {deleting ? <span className="spinner" aria-hidden /> : '🗑'} Xóa
+        </button>
       </div>
       <div className="mail-detail-head">
         <h3 className="mail-detail-subject">{detail.subject}</h3>
@@ -414,9 +477,14 @@ function DetailView({ accountId, path, detail, onBack, onReply }: {
       <div className="mail-detail-body">
         {detail.html ? (
           <iframe
+            ref={frameRef}
             className="mail-frame"
-            sandbox="allow-popups allow-popups-to-escape-sandbox"
+            /* allow-same-origin: để host bắt click link (tải file trong app).
+               An toàn vì KHÔNG allow-scripts + CSP default-src 'none' — mail
+               không thể chạy script hay đọc gì từ app. */
+            sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
             srcDoc={buildSrcDoc(detail.html, allowRemote)}
+            onLoad={wireFrameLinks}
             title={detail.subject}
           />
         ) : (
@@ -466,6 +534,7 @@ function MailboxView({ account, onCompose }: {
   const [detail, setDetail] = useState<MailDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const loadFolders = useCallback(() => {
@@ -512,6 +581,32 @@ function MailboxView({ account, onCompose }: {
   };
 
   const curFolder = folders.find((f) => f.path === path);
+  // Đang đứng trong Thùng rác → xóa là VĨNH VIỄN (server sẽ expunge).
+  const inTrash = curFolder?.specialUse === '\\Trash' || /^trash$/i.test(curFolder?.name ?? '');
+
+  /** Xóa 1 mail theo UID — không mở/không đọc nội dung (an toàn với mail lừa
+   *  đảo). Optimistic: rút khỏi danh sách ngay, trừ badge chưa đọc nếu cần. */
+  const removeMail = async (m: Pick<MailListItem, 'uid' | 'seen' | 'subject'>) => {
+    const label = m.subject ? `"${m.subject}"` : `mail #${m.uid}`;
+    const q = inTrash
+      ? `Xóa VĨNH VIỄN ${label}? (đang ở Thùng rác — không khôi phục được)`
+      : `Xóa ${label}? Mail sẽ được chuyển vào Thùng rác.`;
+    if (!window.confirm(q)) return;
+    setDeleting(m.uid); setErr(null);
+    try {
+      await mDelete(account.id, path, m.uid);
+      setItems((cur) => cur.filter((x) => x.uid !== m.uid));
+      setTotal((t) => Math.max(0, t - 1));
+      if (!m.seen) {
+        setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - 1) } : f)));
+      }
+      setDetail((d) => (d?.uid === m.uid ? null : d));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   return (
     <div className="g-projects">
@@ -545,6 +640,8 @@ function MailboxView({ account, onCompose }: {
             detail={detail}
             onBack={() => setDetail(null)}
             onReply={(all) => onCompose(replyDraft(detail, all, account.email))}
+            onDelete={() => void removeMail({ uid: detail.uid, seen: true, subject: detail.subject })}
+            deleting={deleting === detail.uid}
           />
         ) : (
           <>
@@ -559,8 +656,13 @@ function MailboxView({ account, onCompose }: {
             </div>
             <div className="g-list">
               {items.map((m) => (
-                <button key={m.uid} className={`g-row mail-row${m.seen ? '' : ' unread'}`}
-                  onClick={() => void openMessage(m)} title={m.subject}>
+                /* div role=button (không phải <button>) vì bên trong còn nút 🗑
+                   — button lồng button là HTML sai và click sẽ loạn. */
+                <div key={m.uid} role="button" tabIndex={0}
+                  className={`g-row mail-row${m.seen ? '' : ' unread'}`}
+                  onClick={() => void openMessage(m)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void openMessage(m); } }}
+                  title={m.subject}>
                   <span className={`mail-dot${m.seen ? ' off' : ''}`} aria-hidden
                     title={m.seen ? undefined : 'Chưa đọc'} />
                   <span className="mail-from">{m.from?.name || m.from?.address || '(không rõ)'}</span>
@@ -572,7 +674,13 @@ function MailboxView({ account, onCompose }: {
                     </span>
                   </span>
                   <span className="mail-date">{opening === m.uid ? <span className="spinner" aria-hidden /> : fmtRel(m.date ?? undefined)}</span>
-                </button>
+                  {/* Xóa KHÔNG cần mở — cho mail nghi lừa đảo/độc hại. */}
+                  <button className="mail-row-del" disabled={deleting === m.uid}
+                    onClick={(e) => { e.stopPropagation(); void removeMail(m); }}
+                    title={inTrash ? 'Xóa vĩnh viễn (không cần mở mail)' : 'Xóa — chuyển vào Thùng rác (không cần mở mail)'}>
+                    {deleting === m.uid ? <span className="spinner" aria-hidden /> : '🗑'}
+                  </button>
+                </div>
               ))}
               {!loading && items.length === 0 && !err && (
                 <div className="empty" style={{ padding: '24px 8px' }}><p className="small">Thư mục trống.</p></div>

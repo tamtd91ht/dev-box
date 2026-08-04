@@ -240,6 +240,43 @@ export async function getMessage(account: MailAccount, path: string, uid: number
   });
 }
 
+/** Tìm folder Trash của hộp thư: ưu tiên special-use \Trash, fallback theo tên. */
+async function findTrashPath(client: ImapFlow): Promise<string | null> {
+  const boxes = (await client.list()) as ListResponse[];
+  const byUse = boxes.find((b) => b.specialUse === '\\Trash');
+  if (byUse) return byUse.path;
+  const NAMES = ['trash', 'deleted items', 'deleted messages', 'thùng rác'];
+  const byName = boxes.find((b) => NAMES.includes(b.name.toLowerCase()) || NAMES.includes(b.path.toLowerCase()));
+  return byName?.path ?? null;
+}
+
+/**
+ * Xóa 1 mail — hành vi mail client chuẩn, an toàn cho mail lừa đảo (KHÔNG cần
+ * mở/parse nội dung, chỉ thao tác UID):
+ *   · folder thường  → MOVE vào Trash (còn cứu được nếu xóa nhầm)
+ *   · đang ở Trash / server không có Trash → \Deleted + EXPUNGE (xóa vĩnh viễn)
+ */
+export async function deleteMessage(
+  account: MailAccount,
+  path: string,
+  uid: number,
+): Promise<{ mode: 'trash' | 'purged'; trashPath?: string }> {
+  return withImap(account, async (client) => {
+    const trash = await findTrashPath(client);
+    const lock = await client.getMailboxLock(path);
+    try {
+      if (trash && trash !== path) {
+        await client.messageMove(String(uid), trash, { uid: true });
+        return { mode: 'trash' as const, trashPath: trash };
+      }
+      await client.messageDelete(String(uid), { uid: true });
+      return { mode: 'purged' as const };
+    } finally {
+      lock.release();
+    }
+  });
+}
+
 /** Một attachment (buffer + meta) để stream về client. */
 export async function getAttachment(account: MailAccount, path: string, uid: number, idx: number) {
   return withImap(account, async (client) => {

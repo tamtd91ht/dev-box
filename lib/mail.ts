@@ -110,6 +110,9 @@ export const mList = (accountId: string, path: string, beforeSeq?: number) =>
 export const mMessage = (accountId: string, path: string, uid: number) =>
   mailAction<MailDetail>('message', { accountId, path, uid });
 export const mSend = (input: SendInput) => mailAction<{ messageId: string }>('send', { ...input });
+/** Xóa mail theo UID (move Trash; đang ở Trash → xóa vĩnh viễn) — không đọc nội dung. */
+export const mDelete = (accountId: string, path: string, uid: number) =>
+  mailAction<{ mode: 'trash' | 'purged'; trashPath?: string }>('delete', { accountId, path, uid });
 
 export interface MailContact { email: string; name?: string; count: number; lastSeen: string }
 export const mContacts = () => mailAction<MailContact[]>('contacts');
