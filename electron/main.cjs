@@ -80,6 +80,70 @@ function log(tag, msg) {
   pushLog('shell', `${tag}${msg ? ' — ' + msg : ''}`);
 }
 
+/**
+ * "Cung nha" voi mot workspace: registrable domain (2 nhan cuoi) trung nhau, VD
+ * chat.zalo.me ↔ zalo.me, web.telegram.org ↔ telegram.org. Dung de phan biet
+ * dieu huong TRONG app voi link ra ngoai. Khong dung eTLD+1 chuan (khong co
+ * public-suffix list trong main process) — voi cac host workspace that
+ * (zalo.me, telegram.org, google.com...) 2 nhan la du va khong sinh false
+ * positive giua hai app khac nhau.
+ */
+function sameApp(a, b) {
+  const reg = (h) => h.toLowerCase().split('.').slice(-2).join('.');
+  return !!a && !!b && reg(a) === reg(b);
+}
+
+/**
+ * Link ra ngoai trong Zalo/Telegram KHONG di qua window.open: hai app tu
+ * preventDefault() roi dieu huong chinh main frame cua no (location.href /
+ * router noi bo). Khi do setWindowOpenHandler khong he chay, guest cu the dieu
+ * huong ca workspace sang trang la — CSP cua app hoac router cua no chan lai,
+ * nguoi dung thay "bam link khong an gi".
+ *
+ * Vi vay chan them o tang navigation: main frame roi khoi domain cua chinh
+ * workspace → huy dieu huong, day URL sang browser that. Dieu huong trong app
+ * (dang nhap, OAuth, doi subdomain) van chay binh thuong.
+ *
+ * CHI ap cho workspace app (tab Workspace: Zalo/Telegram/...). Cac <webview>
+ * khac trong DevBox la TRINH XEM da nang — tab Links (persist:links-*) va
+ * viewer Google (persist:ws-google-viewer) song bang viec dieu huong toi ten
+ * mien la, ap luat nay vao la tu ban chan chinh minh (link ngoai bi day ra
+ * browser, dang nhap accounts.google.com khong bao gio vao duoc).
+ */
+const WORKSPACE_PARTITION = /^(persist:)?ws-(?!google-viewer\b)[a-z0-9-]+$/i;
+
+function wireExternalNavigation(guest, homeUrl, partition) {
+  if (!WORKSPACE_PARTITION.test(partition || '')) return;
+  let homeHost = '';
+  try {
+    homeHost = new URL(homeUrl).hostname;
+  } catch {
+    /* homeUrl khong parse duoc — bo qua, coi nhu khong co nha */
+  }
+
+  // `will-navigate`/`will-redirect` chi ban cho MAIN FRAME (iframe di qua
+  // `will-frame-navigate`, ta khong nghe) — nen khong can loc frame o day, quang
+  // cao/widget nhung trong trang van chay binh thuong.
+  const escapeToBrowser = (event, url) => {
+    if (!/^https?:\/\//i.test(url)) return; // zalo:, tg:, mailto:, blob: — de guest tu xu
+    let host = '';
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      return;
+    }
+    if (!homeHost || sameApp(host, homeHost)) return; // dieu huong trong app
+    event.preventDefault();
+    shell.openExternal(url);
+    log('OpenExternal', `${url} (navigation)`);
+  };
+
+  guest.on('will-navigate', escapeToBrowser);
+  // Chuyen huong giua chang (link shortener trong tin nhan) cung phai bat, neu
+  // khong URL cuoi da nam ngoai app moi bi CSP chan.
+  guest.on('will-redirect', escapeToBrowser);
+}
+
 /** Merge userData/workspace.config.json over the defaults. Missing file = defaults. */
 function loadConfig() {
   try {
@@ -189,8 +253,17 @@ function wireDownloadPolicy(ses, label) {
 function wireWebviewHardening(win) {
   const wc = win.webContents;
 
+  // `did-attach-webview` chi cho guest, khong cho biet nha cua no la dau va no
+  // thuoc partition nao. Ca hai chi co o `will-attach-webview` — ma hai event
+  // nay ban lien tiep cho cung mot guest, nen giu tam o day roi doc lai ngay
+  // ben duoi.
+  let pendingSrc = '';
+  let pendingPartition = '';
+
   // Enforce safe webPreferences on every guest BEFORE it is created.
   wc.on('will-attach-webview', (_event, prefs, params) => {
+    pendingSrc = params.src || '';
+    pendingPartition = params.partition || '';
     delete prefs.preload;
     prefs.nodeIntegration = false;
     prefs.contextIsolation = true;
@@ -204,6 +277,10 @@ function wireWebviewHardening(win) {
 
   wc.on('did-attach-webview', (_event, guest) => {
     log('WebViewCreated', guest.getURL());
+
+    // Link ra ngoai bang cach dieu huong chinh main frame (cach Zalo/Telegram
+    // mo link trong tin nhan) → browser that, giu workspace o nguyen trang app.
+    wireExternalNavigation(guest, pendingSrc || guest.getURL(), pendingPartition);
 
     // Popups (target=_blank, window.open) → open in the real browser, never a
     // rogue in-app window.
