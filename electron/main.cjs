@@ -81,86 +81,27 @@ function log(tag, msg) {
 }
 
 /**
- * "Cung nha" voi mot workspace: registrable domain (2 nhan cuoi) trung nhau, VD
- * chat.zalo.me ↔ zalo.me, web.telegram.org ↔ telegram.org. Dung de phan biet
- * dieu huong TRONG app voi link ra ngoai. Khong dung eTLD+1 chuan (khong co
- * public-suffix list trong main process) — voi cac host workspace that
- * (zalo.me, telegram.org, google.com...) 2 nhan la du va khong sinh false
- * positive giua hai app khac nhau.
- */
-function sameApp(a, b) {
-  const reg = (h) => h.toLowerCase().split('.').slice(-2).join('.');
-  return !!a && !!b && reg(a) === reg(b);
-}
-
-/**
- * Bam link trong workspace → HOI nguoi dung mo o dau (renderer dung modal 3 lua
- * chon: tab Links / Browser trong app / trinh duyet ngoai). Main process khong
- * ve duoc UI nen chi day yeu cau qua IPC; renderer tu quyet dinh va tu mo.
+ * Tab Workspace (Zalo/Telegram/... — partition `persist:ws-{plugin}-{acct}`).
  *
- * Neu khong con cua so nao (dang tat app) thi fallback mo browser ngoai luon,
- * de link khong bi mat hut.
- */
-function askOpenTarget(url) {
-  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-  if (!win) {
-    shell.openExternal(url);
-    log('OpenExternal', `${url} (no window)`);
-    return;
-  }
-  win.webContents.send('workspace:openRequest', url);
-  log('OpenRequest', url);
-}
-
-/**
- * Link ra ngoai trong Zalo/Telegram KHONG di qua window.open: hai app tu
- * preventDefault() roi dieu huong chinh main frame cua no (location.href /
- * router noi bo). Khi do setWindowOpenHandler khong he chay, guest cu the dieu
- * huong ca workspace sang trang la — CSP cua app hoac router cua no chan lai,
- * nguoi dung thay "bam link khong an gi".
+ * Workspace la MOT APP DONG TRONG APP: quet QR, dang nhap, doi subdomain, bam
+ * link trong tin nhan — tat ca phai dien ra NGAY TRONG cua so do. DevBox khong
+ * chan, khong hoi, khong day URL di dau ca.
  *
- * Vi vay chan them o tang navigation: main frame roi khoi domain cua chinh
- * workspace → huy dieu huong, hoi mo o dau. Dieu huong trong app (dang nhap,
- * OAuth, doi subdomain) van chay binh thuong.
- *
- * CHI ap cho workspace app (tab Workspace: Zalo/Telegram/...). Cac <webview>
- * khac trong DevBox la TRINH XEM da nang — tab Links (persist:links-*) va
- * viewer Google (persist:ws-google-viewer) song bang viec dieu huong toi ten
- * mien la, ap luat nay vao la tu ban chan chinh minh (link ngoai bi day ra
- * browser, dang nhap accounts.google.com khong bao gio vao duoc).
+ * Phai phan biet voi cac <webview> con lai vi chung la TRINH XEM da nang va co
+ * luat rieng: tab Links (persist:links-*), tab Browser, viewer Google
+ * (persist:ws-google-viewer) — khong ap luat cua workspace vao chung.
  */
 const WORKSPACE_PARTITION = /^(persist:)?ws-(?!google-viewer\b)[a-z0-9-]+$/i;
 
-function wireExternalNavigation(guest, homeUrl, partition) {
-  if (!WORKSPACE_PARTITION.test(partition || '')) return;
-  let homeHost = '';
-  try {
-    homeHost = new URL(homeUrl).hostname;
-  } catch {
-    /* homeUrl khong parse duoc — bo qua, coi nhu khong co nha */
-  }
-
-  // `will-navigate`/`will-redirect` chi ban cho MAIN FRAME (iframe di qua
-  // `will-frame-navigate`, ta khong nghe) — nen khong can loc frame o day, quang
-  // cao/widget nhung trong trang van chay binh thuong.
-  const escapeToBrowser = (event, url) => {
-    if (!/^https?:\/\//i.test(url)) return; // zalo:, tg:, mailto:, blob: — de guest tu xu
-    let host = '';
-    try {
-      host = new URL(url).hostname;
-    } catch {
-      return;
-    }
-    if (!homeHost || sameApp(host, homeHost)) return; // dieu huong trong app
-    event.preventDefault();
-    askOpenTarget(url);
-  };
-
-  guest.on('will-navigate', escapeToBrowser);
-  // Chuyen huong giua chang (link shortener trong tin nhan) cung phai bat, neu
-  // khong URL cuoi da nam ngoai app moi bi CSP chan.
-  guest.on('will-redirect', escapeToBrowser);
-}
+/**
+ * Cua so an tra cho `window.open()` cua guest song bao lau truoc khi bi huy.
+ *
+ * Khong phai con so tuy y: web app do popup co bi chan hay khong bang cach soi
+ * `w.closed` SAU khi goi window.open (Zalo kiem lai sau mot nhip), nen cua so
+ * phai con song luc do — huy ngay la `closed === true` va app bao "popup bi
+ * chan". 10s du rong cho moi kieu kiem tra tre ma van khong giu rac lai lau.
+ */
+const POPUP_STUB_TTL_MS = 10_000;
 
 /** Merge userData/workspace.config.json over the defaults. Missing file = defaults. */
 function loadConfig() {
@@ -178,6 +119,28 @@ function loadConfig() {
 let CONFIG = { ...DEFAULT_CONFIG };
 /** Partitions we've already wired handlers onto (idempotency). */
 const configuredPartitions = new Set();
+
+/**
+ * Partition cua mot guest ('' neu chua biet) — dung de biet guest nay co phai
+ * tab Workspace hay khong.
+ *
+ * Doc bang DANH TINH session chu khong bang bien tam cua `will-attach-webview`:
+ * `session.fromPartition(p)` luon tra ve dung mot object cho moi partition, nen
+ * phep so sanh nay khong the lan hai guest voi nhau. Neu chot theo bien tam thi
+ * co the lech, vi `will-attach-webview` va `did-attach-webview` la hai event roi
+ * nhau — nhieu webview mount cung mot nhip render (Zalo + Telegram + tab Links)
+ * la thu tu xen vao nhau, va luat cua workspace se ap sai guest.
+ */
+function partitionOf(guest) {
+  for (const part of configuredPartitions) {
+    try {
+      if (session.fromPartition(part) === guest.session) return part;
+    } catch {
+      /* partition khong con — bo qua */
+    }
+  }
+  return '';
+}
 
 /** Attach permission / download / popup policy to a guest partition once. */
 // Google chan dang nhap trong embedded browser ("This browser or app may not
@@ -271,17 +234,8 @@ function wireDownloadPolicy(ses, label) {
 function wireWebviewHardening(win) {
   const wc = win.webContents;
 
-  // `did-attach-webview` chi cho guest, khong cho biet nha cua no la dau va no
-  // thuoc partition nao. Ca hai chi co o `will-attach-webview` — ma hai event
-  // nay ban lien tiep cho cung mot guest, nen giu tam o day roi doc lai ngay
-  // ben duoi.
-  let pendingSrc = '';
-  let pendingPartition = '';
-
   // Enforce safe webPreferences on every guest BEFORE it is created.
   wc.on('will-attach-webview', (_event, prefs, params) => {
-    pendingSrc = params.src || '';
-    pendingPartition = params.partition || '';
     delete prefs.preload;
     prefs.nodeIntegration = false;
     prefs.contextIsolation = true;
@@ -294,14 +248,21 @@ function wireWebviewHardening(win) {
   });
 
   wc.on('did-attach-webview', (_event, guest) => {
-    log('WebViewCreated', guest.getURL());
+    const partition = partitionOf(guest);
+    const isWorkspaceApp = WORKSPACE_PARTITION.test(partition);
+    log('WebViewCreated', `${partition || 'default'} · ${guest.getURL()}`);
 
-    // Link ra ngoai bang cach dieu huong chinh main frame (cach Zalo/Telegram
-    // mo link trong tin nhan) → browser that, giu workspace o nguyen trang app.
-    wireExternalNavigation(guest, pendingSrc || guest.getURL(), pendingPartition);
-
-    // Popups (target=_blank, window.open) → hoi mo o dau, khong bao gio de mo
-    // mot cua so roi trong app.
+    // Popups (target=_blank, window.open) → khong bao gio de mo mot cua so roi
+    // trong app.
+    //
+    // TAB WORKSPACE: moi thu o LAI TRONG cua so do — dieu huong thang trong
+    // chinh webview nay. Quet QR xong Zalo tu mo lai app cua no bang
+    // window.open, va link trong tin nhan cung di qua duong nay; ca hai deu phai
+    // hien ra ngay tai cho, khong hoi, khong day sang tab khac, khong ra browser
+    // ngoai. Muon ve chat thi bam ← tren thanh cong cu workspace.
+    //
+    // Cac webview khac (tab Links, tab Browser, viewer Google) giu nguyen luat
+    // cu: popup ra trinh duyet that cua may.
     //
     // TRA VE 'deny' LA CAI BAY: window.open() trong guest se tra ve null, va
     // Zalo KIEM TRA gia tri do — thay null la no ket luan popup bi chan roi
@@ -309,16 +270,25 @@ function wireWebviewHardening(win) {
     // mo popup cua trang web". Link van mo dung, chi rieng bao loi la sai.
     //
     // Vi vay cho phep tao that mot cua so AN (khong bao gio hien) de guest nhan
-    // duoc object khac null → khong con canh bao. Cua so nay bi huy ngay o
-    // did-create-window ben duoi.
-    //
-    // Dat 'about:blank' thay vi de nguyen URL: neu khong, cua so an se THAT SU
-    // tai trang do truoc khi bi huy — vua ton mot request vua co the kich hoat
-    // side effect hai lan (link dung mot lan, link xac nhan qua email...).
-    // Guest chi can mot object window de kiem tra, khong can noi dung.
+    // duoc object khac null. Cua so nay bi chan tai trang (`stop()` o
+    // did-create-window) nen URL that khong he duoc request lan hai — quan trong
+    // voi link dung mot lan / link xac nhan qua email — nhung PHAI SONG mot luc,
+    // xem POPUP_STUB_TTL_MS.
     guest.setWindowOpenHandler(({ url }) => {
       if (!/^https?:\/\//i.test(url)) return { action: 'deny' };
-      askOpenTarget(url);
+
+      if (isWorkspaceApp) {
+        // Hoan mot nhip: dung goi loadURL ngay giua luc Chromium con dang dung
+        // cua so con o tren.
+        setImmediate(() => {
+          if (!guest.isDestroyed()) guest.loadURL(url).catch(() => {});
+        });
+        log('OpenInWorkspace', url);
+      } else {
+        shell.openExternal(url);
+        log('OpenExternal', url);
+      }
+
       return {
         action: 'allow',
         overrideBrowserWindowOptions: { show: false, width: 1, height: 1 },
@@ -326,16 +296,33 @@ function wireWebviewHardening(win) {
       };
     });
 
-    // Cua so an sinh ra tu setWindowOpenHandler o tren: URL da chuyen cho
-    // askOpenTarget nen chan tai trang roi huy luon.
+    // Cua so an sinh ra tu setWindowOpenHandler o tren: URL da duoc xu ly xong
+    // nen chan tai trang, roi de no SONG mot luc truoc khi huy.
+    //
+    // KHONG DUOC HUY NGAY. Zalo khong chi kiem `w !== null` — no con kiem LAI
+    // sau mot nhip, va phep kiem chuan cua web la:
+    //     if (!w || w.closed || typeof w.closed === 'undefined') → "popup bi chan"
+    // Huy ngay thi lan kiem sau thay `w.closed === true` va toast "Co loi xay ra
+    // khi mo popup moi" van hien, du link da mo dung. Da do bang harness
+    // Electron (webview + dung phep kiem tren):
+    //     huy ngay      → sync OK, async BLOCKED (closed=true)   ← dung loi nay
+    //     giu roi huy   → sync OK, async OK      (closed=false)
+    // Giu cua so an (1x1, show:false, da stop nen trang trang) vai giay khong ton
+    // gi, va het TTL la huy nen khong ro ri.
     guest.on('did-create-window', (child) => {
       try {
         child.webContents.on('will-navigate', (e) => e.preventDefault());
         child.webContents.stop();
-        child.destroy();
       } catch {
         /* da dong roi */
       }
+      setTimeout(() => {
+        try {
+          if (!child.isDestroyed()) child.destroy();
+        } catch {
+          /* Electron da tu don khi opener dieu huong (outlivesOpener: false) */
+        }
+      }, POPUP_STUB_TTL_MS);
     });
 
     // Surface the guest's own diagnostics (`[ws-unread]`, `[ws-diag]`, `[ws-size]`)
@@ -576,8 +563,9 @@ ipcMain.handle('workspace:focusHost', (evt) => {
   }
 });
 
-// Người dùng chọn "Trình duyệt ngoài" trong hộp thoại mở link. Chỉ nhận http(s)
-// — không để renderer nhờ shell chạy scheme lạ (file:, ms-msdt:…).
+// Renderer nhờ mở URL bằng trình duyệt ngoài (nút ↗ ở tab Google, link hướng
+// dẫn trong panel lỗi mail). Chỉ nhận http(s) — không để renderer nhờ shell
+// chạy scheme lạ (file:, ms-msdt:…).
 ipcMain.handle('workspace:openExternal', (_evt, url) => {
   if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
     return { ok: false, error: 'invalid url' };

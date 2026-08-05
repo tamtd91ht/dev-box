@@ -34,7 +34,6 @@ import MailWatchHost from '@/components/MailWatchHost';
 import WorkWorkspace from '@/components/WorkWorkspace';
 import WorkAlertHost from '@/components/WorkAlertHost';
 import ConvertHost from '@/components/ConvertHost';
-import OpenLinkDialog from '@/components/OpenLinkDialog';
 import NotificationCenter from '@/components/NotificationCenter';
 import { notices } from '@/lib/noticeStore';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -520,11 +519,6 @@ export default function Home() {
       {/* Job chuyển đổi file chạy ngầm: host này in PDF hộ (Chromium của
           Electron) và báo đường dẫn khi xong. */}
       <ConvertHost />
-
-      {/* Bấm link trong workspace (Zalo/Telegram…) → hỏi mở ở tab Links /
-          Browser trong app / trình duyệt ngoài. setMode bật tab đích, và
-          effect `visited` ở trên mount nó nếu đây là lần ghé đầu. */}
-      <OpenLinkDialog onGoTab={setMode} />
 
       {/* ── Footer ───────────────────────────────────────────────────── */}
       <footer className="appfoot">

@@ -69,6 +69,32 @@ export interface PullResult {
   message: string;
 }
 
+/** Result of the `clone` action — the new repo, ready to select. */
+export interface CloneResult {
+  path: string;
+  name: string;
+  output: string;
+}
+
+/** Result of the `discard-all` action — counts of what was thrown away. */
+export interface DiscardAllResult {
+  /** Tracked files reverted to HEAD (staged + unstaged). */
+  reverted: number;
+  /** Untracked files/folders deleted from disk. */
+  removed: number;
+  /** True when a rebase in progress was aborted too. */
+  abortedRebase: boolean;
+  status: RepoStatus;
+}
+
+/** Folder name a clone URL defaults to — mirrors the server's derivation so the
+ *  form can prefill it without a round-trip. */
+export function defaultCloneName(url: string): string {
+  const trimmed = url.trim().replace(/[/\\]+$/, '');
+  const last = trimmed.split(/[/:]/).pop() ?? '';
+  return last.replace(/\.git$/i, '');
+}
+
 export interface GitCapabilities {
   enabled: boolean;
   repos: RepoInfo[];

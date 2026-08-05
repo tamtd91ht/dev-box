@@ -6,6 +6,9 @@ import {
   mutateGitProject,
   gitAction,
   codeLabel,
+  defaultCloneName,
+  type CloneResult,
+  type DiscardAllResult,
   type RepoInfo,
   type RepoStatus,
   type BranchInfo,
@@ -79,6 +82,8 @@ export default function GitWorkspace() {
   const [safeBase, setSafeBase] = useState('');
   const [activeProjectId, setActiveProjectId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
+  // Clone dialog — clones a remote repo into the active project's root folder.
+  const [cloneOpen, setCloneOpen] = useState(false);
   const [repos, setRepos] = useState<RepoInfo[]>([]);
   const [reposLoading, setReposLoading] = useState(false);
   const [repo, setRepo] = useState<string>('');
@@ -372,6 +377,42 @@ export default function GitWorkspace() {
     setSelected(null);
   }
 
+  /**
+   * Throw away every local change in the repo at once (git reset --hard +
+   * git clean -fd). Spelled out in the confirm because it is irreversible: staged
+   * work included, untracked files deleted, gitignored files kept.
+   */
+  async function discardEverything() {
+    if (!status || !status.files.length || busy) return;
+    const lines = [
+      `Bỏ TOÀN BỘ thay đổi trong repo ${repoName || '(repo này)'}?`,
+      '',
+      `• ${staged.length + unstaged.length} file quay về commit gần nhất (kể cả phần đã stage)`,
+    ];
+    if (untracked.length) lines.push(`• ${untracked.length} file chưa theo dõi bị XÓA khỏi đĩa`);
+    lines.push('• file trong .gitignore (node_modules, .env…) được giữ nguyên', '', 'Không khôi phục được.');
+    if (!window.confirm(lines.join('\n'))) return;
+    await run('Bỏ tất cả', async () => {
+      const res = await gitAction<DiscardAllResult>('discard-all', { repo });
+      const parts = [`${res.reverted} file về HEAD`];
+      if (res.removed) parts.push(`xóa ${res.removed} file mới`);
+      if (res.abortedRebase) parts.push('đã hủy rebase dở dang');
+      return { status: res.status, output: parts.join(', ') };
+    });
+    overviewFetchedAt.current = 0; // this repo's overview badge is now stale
+    setSelected(null);
+  }
+
+  // A fresh clone lands under the active project's root → re-detect the repos of
+  // that project, then select the new one.
+  async function afterClone(res: CloneResult) {
+    setCloneOpen(false);
+    await loadRepos(projectRef.current);
+    setRepo(res.path);
+    overviewFetchedAt.current = 0; // overview is stale — a repo appeared
+    flash(`Đã clone ${res.name}`);
+  }
+
   async function doCommit() {
     if (!message.trim() || !staged.length) return;
     await run('Commit', () => gitAction('commit', { repo, message: message.trim() }));
@@ -501,9 +542,23 @@ export default function GitWorkspace() {
       />
 
       {activeProject && (
-        <div className="small" style={{ color: 'var(--muted)', marginTop: -6, fontFamily: 'var(--mono)' }}>
-          <span title="thư mục gốc của project này">📁 {activeProject.root}</span>
-          {reposLoading ? ' · đang quét repo…' : ` · ${repos.length} repo`}
+        <div
+          className="small"
+          style={{ color: 'var(--muted)', marginTop: -6, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}
+        >
+          <span style={{ fontFamily: 'var(--mono)' }} title="thư mục gốc của project này">
+            📁 {activeProject.root}
+            {reposLoading ? ' · đang quét repo…' : ` · ${repos.length} repo`}
+          </span>
+          <span style={{ flex: 1 }} />
+          <button
+            className="ghost sm"
+            onClick={() => setCloneOpen(true)}
+            disabled={busy || !!commandRunning}
+            title={`git clone một repo về ${activeProject.root}`}
+          >
+            ⧉ Clone repo…
+          </button>
         </div>
       )}
 
@@ -515,7 +570,8 @@ export default function GitWorkspace() {
           ) : (
             <p>
               Không tìm thấy repo git nào trong <code className="small">{activeProject?.root ?? 'thư mục này'}</code>.
-              Chọn/ thêm một project trỏ tới thư mục chứa các repo (bấm <b>Quản lý</b> phía trên).
+              Chọn/ thêm một project trỏ tới thư mục chứa các repo (bấm <b>Quản lý</b> phía trên), hoặc{' '}
+              <b>Clone repo…</b> để tải một repo về thư mục này.
             </p>
           )}
         </div>
@@ -742,6 +798,17 @@ export default function GitWorkspace() {
           <div className="status-line">
             <h3 style={{ margin: 0, flex: 1 }}>Thay đổi</h3>
             {status && <span className="small" style={{ color: 'var(--muted)' }}>{status.files.length} file</span>}
+            {status && status.files.length > 0 && (
+              <button
+                className="ghost sm"
+                onClick={discardEverything}
+                disabled={busy}
+                style={{ color: 'var(--err, #f85149)' }}
+                title="Bỏ toàn bộ thay đổi: git reset --hard + git clean -fd (giữ file trong .gitignore)"
+              >
+                ⟲ Bỏ tất cả
+              </button>
+            )}
           </div>
 
           {clean && (
@@ -961,6 +1028,17 @@ export default function GitWorkspace() {
         </div>
       )}
 
+      {cloneOpen && activeProject && (
+        <CloneRepoModal
+          projectId={activeProjectId}
+          projectName={activeProject.name}
+          root={activeProject.root}
+          existingNames={repos.map((r) => r.name)}
+          onClose={() => setCloneOpen(false)}
+          onCloned={afterClone}
+        />
+      )}
+
       {mrModalOpen && repo && (
         <MergeRequestsModal
           repo={repo}
@@ -970,6 +1048,140 @@ export default function GitWorkspace() {
           onMerged={(mr) => flash(`Đã merge MR !${mr.iid} vào dev`)}
         />
       )}
+    </div>
+  );
+}
+
+// ── Clone repo modal ────────────────────────────────────────────────────────────
+
+interface CloneRepoModalProps {
+  /** Project whose root folder the repo is cloned into. */
+  projectId: string;
+  projectName: string;
+  root: string;
+  /** Repo folder names already in the root — used to warn before submitting. */
+  existingNames: string[];
+  onClose: () => void;
+  onCloned: (res: CloneResult) => void;
+}
+
+/**
+ * `git clone <url>` into the active project's root, so the new repo shows up in
+ * that project's repo list right away. The folder name is prefilled from the URL
+ * and stays editable; the branch field is optional (empty = the remote default).
+ * Auth uses the machine's own git credential — nothing is typed here.
+ */
+function CloneRepoModal({ projectId, projectName, root, existingNames, onClose, onCloned }: CloneRepoModalProps) {
+  const [url, setUrl] = useState('');
+  const [name, setName] = useState('');
+  // Until the user edits the name, it follows the URL.
+  const [nameEdited, setNameEdited] = useState(false);
+  const [branch, setBranch] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const folder = (nameEdited ? name : defaultCloneName(url)).trim();
+  const taken = !!folder && existingNames.includes(folder);
+  const canSubmit = !busy && !!url.trim() && !!folder && !taken;
+
+  const submit = useCallback(async () => {
+    if (busy || !url.trim() || !folder) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await gitAction<CloneResult>('clone', {
+        projectId,
+        url: url.trim(),
+        name: folder,
+        branch: branch.trim(),
+      });
+      onCloned(res);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, url, folder, branch, projectId, onCloned]);
+
+  return (
+    // Backdrop click is ignored while cloning — closing mid-clone would hide a
+    // long-running operation the user can't get back to.
+    <div className="modal-backdrop" onClick={() => !busy && onClose()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(560px, 94vw)' }}>
+        <div className="status-line" style={{ marginBottom: 10 }}>
+          <h3 style={{ margin: 0, flex: 1 }}>Clone repo → {projectName}</h3>
+          <button className="ghost sm" onClick={onClose} disabled={busy}>✕</button>
+        </div>
+
+        <div className="small" style={{ color: 'var(--muted)', marginBottom: 10 }}>
+          Repo sẽ được clone vào <code className="small">{root}</code> và tự xuất hiện trong danh sách repo của project.
+        </div>
+
+        <label className="small" style={{ color: 'var(--muted)' }}>URL repo</label>
+        <input
+          type="text"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && canSubmit && submit()}
+          placeholder="https://gitlab.com/group/repo.git hoặc git@gitlab.com:group/repo.git"
+          autoFocus
+          disabled={busy}
+          style={{ width: '100%', fontFamily: 'var(--mono)', fontSize: 12, margin: '4px 0 10px' }}
+        />
+
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ flex: '2 1 240px' }}>
+            <label className="small" style={{ color: 'var(--muted)' }}>Tên thư mục</label>
+            <input
+              type="text"
+              value={folder}
+              onChange={(e) => {
+                setNameEdited(true);
+                setName(e.target.value);
+              }}
+              onKeyDown={(e) => e.key === 'Enter' && canSubmit && submit()}
+              placeholder="tự lấy từ URL"
+              disabled={busy}
+              style={{ width: '100%', fontFamily: 'var(--mono)', fontSize: 12, marginTop: 4 }}
+            />
+          </div>
+          <div style={{ flex: '1 1 160px' }}>
+            <label className="small" style={{ color: 'var(--muted)' }}>Branch (tùy chọn)</label>
+            <input
+              type="text"
+              value={branch}
+              onChange={(e) => setBranch(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && canSubmit && submit()}
+              placeholder="mặc định của remote"
+              disabled={busy}
+              style={{ width: '100%', fontFamily: 'var(--mono)', fontSize: 12, marginTop: 4 }}
+            />
+          </div>
+        </div>
+
+        {taken && (
+          <div className="badge warn" style={{ marginTop: 10 }}>
+            ⚠ Thư mục <b>{folder}</b> đã có trong project — đổi tên khác.
+          </div>
+        )}
+        {err && <pre className="code" style={{ color: 'var(--err)', margin: '10px 0 0' }}>{err}</pre>}
+
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 14 }}>
+          <span className="small" style={{ flex: 1, color: 'var(--muted)' }}>
+            Dùng credential git của máy (không nhập mật khẩu ở đây).
+          </span>
+          <button className="ghost sm" onClick={onClose} disabled={busy}>Hủy</button>
+          <button className="sm" onClick={submit} disabled={!canSubmit} title="git clone">
+            {busy ? <><span className="spinner" aria-hidden /> Đang clone…</> : '⧉ Clone'}
+          </button>
+        </div>
+
+        {busy && (
+          <div className="small" style={{ color: 'var(--muted)', marginTop: 8 }}>
+            Đang tải repo về — với repo lớn có thể mất vài phút.
+          </div>
+        )}
+      </div>
     </div>
   );
 }

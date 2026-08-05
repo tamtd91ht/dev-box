@@ -8,6 +8,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Tab ▦ Office › Bảng tính — thanh định dạng như Excel + chèn dòng/cột đủ 4 hướng.** Trước đây
+  chỉ sửa được nội dung ô: không đổi được font, màu, căn lề, không trộn ô, và chèn thì chỉ chèn
+  được *xuống dưới* / *bên phải*. Nay có **ribbon** phía trên lưới (chỉ `.xlsx` — CSV là text
+  thuần nên hiện thanh chèn/xóa dòng-cột kèm ghi chú): **font** (10 kiểu chữ · cỡ 8→48 ·
+  **B** *I* <u>U</u> S̶ · màu chữ · màu nền, mỗi màu kèm nút ⌫ bỏ màu) · **kẻ viền** (tất cả ô ·
+  viền ngoài vùng · từng cạnh · bỏ viền) · **căn lề** (trái/giữa/phải/đều + trên/giữa/dưới + wrap
+  text) · **định dạng số** (Chung · `#,##0` · `#,##0.00` · tiền ₫ · tiền $ · % · ngày · ngày giờ ·
+  giờ · văn bản, thêm hai nút **thêm/bớt số thập phân** tự sửa pattern đang có mà giữ ký hiệu tiền)
+  · **trộn ô & căn giữa** + **bỏ trộn** · **xóa định dạng**. Định dạng áp cho **ô đang chọn hoặc cả
+  vùng đã quét**; `Ctrl+B/I/U` chạy ngay trên lưới; **bấm đầu dòng/cột là chọn cả dòng/cột** để
+  định dạng hàng loạt, **chuột phải** (trong lưới hoặc trên đầu dòng/cột) ra menu chèn dòng
+  lên trên/xuống dưới · chèn cột bên trái/bên phải · xóa · trộn ô · xóa định dạng — chọn 3 dòng thì
+  chèn 3 dòng như Excel (trần 200/lần để không lỡ tay thêm mấy nghìn dòng khi đang chọn cả cột).
+  Đổi định dạng số là **thấy ngay trong lưới** (1234567 → `1,234,567 ₫`, số ngày → `05/08/2026`)
+  chứ không phải lưu rồi mở lại, vì client format lại từ giá trị thô.
+  **Cơ chế lưu vẫn là op log**: thêm ba op `style` / `merge` / `unmerge` (patch mang ngữ nghĩa
+  *giữ / xóa / đặt* từng thuộc tính, nên "bôi đậm" không làm mất màu và cỡ chữ sẵn có của ô), server
+  đọc lại file rồi replay theo thứ tự — ô không đụng tới giữ nguyên style và công thức, vẫn backup
+  `.bak` trước khi ghi đè. Server **clone** style trước khi sửa (ExcelJS dùng chung một object style
+  cho mọi ô cùng xf khi đọc file — sửa tại chỗ là đổi lây sang ô khác), chặn màu không phải
+  `#rrggbb`, chặn vùng > 200.000 ô, và ghi thêm số liệu `style=`/`merge=` vào dòng `SHEET_AUDIT`.
+  (`lib/sheet.ts` · `lib/sheetClient.ts` · `lib/numFmt.ts` · `components/SheetFormatBar.tsx` ·
+  `components/SheetWorkspace.tsx` · `app/globals.css`.)
+
+- **Tab ⎇ Git — clone repo mới + bỏ toàn bộ thay đổi của một repo.** Hai việc trước đây phải mở
+  terminal. **⧉ Clone repo…** (nút cạnh đường dẫn project, dùng được cả khi project chưa có repo
+  nào) `git clone` về **thư mục gốc của project đang chọn**, nên repo mới tự xuất hiện trong danh
+  sách repo và được chọn luôn sau khi xong; tên thư mục tự suy ra từ URL (bỏ đuôi `.git`) nhưng sửa
+  được, có ô branch tùy chọn (`--branch`, trống = mặc định của remote), cảnh báo ngay khi tên đã
+  tồn tại trong project, và không đóng được modal khi đang clone (repo lớn mất vài phút).
+  **⟲ Bỏ tất cả** (header khối "Thay đổi", chỉ hiện khi có thay đổi) = `git reset --hard` +
+  `git clean -fd`: hủy rebase dở dang trước (nếu không `reset --hard` để repo kẹt giữa rebase),
+  đưa index + working tree về HEAD (cả phần đã stage), xóa file/thư mục chưa theo dõi, nhưng
+  **giữ nguyên file trong .gitignore** (`node_modules`, `.env`, build) vì `clean` chạy không có
+  `-x`; repo chưa có commit nào (không có HEAD) thì làm rỗng index rồi clean. Confirm liệt kê rõ
+  từng nhóm sẽ mất và báo lại số liệu thật ("2 file về HEAD, xóa 2 file mới"). **An toàn**: URL chỉ
+  nhận `https://` · `ssh://` · `git://` · `git@host:group/repo.git` (chặn `ext::` — transport chạy
+  lệnh tùy ý — và URL mở đầu bằng `-`), tên thư mục bắt buộc là **một** đoạn đường dẫn nên clone
+  không thể ra ngoài root project, đường dẫn đích dựng ở server chứ không lấy từ client,
+  `GIT_TERMINAL_PROMPT=0` để repo private thiếu credential **lỗi ngay** thay vì treo chờ nhập mật
+  khẩu ẩn, timeout riêng 10 phút cho clone. (`lib/gitCore.ts` · `lib/git.ts` ·
+  `app/api/git/route.ts` · `components/GitWorkspace.tsx`.)
+
 - **Tab 🤖 Automation — một engine cấu hình được cho cả tin nhắn lẫn hạ tầng (không hardcode).**
   Mọi nguồn được chuẩn hoá về **một** kiểu sự kiện rồi chạy qua đúng một pipeline
   `nguồn → trigger → phạm vi → khung giờ → điều kiện → giới hạn → hành động`, nên quy tắc viết cho
@@ -195,6 +238,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `app/api/api-integrations/`, `app/api/api-catalog/`, `app/api/curl/`, `app/api/agent-token/`,
   `components/ApiExplorerWorkspace.tsx`, `components/{EndpointForm,FlowRunner,ResponseView}.tsx`,
   `app/page.tsx`, `app/globals.css`, `.gitignore`.)
+
+### Fixed
+
+- **Bấm link trong tin nhắn Zalo vẫn báo "Có lỗi xảy ra khi mở popup mới" — vì cửa sổ ẩn bị huỷ
+  quá sớm.** Lần sửa trước chỉ kiểm `w !== null` nên tưởng đã xong, nhưng phép dò popup chuẩn của
+  web là `if (!w || w.closed || typeof w.closed === 'undefined')` và **Zalo kiểm lại sau một nhịp**
+  — lúc đó cửa sổ ẩn đã `destroy()` nên `w.closed === true`, và toast vẫn hiện dù link mở đúng.
+  Giờ cửa sổ ẩn được `stop()` (không tải gì) rồi mới huỷ sau `POPUP_STUB_TTL_MS` = 10s. Đo bằng
+  harness Electron dựng đúng phép kiểm trên: huỷ ngay → sync OK / **async BLOCKED (closed=true)**;
+  giữ rồi huỷ → sync OK / **async OK (closed=false)**; và URL của cửa sổ ẩn rỗng suốt, tức link
+  thật không bị request lần hai. (`electron/main.cjs`.)
+
+- **Bỏ hẳn việc đẩy link của tab Workspace đi nơi khác — Zalo/Telegram ở lại trong cửa sổ của nó.**
+  Gỡ cả hộp thoại "Mở liên kết ở đâu?" (3 lựa chọn Links / Browser / trình duyệt ngoài) lẫn lớp
+  chặn điều hướng `will-navigate`/`will-redirect` đã đẩy link ra browser ngoài. Cả hai đều **hiểu
+  sai vấn đề**: chúng bắt luôn cả điều hướng của chính app, nên **quét QR xong Zalo bị chặn lại và
+  hỏi mở ở đâu** thay vì hiện giao diện chat. Workspace là một app đóng trong app — quét QR, đăng
+  nhập, đổi subdomain, bấm link trong tin nhắn đều phải diễn ra **ngay trong cửa sổ đó**; DevBox
+  không chặn, không hỏi, không đẩy URL đi đâu. `window.open` của workspace giờ điều hướng thẳng
+  trong chính webview đó (về chat bằng nút ← trên thanh công cụ). Các webview khác (tab Links, tab Browser, viewer Google) **không đổi**
+  hành vi: popup vẫn ra trình duyệt thật. Kèm một lỗi lặng: cờ "guest này có phải workspace không"
+  từng chốt theo biến tạm của `will-attach-webview` — event đó rời khỏi `did-attach-webview` nên
+  nhiều `<webview>` mount cùng một nhịp render là thứ tự xen vào nhau và luật áp sai guest; giờ đọc
+  bằng **danh tính session** (`session.fromPartition(p) === guest.session`) nên không thể lẫn.
+  Xoá `components/OpenLinkDialog.tsx`, `lib/openTarget.ts` và IPC `workspace:openRequest` (giữ
+  `workspace:openExternal` — nút ↗ tab Google và panel lỗi mail đang dùng).
+  (`electron/{main,preload}.cjs`, `app/page.tsx`, `app/globals.css`,
+  `components/{LinksWorkspace,BrowserTabWorkspace}.tsx`, `lib/workspace/types.ts`.)
+
+- **Cửa sổ xin quyền Google: không cuộn được xuống nút Continue.** Trang consent cao hơn khung mà
+  cuộn bằng chuột trong `<webview>` lồng trong modal không đáng tin (hit-testing của Electron lệch
+  khi có compositing ancestor), lại thêm `html/body` của trang consent bị Google khóa
+  `overflow:hidden` — cuộn thật nằm ở một div bên trong nên cả `window.scrollBy` cũng vô dụng.
+  Sửa theo hướng **không phụ thuộc cuộn**: (1) sau mỗi lần tải, đo phần thiếu rồi **tự thu nhỏ
+  guest** (`setZoomFactor`, sàn 60%) đến khi trọn trang vừa khung → nút Continue hiện ra mà không
+  cần cuộn; (2) header có nút **↓ / ⤓ / − / ＋** cuộn và zoom guest qua `executeJavaScript` — chạy
+  trong chính guest, tự tìm div cuộn thật nên không dính hit-testing; (3) wheel rơi vào host được
+  chuyển tiếp xuống guest (guest ăn được wheel thì handler này không chạy → không cuộn đôi).
+  Kèm hai bẫy cũ: bỏ `min-height:560px` của modal (cửa sổ app thấp là modal tràn 2 đầu, backdrop
+  căn giữa nên phần cắt ở đáy — đúng chỗ nút Continue — không lấy lại được), và overlay "đang tải"
+  giờ `pointer-events:none` + tự tắt sau 12s để nó không ngồi che chặn chuột nếu `did-stop-loading`
+  không bao giờ nổ. (`components/GoogleAuthWindow.tsx`, `lib/workspace/types.ts`, `app/globals.css`.)
 
 ### Changed
 

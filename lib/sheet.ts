@@ -26,6 +26,82 @@ export interface WireStyle {
 /** Vùng merge (1-based, inclusive). */
 export interface WireMerge { r1: number; c1: number; r2: number; c2: number }
 
+// ── Định dạng (format) — patch áp cho một VÙNG ô ────────────────────────────
+
+/** Preset kẻ viền cho vùng chọn — như nhóm nút Borders của Excel. */
+export type BorderPreset = 'all' | 'outer' | 'none' | 'top' | 'bottom' | 'left' | 'right';
+
+/**
+ * Thay đổi định dạng áp cho một vùng ô. Ngữ nghĩa mỗi field:
+ *   · undefined = GIỮ nguyên thuộc tính đang có của ô
+ *   · null      = XÓA thuộc tính (về mặc định Excel)
+ *   · giá trị   = đặt thuộc tính
+ * Nhờ vậy "in đậm vùng này" không xoá màu/cỡ chữ sẵn có của từng ô.
+ */
+export interface StylePatch {
+  b?: 1 | null; i?: 1 | null; u?: 1 | null; st?: 1 | null;
+  fc?: string | null; bg?: string | null;
+  fs?: number | null; ff?: string | null;
+  ha?: 'l' | 'c' | 'r' | 'j' | null;
+  va?: 't' | 'm' | 'b' | null;
+  wr?: 1 | null;
+  nf?: string | null;
+  /** Kẻ viền — quy ra 4 cạnh theo vị trí từng ô TRONG vùng (xem borderEdges). */
+  bd?: BorderPreset;
+  /** Xóa TOÀN BỘ định dạng của ô (thắng mọi field khác). */
+  clear?: 1;
+}
+
+/** Viền mảnh chuẩn (CSS) — client vẽ chuỗi này, server ghi thin/#9ca3af. */
+export const BORDER_THIN = '1px solid #9ca3af';
+
+/** Ô đang nằm ở cạnh nào của vùng đang áp preset. */
+export interface CellEdge { t: boolean; r: boolean; b: boolean; l: boolean }
+
+/** preset + vị trí ô trong vùng → cạnh nào VẼ (string) / XÓA (null) / GIỮ (thiếu). */
+export function borderEdges(
+  preset: BorderPreset,
+  e: CellEdge,
+): { bt?: string | null; br?: string | null; bb?: string | null; bl?: string | null } {
+  const B = BORDER_THIN;
+  switch (preset) {
+    case 'none': return { bt: null, br: null, bb: null, bl: null };
+    case 'all': return { bt: B, br: B, bb: B, bl: B };
+    case 'outer': return {
+      ...(e.t ? { bt: B } : {}), ...(e.r ? { br: B } : {}),
+      ...(e.b ? { bb: B } : {}), ...(e.l ? { bl: B } : {}),
+    };
+    case 'top': return e.t ? { bt: B } : {};
+    case 'bottom': return e.b ? { bb: B } : {};
+    case 'left': return e.l ? { bl: B } : {};
+    case 'right': return e.r ? { br: B } : {};
+    default: return {};
+  }
+}
+
+/** Áp patch lên style hiện có của MỘT ô → style mới (undefined = ô trắng trơn). */
+export function applyStylePatch(
+  base: WireStyle | undefined,
+  p: StylePatch,
+  edge: CellEdge,
+): WireStyle | undefined {
+  if (p.clear) return undefined;
+  const w: WireStyle = { ...(base ?? {}) };
+  const set = <K extends keyof WireStyle>(k: K, v: WireStyle[K] | null | undefined) => {
+    if (v === undefined) return;
+    if (v === null) delete w[k];
+    else w[k] = v;
+  };
+  set('b', p.b); set('i', p.i); set('u', p.u); set('st', p.st);
+  set('fc', p.fc); set('bg', p.bg); set('fs', p.fs); set('ff', p.ff);
+  set('ha', p.ha); set('va', p.va); set('wr', p.wr); set('nf', p.nf);
+  if (p.bd) {
+    const e = borderEdges(p.bd, edge);
+    set('bt', e.bt); set('br', e.br); set('bb', e.bb); set('bl', e.bl);
+  }
+  return Object.keys(w).length > 0 ? w : undefined;
+}
+
 export interface WireCell {
   /** Display text ('' = empty cell) — ĐÃ áp numFmt (1234.5 → "1,234.50"). */
   v: string;
@@ -82,7 +158,11 @@ export type SheetOp =
   | { op: 'insertRow'; r: number }
   | { op: 'deleteRow'; r: number }
   | { op: 'insertCol'; c: number }
-  | { op: 'deleteCol'; c: number };
+  | { op: 'deleteCol'; c: number }
+  /** Định dạng một vùng (font/màu/nền/căn lề/viền/numFmt) — chỉ .xlsx. */
+  | { op: 'style'; r1: number; c1: number; r2: number; c2: number; st: StylePatch }
+  | { op: 'merge'; r1: number; c1: number; r2: number; c2: number }
+  | { op: 'unmerge'; r1: number; c1: number; r2: number; c2: number };
 
 export interface SheetSaveResult {
   backupPath: string;

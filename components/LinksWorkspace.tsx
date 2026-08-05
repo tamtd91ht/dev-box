@@ -13,7 +13,6 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { lList, lAdd, lUpdate, lRemove, partitionFor, type SavedLink, type SavedLinkMeta } from '@/lib/links';
-import { onOpenUrl } from '@/lib/openTarget';
 import { fmtRel } from '@/lib/google';
 import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
@@ -114,12 +113,6 @@ export default function LinksWorkspace() {
     setTabs((cur) => (cur.some((t) => t.id === id) ? cur : [...cur, { id, name, url: target, partition, meta }]));
     setActiveTab(id);
   }, []);
-
-  // Link bấm từ workspace (Zalo/Telegram…) đã chọn "Mở trong tab Links".
-  // Không profile: link lạ chưa thuộc nhóm đăng nhập nào → phiên chung.
-  // OpenLinkDialog phát event hai lần (lo tab vừa mount chưa kịp nghe) nên
-  // openInApp phải chịu được gọi trùng — nó dùng lại tab cùng id nên đã an toàn.
-  useEffect(() => onOpenUrl('links', (u) => openInApp(nameFor(u), u)), [openInApp]);
 
   /** Đóng một tab; đang đóng tab nổi thì chuyển sang tab kề. */
   const closeTab = useCallback((id: string) => {

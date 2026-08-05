@@ -23,7 +23,9 @@ import {
   unstage,
   discard,
   discardStaged,
+  discardAll,
   clean,
+  cloneRepo,
   commit,
   checkout,
   pull,
@@ -47,6 +49,19 @@ async function resolveRoot(projectId: unknown): Promise<string | undefined> {
     return project.root;
   }
   return undefined;
+}
+
+/**
+ * Same as resolveRoot, but for actions that MUST know the folder they write into
+ * (clone). With no projectId, fall back to the first effective project root —
+ * which is the legacy/auto default when nothing is configured.
+ */
+async function resolveRootRequired(projectId: unknown): Promise<string> {
+  const root = await resolveRoot(projectId);
+  if (root) return root;
+  const roots = await allowedRoots();
+  if (!roots.length) throw new Error('chưa cấu hình project nào để clone vào');
+  return roots[0];
 }
 
 function disabled() {
@@ -87,6 +102,14 @@ export async function POST(req: NextRequest) {
     if (action === 'pull-all') {
       const root = await resolveRoot(body.projectId);
       return NextResponse.json({ results: await pullAll(root) });
+    }
+    if (action === 'clone') {
+      // Clones into a NEW folder under the project's root — the target path is
+      // built server-side from the validated single-segment name, never taken
+      // from the client, so the clone can't land outside the project.
+      const root = await resolveRootRequired(body.projectId);
+      const result = await cloneRepo(root, body.url, body.name, body.branch);
+      return NextResponse.json(result);
     }
 
     // All remaining actions require an authorized repo path — allowed against the
@@ -131,6 +154,12 @@ export async function POST(req: NextRequest) {
       case 'clean':
         await clean(repo, asFiles(body.files));
         return NextResponse.json(await status(repo));
+
+      case 'discard-all': {
+        // Wipe every local change in this repo (reset --hard + clean -fd).
+        const result = await discardAll(repo);
+        return NextResponse.json({ ...result, status: await status(repo) });
+      }
 
       case 'commit': {
         const out = await commit(repo, String(body.message ?? ''));

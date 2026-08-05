@@ -186,6 +186,20 @@ function generalText(v: number): string {
 }
 
 /**
+ * Tăng/giảm số chữ số thập phân của một pattern (nút "Thêm/bớt số thập phân").
+ * Trả null khi pattern không phải dạng số đơn giản (ngày, text, nhiều section)
+ * — lúc đó nút bị vô hiệu hóa thay vì phá pattern của người dùng.
+ */
+export function adjustDecimals(fmt: string | undefined, delta: number): string | null {
+  const base = !fmt || /^general$/i.test(fmt.trim()) ? '#,##0' : fmt;
+  if (base.includes(';') || base.includes('@') || isDateFmt(base)) return null;
+  const m = base.match(/([#0?]+(?:,[#0?]{3})*)(\.([0#?]*))?/);
+  if (!m) return null;
+  const next = Math.max(0, Math.min(9, (m[3]?.length ?? 0) + delta));
+  return base.replace(m[0], m[1] + (next > 0 ? `.${'0'.repeat(next)}` : ''));
+}
+
+/**
  * Format một giá trị theo numFmt Excel. `value` là number (kể cả serial ngày),
  * Date, hay string (đi vào section text '@'). Trả text + màu (nếu section có).
  */

@@ -7,7 +7,8 @@
 //   3. Paths are path.resolve()'d, extension-whitelisted (.xlsx/.csv — .xlsm is
 //      refused because ExcelJS drops VBA), stat'ed as a real file, size-capped.
 //   4. Save is READ-MODIFY-WRITE with an op log: the file is re-read fresh and
-//      the client's ops (set cell / insert row / delete row) are replayed in
+//      the client's ops (set cell / insert-delete row-col / định dạng vùng /
+//      trộn-bỏ trộn ô) are replayed in
 //      order. Untouched cells keep styles/widths/merges/formulas — sending the
 //      whole grid back instead would flatten every formula to its value.
 //      Known ExcelJS limits: charts/pivots/slicers may not round-trip.
@@ -19,7 +20,8 @@
 import { promises as fs } from 'fs';
 import ExcelJS from 'exceljs';
 import Papa from 'papaparse';
-import type { CellType, SheetOp, SheetOpenResult, SheetSaveResult, WireCell, WireMerge, WireSheet, WireStyle } from './sheet';
+import type { BorderPreset, CellType, SheetOp, SheetOpenResult, SheetSaveResult, StylePatch, WireCell, WireMerge, WireSheet, WireStyle } from './sheet';
+import { borderEdges } from './sheet';
 import { formatNumFmt, isDateFmt } from './numFmt';
 import { OFFICE_ALLOW_WRITE } from './officeFlags';
 import {
@@ -472,10 +474,145 @@ function parseInput(s: string): string | number | boolean | null | { formula: st
   return s;
 }
 
+// ── Style ops: validate + áp lên ExcelJS ────────────────────────────────────
+
+const MAX_STYLE_CELLS = 200_000; // trần một op định dạng (chống vùng khổng lồ)
+
+const HEX = /^#[0-9a-fA-F]{6}$/;
+const BORDER_PRESETS: BorderPreset[] = ['all', 'outer', 'none', 'top', 'bottom', 'left', 'right'];
+
+/** Vùng 1-based inclusive từ payload thô. */
+function sanitizeRange(op: Record<string, unknown>): { r1: number; c1: number; r2: number; c2: number } {
+  const [r1, c1, r2, c2] = (['r1', 'c1', 'r2', 'c2'] as const).map((k) => Number(op[k]));
+  const ok = [r1, c1, r2, c2].every((n) => Number.isInteger(n) && n >= 1);
+  if (!ok || r1 > r2 || c1 > c2 || r2 > 1_048_576 || c2 > 16_384) {
+    throw new Error(`op ${String(op.op)} có vùng không hợp lệ: ${r1},${c1},${r2},${c2}`);
+  }
+  if ((r2 - r1 + 1) * (c2 - c1 + 1) > MAX_STYLE_CELLS) {
+    throw new Error(`Vùng quá lớn (> ${MAX_STYLE_CELLS.toLocaleString('vi')} ô) cho một thao tác định dạng.`);
+  }
+  return { r1, c1, r2, c2 };
+}
+
+/** Chỉ nhận đúng các field/kiểu đã khai trong StylePatch (null = xóa). */
+function sanitizePatch(raw: unknown): StylePatch {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const out: StylePatch = {};
+  if (o.clear) return { clear: 1 };
+  for (const k of ['b', 'i', 'u', 'st', 'wr'] as const) {
+    if (o[k] === null) out[k] = null;
+    else if (o[k] !== undefined) out[k] = 1;
+  }
+  for (const k of ['fc', 'bg'] as const) {
+    if (o[k] === null) out[k] = null;
+    else if (typeof o[k] === 'string') {
+      if (!HEX.test(o[k] as string)) throw new Error(`Màu không hợp lệ: ${String(o[k])}`);
+      out[k] = (o[k] as string).toLowerCase();
+    }
+  }
+  if (o.fs === null) out.fs = null;
+  else if (o.fs !== undefined) {
+    const n = Number(o.fs);
+    if (!Number.isFinite(n) || n < 1 || n > 409) throw new Error(`Cỡ chữ không hợp lệ: ${String(o.fs)}`);
+    out.fs = Math.round(n * 2) / 2; // Excel cho phép nửa point
+  }
+  if (o.ff === null) out.ff = null;
+  else if (typeof o.ff === 'string' && o.ff.trim()) out.ff = o.ff.trim().slice(0, 64);
+  if (o.ha === null) out.ha = null;
+  else if (typeof o.ha === 'string' && 'lcrj'.includes(o.ha)) out.ha = o.ha as StylePatch['ha'];
+  if (o.va === null) out.va = null;
+  else if (typeof o.va === 'string' && 'tmb'.includes(o.va)) out.va = o.va as StylePatch['va'];
+  if (o.nf === null) out.nf = null;
+  else if (typeof o.nf === 'string' && o.nf.trim()) out.nf = o.nf.slice(0, 200);
+  if (typeof o.bd === 'string' && BORDER_PRESETS.includes(o.bd as BorderPreset)) out.bd = o.bd as BorderPreset;
+  return out;
+}
+
+/** '#rrggbb' → 'FFRRGGBB' (ARGB của xlsx). */
+function toArgb(css: string): string {
+  return `FF${css.slice(1).toUpperCase()}`;
+}
+
+const H_ALIGN_X = { l: 'left', c: 'center', r: 'right', j: 'justify' } as const;
+const V_ALIGN_X = { t: 'top', m: 'middle', b: 'bottom' } as const;
+/** Viền mảnh xám — khớp BORDER_THIN mà client vẽ. */
+const BORDER_XL = { style: 'thin', color: { argb: 'FF9CA3AF' } } as const;
+
+/**
+ * Áp một op định dạng lên vùng ô.
+ *
+ * QUAN TRỌNG: ExcelJS chia sẻ CHUNG object style (và cả font/fill/border bên
+ * trong) giữa mọi ô có cùng xf khi đọc file — mutate tại chỗ (cell.font.bold =
+ * true) sẽ đổi luôn định dạng của các ô khác. Nên ở đây luôn clone rồi GÁN LẠI
+ * cell.style bằng object mới.
+ */
+function applyStyleOp(ws: ExcelJS.Worksheet, op: Extract<SheetOp, { op: 'style' }>): void {
+  const p = op.st;
+  for (let r = op.r1; r <= op.r2; r++) {
+    const row = ws.getRow(r);
+    for (let c = op.c1; c <= op.c2; c++) {
+      const cell = row.getCell(c);
+      if (p.clear) {
+        cell.style = {} as ExcelJS.Style;
+        continue;
+      }
+      const cur = (cell.style ?? {}) as Partial<ExcelJS.Style>;
+      const next: Partial<ExcelJS.Style> = { ...cur };
+
+      if (p.b !== undefined || p.i !== undefined || p.u !== undefined || p.st !== undefined
+        || p.fc !== undefined || p.fs !== undefined || p.ff !== undefined) {
+        const f: Record<string, unknown> = { ...(cur.font ?? {}) };
+        const flag = (key: string, v: 1 | null | undefined) => {
+          if (v === undefined) return;
+          if (v === null) delete f[key]; else f[key] = true;
+        };
+        flag('bold', p.b); flag('italic', p.i); flag('underline', p.u); flag('strike', p.st);
+        if (p.fc !== undefined) { if (p.fc === null) delete f.color; else f.color = { argb: toArgb(p.fc) }; }
+        if (p.fs !== undefined) { if (p.fs === null) delete f.size; else f.size = p.fs; }
+        if (p.ff !== undefined) { if (p.ff === null) delete f.name; else f.name = p.ff; }
+        // Typings của ExcelJS đòi Font/Alignment/Borders đủ field, runtime nhận
+        // partial (chỉ những gì có mặt được ghi ra xlsx).
+        if (Object.keys(f).length > 0) next.font = f as unknown as ExcelJS.Font; else delete next.font;
+      }
+
+      if (p.bg !== undefined) {
+        if (p.bg === null) delete next.fill;
+        else next.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: toArgb(p.bg) } } as ExcelJS.Fill;
+      }
+
+      if (p.ha !== undefined || p.va !== undefined || p.wr !== undefined) {
+        const a: Record<string, unknown> = { ...(cur.alignment ?? {}) };
+        if (p.ha !== undefined) { if (p.ha === null) delete a.horizontal; else a.horizontal = H_ALIGN_X[p.ha]; }
+        if (p.va !== undefined) { if (p.va === null) delete a.vertical; else a.vertical = V_ALIGN_X[p.va]; }
+        if (p.wr !== undefined) { if (p.wr === null) delete a.wrapText; else a.wrapText = true; }
+        if (Object.keys(a).length > 0) next.alignment = a as unknown as ExcelJS.Alignment; else delete next.alignment;
+      }
+
+      if (p.bd) {
+        const e = borderEdges(p.bd, { t: r === op.r1, b: r === op.r2, l: c === op.c1, r: c === op.c2 });
+        const bd: Record<string, unknown> = { ...(cur.border ?? {}) };
+        const side = (key: 'top' | 'right' | 'bottom' | 'left', v: string | null | undefined) => {
+          if (v === undefined) return;
+          if (v === null) delete bd[key]; else bd[key] = { ...BORDER_XL };
+        };
+        side('top', e.bt); side('right', e.br); side('bottom', e.bb); side('left', e.bl);
+        if (Object.keys(bd).length > 0) next.border = bd as unknown as ExcelJS.Borders; else delete next.border;
+      }
+
+      if (p.nf !== undefined) next.numFmt = p.nf === null ? 'General' : p.nf;
+
+      cell.style = next as ExcelJS.Style;
+    }
+  }
+}
+
 function sanitizeOps(raw: unknown): SheetOp[] {
   if (!Array.isArray(raw)) throw new Error('ops phải là mảng.');
   return raw.map((o): SheetOp => {
     const op = (o ?? {}) as Record<string, unknown>;
+    // Ops theo VÙNG (định dạng / trộn ô) — validate riêng.
+    if (op.op === 'style') return { op: 'style', ...sanitizeRange(op), st: sanitizePatch(op.st) };
+    if (op.op === 'merge' || op.op === 'unmerge') return { op: op.op, ...sanitizeRange(op) };
     // Col ops không có r — validate riêng từng nhánh.
     if (op.op === 'insertCol' || op.op === 'deleteCol') {
       const c = Number(op.c);
@@ -533,11 +670,12 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
         for (const row of doc.grid) {
           if (row.length >= op.c) row.splice(op.c - 1, 0, '');
         }
-      } else {
+      } else if (op.op === 'deleteCol') {
         for (const row of doc.grid) {
           if (row.length >= op.c) row.splice(op.c - 1, 1);
         }
       }
+      // style/merge/unmerge: CSV không có định dạng — bỏ qua (UI cũng ẩn).
     }
     outBuf = encodeCsv(doc);
   } else {
@@ -559,8 +697,17 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
         } else if (op.op === 'insertCol') {
           // Same caveat as row ops: formulas/merges are not shifted (ExcelJS).
           ws.spliceColumns(op.c, 0, []);
-        } else {
+        } else if (op.op === 'deleteCol') {
           ws.spliceColumns(op.c, 1);
+        } else if (op.op === 'style') {
+          applyStyleOp(ws, op);
+        } else if (op.op === 'merge') {
+          // ExcelJS throws khi vùng chồng lên merge cũ → bỏ trộn trước cho chắc.
+          // Ô không phải trên-trái mất nội dung (đúng như Excel làm khi trộn).
+          ws.unMergeCells(op.r1, op.c1, op.r2, op.c2);
+          ws.mergeCells(op.r1, op.c1, op.r2, op.c2);
+        } else if (op.op === 'unmerge') {
+          ws.unMergeCells(op.r1, op.c1, op.r2, op.c2);
         }
       }
     }
@@ -573,12 +720,10 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
   const backupPath = await atomicBackupWrite(t.abs, outBuf);
 
   const counts = sheetOps.map((s) => {
-    const set = s.ops.filter((o) => o.op === 'set').length;
-    const ins = s.ops.filter((o) => o.op === 'insertRow').length;
-    const del = s.ops.filter((o) => o.op === 'deleteRow').length;
-    const insC = s.ops.filter((o) => o.op === 'insertCol').length;
-    const delC = s.ops.filter((o) => o.op === 'deleteCol').length;
-    return `${s.name}(set=${set},insRow=${ins},delRow=${del},insCol=${insC},delCol=${delC})`;
+    const n = (k: SheetOp['op']) => s.ops.filter((o) => o.op === k).length;
+    return `${s.name}(set=${n('set')},insRow=${n('insertRow')},delRow=${n('deleteRow')}`
+      + `,insCol=${n('insertCol')},delCol=${n('deleteCol')}`
+      + `,style=${n('style')},merge=${n('merge')},unmerge=${n('unmerge')})`;
   }).join(' ');
   // Audit line → server stdout (same convention as PG_AUDIT / MONGO_AUDIT).
   // eslint-disable-next-line no-console

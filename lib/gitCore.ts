@@ -31,6 +31,8 @@ const GIT_ROOT = process.env.GIT_TOOL_ROOT
 
 const MAX_BUFFER = 16 * 1024 * 1024; // 16 MB — diffs can be large
 const GIT_TIMEOUT_MS = 30_000;
+/** Cloning pulls the whole history over the network — minutes, not seconds. */
+const CLONE_TIMEOUT_MS = 10 * 60_000;
 
 export interface RepoInfo {
   /** Absolute path to the repo working tree. */
@@ -39,20 +41,35 @@ export interface RepoInfo {
   name: string;
 }
 
+interface GitOpts {
+  /** Override the default 30 s timeout (clone needs much more). */
+  timeoutMs?: number;
+  /** Extra environment for this call only (merged over process.env). */
+  env?: Record<string, string>;
+  /** Resolve with stderr appended — git writes progress there (clone, fetch). */
+  withStderr?: boolean;
+}
+
 /** Run a git subcommand in `cwd`. Rejects with a trimmed stderr on non-zero exit. */
-function git(cwd: string, args: string[]): Promise<string> {
+function git(cwd: string, args: string[], opts: GitOpts = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       'git',
       args,
-      { cwd, maxBuffer: MAX_BUFFER, timeout: GIT_TIMEOUT_MS, windowsHide: true },
+      {
+        cwd,
+        maxBuffer: MAX_BUFFER,
+        timeout: opts.timeoutMs ?? GIT_TIMEOUT_MS,
+        windowsHide: true,
+        env: opts.env ? { ...process.env, ...opts.env } : process.env,
+      },
       (err, stdout, stderr) => {
         if (err) {
           const msg = (stderr || (err as Error).message || '').toString().trim();
           reject(new Error(msg || 'git command failed'));
           return;
         }
-        resolve(stdout.toString());
+        resolve(opts.withStderr ? stdout.toString() + stderr.toString() : stdout.toString());
       },
     );
   });
@@ -129,6 +146,133 @@ export async function authorizeRepo(requested: string, allowedRoots: string[] = 
   }
   if (!(await isGitRepo(resolved))) throw new Error('not a git repository');
   return resolved;
+}
+
+// ── Clone ─────────────────────────────────────────────────────────────────────
+
+export interface CloneResult {
+  /** Absolute path of the freshly cloned working tree. */
+  path: string;
+  /** Folder name it was cloned into (the new repo's display label). */
+  name: string;
+  /** git's own output — it reports the clone on stderr, so both streams are merged. */
+  output: string;
+}
+
+/**
+ * Remote URLs we accept: http(s)://, ssh://, git:// and the scp-style
+ * `git@host:group/repo.git`. A local path is deliberately NOT accepted — the only
+ * reason to clone in this tool is to bring a remote repo down, and allowing
+ * arbitrary local paths would turn the clone action into a file-read primitive.
+ */
+const REMOTE_URL_RE =
+  /^(?:https?:\/\/|ssh:\/\/|git:\/\/|[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:)[^\s]+$/;
+
+/** Validate a user-supplied clone URL. Throws with a human message when unusable. */
+export function validateCloneUrl(raw: unknown): string {
+  const url = typeof raw === 'string' ? raw.trim() : '';
+  if (!url) throw new Error('URL repo là bắt buộc');
+  // A leading dash would be parsed as a flag by git.
+  if (url.startsWith('-')) throw new Error('URL không hợp lệ');
+  // `ext::<command>` makes git run an arbitrary command as its transport.
+  if (/ext::/i.test(url)) throw new Error('transport ext:: không được phép');
+  if (!REMOTE_URL_RE.test(url)) {
+    throw new Error('URL phải là https://, ssh://, git:// hoặc git@host:group/repo.git');
+  }
+  return url;
+}
+
+/** Folder name a URL would clone into: last path segment minus a `.git` suffix. */
+export function defaultCloneName(url: string): string {
+  const trimmed = url.trim().replace(/[/\\]+$/, '');
+  const last = trimmed.split(/[/:]/).pop() ?? '';
+  return last.replace(/\.git$/i, '');
+}
+
+/**
+ * Validate the target folder name: a single path segment, so the clone can only
+ * ever land directly inside the project root (no traversal, no absolute path).
+ */
+export function validateCloneName(requested: unknown, url: string): string {
+  const explicit = typeof requested === 'string' ? requested.trim() : '';
+  const name = explicit || defaultCloneName(url);
+  if (!name) throw new Error('không suy ra được tên thư mục từ URL — hãy nhập tên');
+  if (name !== path.basename(name) || /[/\\]/.test(name) || name === '.' || name === '..') {
+    throw new Error('tên thư mục phải là một tên đơn (không chứa / hay \\)');
+  }
+  if (name.startsWith('-') || name.startsWith('.')) throw new Error('tên thư mục không hợp lệ');
+  return name;
+}
+
+/** Validate an optional branch to clone (`--branch`). Empty → clone the default. */
+function validateCloneBranch(raw: unknown): string {
+  const branch = typeof raw === 'string' ? raw.trim() : '';
+  if (!branch) return '';
+  if (branch.startsWith('-') || /[\s~^:?*[\]\\]/.test(branch)) throw new Error('tên branch không hợp lệ');
+  return branch;
+}
+
+/**
+ * Clone `url` into a NEW folder directly under `root` (a configured project root),
+ * so the result is auto-detected as one of that project's repos.
+ *
+ * Safety: the URL/name/branch are validated above and passed as separate argv
+ * elements after `--`; `protocol.ext.allow=never` blocks the ext:: transport even
+ * if a redirect tries to reach it; GIT_TERMINAL_PROMPT=0 makes a private repo
+ * without a stored credential fail fast instead of hanging on a hidden prompt.
+ */
+export async function cloneRepo(
+  root: string,
+  urlRaw: unknown,
+  nameRaw: unknown,
+  branchRaw?: unknown,
+): Promise<CloneResult> {
+  const url = validateCloneUrl(urlRaw);
+  const name = validateCloneName(nameRaw, url);
+  const branch = validateCloneBranch(branchRaw);
+
+  const rootAbs = path.resolve(root);
+  try {
+    const st = await fs.stat(rootAbs);
+    if (!st.isDirectory()) throw new Error('not a dir');
+  } catch {
+    throw new Error(`thư mục gốc của project không tồn tại: ${rootAbs}`);
+  }
+
+  const target = path.join(rootAbs, name);
+  try {
+    await fs.access(target);
+    throw new Error(`"${name}" đã tồn tại trong ${rootAbs} — chọn tên khác`);
+  } catch (e) {
+    // ENOENT is what we want; anything else (incl. the throw above) propagates.
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+  }
+
+  // No --progress: without a TTY that would return tens of KB of carriage-return
+  // spam. stderr still carries the useful lines ("Cloning into …", branch info).
+  const args = ['-c', 'protocol.ext.allow=never', 'clone'];
+  if (branch) args.push('--branch', branch);
+  args.push('--', url, target);
+
+  let output: string;
+  try {
+    output = await git(rootAbs, args, {
+      timeoutMs: CLONE_TIMEOUT_MS,
+      withStderr: true,
+      env: { GIT_TERMINAL_PROMPT: '0' },
+    });
+  } catch (e) {
+    const msg = (e as Error).message || 'clone failed';
+    if (/could not read Username|terminal prompts disabled|Authentication failed/i.test(msg)) {
+      throw new Error(
+        'clone thất bại: cần đăng nhập. Lưu credential trước (vd: clone tay một lần bằng git CLI) rồi thử lại.',
+      );
+    }
+    throw new Error(msg.split('\n').slice(0, 3).join('\n'));
+  }
+
+  if (!(await isGitRepo(target))) throw new Error('clone xong nhưng không phải git repo?');
+  return { path: target, name, output: output.trim() };
 }
 
 // ── Status ────────────────────────────────────────────────────────────────────
@@ -464,6 +608,73 @@ export async function discardStaged(repo: string, files: string[]): Promise<void
 export async function clean(repo: string, files: string[]): Promise<void> {
   if (!files.length) return;
   await git(repo, ['clean', '-f', '-d', '--', ...files]);
+}
+
+export interface DiscardAllResult {
+  /** Files brought back to HEAD (tracked — staged + unstaged, deleted included). */
+  reverted: number;
+  /** Untracked files/folders deleted from disk. */
+  removed: number;
+  /** True when an in-progress rebase was aborted as part of the reset. */
+  abortedRebase: boolean;
+}
+
+/** True when the repo has at least one commit (a fresh `git init` has no HEAD). */
+async function hasHead(repo: string): Promise<boolean> {
+  try {
+    await git(repo, ['rev-parse', '--verify', '--quiet', 'HEAD']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Throw away EVERY local change in the repo, in one shot — the SourceTree
+ * "Discard all" / `git reset --hard && git clean -fd`:
+ *   1. an in-progress rebase is aborted first (`reset --hard` alone would leave
+ *      the repo mid-rebase; a merge/`MERGE_HEAD` IS cleared by reset),
+ *   2. index + working tree go back to HEAD (staged and unstaged alike),
+ *   3. untracked files and newly created folders are deleted from disk.
+ *
+ * `clean` runs WITHOUT `-x`, so gitignored files (node_modules, .env, build
+ * output) are deliberately kept — only files git would otherwise report as
+ * untracked go away. Irreversible: nothing here is recoverable from git.
+ */
+export async function discardAll(repo: string): Promise<DiscardAllResult> {
+  const before = await status(repo);
+  const tracked = new Set(before.files.filter((f) => f.group !== 'untracked').map((f) => f.path));
+  const untracked = before.files.filter((f) => f.group === 'untracked').length;
+
+  // Abort a rebase in progress (its state dir lives in the real git dir, which
+  // may be elsewhere for worktrees — ask git for it instead of assuming .git).
+  let abortedRebase = false;
+  const gitDir = path.resolve(repo, (await git(repo, ['rev-parse', '--git-dir'])).trim());
+  for (const dir of ['rebase-merge', 'rebase-apply']) {
+    try {
+      await fs.access(path.join(gitDir, dir));
+    } catch {
+      continue;
+    }
+    try {
+      await git(repo, ['rebase', '--abort']);
+      abortedRebase = true;
+    } catch {
+      /* best effort — the reset below still cleans the tree */
+    }
+    break;
+  }
+
+  if (await hasHead(repo)) {
+    await git(repo, ['reset', '--hard', 'HEAD']);
+  } else {
+    // No commit yet → there is no HEAD to reset to. Empty the index so every
+    // added file becomes untracked, then let `clean` remove it.
+    await git(repo, ['read-tree', '--empty']);
+  }
+  await git(repo, ['clean', '-f', '-d']);
+
+  return { reverted: tracked.size, removed: untracked, abortedRebase };
 }
 
 export async function commit(repo: string, message: string): Promise<string> {
