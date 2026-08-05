@@ -3820,7 +3820,8 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* ── Browser tab (trình duyệt đa tab) ──────────────────────────────────── */
 /* Root flex full-height: KHÔNG dùng .panel (padding+border ăn chiều cao) — mọi
    khoảng trống dồn cho webview. Thanh điều khiển gọn 1 hàng; dấu trang gập. */
-.bt-root { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 6px; padding: 6px; }
+/* position: gốc toạ độ cho .bt-ctx (menu chuột phải trên dấu trang). */
+.bt-root { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 6px; padding: 6px; }
 /* Tràn viền: thoát khỏi pane, phủ kín cửa sổ — che luôn header/footer app. */
 .bt-root.bt-full {
   position: fixed; inset: 0; z-index: 100; background: var(--bg-1); padding: 6px;
@@ -3865,6 +3866,67 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .bt-menu button:hover { background: var(--glass-2); }
 .bt-menu-sep { height: 1px; background: var(--glass-brd); margin: 4px 2px; }
+
+/* Menu chuột phải trên dấu trang — đặt tại con trỏ trong .bt-root. z-index cao
+   hơn webview overlay để không bị khung trang che. */
+.bt-ctx {
+  position: absolute; z-index: 60; min-width: 210px;
+  display: flex; flex-direction: column; padding: 5px;
+  background: var(--bg-1); border: 1px solid var(--glass-brd); border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0,0,0,.45);
+}
+.bt-ctx-head {
+  font-size: 11px; color: var(--muted); padding: 4px 10px 6px;
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border-bottom: 1px solid var(--glass-brd); margin-bottom: 4px;
+}
+.bt-ctx button {
+  text-align: left; border: none; background: transparent; color: var(--text);
+  padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 13px;
+}
+.bt-ctx button:hover { background: var(--glass-2); }
+.bt-ctx button.danger:hover { background: color-mix(in srgb, var(--err, #d33) 26%, transparent); }
+
+/* ── Trình quản lý mật khẩu ────────────────────────────────────────────── */
+
+/* Thanh "Lưu mật khẩu?" trong viewer — nằm giữa toolbar và trang web. */
+.pw-offer {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; font-size: 12px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-1));
+  border-bottom: 1px solid var(--glass-brd);
+}
+.pw-offer-ico { font-size: 14px; }
+.pw-offer-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pw-offer-text code { font-size: 11px; padding: 1px 5px; border-radius: 5px; background: var(--glass-2); }
+.pw-offer-warn { color: var(--warn, #b80); font-style: normal; font-size: 11px; }
+.pw-offer-ok { background: color-mix(in srgb, var(--ok, #2a2) 14%, var(--bg-1)); }
+
+/* Khối "tài khoản site (cách cũ)" trong form lưu link — gập lại mặc định. */
+.glink-legacy-creds { border-top: 1px solid var(--glass-brd); padding-top: 6px; margin-top: 2px; }
+.glink-legacy-creds code { font-size: 11px; padding: 1px 4px; border-radius: 4px; background: var(--glass-2); }
+
+.pw-mgr { max-height: 88vh; display: flex; flex-direction: column; }
+.pw-list { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.pw-row {
+  display: grid; grid-template-columns: minmax(120px, 1.4fr) minmax(90px, 1fr) minmax(80px, 1fr) auto auto;
+  gap: 8px; align-items: center; padding: 6px 4px; font-size: 12px;
+  border-bottom: 1px solid var(--glass-brd);
+}
+.pw-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pw-site { font-weight: 600; }
+.pw-user { color: var(--muted); }
+.pw-secret code { font-size: 11px; }
+.pw-badges { display: flex; gap: 4px; align-items: center; flex-wrap: nowrap; }
+.pw-acts { display: flex; gap: 2px; justify-content: flex-end; }
+.pw-insecure {
+  font-size: 10px; padding: 0 5px; border-radius: 999px; margin-left: 4px;
+  background: color-mix(in srgb, var(--warn, #d90) 18%, transparent); color: var(--warn, #b80);
+}
+@media (max-width: 640px) {
+  .pw-row { grid-template-columns: 1fr auto; row-gap: 2px; }
+  .pw-badges, .pw-secret { grid-column: 1 / -1; }
+}
 
 /* Trang "new tab" (chưa có tab nào): căn giữa, ô nhập to, dấu trang lưới. */
 .bt-home { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px;

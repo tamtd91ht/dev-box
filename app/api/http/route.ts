@@ -20,9 +20,8 @@ export async function POST(req: NextRequest) {
   let url: URL;
   try { url = new URL(body.url); }
   catch { return NextResponse.json({ ok: false, error: `URL không hợp lệ: ${body.url}` }, { status: 400 }); }
-  if (!/^https?:$/.test(url.protocol)) {
-    return NextResponse.json({ ok: false, error: 'Chỉ hỗ trợ http/https.' }, { status: 400 });
-  }
+  // KHÔNG chặn theo protocol — URL nào parse được là gửi. Scheme lạ (ftp:, ws:…)
+  // sẽ do fetch tự ném lỗi, và lỗi đó trả về nguyên văn ở nhánh catch bên dưới.
 
   const method = (body.method || 'GET').toUpperCase();
   const headers = new Headers();

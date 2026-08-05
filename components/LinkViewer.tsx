@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WebviewElement } from '@/lib/workspace/types';
+import { pwMatch, pwSave, pwTouch, canEncrypt, type CredentialOpen } from '@/lib/passwords';
 
 // Nhiều trang (Google sign-in, một số SSO) chặn "embedded browser" bằng cách
 // sniff UA có token Electron/app-name — trình mình đúng là Chrome bên dưới.
@@ -37,14 +38,31 @@ interface Props {
   hidden?: boolean;
   /** Tài khoản site đã lưu theo link — nút 🔑 tự điền vào form login. */
   creds?: { username?: string; password?: string };
+  /** Bật trình quản lý mật khẩu kiểu Chrome cho khung này: tự điền mật khẩu đã
+   *  lưu theo ORIGIN khi trang load, và hỏi "Lưu mật khẩu?" khi submit form
+   *  login. Tab Browser bật; tab Links giữ nguyên hành vi cũ (creds theo link). */
+  passwordManager?: boolean;
+  /** Profile session của tab — phân biệt 2 tài khoản trên cùng một origin. */
+  profile?: string;
 }
 
-export default function LinkViewer({ name, url, partition, onClose, onSaveLink, hidden, creds }: Props) {
+/** Thanh "Lưu mật khẩu?" — user/pass vừa bắt được ở form submit. */
+interface SaveOffer { url: string; username: string; password: string; update: boolean }
+
+const hostOf = (u: string): string => { try { return new URL(u).host; } catch { return u; } };
+
+export default function LinkViewer({
+  name, url, partition, onClose, onSaveLink, hidden, creds, passwordManager, profile,
+}: Props) {
   const ref = useRef<WebviewElement | null>(null);
   const [status, setStatus] = useState<Status>('loading');
   const [failInfo, setFailInfo] = useState('');
   const [canBack, setCanBack] = useState(false);
   const [canForward, setCanForward] = useState(false);
+  const [offer, setOffer] = useState<SaveOffer | null>(null); // thanh "Lưu mật khẩu?"
+  const [savedNote, setSavedNote] = useState<string | null>(null);
+  /** Số mật khẩu đã lưu khớp trang đang xem — badge trên nút 🔑. */
+  const [matchCount, setMatchCount] = useState(0);
 
   useEffect(() => {
     const el = ref.current;
@@ -184,6 +202,217 @@ export default function LinkViewer({ name, url, partition, onClose, onSaveLink, 
     }
   }, [creds]);
 
+  // ── Trình quản lý mật khẩu kiểu Chrome ──────────────────────────────────
+  // Guest bị sandbox và preload bị xóa (wireWebviewHardening trong main.cjs)
+  // nên không cắm được script thường trú; ta executeJavaScript từ host:
+  //   · did-stop-loading → tìm form login, điền mật khẩu đã lưu theo origin
+  //   · cùng lúc gắn listener submit/click/Enter, ghi user/pass vừa gõ vào
+  //     window.__dbxPwd; host đọc ra rồi hỏi "Lưu mật khẩu?"
+  // KHÔNG tự submit — chỉ điền, đúng mặc định của Chrome.
+  //
+  // ĐIỂM CHẾT NGƯỜI: window.__dbxPwd nằm trong window của GUEST, mà điều hướng
+  // toàn trang (submit form cổ điển: gõ ở trang A → POST → sang trang B) XÓA
+  // SẠCH window đó. Nếu chỉ đọc ở did-stop-loading của trang B thì không bao giờ
+  // thấy gì — chỉ login kiểu SPA (không điều hướng) mới bắt được.
+  // Vì vậy đọc ở CẢ HAI mốc:
+  //   · did-start-loading — ngay khi bắt đầu điều hướng, window CŨ còn sống
+  //   · did-stop-loading  — cho SPA/login không điều hướng
+  // và giữ giá trị bắt được trong ref của host (pendingRef) để sống sót qua
+  // điều hướng, chỉ đem ra hỏi sau khi trang mới tải xong.
+
+  /** Đoạn JS tìm ô user/pass — dùng lại cho cả điền và bắt submit. */
+  const FIELD_JS = `
+    const vis = (el) => el && el.offsetParent !== null && !el.disabled && !el.readOnly;
+    const pwEl = () => [...document.querySelectorAll('input[type=password]')].find(vis);
+    const userEl = (pw) => {
+      const texts = [...document.querySelectorAll('input')].filter((i) =>
+        ['text','email','tel','','username'].includes((i.type||'').toLowerCase()) && vis(i));
+      const named = texts.find((i) => /user|email|login|account|phone|tel|name/i.test(
+        (i.name||'')+(i.id||'')+(i.placeholder||'')+(i.autocomplete||'')));
+      if (named) return named;
+      // Không có tên gợi ý → ô text NGAY TRƯỚC ô password trong DOM.
+      if (pw) { const all = [...document.querySelectorAll('input')]; const i = all.indexOf(pw);
+        for (let k = i - 1; k >= 0; k--) if (texts.includes(all[k])) return all[k]; }
+      return texts[0];
+    };`;
+
+  /** Điền user/pass vào form login trong guest.
+   *  force=true (bấm 🔑) ghi đè cả khi ô mật khẩu đang có chữ.
+   *  Trả 'ok' | 'kept' (đang có chữ, không đụng) | 'no-form'. */
+  const injectFill = useCallback(async (username: string, password: string, force = false) => {
+    const code = `(() => {
+      ${FIELD_JS}
+      const setVal = (el, v) => {
+        if (!el || v == null) return;
+        const d = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+        d.set.call(el, v);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const pw = pwEl();
+      if (!pw) return 'no-form';
+      // Người dùng đã tự gõ mật khẩu → KHÔNG ghi đè (autofill tự động không
+      // được đạp lên thứ đang gõ; bấm 🔑 thì force=true nên vẫn điền).
+      if (pw.value && !${JSON.stringify(Boolean(force))}) return 'kept';
+      setVal(userEl(pw), ${JSON.stringify(username)});
+      setVal(pw, ${JSON.stringify(password)});
+      return 'ok';
+    })()`;
+    try { return (await ref.current?.executeJavaScript(code, true)) as string; }
+    catch { return 'no-form'; }
+  }, [FIELD_JS]);
+
+  /** Gắn bẫy submit trong guest: lưu user/pass vừa gõ vào window.__dbxPwd để
+   *  host đọc ra. Idempotent — gọi lại sau mỗi lần điều hướng là vô hại. */
+  const armCapture = useCallback(async () => {
+    const code = `(() => {
+      if (window.__dbxPwdArmed) return 'already';
+      window.__dbxPwdArmed = true;
+      ${FIELD_JS}
+      const grab = () => {
+        const pw = pwEl();
+        if (!pw || !pw.value) return;
+        const u = userEl(pw);
+        window.__dbxPwd = {
+          username: (u && u.value) || '',
+          password: pw.value,
+          url: location.href,
+          at: Date.now(),
+        };
+      };
+      // capture:true để chạy TRƯỚC handler của trang (SPA thường preventDefault
+      // rồi xóa form ngay), và pointerdown để bắt cả nút không nằm trong <form>.
+      document.addEventListener('submit', grab, true);
+      document.addEventListener('pointerdown', (e) => {
+        const t = e.target instanceof Element ? e.target.closest('button,input[type=submit],a') : null;
+        if (t) grab();
+      }, true);
+      document.addEventListener('keydown', (e) => { if (e.key === 'Enter') grab(); }, true);
+      return 'armed';
+    })()`;
+    try { await ref.current?.executeJavaScript(code, true); } catch { /* guest chưa sẵn */ }
+  }, [FIELD_JS]);
+
+  /** Đọc user/pass guest vừa bắt được; xóa khỏi guest sau khi lấy. */
+  const readCaptured = useCallback(async (): Promise<{ username: string; password: string; url: string } | null> => {
+    const code = `(() => { const v = window.__dbxPwd; window.__dbxPwd = null; return v ? JSON.stringify(v) : null; })()`;
+    try {
+      const raw = (await ref.current?.executeJavaScript(code, true)) as string | null;
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }, []);
+
+  /** URL thật của guest (sau redirect SSO) — origin để tra mật khẩu. */
+  const currentUrl = useCallback(() => {
+    try { return ref.current?.getURL() || url; } catch { return url; }
+  }, [url]);
+
+  /** user/pass bắt được, chờ trang mới tải xong mới đem ra hỏi. Ref (không phải
+   *  state) để sống sót qua điều hướng mà không kéo theo re-render. */
+  const pendingRef = useRef<{ username: string; password: string; url: string } | null>(null);
+
+  useEffect(() => {
+    if (!passwordManager) return;
+    const el = ref.current;
+    if (!el) return;
+    let alive = true;
+
+    /** Hỏi lưu nếu cặp user/pass này chưa có trong store. */
+    const considerSave = async (got: { username: string; password: string; url: string }) => {
+      const known = await pwMatch(got.url, profile).catch(() => []);
+      if (!alive) return;
+      const same = known.find((k) => k.username === got.username);
+      // Đã lưu ĐÚNG cặp user+pass này → không hỏi lại (như Chrome).
+      if (same && same.password === got.password) return;
+      setOffer({ url: got.url, username: got.username, password: got.password, update: Boolean(same) });
+    };
+
+    // Điều hướng BẮT ĐẦU: window cũ còn sống, vét nốt thứ vừa gõ trước khi mất.
+    // Giữ vào pendingRef để nếu trang mới tải thật thì hỏi sau khi tải xong.
+    const onStart = () => {
+      void (async () => {
+        const got = await readCaptured();
+        if (got?.password) pendingRef.current = got;
+      })();
+    };
+
+    // Đổi URL trong-trang (SPA) KHÔNG kéo theo did-stop-loading, nên phải hỏi
+    // ngay tại đây — nếu không thứ bắt được sẽ nằm mãi trong pendingRef.
+    const onInPage = () => {
+      void (async () => {
+        const got = (await readCaptured()) ?? pendingRef.current;
+        pendingRef.current = null;
+        if (!alive || !got?.password) return;
+        await considerSave(got);
+      })();
+    };
+
+    const onStopped = () => {
+      void (async () => {
+        const here = currentUrl();
+        await armCapture();
+
+        // 1) Thứ bắt được ở trang trước (hoặc ngay trang này nếu login SPA).
+        const carried = pendingRef.current;
+        pendingRef.current = null;
+        const fresh = await readCaptured();
+        if (!alive) return;
+        const got = fresh?.password ? fresh : carried;
+        if (got?.password) await considerSave(got);
+        if (!alive) return;
+
+        // 2) Trang hiện tại có mật khẩu đã lưu → tự điền (KHÔNG submit).
+        const hits = await pwMatch(here, profile).catch(() => []);
+        if (!alive) return;
+        setMatchCount(hits.length);
+        const best: CredentialOpen | undefined = hits[0];
+        if (best) {
+          const r = await injectFill(best.username, best.password);
+          if (r === 'ok') void pwTouch(best.id);
+        }
+      })();
+    };
+
+    el.addEventListener('did-start-loading', onStart);
+    el.addEventListener('did-stop-loading', onStopped);
+    // Login SPA đổi URL mà không tải lại trang → cũng phải xét lưu.
+    el.addEventListener('did-navigate-in-page', onInPage);
+    return () => {
+      alive = false;
+      el.removeEventListener('did-start-loading', onStart);
+      el.removeEventListener('did-stop-loading', onStopped);
+      el.removeEventListener('did-navigate-in-page', onInPage);
+    };
+  }, [passwordManager, profile, currentUrl, armCapture, readCaptured, injectFill]);
+
+  /** Bấm 🔑: điền mật khẩu đã lưu theo origin (ưu tiên), fallback creds của link. */
+  const fillSaved = useCallback(async () => {
+    if (passwordManager) {
+      const hits = await pwMatch(currentUrl(), profile).catch(() => []);
+      if (hits.length > 0) {
+        const r = await injectFill(hits[0].username, hits[0].password, true);
+        if (r === 'no-form') window.alert('Không thấy ô password trên trang này — mở đúng trang login rồi bấm 🔑 lại.');
+        else void pwTouch(hits[0].id);
+        return;
+      }
+    }
+    await fillLogin();
+  }, [passwordManager, profile, currentUrl, injectFill, fillLogin]);
+
+  /** Chấp nhận thanh "Lưu mật khẩu?" */
+  const acceptOffer = useCallback(async () => {
+    if (!offer) return;
+    try {
+      await pwSave(offer.url, offer.username, offer.password, { profile });
+      setOffer(null);
+      setSavedNote(offer.update ? 'Đã cập nhật mật khẩu' : 'Đã lưu mật khẩu');
+      setMatchCount((n) => (offer.update ? n : n + 1));
+      setTimeout(() => setSavedNote(null), 3000);
+    } catch (e) {
+      window.alert('Không lưu được: ' + (e as Error).message);
+    }
+  }, [offer, profile]);
+
   const webviewAttrs: Record<string, string> = { allowpopups: 'true' };
   if (CHROME_UA) webviewAttrs.useragent = CHROME_UA;
 
@@ -216,8 +445,13 @@ export default function LinkViewer({ name, url, partition, onClose, onSaveLink, 
                 {saveState === 'done' ? '✓' : '💾'}
               </button>
             )}
-            {(creds?.username || creds?.password) && (
-              <button onClick={() => void fillLogin()} title="Điền username/password đã lưu vào form login">🔑</button>
+            {(creds?.username || creds?.password || (passwordManager && matchCount > 0)) && (
+              <button onClick={() => void fillSaved()}
+                title={matchCount > 0
+                  ? `Điền mật khẩu đã lưu cho trang này (${matchCount} tài khoản)`
+                  : 'Điền username/password đã lưu vào form login'}>
+                🔑{passwordManager && matchCount > 1 ? <sup>{matchCount}</sup> : null}
+              </button>
             )}
             <button
               onClick={() => { try { ref.current?.openDevTools(); } catch { /* guest chưa sẵn sàng */ } }}
@@ -230,6 +464,26 @@ export default function LinkViewer({ name, url, partition, onClose, onSaveLink, 
             <button onClick={onClose} title="Đóng (Esc)">✕</button>
           </div>
         </div>
+
+        {/* Thanh "Lưu mật khẩu?" — hiện khi bắt được form login vừa submit */}
+        {offer && (
+          <div className="pw-offer">
+            <span className="pw-offer-ico" aria-hidden>🔑</span>
+            <span className="pw-offer-text">
+              {offer.update ? 'Cập nhật mật khẩu đã lưu cho' : 'Lưu mật khẩu cho'}{' '}
+              <b>{hostOf(offer.url)}</b>
+              {offer.username && <> · <code>{offer.username}</code></>}
+              {!canEncrypt() && (
+                <em className="pw-offer-warn" title="Chỉ mã hóa được khi chạy app desktop (Electron safeStorage)">
+                  — lưu dạng plaintext
+                </em>
+              )}
+            </span>
+            <button className="sm" onClick={() => void acceptOffer()}>Lưu</button>
+            <button className="ghost sm" onClick={() => setOffer(null)}>Không</button>
+          </div>
+        )}
+        {savedNote && <div className="pw-offer pw-offer-ok">✓ {savedNote}</div>}
 
         <div className="ws-canvas">
           {/* partition MUST be an initial attribute — it cannot change after

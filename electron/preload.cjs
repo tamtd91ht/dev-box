@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('workspace', {
   clearSession: (partition) => ipcRenderer.invoke('workspace:clearSession', partition),
   /** Kéo focus về host page sau khi hủy <webview> (fix input "chết"). */
   focusHost: () => ipcRenderer.invoke('workspace:focusHost'),
+  /** Niêm phong/mở niêm phong mật khẩu đã lưu bằng safeStorage (DPAPI). Chỉ
+   *  main process có safeStorage, và Next server là process riêng nên không
+   *  dùng được — renderer là nơi duy nhất thấy plaintext.
+   *  → { ok: true, value } | { ok: false, error: 'unavailable' | ... } */
+  encryptSecret: (plain) => ipcRenderer.invoke('workspace:encryptSecret', plain),
+  decryptSecret: (b64) => ipcRenderer.invoke('workspace:decryptSecret', b64),
 });
 
 // In-app console: the shell + `next dev` log stream the main process buffers

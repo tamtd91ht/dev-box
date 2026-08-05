@@ -106,6 +106,12 @@ export interface WorkspaceBridge {
   /** Kéo focus về host page sau khi hủy <webview> giữ focus (fix input "chết").
    *  Optional: preload cũ (trước khi có handler này) chưa expose. */
   focusHost?(): Promise<{ ok: boolean; error?: string }>;
+  /** Niêm phong mật khẩu bằng safeStorage (DPAPI) trước khi ghi xuống đĩa.
+   *  error='unavailable' khi OS không hỗ trợ → caller lưu plaintext + cảnh báo.
+   *  Optional: preload cũ chưa expose. */
+  encryptSecret?(plain: string): Promise<{ ok: boolean; value?: string; error?: string }>;
+  /** Mở niêm phong để điền vào form login. Thất bại nếu file bị copy từ máy khác. */
+  decryptSecret?(b64: string): Promise<{ ok: boolean; value?: string; error?: string }>;
 }
 
 /** Minimal surface of an Electron <webview> element we actually drive. */

@@ -17,7 +17,7 @@
 // It knows NOTHING about Zalo specifically — plugins are declared in the
 // renderer (lib/workspace/plugins.ts). Nothing here is hardcoded per website.
 
-const { app, BrowserWindow, session, ipcMain, shell, Menu } = require('electron');
+const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -526,6 +526,34 @@ ipcMain.handle('workspace:focusHost', (evt) => {
     evt.sender.focus();
     return { ok: true };
   } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
+// ── Mật khẩu đã lưu: mã hóa at-rest bằng safeStorage (DPAPI trên Windows) ──
+// safeStorage CHỈ dùng được trong main process, và Next server là process riêng
+// (ELECTRON_RUN_AS_NODE) nên API route không với tới. Vì vậy renderer gọi hai
+// handler này để niêm phong/mở niêm phong, còn store (lib/passwordStore.ts) chỉ
+// giữ ciphertext — copy configs/passwords.json sang máy/user khác là vô dụng.
+ipcMain.handle('workspace:encryptSecret', (_evt, plain) => {
+  if (typeof plain !== 'string' || !plain) return { ok: false, error: 'empty' };
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'unavailable' };
+    return { ok: true, value: safeStorage.encryptString(plain).toString('base64') };
+  } catch (err) {
+    log('EncryptError', err && err.message);
+    return { ok: false, error: err && err.message };
+  }
+});
+
+ipcMain.handle('workspace:decryptSecret', (_evt, b64) => {
+  if (typeof b64 !== 'string' || !b64) return { ok: false, error: 'empty' };
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'unavailable' };
+    return { ok: true, value: safeStorage.decryptString(Buffer.from(b64, 'base64')) };
+  } catch (err) {
+    // Sai user Windows / file copy từ máy khác → không giải mã được.
+    log('DecryptError', err && err.message);
     return { ok: false, error: err && err.message };
   }
 });

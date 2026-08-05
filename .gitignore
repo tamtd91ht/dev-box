@@ -89,6 +89,8 @@ electron/dist/
 
 # Browser tab — bookmark + credentials — never commit
 .bookmarks.json
+# Browser tab — mat khau da luu (ma hoa safeStorage, van KHONG commit)
+.passwords.json
 
 # Backup thu cong cua configs/ — KHONG commit (chua secret)
 configs.*

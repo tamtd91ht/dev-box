@@ -9,11 +9,15 @@
 // Tách khỏi tab Links (Links = bookmark tài liệu có tổ chức, dự án/tags).
 // Viewer tái dùng LinkViewer (webview + fill login + save session).
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { bmList, bmAdd, bmUpdate, bmRemove, normalizeUrl, bmPartition, type Bookmark } from '@/lib/bookmarks';
 import LinkViewer from './LinkViewer';
+import PasswordManager from './PasswordManager';
 
 interface Tab { id: string; name: string; url: string; profile?: string; partition: string; creds?: { username?: string; password?: string } }
+
+/** Chuột phải trên một dấu trang → menu ngữ cảnh tại toạ độ con trỏ. */
+interface Ctx { x: number; y: number; bm: Bookmark }
 
 export default function BrowserTabWorkspace() {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
@@ -27,6 +31,12 @@ export default function BrowserTabWorkspace() {
   const [showMarks, setShowMarks] = useState(false); // dải dấu trang gập lại mặc định
   const [menuOpen, setMenuOpen] = useState(false); // menu ⋯ (lưu/dấu trang/tràn viền)
   const [newTabOpen, setNewTabOpen] = useState(false); // panel nhập URL khi đã có tab
+  const [ctx, setCtx] = useState<Ctx | null>(null); // menu chuột phải trên dấu trang
+  const [pwOpen, setPwOpen] = useState(false); // modal 🔑 Mật khẩu đã lưu
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  // Id các tab đang mở — đọc đồng bộ trong openTab để biết tab đã tồn tại chưa
+  // (state `tabs` trong closure có thể cũ khi mở liên tiếp nhiều tab).
+  const existedRef = useRef<Set<string>>(new Set());
 
   // Esc thoát tràn viền (chỉ host document; phím trong guest không bubble ra).
   useEffect(() => {
@@ -36,26 +46,46 @@ export default function BrowserTabWorkspace() {
     return () => window.removeEventListener('keydown', onKey);
   }, [full]);
 
+  // Click bất kỳ đâu (hoặc chuột phải chỗ khác) → đóng menu ngữ cảnh.
+  useEffect(() => {
+    if (!ctx) return;
+    const close = () => setCtx(null);
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close, true);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close, true);
+    };
+  }, [ctx]);
+
   const reload = useCallback(() => { bmList().then(setBookmarks).catch((e) => setErr((e as Error).message)); }, []);
   useEffect(() => { reload(); }, [reload]);
 
   const profiles = [...new Set(bookmarks.map((b) => b.profile).filter(Boolean) as string[])].sort();
 
-  /** Mở một URL thành tab (dùng lại tab nếu trùng url+profile). */
-  const openTab = useCallback((rawUrl: string, opts: { name?: string; profile?: string; creds?: Tab['creds'] } = {}) => {
+  /** Mở một URL thành tab (dùng lại tab nếu trùng url+profile).
+   *  background: thêm tab nhưng KHÔNG nhảy sang — như "mở trong tab mới" của
+   *  trình duyệt thật; tab đã mở sẵn thì vẫn chỉ kích hoạt lại (id = partition|url). */
+  const openTab = useCallback((rawUrl: string, opts: { name?: string; profile?: string; creds?: Tab['creds']; background?: boolean } = {}) => {
     const url = normalizeUrl(rawUrl);
     if (!url) return;
     if (typeof window === 'undefined' || !window.workspace?.isDesktop) { window.open(url, '_blank'); return; }
     const prof = (opts.profile ?? '').trim() || undefined;
     const partition = bmPartition(prof);
     const id = `${partition}|${url}`;
-    setTabs((cur) => cur.some((t) => t.id === id)
+    const existed = existedRef.current.has(id);
+    existedRef.current.add(id);
+    setTabs((cur) => (cur.some((t) => t.id === id)
       ? cur
-      : [...cur, { id, name: opts.name || hostOf(url), url, profile: prof, partition, creds: opts.creds }]);
-    setActiveId(id);
+      : [...cur, { id, name: opts.name || hostOf(url), url, profile: prof, partition, creds: opts.creds }]));
+    // Tab mới ở chế độ background: giữ nguyên tab đang xem. Nhưng nếu chưa có
+    // tab nào nổi, hoặc tab đó đã mở sẵn, thì đưa lên cho khỏi bấm mò.
+    if (!opts.background) setActiveId(id);
+    else setActiveId((a) => (a === null || existed ? id : a));
   }, []);
 
   const closeTab = useCallback((id: string) => {
+    existedRef.current.delete(id);
     setTabs((cur) => {
       const idx = cur.findIndex((t) => t.id === id);
       const next = cur.filter((t) => t.id !== id);
@@ -70,9 +100,19 @@ export default function BrowserTabWorkspace() {
     setAddr(''); setNewTabOpen(false);
   };
 
-  const openBookmark = (b: Bookmark) => {
-    openTab(b.url, { name: b.name, profile: b.profile, creds: { username: b.username, password: b.password } });
-    setNewTabOpen(false); setShowMarks(false);
+  /** Mở dấu trang. background = chuột phải → "Mở trong tab mới": thêm tab
+   *  nhưng giữ nguyên trang đang xem, và giữ dải dấu trang/panel mở để chọn tiếp. */
+  const openBookmark = (b: Bookmark, background = false) => {
+    openTab(b.url, {
+      name: b.name, profile: b.profile, background,
+      creds: { username: b.username, password: b.password },
+    });
+    if (!background) { setNewTabOpen(false); setShowMarks(false); }
+  };
+
+  const closeAllTabs = () => {
+    existedRef.current.clear();
+    setTabs([]); setActiveId(null);
   };
 
   const saveEdit = async () => {
@@ -94,19 +134,39 @@ export default function BrowserTabWorkspace() {
   // Panel nhập URL hiện khi: chưa có tab nào, HOẶC người dùng bấm ＋ (new tab).
   const showAddress = !hasTabs || newTabOpen;
 
+  /** Chuột phải trên một dấu trang → mở menu ngữ cảnh tại con trỏ (toạ độ quy
+   *  về gốc .bt-root vì menu position:absolute trong đó). */
+  const openCtx = (ev: React.MouseEvent, bm: Bookmark) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const host = rootRef.current?.getBoundingClientRect();
+    // Kẹp trong khung để menu không tràn ra ngoài khi bấm sát mép phải/dưới.
+    const MW = 220, MH = 260;
+    const x = Math.min(ev.clientX - (host?.left ?? 0), Math.max(0, (host?.width ?? MW) - MW));
+    const y = Math.min(ev.clientY - (host?.top ?? 0), Math.max(0, (host?.height ?? MH) - MH));
+    setCtx({ x, y, bm });
+  };
+
+  /** Một chip dấu trang — click mở tại chỗ, chuột phải ra menu (tab mới…). */
+  const markChip = (b: Bookmark) => (
+    <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${b.profile}` : ''} — chuột phải để mở trong tab mới`}
+      onContextMenu={(ev) => openCtx(ev, b)}>
+      <button className="bt-mark-go" onClick={() => openBookmark(b)}
+        onAuxClick={(ev) => { if (ev.button === 1) { ev.preventDefault(); openBookmark(b, true); } }}>
+        🔖 {b.name}{b.profile && <span className="bt-mark-prof">{b.profile}</span>}
+      </button>
+      <button className="bt-mark-act" onClick={() => setEdit(structuredClone(b))} title="Sửa">✎</button>
+      <button className="bt-mark-act" onClick={() => void removeBookmark(b)} title="Xóa">✕</button>
+    </span>
+  );
+
   /** Danh sách dấu trang chọn nhanh — dùng cho cả trang new-tab lẫn panel ＋. */
   const marksList = bookmarks.length > 0 && (
     <div className="bt-home-marks">
-      <div className="small" style={{ color: 'var(--muted)', width: '100%', marginBottom: 4 }}>Dấu trang</div>
-      {bookmarks.map((b) => (
-        <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${b.profile}` : ''}`}>
-          <button className="bt-mark-go" onClick={() => openBookmark(b)}>
-            🔖 {b.name}{b.profile && <span className="bt-mark-prof">{b.profile}</span>}
-          </button>
-          <button className="bt-mark-act" onClick={() => setEdit(structuredClone(b))} title="Sửa">✎</button>
-          <button className="bt-mark-act" onClick={() => void removeBookmark(b)} title="Xóa">✕</button>
-        </span>
-      ))}
+      <div className="small" style={{ color: 'var(--muted)', width: '100%', marginBottom: 4 }}>
+        Dấu trang <span style={{ color: 'var(--faint)' }}>— chuột phải: mở trong tab mới</span>
+      </div>
+      {bookmarks.map(markChip)}
     </div>
   );
 
@@ -126,7 +186,7 @@ export default function BrowserTabWorkspace() {
   );
 
   return (
-    <div className={`bt-root${full ? ' bt-full' : ''}`}>
+    <div className={`bt-root${full ? ' bt-full' : ''}`} ref={rootRef}>
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '4px 0' }}>{err}</pre>}
 
       {/* ── Có tab: thanh tab + ＋ new tab + ⋯ menu (KHÔNG còn ô địa chỉ thừa) ── */}
@@ -151,9 +211,10 @@ export default function BrowserTabWorkspace() {
                 <div className="bt-menu">
                   <button onClick={() => { setShowMarks((v) => !v); setMenuOpen(false); }}>🔖 Dấu trang ({bookmarks.length})</button>
                   <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t?.profile ?? '', addedAt: '' }); setMenuOpen(false); }}>☆ Lưu trang hiện tại</button>
+                  <button onClick={() => { setPwOpen(true); setMenuOpen(false); }}>🔑 Mật khẩu đã lưu</button>
                   <button onClick={() => { setFull((v) => !v); setMenuOpen(false); }}>{full ? '🗕 Thoát tràn viền' : '🗖 Tràn viền'}</button>
                   <div className="bt-menu-sep" />
-                  <button onClick={() => { setTabs([]); setActiveId(null); setMenuOpen(false); }}>✕ Đóng tất cả tab</button>
+                  <button onClick={() => { closeAllTabs(); setMenuOpen(false); }}>✕ Đóng tất cả tab</button>
                 </div>
               </>
             )}
@@ -173,15 +234,7 @@ export default function BrowserTabWorkspace() {
       {/* Dải dấu trang — bật từ menu ⋯ */}
       {showMarks && (
         <div className="bt-marks">
-          {bookmarks.map((b) => (
-            <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${b.profile}` : ''}`}>
-              <button className="bt-mark-go" onClick={() => openBookmark(b)}>
-                🔖 {b.name}{b.profile && <span className="bt-mark-prof">{b.profile}</span>}
-              </button>
-              <button className="bt-mark-act" onClick={() => setEdit(structuredClone(b))} title="Sửa">✎</button>
-              <button className="bt-mark-act" onClick={() => void removeBookmark(b)} title="Xóa">✕</button>
-            </span>
-          ))}
+          {bookmarks.map(markChip)}
           {bookmarks.length === 0 && <span className="small" style={{ color: 'var(--muted)', padding: '4px 6px' }}>Chưa có dấu trang — mở trang rồi ☆ Lưu trang.</span>}
         </div>
       )}
@@ -205,7 +258,38 @@ export default function BrowserTabWorkspace() {
           <div className="bt-home-title">🌐 Mở một trang web</div>
           {addressForm}
           {marksList}
-          <p className="small" style={{ color: 'var(--muted)' }}>Nhiều tab mở song song; mỗi profile giữ phiên đăng nhập riêng.</p>
+          <p className="small" style={{ color: 'var(--muted)' }}>
+            Nhiều tab mở song song; mỗi profile giữ phiên đăng nhập riêng.{' '}
+            <button className="ghost sm" onClick={() => setPwOpen(true)}
+              title="Xem/sửa mật khẩu đã lưu — tự điền khi mở lại trang">🔑 Mật khẩu đã lưu</button>
+          </p>
+        </div>
+      )}
+
+      {/* Trình quản lý mật khẩu đã lưu */}
+      {pwOpen && <PasswordManager onClose={() => setPwOpen(false)} />}
+
+      {/* Menu chuột phải trên dấu trang — như trình duyệt thật */}
+      {ctx && (
+        <div className="bt-ctx" style={{ left: ctx.x, top: ctx.y }} onClick={(e) => e.stopPropagation()}>
+          <div className="bt-ctx-head" title={ctx.bm.url}>{ctx.bm.name}</div>
+          <button onClick={() => { openBookmark(ctx.bm, true); setCtx(null); }}>
+            ⊞ Mở trong tab mới
+          </button>
+          <button onClick={() => { openBookmark(ctx.bm); setCtx(null); }}>
+            ▶ Mở ở tab này
+          </button>
+          <button onClick={() => { window.open(normalizeUrl(ctx.bm.url), '_blank'); setCtx(null); }}>
+            ↗ Mở bằng trình duyệt ngoài
+          </button>
+          <div className="bt-menu-sep" />
+          <button onClick={() => { void navigator.clipboard?.writeText(normalizeUrl(ctx.bm.url)); setCtx(null); }}>
+            ⧉ Copy địa chỉ
+          </button>
+          <button onClick={() => { setEdit(structuredClone(ctx.bm)); setCtx(null); }}>✎ Sửa dấu trang</button>
+          <button className="danger" onClick={() => { const b = ctx.bm; setCtx(null); void removeBookmark(b); }}>
+            🗑 Xóa dấu trang
+          </button>
         </div>
       )}
 
@@ -249,6 +333,8 @@ function BrowserTab({ tab, hidden, onClose, onSaveBookmark }: {
       partition={tab.partition}
       hidden={hidden}
       creds={tab.creds}
+      profile={tab.profile}
+      passwordManager
       onClose={onClose}
       onSaveLink={onSaveBookmark}
     />

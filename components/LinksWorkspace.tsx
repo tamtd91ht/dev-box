@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { lList, lAdd, lUpdate, lRemove, partitionFor, type SavedLink, type SavedLinkMeta } from '@/lib/links';
 import { fmtRel } from '@/lib/google';
 import LinkViewer from './LinkViewer';
+import PasswordManager from './PasswordManager';
 
 /** Một TAB viewer đang mở. Kèm metadata đang gõ dở ở "＋ chi tiết" (nếu có)
  *  — để bấm 💾 TRONG viewer vẫn lưu đủ dự án/tags, không chỉ tên + profile.
@@ -44,14 +45,28 @@ function MetaFields({ meta, onChange }: { meta: MetaDraft; onChange: (m: MetaDra
       <input className="input" placeholder="Tags, cách nhau dấu phẩy (optional) — vd: jenkins, logs, omicx"
         value={meta.tagsText ?? ''}
         onChange={(e) => onChange({ ...meta, tagsText: e.target.value })} />
-      <div className="glink-meta-pair">
-        <input className="input" placeholder="Username đăng nhập site (optional)" value={meta.username ?? ''}
-          autoComplete="off" onChange={(e) => onChange({ ...meta, username: e.target.value })} />
-        <input className="input" type="password" placeholder="Password (optional — 🔑 tự điền form login)"
-          value={meta.password ?? ''} autoComplete="new-password"
-          onChange={(e) => onChange({ ...meta, password: e.target.value })}
-          title="Lưu plaintext trong .links.json (gitignored) trên máy này — nút 🔑 trong viewer điền vào form login khi bị đá session." />
-      </div>
+      {/* User/pass ở ĐÂY là cách CŨ: lưu plaintext trong links.json và chỉ dùng
+          khi bấm 🔑. Cách mới (khuyến nghị) là cứ đăng nhập bình thường rồi bấm
+          "Lưu" ở thanh hỏi mật khẩu — nó lưu theo origin, mã hóa DPAPI, và TỰ
+          ĐIỀN lần sau. Giữ lại hai ô này để dữ liệu cũ không mất, nhưng nói rõ
+          để khỏi tưởng đây là chỗ lưu mật khẩu chính. */}
+      <details className="glink-legacy-creds">
+        <summary className="small" style={{ color: 'var(--muted)', cursor: 'pointer' }}>
+          Tài khoản site (cách cũ) — thường KHÔNG cần nữa
+        </summary>
+        <p className="small" style={{ color: 'var(--muted)', margin: '4px 0' }}>
+          Không cần điền: mở link rồi đăng nhập như bình thường, thanh <b>&ldquo;Lưu mật khẩu?&rdquo;</b> sẽ
+          hiện — bấm Lưu là lần sau tự điền (mã hóa bằng Windows DPAPI). Hai ô dưới đây lưu{' '}
+          <b>plaintext</b> trong <code>configs/links.json</code> và chỉ dùng khi bấm 🔑.
+        </p>
+        <div className="glink-meta-pair">
+          <input className="input" placeholder="Username (cách cũ, optional)" value={meta.username ?? ''}
+            autoComplete="off" onChange={(e) => onChange({ ...meta, username: e.target.value })} />
+          <input className="input" type="password" placeholder="Password (cách cũ, optional)"
+            value={meta.password ?? ''} autoComplete="new-password"
+            onChange={(e) => onChange({ ...meta, password: e.target.value })} />
+        </div>
+      </details>
     </>
   );
 }
@@ -74,6 +89,7 @@ export default function LinksWorkspace() {
   // Sửa inline: id của link đang mở form ✎.
   const [editId, setEditId] = useState<string | null>(null);
   const [editMeta, setEditMeta] = useState<MetaDraft>({});
+  const [pwOpen, setPwOpen] = useState(false); // modal 🔑 Mật khẩu đã lưu
 
   const reload = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -199,6 +215,8 @@ export default function LinksWorkspace() {
             title="Tên / dự án / profile / mô tả / tags cho link sắp lưu — tất cả optional">
             ＋ chi tiết
           </button>
+          <button className="ghost sm" onClick={() => setPwOpen(true)}
+            title="Mật khẩu đã lưu — tự điền khi mở lại trang login">🔑</button>
           <button className="ghost sm" onClick={() => void reload()} disabled={loading} title="Tải lại danh sách đã lưu">
             {loading ? <span className="spinner" aria-hidden /> : '↻'}
           </button>
@@ -241,7 +259,13 @@ export default function LinksWorkspace() {
                 href={l.url}
                 onClick={(e) => {
                   e.preventDefault();
-                  openInApp(l.name, l.url, l.profile, { username: l.username, password: l.password });
+                  // Mang THEO đủ metadata của link (dự án/tags/mô tả/profile),
+                  // không chỉ user/pass — nút 💾 trong viewer lưu lại mới đúng.
+                  openInApp(l.name, l.url, l.profile, {
+                    name: l.name, project: l.project, description: l.description,
+                    profile: l.profile, tags: l.tags,
+                    username: l.username, password: l.password,
+                  });
                 }}
                 title={`${l.url} — mở trong app`}
               >
@@ -347,6 +371,8 @@ export default function LinksWorkspace() {
                 partition={t.partition}
                 hidden={t.id !== activeTab}
                 creds={{ username: t.meta?.username, password: t.meta?.password }}
+                profile={t.meta?.profile}
+                passwordManager
                 onClose={() => closeTab(t.id)}
                 onSaveLink={async (name, target) => {
                   // Lưu kèm profile của phiên tab này + metadata gõ dở ở "＋ chi tiết".
@@ -364,6 +390,8 @@ export default function LinksWorkspace() {
           </div>
         </div>
       )}
+
+      {pwOpen && <PasswordManager onClose={() => setPwOpen(false)} />}
     </div>
   );
 }
