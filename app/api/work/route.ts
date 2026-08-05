@@ -11,7 +11,7 @@
 // (/api/mongo-connections) — cùng một registry, không có đường riêng ở đây.
 //     'add'          { ...task }                 → { task }   (quét cảnh báo ngay sau đó)
 //     'update'       { id, ...task }             → { ok }
-//     'status'       { id, status }              → { ok }
+//     'status'       { id, status }              → { ok }   status ∈ pending|active|done|cancelled
 //     'remove'       { id }                      → { ok }
 //
 // Gate theo MONGO_TOOL_ENABLED — tính năng sống trên cụm Mongo do người dùng

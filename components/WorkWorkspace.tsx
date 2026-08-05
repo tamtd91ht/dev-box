@@ -8,6 +8,11 @@
 // được tạo cho ngày tương lai) và khi GẦN DEADLINE theo cấu hình; cảnh báo về
 // qua toast + hòm thông báo (WorkAlertHost).
 //
+// Trạng thái: Đang chờ / Đang diễn ra / Đã hoàn thành / Đã hủy — đổi bằng dãy
+// nút chuyển nhanh trên từng dòng, hoặc dropdown trong form sửa. CHỈ hai trạng
+// thái đầu mới nhận cảnh báo (STATUS_META[...].alerts). Bộ lọc có chip trạng
+// thái kèm số lượng, cộng với keyword và khoảng thời gian.
+//
 // Kho lưu: một cụm Mongo chọn từ danh sách quản lý Mongo hiện có, hoặc nhập
 // connection mới (tự lưu vào menu Mongo luôn). First-run hiện panel cấu hình.
 
@@ -18,6 +23,8 @@ import type { PublicMongoConnection } from '@/lib/mongo';
 // ── Types (khớp lib/workTasks) ───────────────────────────────────────────────
 
 type Priority = 'low' | 'normal' | 'high' | 'urgent';
+
+type Status = 'pending' | 'active' | 'done' | 'cancelled';
 
 type WorkAlert =
   | { kind: 'offset'; minutes: number }
@@ -35,7 +42,7 @@ interface WorkTask {
   dlTime: string | null;
   deadlineMs: number | null;
   alert: WorkAlert | null;
-  status: 'open' | 'done';
+  status: Status;
   createdDate: string;
 }
 
@@ -71,6 +78,16 @@ const PRIORITY_META: Record<Priority, { label: string; cls: string }> = {
   high: { label: 'Cao', cls: 'hi' },
   urgent: { label: 'Khẩn', cls: 'ur' },
 };
+
+/** 4 trạng thái — nhãn, icon nút chuyển nhanh, class màu, có cảnh báo hay không. */
+const STATUS_META: Record<Status, { label: string; icon: string; cls: string; hint: string; alerts: boolean }> = {
+  pending: { label: 'Đang chờ', icon: '🕓', cls: 'pd', hint: 'Chưa đến thời gian thực hiện', alerts: true },
+  active: { label: 'Đang diễn ra', icon: '▶', cls: 'ac', hint: 'Đang thực hiện', alerts: true },
+  done: { label: 'Đã hoàn thành', icon: '✓', cls: 'dn', hint: 'Đã xong — không còn cảnh báo', alerts: false },
+  cancelled: { label: 'Đã hủy', icon: '✕', cls: 'cx', hint: 'Đã hủy — không còn cảnh báo', alerts: false },
+};
+
+const STATUS_ORDER: Status[] = ['pending', 'active', 'done', 'cancelled'];
 
 function fmtDl(t: WorkTask): string {
   if (!t.dlDate) return '';
@@ -258,6 +275,8 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
   const [priority, setPriority] = useState<Priority>(initial?.priority ?? 'normal');
   const [tags, setTags] = useState(initial?.tags.join(', ') ?? '');
   const [start, setStart] = useState(initial?.startDate ?? startDate);
+  // Task mới: để trống → server tự chọn Đang chờ / Đang diễn ra theo ngày bắt đầu.
+  const [status, setStatus] = useState<Status | ''>(initial?.status ?? '');
   const [dlDate, setDlDate] = useState(initial?.dlDate ?? '');
   const [dlTime, setDlTime] = useState(initial?.dlTime ?? '18:00');
   const [choice, setChoice] = useState<AlertChoice>(initial ? alertToChoice(initial.alert) : 'daily');
@@ -274,6 +293,7 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
       project, name, desc, priority,
       tags: tags.split(',').map((t) => t.trim()).filter(Boolean),
       startDate: start, dlDate: dlDate || '', dlTime, alert,
+      ...(status ? { status } : {}),
     });
   };
 
@@ -307,6 +327,19 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
           <label className="wk-field"><span>Ngày bắt đầu</span>
             <input className="input" type="date" value={start} onChange={(e) => setStart(e.target.value)} />
           </label>
+          <label className="wk-field"><span>Trạng thái</span>
+            <select className="input" value={status} onChange={(e) => setStatus(e.target.value as Status | '')}>
+              {!initial && <option value="">Tự động (theo ngày bắt đầu)</option>}
+              {STATUS_ORDER.map((s) => (
+                <option key={s} value={s}>{STATUS_META[s].icon} {STATUS_META[s].label}</option>
+              ))}
+            </select>
+            <span className="small" style={{ color: 'var(--muted)' }}>
+              {status
+                ? STATUS_META[status].hint + (STATUS_META[status].alerts ? '' : ' (tắt cảnh báo)')
+                : 'Ngày bắt đầu ở tương lai → Đang chờ, ngược lại → Đang diễn ra.'}
+            </span>
+          </label>
           <div className="wk-field"><span>Deadline cam kết</span>
             <div style={{ display: 'flex', gap: 6 }}>
               <input className="input" type="date" value={dlDate} onChange={(e) => setDlDate(e.target.value)} style={{ flex: 1 }} />
@@ -335,6 +368,11 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
             <span className="small" style={{ color: 'var(--muted)' }}>
               Nhắc <b>ngày bắt đầu</b> tự kích hoạt khi tạo task cho một ngày trong tương lai (so theo ngày, không quan tâm giờ).
             </span>
+            {status && !STATUS_META[status].alerts && (
+              <span className="small" style={{ color: 'var(--warn, #d29922)' }}>
+                ⚠ Trạng thái <b>{STATUS_META[status].label}</b> KHÔNG nhận cảnh báo — cấu hình ở trên chỉ có tác dụng trở lại khi chuyển về Đang chờ / Đang diễn ra.
+              </span>
+            )}
           </div>
         </div>
 
@@ -368,6 +406,8 @@ export default function WorkWorkspace() {
 
   // ── Bộ lọc quản trị: keyword (dự án/tên/tag, không dấu) + khoảng thời gian ──
   const [kw, setKw] = useState('');
+  /** Trạng thái được chọn; rỗng = tất cả. Nhiều lựa chọn (toggle chip). */
+  const [statusSel, setStatusSel] = useState<Status[]>([]);
   const [rangeMode, setRangeMode] = useState<'' | 'week' | 'month' | 'custom'>('');
   const [rangeFrom, setRangeFrom] = useState('');
   const [rangeTo, setRangeTo] = useState('');
@@ -433,8 +473,10 @@ export default function WorkWorkspace() {
   }, [byStart, byDeadline, selDate]);
 
   const upcoming = useMemo(
+    // Chỉ việc còn sống (đang chờ / đang diễn ra) — đã xong hay đã hủy thì
+    // không còn "sắp đến hạn" nữa.
     () => tasks
-      .filter((t) => t.status === 'open' && t.deadlineMs !== null)
+      .filter((t) => STATUS_META[t.status].alerts && t.deadlineMs !== null)
       .sort((a, b) => (a.deadlineMs ?? 0) - (b.deadlineMs ?? 0))
       .slice(0, 8),
     [tasks],
@@ -460,13 +502,14 @@ export default function WorkWorkspace() {
     return null;
   }, [rangeMode, rangeFrom, rangeTo]);
 
-  const filterActive = kw.trim() !== '' || range !== null;
+  const filterActive = kw.trim() !== '' || range !== null || statusSel.length > 0;
 
   const filtered = useMemo(() => {
     if (!filterActive) return [];
     const q = stripVN(kw.trim());
     return tasks
       .filter((t) => {
+        if (statusSel.length > 0 && !statusSel.includes(t.status)) return false;
         if (q) {
           // Search trên DỰ ÁN + TÊN + TAGS — không phân biệt hoa/thường/dấu.
           const hay = stripVN(`${t.project} ${t.name} ${t.tags.join(' ')}`);
@@ -479,7 +522,7 @@ export default function WorkWorkspace() {
         return true;
       })
       .sort((a, b) => (a.deadlineMs ?? Infinity) - (b.deadlineMs ?? Infinity) || a.startDate.localeCompare(b.startDate));
-  }, [filterActive, kw, range, tasks]);
+  }, [filterActive, kw, range, statusSel, tasks]);
 
   // ── Mutations ──────────────────────────────────────────────────────────────
   const saveTask = async (fields: Record<string, unknown>) => {
@@ -492,11 +535,17 @@ export default function WorkWorkspace() {
     } catch (e) { setFormErr((e as Error).message); } finally { setBusy(false); }
   };
 
-  const toggleDone = async (t: WorkTask) => {
+  /** Chuyển nhanh trạng thái — optimistic để nút phản hồi tức thì, list tải lại sau. */
+  const changeStatus = async (t: WorkTask, status: Status) => {
+    if (t.status === status) return;
+    setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, status } : x)));
     try {
-      await workAction('status', { id: t.id, status: t.status === 'done' ? 'open' : 'done' });
+      await workAction('status', { id: t.id, status });
       await loadTasks();
-    } catch (e) { setErr((e as Error).message); }
+    } catch (e) {
+      setErr((e as Error).message);
+      await loadTasks(); // trả về trạng thái thật trên server
+    }
   };
 
   const remove = async (t: WorkTask) => {
@@ -533,34 +582,55 @@ export default function WorkWorkspace() {
   }
 
   const monthLabel = `Tháng ${ym.m + 1}/${ym.y}`;
-  const renderTaskRow = (t: WorkTask, badge?: string) => (
-    <div key={t.id} className={`wk-task${t.status === 'done' ? ' done' : ''}`}>
-      <input type="checkbox" checked={t.status === 'done'} onChange={() => void toggleDone(t)} title={t.status === 'done' ? 'Mở lại' : 'Đánh dấu xong'} />
-      <div className="wk-task-main">
-        <div className="wk-task-line">
-          <span className={`wk-pri ${PRIORITY_META[t.priority].cls}`}>{PRIORITY_META[t.priority].label}</span>
-          {t.project && <span className="wk-proj">{t.project}</span>}
-          <b className="wk-task-name">{t.name}</b>
-          {badge && <span className="wk-badge-dl">{badge}</span>}
+  const renderTaskRow = (t: WorkTask, badge?: string) => {
+    const meta = STATUS_META[t.status];
+    // Quá hạn chỉ có nghĩa với việc còn sống — đã xong/đã hủy thì thôi tô đỏ.
+    const overdue = t.deadlineMs !== null && t.deadlineMs < Date.now() && meta.alerts;
+    return (
+      <div key={t.id} className={`wk-task st-${meta.cls}`}>
+        <div className="wk-task-main">
+          <div className="wk-task-line">
+            <span className={`wk-st ${meta.cls}`} title={meta.hint}>{meta.icon} {meta.label}</span>
+            <span className={`wk-pri ${PRIORITY_META[t.priority].cls}`}>{PRIORITY_META[t.priority].label}</span>
+            {t.project && <span className="wk-proj">{t.project}</span>}
+            <b className="wk-task-name">{t.name}</b>
+            {badge && <span className="wk-badge-dl">{badge}</span>}
+          </div>
+          {t.desc && <div className="wk-task-desc">{t.desc}</div>}
+          <div className="wk-task-meta">
+            {t.dlDate && (
+              // Hover = đếm ngược sống: "còn 2 ngày" / "còn 3 giờ 15 phút".
+              <span
+                className={overdue ? 'wk-overdue' : undefined}
+                title={`${t.deadlineMs !== null ? remainText(t.deadlineMs) + ' · ' : ''}${meta.alerts ? alertLabel(t.alert) : `${meta.label} — không cảnh báo`}`}
+              >
+                ⏰ {fmtDl(t)}
+              </span>
+            )}
+            {t.tags.map((tag) => <span key={tag} className="wk-tag">#{tag}</span>)}
+          </div>
+          {/* Nút chuyển nhanh — trạng thái hiện tại bị mờ + disable. */}
+          <div className="wk-st-switch">
+            {STATUS_ORDER.map((s) => (
+              <button
+                key={s}
+                className={`wk-st-btn ${STATUS_META[s].cls}${t.status === s ? ' on' : ''}`}
+                disabled={t.status === s}
+                onClick={() => void changeStatus(t, s)}
+                title={t.status === s ? `Đang ở: ${STATUS_META[s].label}` : `Chuyển sang: ${STATUS_META[s].label}${STATUS_META[s].alerts ? '' : ' (tắt cảnh báo)'}`}
+              >
+                {STATUS_META[s].icon} {STATUS_META[s].label}
+              </button>
+            ))}
+          </div>
         </div>
-        {t.desc && <div className="wk-task-desc">{t.desc}</div>}
-        <div className="wk-task-meta">
-          {t.dlDate && (
-            // Hover = đếm ngược sống: "còn 2 ngày" / "còn 3 giờ 15 phút".
-            <span
-              className={t.deadlineMs !== null && t.deadlineMs < Date.now() && t.status === 'open' ? 'wk-overdue' : undefined}
-              title={`${t.deadlineMs !== null ? remainText(t.deadlineMs) + ' · ' : ''}${alertLabel(t.alert)}`}
-            >
-              ⏰ {fmtDl(t)}
-            </span>
-          )}
-          {t.tags.map((tag) => <span key={tag} className="wk-tag">#{tag}</span>)}
+        <div className="wk-task-acts">
+          <button className="ghost sm" onClick={() => { setFormErr(null); setForm({ task: t }); }} title="Sửa">✎</button>
+          <button className="ghost sm" onClick={() => void remove(t)} title="Xóa">🗑</button>
         </div>
       </div>
-      <button className="ghost sm" onClick={() => { setFormErr(null); setForm({ task: t }); }} title="Sửa">✎</button>
-      <button className="ghost sm" onClick={() => void remove(t)} title="Xóa">🗑</button>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="panel sheet-panel">
@@ -606,8 +676,26 @@ export default function WorkWorkspace() {
             <input className="input" type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} title="Đến ngày" />
           </>
         )}
+        {/* Lọc theo TRẠNG THÁI — chip bật/tắt, không chọn cái nào = tất cả. */}
+        <div className="wk-stfilter" role="group" aria-label="Lọc theo trạng thái">
+          {STATUS_ORDER.map((s) => {
+            const on = statusSel.includes(s);
+            const n = tasks.filter((t) => t.status === s).length;
+            return (
+              <button
+                key={s}
+                className={`wk-st-btn ${STATUS_META[s].cls}${on ? ' on' : ''}`}
+                aria-pressed={on}
+                onClick={() => setStatusSel((prev) => (on ? prev.filter((x) => x !== s) : [...prev, s]))}
+                title={`${STATUS_META[s].hint} · ${n} công việc`}
+              >
+                {STATUS_META[s].icon} {STATUS_META[s].label} <span className="wk-st-n">{n}</span>
+              </button>
+            );
+          })}
+        </div>
         {filterActive && (
-          <button className="ghost sm" onClick={() => { setKw(''); setRangeMode(''); setRangeFrom(''); setRangeTo(''); }}>
+          <button className="ghost sm" onClick={() => { setKw(''); setStatusSel([]); setRangeMode(''); setRangeFrom(''); setRangeTo(''); }}>
             ✕ Bỏ lọc
           </button>
         )}
@@ -619,6 +707,7 @@ export default function WorkWorkspace() {
         <div className="wk-results">
           <div className="group-title">
             Kết quả lọc: {filtered.length} công việc
+            {statusSel.length > 0 && <span className="small" style={{ color: 'var(--muted)', fontWeight: 400 }}> · {statusSel.map((s) => STATUS_META[s].label).join(', ')}</span>}
             {range && <span className="small" style={{ color: 'var(--muted)', fontWeight: 400 }}> · {range.from.split('-').reverse().join('/')} → {range.to.split('-').reverse().join('/')}</span>}
           </div>
           {filtered.length === 0 && <p className="small" style={{ color: 'var(--muted)' }}>Không có công việc nào khớp bộ lọc.</p>}
@@ -653,7 +742,12 @@ export default function WorkWorkspace() {
                     <span className="wk-day-num">{cell.day}{dls.length > 0 && <span className="wk-day-dl" title={`${dls.length} deadline`}>⏰</span>}</span>
                     <span className="wk-day-chips">
                       {starts.slice(0, 3).map((t) => (
-                        <span key={t.id} className={`wk-chip ${PRIORITY_META[t.priority].cls}${t.status === 'done' ? ' done' : ''}`}>{t.name}</span>
+                        // Đã xong / đã hủy đều gạch ngang; hover cho biết trạng thái nào.
+                        <span
+                          key={t.id}
+                          className={`wk-chip ${PRIORITY_META[t.priority].cls}${STATUS_META[t.status].alerts ? '' : ' done'}`}
+                          title={`${STATUS_META[t.status].icon} ${STATUS_META[t.status].label} — ${t.name}`}
+                        >{STATUS_META[t.status].icon} {t.name}</span>
                       ))}
                       {starts.length > 3 && <span className="wk-chip more">+{starts.length - 3}</span>}
                     </span>

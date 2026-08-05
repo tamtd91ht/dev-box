@@ -5,6 +5,10 @@
 // quản lý Mongo hiện có (lib/mongoConnections). File config local chỉ giữ
 // CON TRỎ (connectionId + database); collection cố định 'devbox_work_tasks'.
 //
+// Trạng thái (4): 'pending' đang chờ · 'active' đang diễn ra · 'done' đã hoàn
+// thành · 'cancelled' đã hủy. CHỈ pending/active mới được nhắc — task đã xong
+// hoặc đã hủy im lặng hoàn toàn.
+//
 // Cảnh báo (xem workWatch):
 //   · NGÀY BẮT ĐẦU — chỉ khi task được TẠO cho một ngày tương lai (createdDate
 //     < startDate, so theo NGÀY không quan tâm giờ): tới ngày đó thì nhắc.
@@ -81,6 +85,14 @@ async function coll(): Promise<Collection<Document>> {
 
 export type WorkPriority = 'low' | 'normal' | 'high' | 'urgent';
 
+/** 4 trạng thái vòng đời của task. */
+export type WorkStatus = 'pending' | 'active' | 'done' | 'cancelled';
+
+export const WORK_STATUSES: WorkStatus[] = ['pending', 'active', 'done', 'cancelled'];
+
+/** Trạng thái còn "sống" — chỉ những task này mới sinh cảnh báo. */
+export const ALERTABLE_STATUSES: WorkStatus[] = ['pending', 'active'];
+
 export type WorkAlert =
   | { kind: 'offset'; minutes: number }                    // trước deadline X phút
   | { kind: 'daily'; daysBefore: number; time: string };   // trước N ngày, lúc HH:mm
@@ -99,10 +111,11 @@ export interface WorkTask {
   dlTime: string | null;
   deadlineMs: number | null;
   alert: WorkAlert | null;
-  status: 'open' | 'done';
+  status: WorkStatus;
   createdAt: number;
   /** 'YYYY-MM-DD' local lúc tạo — luật nhắc ngày bắt đầu so theo NGÀY. */
   createdDate: string;
+  /** Lúc chốt trạng thái kết thúc (done/cancelled); null khi còn pending/active. */
   doneAt: number | null;
   startNotifiedAt: number | null;
   deadlineNotifiedAt: number | null;
@@ -174,6 +187,20 @@ function sanitize(raw: Record<string, unknown>): Omit<WorkTask, 'id' | 'createdA
   };
 }
 
+/**
+ * Đọc trạng thái từ document, có MIGRATE tại chỗ cho dữ liệu cũ (2 trạng thái
+ * 'open'/'done'): 'open' được suy ra thành 'active' nếu đã tới ngày bắt đầu,
+ * ngược lại 'pending'. Không ghi ngược DB — suy diễn mỗi lần đọc là đủ và
+ * tránh phải migrate hàng loạt trên cụm dùng chung.
+ */
+function statusFromDoc(d: Document, today = todayStr()): WorkStatus {
+  const raw = d.status;
+  if (WORK_STATUSES.includes(raw as WorkStatus)) return raw as WorkStatus;
+  if (raw === 'done') return 'done';
+  const startDate = typeof d.startDate === 'string' ? d.startDate : '';
+  return startDate && startDate > today ? 'pending' : 'active';
+}
+
 function fromDoc(d: Document): WorkTask {
   return {
     id: String(d._id),
@@ -187,7 +214,7 @@ function fromDoc(d: Document): WorkTask {
     dlTime: d.dlTime ?? null,
     deadlineMs: typeof d.deadlineMs === 'number' ? d.deadlineMs : null,
     alert: d.alert ?? null,
-    status: d.status === 'done' ? 'done' : 'open',
+    status: statusFromDoc(d),
     createdAt: d.createdAt ?? 0,
     createdDate: d.createdDate ?? '',
     doneAt: d.doneAt ?? null,
@@ -208,15 +235,28 @@ export async function listTasks(): Promise<WorkTask[]> {
   return docs.map(fromDoc);
 }
 
+/** Trạng thái từ client (form sửa / nút chuyển nhanh); null nếu không gửi. */
+function parseStatus(raw: unknown): WorkStatus | null {
+  const s = String(raw ?? '');
+  if (!s) return null;
+  if (WORK_STATUSES.includes(s as WorkStatus)) return s as WorkStatus;
+  if (s === 'open') return 'active'; // tương thích client cũ
+  throw new Error(`Trạng thái không hợp lệ: ${s}`);
+}
+
 export async function addTask(raw: Record<string, unknown>): Promise<WorkTask> {
   const base = sanitize(raw);
+  const createdDate = todayStr();
+  // Mặc định: tạo cho ngày tương lai → ĐANG CHỜ; từ hôm nay trở về trước →
+  // ĐANG DIỄN RA. Client vẫn có thể chỉ định thẳng trạng thái khác.
+  const status = parseStatus(raw.status) ?? (base.startDate > createdDate ? 'pending' : 'active');
   const task: WorkTask = {
     ...base,
     id: randomUUID(),
-    status: 'open',
+    status,
     createdAt: Date.now(),
-    createdDate: todayStr(),
-    doneAt: null,
+    createdDate,
+    doneAt: status === 'done' || status === 'cancelled' ? Date.now() : null,
     startNotifiedAt: null,
     deadlineNotifiedAt: null,
   };
@@ -254,6 +294,11 @@ export async function updateTask(id: unknown, raw: Record<string, unknown>): Pro
       if (at !== null && at <= Date.now()) deadlineNotifiedAt = Date.now();
     }
   }
+  // Trạng thái sửa ngay trong form (tùy chọn) — không gửi thì giữ nguyên.
+  const nextStatus = parseStatus(raw.status);
+  const curStatus = statusFromDoc(cur);
+  const statusPatch = nextStatus && nextStatus !== curStatus ? statusFields(nextStatus, cur) : {};
+
   await c.updateOne(
     { _id: tid as unknown as Document['_id'] },
     {
@@ -261,19 +306,41 @@ export async function updateTask(id: unknown, raw: Record<string, unknown>): Pro
         ...base,
         ...(deadlineNotifiedAt !== undefined ? { deadlineNotifiedAt } : {}),
         ...(resetStart ? { startNotifiedAt: null } : {}),
+        // SAU cùng: mở lại task (statusFields xóa cờ đã-nhắc) phải thắng, kể cả
+        // khi lượt sửa đó cũng đổi deadline.
+        ...statusPatch,
       },
     },
   );
 }
 
+/**
+ * Các field ghi kèm khi đổi trạng thái.
+ *
+ * Quay lại pending/active sau khi đã done/cancelled thì XÓA cờ đã-nhắc deadline
+ * để task được nhắc lại theo lịch cũ — mở lại một việc chính là muốn nó kêu
+ * tiếp. Cờ ngày bắt đầu giữ nguyên (ngày đó đã trôi qua, nhắc lại vô nghĩa).
+ */
+function statusFields(status: WorkStatus, cur: Document | null): Record<string, unknown> {
+  const closing = status === 'done' || status === 'cancelled';
+  const reopening = !closing && cur !== null && ['done', 'cancelled'].includes(statusFromDoc(cur));
+  return {
+    status,
+    doneAt: closing ? Date.now() : null,
+    ...(reopening ? { deadlineNotifiedAt: null } : {}),
+  };
+}
+
+/** Nút chuyển nhanh trạng thái (ngoài danh sách) + dropdown trong form sửa. */
 export async function setTaskStatus(id: unknown, status: unknown): Promise<void> {
   const tid = String(id ?? '');
-  const st = status === 'done' ? 'done' : 'open';
+  if (!tid) throw new Error('Thiếu id.');
+  const st = parseStatus(status);
+  if (!st) throw new Error('Thiếu trạng thái.');
   const c = await coll();
-  await c.updateOne(
-    { _id: tid as unknown as Document['_id'] },
-    { $set: { status: st, doneAt: st === 'done' ? Date.now() : null } },
-  );
+  const cur = await c.findOne({ _id: tid as unknown as Document['_id'] });
+  if (!cur) throw new Error('Không tìm thấy công việc.');
+  await c.updateOne({ _id: tid as unknown as Document['_id'] }, { $set: statusFields(st, cur) });
 }
 
 export async function removeTask(id: unknown): Promise<void> {
@@ -310,9 +377,10 @@ function fmtDeadline(t: WorkTask): string {
 }
 
 /**
- * Một lượt quét cảnh báo: tìm task đến hạn nhắc, ĐÁNH DẤU đã nhắc (điều kiện
- * trong updateOne — hai server cùng quét cũng chỉ một bên thắng), trả về danh
- * sách sự kiện vừa bắn. Chưa cấu hình Mongo → trả [] im lặng.
+ * Một lượt quét cảnh báo: chuyển ĐANG CHỜ → ĐANG DIỄN RA khi tới ngày bắt đầu,
+ * rồi tìm task đến hạn nhắc, ĐÁNH DẤU đã nhắc (điều kiện trong updateOne — hai
+ * server cùng quét cũng chỉ một bên thắng), trả về danh sách sự kiện vừa bắn.
+ * Chưa cấu hình Mongo → trả [] im lặng.
  */
 export async function runAlertSweep(now = Date.now()): Promise<WorkAlertEvent[]> {
   let c: Collection<Document>;
@@ -324,9 +392,22 @@ export async function runAlertSweep(now = Date.now()): Promise<WorkAlertEvent[]>
   const today = todayStr(new Date(now));
   const events: WorkAlertEvent[] = [];
 
+  // CHỈ 'đang chờ' và 'đang diễn ra' mới được nhắc — done/cancelled im lặng.
+  // 'open' là dữ liệu cũ trước khi tách 4 trạng thái (xem statusFromDoc), vẫn
+  // còn sống nên đưa vào diện nhắc.
+  const alertable = { status: { $in: [...ALERTABLE_STATUSES, 'open'] } };
+
+  // 0) ĐANG CHỜ → ĐANG DIỄN RA khi đã tới ngày bắt đầu. "Đang chờ" nghĩa là
+  //    CHƯA ĐẾN thời gian thực hiện, nên để nguyên sau ngày đó là sai. Người
+  //    dùng vẫn chuyển tay được về bất cứ trạng thái nào sau đó.
+  await c.updateMany(
+    { status: { $in: ['pending', 'open'] }, startDate: { $lte: today } },
+    { $set: { status: 'active' } },
+  );
+
   // 1) Nhắc NGÀY BẮT ĐẦU — task tạo cho ngày tương lai, hôm nay đã tới ngày đó.
   const startDue = await c.find({
-    status: 'open',
+    ...alertable,
     startNotifiedAt: null,
     startDate: { $lte: today },
     $expr: { $lt: ['$createdDate', '$startDate'] }, // chỉ task tạo TRƯỚC ngày bắt đầu
@@ -348,7 +429,7 @@ export async function runAlertSweep(now = Date.now()): Promise<WorkAlertEvent[]>
 
   // 2) Nhắc GẦN DEADLINE — đến giờ cảnh báo đã cấu hình.
   const dlCandidates = await c.find({
-    status: 'open',
+    ...alertable,
     deadlineNotifiedAt: null,
     deadlineMs: { $ne: null },
     alert: { $ne: null },

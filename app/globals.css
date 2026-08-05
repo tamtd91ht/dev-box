@@ -4132,8 +4132,15 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   display: flex; align-items: flex-start; gap: 8px; padding: 8px 9px;
   border-radius: 10px; background: var(--glass); border: 1px solid var(--glass-brd);
 }
-.wk-task.done { opacity: .55; }
-.wk-task.done .wk-task-name { text-decoration: line-through; }
+/* Trạng thái kết thúc (đã hoàn thành / đã hủy) — mờ đi + gạch tên. */
+.wk-task.st-dn, .wk-task.st-cx { opacity: .58; }
+.wk-task.st-dn .wk-task-name, .wk-task.st-cx .wk-task-name { text-decoration: line-through; }
+/* Vạch màu trái theo trạng thái — quét mắt một phát là thấy việc nào đang chạy. */
+.wk-task.st-pd { border-left: 3px solid color-mix(in srgb, var(--muted) 60%, transparent); }
+.wk-task.st-ac { border-left: 3px solid var(--accent); }
+.wk-task.st-dn { border-left: 3px solid var(--ok); }
+.wk-task.st-cx { border-left: 3px solid var(--err); }
+.wk-task-acts { flex: none; display: flex; gap: 2px; }
 .wk-task-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .wk-task-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .wk-task-name { font-size: 12.5px; overflow-wrap: anywhere; }
@@ -4181,6 +4188,34 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-filter { flex: none; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .wk-results { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .wk-overdue { color: var(--err); font-weight: 700; }
+
+/* Work: 4 trạng thái — badge trên dòng, nút chuyển nhanh, chip lọc.
+   Bảng màu dùng chung: pd xám (chờ) · ac accent (đang chạy) · dn ok (xong) ·
+   cx err (hủy). */
+.wk-st {
+  flex: none; font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 6px;
+  white-space: nowrap;
+}
+.wk-st.pd { background: color-mix(in srgb, var(--muted) 20%, transparent); color: var(--muted); }
+.wk-st.ac { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.wk-st.dn { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.wk-st.cx { background: color-mix(in srgb, var(--err) 18%, transparent); color: var(--err); }
+
+.wk-st-switch { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.wk-st-btn {
+  font-size: 10px; font-weight: 600; line-height: 1.5; padding: 2px 7px; cursor: pointer;
+  border-radius: 6px; white-space: nowrap;
+  background: transparent; border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.wk-st-btn:hover:not(:disabled) { border-color: var(--glass-brd-hover); color: var(--text); }
+/* .on = trạng thái hiện tại (nút chuyển, đã disable) hoặc chip lọc đang bật. */
+.wk-st-btn.pd.on { background: color-mix(in srgb, var(--muted) 22%, transparent); border-color: var(--muted); color: var(--text); }
+.wk-st-btn.ac.on { background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: var(--accent); color: var(--accent); }
+.wk-st-btn.dn.on { background: color-mix(in srgb, var(--ok) 20%, transparent); border-color: var(--ok); color: var(--ok); }
+.wk-st-btn.cx.on { background: color-mix(in srgb, var(--err) 20%, transparent); border-color: var(--err); color: var(--err); }
+.wk-st-btn:disabled { cursor: default; }
+.wk-st-n { font-family: var(--mono); opacity: .75; }
+.wk-stfilter { display: flex; gap: 4px; flex-wrap: wrap; }
 
 /* Tools: player media (mở file mp3/mp4/wav... từ máy là phát luôn) */
 .tools-media {
