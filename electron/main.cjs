@@ -94,6 +94,25 @@ function sameApp(a, b) {
 }
 
 /**
+ * Bam link trong workspace → HOI nguoi dung mo o dau (renderer dung modal 3 lua
+ * chon: tab Links / Browser trong app / trinh duyet ngoai). Main process khong
+ * ve duoc UI nen chi day yeu cau qua IPC; renderer tu quyet dinh va tu mo.
+ *
+ * Neu khong con cua so nao (dang tat app) thi fallback mo browser ngoai luon,
+ * de link khong bi mat hut.
+ */
+function askOpenTarget(url) {
+  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+  if (!win) {
+    shell.openExternal(url);
+    log('OpenExternal', `${url} (no window)`);
+    return;
+  }
+  win.webContents.send('workspace:openRequest', url);
+  log('OpenRequest', url);
+}
+
+/**
  * Link ra ngoai trong Zalo/Telegram KHONG di qua window.open: hai app tu
  * preventDefault() roi dieu huong chinh main frame cua no (location.href /
  * router noi bo). Khi do setWindowOpenHandler khong he chay, guest cu the dieu
@@ -101,8 +120,8 @@ function sameApp(a, b) {
  * nguoi dung thay "bam link khong an gi".
  *
  * Vi vay chan them o tang navigation: main frame roi khoi domain cua chinh
- * workspace → huy dieu huong, day URL sang browser that. Dieu huong trong app
- * (dang nhap, OAuth, doi subdomain) van chay binh thuong.
+ * workspace → huy dieu huong, hoi mo o dau. Dieu huong trong app (dang nhap,
+ * OAuth, doi subdomain) van chay binh thuong.
  *
  * CHI ap cho workspace app (tab Workspace: Zalo/Telegram/...). Cac <webview>
  * khac trong DevBox la TRINH XEM da nang — tab Links (persist:links-*) va
@@ -134,8 +153,7 @@ function wireExternalNavigation(guest, homeUrl, partition) {
     }
     if (!homeHost || sameApp(host, homeHost)) return; // dieu huong trong app
     event.preventDefault();
-    shell.openExternal(url);
-    log('OpenExternal', `${url} (navigation)`);
+    askOpenTarget(url);
   };
 
   guest.on('will-navigate', escapeToBrowser);
@@ -282,14 +300,42 @@ function wireWebviewHardening(win) {
     // mo link trong tin nhan) → browser that, giu workspace o nguyen trang app.
     wireExternalNavigation(guest, pendingSrc || guest.getURL(), pendingPartition);
 
-    // Popups (target=_blank, window.open) → open in the real browser, never a
-    // rogue in-app window.
+    // Popups (target=_blank, window.open) → hoi mo o dau, khong bao gio de mo
+    // mot cua so roi trong app.
+    //
+    // TRA VE 'deny' LA CAI BAY: window.open() trong guest se tra ve null, va
+    // Zalo KIEM TRA gia tri do — thay null la no ket luan popup bi chan roi
+    // hien toast "Co loi xay ra khi mo popup moi, vui long kiem tra lai quyen
+    // mo popup cua trang web". Link van mo dung, chi rieng bao loi la sai.
+    //
+    // Vi vay cho phep tao that mot cua so AN (khong bao gio hien) de guest nhan
+    // duoc object khac null → khong con canh bao. Cua so nay bi huy ngay o
+    // did-create-window ben duoi.
+    //
+    // Dat 'about:blank' thay vi de nguyen URL: neu khong, cua so an se THAT SU
+    // tai trang do truoc khi bi huy — vua ton mot request vua co the kich hoat
+    // side effect hai lan (link dung mot lan, link xac nhan qua email...).
+    // Guest chi can mot object window de kiem tra, khong can noi dung.
     guest.setWindowOpenHandler(({ url }) => {
-      if (/^https?:\/\//i.test(url)) {
-        shell.openExternal(url);
-        log('OpenExternal', url);
+      if (!/^https?:\/\//i.test(url)) return { action: 'deny' };
+      askOpenTarget(url);
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: { show: false, width: 1, height: 1 },
+        outlivesOpener: false,
+      };
+    });
+
+    // Cua so an sinh ra tu setWindowOpenHandler o tren: URL da chuyen cho
+    // askOpenTarget nen chan tai trang roi huy luon.
+    guest.on('did-create-window', (child) => {
+      try {
+        child.webContents.on('will-navigate', (e) => e.preventDefault());
+        child.webContents.stop();
+        child.destroy();
+      } catch {
+        /* da dong roi */
       }
-      return { action: 'deny' };
     });
 
     // Surface the guest's own diagnostics (`[ws-unread]`, `[ws-diag]`, `[ws-size]`)
@@ -524,6 +570,21 @@ ipcMain.handle('workspace:focusHost', (evt) => {
     const win = BrowserWindow.fromWebContents(evt.sender);
     if (win) win.focus();
     evt.sender.focus();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
+// Người dùng chọn "Trình duyệt ngoài" trong hộp thoại mở link. Chỉ nhận http(s)
+// — không để renderer nhờ shell chạy scheme lạ (file:, ms-msdt:…).
+ipcMain.handle('workspace:openExternal', (_evt, url) => {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    return { ok: false, error: 'invalid url' };
+  }
+  try {
+    shell.openExternal(url);
+    log('OpenExternal', url);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err && err.message };

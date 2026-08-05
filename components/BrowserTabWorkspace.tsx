@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { bmList, bmAdd, bmUpdate, bmRemove, normalizeUrl, bmPartition, type Bookmark } from '@/lib/bookmarks';
 import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
+import { onOpenUrl } from '@/lib/openTarget';
 
 interface Tab { id: string; name: string; url: string; profile?: string; partition: string; creds?: { username?: string; password?: string } }
 
@@ -83,6 +84,11 @@ export default function BrowserTabWorkspace() {
     if (!opts.background) setActiveId(id);
     else setActiveId((a) => (a === null || existed ? id : a));
   }, []);
+
+  // Link bấm từ workspace (Zalo/Telegram…) đã chọn "Mở trong Browser của app".
+  // OpenLinkDialog phát event hai lần (lo tab vừa mount chưa kịp nghe); openTab
+  // dựng id từ partition+url nên gọi trùng chỉ kích hoạt lại đúng tab đó.
+  useEffect(() => onOpenUrl('browser', (u) => openTab(u)), [openTab]);
 
   const closeTab = useCallback((id: string) => {
     existedRef.current.delete(id);

@@ -106,6 +106,11 @@ export interface WorkspaceBridge {
   /** Kéo focus về host page sau khi hủy <webview> giữ focus (fix input "chết").
    *  Optional: preload cũ (trước khi có handler này) chưa expose. */
   focusHost?(): Promise<{ ok: boolean; error?: string }>;
+  /** Bấm link trong workspace (Zalo/Telegram…) → main process hỏi mở ở đâu.
+   *  Trả về hàm hủy đăng ký. Optional: preload cũ chưa expose. */
+  onOpenRequest?(cb: (url: string) => void): () => void;
+  /** Mở URL bằng trình duyệt ngoài của máy. Optional: preload cũ chưa expose. */
+  openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
   /** Niêm phong mật khẩu bằng safeStorage (DPAPI) trước khi ghi xuống đĩa.
    *  error='unavailable' khi OS không hỗ trợ → caller lưu plaintext + cảnh báo.
    *  Optional: preload cũ chưa expose. */

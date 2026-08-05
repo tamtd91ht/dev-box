@@ -32,6 +32,15 @@ contextBridge.exposeInMainWorld('workspace', {
    *  → { ok: true, value } | { ok: false, error: 'unavailable' | ... } */
   encryptSecret: (plain) => ipcRenderer.invoke('workspace:encryptSecret', plain),
   decryptSecret: (b64) => ipcRenderer.invoke('workspace:decryptSecret', b64),
+  /** Bấm link trong workspace (Zalo/Telegram…) → main process hỏi mở ở đâu.
+   *  Trả về hàm hủy đăng ký. */
+  onOpenRequest: (cb) => {
+    const handler = (_evt, url) => cb(url);
+    ipcRenderer.on('workspace:openRequest', handler);
+    return () => ipcRenderer.removeListener('workspace:openRequest', handler);
+  },
+  /** Người dùng chọn "trình duyệt ngoài" → main process gọi shell.openExternal. */
+  openExternal: (url) => ipcRenderer.invoke('workspace:openExternal', url),
 });
 
 // In-app console: the shell + `next dev` log stream the main process buffers
