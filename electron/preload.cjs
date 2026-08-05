@@ -41,6 +41,10 @@ contextBridge.exposeInMainWorld('workspace', {
   },
   /** Người dùng chọn "trình duyệt ngoài" → main process gọi shell.openExternal. */
   openExternal: (url) => ipcRenderer.invoke('workspace:openExternal', url),
+  /** In HTML ra PDF bằng Chromium của app (tab Tools → Chuyển đổi file).
+   *  Next server không gọi được Electron nên renderer làm cầu nối.
+   *  → { ok: true, base64 } | { ok: false, error } */
+  htmlToPdf: (html) => ipcRenderer.invoke('workspace:htmlToPdf', html),
 });
 
 // In-app console: the shell + `next dev` log stream the main process buffers

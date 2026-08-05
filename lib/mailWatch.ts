@@ -6,7 +6,7 @@
 // của next dev), khởi động từ instrumentation.ts khi server boot hoặc lazily
 // bởi request /api/mail/watch đầu tiên.
 
-import { listAccounts } from './mailAccounts';
+import { listAccounts, accountTitle } from './mailAccounts';
 import { inboxUnseen } from './mailServer';
 
 /** Chu kỳ kiểm tra — 10 phút, đổi được qua env (phút) khi cần test. */
@@ -70,11 +70,11 @@ async function cycle(): Promise<void> {
     for (const a of accounts) {
       try {
         const unseen = await inboxUnseen(a);
-        results.push({ id: a.id, label: a.label, email: a.email, unseen });
+        results.push({ id: a.id, label: accountTitle(a), email: a.email, unseen });
       } catch (e) {
         results.push({
           id: a.id,
-          label: a.label,
+          label: accountTitle(a),
           email: a.email,
           unseen: 0,
           error: (e as Error).message || 'IMAP error',

@@ -21,12 +21,29 @@ export interface MailEndpoint {
 
 export interface MailAccount {
   id: string;
-  /** Display label — defaults to the email address. */
+  /** Tên người GỬI — đi vào header From của mail gửi ra (mailServer.ts).
+   *  KHÁC `title`: đổi cái này là người nhận thấy khác. */
   label: string;
+  /** Tên để QUẢN LÝ trong app — hiện trên tab chọn tài khoản, badge thông báo.
+   *  Không ảnh hưởng mail gửi ra. Bỏ trống → dùng cả địa chỉ email, vì hai
+   *  tài khoản khác domain mà cùng prefix (tamtd@a.com / tamtd@gmail.com) sẽ
+   *  không phân biệt được nếu chỉ lấy phần trước @. */
+  title?: string;
   email: string;
   /** IMAP/SMTP login — thường trùng email (Zimbra/Gmail đều vậy). */
   user: string;
+  /** Mật khẩu / App Password. Rỗng khi auth='oauth'. */
   pass: string;
+  /**
+   * Cách xác thực với mail server:
+   *   'password' (mặc định, cũ) — LOGIN bằng user/pass.
+   *   'oauth'  — XOAUTH2 bằng access token Google, KHÔNG lưu mật khẩu.
+   * Google Workspace thường tắt App Password ("The setting you are looking for
+   * is not available for your account") → oauth là đường duy nhất.
+   */
+  auth?: 'password' | 'oauth';
+  /** auth='oauth': id tài khoản Google trong googleauth.json cấp token. */
+  googleAccountId?: string;
   imap: MailEndpoint;
   smtp: MailEndpoint;
 }
@@ -70,7 +87,12 @@ export async function addAccount(input: Omit<MailAccount, 'id'>): Promise<MailAc
   if (accounts.some((a) => a.email === input.email && a.imap.host === input.imap.host)) {
     throw new Error('Tài khoản này đã được thêm rồi.');
   }
-  accounts.push({ ...input, id: randomUUID(), label: input.label.trim() || input.email });
+  accounts.push({
+    ...input,
+    id: randomUUID(),
+    label: input.label.trim() || input.email,
+    title: input.title?.trim() || undefined,
+  });
   await writeAll(accounts);
   return accounts;
 }
@@ -79,4 +101,26 @@ export async function removeAccount(id: string): Promise<MailAccount[]> {
   const accounts = (await readAll()).filter((a) => a.id !== id);
   await writeAll(accounts);
   return accounts;
+}
+
+/** Đổi tên quản lý (tab) và/hoặc tên người gửi (header From) của một tài khoản. */
+export async function renameAccount(
+  id: string,
+  patch: { title?: string; label?: string },
+): Promise<MailAccount[]> {
+  const accounts = await readAll();
+  const a = accounts.find((x) => x.id === id);
+  if (!a) throw new Error('Không tìm thấy tài khoản mail.');
+  // Bỏ trống title = quay về mặc định (hiện cả địa chỉ email).
+  if (patch.title !== undefined) a.title = patch.title.trim() || undefined;
+  // label rỗng thì giữ email làm tên người gửi, không để From trống.
+  if (patch.label !== undefined) a.label = patch.label.trim() || a.email;
+  await writeAll(accounts);
+  return accounts;
+}
+
+/** Tên hiển thị trong app: title tự đặt → hoặc cả địa chỉ email (KHÔNG cắt
+ *  prefix, để tamtd@a.com và tamtd@gmail.com không trông giống nhau). */
+export function accountTitle(a: Pick<MailAccount, 'title' | 'email'>): string {
+  return a.title?.trim() || a.email;
 }

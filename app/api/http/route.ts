@@ -8,8 +8,28 @@
 // KHÔNG dính auth/apiPrefix của omicx (khác /api/proxy) — đây là HTTP thô.
 
 import { NextResponse, type NextRequest } from 'next/server';
+import { Agent } from 'undici';
 
 export const runtime = 'nodejs';
+
+// Tool gọi API nội bộ (staging, IP thuần, cert tự ký) nên KHÔNG verify TLS —
+// nếu verify, undici reject ngay ở tầng bắt tay và không bao giờ có status code
+// để trả về. Agent này chỉ áp cho request đi ra từ tab API, không đụng phần khác.
+const insecureAgent = new Agent({ connect: { rejectUnauthorized: false } });
+
+// fetch của undici luôn ném đúng một message "fetch failed"; nguyên nhân thật
+// (ECONNREFUSED, ENOTFOUND, cert, scheme lạ) nằm ở chuỗi .cause — bóc hết ra.
+function explain(e: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = e;
+  for (let i = 0; i < 5 && cur instanceof Error; i++) {
+    const code = (cur as NodeJS.ErrnoException).code;
+    const msg = code && !cur.message.includes(code) ? `${cur.message} (${code})` : cur.message;
+    if (msg && !parts.includes(msg)) parts.push(msg);
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return parts.join(' ← ') || String(e);
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null) as {
@@ -27,8 +47,9 @@ export async function POST(req: NextRequest) {
   const headers = new Headers();
   for (const h of body.headers ?? []) if (h.key.trim()) headers.set(h.key.trim(), h.value);
 
-  const init: RequestInit = { method, headers, redirect: 'follow' };
+  const init: RequestInit & { dispatcher?: unknown } = { method, headers, redirect: 'follow' };
   if (body.body && !['GET', 'HEAD'].includes(method)) init.body = body.body;
+  if (url.protocol === 'https:') init.dispatcher = insecureAgent;
 
   const t0 = Date.now();
   try {
@@ -53,7 +74,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: `Không gọi được: ${(e as Error).message}`, result: { timeMs: Date.now() - t0 } },
+      { ok: false, error: `Không gọi được: ${explain(e)}`, result: { timeMs: Date.now() - t0 } },
       { status: 502 },
     );
   }

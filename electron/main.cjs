@@ -619,6 +619,43 @@ ipcMain.handle('workspace:decryptSecret', (_evt, b64) => {
   }
 });
 
+// ── In HTML ra PDF (tab Tools → Chuyển đổi file) ──────────────────────────
+// Next server là process riêng nên không gọi được Electron; renderer lấy HTML
+// từ /api/convert rồi nhờ handler này in, xong gửi base64 ngược về server ghi
+// file. Dùng chính Chromium của app: không thêm dependency, font tiếng Việt
+// chuẩn. Cửa sổ in là offscreen, KHÔNG hiện ra và luôn được đóng ở finally.
+ipcMain.handle('workspace:htmlToPdf', async (_evt, html) => {
+  if (typeof html !== 'string' || !html) return { ok: false, error: 'empty html' };
+  let win = null;
+  try {
+    win = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        offscreen: true,
+        // Trang in là HTML do server dựng từ file người dùng — cách ly tối đa:
+        // không Node, không preload, JS tắt (chỉ cần layout tĩnh).
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        javascript: false,
+        webSecurity: true,
+      },
+    });
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    const pdf = await win.webContents.printToPDF({
+      printBackground: true,
+      margins: { marginType: 'default' },
+    });
+    log('HtmlToPdf', `${pdf.length} bytes`);
+    return { ok: true, base64: pdf.toString('base64') };
+  } catch (err) {
+    log('HtmlToPdfError', err && err.message);
+    return { ok: false, error: err && err.message };
+  } finally {
+    if (win && !win.isDestroyed()) win.destroy();
+  }
+});
+
 // Full log history for the renderer's Console drawer (it then subscribes to
 // the `desktop:log` push stream for live lines).
 ipcMain.handle('desktop:getLogs', () => logBuffer);

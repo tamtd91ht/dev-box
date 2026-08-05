@@ -6,6 +6,9 @@
 // Trái: editor Monaco (nhập/dán, hoặc mở snippet đã lưu). Phải khi kind=html:
 // preview render trong iframe sandbox. Nút Format/Minify gọi lib/format.ts;
 // nút Lưu/Mới/Xóa gọi store qua lib/docs.ts.
+//
+// Cuối rail trái còn có bảng CHUYỂN ĐỔI FILE (ConvertPanel): file trên máy →
+// định dạng khác, chạy ngầm bằng thư viện sẵn có hoặc AI.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import '@/lib/monacoSetup'; // Monaco local /monaco/vs — phải config trước lần init đầu
@@ -15,6 +18,7 @@ import { formatText, minifyJson, monacoLangFor, detectKind, type FormatKind } fr
 import { dList, dSave, dRemove, dSaveFile, dReadFile, type SavedDoc } from '@/lib/docs';
 import { fmtRel } from '@/lib/google';
 import FolderPicker from './FolderPicker';
+import ConvertPanel from './ConvertPanel';
 
 const KINDS: { key: FormatKind; label: string }[] = [
   { key: 'json', label: 'JSON' },
@@ -204,6 +208,10 @@ export default function ToolsWorkspace() {
             </div>
           ))}
           {docs.length === 0 && <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px' }}>Chưa có tài liệu. Gõ nội dung rồi 💾 Lưu.</p>}
+
+          {/* Chuyển đổi file: độc lập với editor (làm việc trên file thật trên
+              máy), job chạy ngầm — xem components/ConvertPanel.tsx. */}
+          <ConvertPanel />
         </aside>
 
         {/* Editor + (HTML) preview — hoặc player khi mở file media */}

@@ -6,11 +6,23 @@ export interface MailEndpointPublic { host: string; port: number; secure: boolea
 
 export interface MailAccountPub {
   id: string;
+  /** Tên người GỬI — vào header From của mail gửi ra. */
   label: string;
+  /** Tên QUẢN LÝ trong app (tab chọn tài khoản). Bỏ trống → dùng cả email. */
+  title?: string;
   email: string;
   user: string;
+  /** 'oauth' = đăng nhập bằng Google (XOAUTH2), không lưu mật khẩu. */
+  auth?: 'password' | 'oauth';
+  googleAccountId?: string;
   imap: MailEndpointPublic;
   smtp: MailEndpointPublic;
+}
+
+/** Tên hiển thị trên tab/badge: title tự đặt, hoặc CẢ địa chỉ email — không cắt
+ *  prefix, vì user@example.com và tamtd@gmail.com sẽ trông y hệt nhau. */
+export function accTitle(a: Pick<MailAccountPub, 'title' | 'email'>): string {
+  return a.title?.trim() || a.email;
 }
 
 export interface MailFolder {
@@ -56,7 +68,10 @@ export interface MailDetail {
 }
 
 export interface AccountAddInput {
+  /** Tên người gửi (header From). */
   label?: string;
+  /** Tên quản lý trên tab chọn tài khoản. */
+  title?: string;
   email: string;
   user?: string;
   pass: string;
@@ -86,6 +101,18 @@ export interface SendInput {
   attachments?: SendAttachment[];
 }
 
+/** Phân loại lỗi IMAP server gửi kèm (mirror của ImapFailure ở mailServer). */
+export interface ImapFailureInfo {
+  kind: 'auth' | 'app-password' | 'imap-disabled' | 'dns' | 'refused' | 'timeout' | 'tls' | 'unknown';
+  title: string;
+  steps: string[];
+  focus?: 'pass' | 'email' | 'imapHost' | 'imapPort';
+  links: { label: string; url: string }[];
+  detail: string;
+}
+
+export type MailActionError = Error & { status?: number; failure?: ImapFailureInfo };
+
 async function mailAction<T>(action: string, params: Record<string, unknown> = {}): Promise<T> {
   const r = await fetch('/api/mail', {
     method: 'POST',
@@ -94,8 +121,10 @@ async function mailAction<T>(action: string, params: Record<string, unknown> = {
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok || (data as { ok?: boolean }).ok === false) {
-    const err = new Error((data as { error?: string }).error || `HTTP ${r.status}`);
-    (err as Error & { status?: number }).status = r.status;
+    const err = new Error((data as { error?: string }).error || `HTTP ${r.status}`) as MailActionError;
+    err.status = r.status;
+    // Lỗi verify IMAP kèm phân loại → UI dựng nút/link khắc phục.
+    err.failure = (data as { failure?: ImapFailureInfo }).failure;
     throw err;
   }
   return (data as { result: T }).result;
@@ -104,6 +133,15 @@ async function mailAction<T>(action: string, params: Record<string, unknown> = {
 export const mAccounts = () => mailAction<MailAccountPub[]>('accounts');
 export const mAccountAdd = (input: AccountAddInput) => mailAction<MailAccountPub[]>('accountAdd', { ...input });
 export const mAccountRemove = (id: string) => mailAction<MailAccountPub[]>('accountRemove', { id });
+/** Thêm hòm thư Gmail/Workspace bằng OAuth — không cần App Password. */
+export const mAccountAddOAuth = (email: string, meta: { label?: string; title?: string } = {}) =>
+  mailAction<MailAccountPub[]>('accountAddOAuth', { email, ...meta });
+/** URL consent Google kèm scope mail (XOAUTH2 cho IMAP/SMTP). */
+export const mGoogleAuthUrl = (email?: string) =>
+  mailAction<{ url: string }>('googleAuthUrl', { email });
+/** Đổi tên tài khoản. title = tên quản lý trên tab; label = tên người gửi (From). */
+export const mAccountRename = (id: string, patch: { title?: string; label?: string }) =>
+  mailAction<MailAccountPub[]>('accountRename', { id, ...patch });
 export const mFolders = (accountId: string) => mailAction<MailFolder[]>('folders', { accountId });
 export const mList = (accountId: string, path: string, beforeSeq?: number) =>
   mailAction<MailListPage>('list', { accountId, path, beforeSeq });
@@ -113,6 +151,9 @@ export const mSend = (input: SendInput) => mailAction<{ messageId: string }>('se
 /** Xóa mail theo UID (move Trash; đang ở Trash → xóa vĩnh viễn) — không đọc nội dung. */
 export const mDelete = (accountId: string, path: string, uid: number) =>
   mailAction<{ mode: 'trash' | 'purged'; trashPath?: string }>('delete', { accountId, path, uid });
+/** Đánh dấu toàn bộ mail trong folder là đã đọc. */
+export const mMarkAllSeen = (accountId: string, path: string) =>
+  mailAction<{ marked: number }>('markAllSeen', { accountId, path });
 
 export interface MailContact { email: string; name?: string; count: number; lastSeen: string }
 export const mContacts = () => mailAction<MailContact[]>('contacts');

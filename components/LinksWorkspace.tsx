@@ -17,6 +17,7 @@ import { onOpenUrl } from '@/lib/openTarget';
 import { fmtRel } from '@/lib/google';
 import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
+import PasswordInput from './PasswordInput';
 
 /** Một TAB viewer đang mở. Kèm metadata đang gõ dở ở "＋ chi tiết" (nếu có)
  *  — để bấm 💾 TRONG viewer vẫn lưu đủ dự án/tags, không chỉ tên + profile.
@@ -63,9 +64,8 @@ function MetaFields({ meta, onChange }: { meta: MetaDraft; onChange: (m: MetaDra
         <div className="glink-meta-pair">
           <input className="input" placeholder="Username (cách cũ, optional)" value={meta.username ?? ''}
             autoComplete="off" onChange={(e) => onChange({ ...meta, username: e.target.value })} />
-          <input className="input" type="password" placeholder="Password (cách cũ, optional)"
-            value={meta.password ?? ''} autoComplete="new-password"
-            onChange={(e) => onChange({ ...meta, password: e.target.value })} />
+          <PasswordInput value={meta.password ?? ''} onChange={(v) => onChange({ ...meta, password: v })}
+            placeholder="Password (cách cũ, optional)" />
         </div>
       </details>
     </>

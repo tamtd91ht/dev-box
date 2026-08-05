@@ -14,12 +14,16 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  mAccounts, mAccountAdd, mAccountRemove, mFolders, mList, mMessage, mSend, mDelete, mContacts, mContactAdd,
-  attachmentUrl, folderIcon, fmtAddr, fmtSize,
+  mAccounts, mAccountAdd, mAccountAddOAuth, mGoogleAuthUrl, mAccountRemove, mAccountRename,
+  mFolders, mList, mMessage, mSend, mDelete, mMarkAllSeen, mContacts, mContactAdd,
+  attachmentUrl, folderIcon, fmtAddr, fmtSize, accTitle,
   type MailAccountPub, type MailFolder, type MailListItem, type MailDetail, type AccountAddInput,
-  type MailContact,
+  type MailContact, type ImapFailureInfo, type MailActionError,
 } from '@/lib/mail';
+import MailErrorPanel from './MailErrorPanel';
+import GoogleAuthWindow from './GoogleAuthWindow';
 import { fmtRel } from '@/lib/google';
+import PasswordInput from './PasswordInput';
 import { MAIL_REFRESH_EVENT } from './MailWatchHost';
 
 /** Báo cho MailWatchHost đếm lại số mail chưa đọc NGAY (badge tab Mail). */
@@ -62,12 +66,17 @@ function AddAccountForm({ onDone, onCancel }: { onDone: (list: MailAccountPub[])
   const [email, setEmail] = useState('');
   const [pass, setPass] = useState('');
   const [label, setLabel] = useState('');
+  const [title, setTitle] = useState('');
   const [imapHost, setImapHost] = useState(PRESETS[0].imapHost);
   const [imapPort, setImapPort] = useState(PRESETS[0].imapPort);
   const [smtpHost, setSmtpHost] = useState(PRESETS[0].smtpHost);
   const [smtpPort, setSmtpPort] = useState(PRESETS[0].smtpPort);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ImapFailureInfo | undefined>();
+  const formRef = useRef<HTMLDivElement | null>(null);
+  const [authUrl, setAuthUrl] = useState<string | null>(null); // consent Google trong app
+  const [showAppPw, setShowAppPw] = useState(false);           // mở lại cách cũ nếu cần
 
   const pickPreset = (p: Preset) => {
     setPreset(p);
@@ -76,14 +85,45 @@ function AddAccountForm({ onDone, onCancel }: { onDone: (list: MailAccountPub[])
   };
 
   const submit = async () => {
-    setBusy(true); setErr(null);
+    setBusy(true); setErr(null); setFailure(undefined);
     try {
       const input: AccountAddInput = {
-        label, email: email.trim(), pass,
+        label, title, email: email.trim(), pass,
         imapHost: imapHost.trim(), imapPort, imapSecure: imapPort !== 143,
         smtpHost: smtpHost.trim(), smtpPort, smtpSecure: smtpPort === 465,
       };
       onDone(await mAccountAdd(input));
+    } catch (e) {
+      // KHÔNG xóa gì trong form — người dùng chỉ cần sửa đúng ô sai rồi Thử lại.
+      const me = e as MailActionError;
+      setErr(me.message);
+      setFailure(me.failure);
+      // Đưa con trỏ về ô có vấn đề (mật khẩu/host/cổng) như mail client thật.
+      const sel: Record<string, string> = {
+        pass: '.pw-input-field', email: 'input[data-f="email"]',
+        imapHost: 'input[data-f="imapHost"]', imapPort: 'input[data-f="imapPort"]',
+      };
+      const target = me.failure?.focus && formRef.current?.querySelector<HTMLInputElement>(sel[me.failure.focus]);
+      if (target) { target.focus(); target.select?.(); }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const emailLooksValid = /^\S+@\S+\.\S+$/.test(email.trim());
+
+  /** Bước 1: mở consent Google (kèm scope mail). Bước 2 chạy ở finishOAuth. */
+  const oauthConnect = async () => {
+    setErr(null); setFailure(undefined); setBusy(true);
+    try {
+      const { url } = await mGoogleAuthUrl(email.trim());
+      if (typeof window !== 'undefined' && window.workspace?.isDesktop) {
+        setAuthUrl(url); // consent TRONG app — khỏi phụ thuộc Edge/profile
+      } else {
+        window.open(url, '_blank', 'noopener');
+        // Web thuần: không biết lúc nào consent xong → để người dùng bấm lại.
+        setErr('Hoàn tất đăng nhập ở tab vừa mở, rồi bấm "Kết nối bằng Google" lần nữa để thêm hòm thư.');
+      }
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -91,10 +131,31 @@ function AddAccountForm({ onDone, onCancel }: { onDone: (list: MailAccountPub[])
     }
   };
 
+  /** Bước 2: consent xong → tạo hòm thư dùng XOAUTH2. */
+  const finishOAuth = async () => {
+    setAuthUrl(null);
+    setBusy(true); setErr(null); setFailure(undefined);
+    try {
+      onDone(await mAccountAddOAuth(email.trim(), { label, title }));
+    } catch (e) {
+      const me = e as MailActionError;
+      setErr(me.message);
+      setFailure(me.failure);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const canSubmit = email.trim() && pass && imapHost.trim() && smtpHost.trim();
+  // Nhắc App Password khi CHỌN preset Gmail hoặc khi gõ địa chỉ @gmail.com vào
+  // preset "Khác…" (người dùng hay tự điền host Gmail bằng tay).
+  const isGmailTarget =
+    preset.key === 'gmail' ||
+    /@(gmail|googlemail)\.com$/i.test(email.trim()) ||
+    /(^|\.)(gmail|googlemail)\.com$|google/i.test(imapHost.trim());
 
   return (
-    <div className="mail-add">
+    <div className="mail-add" ref={formRef}>
       <div className="mail-add-presets">
         {PRESETS.map((p) => (
           <button key={p.key} className={`chip-btn${preset.key === p.key ? ' on' : ''}`}
@@ -104,18 +165,52 @@ function AddAccountForm({ onDone, onCancel }: { onDone: (list: MailAccountPub[])
         ))}
       </div>
       <p className="small" style={{ color: 'var(--muted)', margin: '2px 0 8px' }}>{preset.hint}</p>
+
+      {/* Gmail: ưu tiên OAuth. Google Workspace thường TẮT App Password
+          ("The setting you are looking for is not available for your account")
+          nên OAuth là đường duy nhất, và cũng khỏi phải lưu mật khẩu. */}
+      {isGmailTarget && (
+        <div className="mail-err mail-err--app-password" style={{ marginTop: 0 }}>
+          <div className="mail-err-head">
+            <span className="mail-err-ico" aria-hidden>Ⓖ</span>
+            <b className="mail-err-title">Gmail / Google Workspace: đăng nhập bằng Google, không cần mật khẩu.</b>
+          </div>
+          <ul className="mail-err-steps">
+            <li>Bấm nút dưới → chọn tài khoản → cấp quyền. DevBox chỉ giữ token, KHÔNG lưu mật khẩu.</li>
+            <li>Dùng được cả khi công ty đã tắt App Password.</li>
+          </ul>
+          <div className="mail-err-actions">
+            <button className="sm" onClick={() => void oauthConnect()} disabled={busy || !emailLooksValid}
+              title={emailLooksValid ? 'Đăng nhập Google cho địa chỉ đã nhập' : 'Nhập địa chỉ email trước'}>
+              {busy ? <span className="spinner" aria-hidden /> : 'Ⓖ'} Kết nối bằng Google
+            </button>
+            <button className="ghost sm" onClick={() => setShowAppPw((v) => !v)}>
+              {showAppPw ? '▾' : '▸'} Dùng App Password (cách cũ)
+            </button>
+          </div>
+        </div>
+      )}
       <div className="mail-add-grid">
-        <input className="input" placeholder="Email (vd ban@congty.com)" value={email}
+        <input className="input" data-f="email" placeholder="Email (vd ban@congty.com)" value={email}
           onChange={(e) => setEmail(e.target.value)} autoComplete="off" />
-        <input className="input" type="password" placeholder="Password (Gmail: App Password)" value={pass}
-          onChange={(e) => setPass(e.target.value)} autoComplete="new-password" />
-        <input className="input" placeholder="Tên hiển thị khi gửi (mặc định: email)" value={label}
-          onChange={(e) => setLabel(e.target.value)} />
+        {/* Gmail đi đường OAuth thì không cần ô mật khẩu — chỉ hiện khi người
+            dùng chủ động chọn "Dùng App Password (cách cũ)". */}
+        {(!isGmailTarget || showAppPw) && (
+          <PasswordInput value={pass} onChange={setPass}
+            placeholder={isGmailTarget ? 'App Password 16 ký tự' : 'Password'}
+            title="Bấm 👁 để soi lại chuỗi vừa dán — sai một ký tự là bị từ chối." />
+        )}
+        <input className="input" placeholder="Tên trong app, vd 'Mail công ty' (mặc định: cả email)" value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          title="Chỉ để bạn phân biệt các hòm thư trên tab — không ảnh hưởng mail gửi ra." />
+        <input className="input" placeholder="Tên người gửi khi gửi mail (mặc định: email)" value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          title="Người nhận thấy tên này ở header From." />
         {preset.key === 'custom' && (
           <>
             <div className="mail-add-pair">
-              <input className="input" placeholder="IMAP host" value={imapHost} onChange={(e) => setImapHost(e.target.value)} />
-              <input className="input mail-port" type="number" value={imapPort}
+              <input className="input" data-f="imapHost" placeholder="IMAP host" value={imapHost} onChange={(e) => setImapHost(e.target.value)} />
+              <input className="input mail-port" data-f="imapPort" type="number" value={imapPort}
                 onChange={(e) => setImapPort(Number(e.target.value) || 993)} title="993 = TLS, 143 = plain/STARTTLS" />
             </div>
             <div className="mail-add-pair">
@@ -126,13 +221,27 @@ function AddAccountForm({ onDone, onCancel }: { onDone: (list: MailAccountPub[])
           </>
         )}
       </div>
-      {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
+      {err && (
+        <MailErrorPanel failure={failure} message={err}
+          onRetry={canSubmit ? () => void submit() : undefined} retrying={busy} />
+      )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <button onClick={() => void submit()} disabled={busy || !canSubmit}>
-          {busy ? <span className="spinner" aria-hidden /> : '＋'} {busy ? 'Đang kiểm tra đăng nhập…' : 'Thêm tài khoản'}
-        </button>
+        {/* Gmail + OAuth: nút thêm nằm ở panel Ⓖ trên kia, ở đây chỉ hiện khi
+            dùng mật khẩu — tránh hai nút "thêm" cạnh nhau gây lẫn. */}
+        {(!isGmailTarget || showAppPw) && (
+          <button onClick={() => void submit()} disabled={busy || !canSubmit}>
+            {busy ? <span className="spinner" aria-hidden /> : '＋'} {busy ? 'Đang kiểm tra đăng nhập…' : 'Thêm tài khoản'}
+          </button>
+        )}
         {onCancel && <button className="ghost" onClick={onCancel}>Hủy</button>}
       </div>
+
+      {/* Consent Google chạy trong app — dùng lại khung của tab Google. */}
+      {authUrl && (
+        <GoogleAuthWindow url={authUrl}
+          onDone={() => void finishOAuth()}
+          onCancel={() => setAuthUrl(null)} />
+      )}
     </div>
   );
 }
@@ -541,6 +650,7 @@ function MailboxView({ account, onCompose }: {
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState<number | null>(null);
   const [deleting, setDeleting] = useState<number | null>(null);
+  const [markingAll, setMarkingAll] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const loadFolders = useCallback(() => {
@@ -584,6 +694,21 @@ function MailboxView({ account, onCompose }: {
       setErr((e as Error).message);
     } finally {
       setOpening(null);
+    }
+  };
+
+  /** Đánh dấu toàn bộ mail trong folder hiện tại là đã đọc — optimistic UI. */
+  const markAllRead = async () => {
+    setMarkingAll(true); setErr(null);
+    try {
+      await mMarkAllSeen(account.id, path);
+      setItems((cur) => cur.map((x) => ({ ...x, seen: true })));
+      setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: 0 } : f)));
+      pingMailWatch();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setMarkingAll(false);
     }
   };
 
@@ -658,6 +783,13 @@ function MailboxView({ account, onCompose }: {
               <span className="small" style={{ color: 'var(--muted)' }}>{total ? `· ${total} mail` : ''}</span>
               {loading && <span className="spinner" aria-hidden />}
               <span style={{ flex: 1 }} />
+              {(curFolder?.unseen ?? 0) > 0 && (
+                <button className="ghost sm" disabled={markingAll}
+                  onClick={() => void markAllRead()}
+                  title="Đánh dấu tất cả mail trong thư mục này là đã đọc">
+                  {markingAll ? <span className="spinner" aria-hidden /> : '✓ Đánh dấu tất cả đã đọc'}
+                </button>
+              )}
               <button className="ghost sm" disabled={loading}
                 onClick={() => { void loadList(path); loadFolders(); }}
                 title="Tải lại danh sách mail + số chưa đọc">↻</button>
@@ -708,12 +840,67 @@ function MailboxView({ account, onCompose }: {
   );
 }
 
+/** Modal ✎ — đổi tên QUẢN LÝ (tab) và tên NGƯỜI GỬI (header From). Hai thứ
+ *  khác nhau nên tách rõ: đổi tên tab không ảnh hưởng mail gửi ra. */
+function RenameAccountModal({ account, onDone, onCancel }: {
+  account: MailAccountPub;
+  onDone: (list: MailAccountPub[]) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState(account.title ?? '');
+  const [label, setLabel] = useState(account.label);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    setBusy(true); setErr(null);
+    try { onDone(await mAccountRename(account.id, { title, label })); }
+    catch (e) { setErr((e as Error).message); setBusy(false); }
+  };
+
+  return (
+    <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && onCancel()}>
+      <div className="mail-compose panel" style={{ width: 'min(520px, 94vw)' }}>
+        <div className="mail-compose-head">
+          <b>✎ Đổi tên tài khoản</b>
+          <span className="small" style={{ color: 'var(--muted)' }}>{account.email}</span>
+          <span style={{ flex: 1 }} />
+          <button className="ghost sm" onClick={onCancel}>✕</button>
+        </div>
+        <label className="small" style={{ color: 'var(--muted)' }}>
+          Tên hiển thị trong app (trên tab chọn tài khoản)
+          <input className="input" autoFocus value={title} placeholder={account.email}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }} />
+        </label>
+        <p className="small" style={{ color: 'var(--faint)', margin: '2px 0 6px' }}>
+          Bỏ trống = hiện cả địa chỉ email. Chỉ để bạn phân biệt các hòm thư — không ảnh hưởng mail gửi ra.
+        </p>
+        <label className="small" style={{ color: 'var(--muted)' }}>
+          Tên người gửi (người nhận thấy ở header From)
+          <input className="input" value={label} placeholder={account.email}
+            onChange={(e) => setLabel(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }} />
+        </label>
+        {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <button onClick={() => void submit()} disabled={busy}>
+            {busy ? <span className="spinner" aria-hidden /> : '💾'} Lưu
+          </button>
+          <button className="ghost" onClick={onCancel}>Hủy</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Top-level workspace ─────────────────────────────────────────────────────
 
 export default function MailWorkspace() {
   const [accounts, setAccounts] = useState<MailAccountPub[] | null>(null);
   const [activeId, setActiveId] = useState('');
   const [adding, setAdding] = useState(false);
+  const [renaming, setRenaming] = useState<MailAccountPub | null>(null); // modal ✎ đổi tên
   const [compose, setCompose] = useState<ComposeDraft | null>(null);
   const [sentFlash, setSentFlash] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -739,7 +926,12 @@ export default function MailWorkspace() {
   };
 
   const removeAccount = async (a: MailAccountPub) => {
-    if (!window.confirm(`Gỡ tài khoản ${a.email} khỏi DevBox? (chỉ xóa credentials trên máy này)`)) return;
+    // Hòm thư OAuth: KHÔNG revoke token Google ở đây — token dùng chung với tab
+    // Google (Drive). Muốn thu hồi hẳn thì đăng xuất ở tab Google.
+    const note = a.auth === 'oauth'
+      ? 'Chỉ gỡ hòm thư khỏi tab Mail. Phiên đăng nhập Google vẫn giữ (tab Google dùng chung) — muốn thu hồi hẳn thì đăng xuất ở tab Google.'
+      : 'Chỉ xóa credentials trên máy này.';
+    if (!window.confirm(`Gỡ tài khoản ${a.email} khỏi DevBox?\n\n${note}`)) return;
     try {
       onAccountsChanged(await mAccountRemove(a.id));
     } catch (e) {
@@ -788,12 +980,16 @@ export default function MailWorkspace() {
         <span style={{ flex: 1 }} />
         <div className="g-accounts" role="tablist" aria-label="Mail accounts">
           {accounts.map((a) => (
-            <span key={a.id} className={`g-acc${a.id === active.id ? ' on' : ''}`} title={a.email}>
+            <span key={a.id} className={`g-acc${a.id === active.id ? ' on' : ''}`}
+              title={`${a.email}${a.title ? ` — "${a.title}"` : ''}`}>
               <button className="g-acc-btn" role="tab" aria-selected={a.id === active.id} onClick={() => setActiveId(a.id)}>
-                ✉ {a.email.split('@')[0]}
+                {a.auth === 'oauth' ? 'Ⓖ' : '✉'} {accTitle(a)}
               </button>
               {a.id === active.id && (
-                <button className="g-acc-x" onClick={() => void removeAccount(a)} title={`Gỡ ${a.email}`}>✕</button>
+                <>
+                  <button className="g-acc-x" onClick={() => setRenaming(a)} title="Đổi tên hiển thị">✎</button>
+                  <button className="g-acc-x" onClick={() => void removeAccount(a)} title={`Gỡ ${a.email}`}>✕</button>
+                </>
               )}
             </span>
           ))}
@@ -818,6 +1014,14 @@ export default function MailWorkspace() {
             <AddAccountForm onDone={onAccountsChanged} onCancel={() => setAdding(false)} />
           </div>
         </div>
+      )}
+
+      {renaming && (
+        <RenameAccountModal
+          account={renaming}
+          onDone={(list) => { setAccounts(list); setRenaming(null); }}
+          onCancel={() => setRenaming(null)}
+        />
       )}
 
       {compose && (

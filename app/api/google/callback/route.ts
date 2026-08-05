@@ -16,7 +16,12 @@ function page(title: string, body: string, ok: boolean): Response {
   <h2 style="margin:12px 0 8px">${title}</h2>
   <p style="color:#aaa;font-size:14px;line-height:1.6">${body}</p>
 </div>
-${ok ? '<script>setTimeout(()=>window.close(),1500)</script>' : ''}
+${ok ? `<script>
+// Mở bằng trình duyệt ngoài (tab do window.open tạo) thì tự đóng. Khi consent
+// chạy TRONG app (<webview> của GoogleAuthWindow) thì window.close() không đóng
+// được gì — khung đó tự phát hiện đã tới callback rồi đóng, nên đừng thử.
+setTimeout(function(){ try { if (window.opener) window.close(); } catch (e) {} }, 1500);
+</script>` : ''}
 </body></html>`;
   return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
 }

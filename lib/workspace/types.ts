@@ -117,6 +117,10 @@ export interface WorkspaceBridge {
   encryptSecret?(plain: string): Promise<{ ok: boolean; value?: string; error?: string }>;
   /** Mở niêm phong để điền vào form login. Thất bại nếu file bị copy từ máy khác. */
   decryptSecret?(b64: string): Promise<{ ok: boolean; value?: string; error?: string }>;
+  /** In HTML ra PDF bằng Chromium của app (tab Tools → Chuyển đổi file).
+   *  Next server là process riêng nên không gọi Electron được — renderer làm
+   *  cầu nối. Optional: preload cũ chưa expose, bản web thuần không có. */
+  htmlToPdf?(html: string): Promise<{ ok: boolean; base64?: string; error?: string }>;
 }
 
 /** Minimal surface of an Electron <webview> element we actually drive. */

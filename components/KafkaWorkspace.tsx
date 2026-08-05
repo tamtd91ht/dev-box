@@ -43,6 +43,72 @@ type SubView = 'topics' | 'groups';
 /** Inner tabs of a selected topic (Kafka-HQ style: messages front-and-center). */
 type TopicTab = 'messages' | 'partitions' | 'groups';
 
+/**
+ * One browser-style tab: everything scoped to ONE topic being inspected. Several
+ * can be open at once (topic A on cluster 1 next to topic B on cluster 2), so all
+ * of this is per-tab rather than component-wide — switching tabs is pure state
+ * swapping, no refetch.
+ */
+interface TabState {
+  id: string;
+  /** Cluster this tab is pinned to — a tab keeps its cluster even if the rail moves on. */
+  connectionId: string;
+  /** null = tab is showing the topic picker (a "new tab"). */
+  topic: string | null;
+  detail: TopicDetail | null;
+  detailLoading: boolean;
+  /** Which inner tab of the topic is showing. */
+  view: TopicTab;
+  // Message filter + results.
+  fromInput: string;
+  toInput: string;
+  keyword: string;
+  peekN: string;
+  messages: MessagePage | null;
+  msgLoading: boolean;
+  msgMode: 'peek' | 'search' | null;
+  /** Consumer groups consuming this topic (+ lag) — lazy-loaded when its view opens. */
+  groups: TopicConsumerGroup[] | null;
+  groupsLoading: boolean;
+  /** Set once the auto-peek has fired for the current topic, so it runs exactly once. */
+  peeked: boolean;
+  error: string | null;
+}
+
+let tabSeq = 0;
+/** A fresh empty tab (topic picker) for the given cluster. */
+function newTab(connectionId: string, topic: string | null = null): TabState {
+  tabSeq += 1;
+  const now = Date.now();
+  return {
+    id: `t${tabSeq}`,
+    connectionId,
+    topic,
+    detail: null,
+    detailLoading: false,
+    view: 'messages',
+    fromInput: toLocalInput(now - 15 * 60 * 1000),
+    toInput: toLocalInput(now),
+    keyword: '',
+    peekN: String(DEFAULT_PEEK),
+    messages: null,
+    msgLoading: false,
+    msgMode: null,
+    groups: null,
+    groupsLoading: false,
+    peeked: false,
+    error: null,
+  };
+}
+
+/** Search is ONLY enabled once BOTH a valid time window AND a keyword are present —
+ *  the window is what keeps search fast (seek to the offset range, no full scan). */
+function canSearchTab(t: TabState): boolean {
+  const from = t.fromInput ? new Date(t.fromInput).getTime() : NaN;
+  const to = t.toInput ? new Date(t.toInput).getTime() : NaN;
+  return Number.isFinite(from) && Number.isFinite(to) && to > from && t.keyword.trim().length > 0;
+}
+
 /** Format an epoch-ms into a `datetime-local` input value (local time, minute precision). */
 function toLocalInput(ms: number): string {
   const d = new Date(ms);
@@ -73,27 +139,17 @@ export default function KafkaWorkspace() {
   const [subView, setSubView] = useState<SubView>('topics');
 
   // ── Topics ────────────────────────────────────────────────────────────────
-  const [topics, setTopics] = useState<TopicSummary[]>([]);
+  // Topic list is per-CLUSTER (not per-tab) — two tabs on the same cluster share
+  // one fetched list. Keyed by connection id so switching clusters doesn't refetch.
+  const [topicsByConn, setTopicsByConn] = useState<Record<string, TopicSummary[]>>({});
   const [topicsLoading, setTopicsLoading] = useState(false);
   const [topicFilter, setTopicFilter] = useState('');
   const [showInternal, setShowInternal] = useState(false);
-  const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
-  const [topicDetail, setTopicDetail] = useState<TopicDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  /** Which inner tab of the selected topic is showing (messages default). */
-  const [topicTab, setTopicTab] = useState<TopicTab>('messages');
-  // Consumer groups consuming the selected topic (+ lag) — loaded lazily on tab open.
-  const [topicGroups, setTopicGroups] = useState<TopicConsumerGroup[] | null>(null);
-  const [topicGroupsLoading, setTopicGroupsLoading] = useState(false);
 
-  // ── Messages (peek / search) ────────────────────────────────────────────────
-  const [peekN, setPeekN] = useState(String(DEFAULT_PEEK));
-  const [fromInput, setFromInput] = useState('');
-  const [toInput, setToInput] = useState('');
-  const [keyword, setKeyword] = useState('');
-  const [messages, setMessages] = useState<MessagePage | null>(null);
-  const [msgLoading, setMsgLoading] = useState(false);
-  const [msgMode, setMsgMode] = useState<'peek' | 'search' | null>(null);
+  // ── Tabs: each holds one topic + its own messages/search state ──────────────
+  const [tabs, setTabs] = useState<TabState[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string>('');
+
   const [produceOpen, setProduceOpen] = useState(false);
   /** Message currently open in the detail drawer (null = drawer closed). */
   const [selectedMsg, setSelectedMsg] = useState<PreviewMessage | null>(null);
@@ -123,13 +179,6 @@ export default function KafkaWorkspace() {
   }, []);
 
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // > 0 while a preset is driving a cluster/topic switch, so the connection-reset
-  // effect and the auto-peek effect don't clobber the preset's own search results.
-  // A COUNTER (not a self-clearing boolean): executePreset holds it for the whole
-  // sequence and releases it exactly once at the end, so the two guarded effects can
-  // both fire in any order — or not at all — without leaving the guard stuck or
-  // clearing it prematurely. Reads skip; only executePreset mutates it.
-  const presetGuard = useRef(0);
   const flash = useCallback((msg: string) => {
     setNotice(msg);
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
@@ -137,6 +186,46 @@ export default function KafkaWorkspace() {
   }, []);
 
   const active = useMemo(() => connections.find((c) => c.id === activeId) ?? null, [connections, activeId]);
+
+  // ── Tab plumbing ────────────────────────────────────────────────────────────
+  const activeTab = useMemo(() => tabs.find((t) => t.id === activeTabId) ?? null, [tabs, activeTabId]);
+
+  /** Patch one tab by id. Safe to call from an async callback after the tab closed
+   *  (the map simply matches nothing). */
+  const patchTab = useCallback((id: string, patch: Partial<TabState> | ((t: TabState) => Partial<TabState>)) => {
+    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...(typeof patch === 'function' ? patch(t) : patch) } : t)));
+  }, []);
+
+  /** Open a new tab on a cluster (optionally already pointed at a topic) and focus it. */
+  const openTab = useCallback((connectionId: string, topic: string | null = null) => {
+    const tab = newTab(connectionId, topic);
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+    return tab;
+  }, []);
+
+  /** Close a tab; focus the neighbour on its left (or right if it was first). */
+  const closeTab = useCallback((id: string) => {
+    setTabs((prev) => {
+      const at = prev.findIndex((t) => t.id === id);
+      if (at === -1) return prev;
+      const next = prev.filter((t) => t.id !== id);
+      setActiveTabId((cur) => (cur === id ? next[Math.max(0, at - 1)]?.id ?? '' : cur));
+      return next;
+    });
+  }, []);
+
+  // Always keep at least one tab open once a cluster is available, and never leave
+  // the focus dangling on a closed tab.
+  useEffect(() => {
+    if (!activeId) return;
+    if (tabs.length === 0) { openTab(activeId); return; }
+    if (!tabs.some((t) => t.id === activeTabId)) setActiveTabId(tabs[0].id);
+  }, [activeId, tabs, activeTabId, openTab]);
+
+  /** Topics of the cluster the ACTIVE TAB is on (the list the picker shows). */
+  const tabConnId = activeTab?.connectionId ?? activeId;
+  const topics = useMemo(() => topicsByConn[tabConnId] ?? [], [topicsByConn, tabConnId]);
 
   // ── Connection loading ──────────────────────────────────────────────────────
   const loadConnections = useCallback(async (preferId?: string) => {
@@ -159,65 +248,77 @@ export default function KafkaWorkspace() {
     if (activeId && typeof window !== 'undefined') window.localStorage.setItem(LAST_CONN_KEY, activeId);
   }, [activeId]);
 
-  // Reset the right pane whenever the active connection changes — UNLESS a preset
-  // is driving the switch (it sets the topic/search itself and must not be reset).
+  // Switching cluster in the rail only resets the CLUSTER-scoped panes (consumer
+  // groups). Open topic tabs keep their own cluster + results and are untouched —
+  // that's the whole point of tabs. The active tab follows the rail only if it's
+  // still an empty "new tab" (nothing to lose); otherwise a fresh tab is opened.
   useEffect(() => {
-    if (presetGuard.current > 0) return;
-    setSelectedTopic(null);
-    setTopicDetail(null);
-    setMessages(null);
-    setMsgMode(null);
+    if (!activeId) return;
     setSelectedGroup(null);
     setGroupDetail(null);
-    setTopics([]);
     setGroups([]);
+    setTabs((prev) => {
+      const cur = prev.find((t) => t.id === activeTabId);
+      if (!cur || cur.connectionId === activeId) return prev;
+      if (cur.topic === null) return prev.map((t) => (t.id === cur.id ? { ...t, connectionId: activeId } : t));
+      const tab = newTab(activeId);
+      setActiveTabId(tab.id);
+      return [...prev, tab];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
   // ── Topics ──────────────────────────────────────────────────────────────────
-  const loadTopics = useCallback(async () => {
-    if (!activeId) return;
+  /** Fetch (or refetch) the topic list for a cluster into the shared per-cluster cache. */
+  const loadTopics = useCallback(async (connId?: string) => {
+    const id = connId ?? tabConnId;
+    if (!id) return;
     setTopicsLoading(true);
     setError(null);
     try {
-      setTopics(await listKafkaTopics(activeId));
+      const list = await listKafkaTopics(id);
+      setTopicsByConn((prev) => ({ ...prev, [id]: list }));
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setTopicsLoading(false);
     }
-  }, [activeId]);
+  }, [tabConnId]);
 
-  // Auto-load topics when the Topics view is shown for a connection with none loaded.
+  // Auto-load topics when the Topics view shows a cluster we haven't listed yet.
   useEffect(() => {
-    if (subView === 'topics' && activeId && topics.length === 0 && !topicsLoading) void loadTopics();
+    if (subView === 'topics' && tabConnId && !topicsByConn[tabConnId] && !topicsLoading) void loadTopics(tabConnId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subView, activeId]);
+  }, [subView, tabConnId]);
 
-  const selectTopic = useCallback(
-    async (name: string) => {
-      setSelectedTopic(name);
-      setTopicDetail(null);
-      setMessages(null);
-      setMsgMode(null);
+  /** Point a tab at a topic and load its detail (which then triggers the auto-peek). */
+  const selectTopicIn = useCallback(
+    async (tabId: string, connId: string, name: string) => {
       setSelectedMsg(null);
-      setTopicGroups(null);
-      setTopicTab('messages');
-      setDetailLoading(true);
-      setError(null);
-      // Seed a sensible default time window for search: last 15 minutes.
       const now = Date.now();
-      setFromInput(toLocalInput(now - 15 * 60 * 1000));
-      setToInput(toLocalInput(now));
-      setKeyword('');
+      patchTab(tabId, {
+        topic: name,
+        detail: null,
+        detailLoading: true,
+        view: 'messages',
+        groups: null,
+        messages: null,
+        msgMode: null,
+        peeked: false,
+        error: null,
+        // Seed a sensible default time window for search: last 15 minutes.
+        fromInput: toLocalInput(now - 15 * 60 * 1000),
+        toInput: toLocalInput(now),
+        keyword: '',
+      });
       try {
-        setTopicDetail(await describeKafkaTopic(activeId, name));
+        const detail = await describeKafkaTopic(connId, name);
+        patchTab(tabId, { detail, detailLoading: false });
       } catch (e) {
-        setError((e as Error).message);
-      } finally {
-        setDetailLoading(false);
+        patchTab(tabId, { detailLoading: false, error: (e as Error).message });
       }
     },
-    [activeId],
+    [patchTab],
   );
 
   const filteredTopics = useMemo(() => {
@@ -226,76 +327,69 @@ export default function KafkaWorkspace() {
   }, [topics, topicFilter, showInternal]);
 
   // ── Messages ──────────────────────────────────────────────────────────────
-  const doPeek = useCallback(async () => {
-    if (!selectedTopic) return;
-    setMsgLoading(true);
-    setMsgMode('peek');
-    setError(null);
+  /** Peek the newest N messages of a tab's topic. */
+  const doPeek = useCallback(async (tab: TabState) => {
+    if (!tab.topic) return;
+    patchTab(tab.id, { msgLoading: true, msgMode: 'peek', error: null, peeked: true });
     try {
-      const page = await peekKafkaMessages(activeId, selectedTopic, Number(peekN) || DEFAULT_PEEK);
-      setMessages(page);
+      const page = await peekKafkaMessages(tab.connectionId, tab.topic, Number(tab.peekN) || DEFAULT_PEEK);
       // Re-seed the search window around the newest real message so the default
       // window lands on data (a fixed "last 15 min" is empty on an idle topic).
       const newest = page.messages.reduce((mx, m) => (Number.isFinite(m.timestamp) && m.timestamp > mx ? m.timestamp : mx), 0);
-      if (newest > 0) {
-        setFromInput(toLocalInput(newest - 15 * 60 * 1000));
-        setToInput(toLocalInput(newest + 60 * 1000));
-      }
+      patchTab(tab.id, {
+        messages: page,
+        msgLoading: false,
+        ...(newest > 0
+          ? { fromInput: toLocalInput(newest - 15 * 60 * 1000), toInput: toLocalInput(newest + 60 * 1000) }
+          : null),
+      });
     } catch (e) {
-      setError((e as Error).message);
-      setMessages(null);
-    } finally {
-      setMsgLoading(false);
+      patchTab(tab.id, { msgLoading: false, messages: null, error: (e as Error).message });
     }
-  }, [activeId, selectedTopic, peekN]);
+  }, [patchTab]);
 
-  const fromMs = useMemo(() => (fromInput ? new Date(fromInput).getTime() : NaN), [fromInput]);
-  const toMs = useMemo(() => (toInput ? new Date(toInput).getTime() : NaN), [toInput]);
-  // Search is ONLY enabled once BOTH a valid time window AND a keyword are present.
-  const canSearch = Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs > fromMs && keyword.trim().length > 0;
-
-  const doSearch = useCallback(async () => {
-    if (!selectedTopic || !canSearch) return;
-    setMsgLoading(true);
-    setMsgMode('search');
-    setError(null);
+  /** Search a tab's topic within its time window + keyword. */
+  const doSearch = useCallback(async (tab: TabState) => {
+    const fromMs = tab.fromInput ? new Date(tab.fromInput).getTime() : NaN;
+    const toMs = tab.toInput ? new Date(tab.toInput).getTime() : NaN;
+    if (!tab.topic || !canSearchTab(tab)) return;
+    patchTab(tab.id, { msgLoading: true, msgMode: 'search', error: null });
     try {
-      setMessages(await searchKafkaMessages(activeId, { topic: selectedTopic, fromMs, toMs, keyword: keyword.trim() }));
+      const page = await searchKafkaMessages(tab.connectionId, {
+        topic: tab.topic, fromMs, toMs, keyword: tab.keyword.trim(),
+      });
+      patchTab(tab.id, { messages: page, msgLoading: false });
     } catch (e) {
-      setError((e as Error).message);
-      setMessages(null);
-    } finally {
-      setMsgLoading(false);
+      patchTab(tab.id, { msgLoading: false, messages: null, error: (e as Error).message });
     }
-  }, [activeId, selectedTopic, canSearch, fromMs, toMs, keyword]);
+  }, [patchTab]);
 
-  // Kafka-HQ style: as soon as a topic's detail loads, show its latest messages.
-  // Skip when a preset drove the topic — it already ran its own search.
+  // Kafka-HQ style: as soon as a topic's detail lands, show its latest messages.
+  // `peeked` makes this fire exactly once per topic — a preset-driven tab is created
+  // with peeked:true so its own search result is never overwritten.
   useEffect(() => {
-    if (presetGuard.current > 0) return; // preset ran its own search — don't auto-peek over it
-    if (topicDetail && selectedTopic) void doPeek();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topicDetail]);
+    const t = tabs.find((x) => x.detail && x.topic && !x.peeked && !x.msgLoading);
+    if (t) void doPeek(t);
+  }, [tabs, doPeek]);
 
-  // Consumer groups on the selected topic (+ lag) — load lazily when its tab opens.
-  const loadTopicGroups = useCallback(async () => {
-    if (!activeId || !selectedTopic) return;
-    setTopicGroupsLoading(true);
-    setError(null);
+  /** Consumer groups on a tab's topic (+ lag) — lazy, when its inner tab opens. */
+  const loadTopicGroups = useCallback(async (tab: TabState) => {
+    if (!tab.topic) return;
+    patchTab(tab.id, { groupsLoading: true, error: null });
     try {
-      setTopicGroups(await listKafkaTopicGroups(activeId, selectedTopic));
+      const groups = await listKafkaTopicGroups(tab.connectionId, tab.topic);
+      patchTab(tab.id, { groups, groupsLoading: false });
     } catch (e) {
-      setError((e as Error).message);
-      setTopicGroups(null);
-    } finally {
-      setTopicGroupsLoading(false);
+      patchTab(tab.id, { groups: null, groupsLoading: false, error: (e as Error).message });
     }
-  }, [activeId, selectedTopic]);
+  }, [patchTab]);
 
   useEffect(() => {
-    if (topicTab === 'groups' && selectedTopic && topicGroups === null && !topicGroupsLoading) void loadTopicGroups();
+    if (activeTab && activeTab.view === 'groups' && activeTab.topic && activeTab.groups === null && !activeTab.groupsLoading) {
+      void loadTopicGroups(activeTab);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topicTab, selectedTopic]);
+  }, [activeTab?.id, activeTab?.view, activeTab?.topic]);
 
   // ── Groups ──────────────────────────────────────────────────────────────────
   const loadGroups = useCallback(async () => {
@@ -359,66 +453,55 @@ export default function KafkaWorkspace() {
   // Esc-to-close + Ctrl+F find are owned by MessageDrawer itself (it needs Esc to
   // close the find bar first, then the drawer), so no drawer keyboard handler here.
 
-  /** Return from a selected topic back to the topic list (Kafka-HQ pattern). */
+  /** Return the active tab from its topic back to the topic picker. */
   const backToTopics = useCallback(() => {
-    setSelectedTopic(null);
-    setTopicDetail(null);
-    setMessages(null);
-    setMsgMode(null);
+    if (!activeTab) return;
     setSelectedMsg(null);
-  }, []);
+    patchTab(activeTab.id, { topic: null, detail: null, messages: null, msgMode: null, groups: null, peeked: false });
+  }, [activeTab, patchTab]);
 
   // ── Preset execution ────────────────────────────────────────────────────────
   /**
-   * Run a saved preset with a resolved keyword + time window: switch to its
-   * cluster & topic, then search — reusing the exact same message view as the
-   * main flow (table with horizontal scroll → click opens the detail drawer).
+   * Run a saved preset with a resolved keyword + time window: open a NEW tab on the
+   * preset's cluster + topic and search there — so a preset never disturbs whatever
+   * you already had open. The tab starts with peeked:true so the auto-peek effect
+   * leaves the search result alone.
    */
   const executePreset = useCallback(
-    async (preset: KafkaPreset, kw: string, fromLocal: string, toLocal: string) => {
+    (preset: KafkaPreset, kw: string, fromLocal: string, toLocal: string) => {
       const from = new Date(fromLocal).getTime();
       const to = new Date(toLocal).getTime();
       if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) {
         setError('Khoảng thời gian không hợp lệ.');
         return;
       }
-      // Guard the reset + auto-peek effects so they don't wipe our search result.
-      // Held for the WHOLE sequence and released once BOTH async legs (describe +
-      // search) have settled and flushed their state — so no late-landing
-      // setTopicDetail can re-trigger the auto-peek effect over our results.
-      presetGuard.current += 1;
-      const release = () => { presetGuard.current = Math.max(0, presetGuard.current - 1); };
-      // Land on the preset's cluster + topics view, showing the message table.
       setActiveId(preset.connectionId);
       setSubView('topics');
-      setSelectedTopic(preset.topic);
-      setSelectedGroup(null);
-      setGroupDetail(null);
       setSelectedMsg(null);
-      setTopicTab('messages');
-      setFromInput(fromLocal);
-      setToInput(toLocal);
-      setKeyword(kw);
       setError(null);
-      // Load topic detail (partition/offset counts) in the background so the header
-      // badges + Partitions tab populate; don't block the search on it.
-      setDetailLoading(true);
-      const describeDone = describeKafkaTopic(preset.connectionId, preset.topic)
-        .then(setTopicDetail)
-        .catch((e) => setError((e as Error).message))
-        .finally(() => setDetailLoading(false));
-      // Run the search directly (state-based doSearch can't see fresh values yet).
-      setMsgLoading(true);
-      setMsgMode('search');
-      const searchDone = searchKafkaMessages(preset.connectionId, { topic: preset.topic, fromMs: from, toMs: to, keyword: kw.trim() })
-        .then((page) => setMessages(page))
-        .catch((e) => { setError((e as Error).message); setMessages(null); })
-        .finally(() => setMsgLoading(false));
-      // Only drop the guard once BOTH legs have resolved AND React has flushed the
-      // resulting effects (the extra microtask hop after Promise.all).
-      void Promise.all([describeDone, searchDone]).then(() => setTimeout(release, 0));
+
+      const tab: TabState = {
+        ...newTab(preset.connectionId, preset.topic),
+        fromInput: fromLocal,
+        toInput: toLocal,
+        keyword: kw,
+        detailLoading: true,
+        msgLoading: true,
+        msgMode: 'search',
+        peeked: true, // this tab runs its own search — don't auto-peek over it
+      };
+      setTabs((prev) => [...prev, tab]);
+      setActiveTabId(tab.id);
+
+      // Topic detail (partition/offset badges) loads alongside — don't block on it.
+      void describeKafkaTopic(preset.connectionId, preset.topic)
+        .then((detail) => patchTab(tab.id, { detail, detailLoading: false }))
+        .catch((e) => patchTab(tab.id, { detailLoading: false, error: (e as Error).message }));
+      void searchKafkaMessages(preset.connectionId, { topic: preset.topic, fromMs: from, toMs: to, keyword: kw.trim() })
+        .then((page) => patchTab(tab.id, { messages: page, msgLoading: false }))
+        .catch((e) => patchTab(tab.id, { messages: null, msgLoading: false, error: (e as Error).message }));
     },
-    [],
+    [patchTab],
   );
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -535,7 +618,7 @@ export default function KafkaWorkspace() {
               </div>
               <button
                 className="chip-btn"
-                onClick={() => (subView === 'topics' ? void loadTopics() : void loadGroups())}
+                onClick={() => (subView === 'topics' ? void loadTopics(tabConnId) : void loadGroups())}
               >↻ Tải lại</button>
             </div>
 
@@ -546,8 +629,37 @@ export default function KafkaWorkspace() {
             {error && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{error}</pre>}
             {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
 
-            {subView === 'topics' && !selectedTopic && (
-              /* ── Topic list (collapses once a topic is picked) ─────────── */
+            {subView === 'topics' && (
+              /* ── Browser-style tab strip: one topic per tab ─────────────── */
+              <div className="kafka-tabstrip">
+                {tabs.map((t) => {
+                  const conn = connections.find((c) => c.id === t.connectionId);
+                  return (
+                    <div
+                      key={t.id}
+                      className={`kafka-tab${t.id === activeTabId ? ' active' : ''}`}
+                      onClick={() => { setActiveTabId(t.id); setSelectedMsg(null); }}
+                      onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(t.id); } }}
+                      title={t.topic ? `${t.topic}${conn ? ` · ${conn.name}` : ''}` : 'Tab mới'}
+                    >
+                      {t.msgLoading || t.detailLoading ? <span className="spinner" /> : null}
+                      <span className="kafka-tab-label">{t.topic ?? 'Tab mới'}</span>
+                      {/* Show which cluster the tab is on only when it differs from the rail. */}
+                      {conn && t.connectionId !== activeId && <span className="kafka-tab-conn">{conn.name}</span>}
+                      <button
+                        className="kafka-tab-x"
+                        title="Đóng tab"
+                        onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}
+                      >✕</button>
+                    </div>
+                  );
+                })}
+                <button className="kafka-tab-new" title="Mở tab mới" onClick={() => openTab(activeId)}>+</button>
+              </div>
+            )}
+
+            {subView === 'topics' && activeTab && !activeTab.topic && (
+              /* ── Topic picker for the active tab ───────────────────────── */
               <div className="kafka-pane">
                 <div className="kafka-toolbar">
                   <input
@@ -568,7 +680,7 @@ export default function KafkaWorkspace() {
                     <button
                       key={t.name}
                       className="ep-item"
-                      onClick={() => void selectTopic(t.name)}
+                      onClick={() => void selectTopicIn(activeTab.id, activeTab.connectionId, t.name)}
                     >
                       <span className="kafka-topic-name">{t.name}</span>
                       <span className="kafka-topic-meta">{t.partitions}p · RF{t.replicationFactor}</span>
@@ -579,101 +691,110 @@ export default function KafkaWorkspace() {
               </div>
             )}
 
-            {subView === 'topics' && selectedTopic && (
-              /* ── Selected topic: header + tabs, message viewer gets the room ─ */
+            {subView === 'topics' && activeTab && activeTab.topic && (
+              /* ── The active tab's topic: header + inner tabs + message viewer ─ */
               <div className="kafka-pane">
                 <div className="kafka-topic-header">
                   <button className="chip-btn" title="Về danh sách topic" onClick={backToTopics}>←</button>
-                  <strong className="code kafka-topic-title" title={selectedTopic}>{selectedTopic}</strong>
-                  {topicDetail && (
+                  <strong className="code kafka-topic-title" title={activeTab.topic}>{activeTab.topic}</strong>
+                  {activeTab.detail && (
                     <>
-                      <span className="badge">{topicDetail.partitions.length}p</span>
-                      <span className="badge">≈ {fmtInt(topicDetail.totalMessages)} msg</span>
+                      <span className="badge">{activeTab.detail.partitions.length}p</span>
+                      <span className="badge">≈ {fmtInt(activeTab.detail.totalMessages)} msg</span>
                     </>
                   )}
                   <span style={{ flex: 1 }} />
-                  <button className="chip-btn" disabled={!topicDetail} onClick={() => setProduceOpen(true)}>+ Produce</button>
+                  <button className="chip-btn" disabled={!activeTab.detail} onClick={() => setProduceOpen(true)}>+ Produce</button>
                 </div>
+
+                {activeTab.error && (
+                  <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{activeTab.error}</pre>
+                )}
 
                 <div className="kafka-subnav kafka-topic-tabs">
-                  <button className={topicTab === 'messages' ? 'on' : ''} onClick={() => setTopicTab('messages')}>Messages</button>
-                  <button className={topicTab === 'partitions' ? 'on' : ''} onClick={() => setTopicTab('partitions')}>Partitions</button>
-                  <button className={topicTab === 'groups' ? 'on' : ''} onClick={() => setTopicTab('groups')}>Consumer groups</button>
+                  <button className={activeTab.view === 'messages' ? 'on' : ''} onClick={() => patchTab(activeTab.id, { view: 'messages' })}>Messages</button>
+                  <button className={activeTab.view === 'partitions' ? 'on' : ''} onClick={() => patchTab(activeTab.id, { view: 'partitions' })}>Partitions</button>
+                  <button className={activeTab.view === 'groups' ? 'on' : ''} onClick={() => patchTab(activeTab.id, { view: 'groups' })}>Consumer groups</button>
                 </div>
 
-                {detailLoading ? (
+                {activeTab.detailLoading && !activeTab.detail ? (
                   <p><span className="spinner" /> Đang tải chi tiết…</p>
-                ) : !topicDetail ? null : topicTab === 'messages' ? (
+                ) : activeTab.view === 'messages' ? (
                   <>
                     {/* Compact one-line filter: time window + keyword + search + peek */}
                     <div className="kafka-filter">
-                      <DateTimeField className="input kafka-dt" value={fromInput} onChange={setFromInput} />
+                      <DateTimeField className="input kafka-dt" value={activeTab.fromInput} onChange={(v) => patchTab(activeTab.id, { fromInput: v })} />
                       <span className="kafka-filter-sep">→</span>
-                      <DateTimeField className="input kafka-dt" value={toInput} onChange={setToInput} />
+                      <DateTimeField className="input kafka-dt" value={activeTab.toInput} onChange={(v) => patchTab(activeTab.id, { toInput: v })} />
                       <input
                         className="input kafka-kw"
                         type="search"
                         name="kafka-filter-keyword"
                         placeholder="Keyword…"
-                        value={keyword}
-                        onChange={(e) => setKeyword(e.target.value)}
+                        value={activeTab.keyword}
+                        onChange={(e) => patchTab(activeTab.id, { keyword: e.target.value })}
                         autoComplete="off"
                         data-lpignore="true"
                         data-form-type="other"
-                        onKeyDown={(e) => e.key === 'Enter' && canSearch && void doSearch()}
+                        onKeyDown={(e) => e.key === 'Enter' && canSearchTab(activeTab) && void doSearch(activeTab)}
                       />
-                      <button className="sm" disabled={!canSearch || msgLoading} onClick={() => void doSearch()} title="Tìm theo khoảng thời gian + keyword">
-                        Tìm
-                      </button>
+                      <button
+                        className="sm"
+                        disabled={!canSearchTab(activeTab) || activeTab.msgLoading}
+                        onClick={() => void doSearch(activeTab)}
+                        title="Tìm theo khoảng thời gian + keyword"
+                      >Tìm</button>
                       <span className="kafka-filter-sep">·</span>
                       <input
                         className="input kafka-peekn"
                         type="number"
                         min={1}
                         max={200}
-                        value={peekN}
-                        onChange={(e) => setPeekN(e.target.value)}
+                        value={activeTab.peekN}
+                        onChange={(e) => patchTab(activeTab.id, { peekN: e.target.value })}
                         title="Số message mới nhất"
                       />
-                      <button className="chip-btn" disabled={msgLoading} onClick={() => void doPeek()} title="Xem message mới nhất">
+                      <button className="chip-btn" disabled={activeTab.msgLoading} onClick={() => void doPeek(activeTab)} title="Xem message mới nhất">
                         Mới nhất
                       </button>
                     </div>
 
                     <MessageList
-                      page={messages}
-                      loading={msgLoading}
-                      mode={msgMode}
+                      page={activeTab.messages}
+                      loading={activeTab.msgLoading}
+                      mode={activeTab.msgMode}
                       selected={selectedMsg}
                       onSelect={setSelectedMsg}
                     />
                   </>
-                ) : topicTab === 'partitions' ? (
+                ) : activeTab.view === 'partitions' ? (
                   <div className="kafka-scroll" style={{ flex: 1 }}>
-                    <table className="kafka-table">
-                      <thead>
-                        <tr><th>P</th><th>Leader</th><th>ISR</th><th>Low</th><th>High</th><th>Count</th></tr>
-                      </thead>
-                      <tbody>
-                        {topicDetail.partitions.map((p) => (
-                          <tr key={p.partition}>
-                            <td>{p.partition}</td>
-                            <td>{p.leader}</td>
-                            <td>{p.isr.length}/{p.replicas.length}</td>
-                            <td>{fmtInt(p.low)}</td>
-                            <td>{fmtInt(p.high)}</td>
-                            <td>{fmtInt(p.count)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    {!activeTab.detail ? <p className="empty">Chưa tải được chi tiết topic.</p> : (
+                      <table className="kafka-table">
+                        <thead>
+                          <tr><th>P</th><th>Leader</th><th>ISR</th><th>Low</th><th>High</th><th>Count</th></tr>
+                        </thead>
+                        <tbody>
+                          {activeTab.detail.partitions.map((p) => (
+                            <tr key={p.partition}>
+                              <td>{p.partition}</td>
+                              <td>{p.leader}</td>
+                              <td>{p.isr.length}/{p.replicas.length}</td>
+                              <td>{fmtInt(p.low)}</td>
+                              <td>{fmtInt(p.high)}</td>
+                              <td>{fmtInt(p.count)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
                   </div>
                 ) : (
                   <div className="kafka-scroll" style={{ flex: 1 }}>
                     <TopicGroups
-                      groups={topicGroups}
-                      loading={topicGroupsLoading}
-                      onRefresh={() => void loadTopicGroups()}
+                      groups={activeTab.groups}
+                      loading={activeTab.groupsLoading}
+                      onRefresh={() => void loadTopicGroups(activeTab)}
                     />
                   </div>
                 )}
@@ -757,13 +878,13 @@ export default function KafkaWorkspace() {
         )}
       </main>
 
-      {produceOpen && active && selectedTopic && (
+      {produceOpen && activeTab?.topic && (
         <ProduceModal
-          topic={selectedTopic}
-          partitions={topicDetail?.partitions.length ?? 1}
+          topic={activeTab.topic}
+          partitions={activeTab.detail?.partitions.length ?? 1}
           onClose={() => setProduceOpen(false)}
           onSent={(where) => { setProduceOpen(false); flash(`Đã gửi → p${where.partition}@${where.offset}`); }}
-          onProduce={(payload) => produceKafkaMessage(activeId, { topic: selectedTopic, ...payload })}
+          onProduce={(payload) => produceKafkaMessage(activeTab.connectionId, { topic: activeTab.topic!, ...payload })}
         />
       )}
 
@@ -830,8 +951,7 @@ export default function KafkaWorkspace() {
         <PresetForm
           initial={presetEdit === 'new' ? null : presetEdit}
           connections={connections}
-          activeId={activeId}
-          topics={topics}
+          topicsByConn={topicsByConn}
           onCancel={() => setPresetEdit(null)}
           onSave={(input) => {
             const next = presetEdit === 'new' ? addPreset(input) : updatePreset(presetEdit.id, input);
@@ -839,7 +959,7 @@ export default function KafkaWorkspace() {
             setPresetEdit(null);
             flash(presetEdit === 'new' ? 'Đã tạo chức năng' : 'Đã cập nhật');
           }}
-          onNeedTopics={() => { void loadTopics(); }}
+          onNeedTopics={(connId) => { void loadTopics(connId); }}
         />
       )}
 
@@ -854,7 +974,7 @@ export default function KafkaWorkspace() {
             const { preset, keyword: kw } = runPresetState;
             setRunPresetState(null);
             setPresetOpen(false);
-            void executePreset(preset, kw, from, to);
+            executePreset(preset, kw, from, to);
           }}
         />
       )}
@@ -1302,32 +1422,32 @@ function ConnectionForm({
 function PresetForm({
   initial,
   connections,
-  activeId,
-  topics,
+  topicsByConn,
   onCancel,
   onSave,
   onNeedTopics,
 }: {
   initial: KafkaPreset | null;
   connections: PublicKafkaConnection[];
-  activeId: string;
-  topics: TopicSummary[];
+  /** Per-cluster topic cache — suggestions come from here for whichever cluster is picked. */
+  topicsByConn: Record<string, TopicSummary[]>;
   onCancel: () => void;
   onSave: (input: Omit<KafkaPreset, 'id'>) => void;
   /** Ask the parent to load the topic list for the chosen cluster (for suggestions). */
-  onNeedTopics: () => void;
+  onNeedTopics: (connectionId: string) => void;
 }) {
   const [name, setName] = useState(initial?.name ?? '');
-  const [connectionId, setConnectionId] = useState(initial?.connectionId ?? activeId ?? connections[0]?.id ?? '');
+  const [connectionId, setConnectionId] = useState(initial?.connectionId ?? connections[0]?.id ?? '');
   const [topic, setTopic] = useState(initial?.topic ?? '');
 
-  // Topic suggestions are only meaningful for the currently-active cluster (that's
-  // the one whose topics the workspace has loaded). Offer them as a datalist.
-  const suggestForActive = connectionId === activeId && topics.length > 0;
+  // Suggestions come from the picked cluster's cached topic list — fetch it on demand
+  // so choosing any cluster (not just the active one) gives a usable datalist.
+  const topics = topicsByConn[connectionId] ?? [];
+  const suggest = topics.length > 0;
   useEffect(() => {
-    if (connectionId === activeId && topics.length === 0) onNeedTopics();
+    if (connectionId && !topicsByConn[connectionId]) onNeedTopics(connectionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionId, activeId]);
+  }, [connectionId]);
 
   const valid = name.trim().length > 0 && connectionId && topic.trim().length > 0;
 
@@ -1354,22 +1474,15 @@ function PresetForm({
           </select>
         </label>
         <label className="kafka-field">
-          <span>
-            Topic
-            {suggestForActive
-              ? ' — gõ để lọc trong danh sách gợi ý'
-              : connectionId === activeId
-                ? ' — nhập thủ công'
-                : ' — nhập thủ công (chọn cluster này ở ngoài để có gợi ý)'}
-          </span>
+          <span>Topic{suggest ? ' — gõ để lọc trong danh sách gợi ý' : ' — đang tải gợi ý, có thể nhập thủ công'}</span>
           <input
             className="input"
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
             placeholder="fs-event-complete"
-            list={suggestForActive ? 'kafka-preset-topics' : undefined}
+            list={suggest ? 'kafka-preset-topics' : undefined}
           />
-          {suggestForActive && (
+          {suggest && (
             <datalist id="kafka-preset-topics">
               {topics.map((t) => <option key={t.name} value={t.name} />)}
             </datalist>

@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { bmList, bmAdd, bmUpdate, bmRemove, normalizeUrl, bmPartition, type Bookmark } from '@/lib/bookmarks';
 import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
+import PasswordInput from './PasswordInput';
 import { onOpenUrl } from '@/lib/openTarget';
 
 interface Tab { id: string; name: string; url: string; profile?: string; partition: string; creds?: { username?: string; password?: string } }
@@ -314,8 +315,8 @@ export default function BrowserTabWorkspace() {
             <div className="glink-meta-pair">
               <input className="input" placeholder="Username (optional)" value={edit.username ?? ''}
                 autoComplete="off" onChange={(e) => setEdit({ ...edit, username: e.target.value })} />
-              <input className="input" type="password" placeholder="Password (optional — 🔑 tự điền)" value={edit.password ?? ''}
-                autoComplete="new-password" onChange={(e) => setEdit({ ...edit, password: e.target.value })} />
+              <PasswordInput value={edit.password ?? ''} onChange={(v) => setEdit({ ...edit, password: v })}
+                placeholder="Password (optional — 🔑 tự điền)" />
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={() => void saveEdit()} disabled={!edit.url.trim()}>💾 Lưu</button>

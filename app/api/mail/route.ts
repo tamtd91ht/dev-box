@@ -6,13 +6,22 @@
 //
 //   POST { action, ... }  where action is one of:
 //     'accounts'      {}                              → { ok, result: MailAccountPublic[] }
-//     'accountAdd'    { label?, email, user?, pass, imapHost, imapPort?, imapSecure?,
+//     'accountAdd'    { label?, title?, email, user?, pass, imapHost, imapPort?, imapSecure?,
 //                       smtpHost, smtpPort?, smtpSecure? }
 //                     → { ok, result: MailAccountPublic[] }   (verify IMAP login trước khi lưu)
+//     'accountAddOAuth' { email, label?, title? }     → { ok, result: MailAccountPublic[] }
+//                     (Gmail/Workspace qua XOAUTH2 — KHÔNG cần App Password;
+//                      đòi đã đăng nhập Google cho email đó + có scope mail)
+//     'googleAuthUrl' { email? }                      → { ok, result: { url } }
+//                     (consent kèm scope https://mail.google.com/)
 //     'accountRemove' { id }                          → { ok, result: MailAccountPublic[] }
+//     'accountRename' { id, title?, label? }          → { ok, result: MailAccountPublic[] }
+//                     (title = tên quản lý hiện trên tab; label = tên người gửi ở header From)
 //     'folders'       { accountId }                   → { ok, result: MailFolder[] }
 //     'list'          { accountId, path, beforeSeq? } → { ok, result: MailListPage }
 //     'message'       { accountId, path, uid }        → { ok, result: MailDetail } (đánh dấu \Seen)
+//     'markAllSeen'   { accountId, path }              → { ok, result: { marked } }
+//                     (đánh dấu TOÀN BỘ mail trong folder là đã đọc)
 //     'delete'        { accountId, path, uid }        → { ok, result: { mode: 'trash'|'purged' } }
 //                     (move vào Trash; đang ở Trash → xóa vĩnh viễn — không đọc nội dung)
 //     'send'          { accountId, to, cc?, bcc?, subject, text, inReplyTo?, references? }
@@ -25,11 +34,13 @@
 //       để tải ngay trong app thay vì văng ra trình duyệt ngoài.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { listAccounts, getAccount, addAccount, removeAccount, toPublic } from '@/lib/mailAccounts';
+import { listAccounts, getAccount, addAccount, removeAccount, renameAccount, toPublic } from '@/lib/mailAccounts';
 import {
   verifyImap, listFolders, listMessages, getMessage, getAttachment, sendMail, deleteMessage,
+  markAllSeen, ImapVerifyError,
 } from '@/lib/mailServer';
 import { listContacts, recordAddresses, removeContact, domainOf } from '@/lib/mailContacts';
+import { findAccountByEmail, hasMailScope, authUrl as googleAuthUrl } from '@/lib/googleAuth';
 
 export const runtime = 'nodejs';
 
@@ -52,6 +63,13 @@ export async function POST(req: NextRequest) {
       case 'accounts':
         result = (await listAccounts()).map(toPublic);
         break;
+      // URL consent Google có kèm scope MAIL (https://mail.google.com/).
+      // Tách khỏi /api/google 'authUrl' vì tab đó chỉ xin quyền Drive.
+      case 'googleAuthUrl': {
+        const hint = String(body.email ?? '').trim();
+        result = { url: googleAuthUrl(['mail'], hint || undefined) };
+        break;
+      }
       case 'accountAdd': {
         const email = String(body.email ?? '').trim();
         if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error('Email không hợp lệ.');
@@ -59,6 +77,7 @@ export async function POST(req: NextRequest) {
         if (!pass) throw new Error('Thiếu password.');
         const acc = {
           label: String(body.label ?? '').trim() || email,
+          title: String(body.title ?? '').trim() || undefined,
           email,
           user: String(body.user ?? '').trim() || email,
           pass,
@@ -82,6 +101,43 @@ export async function POST(req: NextRequest) {
       case 'accountRemove':
         result = (await removeAccount(String(body.id ?? ''))).map(toPublic);
         break;
+      // Thêm hòm thư Gmail/Workspace bằng OAuth — KHÔNG cần App Password.
+      // Điều kiện: đã đăng nhập tài khoản Google đó (tab Google hoặc nút
+      // "Kết nối bằng Google") và tài khoản đã cấp scope mail.
+      case 'accountAddOAuth': {
+        const email = String(body.email ?? '').trim();
+        if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error('Email không hợp lệ.');
+        const g = await findAccountByEmail(email);
+        if (!g) {
+          throw new Error(`Chưa đăng nhập Google cho ${email} — bấm "Kết nối bằng Google" trước.`);
+        }
+        if (!(await hasMailScope(g.id))) {
+          throw new Error(`Tài khoản ${email} chưa cấp quyền mail — bấm "Kết nối bằng Google" để cấp quyền IMAP/SMTP.`);
+        }
+        const acc = {
+          label: String(body.label ?? '').trim() || email,
+          title: String(body.title ?? '').trim() || undefined,
+          email,
+          user: email,
+          pass: '',                       // OAuth: không lưu mật khẩu
+          auth: 'oauth' as const,
+          googleAccountId: g.id,
+          // Gmail cố định; Workspace domain riêng cũng dùng chung endpoint này.
+          imap: { host: 'imap.gmail.com', port: 993, secure: true },
+          smtp: { host: 'smtp.gmail.com', port: 465, secure: true },
+        };
+        // Vẫn login thử để chắc chắn token dùng được, không lưu account chết.
+        await verifyImap({ ...acc, id: 'verify' });
+        result = (await addAccount(acc)).map(toPublic);
+        break;
+      }
+      case 'accountRename': {
+        const patch: { title?: string; label?: string } = {};
+        if (body.title !== undefined) patch.title = String(body.title);
+        if (body.label !== undefined) patch.label = String(body.label);
+        result = (await renameAccount(String(body.id ?? ''), patch)).map(toPublic);
+        break;
+      }
       case 'folders':
         result = await listFolders(await needAccount());
         break;
@@ -105,6 +161,9 @@ export async function POST(req: NextRequest) {
         result = detail;
         break;
       }
+      case 'markAllSeen':
+        result = await markAllSeen(await needAccount(), String(body.path ?? 'INBOX'));
+        break;
       case 'delete':
         // Xóa theo UID — không tải/parse nội dung nên an toàn với mail lừa đảo.
         result = await deleteMessage(
@@ -152,7 +211,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, result });
   } catch (err) {
     const msg = (err as Error).message || 'Mail operation failed';
-    return NextResponse.json({ ok: false, error: msg }, { status: 502 });
+    // Lỗi verify IMAP mang theo phân loại + link khắc phục → client dựng UI
+    // hành động được thay vì in một khối text.
+    const failure = err instanceof ImapVerifyError ? err.failure : undefined;
+    return NextResponse.json({ ok: false, error: msg, failure }, { status: 502 });
   }
 }
 

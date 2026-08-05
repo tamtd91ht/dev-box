@@ -21,6 +21,7 @@ import {
 import { lAdd } from '@/lib/links';
 import GoogleDocViewer from './GoogleDocViewer';
 import GoogleFilePreview from './GoogleFilePreview';
+import GoogleAuthWindow from './GoogleAuthWindow';
 
 /** What the in-app viewer is currently showing (desktop shell only). */
 interface ViewerTarget { name: string; url: string }
@@ -332,10 +333,14 @@ function ProjectsView({ accountId, onOpen, onOpenUrl }: {
   );
 }
 
-/** Compact label for an account chip: phần trước @ (đủ nhận ra trong team). */
-function accLabel(a: GoogleAccount): string {
+/** Nhãn ngắn cho chip tài khoản: phần trước @ cho gọn, NHƯNG nếu có tài khoản
+ *  khác cùng prefix (user@example.com vs tamtd@gmail.com) thì hiện cả email
+ *  — hai chip giống hệt nhau thì không biết đang chọn cái nào. */
+function accLabel(a: GoogleAccount, all: GoogleAccount[] = []): string {
   if (!a.email) return a.id.slice(0, 8);
-  return a.email.split('@')[0];
+  const prefix = a.email.split('@')[0];
+  const clash = all.some((o) => o.id !== a.id && o.email && o.email.split('@')[0] === prefix);
+  return clash ? a.email : prefix;
 }
 
 export default function GoogleWorkspace() {
@@ -345,6 +350,7 @@ export default function GoogleWorkspace() {
   const [section, setSection] = useState<Section>('projects');
   const [err, setErr] = useState<string | null>(null);
   const [waiting, setWaiting] = useState(false);
+  const [authUrl, setAuthUrl] = useState<string | null>(null); // consent trong app
   const [viewer, setViewer] = useState<ViewerTarget | null>(null);
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -388,30 +394,55 @@ export default function GoogleWorkspace() {
     if (activeId && typeof window !== 'undefined') window.localStorage.setItem(ACTIVE_ACCOUNT_KEY, activeId);
   }, [activeId]);
 
-  /** Mở consent flow — dùng cho đăng nhập đầu tiên VÀ "＋ Thêm tài khoản". */
+  /** Poll status tới khi thấy tài khoản mới — dùng cho cả luồng trong app lẫn
+   *  luồng mở trình duyệt ngoài. */
+  const pollForNewAccount = () => {
+    setWaiting(true);
+    const before = st?.accounts.length ?? 0;
+    if (pollRef.current) clearInterval(pollRef.current);
+    let tries = 0;
+    pollRef.current = setInterval(async () => {
+      tries += 1;
+      const s = await refreshStatus();
+      if ((s && s.accounts.length > before) || tries > 60) {
+        if (pollRef.current) clearInterval(pollRef.current);
+        setWaiting(false);
+        // Tài khoản mới thêm trở thành tài khoản đang chọn.
+        if (s && s.accounts.length > before) {
+          const known = new Set((st?.accounts ?? []).map((a) => a.id));
+          const fresh = s.accounts.find((a) => !known.has(a.id));
+          if (fresh) setActiveId(fresh.id);
+        }
+      }
+    }, 2000);
+  };
+
+  /** Mở consent flow — đăng nhập đầu tiên VÀ "＋ Thêm tài khoản".
+   *  Desktop: mở TRONG APP (khỏi phụ thuộc trình duyệt mặc định / profile).
+   *  Web thuần: không có <webview> → vẫn mở tab mới như trước. */
   const addAccount = async () => {
     setErr(null);
     try {
       const { url } = await gAuthUrl();
+      if (typeof window !== 'undefined' && window.workspace?.isDesktop) {
+        setAuthUrl(url);
+        return;
+      }
       window.open(url, '_blank', 'noopener');
-      setWaiting(true);
-      const before = st?.accounts.length ?? 0;
-      if (pollRef.current) clearInterval(pollRef.current);
-      let tries = 0;
-      pollRef.current = setInterval(async () => {
-        tries += 1;
-        const s = await refreshStatus();
-        if ((s && s.accounts.length > before) || tries > 60) {
-          if (pollRef.current) clearInterval(pollRef.current);
-          setWaiting(false);
-          // Tài khoản mới thêm trở thành tài khoản đang chọn.
-          if (s && s.accounts.length > before) {
-            const known = new Set((st?.accounts ?? []).map((a) => a.id));
-            const fresh = s.accounts.find((a) => !known.has(a.id));
-            if (fresh) setActiveId(fresh.id);
-          }
-        }
-      }, 2000);
+      pollForNewAccount();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+
+  /** Lối thoát: vẫn cho mở bằng trình duyệt ngoài nếu ai thích cách cũ. */
+  const addAccountExternal = async () => {
+    setErr(null);
+    try {
+      const { url } = await gAuthUrl();
+      const ext = window.workspace?.openExternal;
+      if (ext) await ext(url); else window.open(url, '_blank', 'noopener');
+      pollForNewAccount();
     } catch (e) {
       setErr((e as Error).message);
     }
@@ -488,8 +519,20 @@ export default function GoogleWorkspace() {
             {waiting ? <span className="spinner" aria-hidden /> : 'Ⓖ'} {waiting ? 'Đang chờ đăng nhập…' : 'Đăng nhập Google'}
           </button>
           {waiting && <p className="small" style={{ color: 'var(--muted)' }}>Hoàn tất đăng nhập ở tab vừa mở — DevBox sẽ tự nhận.</p>}
+          <p className="small" style={{ color: 'var(--faint)' }}>
+            Đăng nhập mở ngay trong app — không phụ thuộc trình duyệt mặc định của máy.{' '}
+            <button className="ghost sm" onClick={() => void addAccountExternal()} disabled={waiting}
+              title="Mở trang consent bằng trình duyệt mặc định của máy (cách cũ)">
+              Dùng trình duyệt ngoài
+            </button>
+          </p>
           {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
         </div>
+        {authUrl && (
+          <GoogleAuthWindow url={authUrl}
+            onDone={() => { setAuthUrl(null); pollForNewAccount(); }}
+            onCancel={() => setAuthUrl(null)} />
+        )}
       </div>
     );
   }
@@ -520,7 +563,7 @@ export default function GoogleWorkspace() {
           {st.accounts.map((a) => (
             <span key={a.id} className={`g-acc${a.id === active.id ? ' on' : ''}`} title={a.email ?? a.id}>
               <button className="g-acc-btn" role="tab" aria-selected={a.id === active.id} onClick={() => setActiveId(a.id)}>
-                Ⓖ {accLabel(a)}
+                Ⓖ {accLabel(a, st.accounts)}
               </button>
               {a.id === active.id && (
                 <button className="g-acc-x" onClick={() => void removeAccount(a)} title={`Đăng xuất ${a.email ?? a.id}`}>✕</button>
@@ -572,6 +615,13 @@ export default function GoogleWorkspace() {
             await lAdd(url, { name });
           }}
         />
+      )}
+
+      {/* Consent Google trong app — dùng cho "＋ Tài khoản" khi đã đăng nhập. */}
+      {authUrl && (
+        <GoogleAuthWindow url={authUrl}
+          onDone={() => { setAuthUrl(null); pollForNewAccount(); }}
+          onCancel={() => setAuthUrl(null)} />
       )}
     </div>
   );

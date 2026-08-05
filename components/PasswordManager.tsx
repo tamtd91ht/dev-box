@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   pwList, pwRemove, pwSave, pwUpdate, pwReveal, canEncrypt, hostOfOrigin, type Credential,
 } from '@/lib/passwords';
+import PasswordInput from './PasswordInput';
 
 /** Form thêm/sửa. id rỗng = thêm mới. */
 interface Draft { id: string; origin: string; username: string; password: string; profile: string; label: string }
@@ -121,9 +122,8 @@ export default function PasswordManager({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setDraft({ ...draft, username: e.target.value })} />
             </div>
             <div className="glink-meta-pair">
-              <input className="input" type="password" autoComplete="new-password"
-                placeholder={draft.id ? 'Mật khẩu mới (bỏ trống = giữ nguyên)' : 'Mật khẩu'}
-                value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
+              <PasswordInput value={draft.password} onChange={(v) => setDraft({ ...draft, password: v })}
+                placeholder={draft.id ? 'Mật khẩu mới (bỏ trống = giữ nguyên)' : 'Mật khẩu'} />
               <input className="input" placeholder="Profile (optional)" value={draft.profile}
                 title="Cùng origin nhưng hai tài khoản → đặt profile khác nhau, khớp với profile của tab."
                 onChange={(e) => setDraft({ ...draft, profile: e.target.value })} />
