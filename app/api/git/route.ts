@@ -33,7 +33,8 @@ import {
 } from '@/lib/gitCore';
 import { getProject, allowedRoots } from '@/lib/gitProjects';
 import { runReviewMr, runScanSecurity, serviceNameFromRepoPath, validateBranch } from '@/lib/reviewMr';
-import { listOpenMergeRequests, mergeMergeRequest } from '@/lib/gitlabMr';
+import { listOpenMergeRequests, mergeMergeRequest, repoGitLabRef } from '@/lib/gitlabMr';
+import { listTokens, setToken, deleteToken, tokenStatus } from '@/lib/gitlabTokens';
 
 export const runtime = 'nodejs';
 
@@ -110,6 +111,22 @@ export async function POST(req: NextRequest) {
       const root = await resolveRootRequired(body.projectId);
       const result = await cloneRepo(root, body.url, body.name, body.branch);
       return NextResponse.json(result);
+    }
+
+    // GitLab API token management — host-scoped, not repo-scoped, so these run
+    // before authorizeRepo. The token itself is NEVER echoed back: responses
+    // carry only a redacted preview (last 4 chars) + savedAt.
+    if (action === 'list-gitlab-tokens') {
+      return NextResponse.json({ tokens: await listTokens() });
+    }
+    if (action === 'set-gitlab-token') {
+      // savedAt is stamped here (the request boundary) so lib/gitlabTokens stays
+      // free of ambient clock reads.
+      const saved = await setToken(body.host, body.token, new Date().toISOString());
+      return NextResponse.json({ token: saved });
+    }
+    if (action === 'delete-gitlab-token') {
+      return NextResponse.json({ removed: await deleteToken(body.host) });
     }
 
     // All remaining actions require an authorized repo path — allowed against the
@@ -199,9 +216,18 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(result);
       }
 
+      case 'gitlab-token-status': {
+        // Which GitLab host this repo's origin points at, and whether a token is
+        // configured for it — lets the UI prefill the host and show state without
+        // the user hunting for it. Redacted: never includes the token.
+        const ref = await repoGitLabRef(repo);
+        return NextResponse.json({ host: ref.host, token: await tokenStatus(ref.host) });
+      }
+
       case 'list-mrs': {
         // Open GitLab MRs of this repo targeting `branch` (default 'dev'). Token
-        // comes from the repo's own git credential — never from the client.
+        // is resolved server-side (saved PAT for the host, else git credential) —
+        // never taken from the client.
         const target = validateBranch(body.branch) || 'dev';
         const { ref, mrs } = await listOpenMergeRequests(repo, target);
         return NextResponse.json({ targetBranch: target, project: ref.projectPath, baseUrl: ref.baseUrl, mrs });

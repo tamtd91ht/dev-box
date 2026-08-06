@@ -35,6 +35,20 @@ contextBridge.exposeInMainWorld('workspace', {
   /** Mở URL bằng trình duyệt ngoài của máy (nút ↗ ở tab Google, link hướng dẫn
    *  trong panel lỗi mail). */
   openExternal: (url) => ipcRenderer.invoke('workspace:openExternal', url),
+  /** Bấm link trong tin nhắn Zalo/Telegram → main process hỏi mở ở tab Links
+   *  hay tab Browser. Trả về hàm hủy đăng ký. */
+  onOpenRequest: (cb) => {
+    const handler = (_evt, url) => cb(url);
+    ipcRenderer.on('workspace:openRequest', handler);
+    return () => ipcRenderer.removeListener('workspace:openRequest', handler);
+  },
+  /** window.open() từ chính UI DevBox — mở TRONG app (tab Links / tab Browser
+   *  tùy defaultTargetFor) thay vì bắn ra Edge/Chrome. Trả về hàm hủy đăng ký. */
+  onOpenInApp: (cb) => {
+    const handler = (_evt, url) => cb(url);
+    ipcRenderer.on('workspace:openInApp', handler);
+    return () => ipcRenderer.removeListener('workspace:openInApp', handler);
+  },
   /** In HTML ra PDF bằng Chromium của app (tab Tools → Chuyển đổi file).
    *  Next server không gọi được Electron nên renderer làm cầu nối.
    *  → { ok: true, base64 } | { ok: false, error } */

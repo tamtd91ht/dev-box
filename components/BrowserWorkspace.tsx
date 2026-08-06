@@ -99,9 +99,13 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
   // keepAlive plugins (e.g. Zalo) open eagerly even under lazyLoad — they exist
   // to run in the background and raise new-message alerts, which requires their
   // guest to be alive BEFORE the user ever opens this tab. Other plugins stay lazy.
-  const eagerKeys = (cfg.lazyLoad ? allAccounts.filter((a) => !!getPlugin(a.pluginId)?.keepAlive) : allAccounts)
-    .map((a) => accountKey(a.pluginId, a.instanceId))
-    .slice(0, Math.max(1, cfg.maxActiveWorkspace));
+  const eagerKeys = useMemo(
+    () =>
+      (cfg.lazyLoad ? allAccounts.filter((a) => !!getPlugin(a.pluginId)?.keepAlive) : allAccounts)
+        .map((a) => accountKey(a.pluginId, a.instanceId))
+        .slice(0, Math.max(1, cfg.maxActiveWorkspace)),
+    [allAccounts, cfg.lazyLoad, cfg.maxActiveWorkspace],
+  );
   const [activeKey, setActiveKey] = useState<string>(eagerKeys[0] ?? '');
   const [openKeys, setOpenKeys] = useState<string[]>(eagerKeys);
 
@@ -134,7 +138,34 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
     [],
   );
 
-  const keepAlive = useCallback((pluginId: string) => !!getPlugin(pluginId)?.keepAlive, []);
+  /**
+   * A capture-capable account must stay mounted while capture is on: only a
+   * mounted guest polls, so an evicted account silently stops feeding
+   * automation even though its rules are enabled and in scope.
+   */
+  const pinned = useCallback(
+    (key: string) => {
+      const plugin = getPlugin(key.split('::')[0]);
+      if (!plugin) return false;
+      return !!plugin.keepAlive || (captureOn && !!plugin.capture);
+    },
+    [captureOn],
+  );
+
+  // Turning capture on must reach EVERY messaging account, not just the ones
+  // that happened to be open — a rule scoped to "Tất cả" is otherwise silently
+  // limited to whichever account the LRU last kept. Mounted-but-not-active
+  // guests sit offscreen and keep polling, so this costs nothing visually.
+  useEffect(() => {
+    if (!captureOn) return;
+    const wanted = allAccounts
+      .filter((a) => !!getPlugin(a.pluginId)?.capture)
+      .map((a) => accountKey(a.pluginId, a.instanceId));
+    setOpenKeys((prev) => {
+      const missing = wanted.filter((k) => !prev.includes(k));
+      return missing.length ? [...prev, ...missing] : prev;
+    });
+  }, [captureOn, allAccounts]);
 
   const select = useCallback(
     (key: string) => {
@@ -143,7 +174,7 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
         const cap = cfg.keepAlive ? Math.max(1, cfg.maxActiveWorkspace) : 1;
         let result = next;
         while (result.length > cap) {
-          const victim = result.findIndex((x) => x !== key && !keepAlive(x.split('::')[0]));
+          const victim = result.findIndex((x) => x !== key && !pinned(x));
           if (victim === -1) break; // everything left is pinned
           result = result.filter((_, i) => i !== victim);
         }
@@ -151,7 +182,7 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
       });
       setActiveKey(key);
     },
-    [cfg.keepAlive, cfg.maxActiveWorkspace, keepAlive],
+    [cfg.keepAlive, cfg.maxActiveWorkspace, pinned],
   );
 
   const setInstanceUnread = useCallback((key: string, n: number) => {

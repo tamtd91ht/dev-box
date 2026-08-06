@@ -109,6 +109,13 @@ export interface WorkspaceBridge {
   /** Mở URL bằng trình duyệt ngoài của máy (nút ↗ ở tab Google, link hướng dẫn
    *  trong panel lỗi mail). Optional: preload cũ chưa expose. */
   openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
+  /** Bấm link trong tin nhắn Zalo/Telegram → main process hỏi mở ở tab Links
+   *  hay tab Browser (components/OpenLinkDialog.tsx). Trả về hàm hủy đăng ký.
+   *  Optional: preload cũ chưa expose. */
+  onOpenRequest?(cb: (url: string) => void): () => void;
+  /** window.open() từ chính UI DevBox → mở TRONG app thay vì Edge/Chrome; đích
+   *  do defaultTargetFor() quyết định. Optional: preload cũ chưa expose. */
+  onOpenInApp?(cb: (url: string) => void): () => void;
   /** Niêm phong mật khẩu bằng safeStorage (DPAPI) trước khi ghi xuống đĩa.
    *  error='unavailable' khi OS không hỗ trợ → caller lưu plaintext + cảnh báo.
    *  Optional: preload cũ chưa expose. */

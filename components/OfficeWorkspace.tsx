@@ -5,6 +5,9 @@
 // editor is self-contained (own file state, recents, save flow) and stays
 // MOUNTED once visited so an open document survives switching sections —
 // same mount-and-keep pattern as the app's top-level tabs.
+//
+// Markdown (.md) KHÔNG ở đây — nó là định dạng text nên nằm ở tab Tools cùng
+// JSON / XML / HTML (xem components/ToolsWorkspace.tsx).
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import SheetWorkspace from './SheetWorkspace';

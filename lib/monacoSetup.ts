@@ -13,13 +13,20 @@
 
 import { loader } from '@monaco-editor/react';
 
-loader.config({ paths: { vs: '/monaco/vs' } });
+// CHỈ chạy trong trình duyệt. 'use client' KHÔNG có nghĩa là "không chạy trên
+// server": Next vẫn đánh giá module client khi SSR, và loader.init() chạm
+// `window` ngay lập tức → ReferenceError làm chết cả trang (GET / 500), vì
+// ToolsWorkspace/EditorPane import module này tĩnh và page.tsx import chúng tĩnh.
+// Guard rồi thì SSR bỏ qua, còn client vẫn cấu hình trước lần init đầu như cũ.
+if (typeof window !== 'undefined') {
+  loader.config({ paths: { vs: '/monaco/vs' } });
 
-// loader giữ MỘT wrapper promise chung cho cả app — gắn catch ở đây là mọi
-// thất bại init đều "đã xử lý": log rõ nguyên nhân thay vì redbox [object Event].
-loader.init().catch((e: unknown) => {
-  console.error(
-    '[monaco] không tải được editor từ /monaco/vs — chạy `npm install` (hoặc `node scripts/copy-monaco.cjs`) để copy lại.',
-    e,
-  );
-});
+  // loader giữ MỘT wrapper promise chung cho cả app — gắn catch ở đây là mọi
+  // thất bại init đều "đã xử lý": log rõ nguyên nhân thay vì redbox [object Event].
+  loader.init().catch((e: unknown) => {
+    console.error(
+      '[monaco] không tải được editor từ /monaco/vs — chạy `npm install` (hoặc `node scripts/copy-monaco.cjs`) để copy lại.',
+      e,
+    );
+  });
+}

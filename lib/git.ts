@@ -137,6 +137,20 @@ export interface MergeMrResult {
   webUrl: string;
 }
 
+/** Redacted view of a stored GitLab API token — never carries the secret. */
+export interface GitLabTokenStatus {
+  host: string;
+  /** Last 4 chars only, e.g. "…a1b2". */
+  preview: string;
+  savedAt: string;
+}
+
+/** Response of the `gitlab-token-status` action (host of the repo's origin). */
+export interface GitLabTokenStatusResult {
+  host: string;
+  token: GitLabTokenStatus | null;
+}
+
 /** A configured Git project — a named root folder that holds sibling repos. */
 export interface GitProject {
   id: string;

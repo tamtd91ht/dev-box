@@ -103,6 +103,45 @@ const WORKSPACE_PARTITION = /^(persist:)?ws-(?!google-viewer\b)[a-z0-9-]+$/i;
  */
 const POPUP_STUB_TTL_MS = 10_000;
 
+/**
+ * Hai host co cung "domain dang ky" (bo subdomain) → coi la CUNG MOT APP.
+ * chat.zalo.me vs id.zalo.me → cung zalo.me. Tho nhung du: chi dung de phan biet
+ * "URL cua chinh app nay" voi "link nguoi ta gui trong tin nhan".
+ */
+function sameApp(a, b) {
+  const reg = (h) => h.toLowerCase().split('.').slice(-2).join('.');
+  return !!a && !!b && reg(a) === reg(b);
+}
+
+/** Host cua mot URL, '' neu khong parse duoc. */
+function hostOf(u) {
+  try {
+    return new URL(u).hostname;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Bam link trong tin nhan workspace → HOI nguoi dung mo o dau. Renderer dung
+ * modal hai lua chon (tab Links / tab Browser) roi tu mo, xem
+ * components/OpenLinkDialog.tsx.
+ *
+ * Main process khong ve duoc UI nen chi day URL qua IPC. Neu khong con cua so
+ * nao (dang tat app) thi danh mo browser ngoai — luc do khong con tab Links hay
+ * tab Browser nao ton tai de mo vao, va de mat hut link con te hon.
+ */
+function askOpenTarget(url) {
+  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+  if (!win) {
+    shell.openExternal(url);
+    log('OpenExternal', `${url} (no window)`);
+    return;
+  }
+  win.webContents.send('workspace:openRequest', url);
+  log('OpenRequest', url);
+}
+
 /** Merge userData/workspace.config.json over the defaults. Missing file = defaults. */
 function loadConfig() {
   try {
@@ -255,11 +294,19 @@ function wireWebviewHardening(win) {
     // Popups (target=_blank, window.open) → khong bao gio de mo mot cua so roi
     // trong app.
     //
-    // TAB WORKSPACE: moi thu o LAI TRONG cua so do — dieu huong thang trong
-    // chinh webview nay. Quet QR xong Zalo tu mo lai app cua no bang
-    // window.open, va link trong tin nhan cung di qua duong nay; ca hai deu phai
-    // hien ra ngay tai cho, khong hoi, khong day sang tab khac, khong ra browser
-    // ngoai. Muon ve chat thi bam ← tren thanh cong cu workspace.
+    // TAB WORKSPACE: link trong tin nhan Zalo/Telegram di qua duong nay (Zalo
+    // dung handler JS + window.open chu khong phai <a href> thuong — nen popup
+    // bi chan la click "khong an gi"). Hoi nguoi dung mo o tab Links hay tab
+    // Browser, roi renderer tu mo. CA HAI deu o TRONG app.
+    //
+    // TUYET DOI KHONG goi guest.loadURL(url) o day. Lan sua truoc lam vay va no
+    // dieu huong CHINH cai webview dang chay Zalo sang trang link — Zalo bien
+    // mat, mat khung chat, quay lai phai load lai tu dau. Guest phai duoc giu
+    // NGUYEN VEN: van dang nhap, van o dung cuoc hoi thoai.
+    //
+    // Cung khong dung lai lop chan will-navigate/will-redirect (da go o dedeb7c):
+    // no bat luon dieu huong cua chinh app — quet QR xong Zalo tu chuyen trang
+    // va bi chan lai. Chan o dung tang window.open la du.
     //
     // Cac webview khac (tab Links, tab Browser, viewer Google) giu nguyen luat
     // cu: popup ra trinh duyet that cua may.
@@ -278,12 +325,21 @@ function wireWebviewHardening(win) {
       if (!/^https?:\/\//i.test(url)) return { action: 'deny' };
 
       if (isWorkspaceApp) {
-        // Hoan mot nhip: dung goi loadURL ngay giua luc Chromium con dang dung
-        // cua so con o tren.
-        setImmediate(() => {
-          if (!guest.isDestroyed()) guest.loadURL(url).catch(() => {});
-        });
-        log('OpenInWorkspace', url);
+        // URL CUA CHINH APP (zalo.me → zalo.me): day la app tu dieu huong, dien
+        // hinh la quet QR xong Zalo mo lai app cua no bang window.open. Phai cho
+        // no chay NGAY TRONG webview nay — hoi "mo o dau" o day la be luon luong
+        // dang nhap. Chi link THAT SU ra ngoai domain moi dem ra hoi.
+        // guest.getURL() la URL DANG chay cua guest — dung o thoi diem popup nay
+        // no chinh la trang Zalo hien tai, khong can bien tam nao (xem chu thich
+        // cua partitionOf ve viec KHONG chot theo bien cua will-attach-webview).
+        if (sameApp(hostOf(url), hostOf(guest.getURL()))) {
+          setImmediate(() => {
+            if (!guest.isDestroyed()) guest.loadURL(url).catch(() => {});
+          });
+          log('OpenInWorkspace', url);
+        } else {
+          askOpenTarget(url);
+        }
       } else {
         shell.openExternal(url);
         log('OpenExternal', url);
@@ -520,9 +576,29 @@ function createWindow() {
     },
   });
 
-  // DevBox UI's own popups (rare) → external browser.
+  // window.open() tu chinh UI DevBox → MO TRONG APP, khong day ra Edge/Chrome.
+  //
+  // Day la CHO DUY NHAT moi `window.open(...)` tran trong renderer di qua (nut
+  // "mo tren browser" o tab Google, bookmark tab Browser, link trong Mail...).
+  // Truoc day no goi shell.openExternal thang, nen "mot so noi" bat ra trinh
+  // duyet mac dinh cua may — dung thu ma nguoi dung khong muon.
+  //
+  // Gio gui sang renderer de no tu chon dich theo defaultTargetFor()
+  // (lib/openTarget.ts): link Google can dang nhap → tab Links, con lai → tab
+  // Browser. Van 'deny' vi khong bao gio duoc mo mot BrowserWindow roi.
+  //
+  // Renderer khong nghe duoc (chua mount) thi coi nhu mat link — nen fallback
+  // shell.openExternal khi khong gui duoc.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    if (/^https?:\/\//i.test(url)) {
+      try {
+        win.webContents.send('workspace:openInApp', url);
+        log('OpenInApp', url);
+      } catch {
+        shell.openExternal(url);
+        log('OpenExternal', `${url} (send failed)`);
+      }
+    }
     return { action: 'deny' };
   });
 

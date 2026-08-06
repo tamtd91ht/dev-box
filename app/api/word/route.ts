@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, result: await openDocx(body.path) });
       case 'create': {
         try {
-          const result = await createDocx({ dir: body.dir, name: body.name });
+          const result = await createDocx({ dir: body.dir, name: body.name, template: body.template });
           return NextResponse.json({ ok: true, result });
         } catch (err) {
           const msg = (err as Error).message || 'create refused';

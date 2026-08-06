@@ -138,9 +138,16 @@ function safeExts(exts?: string[]): string[] | undefined {
  * picker can select a file instead of a folder. Omitted → directories only,
  * identical to the historical behaviour.
  */
-export async function browse(target?: string, marker?: string, exts?: string[]): Promise<BrowseResult> {
+export async function browse(
+  target?: string,
+  marker?: string,
+  exts?: string[],
+  allFiles = false,
+): Promise<BrowseResult> {
   const mark = safeMarker(marker);
-  const fileExts = safeExts(exts);
+  const fileExts = allFiles ? [] : safeExts(exts);
+  /** Có liệt kê file hay không (mảng rỗng = mọi đuôi). */
+  const wantFiles = allFiles || fileExts !== undefined;
   // Empty target → the drive list on Windows, or "/" elsewhere.
   const isWin = process.platform === 'win32';
   if (target === '' && isWin) {
@@ -193,9 +200,16 @@ export async function browse(target?: string, marker?: string, exts?: string[]):
   };
   if (mark) result.markerHere = await contains(start, mark);
 
-  if (fileExts) {
+  if (wantFiles) {
+    // isFile() là FALSE với symlink/junction/reparse point — thư mục kiểu
+    // OneDrive-redirected (Desktop, Documents trên Windows) đầy loại này, nên
+    // lọc theo isFile() sẽ nuốt mất file có thật. Nhận luôn mọi entry KHÔNG
+    // phải thư mục rồi để fs.stat() bên dưới (đi theo symlink) chốt lại.
+    // fileExts rỗng (allFiles) = không lọc đuôi.
+    const byExt = fileExts && fileExts.length > 0;
     const wanted = dirents.filter(
-      (d) => d.isFile() && fileExts.includes(path.extname(d.name).slice(1).toLowerCase()),
+      (d) => !d.isDirectory()
+        && (!byExt || fileExts.includes(path.extname(d.name).slice(1).toLowerCase())),
     );
     const files = await Promise.all(
       wanted
@@ -203,10 +217,13 @@ export async function browse(target?: string, marker?: string, exts?: string[]):
         .map(async (d): Promise<FileEntry | null> => {
           const full = path.join(start, d.name);
           try {
+            // stat() đi theo symlink → chốt lại đây mới là file thật (symlink
+            // trỏ vào thư mục sẽ bị loại ở bước này).
             const st = await fs.stat(full);
+            if (!st.isFile()) return null;
             return { name: d.name, path: full, sizeBytes: st.size, mtimeMs: st.mtimeMs };
           } catch {
-            return null; // vanished between readdir and stat — just skip it
+            return null; // vanished / broken symlink / no permission — skip it
           }
         }),
     );

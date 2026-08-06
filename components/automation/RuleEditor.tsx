@@ -28,7 +28,7 @@ import type {
   InfraStack,
   TriggerType,
 } from '@/lib/automation/types';
-import { loadAccounts } from '@/lib/workspace/accounts';
+import { accountKey, loadAccounts } from '@/lib/workspace/accounts';
 import { messagingPlugins } from '@/lib/workspace/plugins';
 import { Field, Num, Toggle } from './parts';
 
@@ -78,8 +78,14 @@ function useInstanceOptions(category: EventCategory, sourceIds: string[]): { id:
     if (category === 'infra') return infra;
     if (category !== 'social') return [];
     const plugins = messagingPlugins().filter((p) => !sourceIds.length || sourceIds.includes(p.id));
+    // Qualify with the plugin id: every plugin's first account is `main`, so a
+    // bare instanceId collides across apps (duplicate React keys, and a scope
+    // entry that can't tell Zalo's "main" from Telegram's).
     return plugins.flatMap((p) =>
-      loadAccounts(p).map((a) => ({ id: a.instanceId, label: `${p.name} — ${a.label}` })),
+      loadAccounts(p).map((a) => ({
+        id: accountKey(p.id, a.instanceId),
+        label: `${p.name} — ${a.label}`,
+      })),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [category, infra, sourceIds.join(',')]);

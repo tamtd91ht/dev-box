@@ -16,7 +16,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   gStatus, gAuthUrl, gLogout, gRoots, gRootAdd, gRootRemove, gBrowse, gList,
   mimeIcon, fmtRel, withAuthuser, gDownload, gCanDownload, G_MIME,
-  type GFile, type GList as GListT, type GoogleAccount, type GoogleStatus, type GRoot,
+  gDocLinks, gDocResolve, gDocLinkRemove, gDocLinkRename, gDocLinkPin, gDocLinkTouch, gDocDownload,
+  type GFile, type GList as GListT, type GoogleAccount, type GoogleStatus, type GRoot, type GDocLink,
 } from '@/lib/google';
 import { lAdd } from '@/lib/links';
 import GoogleDocViewer from './GoogleDocViewer';
@@ -37,12 +38,13 @@ type OpenInApp = (name: string, url: string) => void;
  *  trong webview vì Google chặn đăng nhập embedded browser). */
 type OpenFile = (f: GFile) => void;
 
-type Section = 'projects' | 'docs' | 'sheets';
+type Section = 'projects' | 'shared' | 'docs' | 'sheets';
 
 const ACTIVE_ACCOUNT_KEY = 'google.activeAccount';
 
 const SECTIONS: { key: Section; icon: string; label: string; hint: string }[] = [
   { key: 'projects', icon: '📁', label: 'Dự án', hint: 'thư mục Drive đã đăng ký' },
+  { key: 'shared', icon: '🔗', label: 'Được share', hint: 'dán link tài liệu để xem' },
   { key: 'docs', icon: '📝', label: 'Docs', hint: 'toàn bộ Google Docs' },
   { key: 'sheets', icon: '📊', label: 'Sheets', hint: 'toàn bộ Google Sheets' },
 ];
@@ -333,6 +335,146 @@ function ProjectsView({ accountId, onOpen, onOpenUrl }: {
   );
 }
 
+/** 🔗 section — dán link MỘT tài liệu được share (không cần thư mục dự án).
+ *
+ *  Quyền Drive tính theo từng file và link share thường thuộc tài khoản khác,
+ *  nên server dò lần lượt mọi tài khoản đang đăng nhập để tìm cái đọc được —
+ *  người dùng chỉ việc dán. Mở ra là API-preview (xem + ⬇ tải), giống hệt file
+ *  trong thư mục dự án. Danh sách lưu trên máy: ghim ⭐ / đổi tên / xóa. */
+function SharedView({ accountId, onOpen }: { accountId: string; onOpen: OpenFile }) {
+  const [links, setLinks] = useState<GDocLink[]>([]);
+  const [url, setUrl] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+
+  useEffect(() => {
+    gDocLinks().then(setLinks).catch((e) => setErr((e as Error).message));
+  }, []);
+
+  /** Dán link → nhận diện + lưu + MỞ LUÔN (dán là để xem, không phải để lưu). */
+  const paste = async () => {
+    if (!url.trim() || busy) return;
+    setBusy(true); setErr(null); setNote(null);
+    try {
+      const res = await gDocResolve(url, { accountId });
+      setLinks(res.links);
+      setUrl('');
+      setNote(`Mở "${res.file.name}" bằng ${res.usedBy}.`);
+      onOpen({ id: res.file.id, name: res.file.name, mimeType: res.file.mimeType, webViewLink: res.file.webViewLink });
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const open = (l: GDocLink) => {
+    void gDocLinkTouch(l.id).then(setLinks).catch(() => { /* thứ tự sắp xếp thôi, hỏng cũng không sao */ });
+    onOpen({ id: l.fileId, name: l.name, mimeType: l.mimeType, webViewLink: l.url });
+  };
+
+  const act = async (fn: () => Promise<GDocLink[]>) => {
+    try { setLinks(await fn()); } catch (e) { setErr((e as Error).message); }
+  };
+
+  const remove = (l: GDocLink) => {
+    if (!window.confirm(`Bỏ "${l.name}" khỏi danh sách? (không đụng gì tới Drive)`)) return;
+    void act(() => gDocLinkRemove(l.id));
+  };
+
+  return (
+    <div className="g-list-wrap">
+      <div className="g-toolbar">
+        <input
+          className="input g-search"
+          placeholder="Dán link tài liệu được share (Docs / Sheets / Slides / PDF trên Drive)…"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && void paste()}
+        />
+        <button className="sm" onClick={() => void paste()} disabled={busy || !url.trim()}
+          title="Nhận diện link, tự dò tài khoản đọc được rồi mở xem ngay">
+          {busy ? <span className="spinner" aria-hidden /> : '＋'} Mở &amp; lưu
+        </button>
+      </div>
+
+      {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
+      {note && <p className="small" style={{ color: 'var(--muted)', margin: '2px 4px' }}>{note}</p>}
+
+      <div className="g-list">
+        {links.map((l) => (
+          <div key={l.id} className="g-row" style={{ cursor: 'default' }}>
+            <span className="g-ico" aria-hidden>{mimeIcon(l.mimeType)}</span>
+            {editing === l.id ? (
+              <input
+                className="input"
+                autoFocus
+                defaultValue={l.name}
+                style={{ flex: 1, minWidth: 0 }}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const v = (e.target as HTMLInputElement).value.trim();
+                    if (v && v !== l.name) void act(() => gDocLinkRename(l.id, v));
+                    setEditing(null);
+                  } else if (e.key === 'Escape') setEditing(null);
+                }}
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  if (v && v !== l.name) void act(() => gDocLinkRename(l.id, v));
+                  setEditing(null);
+                }}
+              />
+            ) : (
+              <button
+                className="g-name"
+                style={{ background: 'none', border: 0, padding: 0, textAlign: 'left', font: 'inherit', color: 'inherit', cursor: 'pointer' }}
+                onClick={() => open(l)}
+                title={`${l.name} — xem trong app (chỉ đọc)`}
+              >
+                <span className="g-base">{l.pinned && <span className="g-star" aria-hidden>⭐</span>}{l.name}</span>
+                <span className="g-meta">{fmtRel(l.lastOpened ?? l.addedAt)}</span>
+              </button>
+            )}
+            {gCanDownload(l.mimeType) && (
+              <span className="g-open" title="Tải về máy — tự dò tài khoản đọc được"
+                onClick={(e) => { e.stopPropagation(); void gDocDownload(l.fileId); }}>
+                ⬇
+              </span>
+            )}
+            <span className="g-open" title={l.pinned ? 'Bỏ ghim' : 'Ghim lên đầu'}
+              onClick={(e) => { e.stopPropagation(); void act(() => gDocLinkPin(l.id, !l.pinned)); }}>
+              {l.pinned ? '☆' : '⭐'}
+            </span>
+            <span className="g-open" title="Đổi tên hiển thị"
+              onClick={(e) => { e.stopPropagation(); setEditing(l.id); }}>
+              ✎
+            </span>
+            <span className="g-open" title="Mở bằng trình duyệt ngoài"
+              onClick={(e) => { e.stopPropagation(); window.open(l.url, '_blank'); }}>
+              ↗
+            </span>
+            <span className="g-open" title="Bỏ khỏi danh sách"
+              onClick={(e) => { e.stopPropagation(); remove(l); }}>
+              ✕
+            </span>
+          </div>
+        ))}
+        {links.length === 0 && !err && (
+          <div className="empty" style={{ padding: '24px 8px' }}>
+            <p className="small">
+              Chưa có tài liệu nào. Dán link ai đó share cho bạn vào ô trên — DevBox tự tìm tài khoản
+              đọc được rồi mở xem, tải về ngay trong app.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** Nhãn ngắn cho chip tài khoản: phần trước @ cho gọn, NHƯNG nếu có tài khoản
  *  khác cùng prefix (user@example.com vs tamtd@gmail.com) thì hiện cả email
  *  — hai chip giống hệt nhau thì không biết đang chọn cái nào. */
@@ -580,6 +722,9 @@ export default function GoogleWorkspace() {
       {/* key=account id → đổi tài khoản là remount sạch dữ liệu của account đó */}
       <div className="office-body">
         {section === 'projects' && <ProjectsView key={`p-${active.id}`} accountId={active.id} onOpen={openFile} onOpenUrl={openInApp} />}
+        {/* Không key theo account: link được share vốn không thuộc riêng
+            tài khoản nào — danh sách dùng chung, viewer tự dò quyền. */}
+        {section === 'shared' && <SharedView accountId={active.id} onOpen={openFile} />}
         {section === 'docs' && <KindList key={`d-${active.id}`} accountId={active.id} kind="docs" onOpen={openFile} />}
         {section === 'sheets' && <KindList key={`s-${active.id}`} accountId={active.id} kind="sheets" onOpen={openFile} />}
       </div>

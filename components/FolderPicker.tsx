@@ -12,7 +12,7 @@
 // folders that contain a given file — that turns "type the right path" into
 // "see the ▤ badge and click it".
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface DirEntry {
   name: string;
@@ -51,12 +51,19 @@ interface BrowseResult {
   shortcuts?: QuickPlace[];
 }
 
-/** `path`: undefined → server start folder · "" → drive list · absolute → that dir. */
-async function browseFolders(path?: string, marker?: string, exts?: string[]): Promise<BrowseResult> {
-  const body: Record<string, string | string[]> = {};
+/** `path`: undefined → server start folder · "" → drive list · absolute → that dir.
+ *  `allFiles`: bỏ lọc đuôi, liệt kê mọi file trong thư mục. */
+async function browseFolders(
+  path?: string,
+  marker?: string,
+  exts?: string[],
+  allFiles?: boolean,
+): Promise<BrowseResult> {
+  const body: Record<string, string | string[] | boolean> = {};
   if (path !== undefined) body.path = path;
   if (marker) body.marker = marker;
   if (exts && exts.length > 0) body.exts = exts;
+  if (allFiles) body.allFiles = true;
   const r = await fetch('/api/fs-browse', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -82,8 +89,23 @@ export interface FolderPickerProps {
   fileExts?: string[];
   /** Called when the user clicks a listed file (requires `fileExts`). */
   onPickFile?: (path: string) => void;
+  /** Keep the "Chọn thư mục này" button even in file mode — for SAVE dialogs,
+   *  where the user may either pick an existing file (overwrite) or just pick
+   *  the folder and type a new name. */
+  allowPickFolder?: boolean;
   onPick: (path: string) => void;
   onClose: () => void;
+}
+
+/** Icon theo đuôi file cho các dòng file trong picker. */
+function fileIcon(name: string): string {
+  const ext = name.toLowerCase().split('.').pop() ?? '';
+  if (ext === 'xlsx' || ext === 'xls') return '📊';
+  if (ext === 'docx' || ext === 'doc') return '🗎';
+  if (ext === 'md' || ext === 'markdown' || ext === 'mdown' || ext === 'mkd' || ext === 'mdx') return '📝';
+  if (ext === 'json') return '🧾';
+  if (ext === 'html' || ext === 'htm' || ext === 'xml' || ext === 'svg') return '🌐';
+  return '📄';
 }
 
 /** Compact size for the file rows: 731 B · 24 KB · 3.2 MB. */
@@ -100,12 +122,17 @@ export default function FolderPicker({
   marker,
   fileExts,
   onPickFile,
+  allowPickFolder,
   onPick,
   onClose,
 }: FolderPickerProps) {
   const [data, setData] = useState<BrowseResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+
+  /** Bỏ lọc đuôi file — hiện MỌI file trong thư mục. Cứu trường hợp file có
+   *  thật nhưng đuôi không nằm trong `fileExts` (vd .markdown, .yaml, .conf). */
+  const [showAll, setShowAll] = useState(false);
 
   // `undefined` on first load → server start folder; thereafter an explicit path
   // (including "" for the Windows drive list).
@@ -115,15 +142,24 @@ export default function FolderPicker({
     setLoading(true);
     setErr(null);
     try {
-      setData(await browseFolders(target, marker, extsKey ? extsKey.split(',') : undefined));
+      setData(await browseFolders(
+        target,
+        marker,
+        extsKey ? extsKey.split(',') : undefined,
+        showAll,
+      ));
     } catch (e) {
       setErr((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [marker, extsKey]);
+  }, [marker, extsKey, showAll]);
 
-  useEffect(() => { load(initial); }, [load, initial]);
+  // Lần đầu vào `initial`; đổi công tắc "mọi file" thì đọc lại đúng thư mục
+  // đang mở (ref giữ path hiện tại để không nhảy về `initial`).
+  const curPath = useRef<string | undefined>(initial);
+  useEffect(() => { load(curPath.current); }, [load]);
+  useEffect(() => { if (data) curPath.current = data.isDriveList ? '' : data.path; }, [data]);
 
   // Esc = thoát hộp thoại (ngoài nút ✕ / Hủy / bấm ra nền).
   useEffect(() => {
@@ -156,6 +192,14 @@ export default function FolderPicker({
           <code className="small picker-cwd" title={data?.path || ''}>
             {data?.isDriveList ? '(chọn ổ đĩa)' : data?.path || '…'}
           </code>
+          <button
+            className="ghost sm"
+            onClick={() => load(data?.isDriveList ? '' : data?.path)}
+            disabled={loading}
+            title="Đọc lại thư mục này (file vừa tạo/copy chưa thấy thì bấm đây)"
+          >
+            {loading ? <span className="spinner" aria-hidden /> : '↻'}
+          </button>
           {marker && canPick && (
             <span
               className="badge"
@@ -206,7 +250,7 @@ export default function FolderPicker({
               ))}
               {(data.files ?? []).map((f) => (
                 <button key={f.path} className="picker-row" onClick={() => onPickFile?.(f.path)} title={f.path}>
-                  <span className="picker-ico" aria-hidden>{f.name.toLowerCase().endsWith('.csv') ? '📄' : '📊'}</span>
+                  <span className="picker-ico" aria-hidden>{fileIcon(f.name)}</span>
                   <span className="picker-name">{f.name}</span>
                   <span className="small" style={{ color: 'var(--muted)', flex: 'none' }}>{fmtSize(f.sizeBytes)}</span>
                 </button>
@@ -227,8 +271,19 @@ export default function FolderPicker({
                 ? 'Bấm vào thư mục để đi vào; bấm vào file để mở.'
                 : 'Bấm vào thư mục để đi vào; “Chọn thư mục này” để lấy thư mục đang mở.')}
           </span>
+          {fileExts && (
+            <button
+              className={`chip-btn${showAll ? ' on' : ''}`}
+              onClick={() => setShowAll((v) => !v)}
+              title={showAll
+                ? 'Chỉ hiện file đúng loại đang cần'
+                : 'Hiện MỌI file trong thư mục (kể cả đuôi khác)'}
+            >
+              {showAll ? '✓ Mọi file' : 'Mọi file'}
+            </button>
+          )}
           <button className="ghost sm" onClick={onClose}>Hủy</button>
-          {!fileExts && (
+          {(!fileExts || allowPickFolder) && (
             <button
               className="sm"
               onClick={() => data && canPick && onPick(data.path)}

@@ -17,17 +17,40 @@
 // on GitLab are respected — this is a real MR merge, not a local `git merge`.
 
 import { execFile } from 'child_process';
+import { getToken } from './gitlabTokens';
 
 const GIT_TIMEOUT_MS = 15_000;
 const API_TIMEOUT_MS = 20_000;
 
-/** Run a git subcommand in `cwd`, optionally feeding `input` to stdin. */
+/**
+ * Run a git subcommand in `cwd`, optionally feeding `input` to stdin.
+ *
+ * Never interactive. This runs inside a server request with no attached
+ * terminal, so a credential prompt has nobody to answer it: GIT_TERMINAL_PROMPT=0
+ * blocks git's own text prompt, and an empty GIT_ASKPASS/SSH_ASKPASS blocks the
+ * GUI helper (on Windows, Git Credential Manager) that would otherwise pop a
+ * dialog per call. Without these, `credential fill` below pops a login box that
+ * can never stick — `fill` only READS credentials, so whatever is typed is used
+ * once and never saved, and the next call prompts again.
+ */
 function git(cwd: string, args: string[], input?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       'git',
       args,
-      { cwd, timeout: GIT_TIMEOUT_MS, windowsHide: true, maxBuffer: 1 << 20 },
+      {
+        cwd,
+        timeout: GIT_TIMEOUT_MS,
+        windowsHide: true,
+        maxBuffer: 1 << 20,
+        env: {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: '0',
+          GIT_ASKPASS: '',
+          SSH_ASKPASS: '',
+          GCM_INTERACTIVE: 'never',
+        },
+      },
       (err, stdout, stderr) => {
         if (err) {
           const msg = (stderr || (err as Error).message || '').toString().trim();
@@ -110,7 +133,9 @@ async function tokenFromGitCredential(repo: string, host: string): Promise<strin
   const input = `protocol=https\nhost=${host}\n\n`;
   let out: string;
   try {
-    // --no-prompt: never pop an interactive prompt on the server; just fail.
+    // NOTE: `git credential` has no --no-prompt flag (it accepts only
+    // fill|approve|reject, and rejects anything else with exit 129). Interactive
+    // prompts are suppressed by the env set in git() above instead.
     out = await git(repo, ['credential', 'fill'], input);
   } catch {
     return null;
@@ -212,7 +237,9 @@ async function gitlabApi(
     }
     if (res.status === 401 || res.status === 403) {
       throw new Error(
-        `GitLab API ${res.status}: token thiếu quyền (cần scope \`api\`). ${detail}`,
+        `GitLab API ${res.status}: token không hợp lệ hoặc thiếu quyền (cần scope \`api\`). ` +
+          `Nếu bạn đang dùng mật khẩu tài khoản: REST API không nhận mật khẩu — ` +
+          `hãy lưu một Personal Access Token qua nút "Token GitLab" trong tab Git. ${detail}`,
       );
     }
     throw new Error(`GitLab API ${res.status}: ${detail}`);
@@ -220,16 +247,28 @@ async function gitlabApi(
   return text ? JSON.parse(text) : null;
 }
 
-/** Resolve the API token for a repo, throwing a clear error when unavailable. */
+/**
+ * Resolve the API token for a repo, throwing a clear error when unavailable.
+ *
+ * Order matters. A token saved explicitly for this host (gitlabTokens.ts) wins,
+ * because it is known to be a Personal/Project Access Token — the only thing the
+ * REST API accepts. The git credential helper is only a fallback: on an instance
+ * that allows password auth for HTTPS git, what it stores is the account
+ * password, which pushes fine but 401s here. Trying it anyway costs one cheap
+ * local call and keeps setups that DID store a PAT working with no config.
+ */
 async function resolveToken(repo: string, ref: GitLabRepoRef): Promise<string> {
-  const token = await tokenFromGitCredential(repo, ref.host);
-  if (!token) {
-    throw new Error(
-      `Không lấy được token GitLab từ git credential cho ${ref.host}. ` +
-        `Hãy chắc chắn remote dùng HTTPS và bạn đã từng push/pull (credential đã được lưu).`,
-    );
-  }
-  return token;
+  const saved = await getToken(ref.host);
+  if (saved) return saved;
+
+  const fromGit = await tokenFromGitCredential(repo, ref.host);
+  if (fromGit) return fromGit;
+
+  throw new Error(
+    `Chưa có token GitLab cho ${ref.host}. Tạo Personal Access Token (scope \`api\`) ` +
+      `trên GitLab rồi lưu vào tab Git (nút "Token GitLab"). ` +
+      `Lưu ý: mật khẩu tài khoản dùng để push/pull KHÔNG dùng được cho MR API.`,
+  );
 }
 
 /**

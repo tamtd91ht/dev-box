@@ -31,8 +31,10 @@ export async function POST(req: NextRequest) {
   const exts = Array.isArray(body?.exts)
     ? (body.exts as unknown[]).filter((x): x is string => typeof x === 'string')
     : undefined;
+  // allFiles: bỏ lọc đuôi, liệt kê MỌI file (vẫn chỉ tên + kích thước).
+  const allFiles = body?.allFiles === true;
   try {
-    return NextResponse.json(await browse(target, marker, exts));
+    return NextResponse.json(await browse(target, marker, exts, allFiles));
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message || 'browse failed' }, { status: 400 });
   }

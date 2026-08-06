@@ -27,6 +27,10 @@ export const dSave = (input: { id?: string; name: string; kind: DocKind; content
 export const dRemove = (id: string) => docsAction<SavedDoc[]>('remove', { id });
 export const dSaveFile = (dir: string, filename: string, content: string) =>
   docsAction<{ path: string }>('saveFile', { dir, filename, content });
+/** File đã tồn tại chưa? → thông tin file, hoặc null nếu chưa có. Dùng để hỏi
+ *  xác nhận trước khi ghi đè. */
+export const dFileExists = (dir: string, filename: string) =>
+  docsAction<{ size: number; mtime: string } | null>('statFile', { dir, filename });
 /** Mở file text thật từ máy local (cap 10MB). */
 export const dReadFile = (path: string) =>
   docsAction<{ path: string; content: string }>('readFile', { path });

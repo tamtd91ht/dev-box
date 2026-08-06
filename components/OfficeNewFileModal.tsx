@@ -8,6 +8,14 @@
 import { useEffect, useState } from 'react';
 import FolderPicker from './FolderPicker';
 
+/** A starting-point document offered alongside the blank one. */
+export interface OfficeTemplateChoice {
+  v: string;
+  label: string;
+  hint: string;
+  icon: string;
+}
+
 export interface OfficeNewFileModalProps {
   /** Modal heading, e.g. 'Tạo bảng tính mới'. */
   title: string;
@@ -15,10 +23,13 @@ export interface OfficeNewFileModalProps {
   exts: string[];
   /** Pre-filled destination folder (e.g. folder of the currently open file). */
   initialDir?: string;
+  /** When given, the user picks a template; its id comes back via onCreate. */
+  templates?: OfficeTemplateChoice[];
   busy: boolean;
   err: string | null;
-  /** `name` always carries its extension. */
-  onCreate: (dir: string, name: string) => void;
+  /** `name` always carries its extension. `template` is set only when
+   *  `templates` was provided. */
+  onCreate: (dir: string, name: string, template?: string) => void;
   onClose: () => void;
 }
 
@@ -30,6 +41,7 @@ export default function OfficeNewFileModal({
   title,
   exts,
   initialDir,
+  templates,
   busy,
   err,
   onCreate,
@@ -38,6 +50,7 @@ export default function OfficeNewFileModal({
   const [dir, setDir] = useState(initialDir ?? '');
   const [name, setName] = useState('');
   const [ext, setExt] = useState(exts[0]);
+  const [template, setTemplate] = useState(templates?.[0]?.v ?? '');
   const [dirPickerOpen, setDirPickerOpen] = useState(false);
 
   // Esc = thoát: close the nested folder picker first, then the modal itself.
@@ -58,7 +71,7 @@ export default function OfficeNewFileModal({
   const canCreate = !busy && dir !== '' && trimmed !== '' && !nameBad;
 
   const submit = () => {
-    if (canCreate) onCreate(dir, fullName);
+    if (canCreate) onCreate(dir, fullName, templates ? template : undefined);
   };
 
   return (
@@ -68,6 +81,30 @@ export default function OfficeNewFileModal({
           <h3 style={{ margin: 0, flex: 1 }}>{title}</h3>
           <button className="ghost sm" onClick={onClose} disabled={busy}>✕</button>
         </div>
+
+        {templates && templates.length > 0 && (
+          <>
+            <label className="small" style={{ color: 'var(--muted)', display: 'block', marginBottom: 4 }}>
+              Bắt đầu từ
+            </label>
+            <div className="office-tpl-grid">
+              {templates.map((t) => (
+                <button
+                  key={t.v}
+                  type="button"
+                  className={`office-tpl${template === t.v ? ' on' : ''}`}
+                  onClick={() => setTemplate(t.v)}
+                  disabled={busy}
+                  title={t.hint}
+                >
+                  <span className="office-tpl-ico" aria-hidden>{t.icon}</span>
+                  <span className="office-tpl-name">{t.label}</span>
+                  <span className="office-tpl-hint">{t.hint}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
 
         <label className="small" style={{ color: 'var(--muted)', display: 'block', marginBottom: 4 }}>
           Tên file

@@ -13,7 +13,17 @@
 //     'rootRename' { id, name }                  → { ok, result: GoogleRoot[] }
 //     'browse'     { accountId, folderId }       → { ok, result: DriveList }
 //     'list'       { accountId, kind: 'docs'|'sheets', q?, starred?, pageToken? } → { ok, result: DriveList }
-// (Mục 🔗 link dán tay đã tách ra tab Links riêng — xem /api/links.)
+//   Mục 🔗 "Tài liệu được share" — dán link MỘT FILE (không cần thư mục dự án):
+//     'docLinks'      {}                         → { ok, result: GoogleDocLink[] }
+//     'docResolve'    { url, accountId?, name?, save? }
+//                       → { ok, result: { file, usedBy, links } }
+//                       Dò LẦN LƯỢT mọi tài khoản đang đăng nhập để tìm cái đọc
+//                       được file (link share thường thuộc account khác).
+//     'docLinkRemove' { id }                     → { ok, result: GoogleDocLink[] }
+//     'docLinkRename' { id, name }               → { ok, result: GoogleDocLink[] }
+//     'docLinkPin'    { id, pinned }             → { ok, result: GoogleDocLink[] }
+//     'docLinkTouch'  { id }                     → { ok, result: GoogleDocLink[] }
+// (Tab Links dán link web chung — xem /api/links.)
 //
 // Everything is READ-ONLY against Google (scope drive.readonly; only
 // files.list/files.get are called) — editing opens Google's own UI in the
@@ -27,6 +37,9 @@ import {
 } from '@/lib/googleDrive';
 import { xlsxToSheets } from '@/lib/xlsxHtml';
 import { listRoots, addRoot, removeRoot, renameRoot } from '@/lib/googleRoots';
+import {
+  listDocLinks, addDocLink, removeDocLink, renameDocLink, pinDocLink, touchDocLink,
+} from '@/lib/googleDocLinks';
 
 export const runtime = 'nodejs';
 
@@ -97,6 +110,103 @@ export async function POST(req: NextRequest) {
         });
         break;
       }
+      // ── 🔗 Tài liệu được share: dán link file bất kỳ, không cần thư mục ──
+      case 'docLinks':
+        result = await listDocLinks();
+        break;
+      case 'docResolve': {
+        // Không dùng needAccount(): link share có thể thuộc BẤT KỲ tài khoản
+        // nào đang đăng nhập, nên ta dò lần lượt thay vì bắt người dùng đoán.
+        const url = String(body.url ?? '');
+        const fileId = extractDriveId(url);
+        if (!fileId) {
+          throw new Error(
+            'Không nhận ra link Google — dán link Docs/Sheets/Slides/Drive (…/d/<id>… hoặc …?id=<id>).',
+          );
+        }
+        const st = await status();
+        if (st.accounts.length === 0) throw new Error('Chưa đăng nhập tài khoản Google nào.');
+        // Tài khoản đang chọn (nếu có) thử trước — thường là đúng.
+        const order = [
+          ...st.accounts.filter((a) => a.id === accountId),
+          ...st.accounts.filter((a) => a.id !== accountId),
+        ];
+        let meta: DriveFile | null = null;
+        let usedBy = '';
+        let firstErr = '';
+        for (const acc of order) {
+          try {
+            meta = await resolveFile(acc.id, fileId);
+            usedBy = acc.email ?? acc.id;
+            break;
+          } catch (err) {
+            firstErr ||= (err as Error).message;
+          }
+        }
+        if (!meta) {
+          throw new Error(
+            `Không tài khoản nào đọc được link này (đã thử ${order.length} tài khoản: ` +
+            `${order.map((a) => a.email ?? a.id).join(', ')}).\n` +
+            'Kiểm tra file đã được share cho một trong các tài khoản trên chưa.\n' +
+            (firstErr ? `Google báo: ${firstErr}` : ''),
+          );
+        }
+        if (meta.mimeType === MIME.folder) {
+          throw new Error(
+            `Link này là THƯ MỤC "${meta.name}" — đăng ký nó ở mục 📁 Dự án để duyệt cây thư mục.`,
+          );
+        }
+        const saved = body.save === false
+          ? await listDocLinks()
+          : await addDocLink({
+              fileId: meta.id,
+              name: String(body.name ?? '').trim() || meta.name,
+              mimeType: meta.mimeType,
+              url,
+            });
+        result = {
+          file: { id: meta.id, name: meta.name, mimeType: meta.mimeType, webViewLink: meta.webViewLink },
+          usedBy,
+          links: saved,
+        };
+        break;
+      }
+      case 'docOwner': {
+        // Tài khoản ĐẦU TIÊN đọc được file — client cần nó để dựng URL tải về
+        // cho một link share (không biết trước file thuộc account nào).
+        const fileId = String(body.fileId ?? '');
+        if (!fileId) throw new Error('Thiếu fileId.');
+        const st = await status();
+        const order = [
+          ...st.accounts.filter((a) => a.id === accountId),
+          ...st.accounts.filter((a) => a.id !== accountId),
+        ];
+        let owner = '';
+        for (const acc of order) {
+          try {
+            await getFile(acc.id, fileId);
+            owner = acc.id;
+            break;
+          } catch {
+            /* account này không thấy file — thử account kế tiếp */
+          }
+        }
+        if (!owner) throw new Error('Không tài khoản nào đang đăng nhập đọc được file này.');
+        result = owner;
+        break;
+      }
+      case 'docLinkRemove':
+        result = await removeDocLink(String(body.id ?? ''));
+        break;
+      case 'docLinkRename':
+        result = await renameDocLink(String(body.id ?? ''), String(body.name ?? ''));
+        break;
+      case 'docLinkPin':
+        result = await pinDocLink(String(body.id ?? ''), body.pinned === true);
+        break;
+      case 'docLinkTouch':
+        result = await touchDocLink(String(body.id ?? ''));
+        break;
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
     }

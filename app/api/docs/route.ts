@@ -4,6 +4,7 @@
 //     'save'     { id?, name, kind, content } → SavedDoc[]  (id có = cập nhật)
 //     'remove'   { id }                       → SavedDoc[]
 //     'saveFile' { dir, filename, content }   → { path }  (ghi ra file thật)
+//     'statFile' { dir, filename }             → { size, mtime } | null (đã tồn tại chưa)
 //     'readFile' { path }                      → { path, content } (mở file thật từ máy)
 //   GET ?media&path=  → stream file media (audio/video) với Range để <audio>/<video>
 //                       phát + tua được ngay trong tab Tools.
@@ -94,6 +95,17 @@ export async function POST(req: NextRequest) {
         const full = path.join(dir, filename);
         await fs.writeFile(full, String(body.content ?? ''), 'utf8');
         result = { path: full };
+        break;
+      }
+      case 'statFile': {
+        // File đích đã tồn tại chưa (để UI hỏi xác nhận ghi đè)? Không đọc nội
+        // dung — chỉ trả kích thước + lần sửa cuối. Chưa có → null.
+        const dir = String(body.dir ?? '').trim();
+        const filename = String(body.filename ?? '').trim();
+        if (!dir || !filename) throw new Error('Thiếu thư mục hoặc tên file.');
+        if (filename !== path.basename(filename)) throw new Error('Tên file không hợp lệ.');
+        const st = await fs.stat(path.join(dir, filename)).catch(() => null);
+        result = st?.isFile() ? { size: st.size, mtime: st.mtime.toISOString() } : null;
         break;
       }
       case 'readFile': {

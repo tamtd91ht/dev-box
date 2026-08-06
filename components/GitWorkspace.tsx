@@ -22,6 +22,7 @@ import {
   type MergeRequestSummary,
   type ListMrsResult,
   type MergeMrResult,
+  type GitLabTokenStatusResult,
 } from '@/lib/git';
 import FolderPicker from './FolderPicker';
 
@@ -1225,6 +1226,7 @@ function MergeRequestsModal({ repo, repoName, highlightBranch, onClose, onMerged
   const [mergingIid, setMergingIid] = useState<number | null>(null);
   // MRs that succeeded this session — shown as merged, removed from actionable list.
   const [mergedIids, setMergedIids] = useState<Set<number>>(() => new Set());
+  const [tokenOpen, setTokenOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1271,6 +1273,9 @@ function MergeRequestsModal({ repo, repoName, highlightBranch, onClose, onMerged
           <h3 style={{ margin: 0, flex: 1 }}>
             Merge request → <b>dev</b> — {repoName || 'repo'}
           </h3>
+          <button className="ghost sm" onClick={() => setTokenOpen(true)} title="Token GitLab dùng cho MR API">
+            🔑 Token
+          </button>
           <button className="ghost sm" onClick={load} disabled={loading} title="Làm mới danh sách MR">
             {loading ? <span className="spinner" aria-hidden /> : '↻'}
           </button>
@@ -1283,7 +1288,18 @@ function MergeRequestsModal({ repo, repoName, highlightBranch, onClose, onMerged
           </div>
         )}
 
-        {err && <pre className="code" style={{ color: 'var(--err)', margin: '0 0 10px' }}>{err}</pre>}
+        {err && (
+          <div style={{ margin: '0 0 10px' }}>
+            <pre className="code" style={{ color: 'var(--err)', margin: 0 }}>{err}</pre>
+            {/* Token/permission failures are the common case here and are fixed in
+                one place — offer the jump instead of making the user find it. */}
+            {/token|401|403/i.test(err) && (
+              <button className="sm" style={{ marginTop: 8 }} onClick={() => setTokenOpen(true)}>
+                🔑 Nhập token GitLab
+              </button>
+            )}
+          </div>
+        )}
 
         {loading && !data ? (
           <div className="empty" style={{ padding: '28px 8px' }}>
@@ -1359,8 +1375,159 @@ function MergeRequestsModal({ repo, repoName, highlightBranch, onClose, onMerged
         )}
 
         <div className="small" style={{ color: 'var(--muted)', marginTop: 10 }}>
-          Merge gọi GitLab MR API (tôn trọng approval/pipeline/conflict trên GitLab). Token lấy từ git credential của repo.
+          Merge gọi GitLab MR API (tôn trọng approval/pipeline/conflict trên GitLab).
+          Token dùng Personal Access Token đã lưu cho host (nút 🔑 Token).
         </div>
+
+        {tokenOpen && (
+          <GitLabTokenModal
+            repo={repo}
+            onClose={() => setTokenOpen(false)}
+            onSaved={() => {
+              setTokenOpen(false);
+              load();
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── GitLab token modal ──────────────────────────────────────────────────────────
+
+interface GitLabTokenModalProps {
+  repo: string;
+  onClose: () => void;
+  /** Called after a successful save/remove so the caller can retry its request. */
+  onSaved: () => void;
+}
+
+/**
+ * Save the Personal Access Token used for the GitLab REST API (MR list + merge).
+ *
+ * This is deliberately separate from the credential `git push` uses: a self-hosted
+ * instance may accept an account password over HTTPS for git, but the REST API
+ * only accepts a PAT. The host is derived server-side from the repo's own origin
+ * remote — not typed here — so the token can't be filed under the wrong host.
+ * The token is write-only from the browser's point of view: the server returns
+ * just a redacted preview, never the value back.
+ */
+function GitLabTokenModal({ repo, onClose, onSaved }: GitLabTokenModalProps) {
+  const [status, setStatus] = useState<GitLabTokenStatusResult | null>(null);
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      setStatus(await gitAction<GitLabTokenStatusResult>('gitlab-token-status', { repo }));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [repo]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const save = useCallback(async () => {
+    const t = token.trim();
+    if (!t || !status?.host || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await gitAction('set-gitlab-token', { host: status.host, token: t });
+      setToken('');
+      await refresh();
+      onSaved();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [token, status, busy, refresh, onSaved]);
+
+  const remove = useCallback(async () => {
+    if (!status?.host || busy) return;
+    if (!window.confirm(`Xoá token GitLab đã lưu cho ${status.host}?`)) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await gitAction('delete-gitlab-token', { host: status.host });
+      await refresh();
+      onSaved();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [status, busy, refresh, onSaved]);
+
+  return (
+    <div className="modal-backdrop" onClick={() => !busy && onClose()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(560px, 94vw)' }}>
+        <div className="status-line" style={{ marginBottom: 10 }}>
+          <h3 style={{ margin: 0, flex: 1 }}>Token GitLab</h3>
+          <button className="ghost sm" onClick={onClose} disabled={busy}>✕</button>
+        </div>
+
+        {loading ? (
+          <div className="empty" style={{ padding: '20px 8px' }}>
+            <p className="small">Đang đọc trạng thái token…</p>
+          </div>
+        ) : (
+          <>
+            <div className="small" style={{ color: 'var(--muted)', marginBottom: 10 }}>
+              Host: <code style={{ fontFamily: 'var(--mono)' }}>{status?.host || '—'}</code>
+              {status?.token ? (
+                <>
+                  {' · '}
+                  <span className="badge info">đã lưu {status.token.preview}</span>
+                </>
+              ) : (
+                <>
+                  {' · '}
+                  <span className="badge warn">chưa có token</span>
+                </>
+              )}
+            </div>
+
+            <label className="small" style={{ display: 'block', marginBottom: 4 }}>
+              Personal Access Token (scope <code>api</code>)
+            </label>
+            <input
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && save()}
+              placeholder="glpat-…"
+              autoComplete="off"
+              spellCheck={false}
+              disabled={busy}
+              style={{ width: '100%', fontFamily: 'var(--mono)' }}
+            />
+
+            {err && <pre className="code" style={{ color: 'var(--err)', margin: '10px 0 0' }}>{err}</pre>}
+
+            <div className="status-line" style={{ marginTop: 12 }}>
+              <div className="small" style={{ flex: 1, color: 'var(--muted)' }}>
+                Tạo ở GitLab → Settings → Access Tokens. Token chỉ lưu trên máy này.
+              </div>
+              {status?.token && (
+                <button className="ghost sm" onClick={remove} disabled={busy}>Xoá</button>
+              )}
+              <button className="sm" onClick={save} disabled={busy || !token.trim()}>
+                {busy ? <><span className="spinner" aria-hidden /> Đang lưu</> : 'Lưu'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

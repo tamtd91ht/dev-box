@@ -76,11 +76,21 @@ function listensTo(rule: AutomationRule, event: AutomationEvent): boolean {
   return rule.trigger === event.type;
 }
 
-/** Does the rule apply to the event's source + instance? Empty list = all. */
+/**
+ * Does the rule apply to the event's source + instance? Empty list = all.
+ *
+ * Instance ids are stored qualified (`zalo::main`) because every plugin's first
+ * account is literally `main` — a bare `main` cannot tell Zalo from Telegram.
+ * The unqualified form is still accepted so infra connection ids (already
+ * globally unique) and rules saved before the change keep matching.
+ */
 function inScope(rule: AutomationRule, event: AutomationEvent): boolean {
   const { sourceIds, instanceIds } = rule.scope ?? { sourceIds: [], instanceIds: [] };
   if (sourceIds?.length && !sourceIds.includes(event.sourceId)) return false;
-  if (instanceIds?.length && !instanceIds.includes(event.instanceId)) return false;
+  if (instanceIds?.length) {
+    const qualified = `${event.sourceId}::${event.instanceId}`;
+    if (!instanceIds.includes(qualified) && !instanceIds.includes(event.instanceId ?? '')) return false;
+  }
   return true;
 }
 

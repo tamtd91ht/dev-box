@@ -61,6 +61,35 @@ export const gRootAdd = (accountId: string, url: string, name?: string) =>
   googleAction<GRoot[]>('rootAdd', { accountId, url, name });
 export const gRootRemove = (id: string) => googleAction<GRoot[]>('rootRemove', { id });
 export const gBrowse = (accountId: string, folderId: string) => googleAction<GList>('browse', { accountId, folderId });
+
+/** Một link tài liệu đã dán (mục 🔗 Tài liệu được share). */
+export interface GDocLink {
+  id: string;
+  fileId: string;
+  name: string;
+  mimeType: string;
+  url: string;
+  pinned?: boolean;
+  lastOpened?: string;
+  addedAt: string;
+}
+
+/** Kết quả dán link: file đã nhận diện + tài khoản đọc được + danh sách mới. */
+export interface GDocResolved {
+  file: { id: string; name: string; mimeType: string; webViewLink?: string };
+  /** Email tài khoản thực sự đọc được file (có thể khác account đang chọn). */
+  usedBy: string;
+  links: GDocLink[];
+}
+
+export const gDocLinks = () => googleAction<GDocLink[]>('docLinks');
+/** Dán link — server dò mọi tài khoản để tìm cái đọc được, rồi lưu vào registry. */
+export const gDocResolve = (url: string, opts: { accountId?: string; name?: string; save?: boolean } = {}) =>
+  googleAction<GDocResolved>('docResolve', { url, ...opts });
+export const gDocLinkRemove = (id: string) => googleAction<GDocLink[]>('docLinkRemove', { id });
+export const gDocLinkRename = (id: string, name: string) => googleAction<GDocLink[]>('docLinkRename', { id, name });
+export const gDocLinkPin = (id: string, pinned: boolean) => googleAction<GDocLink[]>('docLinkPin', { id, pinned });
+export const gDocLinkTouch = (id: string) => googleAction<GDocLink[]>('docLinkTouch', { id });
 export const gList = (
   accountId: string,
   kind: 'docs' | 'sheets',
@@ -118,6 +147,20 @@ export function gDownload(accountId: string, fileId: string): void {
   a.click();
   a.remove();
 }
+
+/**
+ * Tải một file chỉ biết fileId (link được share — chưa biết tài khoản nào đọc
+ * được). Hỏi server xem account nào mở được rồi mới kích download bằng account
+ * đó; gDownload() thường yêu cầu accountId đúng ngay từ đầu.
+ */
+export async function gDocDownload(fileId: string): Promise<void> {
+  const accountId = await gDocOwner(fileId);
+  gDownload(accountId, fileId);
+}
+
+/** Tài khoản đầu tiên đọc được file — dùng cho link share không rõ chủ. */
+export const gDocOwner = (fileId: string) =>
+  googleAction<string>('docOwner', { fileId });
 
 export const G_MIME = {
   folder: 'application/vnd.google-apps.folder',
