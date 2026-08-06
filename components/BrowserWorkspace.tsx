@@ -118,13 +118,47 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
   }, []);
   const chime = useChime();
 
-  const total = useMemo(() => Object.values(unread).reduce((a, b) => a + b, 0), [unread]);
+  /**
+   * Tài khoản đang ẩn thông báo → số của nó dừng lại ở dòng của chính nó.
+   *
+   * `unread` giữ số THẬT của mọi tài khoản (dòng trong rail đọc thẳng từ đó).
+   * Mọi thứ dội RA NGOÀI — huy hiệu nhóm, huy hiệu tab Workspace, tiêu đề cửa
+   * sổ, chuông báo — đều đi qua `audible` này. Một chỗ lọc duy nhất, nên không
+   * có đường nào lọt: thêm một chỗ hiện huy hiệu sau này cũng chỉ việc đọc nó.
+   */
+  const isMuted = useCallback(
+    (key: string) => {
+      const [pluginId, instanceId] = key.split('::');
+      return !!(accounts[pluginId] ?? []).find((a) => a.instanceId === instanceId)?.muted;
+    },
+    [accounts],
+  );
+
+  const audible = useCallback(
+    (key: string) => (isMuted(key) ? 0 : unread[key] ?? 0),
+    [isMuted, unread],
+  );
+
+  const total = useMemo(
+    () => Object.entries(unread).reduce((sum, [key, n]) => sum + (isMuted(key) ? 0 : n), 0),
+    [unread, isMuted],
+  );
   const prevTotal = useRef(0);
+  // Bỏ ẩn một tài khoản đang có tin chưa đọc làm `total` nhảy vọt — nhưng đó là
+  // tin CŨ vừa được tính lại, không phải tin mới đến. Chuông chỉ được kêu vì
+  // tin mới, nên lần chạy ngay sau khi đổi cờ ẩn chỉ ghi lại mốc, không kêu.
+  const mutedSig = useMemo(
+    () => allAccounts.map((a) => (a.muted ? '1' : '0')).join(''),
+    [allAccounts],
+  );
+  const prevMutedSig = useRef(mutedSig);
   useEffect(() => {
-    if (total > prevTotal.current && !muted) chime();
+    const remuted = prevMutedSig.current !== mutedSig;
+    prevMutedSig.current = mutedSig;
+    if (total > prevTotal.current && !muted && !remuted) chime();
     prevTotal.current = total;
     onUnread?.(total);
-  }, [total, muted, chime, onUnread]);
+  }, [total, muted, chime, onUnread, mutedSig]);
 
   // Automation: message capture is opt-in and off by default, so the guests
   // count unread and store nothing until the Automation tab enables it.
@@ -206,6 +240,17 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
     [select],
   );
 
+  /** Bật/tắt "ẩn thông báo" cho một tài khoản (ghi xuống localStorage luôn). */
+  const toggleAccountMuted = useCallback((pluginId: string, instanceId: string) => {
+    setAccounts((prev) => {
+      const next = (prev[pluginId] ?? []).map((a) =>
+        a.instanceId === instanceId ? { ...a, muted: !a.muted } : a,
+      );
+      saveAccounts(pluginId, next);
+      return { ...prev, [pluginId]: next };
+    });
+  }, []);
+
   const renameAccount = useCallback((pluginId: string, instanceId: string, label: string) => {
     setAccounts((prev) => {
       const next = (prev[pluginId] ?? []).map((a) =>
@@ -277,7 +322,10 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
           <button
             className="ws-icon-btn"
             onClick={toggleMute}
-            title={muted ? 'Bật chuông báo tin nhắn' : 'Tắt chuông báo tin nhắn'}
+            // Chuông ở đầu rail = ÂM THANH cho tất cả. Chuông trên mỗi dòng =
+            // ẩn thông báo của riêng tài khoản đó. Nói rõ trong tooltip để hai
+            // cái không bị hiểu lẫn nhau.
+            title={muted ? 'Bật chuông báo (toàn bộ workspace)' : 'Tắt chuông báo (toàn bộ workspace)'}
           >
             {muted ? '🔕' : '🔔'}
           </button>
@@ -286,8 +334,10 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
         {plugins.map((plugin) => {
           const list = accounts[plugin.id] ?? [];
           const multi = !!plugin.multiAccount;
+          // Huy hiệu nhóm chỉ cộng tài khoản KHÔNG ẩn — ẩn một tài khoản mà đầu
+          // nhóm vẫn sáng số của nó thì coi như chưa ẩn.
           const groupUnread = list.reduce(
-            (sum, a) => sum + (unread[accountKey(plugin.id, a.instanceId)] ?? 0),
+            (sum, a) => sum + audible(accountKey(plugin.id, a.instanceId)),
             0,
           );
 
@@ -342,16 +392,41 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
                   return (
                     <div
                       key={key}
-                      className={`ws-acct${isActive ? ' is-active' : ''}`}
+                      className={`ws-acct${isActive ? ' is-active' : ''}${acc.muted ? ' is-muted' : ''}`}
                       onClick={() => select(key)}
-                      title={`${plugin.name} — ${acc.label}`}
+                      title={
+                        `${plugin.name} — ${acc.label}` +
+                        (acc.muted ? ' · đang ẩn thông báo' : '')
+                      }
                     >
                       {/* The app mark repeats on every row: a renamed account
                           ("Sếp", "CSKH") must still say which app it lives in. */}
                       <BrandMark plugin={plugin} size={14} faded={!alive} />
                       <span className="ws-acct-name">{acc.label}</span>
-                      {n > 0 && <span className="ws-unread sm">{n > 99 ? '99+' : n}</span>}
+                      {/* Số THẬT, kể cả khi đang ẩn: ẩn là không dội ra ngoài,
+                          chứ ngay tại dòng này vẫn phải thấy có gì mới. Ẩn thì
+                          để huy hiệu ở dạng lặng (xám) cho khỏi bắt mắt. */}
+                      {n > 0 && (
+                        <span className={`ws-unread sm${acc.muted ? ' is-quiet' : ''}`}>
+                          {n > 99 ? '99+' : n}
+                        </span>
+                      )}
                       {alive && <span className={`ws-rail-live${isActive ? '' : ' is-bg'}`} />}
+                      <button
+                        className={`ws-acct-btn${acc.muted ? ' is-on' : ''}`}
+                        title={
+                          acc.muted
+                            ? 'Đang ẩn thông báo — bấm để báo lại như bình thường'
+                            : 'Ẩn thông báo: chỉ hiện số ngay dòng này, không báo ra ngoài'
+                        }
+                        aria-pressed={!!acc.muted}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleAccountMuted(plugin.id, acc.instanceId);
+                        }}
+                      >
+                        {acc.muted ? '🔕' : '🔔'}
+                      </button>
                       {multi && (
                         <>
                           <button

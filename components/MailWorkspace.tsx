@@ -25,6 +25,7 @@ import GoogleAuthWindow from './GoogleAuthWindow';
 import { fmtRel } from '@/lib/google';
 import PasswordInput from './PasswordInput';
 import { MAIL_REFRESH_EVENT } from './MailWatchHost';
+import { MAIL_MUTED_EVENT, loadMutedMail, toggleMutedMail } from '@/lib/mailMuted';
 
 /** Báo cho MailWatchHost đếm lại số mail chưa đọc NGAY (badge tab Mail). */
 function pingMailWatch() {
@@ -913,6 +914,51 @@ export default function MailWorkspace() {
   const [sentFlash, setSentFlash] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Ẩn thông báo theo từng hòm thư + số chưa đọc của riêng từng hòm.
+  //
+  // Số lấy từ chính snapshot mà MailWatchHost đang poll (/api/mail/watch) — nó
+  // đã có sẵn mảng per-account, nên không mở thêm kết nối IMAP nào. Ẩn rồi thì
+  // số vẫn hiện ngay trên tab của hòm thư đó, chỉ là không dội ra huy hiệu tab
+  // Mail nữa — giống hệt cách làm bên Workspace.
+  const [mutedIds, setMutedIds] = useState<Set<string>>(() => new Set());
+  const [unseenById, setUnseenById] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    setMutedIds(loadMutedMail());
+    const sync = () => setMutedIds(loadMutedMail());
+    window.addEventListener(MAIL_MUTED_EVENT, sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener(MAIL_MUTED_EVENT, sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    const pull = async () => {
+      try {
+        const res = await fetch('/api/mail/watch');
+        if (!res.ok) return;
+        const snap = (await res.json()) as { accounts?: { id: string; unseen: number }[] };
+        if (stopped || !Array.isArray(snap.accounts)) return;
+        setUnseenById(Object.fromEntries(snap.accounts.map((a) => [a.id, a.unseen || 0])));
+      } catch {
+        /* server chưa sẵn sàng — thử lại ở nhịp sau */
+      }
+    };
+    void pull();
+    // Cùng nhịp với MailWatchHost; đọc snapshot in-memory nên rất nhẹ.
+    const timer = setInterval(() => void pull(), 60_000);
+    const onRefresh = () => void pull();
+    window.addEventListener(MAIL_REFRESH_EVENT, onRefresh);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      window.removeEventListener(MAIL_REFRESH_EVENT, onRefresh);
+    };
+  }, []);
+
   useEffect(() => {
     mAccounts()
       .then((list) => {
@@ -942,6 +988,9 @@ export default function MailWorkspace() {
     if (!window.confirm(`Gỡ tài khoản ${a.email} khỏi DevBox?\n\n${note}`)) return;
     try {
       onAccountsChanged(await mAccountRemove(a.id));
+      // Dọn cờ ẩn của hòm thư vừa gỡ, đừng để lại rác trong localStorage — id
+      // là ngẫu nhiên nên nó sẽ nằm đó mãi mà không ai dùng tới nữa.
+      if (loadMutedMail().has(a.id)) setMutedIds(toggleMutedMail(a.id));
     } catch (e) {
       setErr((e as Error).message);
     }
@@ -987,12 +1036,38 @@ export default function MailWorkspace() {
         {sentFlash && <span className="small" style={{ color: 'var(--ok, #3c9)' }}>✓ Đã gửi</span>}
         <span style={{ flex: 1 }} />
         <div className="g-accounts" role="tablist" aria-label="Mail accounts">
-          {accounts.map((a) => (
-            <span key={a.id} className={`g-acc${a.id === active.id ? ' on' : ''}`}
-              title={`${a.email}${a.title ? ` — "${a.title}"` : ''}`}>
+          {accounts.map((a) => {
+            const muted = mutedIds.has(a.id);
+            const unseen = unseenById[a.id] ?? 0;
+            return (
+            <span key={a.id} className={`g-acc${a.id === active.id ? ' on' : ''}${muted ? ' is-muted' : ''}`}
+              title={`${a.email}${a.title ? ` — "${a.title}"` : ''}${muted ? ' · đang ẩn thông báo' : ''}`}>
               <button className="g-acc-btn" role="tab" aria-selected={a.id === active.id} onClick={() => setActiveId(a.id)}>
                 {a.auth === 'oauth' ? 'Ⓖ' : '✉'} {accTitle(a)}
               </button>
+              {/* Số chưa đọc của RIÊNG hòm thư này — ẩn thông báo thì vẫn hiện
+                  ở đây (dạng lặng), chỉ là không cộng vào badge tab Mail. */}
+              {unseen > 0 && (
+                <span className={`mail-acc-unseen${muted ? ' is-quiet' : ''}`}
+                  title={`${unseen} mail chưa đọc`}>
+                  {unseen > 99 ? '99+' : unseen}
+                </span>
+              )}
+              {/* Nút ẩn hiện thường trực khi ĐANG bật (nó là trạng thái, giấu đi
+                  thì không biết hòm nào đang im); còn lại theo nếp cũ của ✎/✕ —
+                  chỉ hiện ở tài khoản đang chọn. */}
+              {(muted || a.id === active.id) && (
+                <button
+                  className={`g-acc-x${muted ? ' is-on' : ''}`}
+                  aria-pressed={muted}
+                  title={muted
+                    ? 'Đang ẩn thông báo — bấm để báo lại như bình thường'
+                    : 'Ẩn thông báo: chỉ hiện số ngay tại đây, không báo ra tab Mail'}
+                  onClick={() => setMutedIds(toggleMutedMail(a.id))}
+                >
+                  {muted ? '🔕' : '🔔'}
+                </button>
+              )}
               {a.id === active.id && (
                 <>
                   <button className="g-acc-x" onClick={() => setRenaming(a)} title="Đổi tên hiển thị">✎</button>
@@ -1000,7 +1075,8 @@ export default function MailWorkspace() {
                 </>
               )}
             </span>
-          ))}
+            );
+          })}
           <button className="ghost sm" onClick={() => setAdding(true)} title="Thêm tài khoản mail khác">＋ Tài khoản</button>
         </div>
       </div>

@@ -14,6 +14,18 @@ export interface WorkspaceAccount {
   instanceId: string;
   /** Editable label shown in the rail. */
   label: string;
+  /**
+   * Ẩn thông báo của riêng tài khoản này.
+   *
+   * ẨN ≠ TẮT ĐẾM. Guest vẫn chạy, vẫn đếm, vẫn thu tin cho automation y như cũ —
+   * chỉ là số đó KHÔNG dội ra ngoài nữa: không cộng vào huy hiệu nhóm, không
+   * cộng vào huy hiệu tab Workspace, không đổi tiêu đề cửa sổ, không kêu chuông.
+   * Số vẫn hiện ngay trên dòng của tài khoản đó trong rail, để mở workspace ra
+   * là biết có gì mới — đúng như yêu cầu "chỉ hiển thị trên account đó thôi".
+   *
+   * Vắng mặt = false, nên tài khoản cũ đã lưu từ trước vẫn báo bình thường.
+   */
+  muted?: boolean;
 }
 
 const storeKey = (pluginId: string) => `ws:accounts:${pluginId}`;

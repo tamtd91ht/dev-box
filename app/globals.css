@@ -2691,6 +2691,18 @@ pre.kafka-drawer-body {
 .ws-acct:hover .ws-acct-btn { display: grid; }
 .ws-acct-btn:hover { background: var(--glass-2); color: var(--text); }
 .ws-acct-btn.danger:hover { color: var(--err); }
+
+/* ── Ẩn thông báo của một tài khoản ────────────────────────────────────────
+   Nút ✎/× chỉ hiện khi rê chuột vì chúng là HÀNH ĐỘNG. Nút ẩn thông báo khi
+   đang bật lại là TRẠNG THÁI: giấu đi thì nhìn cả rail không tài nào biết tài
+   khoản nào đang im. Nên bật là hiện thường trực, tắt thì về nếp cũ (chỉ hiện
+   lúc hover) để hàng nút không rối. */
+.ws-acct-btn.is-on { display: grid; color: var(--warn); }
+.ws-acct-btn.is-on:hover { color: var(--warn); }
+/* Tên tài khoản đang ẩn nhạt đi một chút — lướt mắt là thấy nó đang im. */
+.ws-acct.is-muted .ws-acct-name { color: var(--muted); }
+/* (Huy hiệu dạng lặng `.ws-unread.is-quiet` đặt NGAY SAU khai báo gốc của
+   .ws-unread ở dưới — cùng độ ưu tiên thì luật đứng sau mới thắng.) */
 .ws-acct-add {
   text-align: left; padding: 6px 10px; margin-top: 1px; border-radius: 10px;
   background: transparent; border: 1px dashed var(--glass-brd); color: var(--muted);
@@ -2733,6 +2745,13 @@ pre.kafka-drawer-body {
   box-shadow: 0 0 8px color-mix(in srgb, var(--err) 55%, transparent);
 }
 .ws-unread.sm { min-width: 16px; height: 16px; font-size: 9.5px; }
+/* Tài khoản đang ẩn thông báo: số vẫn hiện ngay trên dòng của nó (để mở ra là
+   biết có gì mới) nhưng ở dạng lặng — không đỏ, không quầng sáng, không kéo mắt
+   như một tin đang thật sự gọi mình. */
+.ws-unread.is-quiet {
+  background: var(--glass-2); color: var(--muted);
+  box-shadow: none; border: 1px solid var(--glass-brd);
+}
 .ms-unread { margin-left: 4px; }
 
 /* New-message alert on the Workspace tab — a red bell + count, visible while
@@ -3341,6 +3360,26 @@ pre.kafka-drawer-body {
   font-size: 10px; padding: 4px 8px 4px 0;
 }
 .g-acc-x:hover { color: var(--err); }
+
+/* ── Ẩn thông báo cho một hòm thư ──────────────────────────────────────────
+   Cùng luật với nút ẩn thông báo bên Workspace: bật là 🔕 vàng hiện thường
+   trực (trạng thái, không phải hành động), tên hòm thư nhạt đi.
+   `:hover { color: var(--err) }` của .g-acc-x là dành cho nút ✕ gỡ tài khoản —
+   phải chặn lại ở đây, nút chuông rê chuột vào mà đỏ lên thì trông như sắp xóa
+   mất cái gì. */
+.g-acc-x.is-on, .g-acc-x.is-on:hover { color: var(--warn); }
+.g-acc.is-muted .g-acc-btn { color: var(--muted); font-weight: 400; }
+
+/* Số chưa đọc của riêng một hòm thư, ngay trên tab tài khoản. */
+.mail-acc-unseen {
+  flex: none; min-width: 16px; padding: 1px 6px; border-radius: 999px;
+  font-family: var(--mono); font-size: 10px; font-weight: 700; line-height: 1.5;
+  color: #fff; background: var(--err);
+}
+/* Đang ẩn → vẫn đọc được nhưng thôi đỏ, thôi kéo mắt. */
+.mail-acc-unseen.is-quiet {
+  background: var(--glass-2); color: var(--muted); border: 1px solid var(--glass-brd);
+}
 
 /* ══════════════════════════════════════════════════════════════
    Automation tab — rules · watches · activity · test
