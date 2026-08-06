@@ -61,6 +61,18 @@ export default function BrandMark({ plugin, size = 18, className = '', faded = f
           />
         </svg>
       );
+    case 'messenger':
+      // Messenger: bong bóng chat có đuôi + tia chớp — khác hẳn hình tròn của
+      // Telegram/WhatsApp và hình vuông của Zalo, nhìn lướt là phân biệt được.
+      return (
+        <svg {...common}>
+          <path
+            d="M12 1.8C5.9 1.8 1.4 6.3 1.4 12.1c0 3.1 1.4 5.8 3.7 7.6v4.1l3.5-1.9c1.1.3 2.2.5 3.4.5 6.1 0 10.6-4.5 10.6-10.3S18.1 1.8 12 1.8z"
+            fill={color}
+          />
+          <path d="M5.6 15.1 10.8 9.6l2.9 2.7 4.4-2.7-5.2 5.5-2.8-2.7z" fill="#fff" />
+        </svg>
+      );
     default:
       // No vector mark declared → the emoji on a tinted chip, same footprint.
       return (

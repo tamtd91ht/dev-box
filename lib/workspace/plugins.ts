@@ -1,8 +1,9 @@
 // Browser Workspace Framework — plugin registry.
 //
-// A plugin is a pure declaration. To add a workspace (Telegram, WhatsApp,
-// Kibana, Grafana, Jenkins, an internal admin…), append an entry here — no other
-// code changes. The framework gives EACH ACCOUNT of each plugin its own
+// A plugin is a pure declaration. To add a workspace (Kibana, Grafana, Jenkins,
+// an internal admin…), append an entry here — no other code changes. Hiện có:
+// Zalo · Telegram · WhatsApp · Messenger (Facebook).
+// The framework gives EACH ACCOUNT of each plugin its own
 // persistent session partition (`persist:ws-{pluginId}-{instanceId}`), so Zalo
 // and Telegram never share cookies, storage or a login — they are already fully
 // partitioned. What they do share is the rail, and there each app carries its
@@ -148,20 +149,43 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
       bodySenderSeparator: ': ',
     },
   },
-  // WhatsApp Web works the same way — its toasts go through the service worker,
-  // which the collector already hooks. Uncomment when you actually need it:
-  // {
-  //   id: 'whatsapp',
-  //   name: 'WhatsApp',
-  //   icon: '🟢',
-  //   brand: { color: '#25d366', logo: 'whatsapp' },
-  //   url: 'https://web.whatsapp.com/',
-  //   badge: 'personal',
-  //   permissions: CHAT_PERMISSIONS,
-  //   keepAlive: true,
-  //   multiAccount: true,
-  //   capture: { genericTitles: ['WhatsApp'], bodySenderSeparator: ': ' },
-  // },
+  {
+    id: 'whatsapp',
+    name: 'WhatsApp',
+    icon: '🟢',
+    brand: { color: '#25d366', logo: 'whatsapp' },
+    url: 'https://web.whatsapp.com/',
+    badge: 'personal',
+    description: 'WhatsApp Web — quét QR bằng app trên điện thoại, phiên lưu ngay trên máy bạn.',
+    permissions: CHAT_PERMISSIONS,
+    keepAlive: true,
+    multiAccount: true,
+    capture: {
+      // Toast của WhatsApp Web đi qua service worker — collector đã hook sẵn cả
+      // hai dạng. Tiêu đề là tên hội thoại, thân là "Người gửi: nội dung".
+      genericTitles: ['WhatsApp', 'WhatsApp Web'],
+      bodySenderSeparator: ': ',
+    },
+  },
+  {
+    id: 'messenger',
+    name: 'Messenger',
+    icon: '💬',
+    brand: { color: '#0084ff', logo: 'messenger' },
+    // messenger.com chứ không phải facebook.com/messages: đây là client chat
+    // độc lập, nhẹ hơn và không kéo theo toàn bộ News Feed. Đăng nhập vẫn bằng
+    // tài khoản Facebook như thường.
+    url: 'https://www.messenger.com/',
+    badge: 'personal',
+    description: 'Facebook Messenger — đăng nhập bằng tài khoản Facebook, phiên lưu ngay trên máy bạn.',
+    permissions: CHAT_PERMISSIONS,
+    keepAlive: true,
+    multiAccount: true,
+    capture: {
+      genericTitles: ['Messenger', 'Facebook', 'Facebook Messenger'],
+      bodySenderSeparator: ': ',
+    },
+  },
 ];
 
 export function getPlugin(id: string): WorkspacePlugin | undefined {
