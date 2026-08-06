@@ -316,8 +316,11 @@ export default function WorkspaceView({
   /**
    * Menu điều hướng nhanh (hiện chỉ Facebook khai): đi tới một trang trong CÙNG
    * guest — không mở tab mới, không dựng lại webview — nên phiên đăng nhập và
-   * cả trạng thái cuộn của app đều còn nguyên. Đường dẫn nối vào origin của
-   * plugin để tuyệt đối không đi lạc sang domain khác.
+   * cả trạng thái cuộn của app đều còn nguyên.
+   *
+   * Mục khai đường dẫn tương đối thì nối vào origin của plugin; khai URL tuyệt
+   * đối thì đi thẳng tới đó (Facebook ↔ Messenger là hai miền dùng chung phiên
+   * Meta, xem WORKSPACE_MENUS). Cả hai đều qua `new URL(path, plugin.url)`.
    */
   const menu = useMemo(() => menuFor(plugin.id), [plugin.id]);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -409,7 +412,11 @@ export default function WorkspaceView({
               {menuOpen && (
                 <div className="ws-menu-pop">
                   {menu.map((m) => (
-                    <button key={m.path} className="ws-menu-item" onClick={() => goTo(m.path)}>
+                    <button
+                      key={m.path}
+                      className={`ws-menu-item${m.divider ? ' has-div' : ''}`}
+                      onClick={() => goTo(m.path)}
+                    >
                       <span className="ws-menu-ico">{m.icon}</span>
                       {m.label}
                     </button>

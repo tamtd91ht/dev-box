@@ -2,7 +2,7 @@
 //
 // A plugin is a pure declaration. To add a workspace (Kibana, Grafana, Jenkins,
 // an internal admin…), append an entry here — no other code changes. Hiện có:
-// Zalo · Telegram · WhatsApp · Messenger · Facebook.
+// Zalo · Telegram · WhatsApp · Facebook (gồm cả Messenger, chung một phiên).
 // The framework gives EACH ACCOUNT of each plugin its own
 // persistent session partition (`persist:ws-{pluginId}-{instanceId}`), so Zalo
 // and Telegram never share cookies, storage or a login — they are already fully
@@ -168,43 +168,34 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
     },
   },
   {
-    id: 'messenger',
-    name: 'Messenger',
-    icon: '💬',
-    brand: { color: '#0084ff', logo: 'messenger' },
-    // messenger.com chứ không phải facebook.com/messages: đây là client chat
-    // độc lập, nhẹ hơn và không kéo theo toàn bộ News Feed. Đăng nhập vẫn bằng
-    // tài khoản Facebook như thường.
-    url: 'https://www.messenger.com/',
-    badge: 'personal',
-    description: 'Facebook Messenger — đăng nhập bằng tài khoản Facebook, phiên lưu ngay trên máy bạn.',
-    permissions: CHAT_PERMISSIONS,
-    keepAlive: true,
-    multiAccount: true,
-    capture: {
-      genericTitles: ['Messenger', 'Facebook', 'Facebook Messenger'],
-      bodySenderSeparator: ': ',
-    },
-  },
-  {
     id: 'facebook',
     name: 'Facebook',
     icon: '📘',
     brand: { color: '#0866ff', logo: 'facebook' },
-    // facebook.com đầy đủ chứ không phải messenger.com: đây là chỗ để xem News
-    // Feed, story, trang cá nhân và profile của mình — đúng như mở
-    // facebook.com trong trình duyệt. Chat vẫn nên dùng workspace Messenger
-    // riêng bên trên (nhẹ hơn, và unread không lẫn với thông báo Feed).
+    // MỘT workspace cho cả Facebook và Messenger, không tách hai.
+    //
+    // facebook.com và messenger.com dùng CHUNG hệ đăng nhập của Meta. Tách
+    // thành hai plugin thì mỗi cái một partition (`ws-{pluginId}-{instanceId}`)
+    // → hai cookie jar riêng → phải đăng nhập hai lần cho cùng một tài khoản,
+    // trong khi trên Chrome thật đăng nhập Facebook là vào Messenger được luôn.
+    // Gộp lại: một partition, đăng nhập một lần, menu ☰ chọn vào Facebook hay
+    // Messenger — giống hệt cách mở hai địa chỉ trong cùng một trình duyệt.
     url: 'https://www.facebook.com/',
     badge: 'personal',
-    description: 'Facebook — News Feed, story, trang cá nhân. Phiên đăng nhập lưu ngay trên máy bạn.',
+    description:
+      'Facebook & Messenger — đăng nhập một lần, menu ☰ chọn Bảng tin hay Nhắn tin. Phiên lưu ngay trên máy bạn.',
     permissions: CHAT_PERMISSIONS,
-    // KHÔNG keepAlive: Facebook là tab để xem, không phải nguồn tin nhắn chạy
-    // nền — giữ sống một trang Feed nặng suốt phiên chỉ tốn RAM vô ích.
+    // keepAlive vì workspace này CÓ Messenger: tin nhắn phải tới được khi đang
+    // ở tab khác, nếu không badge chỉ nhảy lúc mình mở lên xem.
+    keepAlive: true,
     multiAccount: true,
-    // Không khai `capture`: đây không phải app nhắn tin, không đẩy tin vào
-    // automation. Số huy hiệu vì thế lấy từ "(N)" trên tiêu đề trang — chính là
-    // tổng thông báo Facebook hiển thị, đúng cái người ta mong đợi.
+    capture: {
+      // Gộp tiêu đề chung của cả hai miền — Messenger đặt tiêu đề theo tên hội
+      // thoại, còn Facebook để "Facebook". Cả hai đều là tiêu đề "vô nghĩa",
+      // lọc ra để không đẩy thành thông báo rác.
+      genericTitles: ['Messenger', 'Facebook', 'Facebook Messenger'],
+      bodySenderSeparator: ': ',
+    },
   },
 ];
 
@@ -214,18 +205,28 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
  * Cùng một guest, chỉ điều hướng — nên bấm qua lại KHÔNG mất phiên đăng nhập và
  * không dựng lại trang từ đầu. `/me/` để Facebook tự phân giải sang trang cá
  * nhân của tài khoản đang đăng nhập: không phải nhét username hay id vào source.
+ *
+ * Mục Nhắn tin trỏ sang messenger.com bằng URL TUYỆT ĐỐI: khác miền với
+ * facebook.com nhưng cùng phiên đăng nhập Meta, nên vẫn trong một guest và vào
+ * thẳng, không hỏi đăng nhập lại. Đây là lý do `path` chấp nhận cả URL đầy đủ.
  */
 export interface WorkspaceMenuItem {
   label: string;
-  /** Đường dẫn tuyệt đối trong cùng app (nối vào origin của plugin). */
+  /**
+   * Đường dẫn trong cùng app (nối vào origin của plugin), HOẶC một URL tuyệt đối
+   * khi mục đó nằm ở miền anh em dùng chung phiên (messenger.com ↔ facebook.com).
+   */
   path: string;
   icon?: string;
+  /** Vạch phân nhóm phía trên mục này trong menu. */
+  divider?: boolean;
 }
 
 export const WORKSPACE_MENUS: Record<string, WorkspaceMenuItem[]> = {
   facebook: [
-    { label: 'Bảng tin', path: '/', icon: '🏠' },
-    { label: 'Trang cá nhân', path: '/me/', icon: '👤' },
+    { label: 'Bảng tin', path: 'https://www.facebook.com/', icon: '🏠' },
+    { label: 'Nhắn tin (Messenger)', path: 'https://www.messenger.com/', icon: '💬' },
+    { label: 'Trang cá nhân', path: '/me/', icon: '👤', divider: true },
     { label: 'Story', path: '/stories/', icon: '📸' },
     { label: 'Reels', path: '/reel/', icon: '🎬' },
     { label: 'Bạn bè', path: '/friends/', icon: '👥' },
@@ -233,7 +234,7 @@ export const WORKSPACE_MENUS: Record<string, WorkspaceMenuItem[]> = {
     { label: 'Kỷ niệm', path: '/memories/', icon: '🕰️' },
     { label: 'Đã lưu', path: '/saved/', icon: '🔖' },
     { label: 'Marketplace', path: '/marketplace/', icon: '🛒' },
-    { label: 'Thông báo', path: '/notifications/', icon: '🔔' },
+    { label: 'Thông báo', path: '/notifications/', icon: '🔔', divider: true },
     { label: 'Cài đặt', path: '/settings/', icon: '⚙️' },
   ],
 };

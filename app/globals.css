@@ -2596,7 +2596,9 @@ pre.kafka-drawer-body {
 .ws-menu-pop {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
   min-width: 190px; padding: 5px;
-  background: var(--bg-2, #14161c); border: 1px solid var(--glass-brd);
+  /* Nền ĐẶC (--qt-surface): menu này nổi trên <webview> Facebook, dùng kính
+     trong suốt thì nội dung trang xuyên qua, đọc không nổi. */
+  background: var(--qt-surface); border: 1px solid var(--glass-brd);
   border-radius: 12px; box-shadow: 0 14px 38px rgba(0, 0, 0, .42);
   display: flex; flex-direction: column; gap: 1px;
 }
@@ -2606,6 +2608,11 @@ pre.kafka-drawer-body {
   place-items: unset;
 }
 .ws-toolbar .ws-menu-item:hover { background: var(--glass-2); }
+/* Vạch phân nhóm: tách "Bảng tin / Nhắn tin" khỏi các trang phụ. */
+.ws-toolbar .ws-menu-item.has-div {
+  margin-top: 5px; padding-top: 11px;
+  border-top: 1px solid var(--glass-brd); border-radius: 8px;
+}
 .ws-menu-ico { width: 18px; flex: none; text-align: center; font-size: 13px; }
 
 .ws-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
@@ -3564,15 +3571,20 @@ pre.kafka-drawer-body {
   position: fixed; right: 18px; bottom: 18px; z-index: 9000;
   display: flex; flex-direction: column; gap: 8px; max-width: min(380px, 92vw);
 }
+/* Nền ĐẶC (--qt-surface) — xem ghi chú ở khối token. Toast nổi ở góc phải
+   trên <webview>, dùng kính thì chữ chìm hẳn vào nội dung trang phía sau. */
 .auto-toast {
   display: flex; align-items: flex-start; gap: 10px; text-align: left;
   padding: 11px 13px; border-radius: 12px; cursor: pointer;
-  background: var(--glass); border: 1px solid var(--glass-brd); color: var(--text);
-  backdrop-filter: blur(16px) saturate(140%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
-  box-shadow: var(--shadow); animation: auto-toast-in .18s ease-out;
+  background: var(--qt-surface); border: 1px solid var(--glass-brd); color: var(--text);
+  /* Toast không có scrim phía sau như panel, nên bóng phải đủ đậm để tách
+     khỏi nội dung trang bên dưới. */
+  box-shadow: 0 14px 44px rgb(0 0 0 / .5); animation: auto-toast-in .18s ease-out;
 }
-.auto-toast:hover:not(:disabled) { transform: none; box-shadow: var(--shadow); border-color: var(--glass-brd-hover); }
+.auto-toast:hover:not(:disabled) {
+  transform: none; box-shadow: 0 14px 44px rgb(0 0 0 / .5);
+  border-color: var(--glass-brd-hover);
+}
 .auto-toast.lv-warn { border-color: color-mix(in srgb, var(--warn, #d29922) 55%, transparent); }
 .auto-toast.lv-urgent { border-color: color-mix(in srgb, var(--bad, #f85149) 65%, transparent); }
 .auto-toast.dry { border-style: dashed; }
@@ -4572,23 +4584,24 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
    ra ngoài / Esc). */
 .ntc-scrim {
   position: fixed; inset: 0; z-index: 9090;
-  background: rgba(3, 5, 14, 0.45);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
+  background: rgb(3 5 14 / .62);
+  backdrop-filter: blur(6px) saturate(80%);
+  -webkit-backdrop-filter: blur(6px) saturate(80%);
 }
+/* Nền ĐẶC (--qt-surface) — xem ghi chú ở khối token. Panel nổi trên
+   <webview> Zalo nên kính trong suốt là không đọc nổi. */
 .ntc-panel {
   position: fixed; left: 50%; top: clamp(16px, 12vh, 120px);
   transform: translateX(-50%); z-index: 9100;
   width: min(520px, 94vw); max-height: min(70vh, 640px);
   display: flex; flex-direction: column; overflow: hidden;
-  background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 12px;
-  backdrop-filter: blur(16px) saturate(140%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
-  box-shadow: var(--shadow);
+  background: var(--qt-surface); border: 1px solid var(--glass-brd); border-radius: 12px;
+  box-shadow: 0 24px 70px rgb(0 0 0 / .55), 0 0 0 1px rgb(255 255 255 / .04) inset;
 }
 .ntc-head {
   flex: none; display: flex; align-items: center; gap: 8px;
   padding: 10px 12px; border-bottom: 1px solid var(--glass-brd);
+  background: var(--qt-surface-2);
 }
 .ntc-title { font-size: 13px; font-weight: 700; }
 .ntc-hint { flex: 1 1 auto; font-size: 10.5px; color: var(--faint); }
@@ -4957,10 +4970,16 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
-/* ── Tiếp cận nhanh các tab đang làm (Ctrl+`) ───────────────────────── */
-/* Màn hình này nổi trên workspace (Zalo/Messenger/…) nên nền phải ĐẶC.
-   Dùng .panel kính trong suốt thì nội dung chat phía sau xuyên qua, chữ
-   tên tab lẫn vào ảnh avatar — không đọc nổi. */
+/* ── Nền ĐẶC cho lớp nổi trên <webview> ──────────────────────────────
+   Mọi thứ nổi trên workspace (Zalo/Messenger/Facebook/…) đều phải dùng
+   nền đặc, KHÔNG dùng .panel kính (--glass chỉ 4.5% đục ở nền tối, đọc
+   được là nhờ backdrop-filter). <webview> vẽ ở lớp native riêng nên
+   backdrop-filter không lấy mẫu được pixel của nó: kính thành trong
+   suốt, nội dung chat xuyên qua, chữ lẫn vào ảnh avatar.
+
+   Dùng chung bởi: tiếp cận nhanh Ctrl+` (.qt-*), menu điều hướng
+   workspace (.ws-menu-pop), hòm thông báo (.ntc-panel), toast (.auto-toast).
+   Thêm lớp nổi mới trên webview → dùng lại token này, đừng tạo token khác. */
 :root, :root[data-theme='dark'] {
   --qt-surface: #141a2e;
   --qt-surface-2: #1b2237;
