@@ -165,9 +165,9 @@ export default function Home() {
     });
   };
 
-  // ── Tiếp cận nhanh các tab đang làm (Ctrl+Q) ────────────────────────────────
+  // ── Tiếp cận nhanh các tab đang làm (Ctrl+`) ────────────────────────────────
   // Ghi nhận tab vừa dùng để nhảy qua nhảy lại: đang ở Kafka, có mail thì qua
-  // Mail đọc, xong Ctrl+Q (hoặc Ctrl+Tab) là về thẳng Kafka.
+  // Mail đọc, xong Ctrl+` (hoặc Ctrl+Tab) là về thẳng Kafka.
   const [quickOpen, setQuickOpen] = useState(false);
   const recents = useSyncExternalStore(
     recentTabs.subscribe, recentTabs.getSnapshot, recentTabs.getServerSnapshot,
@@ -180,15 +180,17 @@ export default function Home() {
     return () => clearTimeout(t);
   }, [mode]);
 
-  // Ctrl+Q mở màn hình tiếp cận nhanh · Ctrl+Tab về tab trước đó.
+  // Ctrl+` mở màn hình tiếp cận nhanh · Ctrl+Tab về tab trước đó.
   //
-  // CỐ Ý chỉ bắt ctrlKey, KHÔNG bắt metaKey: trên macOS ⌘Q là lệnh thoát app ở
-  // tầng hệ điều hành, JS chặn không được — bắt thêm metaKey chỉ tổ mở hộp
-  // thoại này ngay lúc app đang tắt. Ctrl+Q trên Windows/Linux thì preventDefault
-  // giữ được, và bản Electron này không đăng ký accelerator nào cho nó.
+  // Chọn phím ` (ngay trên Tab) để hai thao tác cùng một ngón. KHÔNG dùng Ctrl+W
+  // (đóng cửa sổ, preventDefault không chặn nổi) và Ctrl+Q (thoát app trên
+  // Linux, cả ⌘Q trên macOS — đều ở tầng hệ điều hành, JS chặn không được).
+  //
+  // Bắt theo e.code='Backquote' chứ không phải e.key: layout AZERTY/JIS cho ra
+  // ký tự khác ở đúng vị trí phím đó, dùng e.code thì vẫn đúng ngón.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'q') {
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'Backquote') {
         e.preventDefault();
         setQuickOpen((v) => !v);
         return;
@@ -415,7 +417,7 @@ export default function Home() {
           <button
             className="qt-open-btn"
             onClick={() => setQuickOpen(true)}
-            title="Tab đang làm — tiếp cận nhanh (Ctrl+Q)"
+            title="Tab đang làm — tiếp cận nhanh (Ctrl+`)"
             aria-label="Tab đang làm"
           >
             🕘
@@ -426,7 +428,7 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Màn hình tiếp cận nhanh (Ctrl+Q) — nổi trên mọi workspace. */}
+      {/* Màn hình tiếp cận nhanh (Ctrl+`) — nổi trên mọi workspace. */}
       <QuickTabs
         open={quickOpen}
         current={mode}

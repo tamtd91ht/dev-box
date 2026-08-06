@@ -2585,6 +2585,29 @@ pre.kafka-drawer-body {
 }
 .ws-toolbar button:hover:not(:disabled) { background: var(--glass-2); }
 .ws-toolbar button:disabled { opacity: .35; cursor: default; }
+
+/* Menu điều hướng nhanh của workspace (Facebook: Bảng tin / Trang cá nhân /
+   Story…). Popup buộc phải rơi xuống ĐÈ LÊN vùng <webview>, mà webview vẽ trên
+   một lớp native — z-index của anh em bình thường không thắng nổi nó. Cách
+   dùng ở đây: popup nằm trong .ws-toolbar (ngoài .ws-canvas) và có z-index đủ
+   lớn cùng nền đục; toolbar không được overflow:hidden nên nó tràn xuống được. */
+.ws-menu { position: relative; }
+.ws-menu > button.is-on { background: var(--glass-2); border-color: var(--glass-brd); }
+.ws-menu-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
+  min-width: 190px; padding: 5px;
+  background: var(--bg-2, #14161c); border: 1px solid var(--glass-brd);
+  border-radius: 12px; box-shadow: 0 14px 38px rgba(0, 0, 0, .42);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.ws-toolbar .ws-menu-item {
+  width: 100%; height: auto; display: flex; align-items: center; gap: 9px;
+  padding: 7px 9px; border-radius: 8px; font-size: 13px; text-align: left;
+  place-items: unset;
+}
+.ws-toolbar .ws-menu-item:hover { background: var(--glass-2); }
+.ws-menu-ico { width: 18px; flex: none; text-align: center; font-size: 13px; }
+
 .ws-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .ws-title-text {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -4895,7 +4918,19 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
-/* ── Tiếp cận nhanh các tab đang làm (Ctrl+K) ───────────────────────── */
+/* ── Tiếp cận nhanh các tab đang làm (Ctrl+`) ───────────────────────── */
+/* Màn hình này nổi trên workspace (Zalo/Messenger/…) nên nền phải ĐẶC.
+   Dùng .panel kính trong suốt thì nội dung chat phía sau xuyên qua, chữ
+   tên tab lẫn vào ảnh avatar — không đọc nổi. */
+:root, :root[data-theme='dark'] {
+  --qt-surface: #141a2e;
+  --qt-surface-2: #1b2237;
+}
+:root[data-theme='light'] {
+  --qt-surface: #ffffff;
+  --qt-surface-2: #f3f5fb;
+}
+
 .qt-open-btn {
   flex: none; width: 32px; height: 32px; padding: 0; font-size: 15px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -4908,16 +4943,29 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   position: fixed; inset: 0; z-index: 90;
   display: flex; align-items: flex-start; justify-content: center;
   padding: 10vh 16px 16px;
-  background: rgb(0 0 0 / .45); backdrop-filter: blur(2px);
+  background: rgb(3 5 14 / .62); backdrop-filter: blur(6px) saturate(80%);
+  animation: qt-fade .13s ease-out;
 }
 .qt-panel {
   width: min(620px, 96vw); max-height: 74vh;
   display: flex; flex-direction: column; gap: 0; padding: 0; overflow: hidden;
-  box-shadow: 0 18px 60px rgb(0 0 0 / .4);
+  background: var(--qt-surface);
+  border: 1px solid var(--glass-brd);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgb(0 0 0 / .55), 0 0 0 1px rgb(255 255 255 / .04) inset;
+  animation: qt-pop .15s cubic-bezier(.2, .9, .3, 1);
+}
+@keyframes qt-fade { from { opacity: 0; } }
+@keyframes qt-pop {
+  from { opacity: 0; transform: translateY(-8px) scale(.985); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qt-backdrop, .qt-panel { animation: none; }
 }
 .qt-head {
   display: flex; align-items: center; gap: 8px; flex: none;
   padding: 10px 12px; border-bottom: 1px solid var(--glass-brd);
+  background: var(--qt-surface-2);
 }
 .qt-head-ico { font-size: 16px; flex: none; }
 .qt-search {
@@ -4930,15 +4978,30 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .qt-row {
   display: flex; align-items: center; gap: 4px;
   border-radius: 9px; padding: 1px;
+  border: 1px solid transparent;
 }
-.qt-row.sel { background: var(--glass-2); }
-.qt-row.cur { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+.qt-row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+/* Hàng đang chọn (↑↓): nền đậm + vạch accent bên trái để mắt bắt ngay đang ở
+   đâu trong danh sách, không phải dò từng dòng. */
+.qt-row.sel {
+  background: color-mix(in srgb, var(--accent) 18%, var(--qt-surface));
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.qt-row.cur .qt-ico {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 7px;
+}
 .qt-open {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 11px;
   padding: 9px 10px; border: none; background: transparent; cursor: pointer;
   color: var(--text); text-align: left; border-radius: 8px;
 }
-.qt-ico { flex: none; font-size: 17px; width: 22px; text-align: center; }
+.qt-ico {
+  flex: none; font-size: 16px; width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--qt-surface-2); border-radius: 7px;
+}
 .qt-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .qt-label {
   display: flex; align-items: center; gap: 7px;
@@ -4962,5 +5025,14 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 
 .qt-foot {
   flex: none; padding: 7px 12px; color: var(--faint);
-  border-top: 1px solid var(--glass-brd); background: var(--glass-2);
+  border-top: 1px solid var(--glass-brd); background: var(--qt-surface-2);
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+}
+.qt-kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; padding: 1px 5px; margin-right: 3px;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  color: var(--muted); background: var(--qt-surface);
+  border: 1px solid var(--glass-brd); border-radius: 4px;
+  box-shadow: 0 1px 0 var(--glass-brd);
 }
