@@ -210,6 +210,79 @@ const GOOGLE_LOGIN_HOSTS = /(^|\.)accounts\.google\.com$|(^|\.)gds\.google\.com$
 const FIREFOX_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0';
 
+// ── Client Hints: khai thuong hieu "Google Chrome" ────────────────────────
+//
+// Bo token `Electron/...` khoi UA (xem app.userAgentFallback o tren) VAN CHUA
+// DU cho WhatsApp Web — no khong doc chuoi UA ma doc User-Agent Client Hints.
+// Electron khai brand la "Chromium" chu khong phai "Google Chrome", nen check
+// "co phai Chrome that khong" cua WhatsApp truot, va no bao "WhatsApp works
+// with Google Chrome 100+" du Chromium ben duoi la 140.
+//
+// Hai mat trong cung mot su that phai khop nhau, thieu mat nao cung truot:
+//   1. HEADER `Sec-CH-UA*` gui kem moi request (xu ly ngay duoi day)
+//   2. `navigator.userAgentData` doc trong trang (xem CLIENT_HINTS_PATCH)
+// Ca hai deu lay so phien ban tu chinh UA that, khong hardcode — nang Electron
+// len la tu dong dung theo, khong con cho nao phai sua tay.
+const CHROME_MAJOR = (() => {
+  const m = /Chrome\/(\d+)/.exec(app.userAgentFallback || '');
+  return m ? m[1] : '140';
+})();
+const CHROME_FULL = (() => {
+  const m = /Chrome\/([\d.]+)/.exec(app.userAgentFallback || '');
+  return m ? m[1] : `${CHROME_MAJOR}.0.0.0`;
+})();
+
+// Thu tu brand + chuoi "Not?A_Brand" la dung khuon Chrome that gui, giu nguyen
+// de khong tao ra mot dau van tay la hoac.
+const SEC_CH_UA = `"Chromium";v="${CHROME_MAJOR}", "Google Chrome";v="${CHROME_MAJOR}", "Not?A_Brand";v="99"`;
+const SEC_CH_UA_FULL = `"Chromium";v="${CHROME_FULL}", "Google Chrome";v="${CHROME_FULL}", "Not?A_Brand";v="99.0.0.0"`;
+
+/**
+ * Nhung host soi Client Hints de chan "trinh duyet nhung". Chi ap cho dung may
+ * host nay — moi trang khac giu nguyen hanh vi mac dinh cua Electron, khong
+ * dung den mot dong nao cua lop nay.
+ */
+const CHROME_BRAND_HOSTS = /(^|\.)(whatsapp\.com|messenger\.com|facebook\.com|fbcdn\.net)$/i;
+
+/**
+ * Va lai `navigator.userAgentData` trong trang cho khop voi header o tren.
+ *
+ * Chay o `document-start` nen no vao truoc moi script cua trang — WhatsApp doc
+ * userAgentData rat som, sua sau khi trang chay la muon. `getHighEntropyValues`
+ * cung phai tra ve dung bo do: WhatsApp goi ham nay chu khong chi doc `brands`.
+ */
+const CLIENT_HINTS_PATCH = `
+(function(){
+  try{
+    var brands = [
+      { brand: 'Chromium', version: '${CHROME_MAJOR}' },
+      { brand: 'Google Chrome', version: '${CHROME_MAJOR}' },
+      { brand: 'Not?A_Brand', version: '99' }
+    ];
+    var high = {
+      architecture: 'x86', bitness: '64', model: '',
+      platform: 'Windows', platformVersion: '15.0.0',
+      uaFullVersion: '${CHROME_FULL}', wow64: false,
+      fullVersionList: [
+        { brand: 'Chromium', version: '${CHROME_FULL}' },
+        { brand: 'Google Chrome', version: '${CHROME_FULL}' },
+        { brand: 'Not?A_Brand', version: '99.0.0.0' }
+      ]
+    };
+    var data = {
+      brands: brands, mobile: false, platform: 'Windows',
+      getHighEntropyValues: function(hints){
+        var out = { brands: brands, mobile: false, platform: 'Windows' };
+        (hints||[]).forEach(function(h){ if(h in high) out[h] = high[h]; });
+        return Promise.resolve(out);
+      },
+      toJSON: function(){ return { brands: brands, mobile: false, platform: 'Windows' }; }
+    };
+    Object.defineProperty(navigator, 'userAgentData', { get: function(){ return data; }, configurable: true });
+  }catch(e){}
+})();
+`;
+
 function configurePartition(part) {
   if (!part || configuredPartitions.has(part)) return;
   configuredPartitions.add(part);
@@ -224,6 +297,21 @@ function configurePartition(part) {
         for (const k of Object.keys(headers)) {
           if (/^sec-ch-ua/i.test(k)) delete headers[k];
         }
+        callback({ requestHeaders: headers });
+        return;
+      }
+      // Meta (WhatsApp / Messenger / Facebook): khai brand "Google Chrome".
+      // GHI DE chu khong xoa — xoa het Sec-CH-UA* thi trang coi nhu trinh duyet
+      // khong ho tro client hints, cung roi vao dung nhanh "hay dung Chrome".
+      if (CHROME_BRAND_HOSTS.test(host)) {
+        const headers = { ...details.requestHeaders };
+        headers['sec-ch-ua'] = SEC_CH_UA;
+        headers['sec-ch-ua-mobile'] = '?0';
+        headers['sec-ch-ua-platform'] = '"Windows"';
+        // Chi gui cac hint "entropy cao" khi trang da hoi den — tu dinh them
+        // vao moi request la mot dau van tay khac Chrome that.
+        if ('sec-ch-ua-full-version-list' in headers) headers['sec-ch-ua-full-version-list'] = SEC_CH_UA_FULL;
+        if ('sec-ch-ua-full-version' in headers) headers['sec-ch-ua-full-version'] = `"${CHROME_FULL}"`;
         callback({ requestHeaders: headers });
         return;
       }
@@ -409,6 +497,23 @@ function wireWebviewHardening(win) {
         (v) => typeof v === 'string' && v.startsWith('[ws-'),
       );
       if (msg) log('Guest', msg);
+    });
+
+    // Client Hints cho cac host cua Meta: va `navigator.userAgentData` cho khop
+    // voi header Sec-CH-UA* da ghi de o configurePartition().
+    //
+    // Phai chay o `did-start-navigation` chu khong phai `dom-ready`: WhatsApp
+    // doc userAgentData ngay trong script dau tien cua trang, den luc DOM xong
+    // thi no da ket luan "khong phai Chrome" va ve man hinh chan roi. Chi dong
+    // vao dung cac host trong CHROME_BRAND_HOSTS, trang khac khong bi anh huong.
+    guest.on('did-start-navigation', (e) => {
+      try {
+        if (!e.isMainFrame) return;
+        if (!CHROME_BRAND_HOSTS.test(new URL(e.url).hostname)) return;
+        guest.executeJavaScript(CLIENT_HINTS_PATCH, false).catch(() => {});
+      } catch {
+        /* URL la ve — bo qua */
+      }
     });
 
     // Keep wheel/touch scrolling INSIDE the guest: when its inner scroller hits
