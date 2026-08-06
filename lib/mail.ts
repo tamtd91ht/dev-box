@@ -20,7 +20,7 @@ export interface MailAccountPub {
 }
 
 /** Tên hiển thị trên tab/badge: title tự đặt, hoặc CẢ địa chỉ email — không cắt
- *  prefix, vì user@example.com và tamtd@gmail.com sẽ trông y hệt nhau. */
+ *  prefix, vì user@example.com và user@gmail.com sẽ trông y hệt nhau. */
 export function accTitle(a: Pick<MailAccountPub, 'title' | 'email'>): string {
   return a.title?.trim() || a.email;
 }

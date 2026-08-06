@@ -316,7 +316,7 @@ export default function ApiWorkspace() {
               <button className="ghost sm" onClick={() => setSaveOpen(false)}>✕</button></div>
             <input className="input" autoFocus placeholder="Tên request" value={saveName}
               onChange={(e) => setSaveName(e.target.value)} />
-            <input className="input" placeholder="Folder/nhóm (optional) — vd: Auth, OMICX" value={saveFolder}
+            <input className="input" placeholder="Folder/nhóm (optional) — vd: Auth, Backend" value={saveFolder}
               list="api-folders" onChange={(e) => setSaveFolder(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && void persistRequest(saveName, saveFolder)} />
             <datalist id="api-folders">

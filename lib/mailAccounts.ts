@@ -26,7 +26,7 @@ export interface MailAccount {
   label: string;
   /** Tên để QUẢN LÝ trong app — hiện trên tab chọn tài khoản, badge thông báo.
    *  Không ảnh hưởng mail gửi ra. Bỏ trống → dùng cả địa chỉ email, vì hai
-   *  tài khoản khác domain mà cùng prefix (tamtd@a.com / tamtd@gmail.com) sẽ
+   *  tài khoản khác domain mà cùng prefix (user@a.com / user@gmail.com) sẽ
    *  không phân biệt được nếu chỉ lấy phần trước @. */
   title?: string;
   email: string;
@@ -120,7 +120,7 @@ export async function renameAccount(
 }
 
 /** Tên hiển thị trong app: title tự đặt → hoặc cả địa chỉ email (KHÔNG cắt
- *  prefix, để tamtd@a.com và tamtd@gmail.com không trông giống nhau). */
+ *  prefix, để user@a.com và user@gmail.com không trông giống nhau). */
 export function accountTitle(a: Pick<MailAccount, 'title' | 'email'>): string {
   return a.title?.trim() || a.email;
 }

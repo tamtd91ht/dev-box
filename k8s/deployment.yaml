@@ -1,5 +1,5 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# omicx-local-all-in-one — Deployment + Service
+# devbox — Deployment + Service
 #
 # Internal, VPN-only API testing tool (Next.js standalone). Port 8080.
 # Access: restricted ingress domain (VPN only) — see ingress.yaml.
@@ -17,16 +17,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: omicx-local-all-in-one
+  name: devbox
   labels:
-    app: omicx-local-all-in-one
-    part-of: omicx
+    app: devbox
+    part-of: devbox
     env: prod
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: omicx-local-all-in-one
+      app: devbox
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -35,16 +35,16 @@ spec:
   template:
     metadata:
       labels:
-        app: omicx-local-all-in-one
-        part-of: omicx
+        app: devbox
+        part-of: devbox
         env: prod
     spec:
       terminationGracePeriodSeconds: 30
       imagePullSecrets:
         - name: harbor-registry
       containers:
-        - name: omicx-local-all-in-one
-          image: <your-registry>/ci/omicx-local-all-in-one:latest
+        - name: devbox
+          image: <your-registry>/ci/devbox:latest
           ports:
             - containerPort: 8080
               name: http
@@ -93,15 +93,15 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: omicx-local-all-in-one
+  name: devbox
   labels:
-    app: omicx-local-all-in-one
-    part-of: omicx
+    app: devbox
+    part-of: devbox
     env: prod
 spec:
   type: ClusterIP
   selector:
-    app: omicx-local-all-in-one
+    app: devbox
   ports:
     - name: http
       port: 8080

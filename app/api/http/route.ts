@@ -5,7 +5,7 @@
 //   POST { method, url, headers?: {key,value}[], body?: string }
 //   → { ok, result: { status, statusText, headers, body, timeMs, size } }
 //
-// KHÔNG dính auth/apiPrefix của omicx (khác /api/proxy) — đây là HTTP thô.
+// KHÔNG dính auth/apiPrefix của backend cấu hình sẵn (khác /api/proxy) — đây là HTTP thô.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { Agent } from 'undici';

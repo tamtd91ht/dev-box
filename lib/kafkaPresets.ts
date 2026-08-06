@@ -7,7 +7,9 @@
 // (unlike connections, which the Next server owns). Browser-only module.
 
 /** localStorage key holding the preset array (JSON). */
-const PRESETS_KEY = 'omicx.kafka.presets';
+import { readLocal, writeLocal } from './localKeys';
+
+const PRESETS_KEY = 'kafka.presets';
 
 export interface KafkaPreset {
   id: string;
@@ -34,7 +36,7 @@ function isPreset(v: unknown): v is KafkaPreset {
 export function loadPresets(): KafkaPreset[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = window.localStorage.getItem(PRESETS_KEY);
+    const raw = readLocal(PRESETS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.filter(isPreset) : [];
@@ -46,7 +48,7 @@ export function loadPresets(): KafkaPreset[] {
 /** Persist the full preset list. */
 function save(list: KafkaPreset[]): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(PRESETS_KEY, JSON.stringify(list));
+  writeLocal(PRESETS_KEY, JSON.stringify(list));
 }
 
 /** A non-crypto id — presets are local bookmarks, collision-safety isn't critical. */

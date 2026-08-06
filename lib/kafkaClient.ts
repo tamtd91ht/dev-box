@@ -166,7 +166,7 @@ function evictIdle(now: number): void {
 
 function newKafka(brokers: string[]): Kafka {
   return new Kafka({
-    clientId: 'omicx-inspector',
+    clientId: 'devbox-inspector',
     brokers,
     connectionTimeout: CONNECT_TIMEOUT_MS,
     requestTimeout: REQUEST_TIMEOUT_MS,
@@ -837,7 +837,7 @@ async function getRawCluster(conn: KafkaConnection): Promise<any> {
     brokers: [...conn.brokers],
     ssl: undefined,
     sasl: undefined,
-    clientId: 'omicx-inspector-raw',
+    clientId: 'devbox-inspector-raw',
     connectionTimeout: CONNECT_TIMEOUT_MS,
     authenticationTimeout: CONNECT_TIMEOUT_MS,
     reauthenticationThreshold: 10_000,

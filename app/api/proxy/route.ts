@@ -1,7 +1,7 @@
 // The CORS-avoiding proxy. The browser posts here; the Next server forwards the
 // request to the real backend (baseUrl) and returns the response verbatim.
 //
-// Why a proxy: the omicx backend has CORS disabled by default, so a browser
+// Why a proxy: the target backend may have CORS disabled by default, so a browser
 // cannot call it directly. Routing through this same-origin Next server sidesteps
 // CORS entirely — the server-to-server fetch is not subject to it.
 //

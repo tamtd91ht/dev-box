@@ -7,6 +7,7 @@
 import assert from 'assert';
 import { parseCommand } from './command';
 import { parseScoreLine } from './reviewer';
+import { SERVICE_PREFIX } from '../lib/reviewMr';
 
 let passed = 0;
 function ok(name: string, cond: boolean): void {
@@ -40,7 +41,10 @@ async function run(): Promise<void> {
   const real = await parseCommand('/review ai-service dev_duynh', base);
   if (real.kind === 'review') {
     ok('ai-service resolves', real.service === 'ai-service' && real.branch === 'dev_duynh');
-    ok('repoPath points at the repo', real.repoPath.endsWith('cloud-saas-omicx-ai-service'));
+    // Derive the expected folder from the configured prefix — the tool is
+    // org-neutral, so hardcoding a naming scheme here would break on any
+    // workspace that sets REVIEW_SERVICE_PREFIX differently (or not at all).
+    ok('repoPath points at the repo', real.repoPath.endsWith(`${SERVICE_PREFIX}ai-service`));
     ok('no description → empty', real.description === '');
 
     // Natural free-text description (no key=value).
@@ -68,7 +72,7 @@ async function run(): Promise<void> {
     console.log(`  ⚠ ai-service not resolvable here (kind=${real.kind}) — skipping repo assertions`);
   }
 
-  const cmdAt = await parseCommand('/review@omicx_review_bot ai-service', base);
+  const cmdAt = await parseCommand('/review@my_review_bot ai-service', base);
   ok('/review@botname recognized', cmdAt.kind === 'review' || cmdAt.kind === 'error');
 
   // ── SCORE line parsing ─────────────────────────────────────────────────────

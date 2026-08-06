@@ -83,7 +83,7 @@ export default function PackManager({ packs, onChanged, onOpen }: PackManagerPro
       <div className="apix-form" style={{ marginTop: 4 }}>
         <div className="apix-form-row">
           <label className="apix-field" style={{ flex: 1 }}><span>Tên</span>
-            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="OMICX"
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="MYPROJECT"
               onKeyDown={(e) => { if (e.key === 'Enter' && name.trim() && root.trim() && !busy) register(); }} />
           </label>
           <label className="apix-field" style={{ flex: 2 }}><span>Folder chứa devbox.api.json</span>

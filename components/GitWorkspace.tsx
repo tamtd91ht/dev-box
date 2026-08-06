@@ -27,8 +27,10 @@ import {
 import FolderPicker from './FolderPicker';
 
 /** localStorage keys remembering the last-selected project + repo. */
-const LAST_REPO_KEY = 'omicx.git.lastRepo';
-const LAST_PROJECT_KEY = 'omicx.git.lastProject';
+import { readLocal, writeLocal } from '@/lib/localKeys';
+
+const LAST_REPO_KEY = 'git.lastRepo';
+const LAST_PROJECT_KEY = 'git.lastProject';
 
 /** Colour a single diff line by its leading character. */
 function diffLineStyle(line: string): React.CSSProperties {
@@ -71,7 +73,7 @@ function repoOptionLabel(name: string, ov?: RepoOverview): string {
 
 /**
  * SourceTree-style Git workspace — local dev only (server gates on GIT_TOOL_ENABLED).
- * Pick an auto-detected omicx repo, review status, stage/unstage individual files,
+ * Pick an auto-detected repo, review status, stage/unstage individual files,
  * inspect per-file diffs, commit staged changes, pull (--ff-only), push, and
  * checkout / create branches. Independent of the API-explorer service selection.
  */
@@ -143,7 +145,7 @@ export default function GitWorkspace() {
     // Choose the active project: explicit preference → remembered → first.
     let remembered = '';
     try {
-      remembered = localStorage.getItem(LAST_PROJECT_KEY) ?? '';
+      remembered = readLocal(LAST_PROJECT_KEY) ?? '';
     } catch {
       /* ignore */
     }
@@ -173,7 +175,7 @@ export default function GitWorkspace() {
       setRepos(r.repos);
       let initial = '';
       try {
-        initial = localStorage.getItem(LAST_REPO_KEY + ':' + projectId) ?? '';
+        initial = readLocal(LAST_REPO_KEY + ':' + projectId) ?? '';
       } catch {
         /* ignore */
       }
@@ -192,7 +194,7 @@ export default function GitWorkspace() {
   useEffect(() => {
     if (!activeProjectId) return;
     try {
-      localStorage.setItem(LAST_PROJECT_KEY, activeProjectId);
+      writeLocal(LAST_PROJECT_KEY, activeProjectId);
     } catch {
       /* ignore */
     }
@@ -262,7 +264,7 @@ export default function GitWorkspace() {
     if (!repo) return;
     try {
       // Remember the last repo per-project so each tab restores its own selection.
-      if (projectRef.current) localStorage.setItem(LAST_REPO_KEY + ':' + projectRef.current, repo);
+      if (projectRef.current) writeLocal(LAST_REPO_KEY + ':' + projectRef.current, repo);
     } catch {
       /* ignore */
     }
@@ -677,7 +679,7 @@ export default function GitWorkspace() {
 
         {branchWarn && (
           <div className="badge warn" style={{ marginTop: 10 }}>
-            ⚠ Repo <b>{repoName}</b> đang ở branch <b>{status?.branch}</b> — quy ước omicx: code trên <b>dev</b>.
+            ⚠ Repo <b>{repoName}</b> đang ở branch <b>{status?.branch}</b> — quy ước dự án: code trên <b>dev</b>.
           </div>
         )}
 
@@ -1676,7 +1678,7 @@ function ProjectTabs({
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Tên project (vd: omicx backend)"
+                placeholder="Tên project (vd: backend)"
                 disabled={busy}
                 style={{ flex: '1 1 180px', minWidth: 160, fontSize: 12 }}
               />

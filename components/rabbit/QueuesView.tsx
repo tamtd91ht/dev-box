@@ -339,7 +339,7 @@ function CreateQueueForm({
     <div className="rabbit-form">
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
       <label className="rabbit-field"><span>Tên queue</span>
-        <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="omicx.order.created" />
+        <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="app.order.created" />
       </label>
       <div className="rabbit-form-row">
         <label className="rabbit-field" style={{ flex: 1 }}><span>Queue type</span>
@@ -354,7 +354,7 @@ function CreateQueueForm({
       </div>
       <div className="rabbit-form-row">
         <label className="rabbit-field" style={{ flex: 1 }}><span>Dead-letter exchange</span>
-          <input className="input" value={dlx} onChange={(e) => setDlx(e.target.value)} placeholder="omicx.dlx" />
+          <input className="input" value={dlx} onChange={(e) => setDlx(e.target.value)} placeholder="app.dlx" />
         </label>
         <label className="rabbit-field" style={{ flex: 1 }}><span>Dead-letter routing key</span>
           <input className="input" value={dlrk} onChange={(e) => setDlrk(e.target.value)} placeholder="order.created.dead" />

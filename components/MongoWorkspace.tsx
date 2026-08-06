@@ -32,7 +32,9 @@ import OverviewView from './mongo/OverviewView';
 import BrowserView from './mongo/BrowserView';
 import QuickFindView from './mongo/QuickFindView';
 
-const LAST_CONN_KEY = 'omicx.mongo.lastConn';
+import { readLocal, writeLocal } from '@/lib/localKeys';
+
+const LAST_CONN_KEY = 'mongo.lastConn';
 
 type SubView = 'overview' | 'browser' | 'quickfind';
 
@@ -107,7 +109,7 @@ export default function MongoWorkspace() {
     setConnections(res.connections);
     if (!res.enabled) return;
     setActiveId((cur) => {
-      const remembered = typeof window !== 'undefined' ? window.localStorage.getItem(LAST_CONN_KEY) ?? '' : '';
+      const remembered = readLocal(LAST_CONN_KEY) ?? '';
       const pick = [cur, remembered].find((id) => id && res.connections.some((c) => c.id === id));
       return pick || res.connections[0]?.id || '';
     });
@@ -116,7 +118,7 @@ export default function MongoWorkspace() {
   useEffect(() => { void loadConnections(); }, [loadConnections]);
 
   useEffect(() => {
-    if (activeId && typeof window !== 'undefined') window.localStorage.setItem(LAST_CONN_KEY, activeId);
+    if (activeId) writeLocal(LAST_CONN_KEY, activeId);
   }, [activeId]);
 
   // Reset every pane on connection change — stale data from another cluster is

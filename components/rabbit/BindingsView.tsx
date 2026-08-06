@@ -190,7 +190,7 @@ function BindForm({
       <div className="rabbit-form-row">
         <label className="rabbit-field" style={{ flex: 1 }}>
           <span>Exchange nguồn</span>
-          <input className="input" list="rabbit-ex-list" value={source} onChange={(e) => setSource(e.target.value)} placeholder="omicx.events" />
+          <input className="input" list="rabbit-ex-list" value={source} onChange={(e) => setSource(e.target.value)} placeholder="app.events" />
           <datalist id="rabbit-ex-list">
             {exchanges.filter((x) => x.name).map((x) => <option key={x.name} value={x.name}>{x.type}</option>)}
           </datalist>
@@ -209,7 +209,7 @@ function BindForm({
             list={destinationType === 'queue' ? 'rabbit-q-list' : 'rabbit-ex-list'}
             value={destination}
             onChange={(e) => setDestination(e.target.value)}
-            placeholder={destinationType === 'queue' ? 'omicx.order.created' : 'omicx.events.internal'}
+            placeholder={destinationType === 'queue' ? 'app.order.created' : 'app.events.internal'}
           />
           <datalist id="rabbit-q-list">
             {queues.map((q) => <option key={`${q.vhost}/${q.name}`} value={q.name} />)}

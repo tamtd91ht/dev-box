@@ -11,16 +11,16 @@ API keys entered in the UI — **never expose it publicly**.
 ## Image
 
 ```
-<your-registry>/ci/omicx-local-all-in-one:latest
+<your-registry>/ci/devbox:latest
 ```
 
 Build & push (first deploy, by hand):
 
 ```bash
-cd omicx-local-all-in-one
-docker build -t <your-registry>/ci/omicx-local-all-in-one:latest .
+cd devbox
+docker build -t <your-registry>/ci/devbox:latest .
 docker login <your-registry>
-docker push  <your-registry>/ci/omicx-local-all-in-one:latest
+docker push  <your-registry>/ci/devbox:latest
 ```
 
 > If the build env cannot reach Docker Hub, swap the `node:20-alpine` base in the
@@ -29,13 +29,13 @@ docker push  <your-registry>/ci/omicx-local-all-in-one:latest
 ## Setup new environment (one-time, by ops)
 
 1. Create the Deployment on Rancher using `deployment.yaml` as reference:
-   - Container `omicx-local-all-in-one`, port **8080**
+   - Container `devbox`, port **8080**
    - `imagePullSecrets: harbor-registry`
    - Health probe: `GET /api/health`
    - **No** infra Secrets needed (no mongo/kafka/redis) — all creds are entered in the UI.
 2. Create the `ClusterIP` Service on port 8080.
 3. Configure the **Ingress** as a VPN-only domain (`ingress.yaml` is the template):
-   - Pick an internal host, e.g. `omicx-local-all-in-one.<internal-domain>`
+   - Pick an internal host, e.g. `devbox.<internal-domain>`
    - Point internal DNS at the ingress LB (same target as tool-service)
    - Reuse tool-service's `ingressClassName`, VPN/IP-whitelist annotation, and TLS issuer
    - Confirm these values with ops — do not invent a new mechanism.

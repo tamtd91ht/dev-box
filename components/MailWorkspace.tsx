@@ -1,8 +1,8 @@
 'use client';
 
 // Mail workspace — xem + gửi/phản hồi email qua IMAP/SMTP chuẩn, KHÔNG riêng
-// nhà cung cấp nào: Zimbra công ty (mail.example.com), Gmail (app
-// password), hay bất kỳ server IMAP nào. MULTI-ACCOUNT như tab Google —
+// nhà cung cấp nào: Zimbra/mail nội bộ, Gmail (app password), Outlook, hay bất
+// kỳ server IMAP nào. MULTI-ACCOUNT như tab Google —
 // chip chuyển tài khoản trên toolbar, mỗi tài khoản remount view sạch.
 //
 // Scope CHỦ ĐÍCH chỉ 2 việc: XEM (folder → danh sách → nội dung, đánh dấu đã
@@ -43,16 +43,24 @@ interface Preset {
   smtpHost: string; smtpPort: number; smtpSecure: boolean;
 }
 
+// Chỉ preset của nhà cung cấp PHỔ BIẾN, không gắn với tổ chức nào. Mail server
+// nội bộ (Zimbra, Exchange…) dùng "Khác…" rồi tự điền host — cấu hình đó là dữ
+// liệu của người dùng, lưu trong configs/, không hardcode vào source.
 const PRESETS: Preset[] = [
-  {
-    key: 'vihat', label: 'ViHat (Zimbra)', hint: 'mail.example.com — đăng nhập như webmail',
-    imapHost: 'mail.example.com', imapPort: 993, imapSecure: true,
-    smtpHost: 'mail.example.com', smtpPort: 465, smtpSecure: true,
-  },
   {
     key: 'gmail', label: 'Gmail', hint: 'cần App Password (myaccount.google.com/apppasswords)',
     imapHost: 'imap.gmail.com', imapPort: 993, imapSecure: true,
     smtpHost: 'smtp.gmail.com', smtpPort: 465, smtpSecure: true,
+  },
+  {
+    key: 'outlook', label: 'Outlook / Microsoft 365', hint: 'outlook.office365.com',
+    imapHost: 'outlook.office365.com', imapPort: 993, imapSecure: true,
+    smtpHost: 'smtp.office365.com', smtpPort: 587, smtpSecure: false,
+  },
+  {
+    key: 'zimbra', label: 'Zimbra / mail nội bộ', hint: 'tự điền host IMAP/SMTP của tổ chức bạn',
+    imapHost: '', imapPort: 993, imapSecure: true,
+    smtpHost: '', smtpPort: 465, smtpSecure: true,
   },
   {
     key: 'custom', label: 'Khác…', hint: 'tự điền host IMAP/SMTP',
@@ -951,8 +959,8 @@ export default function MailWorkspace() {
           <div className="office-hero-ico" aria-hidden>✉️</div>
           <div className="office-hero-title">Kết nối hòm thư</div>
           <p className="office-hero-sub">
-            Xem + gửi/trả lời email ngay trong DevBox qua IMAP/SMTP chuẩn — Zimbra công ty
-            (mail.example.com), Gmail, hay bất kỳ mail server nào. Credentials lưu trên máy này,
+            Xem + gửi/trả lời email ngay trong DevBox qua IMAP/SMTP chuẩn — Zimbra/mail nội bộ,
+            Gmail, Outlook, hay bất kỳ mail server nào. Credentials lưu trên máy này,
             không rời server process.
           </p>
           <div className="office-hero-points">

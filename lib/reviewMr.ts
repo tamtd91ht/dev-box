@@ -1,5 +1,5 @@
 // Server-only: run read-only Claude Code slash commands (/review-mr-dev,
-// /scan-security) against the omicx workspace.
+// /scan-security) against the configured workspace.
 //
 // SECURITY MODEL — mirrors lib/gitCore.ts:
 //   1. Reached ONLY through the GIT_TOOL_ENABLED-gated /api/git route, after the
@@ -22,11 +22,14 @@ const COMMAND_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
 const COMMAND_MAX_BUFFER = 64 * 1024 * 1024; // 64 MB — full multi-service report
 
 /**
- * Repo-folder prefix that marks a reviewable service in the workspace. Default
- * fits the omicx layout (`cloud-saas-omicx-ai-service`); another project sets
- * REVIEW_SERVICE_PREFIX to its own convention.
+ * Repo-folder prefix that marks a reviewable service in the workspace, e.g. with
+ * `cloud-saas-` set, the folder `cloud-saas-ai-service` maps to service
+ * `ai-service`. Set REVIEW_SERVICE_PREFIX to your own convention.
+ *
+ * Empty by default — the tool is org-neutral, so it assumes no naming scheme and
+ * uses the folder name as-is (see serviceNameFromRepoPath) until configured.
  */
-export const SERVICE_PREFIX = process.env.REVIEW_SERVICE_PREFIX?.trim() || 'cloud-saas-omicx-';
+export const SERVICE_PREFIX = process.env.REVIEW_SERVICE_PREFIX?.trim() || '';
 
 export interface CommandResult {
   output: string;
@@ -37,12 +40,14 @@ export interface CommandResult {
 export type ReviewMrResult = CommandResult;
 
 /**
- * Short service name for the /review-mr-dev arg, derived from the repo folder:
- *   cloud-saas-omicx-account-service → account-service.
- * A non-matching name is returned unchanged (the command warns if it can't map).
+ * Short service name for the /review-mr-dev arg, derived from the repo folder.
+ * With REVIEW_SERVICE_PREFIX=`cloud-saas-`: `cloud-saas-account-service` →
+ * `account-service`. A non-matching name — and every name when no prefix is
+ * configured — is returned unchanged.
  */
 export function serviceNameFromRepoPath(repoPath: string): string {
   const base = path.basename(repoPath);
+  if (!SERVICE_PREFIX) return base; // no convention configured → folder name as-is
   return base.startsWith(SERVICE_PREFIX) ? base.slice(SERVICE_PREFIX.length) : base;
 }
 
@@ -76,7 +81,9 @@ function runClaudeCommand(cwd: string, prompt: string): Promise<CommandResult> {
       ['-p', prompt, '--permission-mode', 'acceptEdits'],
       {
         cwd,
-        env: { ...process.env, OMICX_BASE_PATH: cwd },
+        // Set the current name and the legacy alias: the spawned command may be
+        // an older revision that still only reads OMICX_BASE_PATH.
+        env: { ...process.env, BOT_BASE_PATH: cwd, OMICX_BASE_PATH: cwd },
         timeout: COMMAND_TIMEOUT_MS,
         maxBuffer: COMMAND_MAX_BUFFER,
         windowsHide: true,

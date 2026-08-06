@@ -236,7 +236,7 @@ function ExchangeForm({
     <div className="rabbit-form">
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
       <label className="rabbit-field"><span>Tên exchange</span>
-        <input className="input" value={name} onChange={(e) => { setName(e.target.value); setDiff(null); }} placeholder="omicx.events" />
+        <input className="input" value={name} onChange={(e) => { setName(e.target.value); setDiff(null); }} placeholder="app.events" />
       </label>
       <div className="rabbit-form-row">
         <label className="rabbit-field" style={{ flex: 1 }}><span>Type</span>
@@ -253,7 +253,7 @@ function ExchangeForm({
       </div>
       <label className="rabbit-field">
         <span>Alternate exchange (nơi nhận message không route được)</span>
-        <input className="input" value={altExchange} onChange={(e) => { setAltExchange(e.target.value); setDiff(null); }} placeholder="omicx.unroutable" />
+        <input className="input" value={altExchange} onChange={(e) => { setAltExchange(e.target.value); setDiff(null); }} placeholder="app.unroutable" />
       </label>
 
       {diff && <DiffPanel diff={diff} name={name.trim()} />}

@@ -35,7 +35,9 @@ import {
 } from '@/lib/kafkaPresets';
 
 /** localStorage key remembering the last-selected connection. */
-const LAST_CONN_KEY = 'omicx.kafka.lastConn';
+import { readLocal, writeLocal } from '@/lib/localKeys';
+
+const LAST_CONN_KEY = 'kafka.lastConn';
 /** Default number of messages a "peek" pulls. */
 const DEFAULT_PEEK = 20;
 
@@ -234,7 +236,7 @@ export default function KafkaWorkspace() {
     setConnections(res.connections);
     if (!res.enabled) return;
     setActiveId((cur) => {
-      const remembered = typeof window !== 'undefined' ? window.localStorage.getItem(LAST_CONN_KEY) ?? '' : '';
+      const remembered = readLocal(LAST_CONN_KEY) ?? '';
       const pick = [preferId, cur, remembered].find((id) => id && res.connections.some((c) => c.id === id));
       return pick || res.connections[0]?.id || '';
     });
@@ -245,7 +247,7 @@ export default function KafkaWorkspace() {
   }, [loadConnections]);
 
   useEffect(() => {
-    if (activeId && typeof window !== 'undefined') window.localStorage.setItem(LAST_CONN_KEY, activeId);
+    if (activeId) writeLocal(LAST_CONN_KEY, activeId);
   }, [activeId]);
 
   // Switching cluster in the rail only resets the CLUSTER-scoped panes (consumer

@@ -73,7 +73,9 @@ function chipHost(url: string): string {
 }
 
 /** localStorage key holding this browser's quick webhook id (client-generated). */
-const QUICK_ID_KEY = 'omicx.tool.webhook.quickId';
+import { readLocal, writeLocal } from '@/lib/localKeys';
+
+const QUICK_ID_KEY = 'tool.webhook.quickId';
 
 /** True when `s` is a canonical 36-char UUID — matches the backend's auto-create guard. */
 function isUuid(s: string): boolean {
@@ -205,13 +207,13 @@ export default function WebhookReceiver({
   useEffect(() => {
     let id = '';
     try {
-      id = localStorage.getItem(QUICK_ID_KEY) ?? '';
+      id = readLocal(QUICK_ID_KEY) ?? '';
     } catch {
       /* storage unavailable (private mode) — fall back to an in-memory id */
     }
     if (!isUuid(id)) {
       id = genUuid();
-      try { localStorage.setItem(QUICK_ID_KEY, id); } catch { /* ignore */ }
+      writeLocal(QUICK_ID_KEY, id);
     }
     setQuickId(id);
   }, []);
@@ -509,7 +511,7 @@ export default function WebhookReceiver({
 
   function regenerateQuickId() {
     const id = genUuid();
-    try { localStorage.setItem(QUICK_ID_KEY, id); } catch { /* ignore */ }
+    writeLocal(QUICK_ID_KEY, id);
     setQuickId(id);
     // If we were watching the old quick id, follow the new one so the stream stays on it.
     if (selectedId && !linksRef.current.some((l) => l.id === selectedId)) {

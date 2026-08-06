@@ -1,6 +1,6 @@
 // Client-side call helpers for the API Explorer + Webhooks workspaces. All
 // requests go through the same-origin /api/proxy (the server injects auth
-// headers). Auth-mode metadata that used to live in the omicx-specific
+// headers). Auth-mode metadata that used to live in the integration-specific
 // lib/services.ts is inlined here — integration packs declare a service's
 // authMode in their manifest instead.
 

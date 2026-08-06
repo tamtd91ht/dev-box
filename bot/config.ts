@@ -23,7 +23,7 @@
 //      Several candidates → boot fails asking for BOT_PROJECT, never guesses.
 //   4. Nothing registered → parent folder of this repo (sibling-workspace default).
 //
-// So for OMICX: register D:/works/vihat/sources/omicx once (Git tab or ＋
+// So for a project: register its sources folder once (Git tab or ＋
 // Projects) and `npm run bot` picks it up.
 
 import path from 'path';

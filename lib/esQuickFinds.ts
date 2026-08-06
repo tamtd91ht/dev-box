@@ -8,12 +8,14 @@
 //   text    → match (analyzed full-text fields)
 //   number  → term  (numeric equality)
 //   boolean → term  (true/false)
-// List mode ("quidn,tamtd") → `terms` for keyword/number/boolean, and a
+// List mode ("alice,bob") → `terms` for keyword/number/boolean, and a
 // bool.should of `match` (minimum_should_match: 1) for text.
 //
 // Presets live in localStorage. Browser-only module.
 
-const QUICKFINDS_KEY = 'omicx.es.quickfinds';
+import { readLocal, writeLocal } from './localKeys';
+
+const QUICKFINDS_KEY = 'es.quickfinds';
 
 export type EsQuickFieldType = 'keyword' | 'text' | 'number' | 'boolean';
 
@@ -64,7 +66,7 @@ function isQuickFind(v: unknown): v is EsQuickFind {
 export function loadEsQuickFinds(): EsQuickFind[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = window.localStorage.getItem(QUICKFINDS_KEY);
+    const raw = readLocal(QUICKFINDS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed)
@@ -77,7 +79,7 @@ export function loadEsQuickFinds(): EsQuickFind[] {
 
 function save(list: EsQuickFind[]): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(QUICKFINDS_KEY, JSON.stringify(list));
+  writeLocal(QUICKFINDS_KEY, JSON.stringify(list));
 }
 
 function newId(): string {

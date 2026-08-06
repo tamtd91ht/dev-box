@@ -24,7 +24,9 @@ import {
 import MonitorStrip from './redis/MonitorStrip';
 
 /** localStorage key remembering the last-selected connection. */
-const LAST_CONN_KEY = 'omicx.redis.lastConn';
+import { readLocal, writeLocal } from '@/lib/localKeys';
+
+const LAST_CONN_KEY = 'redis.lastConn';
 /** Keys fetched per SCAN round. */
 const SCAN_COUNT = 300;
 /**
@@ -159,7 +161,7 @@ export default function RedisWorkspace() {
     if (!res.enabled) return res;
     let remembered = '';
     try {
-      remembered = localStorage.getItem(LAST_CONN_KEY) ?? '';
+      remembered = readLocal(LAST_CONN_KEY) ?? '';
     } catch {
       /* ignore */
     }
@@ -228,7 +230,7 @@ export default function RedisWorkspace() {
   useEffect(() => {
     if (!activeId) return;
     try {
-      localStorage.setItem(LAST_CONN_KEY, activeId);
+      writeLocal(LAST_CONN_KEY, activeId);
     } catch {
       /* ignore */
     }

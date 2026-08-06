@@ -18,7 +18,9 @@
 // Browser-only module.
 
 /** localStorage key holding the preset array (JSON). */
-const QUICKFINDS_KEY = 'omicx.mongo.quickfinds';
+import { readLocal, writeLocal } from './localKeys';
+
+const QUICKFINDS_KEY = 'mongo.quickfinds';
 
 export type QuickFieldType = 'text' | 'objectId' | 'number' | 'boolean';
 
@@ -74,7 +76,7 @@ function isQuickFind(v: unknown): v is MongoQuickFind {
 export function loadQuickFinds(): MongoQuickFind[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = window.localStorage.getItem(QUICKFINDS_KEY);
+    const raw = readLocal(QUICKFINDS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed)
@@ -88,7 +90,7 @@ export function loadQuickFinds(): MongoQuickFind[] {
 /** Persist the full preset list. */
 function save(list: MongoQuickFind[]): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(QUICKFINDS_KEY, JSON.stringify(list));
+  writeLocal(QUICKFINDS_KEY, JSON.stringify(list));
 }
 
 /** A non-crypto id — presets are local bookmarks, collision-safety isn't critical. */
@@ -125,7 +127,7 @@ export interface QuickFilterEntry {
   type: QuickFieldType;
   /** Raw text the operator typed. */
   value: string;
-  /** true = "quidn,tamtd" is a comma-separated list → `{path: {$in: [...]}}`. */
+  /** true = "alice,bob" is a comma-separated list → `{path: {$in: [...]}}`. */
   list?: boolean;
 }
 

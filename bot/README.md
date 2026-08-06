@@ -37,7 +37,7 @@ Engine review (diff, fan-out agent, chấm rule, ghi `review-mr/…md` + rollup 
 - Mô tả **chỉ để người trên group đọc hiểu đang xin review gì** — bot echo lại trong reply
   và ghi 1 dòng `> 🗒️ Yêu cầu review (@ai): …` vào đầu file report. **Không** đưa vào engine,
   nên không làm review thiên lệch.
-- `<service>`: tên short (`ai-service`, `wallet`) hoặc full `cloud-saas-omicx-*`.
+- `<service>`: tên short (`ai-service`, `wallet`) hoặc full `cloud-saas-myorg-*`.
 - (Tuỳ chọn nâng cao, không bắt buộc) vẫn nhận `branch=dev_duynh des= …` nếu ai thích rõ ràng.
 
 ## Cài đặt lần đầu
@@ -71,17 +71,17 @@ DevBox là tool **dùng chung nhiều project**, nên bot **không hardcode đư
 | 4 | **Đúng 1** git project đã đăng ký | tab **Git** (`.gitprojects.json`) |
 | 5 | Chưa đăng ký gì | thư mục **cha** của repo này |
 
-→ **OMICX: không cần cấu hình gì thêm.** Folder `…/sources/omicx` đã đăng ký ở tab ＋ Projects
+→ **Ví dụ: không cần cấu hình gì thêm.** Folder `…/sources/myproject` đã đăng ký ở tab ＋ Projects
 (pack `devbox.api.json`), nên `npm run bot` tự lấy đúng workspace đó.
 
 Nhiều project đã đăng ký mà không đặt `BOT_PROJECT` → bot **báo lỗi + liệt kê project đang có**
 rồi dừng, **không đoán bừa**. Dòng log lúc boot luôn in nguồn đã dùng:
 
 ```
-[09:12:01] workspace lấy từ: project "OMICX" (.apiintegrations.json)
+[09:12:01] workspace lấy từ: project "MYPROJECT" (.apiintegrations.json)
 ```
 
-Prefix folder để nhận diện service reviewable mặc định là `cloud-saas-omicx-`; project khác
+Prefix folder để nhận diện service reviewable mặc định là `my-service-prefix-`; project khác
 đặt `REVIEW_SERVICE_PREFIX=<prefix của bạn>`.
 
 ## Chạy
@@ -171,7 +171,7 @@ sha đổi → review lại (đúng khái niệm "Lần review" tăng dần tron
 ```bash
 # Parser + SCORE parsing (offline, không cần Telegram):
 npm run bot:test                                        # workspace = thư mục cha của repo
-BOT_BASE_PATH=D:/works/vihat/sources/omicx npm run bot:test    # hoặc chỉ định rõ
+BOT_BASE_PATH=D:/works/sources/myproject npm run bot:test    # hoặc chỉ định rõ
 ```
 
 Các phần chạm Telegram/git kiểm bằng tay theo mục "Chạy" ở trên (nhắn `/review` thật trong group).

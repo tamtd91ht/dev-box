@@ -67,7 +67,7 @@ const NAV_LANGS = [
 ];
 const COMPLETION_LANGS = ['java', 'kotlin', 'typescript', 'javascript', 'python', 'go', 'csharp', 'php'];
 
-/** "/omicx/src/Main.java" → { projectId: 'omicx', rel: 'src/Main.java' } */
+/** "/myproject/src/Main.java" → { projectId: 'myproject', rel: 'src/Main.java' } */
 function splitModelPath(path: string): { projectId: string; rel: string } | null {
   const p = path.replace(/^\/+/, '');
   const i = p.indexOf('/');

@@ -44,7 +44,7 @@ function MetaFields({ meta, onChange }: { meta: MetaDraft; onChange: (m: MetaDra
       </div>
       <input className="input" placeholder="Mô tả ngắn (optional)" value={meta.description ?? ''}
         onChange={(e) => onChange({ ...meta, description: e.target.value })} />
-      <input className="input" placeholder="Tags, cách nhau dấu phẩy (optional) — vd: jenkins, logs, omicx"
+      <input className="input" placeholder="Tags, cách nhau dấu phẩy (optional) — vd: jenkins, logs, backend"
         value={meta.tagsText ?? ''}
         onChange={(e) => onChange({ ...meta, tagsText: e.target.value })} />
       {/* User/pass ở ĐÂY là cách CŨ: lưu plaintext trong links.json và chỉ dùng

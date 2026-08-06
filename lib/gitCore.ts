@@ -6,7 +6,7 @@
 //      k8s/production deployment simply never sets it, so the feature is off
 //      there and there is no way to reach these functions.
 //   2. Every repo path is validated against an ALLOWLIST derived from the
-//      configured Git root (auto-detected omicx sibling repos + any explicitly
+//      configured Git root (auto-detected sibling repos + any explicitly
 //      added). A request can only target a path that is in that list AND is a
 //      real git working tree — never an arbitrary path from the request body.
 //   3. Commands run via execFile('git', [argv]) — NEVER a shell string — so a
@@ -22,7 +22,7 @@ import path from 'path';
 
 export const GIT_ENABLED = /^(1|true|yes|on)$/i.test(process.env.GIT_TOOL_ENABLED ?? '');
 
-/** Root under which sibling repos are auto-detected. Defaults to the omicx
+/** Root under which sibling repos are auto-detected. Defaults to the workspace
  *  workspace that contains this repo (two levels up from cwd's repo). Override
  *  with GIT_TOOL_ROOT (absolute path). */
 const GIT_ROOT = process.env.GIT_TOOL_ROOT

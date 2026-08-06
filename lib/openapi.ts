@@ -1,4 +1,4 @@
-// Parse an omicx openapi.yaml into a normalized, flat endpoint catalog.
+// Parse an openapi.yaml into a normalized, flat endpoint catalog.
 // Server-side only (reads from disk). The spec is a single self-contained file
 // whose only $refs are local (#/components/...), so a lightweight js-yaml parse
 // plus manual local-$ref resolution is enough — no heavy swagger toolchain.

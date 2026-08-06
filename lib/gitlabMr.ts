@@ -3,10 +3,11 @@
 // SECURITY MODEL — mirrors gitCore.ts. This runs on the developer's own machine,
 // gated by GIT_TOOL_ENABLED (the /api/git route 403s otherwise), and never
 // exposes any secret to the browser:
-//   1. The GitLab API token is NOT configured anywhere and NOT entered in the UI.
-//      It is read at request time from the SAME git credential helper that `git
-//      push`/`pull` already uses — via `git credential fill`. The token stays on
-//      the server; only MR metadata (never the token) is returned to the client.
+//   1. The GitLab API token is a Personal Access Token stored per-host by
+//      gitlabTokens.ts (configs/, gitignored), with `git credential fill` as a
+//      fallback for setups that already keep a PAT there. It is resolved at
+//      request time and stays on the server: only MR metadata — never the token
+//      — is returned to the client, and the UI only ever sees a redacted preview.
 //   2. The GitLab host + project path are derived from the repo's own `origin`
 //      remote URL — never from client input. The client only ever names an
 //      already-authorized repo path (authorizeRepo in the route) and an MR iid.

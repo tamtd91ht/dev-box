@@ -24,7 +24,9 @@ import OverviewView from './pg/OverviewView';
 import BrowserView from './pg/BrowserView';
 import QuickFindView from './pg/QuickFindView';
 
-const LAST_CONN_KEY = 'omicx.pg.lastConn';
+import { readLocal, writeLocal } from '@/lib/localKeys';
+
+const LAST_CONN_KEY = 'pg.lastConn';
 
 type SubView = 'overview' | 'browser' | 'quickfind';
 
@@ -73,7 +75,7 @@ export default function PgWorkspace() {
     setConnections(res.connections);
     if (!res.enabled) return;
     setActiveId((cur) => {
-      const remembered = typeof window !== 'undefined' ? window.localStorage.getItem(LAST_CONN_KEY) ?? '' : '';
+      const remembered = readLocal(LAST_CONN_KEY) ?? '';
       const pick = [cur, remembered].find((id) => id && res.connections.some((c) => c.id === id));
       return pick || res.connections[0]?.id || '';
     });
@@ -82,7 +84,7 @@ export default function PgWorkspace() {
   useEffect(() => { void loadConnections(); }, [loadConnections]);
 
   useEffect(() => {
-    if (activeId && typeof window !== 'undefined') window.localStorage.setItem(LAST_CONN_KEY, activeId);
+    if (activeId) writeLocal(LAST_CONN_KEY, activeId);
   }, [activeId]);
 
   useEffect(() => {

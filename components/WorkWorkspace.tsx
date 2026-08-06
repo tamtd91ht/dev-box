@@ -307,7 +307,7 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
 
         <div className="wk-form-grid">
           <label className="wk-field"><span>Dự án</span>
-            <input className="input" list="wk-projects" value={project} onChange={(e) => setProject(e.target.value)} placeholder="vd OMICX" />
+            <input className="input" list="wk-projects" value={project} onChange={(e) => setProject(e.target.value)} placeholder="vd MYPROJECT" />
             <datalist id="wk-projects">{projects.map((pj) => <option key={pj} value={pj} />)}</datalist>
           </label>
           <label className="wk-field"><span>Tên công việc *</span>

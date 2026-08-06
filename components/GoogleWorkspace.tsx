@@ -257,7 +257,7 @@ function ProjectsView({ accountId, onOpen, onOpenUrl }: {
         ))}
         {roots.length === 0 && (
           <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px 10px' }}>
-            Dán link thư mục Drive của dự án (thuộc tài khoản này) để bắt đầu — vd folder tài liệu OMICX.
+            Dán link thư mục Drive của dự án (thuộc tài khoản này) để bắt đầu — vd folder tài liệu dự án.
           </p>
         )}
         <div className="g-add">
@@ -476,7 +476,7 @@ function SharedView({ accountId, onOpen }: { accountId: string; onOpen: OpenFile
 }
 
 /** Nhãn ngắn cho chip tài khoản: phần trước @ cho gọn, NHƯNG nếu có tài khoản
- *  khác cùng prefix (user@example.com vs tamtd@gmail.com) thì hiện cả email
+ *  khác cùng prefix (user@example.com vs user@gmail.com) thì hiện cả email
  *  — hai chip giống hệt nhau thì không biết đang chọn cái nào. */
 function accLabel(a: GoogleAccount, all: GoogleAccount[] = []): string {
   if (!a.email) return a.id.slice(0, 8);

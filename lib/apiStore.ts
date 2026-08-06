@@ -12,7 +12,7 @@ export interface ApiHeader { key: string; value: string; on?: boolean }
 export interface ApiRequest {
   id: string;
   name: string;
-  /** Folder/nhóm tự do (vd "Auth", "OMICX") — rỗng = chưa phân nhóm. */
+  /** Folder/nhóm tự do (vd "Auth", "Backend") — rỗng = chưa phân nhóm. */
   folder?: string;
   method: string;
   url: string;

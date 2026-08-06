@@ -31,7 +31,7 @@ export const NO_COLUMN_PATH = '__no';
 
 export interface ReportMeta {
   title: string;
-  /** e.g. "omicx_data_prod.tenants". */
+  /** e.g. "app_data_prod.tenants". */
   target: string;
   rowCount: number;
   /** Optional extra note appended to the subtitle (e.g. "đã cắt tại 5.000 dòng"). */

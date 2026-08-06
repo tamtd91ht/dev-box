@@ -200,7 +200,7 @@ export async function POST(req: NextRequest) {
 
       case 'review-mr': {
         // Run Claude Code's /review-mr-dev against this repo. Service is derived
-        // from the authorized path; cwd/OMICX_BASE_PATH must be the project root.
+        // from the authorized path; cwd/BOT_BASE_PATH must be the project root.
         const service = serviceNameFromRepoPath(repo);
         const branch = validateBranch(body.branch);
         const projectRoot = path.dirname(repo);

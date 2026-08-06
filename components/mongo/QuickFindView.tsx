@@ -9,7 +9,7 @@
 // ObjectId in the query.
 //
 // SCREEN BUDGET: pressing Run COLLAPSES the setup panel into a one-line query
-// summary ("domain = quidn AND is_deleted = false · trả về 3 field") so the
+// summary ("domain = alice AND is_deleted = false · trả về 3 field") so the
 // results strip gets the vertical space; ✎ on the summary reopens the panel.
 //
 // The setup panel has two tabs:
@@ -183,7 +183,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
 
   const enabledCount = runFields.filter((f) => f.checked).length;
 
-  /** One-line compact summary: `{domain:quidn, is_deleted:false}` · list → `domain:$in[quidn,tamtd]`. */
+  /** One-line compact summary: `{domain:alice, is_deleted:false}` · list → `domain:$in[alice,bob]`. */
   const querySummary = useMemo(() => {
     const parts = runFields
       .filter((f) => f.checked)
@@ -330,7 +330,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                           disabled={!f.checked}
                           value={f.value}
                           placeholder={f.list
-                            ? 'nhiều giá trị, cách nhau dấu phẩy — vd. quidn,tamtd'
+                            ? 'nhiều giá trị, cách nhau dấu phẩy — vd. alice,bob'
                             : f.type === 'objectId' ? '24 ký tự hex — sẽ convert sang ObjectId' : f.type === 'number' ? 'số' : 'giá trị (so sánh bằng)'}
                           onChange={(e) => setRunFields((fs) => fs.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))}
                           onKeyDown={(e) => { if (e.key === 'Enter' && !busy && enabledCount > 0) void doRun(); }}
@@ -519,7 +519,7 @@ function QuickFindForm({
         <label className="mongo-field" style={{ flex: 1 }}>
           <span>Database</span>
           <input className="input mono" list="mongo-qf-dbs" value={database}
-            onChange={(e) => { setDatabase(e.target.value); setCollection(''); }} placeholder="omicx_data_prod" />
+            onChange={(e) => { setDatabase(e.target.value); setCollection(''); }} placeholder="app_data_prod" />
           <datalist id="mongo-qf-dbs">{dbOptions.map((d) => <option key={d} value={d} />)}</datalist>
         </label>
         <label className="mongo-field" style={{ flex: 1 }}>

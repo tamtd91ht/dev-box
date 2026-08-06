@@ -37,7 +37,7 @@ export interface ExportModalProps {
   coll: string;
   /** EJSON filter string of the query being exported (from the last run). */
   filter: string;
-  /** Compact summary shown in the sheet subtitle, e.g. `{domain:quidn}`. */
+  /** Compact summary shown in the sheet subtitle, e.g. `{domain:alice}`. */
   querySummary: string;
   /** Field-name suggestions (discovered + preset paths) for the column mapper. */
   fieldSuggestions: string[];

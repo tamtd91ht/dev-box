@@ -1,8 +1,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# omicx-local-all-in-one — Next.js 15 standalone image
+# devbox — Next.js 15 standalone image
 #
 # Internal, VPN-only API testing tool. Port 8080.
-# Build:  docker build -t <your-registry>/ci/omicx-local-all-in-one:latest .
+# Build:  docker build -t <your-registry>/ci/devbox:latest .
 #
 # NOTE: if the build env cannot reach Docker Hub, replace `node:20-alpine`
 #       with the Harbor-mirrored node image (ask ops).

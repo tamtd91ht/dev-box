@@ -1,7 +1,7 @@
 'use client';
 
-// VHS DevBox — infra toolbox shell. Forked from omicx-local-all-in-one with the
-// OMICX API Explorer and the Telegram review bot removed: this build is the
+// VHS DevBox — infra toolbox shell. Forked from an internal all-in-one toolbox with the
+// API Explorer and the Telegram review bot removed: this build is the
 // company-wide datastore/broker manager (Webhooks · Git · Redis · Kafka ·
 // RabbitMQ · MongoDB · Elastic · PostgreSQL). Each workspace mounts lazily and
 // stays mounted (hidden) across tab switches so long-running state survives.
@@ -36,6 +36,8 @@ import WorkAlertHost from '@/components/WorkAlertHost';
 import ConvertHost from '@/components/ConvertHost';
 import OpenLinkDialog from '@/components/OpenLinkDialog';
 import NotificationCenter from '@/components/NotificationCenter';
+import QuickTabs, { type TabInfo } from '@/components/QuickTabs';
+import * as recentTabs from '@/lib/recentTabs';
 import { notices } from '@/lib/noticeStore';
 import ThemeToggle from '@/components/ThemeToggle';
 import DesktopConsole from '@/components/DesktopConsole';
@@ -163,6 +165,44 @@ export default function Home() {
     });
   };
 
+  // ── Tiếp cận nhanh các tab đang làm (Ctrl+Q) ────────────────────────────────
+  // Ghi nhận tab vừa dùng để nhảy qua nhảy lại: đang ở Kafka, có mail thì qua
+  // Mail đọc, xong Ctrl+Q (hoặc Ctrl+Tab) là về thẳng Kafka.
+  const [quickOpen, setQuickOpen] = useState(false);
+  const recents = useSyncExternalStore(
+    recentTabs.subscribe, recentTabs.getSnapshot, recentTabs.getServerSnapshot,
+  );
+
+  // Chỉ ghi nhận khi ở lại tab đủ lâu — lướt qua để tìm đường thì không tính,
+  // nếu không danh sách "vừa dùng" sẽ đầy rác.
+  useEffect(() => {
+    const t = setTimeout(() => recentTabs.touch(mode), recentTabs.MIN_DWELL_MS);
+    return () => clearTimeout(t);
+  }, [mode]);
+
+  // Ctrl+Q mở màn hình tiếp cận nhanh · Ctrl+Tab về tab trước đó.
+  //
+  // CỐ Ý chỉ bắt ctrlKey, KHÔNG bắt metaKey: trên macOS ⌘Q là lệnh thoát app ở
+  // tầng hệ điều hành, JS chặn không được — bắt thêm metaKey chỉ tổ mở hộp
+  // thoại này ngay lúc app đang tắt. Ctrl+Q trên Windows/Linux thì preventDefault
+  // giữ được, và bản Electron này không đăng ký accelerator nào cho nó.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'q') {
+        e.preventDefault();
+        setQuickOpen((v) => !v);
+        return;
+      }
+      if (e.ctrlKey && e.key === 'Tab') {
+        e.preventDefault();
+        const prev = recentTabs.previous(mode);
+        if (prev) setMode(prev);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mode]);
+
   // Hòm thông báo local (lib/noticeStore) — badge đỏ trên tab đích ('git', …)
   // như thư đến. Mở đúng tab là đã đọc thư của tab đó.
   const noticeSnap = useSyncExternalStore(notices.subscribe, notices.getSnapshot, notices.getServerSnapshot);
@@ -190,6 +230,26 @@ export default function Home() {
       .then((d) => setPacks((d.integrations ?? []) as IntegrationView[]))
       .catch(() => {});
   }, []);
+
+  /** Nhãn của một khoá tab cho màn hình tiếp cận nhanh — tab lõi tra trong
+   *  TABS, pack thì tra trong danh sách packs đã nạp. Trả undefined nếu tab
+   *  không còn (pack bị gỡ) để màn hình đó tự lọc bỏ. */
+  const tabInfo = useMemo(() => (key: string): TabInfo | undefined => {
+    const core = TABS.find((t) => t.key === key);
+    if (core) {
+      const unread = (noticeSnap.unreadByTab[key] ?? 0)
+        + (key === 'mail' ? mailUnread : 0)
+        + (key === 'workspace' ? wsUnread : 0);
+      return { key, icon: core.icon, label: core.label, badge: core.badge, unread };
+    }
+    if (key === 'packs') return { key, icon: '＋', label: 'Quản lý packs', badge: 'pack' };
+    if (key.startsWith('pack:')) {
+      const p = packs.find((x) => `pack:${x.id}` === key);
+      if (!p) return undefined; // pack đã bị gỡ → bỏ khỏi danh sách
+      return { key, icon: '▤', label: p.manifest?.name ?? p.name, badge: 'pack' };
+    }
+    return undefined;
+  }, [packs, noticeSnap, mailUnread, wsUnread]);
 
   // Lazy mount-and-keep per workspace: don't probe a tool's API until the user
   // opens it, then keep it mounted so its state survives tab switches.
@@ -351,11 +411,32 @@ export default function Home() {
             anything conditional here resizes the header and can push the tab
             strip (with the Workspace bell) out of view. */}
         <div className="appbar-right">
+          {/* Tiếp cận nhanh các tab đang làm — nhảy qua nhảy lại khỏi dò menu. */}
+          <button
+            className="qt-open-btn"
+            onClick={() => setQuickOpen(true)}
+            title="Tab đang làm — tiếp cận nhanh (Ctrl+Q)"
+            aria-label="Tab đang làm"
+          >
+            🕘
+          </button>
           {/* Hòm thông báo: xem lại lịch sử (local, 2 ngày) + xóa tất cả. */}
           <NotificationCenter />
           <ThemeToggle />
         </div>
       </header>
+
+      {/* Màn hình tiếp cận nhanh (Ctrl+Q) — nổi trên mọi workspace. */}
+      <QuickTabs
+        open={quickOpen}
+        current={mode}
+        recents={recents}
+        info={tabInfo}
+        onPick={setMode}
+        onRemove={recentTabs.remove}
+        onClear={recentTabs.clear}
+        onClose={() => setQuickOpen(false)}
+      />
 
       {/* ── Body: workspaces (mount-and-keep) ───────────────────────── */}
       <div className="body">

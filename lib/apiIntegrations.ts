@@ -4,7 +4,7 @@
 // itself in by shipping a `devbox.api.json` MANIFEST in its own repo:
 //
 //   {
-//     "name": "OMICX",
+//     "name": "MYPROJECT",
 //     "services": [
 //       { "id": "public-service", "label": "Public", "blurb": "...",
 //         "authMode": "apikey", "spec": "openapi/public-service.yaml",
@@ -15,7 +15,7 @@
 //
 // The operator registers packs per machine in `.apiintegrations.json`
 // (gitignored — same convention as the connection registries):
-//   { "integrations": [{ "id": "omicx", "name": "OMICX", "root": "D:/.../omicx-local-all-in-one" }] }
+//   { "integrations": [{ "id": "myproject", "name": "MYPROJECT", "root": "D:/.../myproject" }] }
 //
 // Spec paths in the manifest are RELATIVE to the pack root and are resolved
 // with a containment check — a manifest cannot read files outside its root.
@@ -29,7 +29,7 @@ import { configPath } from './configDir';
 export interface ApiIntegration {
   /** Stable opaque id (used as the registry key + api param). */
   id: string;
-  /** Display name, e.g. "OMICX". */
+  /** Display name, e.g. "MYPROJECT". */
   name: string;
   /** Absolute folder containing devbox.api.json. */
   root: string;

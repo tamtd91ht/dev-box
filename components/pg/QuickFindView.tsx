@@ -263,7 +263,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                           disabled={!f.checked}
                           value={f.value}
                           placeholder={f.list
-                            ? 'nhiều giá trị, cách nhau dấu phẩy — vd. quidn,tamtd'
+                            ? 'nhiều giá trị, cách nhau dấu phẩy — vd. alice,bob'
                             : f.type === 'number' ? 'số' : 'giá trị (so sánh bằng)'}
                           onChange={(e) => setRunFields((fs) => fs.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))}
                           onKeyDown={(e) => { if (e.key === 'Enter' && !busy && enabledCount > 0) void doRun(); }}

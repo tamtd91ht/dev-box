@@ -68,7 +68,7 @@ export default function ConnectionForm({ initial, onCancel, onSaved, onError }: 
       </div>
       <div className="mongo-form-row">
         <label className="mongo-field" style={{ flex: 1 }}><span>Username (để trống = không auth)</span>
-          <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="omicx_reader" />
+          <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="app_reader" />
         </label>
         <label className="mongo-field" style={{ flex: 1 }}><span>Password {initial ? '(để trống = giữ nguyên)' : ''}</span>
           <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={initial?.hasPassword ? '••••••' : ''} />

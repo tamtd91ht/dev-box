@@ -11,7 +11,7 @@
 // ("ai đang xin review cái gì"): `des=` is a human description echoed back and
 // recorded on the report — it never enters the engine's judgment.
 //
-// The command word may carry a @botname suffix in a group ("/review@omicx_bot").
+// The command word may carry a @botname suffix in a group ("/review@my_review_bot").
 
 import { detectRepos, type RepoInfo } from '../lib/gitCore';
 import { serviceNameFromRepoPath, validateBranch, SERVICE_PREFIX } from '../lib/reviewMr';
@@ -67,7 +67,7 @@ export async function resolveService(
   let hit = services.find((r) => r.name.toLowerCase() === t);
   if (hit) return hit;
 
-  // 2. short name (folder minus the cloud-saas-omicx- prefix)
+  // 2. short name (folder minus the my-service-prefix- prefix)
   hit = services.find((r) => serviceNameFromRepoPath(r.path).toLowerCase() === t);
   if (hit) return hit;
 

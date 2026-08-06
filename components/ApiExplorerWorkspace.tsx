@@ -281,7 +281,7 @@ export default function ApiExplorerWorkspace({ packId }: { packId: string }) {
                 {(authMode === 'jwt-agent' || authMode === 'jwt-admin') && (
                   <div className="apix-form-row" style={{ alignItems: 'flex-end' }}>
                     <label className="apix-field" style={{ flex: 1 }}><span>Mint agent token (tenantId / domain — qua tool-service đã cấu hình ở tab Webhooks)</span>
-                      <input className="input mono" value={mintTenant} onChange={(e) => setMintTenant(e.target.value)} placeholder="t_123 hoặc quidn" />
+                      <input className="input mono" value={mintTenant} onChange={(e) => setMintTenant(e.target.value)} placeholder="t_123 hoặc tenant-slug" />
                     </label>
                     <button
                       className="ghost sm"

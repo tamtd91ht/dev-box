@@ -4,7 +4,7 @@
 hạ tầng dev/ops từ MỘT chỗ: **Redis · Kafka · RabbitMQ · MongoDB · Elasticsearch · PostgreSQL ·
 Git · Webhooks**.
 
-> Fork từ `omicx/omicx-local-all-in-one`. Hai tính năng vốn gắn chặt với OMICX đã được **viết lại
+> Fork từ một toolbox all-in-one nội bộ. Hai tính năng vốn gắn chặt với tổ chức gốc đã được **viết lại
 > theo hướng project-neutral** và quay lại đây: **API Explorer** (giờ là *integration pack* — tab
 > ＋ Projects) và **Telegram MR-review bot** (`npm run bot` — workspace lấy từ project đã đăng ký).
 > Cả hai không hardcode đường dẫn hay tên service của dự án nào.
@@ -45,8 +45,8 @@ double-click icon ngoài Desktop hoặc nhấn nút Windows gõ "VHS DevBox".
   picker chạy server-side, thư mục có manifest hiện badge `▤ pack`; registry per-máy
   `.apiintegrations.json`); mỗi pack thành **một tab riêng** ở phân vùng Projects trên header.
   DevBox parse openapi và dựng Explore (endpoint → gửi request qua proxy, curl preview) + Flows
-  (chuỗi request với `{{var}}` capture). OMICX là pack đầu tiên — manifest ở root workspace
-  `omicx/devbox.api.json`, spec đọc thẳng từ `cloud-saas-omicx-*/src/main/resources/openapi.yaml`
+  (chuỗi request với `{{var}}` capture). Ví dụ một pack — manifest ở root workspace
+  `<project>/devbox.api.json`, spec đọc thẳng từ `<service>/src/main/resources/openapi.yaml`
   nên không cần bước sync. Auth: apikey / tool key+secret / JWT (user/agent/admin, có mint agent
   token qua tool-service).
 - **Git** — multi-project (root cấu hình được), status/pull-all/history/commit + Review MR runner.

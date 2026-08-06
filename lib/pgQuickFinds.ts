@@ -11,7 +11,9 @@
 
 import type { PgQuickFieldType } from '@/lib/pg';
 
-const QUICKFINDS_KEY = 'omicx.pg.quickfinds';
+import { readLocal, writeLocal } from './localKeys';
+
+const QUICKFINDS_KEY = 'pg.quickfinds';
 
 export const PG_QUICK_FIELD_TYPES: { value: PgQuickFieldType; label: string }[] = [
   { value: 'text', label: 'Text' },
@@ -63,7 +65,7 @@ function isQuickFind(v: unknown): v is PgQuickFind {
 export function loadPgQuickFinds(): PgQuickFind[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = window.localStorage.getItem(QUICKFINDS_KEY);
+    const raw = readLocal(QUICKFINDS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed)
@@ -76,7 +78,7 @@ export function loadPgQuickFinds(): PgQuickFind[] {
 
 function save(list: PgQuickFind[]): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(QUICKFINDS_KEY, JSON.stringify(list));
+  writeLocal(QUICKFINDS_KEY, JSON.stringify(list));
 }
 
 function newId(): string {
