@@ -2,7 +2,7 @@
 //
 // A plugin is a pure declaration. To add a workspace (Kibana, Grafana, Jenkins,
 // an internal admin…), append an entry here — no other code changes. Hiện có:
-// Zalo · Telegram · WhatsApp · Messenger (Facebook).
+// Zalo · Telegram · WhatsApp · Messenger · Facebook.
 // The framework gives EACH ACCOUNT of each plugin its own
 // persistent session partition (`persist:ws-{pluginId}-{instanceId}`), so Zalo
 // and Telegram never share cookies, storage or a login — they are already fully
@@ -186,7 +186,60 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
       bodySenderSeparator: ': ',
     },
   },
+  {
+    id: 'facebook',
+    name: 'Facebook',
+    icon: '📘',
+    brand: { color: '#0866ff', logo: 'facebook' },
+    // facebook.com đầy đủ chứ không phải messenger.com: đây là chỗ để xem News
+    // Feed, story, trang cá nhân và profile của mình — đúng như mở
+    // facebook.com trong trình duyệt. Chat vẫn nên dùng workspace Messenger
+    // riêng bên trên (nhẹ hơn, và unread không lẫn với thông báo Feed).
+    url: 'https://www.facebook.com/',
+    badge: 'personal',
+    description: 'Facebook — News Feed, story, trang cá nhân. Phiên đăng nhập lưu ngay trên máy bạn.',
+    permissions: CHAT_PERMISSIONS,
+    // KHÔNG keepAlive: Facebook là tab để xem, không phải nguồn tin nhắn chạy
+    // nền — giữ sống một trang Feed nặng suốt phiên chỉ tốn RAM vô ích.
+    multiAccount: true,
+    // Không khai `capture`: đây không phải app nhắn tin, không đẩy tin vào
+    // automation. Số huy hiệu vì thế lấy từ "(N)" trên tiêu đề trang — chính là
+    // tổng thông báo Facebook hiển thị, đúng cái người ta mong đợi.
+  },
 ];
+
+/**
+ * Facebook: các trang hay vào, đổ thành menu ngay trên thanh công cụ workspace.
+ *
+ * Cùng một guest, chỉ điều hướng — nên bấm qua lại KHÔNG mất phiên đăng nhập và
+ * không dựng lại trang từ đầu. `/me/` để Facebook tự phân giải sang trang cá
+ * nhân của tài khoản đang đăng nhập: không phải nhét username hay id vào source.
+ */
+export interface WorkspaceMenuItem {
+  label: string;
+  /** Đường dẫn tuyệt đối trong cùng app (nối vào origin của plugin). */
+  path: string;
+  icon?: string;
+}
+
+export const WORKSPACE_MENUS: Record<string, WorkspaceMenuItem[]> = {
+  facebook: [
+    { label: 'Bảng tin', path: '/', icon: '🏠' },
+    { label: 'Trang cá nhân', path: '/me/', icon: '👤' },
+    { label: 'Story', path: '/stories/', icon: '📸' },
+    { label: 'Reels', path: '/reel/', icon: '🎬' },
+    { label: 'Bạn bè', path: '/friends/', icon: '👥' },
+    { label: 'Nhóm', path: '/groups/feed/', icon: '👪' },
+    { label: 'Kỷ niệm', path: '/memories/', icon: '🕰️' },
+    { label: 'Đã lưu', path: '/saved/', icon: '🔖' },
+    { label: 'Marketplace', path: '/marketplace/', icon: '🛒' },
+    { label: 'Thông báo', path: '/notifications/', icon: '🔔' },
+    { label: 'Cài đặt', path: '/settings/', icon: '⚙️' },
+  ],
+};
+
+/** Menu điều hướng nhanh của một plugin (rỗng nếu plugin không khai). */
+export const menuFor = (pluginId: string): WorkspaceMenuItem[] => WORKSPACE_MENUS[pluginId] ?? [];
 
 export function getPlugin(id: string): WorkspacePlugin | undefined {
   return WORKSPACE_PLUGINS.find((p) => p.id === id);

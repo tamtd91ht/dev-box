@@ -73,6 +73,18 @@ export default function BrandMark({ plugin, size = 18, className = '', faded = f
           <path d="M5.6 15.1 10.8 9.6l2.9 2.7 4.4-2.7-5.2 5.5-2.8-2.7z" fill="#fff" />
         </svg>
       );
+    case 'facebook':
+      // Facebook: hình tròn + chữ "f". Cùng họ tròn với Telegram/WhatsApp nhưng
+      // ruột là một chữ cái đặc, không phải hình — nhìn 14px vẫn tách bạch.
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="11" fill={color} />
+          <path
+            d="M14.6 12.6h-2v7.9a11 11 0 0 1-2.6 0v-7.9H8.2v-2.5h1.8V8.4c0-2.3 1.3-3.5 3.4-3.5.7 0 1.4.1 2 .2v2.3h-1.1c-1 0-1.4.5-1.4 1.4v1.3h2.4z"
+            fill="#fff"
+          />
+        </svg>
+      );
     default:
       // No vector mark declared → the emoji on a tinted chip, same footprint.
       return (

@@ -55,6 +55,23 @@ function pushLog(source, line) {
 // app is ready. Persistent partitions land under data/browser/Partitions/.
 app.setPath('userData', path.join(app.getAppPath(), 'data', 'browser'));
 
+// ── User-Agent: nói thật là Chrome, đừng khoe là Electron ─────────────────
+//
+// UA mặc định của Electron có thêm token `Electron/43.2.0` ở giữa `Chrome/…` và
+// `Safari/537.36`. Đúng về kỹ thuật (bên dưới là Chromium thật), nhưng các web
+// app của Meta soi UA rất chặt:
+//   • WhatsApp Web → "WhatsApp works with Google Chrome 100+" và CHẶN LUÔN, dù
+//     Chromium bên dưới là 140. Nó không đọc nổi phiên bản khi gặp token lạ.
+//   • Messenger / Facebook → luồng đăng nhập bị coi là "trình duyệt nhúng
+//     không an toàn", nhập xong không vào được (nên phiên chẳng có gì để lưu).
+//
+// Bỏ token `Electron/x.y.z` là hết: phần còn lại của chuỗi đã là UA Chrome hợp
+// lệ, không bịa thêm phiên bản nào cả — chỉ ngừng tự khai thêm. Đặt qua
+// `userAgentFallback` nên áp cho MỌI session/partition (cửa sổ chính lẫn từng
+// <webview> guest) mà không phải sửa từng chỗ. Plugin nào cần UA riêng vẫn
+// override được bằng `plugin.userAgent` (lib/workspace/types.ts).
+app.userAgentFallback = app.userAgentFallback.replace(/ Electron\/[\d.]+/i, '');
+
 const DEFAULT_CONFIG = {
   persistSession: true,
   lazyLoad: true,

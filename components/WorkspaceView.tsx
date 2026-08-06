@@ -8,8 +8,9 @@
 // shows comes from the passed-in `plugin` declaration and `config`. No Zalo
 // specifics live here.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BrandMark from './BrandMark';
+import { menuFor } from '@/lib/workspace/plugins';
 import type { WebviewElement, WorkspaceConfig, WorkspacePlugin } from '@/lib/workspace/types';
 import { type WorkspaceAccount, partitionForAccount } from '@/lib/workspace/accounts';
 import { type CollectResult, buildCollectorScript, captureFlagScript } from '@/lib/workspace/capture';
@@ -312,6 +313,45 @@ export default function WorkspaceView({
     }
   }, [partition]);
 
+  /**
+   * Menu điều hướng nhanh (hiện chỉ Facebook khai): đi tới một trang trong CÙNG
+   * guest — không mở tab mới, không dựng lại webview — nên phiên đăng nhập và
+   * cả trạng thái cuộn của app đều còn nguyên. Đường dẫn nối vào origin của
+   * plugin để tuyệt đối không đi lạc sang domain khác.
+   */
+  const menu = useMemo(() => menuFor(plugin.id), [plugin.id]);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  // Bấm ra ngoài / Esc → đóng menu, như mọi dropdown khác.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
+
+  const goTo = useCallback(
+    (p: string) => {
+      setMenuOpen(false);
+      try {
+        ref.current?.loadURL(new URL(p, plugin.url).toString());
+      } catch {
+        /* guest chưa gắn — bỏ qua, người dùng bấm lại được */
+      }
+    },
+    [plugin.url],
+  );
+
   const openExternal = useCallback(() => {
     let url = plugin.url;
     try {
@@ -357,6 +397,27 @@ export default function WorkspaceView({
           <button onClick={() => ref.current?.loadURL(plugin.url)} title="Trang chủ">
             ⌂
           </button>
+          {menu.length > 0 && (
+            <div className="ws-menu" ref={menuRef}>
+              <button
+                className={menuOpen ? 'is-on' : ''}
+                onClick={() => setMenuOpen((v) => !v)}
+                title={`Các trang ${plugin.name}`}
+              >
+                ☰
+              </button>
+              {menuOpen && (
+                <div className="ws-menu-pop">
+                  {menu.map((m) => (
+                    <button key={m.path} className="ws-menu-item" onClick={() => goTo(m.path)}>
+                      <span className="ws-menu-ico">{m.icon}</span>
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="ws-title">

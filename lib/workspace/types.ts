@@ -22,7 +22,7 @@ export interface WorkspaceBrand {
   /** Accent colour — chip fill, rail accent bar, active-row tint. */
   color: string;
   /** Built-in vector mark. Absent → the emoji `icon` is used instead. */
-  logo?: 'zalo' | 'telegram' | 'whatsapp' | 'messenger';
+  logo?: 'zalo' | 'telegram' | 'whatsapp' | 'messenger' | 'facebook';
 }
 
 /** Web APIs a workspace guest may request. Anything not listed is denied. */
