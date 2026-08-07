@@ -21,6 +21,7 @@ import {
   type MailContact, type ImapFailureInfo, type MailActionError,
 } from '@/lib/mail';
 import MailErrorPanel from './MailErrorPanel';
+import MailCalendar from './MailCalendar';
 import GoogleAuthWindow from './GoogleAuthWindow';
 import { fmtRel } from '@/lib/google';
 import PasswordInput from './PasswordInput';
@@ -33,6 +34,8 @@ function pingMailWatch() {
 }
 
 const ACTIVE_ACCOUNT_KEY = 'mail.activeAccount';
+/** Đang xem Thư hay Lịch — nhớ lại giữa các lần mở app. */
+const VIEW_KEY = 'mail.view';
 
 // ── Presets thêm tài khoản ──────────────────────────────────────────────────
 
@@ -913,6 +916,13 @@ export default function MailWorkspace() {
   const [compose, setCompose] = useState<ComposeDraft | null>(null);
   const [sentFlash, setSentFlash] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Thư (IMAP) hay Lịch (CalDAV) — cùng tài khoản, cùng credentials.
+  const [view, setView] = useState<'mail' | 'cal'>('mail');
+
+  useEffect(() => {
+    if (window.localStorage.getItem(VIEW_KEY) === 'cal') setView('cal');
+  }, []);
+  useEffect(() => { window.localStorage.setItem(VIEW_KEY, view); }, [view]);
 
   // Ẩn thông báo theo từng hòm thư + số chưa đọc của riêng từng hòm.
   //
@@ -1030,9 +1040,18 @@ export default function MailWorkspace() {
   return (
     <div className="panel sheet-panel">
       <div className="sheet-toolbar">
-        <button onClick={() => setCompose({ to: '', cc: '', subject: '', body: '' })} title="Soạn thư mới">
-          ✉️ Soạn thư
-        </button>
+        {/* Thư / Lịch — hai mặt của cùng một hòm thư (IMAP và CalDAV). */}
+        <div className="mail-view-switch" role="tablist" aria-label="Thư hoặc Lịch">
+          <button className={`chip-btn${view === 'mail' ? ' on' : ''}`} role="tab" aria-selected={view === 'mail'}
+            onClick={() => setView('mail')} title="Hòm thư">📥 Thư</button>
+          <button className={`chip-btn${view === 'cal' ? ' on' : ''}`} role="tab" aria-selected={view === 'cal'}
+            onClick={() => setView('cal')} title="Lịch (CalDAV — Zimbra và tương đương)">📅 Lịch</button>
+        </div>
+        {view === 'mail' && (
+          <button onClick={() => setCompose({ to: '', cc: '', subject: '', body: '' })} title="Soạn thư mới">
+            ✉️ Soạn thư
+          </button>
+        )}
         {sentFlash && <span className="small" style={{ color: 'var(--ok, #3c9)' }}>✓ Đã gửi</span>}
         <span style={{ flex: 1 }} />
         <div className="g-accounts" role="tablist" aria-label="Mail accounts">
@@ -1084,7 +1103,9 @@ export default function MailWorkspace() {
 
       {/* key=account id → đổi tài khoản là remount sạch folder/list/detail */}
       <div className="office-body">
-        <MailboxView key={active.id} account={active} onCompose={setCompose} />
+        {view === 'cal'
+          ? <MailCalendar key={`cal-${active.id}`} account={active} />
+          : <MailboxView key={active.id} account={active} onCompose={setCompose} />}
       </div>
 
       {adding && (

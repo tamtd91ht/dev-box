@@ -53,6 +53,16 @@ contextBridge.exposeInMainWorld('workspace', {
    *  Next server không gọi được Electron nên renderer làm cầu nối.
    *  → { ok: true, base64 } | { ok: false, error } */
   htmlToPdf: (html) => ipcRenderer.invoke('workspace:htmlToPdf', html),
+  /** Tab Remote: bật phần mềm điều khiển từ xa có sẵn trên máy.
+   *  CHỈ nhận { kind, address, username? } — kind là khoá trong bảng client
+   *  khai sẵn ở main process, renderer không đưa được đường dẫn .exe tuỳ ý.
+   *  → { ok: true, manual? } | { ok: false, error }
+   *  `manual: true` nghĩa là client không nhận ID qua dòng lệnh (UltraViewer):
+   *  ID đã được chép vào clipboard, người dùng tự dán. */
+  openRemote: (payload) => ipcRenderer.invoke('workspace:openRemote', payload),
+  /** Chép một chuỗi vào clipboard (nút "chép mật khẩu" ở tab Remote — mật khẩu
+   *  chỉ được mở niêm phong ngay lúc bấm, không hiện ra màn hình). */
+  copyText: (text) => ipcRenderer.invoke('workspace:copyText', text),
 });
 
 // In-app console: the shell + `next dev` log stream the main process buffers

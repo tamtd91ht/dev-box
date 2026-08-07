@@ -101,6 +101,20 @@ async function isGitRepo(dir: string): Promise<boolean> {
   }
 }
 
+/**
+ * The repo's `origin` remote URL, or null when it has none (a repo created with
+ * `git init` and never pushed). Never throws — callers treat "no remote" as data,
+ * not an error.
+ */
+export async function remoteUrl(repo: string): Promise<string | null> {
+  try {
+    const out = await git(repo, ['remote', 'get-url', 'origin']);
+    return out.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Auto-detect immediate sibling directories under `root` that are git repos.
  *  Defaults to the legacy GIT_ROOT so callers that don't pass a root keep working. */
 export async function detectRepos(root: string = GIT_ROOT): Promise<RepoInfo[]> {

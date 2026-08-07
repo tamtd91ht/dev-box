@@ -13,7 +13,14 @@ npm-debug.log*
 # ── Local registries / state (secrets, machine paths) ──────────────────────
 # TẤT CẢ file cấu hình local giờ nằm trong configs/ — ignore cả thư mục là an
 # toàn nhất (khỏi phải nhớ liệt kê từng file mỗi khi thêm tính năng mới).
-configs/
+# LƯU Ý: phải là `configs/*` chứ KHÔNG phải `configs/`. Ignore cả thư mục thì
+# git không xét tới file bên trong nữa, nên dòng `!` bên dưới sẽ vô hiệu.
+configs/*
+# NGOẠI LỆ DUY NHẤT — manifest repo của tab Git. Cố ý ĐƯỢC commit: nó chỉ chứa
+# tên project + remote URL (đã strip credential), không có root theo máy và
+# không có secret. Nhờ nó, ai pull dev-box về cũng biết project này gồm những
+# repo nào và clone lại được. Xem lib/gitManifest.ts.
+!configs/gitprojects.shared.json
 # Các dòng .xxx.json bên dưới là DI SẢN: file cũ ở repo-root, tự động được
 # migrate vào configs/ khi chạy. Giữ lại phòng máy nào chưa migrate xong.
 

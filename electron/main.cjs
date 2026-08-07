@@ -17,7 +17,7 @@
 // It knows NOTHING about Zalo specifically — plugins are declared in the
 // renderer (lib/workspace/plugins.ts). Nothing here is hardcoded per website.
 
-const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage } = require('electron');
+const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -291,6 +291,11 @@ function configurePartition(part) {
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
     try {
       const host = new URL(details.url).hostname;
+      // [TAM THOI - CHAN DOAN] In moi document request toi Google de biet host
+      // that su cua trang dang nhap. Go sau khi da chot regex GOOGLE_LOGIN_HOSTS.
+      if (details.resourceType === 'mainFrame' && /google|youtube/i.test(host)) {
+        log('GAuthProbe', `${GOOGLE_LOGIN_HOSTS.test(host) ? 'UA-FIREFOX' : 'UA-CHROME '} ${host} ${details.url.slice(0, 120)}`);
+      }
       if (GOOGLE_LOGIN_HOSTS.test(host)) {
         const headers = { ...details.requestHeaders };
         headers['User-Agent'] = FIREFOX_UA;
@@ -839,6 +844,142 @@ ipcMain.handle('workspace:htmlToPdf', async (_evt, html) => {
     return { ok: false, error: err && err.message };
   } finally {
     if (win && !win.isDestroyed()) win.destroy();
+  }
+});
+
+// ── Tab Remote: bật phần mềm điều khiển từ xa có sẵn trên máy ─────────────
+//
+// DevBox không tự vẽ màn hình máy kia (muốn vậy phải có host capture + relay
+// xuyên NAT — tức là viết lại UltraViewer). Nó chỉ NHỚ máy và bật đúng client.
+//
+// AN TOÀN: renderer KHÔNG được truyền đường dẫn chương trình. Nó chỉ gửi
+// `kind` (một khoá trong bảng dưới) + địa chỉ; main process tự tra ra file
+// .exe. Nếu để renderer đưa path tuỳ ý thì một trang web trong <webview>
+// chiếm được cầu IPC là chạy được mọi thứ trên máy.
+//
+// Địa chỉ còn phải khớp ADDRESS_OK (đồng bộ với lib/remoteHosts.ts) trước khi
+// ghép vào tham số dòng lệnh — chặn chèn tham số kiểu `1.2.3.4 /shadow:1`.
+const ADDRESS_OK = /^[A-Za-z0-9._\-:@ ]{1,128}$/;
+
+/** Các chỗ hay cài UltraViewer/AnyDesk/TeamViewer trên Windows. */
+function firstExisting(candidates) {
+  for (const c of candidates) {
+    try {
+      if (c && fs.existsSync(c)) return c;
+    } catch {
+      /* path lạ — bỏ qua */
+    }
+  }
+  return null;
+}
+
+function programFiles() {
+  return [
+    process.env['ProgramFiles'],
+    process.env['ProgramFiles(x86)'],
+    process.env['LOCALAPPDATA'],
+  ].filter(Boolean);
+}
+
+/**
+ * Dựng lệnh cho một loại kết nối.
+ * → { cmd, args } | { error }
+ *
+ * Mỗi nhánh tự quyết định tham số; địa chỉ đã được kiểm tra ở trên nên chỉ
+ * còn việc đặt đúng chỗ. Không dùng shell (spawn với shell:false) nên khoảng
+ * trắng trong đường dẫn không thành lỗ hổng.
+ */
+function buildRemoteCommand(kind, address, username) {
+  const addr = address.trim();
+  if (kind === 'rdp') {
+    // mstsc có sẵn trong Windows. /v: nhận host[:port].
+    if (process.platform !== 'win32') return { error: 'RDP chỉ bật sẵn được trên Windows' };
+    return { cmd: 'mstsc.exe', args: [`/v:${addr}`] };
+  }
+  if (kind === 'ultraviewer') {
+    const exe = firstExisting(
+      programFiles().map((base) => path.join(base, 'UltraViewer', 'UltraViewer_Desktop.exe')),
+    );
+    if (!exe) return { error: 'Không thấy UltraViewer trên máy — cài rồi thử lại' };
+    // UltraViewer không nhận ID qua dòng lệnh: bật lên để người dùng dán ID
+    // (DevBox đã copy sẵn vào clipboard trước khi gọi).
+    return { cmd: exe, args: [], manual: true };
+  }
+  if (kind === 'anydesk') {
+    const exe = firstExisting(
+      programFiles().map((base) => path.join(base, 'AnyDesk', 'AnyDesk.exe')),
+    );
+    if (!exe) return { error: 'Không thấy AnyDesk trên máy — cài rồi thử lại' };
+    return { cmd: exe, args: [addr] };
+  }
+  if (kind === 'teamviewer') {
+    const exe = firstExisting(
+      programFiles().map((base) => path.join(base, 'TeamViewer', 'TeamViewer.exe')),
+    );
+    if (!exe) return { error: 'Không thấy TeamViewer trên máy — cài rồi thử lại' };
+    return { cmd: exe, args: ['-i', addr] };
+  }
+  if (kind === 'vnc') {
+    const exe = firstExisting([
+      ...programFiles().map((b) => path.join(b, 'RealVNC', 'VNC Viewer', 'vncviewer.exe')),
+      ...programFiles().map((b) => path.join(b, 'uvnc bvba', 'UltraVNC', 'vncviewer.exe')),
+      ...programFiles().map((b) => path.join(b, 'TightVNC', 'tvnviewer.exe')),
+    ]);
+    if (!exe) return { error: 'Không thấy VNC Viewer (RealVNC/UltraVNC/TightVNC) trên máy' };
+    return { cmd: exe, args: [addr] };
+  }
+  return { error: `Loại kết nối không hỗ trợ: ${kind}` };
+}
+
+ipcMain.handle('workspace:openRemote', (_evt, payload) => {
+  const kind = payload && payload.kind;
+  const address = payload && payload.address;
+  if (typeof kind !== 'string' || typeof address !== 'string' || !address.trim()) {
+    return { ok: false, error: 'thiếu thông tin máy' };
+  }
+  if (!ADDRESS_OK.test(address.trim())) {
+    return { ok: false, error: 'địa chỉ chứa ký tự không hợp lệ' };
+  }
+  const built = buildRemoteCommand(kind, address, payload.username);
+  if (built.error) {
+    log('RemoteOpenFail', `${kind} ${address} — ${built.error}`);
+    return { ok: false, error: built.error };
+  }
+  // Client không nhận ID qua dòng lệnh (UltraViewer) → chép sẵn ID vào
+  // clipboard để người dùng chỉ việc Ctrl+V vào ô "ID máy đối tác".
+  if (built.manual) {
+    try {
+      clipboard.writeText(address.trim());
+    } catch {
+      /* không chép được thì thôi, vẫn bật client */
+    }
+  }
+  try {
+    // detached + unref: client sống độc lập, đóng DevBox không giết nó theo.
+    const child = spawn(built.cmd, built.args, {
+      detached: true,
+      stdio: 'ignore',
+      shell: false, // KHÔNG qua shell — tránh mọi chuyện diễn giải chuỗi
+    });
+    child.on('error', (err) => log('RemoteSpawnError', err && err.message));
+    child.unref();
+    log('RemoteOpen', `${kind} ${address}`);
+    return { ok: true, manual: !!built.manual };
+  } catch (err) {
+    log('RemoteOpenFail', err && err.message);
+    return { ok: false, error: (err && err.message) || 'không bật được client' };
+  }
+});
+
+// Chép chuỗi vào clipboard (nút chép mật khẩu ở tab Remote). Không ghi giá trị
+// vào log — đây là chỗ duy nhất plaintext đi qua main process.
+ipcMain.handle('workspace:copyText', (_evt, text) => {
+  if (typeof text !== 'string' || !text) return { ok: false, error: 'empty' };
+  try {
+    clipboard.writeText(text);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err && err.message };
   }
 });
 

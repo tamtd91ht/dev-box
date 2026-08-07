@@ -151,6 +151,55 @@ export interface GitLabTokenStatusResult {
   token: GitLabTokenStatus | null;
 }
 
+/** Response of the `list-gitlab-tokens` action — every host with a saved PAT. */
+export interface ListGitLabTokensResult {
+  tokens: GitLabTokenStatus[];
+}
+
+/** One namespace (personal or group) a new GitLab project can be created under. */
+export interface NamespaceOption {
+  id: number;
+  /** Full path, e.g. "backend/services" — prefixes the project URL. */
+  fullPath: string;
+  name: string;
+  /** 'user' | 'group'. */
+  kind: string;
+}
+
+/** Response of the `list-gitlab-namespaces` action. */
+export interface ListNamespacesResult {
+  host: string;
+  namespaces: NamespaceOption[];
+}
+
+/** A GitLab project freshly created by the `create-repo` action. */
+export interface CreatedProject {
+  id: number;
+  name: string;
+  /** "group/sub/repo". */
+  pathWithNamespace: string;
+  webUrl: string;
+  httpUrl: string;
+  sshUrl: string;
+  defaultBranch: string;
+  visibility: string;
+}
+
+/**
+ * Response of the `create-repo` action. The project is created first; the clone
+ * is best-effort, so `clone` may be null with `cloneError` explaining why while
+ * the project itself already exists on GitLab.
+ */
+export interface CreateRepoResult {
+  project: CreatedProject;
+  clone: CloneResult | null;
+  cloneError: string | null;
+}
+
+/** GitLab's own rule for a project path — mirrored so the form can validate
+ *  before the round-trip (see validateProjectPath in lib/gitlabProjects). */
+export const GITLAB_PATH_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
 /** A configured Git project — a named root folder that holds sibling repos. */
 export interface GitProject {
   id: string;

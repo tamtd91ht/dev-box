@@ -30,6 +30,15 @@ function ensureDir(): void {
  *        [".links.json", ".googlelinks.json"]). File đầu tiên tồn tại sẽ được
  *        chuyển vào configs/<name> nếu configs/<name> chưa có.
  */
+/**
+ * Thư mục chứa mọi file config local. Dùng khi cần LIỆT KÊ cả thư mục (đồng bộ
+ * lên repo dev-box-config chẳng hạn) thay vì mở một file cụ thể.
+ */
+export function configDir(): string {
+  ensureDir();
+  return CONFIG_DIR;
+}
+
 export function configPath(name: string, legacyBasenames: string[] = []): string {
   ensureDir();
   const target = path.join(CONFIG_DIR, name);

@@ -2,6 +2,8 @@
 //
 //   GET                        → { enabled, configured, base, projects[] }
 //   POST   { name, root }      → add a project      → { projects[] }
+//   POST   { op:'manifest', projectId }  → manifest vs disk → { manifest }
+//   POST   { op:'sync-manifest' }        → rewrite manifest → { projects[] }
 //   PUT    { id, name?, root? } → update a project   → { projects[] }
 //   DELETE { id }              → remove a project    → { projects[] }
 //
@@ -11,7 +13,8 @@
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { GIT_ENABLED } from '@/lib/gitCore';
-import { listProjects, addProject, updateProject, removeProject, browseStart } from '@/lib/gitProjects';
+import { listProjects, addProject, updateProject, removeProject, browseStart, getProject } from '@/lib/gitProjects';
+import { manifestStatus, syncManifest } from '@/lib/gitManifest';
 
 export const runtime = 'nodejs';
 
@@ -32,6 +35,16 @@ export async function POST(req: NextRequest) {
   if (!GIT_ENABLED) return disabled();
   const body = await req.json().catch(() => null);
   try {
+    // Manifest ops đi chung POST (thay vì thêm route mới) vì cùng vòng đời với
+    // project list — `op` phân biệt chúng với "thêm project".
+    if (body?.op === 'manifest') {
+      const project = await getProject(String(body?.projectId ?? ''));
+      if (!project) throw new Error('project not found');
+      return NextResponse.json({ manifest: await manifestStatus(project) });
+    }
+    if (body?.op === 'sync-manifest') {
+      return NextResponse.json({ projects: await syncManifest() });
+    }
     const projects = await addProject(body?.name, body?.root);
     return NextResponse.json({ projects });
   } catch (e) {

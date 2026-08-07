@@ -31,10 +31,12 @@ import {
   pull,
   push,
 } from '@/lib/gitCore';
-import { getProject, allowedRoots } from '@/lib/gitProjects';
+import { getProject, allowedRoots, listProjects } from '@/lib/gitProjects';
+import { recordRepo } from '@/lib/gitManifest';
 import { runReviewMr, runScanSecurity, serviceNameFromRepoPath, validateBranch } from '@/lib/reviewMr';
 import { listOpenMergeRequests, mergeMergeRequest, repoGitLabRef } from '@/lib/gitlabMr';
 import { listTokens, setToken, deleteToken, tokenStatus } from '@/lib/gitlabTokens';
+import { createGitLabProject, listNamespaces } from '@/lib/gitlabProjects';
 
 export const runtime = 'nodejs';
 
@@ -58,11 +60,22 @@ async function resolveRoot(projectId: unknown): Promise<string | undefined> {
  * which is the legacy/auto default when nothing is configured.
  */
 async function resolveRootRequired(projectId: unknown): Promise<string> {
-  const root = await resolveRoot(projectId);
-  if (root) return root;
-  const roots = await allowedRoots();
-  if (!roots.length) throw new Error('chưa cấu hình project nào để clone vào');
-  return roots[0];
+  return (await resolveTargetProject(projectId)).root;
+}
+
+/**
+ * Như resolveRootRequired nhưng trả cả TÊN project — cần để ghi vào manifest
+ * (lib/gitManifest khớp project theo name, vì id/root là thứ riêng từng máy).
+ */
+async function resolveTargetProject(projectId: unknown): Promise<{ name: string; root: string }> {
+  if (typeof projectId === 'string' && projectId) {
+    const project = await getProject(projectId);
+    if (!project) throw new Error(`unknown project: ${projectId}`);
+    return { name: project.name, root: project.root };
+  }
+  const { projects } = await listProjects();
+  if (!projects.length) throw new Error('chưa cấu hình project nào để clone vào');
+  return { name: projects[0].name, root: projects[0].root };
 }
 
 function disabled() {
@@ -127,6 +140,46 @@ export async function POST(req: NextRequest) {
     }
     if (action === 'delete-gitlab-token') {
       return NextResponse.json({ removed: await deleteToken(body.host) });
+    }
+
+    // Namespaces (personal + groups) the saved token may create a project under.
+    // Host-scoped: there is no repo yet, so the host comes from the client and is
+    // only ever used to look up an already-saved PAT.
+    if (action === 'list-gitlab-namespaces') {
+      return NextResponse.json(await listNamespaces(body.host));
+    }
+
+    if (action === 'create-repo') {
+      // Create a NEW project on GitLab, then clone it into the active project's
+      // root so it joins the repo list like any other.
+      const created = await createGitLabProject({
+        host: body.host,
+        path: body.path,
+        name: body.name,
+        namespaceId: body.namespaceId,
+        visibility: body.visibility,
+        description: body.description,
+        // Default ON: a project with no commits has no default branch, so the
+        // clone yields a repo whose status has nothing to report.
+        initReadme: body.initReadme !== false,
+        defaultBranch: body.defaultBranch,
+      });
+
+      // The GitLab project now EXISTS. A clone failure must not fail the whole
+      // request — reporting an error here would read as "nothing was created" and
+      // the retry would hit a 409 on the taken path. Surface it separately.
+      let clone = null;
+      let cloneError: string | null = null;
+      if (body.clone !== false) {
+        try {
+          const root = await resolveRootRequired(body.projectId);
+          const folder = typeof body.folder === 'string' && body.folder.trim() ? body.folder.trim() : undefined;
+          clone = await cloneRepo(root, created.httpUrl, folder, created.defaultBranch);
+        } catch (e) {
+          cloneError = (e as Error).message || 'clone thất bại';
+        }
+      }
+      return NextResponse.json({ project: created, clone, cloneError });
     }
 
     // All remaining actions require an authorized repo path — allowed against the

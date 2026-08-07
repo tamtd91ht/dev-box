@@ -126,6 +126,15 @@ export interface WorkspaceBridge {
    *  Next server là process riêng nên không gọi Electron được — renderer làm
    *  cầu nối. Optional: preload cũ chưa expose, bản web thuần không có. */
   htmlToPdf?(html: string): Promise<{ ok: boolean; base64?: string; error?: string }>;
+  /** Tab Remote: bật phần mềm điều khiển từ xa có sẵn trên máy (UltraViewer,
+   *  mstsc, AnyDesk…). Renderer chỉ gửi `kind` + địa chỉ; đường dẫn .exe do
+   *  main process tra trong bảng khai sẵn — xem electron/main.cjs.
+   *  `manual: true` = client không nhận ID qua dòng lệnh, ID đã nằm sẵn trong
+   *  clipboard để người dùng dán. Optional: preload cũ chưa expose. */
+  openRemote?(payload: { kind: string; address: string; username?: string }):
+    Promise<{ ok: boolean; manual?: boolean; error?: string }>;
+  /** Chép chuỗi vào clipboard (nút chép mật khẩu ở tab Remote). */
+  copyText?(text: string): Promise<{ ok: boolean; error?: string }>;
 }
 
 /** Minimal surface of an Electron <webview> element we actually drive. */

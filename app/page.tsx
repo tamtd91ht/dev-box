@@ -27,6 +27,7 @@ import ToolsWorkspace from '@/components/ToolsWorkspace';
 import ApiWorkspace from '@/components/ApiWorkspace';
 import BrowserTabWorkspace from '@/components/BrowserTabWorkspace';
 import BrowserWorkspace from '@/components/BrowserWorkspace';
+import RemoteWorkspace from '@/components/RemoteWorkspace';
 import AutomationWorkspace from '@/components/automation/AutomationWorkspace';
 import AutomationHost from '@/components/AutomationHost';
 import GitAutoPullHost from '@/components/GitAutoPullHost';
@@ -37,10 +38,13 @@ import ConvertHost from '@/components/ConvertHost';
 import OpenLinkDialog from '@/components/OpenLinkDialog';
 import NotificationCenter from '@/components/NotificationCenter';
 import QuickTabs, { type TabInfo } from '@/components/QuickTabs';
+import UltraBar from '@/components/UltraBar';
 import * as recentTabs from '@/lib/recentTabs';
+import * as ultraView from '@/lib/ultraView';
 import { notices } from '@/lib/noticeStore';
 import ThemeToggle from '@/components/ThemeToggle';
 import DesktopConsole from '@/components/DesktopConsole';
+import ConfigSyncButton from '@/components/ConfigSyncButton';
 import { resolveAuth, authReady as isAuthReady } from '@/lib/request';
 import {
   fetchFullConfig,
@@ -73,6 +77,37 @@ function paneStyle(on: boolean, hostsWebviews = false): CSSProperties {
     width: '100vw',
     height: '100vh',
     overflow: 'hidden',
+    pointerEvents: 'none',
+  };
+}
+
+/** Chỗ đặt một pane khi ULTRA VIEW đang bật.
+ *
+ *  Pane đang xem không chiếm trọn bề ngang nữa mà xếp cạnh nhau trong lưới do
+ *  `.body[data-ultra]` khai (xem globals.css). Vị trí truyền qua `order` chứ
+ *  KHÔNG ghim gridColumn/gridRow: số cột đổi theo bề ngang màn hình (4 khung
+ *  tụt xuống 2×2 trên máy hẹp), ghim cứng cột 3–4 thì lúc đó trỏ vào cột không
+ *  tồn tại. Có `order` thì thứ tự trái→phải vẫn đúng ở mọi số cột, và CSS tự
+ *  lo chuyện xuống hàng.
+ *
+ *  Pane KHÔNG nằm trong khung nhìn thì giấu y hệt chế độ một tab — nhờ vậy nó
+ *  vẫn mount, vẫn giữ kết nối và trạng thái, chỉ là không thấy.
+ *
+ *  `col < 0` nghĩa là pane không được chọn. */
+function ultraPaneStyle(col: number, hostsWebviews = false): CSSProperties {
+  if (col >= 0) return { order: col, minWidth: 0 };
+  // Pane không được chọn phải RA KHỎI dòng chảy của lưới, nếu không nó vẫn
+  // chiếm một ô và đẩy các khung thật sang chỗ khác. Pane thường thì gỡ bằng
+  // position:absolute (vẫn có layout, giữ nguyên trạng thái cuộn); pane có
+  // <webview> vẫn phải đi offscreen như cũ — xem paneStyle.
+  if (hostsWebviews) return paneStyle(false, true);
+  return {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: '100%',
+    height: '100%',
+    visibility: 'hidden',
     pointerEvents: 'none',
   };
 }
@@ -136,6 +171,7 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'mail', icon: '✉️', label: 'Mail', badge: 'imap' },
   { key: 'links', icon: '🔗', label: 'Links', badge: 'web' },
   { key: 'browser', icon: '🌐', label: 'Browser', badge: 'web' },
+  { key: 'remote', icon: '🖥', label: 'Remote', badge: 'máy' },
   { key: 'apps', icon: '⚙', label: 'Apps', badge: 'run' },
   { key: 'tools', icon: '🧰', label: 'Tools', badge: 'fmt' },
   { key: 'api', icon: '📮', label: 'API', badge: 'http' },
@@ -205,6 +241,60 @@ export default function Home() {
     return () => window.removeEventListener('keydown', onKey);
   }, [mode]);
 
+  // ── Ultra View: xem nhiều workspace cùng lúc ────────────────────────────────
+  // Chỉ đổi chỗ ĐẶT pane, không đụng gì tới cách mount — xem lib/ultraView.
+  const ultra = useSyncExternalStore(
+    ultraView.subscribe, ultraView.getSnapshot, ultraView.getServerSnapshot,
+  );
+
+  // Ctrl+Shift+U bật/tắt nhanh, lấy tab đang mở làm pane đầu tiên.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && !e.altKey && e.code === 'KeyU') {
+        e.preventDefault();
+        ultraView.toggle(mode);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mode]);
+
+  /** Chỗ đặt pane `key`: Ultra View thì theo cột, không thì theo tab đang chọn.
+   *  Mọi <main> bên dưới đều đi qua đây nên hai chế độ dùng CHUNG một cây pane
+   *  — bật/tắt không dựng lại workspace nào. */
+  const pane = useMemo(
+    () => (key: string, hostsWebviews = false): CSSProperties => (
+      ultra.on
+        ? ultraPaneStyle(ultra.panes.indexOf(key), hostsWebviews)
+        : paneStyle(mode === key, hostsWebviews)
+    ),
+    [ultra, mode],
+  );
+
+  /** Pane có đang hiện trên màn hình không — cho aria-hidden và cho các
+   *  workspace cần biết mình có đang được nhìn (vd BrowserWorkspace). */
+  const shown = useMemo(
+    () => (key: string): boolean => (ultra.on ? ultra.panes.includes(key) : mode === key),
+    [ultra, mode],
+  );
+
+  /** Bấm một tab trên thanh menu.
+   *
+   *  Chế độ thường: đổi tab như cũ. Đang bật Ultra View: thêm tab đó vào khung
+   *  nhìn (đủ 4 thì thay khung ngoài cùng phải) — bấm là thấy ngay, không cần
+   *  mở bảng chọn. Giữ Ctrl khi bấm để THOÁT Ultra View và xem mỗi tab đó,
+   *  lối ra nhanh khi đang cần một màn hình rộng. `mode` luôn được cập nhật để
+   *  danh sách "vừa dùng" và tắt Ultra View sau đó rơi về đúng tab. */
+  const pickTab = useMemo(
+    () => (key: string, e?: React.MouseEvent): void => {
+      setMode(key);
+      if (!ultra.on) return;
+      if (e?.ctrlKey || e?.metaKey) ultraView.disable();
+      else ultraView.add(key);
+    },
+    [ultra.on],
+  );
+
   // Hòm thông báo local (lib/noticeStore) — badge đỏ trên tab đích ('git', …)
   // như thư đến. Mở đúng tab là đã đọc thư của tab đó.
   const noticeSnap = useSyncExternalStore(notices.subscribe, notices.getSnapshot, notices.getServerSnapshot);
@@ -253,6 +343,13 @@ export default function Home() {
     return undefined;
   }, [packs, noticeSnap, mailUnread, wsUnread]);
 
+  /** Mọi khoá tab đưa vào Ultra View được — tab lõi rồi tới pack, đúng thứ tự
+   *  trên thanh menu. Trừ 'packs' (màn hình quản lý, không phải nơi làm việc). */
+  const ultraKeys = useMemo(
+    () => [...TABS.map((t) => t.key), ...packs.map((p) => `pack:${p.id}`)],
+    [packs],
+  );
+
   // Lazy mount-and-keep per workspace: don't probe a tool's API until the user
   // opens it, then keep it mounted so its state survives tab switches.
   // Exception: the browser Workspace mounts from startup — its whole point is
@@ -262,6 +359,30 @@ export default function Home() {
   useEffect(() => {
     setVisited((v) => (v[mode] ? v : { ...v, [mode]: true }));
   }, [mode]);
+
+  // Pane trong Ultra View cũng phải được mount, kể cả tab chưa ghé lần nào —
+  // khôi phục bố cục đã lưu sau khi khởi động lại app là rơi đúng vào ca này.
+  useEffect(() => {
+    if (!ultra.on) return;
+    setVisited((v) => {
+      const missing = ultra.panes.filter((k) => !v[k]);
+      if (missing.length === 0) return v;
+      const next = { ...v };
+      for (const k of missing) next[k] = true;
+      return next;
+    });
+  }, [ultra]);
+
+  // Bố cục đã lưu có thể trỏ tới một pack đã bị gỡ: khoá đó không dựng ra pane
+  // nào nhưng vẫn được đếm vào số cột, để lại một cột trống. Dọn nó đi.
+  // Chỉ chạy khi packs đã nạp xong, không thì lượt render đầu (packs rỗng) sẽ
+  // xoá oan mọi pane pack.
+  useEffect(() => {
+    if (!ultra.on || packs.length === 0) return;
+    const alive = new Set(ultraKeys);
+    const stale = ultra.panes.filter((k) => k.startsWith('pack:') && !alive.has(k));
+    if (stale.length > 0) ultraView.setPanes(ultra.panes.filter((k) => !stale.includes(k)));
+  }, [ultra, ultraKeys, packs.length]);
 
   // Persisted connection config (webhooks/tool-service keys live here), loaded
   // from the on-disk local store so a restart re-maps it automatically.
@@ -334,22 +455,25 @@ export default function Home() {
             <button
               key={t.key}
               role="tab"
-              aria-selected={mode === t.key}
+              aria-selected={shown(t.key)}
               className={[
-                mode === t.key ? 'on' : '',
-                // Alert the Workspace tab while you're viewing ANY other tab.
-                t.key === 'workspace' && wsUnread > 0 && mode !== 'workspace' ? 'ms-alert' : '',
+                // Ultra View: mọi tab đang có khung đều sáng, không chỉ một.
+                shown(t.key) ? 'on' : '',
+                ultra.on && ultra.panes.includes(t.key) ? 'ms-ultra' : '',
+                // Chuông chỉ nháy khi tab đó KHÔNG hiện trên màn hình — Ultra
+                // View đang mở sẵn Mail thì thôi đừng réo nữa.
+                t.key === 'workspace' && wsUnread > 0 && !shown('workspace') ? 'ms-alert' : '',
                 // Mail đến chưa đọc — nháy khi đang ở tab khác.
-                t.key === 'mail' && mailUnread > 0 && mode !== 'mail' ? 'ms-alert' : '',
-                nUnread > 0 && mode !== t.key ? 'ms-alert' : '',
+                t.key === 'mail' && mailUnread > 0 && !shown('mail') ? 'ms-alert' : '',
+                nUnread > 0 && !shown(t.key) ? 'ms-alert' : '',
               ].filter(Boolean).join(' ')}
-              onClick={() => setMode(t.key)}
+              onClick={(e) => pickTab(t.key, e)}
             >
               <span className="ms-ico" aria-hidden>{t.icon}</span>
               {t.label}
               {t.key === 'workspace' && wsUnread > 0 ? (
                 <span
-                  className={`ms-unread ms-bell${mode !== 'workspace' ? ' ringing' : ''}`}
+                  className={`ms-unread ms-bell${!shown('workspace') ? ' ringing' : ''}`}
                   title={`${wsUnread} tin nhắn mới`}
                 >
                   <span className="ms-bell-ico" aria-hidden>🔔</span>
@@ -359,7 +483,7 @@ export default function Home() {
                 // Bộ đếm sống: hiện cả khi ĐANG ở tab Mail (như hòm thư thật),
                 // chỉ về 0 khi mail được đọc trên server.
                 <span
-                  className={`ms-unread ms-bell${mode !== 'mail' ? ' ringing' : ''}`}
+                  className={`ms-unread ms-bell${!shown('mail') ? ' ringing' : ''}`}
                   title={`${mailUnread} email chưa đọc`}
                 >
                   <span className="ms-bell-ico" aria-hidden>✉️</span>
@@ -367,7 +491,7 @@ export default function Home() {
                 </span>
               ) : nUnread > 0 ? (
                 <span
-                  className={`ms-unread ms-bell${mode !== t.key ? ' ringing' : ''}`}
+                  className={`ms-unread ms-bell${!shown(t.key) ? ' ringing' : ''}`}
                   title={`${nUnread} thông báo mới`}
                 >
                   <span className="ms-bell-ico" aria-hidden>🔔</span>
@@ -387,10 +511,10 @@ export default function Home() {
             <button
               key={p.id}
               role="tab"
-              aria-selected={mode === `pack:${p.id}`}
-              className={`${mode === `pack:${p.id}` ? 'on ' : ''}ms-pack`}
+              aria-selected={shown(`pack:${p.id}`)}
+              className={`${shown(`pack:${p.id}`) ? 'on ' : ''}ms-pack`}
               title={p.manifestError ? `manifest lỗi: ${p.manifestError}` : p.root}
-              onClick={() => setMode(`pack:${p.id}`)}
+              onClick={(e) => pickTab(`pack:${p.id}`, e)}
             >
               <span className="ms-ico" aria-hidden>▤</span>
               {p.manifest?.name ?? p.name}
@@ -422,6 +546,8 @@ export default function Home() {
           >
             🕘
           </button>
+          {/* Ultra View: xem nhiều workspace cùng lúc (Ctrl+Shift+U). */}
+          <UltraBar state={ultra} current={mode} allKeys={ultraKeys} info={tabInfo} />
           {/* Hòm thông báo: xem lại lịch sử (local, 2 ngày) + xóa tất cả. */}
           <NotificationCenter />
           <ThemeToggle />
@@ -441,64 +567,66 @@ export default function Home() {
       />
 
       {/* ── Body: workspaces (mount-and-keep) ───────────────────────── */}
-      <div className="body">
+      {/* data-ultra = số pane đang xem → globals.css chia đúng ngần ấy cột.
+          Không bật thì không có thuộc tính, lưới giữ nguyên như cũ. */}
+      <div className="body" data-ultra={ultra.on ? ultra.panes.length : undefined}>
         {visited.work && (
-          <main className="workspace" style={paneStyle(mode === 'work')} aria-hidden={mode !== 'work'}>
+          <main className="workspace" style={pane('work')} aria-hidden={!shown('work')}>
             <WorkWorkspace />
           </main>
         )}
         {visited.git && (
-          <main className="workspace" style={paneStyle(mode === 'git')} aria-hidden={mode !== 'git'}>
+          <main className="workspace" style={pane('git')} aria-hidden={!shown('git')}>
             <GitWorkspace />
           </main>
         )}
         {visited.code && (
-          <main className="workspace" style={paneStyle(mode === 'code')} aria-hidden={mode !== 'code'}>
+          <main className="workspace" style={pane('code')} aria-hidden={!shown('code')}>
             <CodeStudio />
           </main>
         )}
         {visited.redis && (
-          <main className="workspace" style={paneStyle(mode === 'redis')} aria-hidden={mode !== 'redis'}>
+          <main className="workspace" style={pane('redis')} aria-hidden={!shown('redis')}>
             <RedisWorkspace />
           </main>
         )}
         {visited.kafka && (
-          <main className="workspace" style={paneStyle(mode === 'kafka')} aria-hidden={mode !== 'kafka'}>
+          <main className="workspace" style={pane('kafka')} aria-hidden={!shown('kafka')}>
             <KafkaWorkspace />
           </main>
         )}
         {visited.rabbit && (
-          <main className="workspace" style={paneStyle(mode === 'rabbit')} aria-hidden={mode !== 'rabbit'}>
+          <main className="workspace" style={pane('rabbit')} aria-hidden={!shown('rabbit')}>
             <RabbitWorkspace />
           </main>
         )}
         {visited.mongo && (
-          <main className="workspace" style={paneStyle(mode === 'mongo')} aria-hidden={mode !== 'mongo'}>
+          <main className="workspace" style={pane('mongo')} aria-hidden={!shown('mongo')}>
             <MongoWorkspace />
           </main>
         )}
         {visited.es && (
-          <main className="workspace" style={paneStyle(mode === 'es')} aria-hidden={mode !== 'es'}>
+          <main className="workspace" style={pane('es')} aria-hidden={!shown('es')}>
             <EsWorkspace />
           </main>
         )}
         {visited.pg && (
-          <main className="workspace" style={paneStyle(mode === 'pg')} aria-hidden={mode !== 'pg'}>
+          <main className="workspace" style={pane('pg')} aria-hidden={!shown('pg')}>
             <PgWorkspace />
           </main>
         )}
         {visited.office && (
-          <main className="workspace" style={paneStyle(mode === 'office')} aria-hidden={mode !== 'office'}>
+          <main className="workspace" style={pane('office')} aria-hidden={!shown('office')}>
             <OfficeWorkspace />
           </main>
         )}
         {visited.google && (
-          <main className="workspace" style={paneStyle(mode === 'google')} aria-hidden={mode !== 'google'}>
+          <main className="workspace" style={pane('google')} aria-hidden={!shown('google')}>
             <GoogleWorkspace />
           </main>
         )}
         {visited.mail && (
-          <main className="workspace" style={paneStyle(mode === 'mail')} aria-hidden={mode !== 'mail'}>
+          <main className="workspace" style={pane('mail')} aria-hidden={!shown('mail')}>
             <MailWorkspace />
           </main>
         )}
@@ -506,37 +634,42 @@ export default function Home() {
           /* hostsWebviews: viewer nhúng (LinkViewer) có thể đang mở khi chuyển
              tab — webview vẽ ở native layer, phải đưa offscreen chứ không
              visibility:hidden được. */
-          <main className="workspace" style={paneStyle(mode === 'links', true)} aria-hidden={mode !== 'links'}>
+          <main className="workspace" data-webview style={pane('links', true)} aria-hidden={!shown('links')}>
             <LinksWorkspace />
           </main>
         )}
         {visited.apps && (
-          <main className="workspace" style={paneStyle(mode === 'apps')} aria-hidden={mode !== 'apps'}>
+          <main className="workspace" style={pane('apps')} aria-hidden={!shown('apps')}>
             <AppsWorkspace />
           </main>
         )}
         {visited.tools && (
-          <main className="workspace" style={paneStyle(mode === 'tools')} aria-hidden={mode !== 'tools'}>
+          <main className="workspace" style={pane('tools')} aria-hidden={!shown('tools')}>
             <ToolsWorkspace />
           </main>
         )}
         {visited.api && (
-          <main className="workspace" style={paneStyle(mode === 'api')} aria-hidden={mode !== 'api'}>
+          <main className="workspace" style={pane('api')} aria-hidden={!shown('api')}>
             <ApiWorkspace />
           </main>
         )}
         {visited.browser && (
-          <main className="workspace" style={paneStyle(mode === 'browser', true)} aria-hidden={mode !== 'browser'}>
+          <main className="workspace" data-webview style={pane('browser', true)} aria-hidden={!shown('browser')}>
             <BrowserTabWorkspace />
           </main>
         )}
+        {visited.remote && (
+          <main className="workspace" style={pane('remote')} aria-hidden={!shown('remote')}>
+            <RemoteWorkspace />
+          </main>
+        )}
         {visited.workspace && (
-          <main className="workspace" style={paneStyle(mode === 'workspace', true)} aria-hidden={mode !== 'workspace'}>
-            <BrowserWorkspace onUnread={setWsUnread} visible={mode === 'workspace'} />
+          <main className="workspace" data-webview style={pane('workspace', true)} aria-hidden={!shown('workspace')}>
+            <BrowserWorkspace onUnread={setWsUnread} visible={shown('workspace')} />
           </main>
         )}
         {visited.automation && (
-          <main className="workspace" style={paneStyle(mode === 'automation')} aria-hidden={mode !== 'automation'}>
+          <main className="workspace" style={pane('automation')} aria-hidden={!shown('automation')}>
             <AutomationWorkspace />
           </main>
         )}
@@ -545,15 +678,15 @@ export default function Home() {
           <main
             key={p.id}
             className="workspace"
-            style={paneStyle(mode === `pack:${p.id}`)}
-            aria-hidden={mode !== `pack:${p.id}`}
+            style={pane(`pack:${p.id}`)}
+            aria-hidden={!shown(`pack:${p.id}`)}
           >
             <ApiExplorerWorkspace packId={p.id} />
           </main>
         ))}
 
-        {mode === 'packs' && (
-          <main className="workspace" style={paneStyle(true)}>
+        {shown('packs') && (
+          <main className="workspace" style={pane('packs')}>
             <PackManager
               packs={packs}
               onChanged={setPacks}
@@ -562,8 +695,8 @@ export default function Home() {
           </main>
         )}
 
-        {mode === 'webhooks' && (
-          <main className="workspace" style={paneStyle(true)}>
+        {shown('webhooks') && (
+          <main className="workspace" style={pane('webhooks')}>
             <WebhookReceiver
               baseUrl={toolBaseUrl}
               onBaseUrl={(u) => setToolConfig({ baseUrl: u })}
@@ -614,6 +747,9 @@ export default function Home() {
         <span>VHS DevBox · infra toolbox dùng chung cho mọi dự án</span>
         <span className="foot-right">
           Redis · Kafka · RabbitMQ · MongoDB · Elastic · PostgreSQL · Office · Google · Mail · Links · Git · Webhooks · Automation
+          {/* Đồng bộ configs/ với repo dev-box-config: đẩy lên một cú bấm,
+              kéo về thì hỏi passphrase. Badge trên nút cho biết khi nào cần. */}
+          <ConfigSyncButton />
           {/* Desktop only: log của shell + next dev, ẩn mặc định. */}
           <DesktopConsole />
         </span>

@@ -46,6 +46,12 @@ export interface MailAccount {
   googleAccountId?: string;
   imap: MailEndpoint;
   smtp: MailEndpoint;
+  /**
+   * Gốc CalDAV cho mục Lịch (vd https://mail.congty.com). Bỏ trống → suy ra từ
+   * imap.host, đúng với Zimbra vì webmail và IMAP thường cùng host. Chỉ cần
+   * khai khi lịch nằm ở địa chỉ khác.
+   */
+  calDavUrl?: string;
 }
 
 /** Shape trả về cho client — KHÔNG BAO GIỜ kèm password. */
@@ -99,6 +105,17 @@ export async function addAccount(input: Omit<MailAccount, 'id'>): Promise<MailAc
 
 export async function removeAccount(id: string): Promise<MailAccount[]> {
   const accounts = (await readAll()).filter((a) => a.id !== id);
+  await writeAll(accounts);
+  return accounts;
+}
+
+/** Khai/xóa địa chỉ CalDAV riêng cho một tài khoản (mục Lịch). Chuỗi rỗng =
+ *  quay về suy ra từ imap.host. */
+export async function setCalDavUrl(id: string, url: string): Promise<MailAccount[]> {
+  const accounts = await readAll();
+  const a = accounts.find((x) => x.id === id);
+  if (!a) throw new Error('Không tìm thấy tài khoản mail.');
+  a.calDavUrl = url.trim().replace(/\/+$/, '') || undefined;
   await writeAll(accounts);
   return accounts;
 }

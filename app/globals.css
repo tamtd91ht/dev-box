@@ -342,6 +342,280 @@ a:hover { text-decoration: underline; }
 
 /* ── Workspace ───────────────────────────────────────────────── */
 .workspace { min-width: 0; height: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+
+/* ── ULTRA VIEW: xem nhiều workspace cùng lúc ────────────────── */
+/* Bình thường mọi pane chồng lên nhau trong MỘT ô lưới và chỉ pane đang chọn
+   hiện ra. Bật Ultra View thì `data-ultra` (= số khung) chia body thành ngần
+   ấy cột, mỗi pane ngồi một cột — xem ultraPaneStyle trong app/page.tsx.
+   Pane không được chọn vẫn mount, vẫn giấu y như cũ. */
+/* position:relative làm mốc cho pane bị giấu (ultraPaneStyle dùng absolute để
+   gỡ nó khỏi dòng chảy lưới, khỏi chiếm chỗ của khung thật). */
+.body[data-ultra] { gap: 14px; position: relative; }
+.body[data-ultra="1"] { grid-template-columns: minmax(0, 1fr); }
+.body[data-ultra="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.body[data-ultra="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.body[data-ultra="4"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* Khung nhìn có viền riêng để mắt tách được đâu là workspace nào — chế độ một
+   tab thì không cần vì đã chiếm trọn màn hình. */
+.body[data-ultra] > .workspace {
+  border: 1px solid var(--glass-brd);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--glass) 45%, transparent);
+  overflow: auto;
+}
+
+/* Màn hình hẹp: 3–4 khung thì mỗi cột chưa nổi 300px, workspace vỡ bố cục —
+   xuống 2 cột, khung thứ 3–4 tự rơi xuống hàng dưới (thứ tự giữ bằng `order`
+   trong ultraPaneStyle, không ghim cột nên không cần sửa gì thêm). */
+@media (max-width: 1500px) {
+  .body[data-ultra="3"], .body[data-ultra="4"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+}
+/* Quá hẹp để chia đôi: mỗi khung một hàng, cuộn dọc mà xem. */
+@media (max-width: 1000px) {
+  .body[data-ultra] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-rows: minmax(320px, 1fr);
+  }
+}
+
+/* ── Tab Remote: sổ máy điều khiển từ xa ─────────────────────── */
+.rmt { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.rmt-head { display: flex; align-items: flex-start; gap: 16px; }
+.rmt-title { margin: 0; font-size: 18px; }
+.rmt-sub { margin: 4px 0 0; font-size: 12px; color: var(--muted); line-height: 1.55; max-width: 70ch; }
+.rmt-add {
+  margin-left: auto; flex-shrink: 0;
+  padding: 8px 14px; font-size: 12px; font-weight: 600;
+  color: #fff; background: var(--accent-solid);
+  border: 0; border-radius: 10px; cursor: pointer;
+}
+.rmt-add:hover { filter: brightness(1.1); }
+
+.rmt-warn, .rmt-err, .rmt-msg, .rmt-hint {
+  padding: 9px 12px; border-radius: 10px; font-size: 12px; line-height: 1.5;
+}
+.rmt-warn { background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn); }
+.rmt-err { background: rgba(225, 29, 72, .12); color: var(--err); border: 1px solid var(--err); }
+.rmt-msg { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok); }
+.rmt-hint { color: var(--muted); padding: 0; }
+
+.rmt-form {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px; border-radius: 14px;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+}
+.rmt-form-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.rmt-form-row:has(> :nth-child(2):last-child) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 800px) { .rmt-form-row { grid-template-columns: 1fr; } }
+.rmt-form-actions { display: flex; gap: 8px; margin-top: 2px; }
+.rmt-save {
+  padding: 8px 16px; font-size: 12px; font-weight: 600; color: #fff;
+  background: var(--accent-solid); border: 0; border-radius: 9px; cursor: pointer;
+}
+.rmt-save:disabled { opacity: .6; cursor: default; }
+.rmt-cancel {
+  padding: 8px 14px; font-size: 12px; color: var(--muted);
+  background: transparent; border: 1px solid var(--glass-brd);
+  border-radius: 9px; cursor: pointer;
+}
+.rmt-cancel:hover { color: var(--text); }
+
+.rmt-tools { display: flex; align-items: center; gap: 8px; }
+.rmt-search { flex: 1; min-width: 0; }
+.rmt-filter { width: auto; min-width: 150px; }
+.rmt-count { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+.rmt-list { display: flex; flex-direction: column; gap: 8px; }
+.rmt-card {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 14px; border-radius: 13px;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+}
+.rmt-card:hover { border-color: var(--glass-brd-hover); }
+.rmt-card-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.rmt-card-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rmt-kind { font-size: 15px; }
+.rmt-name { font-size: 13px; }
+.rmt-net, .rmt-proj, .rmt-tag {
+  font-size: 10px; padding: 1px 7px; border-radius: 20px;
+  background: var(--glass-2); color: var(--muted); border: 1px solid var(--glass-brd);
+}
+.rmt-proj { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.rmt-addr { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+.rmt-addr code { font-family: var(--mono); font-size: 11px; color: var(--text); }
+.rmt-kind-label { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.rmt-user { color: var(--faint); }
+.rmt-note { margin: 2px 0 0; font-size: 11px; color: var(--muted); line-height: 1.5; }
+.rmt-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10px; color: var(--faint); }
+
+.rmt-card-actions { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.rmt-connect {
+  padding: 7px 14px; font-size: 12px; font-weight: 600; color: #fff;
+  background: var(--accent-solid); border: 0; border-radius: 9px; cursor: pointer;
+}
+.rmt-connect:hover:not(:disabled) { filter: brightness(1.1); }
+.rmt-connect:disabled { opacity: .45; cursor: not-allowed; }
+.rmt-mini {
+  width: 30px; height: 30px; display: grid; place-items: center;
+  font-size: 12px; color: var(--muted);
+  background: var(--glass-2); border: 1px solid var(--glass-brd);
+  border-radius: 8px; cursor: pointer;
+}
+.rmt-mini:hover { color: var(--text); border-color: var(--glass-brd-hover); }
+.rmt-del:hover { color: var(--err); border-color: var(--err); }
+
+@media (max-width: 700px) {
+  .rmt-card { flex-direction: column; align-items: stretch; }
+  .rmt-card-actions { justify-content: flex-end; }
+}
+
+/* ── Ultra View: nút + bảng chọn trên thanh tiêu đề ──────────── */
+.ultra { position: relative; display: flex; align-items: center; gap: 2px; }
+.ultra-btn, .ultra-more {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 10px;
+  font-size: 12px; font-weight: 600; color: var(--text);
+  background: var(--glass); border: 1px solid var(--glass-brd);
+  border-radius: 10px; cursor: pointer;
+  transition: border-color .2s, background .2s, transform .15s;
+}
+.ultra-more { padding: 0 6px; font-size: 10px; }
+.ultra-btn:hover, .ultra-more:hover {
+  border-color: var(--glass-brd-hover); background: var(--glass-2); transform: translateY(-1px);
+}
+.ultra-btn.is-on, .ultra-more.is-on {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+.ultra-ico { font-size: 13px; line-height: 1; }
+.ultra-count {
+  min-width: 16px; padding: 0 5px; border-radius: 20px;
+  font-size: 10px; line-height: 16px; text-align: center;
+  background: var(--accent); color: #fff;
+}
+
+/* Bảng chọn khung nhìn: MODAL neo giữa màn hình, không phải dropdown cạnh nút.
+   Lý do đổi: nút Ultra nằm trong cụm nút của appbar — ở menu dọc thì cụm đó bị
+   dồn xuống đáy sidebar hẹp (~200px), dropdown 320px neo phải sẽ tràn ra ngoài
+   cửa sổ cả dưới lẫn trái. Và khi Ultra View đang bật, các pane <webview>
+   (Links/Browser/Workspace) vẽ ở tầng native che luôn dropdown, z-index không
+   cứu được. Modal giữa màn hình tránh cả hai. */
+.ultra-scrim {
+  position: fixed; inset: 0; z-index: 9090;
+  background: rgb(3 5 14 / .62);
+  backdrop-filter: blur(6px) saturate(80%);
+  -webkit-backdrop-filter: blur(6px) saturate(80%);
+}
+.ultra-pop {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  z-index: 9100;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(76vh, 680px); overflow: auto;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px;
+  background: var(--qt-surface);
+  border: 1px solid var(--glass-brd); border-radius: 14px;
+  box-shadow: 0 24px 70px rgb(0 0 0 / .55), 0 0 0 1px rgb(255 255 255 / .04) inset;
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+/* Nút × nằm trong head chứ không absolute theo panel: panel có overflow:auto nên
+   phần tử absolute sẽ trôi khi cuộn. Đặt trong flex-row của head là nó luôn ở
+   đúng góc trên phải, kể cả lúc cuộn. */
+.ultra-pop-head {
+  flex-direction: row !important; align-items: flex-start;
+  justify-content: space-between; gap: 10px !important;
+}
+.ultra-pop-head > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ultra-pop-x {
+  flex: none; margin: -2px -2px 0 0;
+  background: none; border: 0; cursor: pointer;
+  color: var(--muted); font-size: 19px; line-height: 1; padding: 0 2px;
+}
+.ultra-pop-x:hover { color: var(--text); }
+
+/* Khi có modal cần hiện TRÊN <webview>: đẩy pane chứa webview ra khỏi màn hình.
+   Guest của Electron vẽ ở tầng native riêng, bỏ qua z-index và cả `visibility`
+   của tổ tiên — đây là cùng chiến lược mà paneStyle() dùng cho pane bị ẩn
+   (app/page.tsx). Webview vẫn mount, vẫn giữ phiên và vị trí cuộn.
+   Nhắm bằng [data-webview] chứ không phải :has(webview) — pane đánh dấu sẵn ở
+   page.tsx nên không phụ thuộc webview đã mount hay chưa. */
+html[data-modal-over-webview] .workspace[data-webview] {
+  position: fixed !important;
+  top: 0 !important; left: -200vw !important;
+  width: 100vw !important; height: 100vh !important;
+  pointer-events: none !important;
+}
+.ultra-pop-head { display: flex; flex-direction: column; gap: 2px; }
+.ultra-pop-head b { font-size: 13px; }
+.ultra-pop-sub { font-size: 11px; color: var(--muted); line-height: 1.45; }
+.ultra-pop-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); margin-top: 4px;
+}
+
+/* Khung đang chọn, xếp theo thứ tự trái → phải trên màn hình. */
+.ultra-sel { display: flex; flex-direction: column; gap: 4px; }
+.ultra-chip {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 6px; border-radius: 9px;
+  background: var(--glass-2); border: 1px solid var(--glass-brd);
+  font-size: 12px;
+}
+.ultra-chip-ico { font-size: 13px; }
+.ultra-chip-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ultra-chip-mv, .ultra-chip-x {
+  width: 20px; height: 20px; display: grid; place-items: center;
+  font-size: 9px; color: var(--muted);
+  background: transparent; border: 0; border-radius: 6px; cursor: pointer;
+}
+.ultra-chip-mv:hover:not(:disabled), .ultra-chip-x:hover { background: var(--glass); color: var(--text); }
+.ultra-chip-mv:disabled { opacity: .3; cursor: default; }
+.ultra-chip-x:hover { color: var(--err); }
+
+.ultra-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.ultra-preset {
+  padding: 6px 8px; font-size: 11px; color: var(--text);
+  background: var(--glass-2); border: 1px solid var(--glass-brd);
+  border-radius: 8px; cursor: pointer; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ultra-preset:hover { border-color: var(--accent); color: var(--accent); }
+
+.ultra-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+.ultra-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; font-size: 11px; color: var(--text);
+  background: transparent; border: 1px solid transparent;
+  border-radius: 8px; cursor: pointer; text-align: left;
+}
+.ultra-item:hover { background: var(--glass-2); }
+.ultra-item.is-on {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent);
+}
+.ultra-item-ico { font-size: 12px; }
+.ultra-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ultra-item-tick { font-size: 10px; }
+
+.ultra-off {
+  margin-top: 4px; padding: 7px; font-size: 11px; font-weight: 600;
+  color: var(--muted); background: var(--glass-2);
+  border: 1px solid var(--glass-brd); border-radius: 9px; cursor: pointer;
+}
+.ultra-off:hover { color: var(--text); border-color: var(--glass-brd-hover); }
+
+/* Tab đang có khung trong Ultra View — gạch chân mảnh để phân biệt với tab
+   "đang chọn" thường, vì lúc này nhiều tab cùng sáng. */
+.modeswitch button.ms-ultra { box-shadow: inset 0 -2px 0 var(--accent); }
 .empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 12px; padding: 60px 20px; text-align: center; color: var(--muted);
@@ -829,6 +1103,85 @@ audio { width: 100%; margin-top: 12px; }
 .console-src { flex: none; width: 42px; text-align: right; color: var(--muted); }
 .console-src.src-next { color: var(--accent); }
 .console-msg { color: var(--text); }
+
+/* ── Config sync (footer button + panel) ─────────────────────── */
+.cfgsync { position: relative; display: inline-flex; }
+.cfgsync-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; font-size: 11px; border-radius: 999px; cursor: pointer;
+  color: var(--muted); background: transparent;
+  border: 1px solid var(--glass-brd);
+}
+.cfgsync-btn:hover { color: var(--text); border-color: var(--accent); }
+.cfgsync-btn.on { color: var(--accent); border-color: var(--accent); }
+.cfgsync-ic { display: inline-block; font-size: 12px; line-height: 1; }
+/* Chỉ xoay khi đang chạy — chuyển động liên tục ở footer gây nhiễu thị giác. */
+.cfgsync-ic.spin { animation: cfgsync-spin 1s linear infinite; }
+@keyframes cfgsync-spin { to { transform: rotate(360deg); } }
+
+.cfgsync-badge {
+  min-width: 15px; padding: 0 4px; border-radius: 999px;
+  font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center;
+}
+.cfgsync-badge.warn { color: #4a2c00; background: var(--warn); }
+.cfgsync-badge.dirty { color: var(--warn); background: var(--warn-bg); }
+
+.cfgsync-panel {
+  position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 95;
+  width: min(380px, calc(100vw - 32px));
+  padding: 12px 14px 14px;
+  display: flex; flex-direction: column; gap: 9px;
+  font-size: 11.5px; color: var(--text);
+  background: color-mix(in srgb, var(--bg-1) 96%, transparent);
+  border: 1px solid var(--glass-brd); border-radius: 12px;
+  backdrop-filter: blur(14px);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+}
+.cfgsync-head { display: flex; align-items: center; justify-content: space-between; }
+.cfgsync-x {
+  background: none; border: 0; cursor: pointer; color: var(--muted);
+  font-size: 17px; line-height: 1; padding: 0 2px;
+}
+.cfgsync-x:hover { color: var(--text); }
+
+.cfgsync-grid {
+  display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: baseline;
+}
+.cfgsync-grid .muted, .cfgsync-row.muted { color: var(--muted); }
+.cfgsync-row.small, .cfgsync-grid + .cfgsync-row.small { font-size: 10.5px; line-height: 1.5; }
+.cfgsync-panel .warn { color: var(--warn); }
+.cfgsync-panel code {
+  font-size: 10.5px; padding: 1px 4px; border-radius: 4px;
+  background: var(--glass); color: var(--accent);
+}
+
+.cfgsync-actions { display: flex; gap: 8px; }
+.cfgsync-go {
+  flex: 1; padding: 6px 10px; font-size: 11.5px; font-weight: 600;
+  cursor: pointer; border-radius: 8px;
+  color: #fff; background: var(--accent-solid); border: 1px solid transparent;
+}
+.cfgsync-go:hover:not(:disabled) { filter: brightness(1.12); }
+.cfgsync-go:disabled { opacity: 0.45; cursor: not-allowed; }
+.cfgsync-go.alt { color: var(--text); background: var(--glass-2); border-color: var(--glass-brd); }
+.cfgsync-go.alt:hover:not(:disabled) { border-color: var(--accent); }
+
+.cfgsync-pass { display: flex; gap: 8px; }
+.cfgsync-pass input {
+  flex: 1; min-width: 0; padding: 6px 9px; font-size: 11.5px;
+  color: var(--text); background: var(--glass); border-radius: 8px;
+  border: 1px solid var(--glass-brd);
+}
+.cfgsync-pass input:focus { outline: none; border-color: var(--accent); }
+.cfgsync-pass .cfgsync-go { flex: none; }
+
+.cfgsync-msg {
+  padding: 7px 9px; border-radius: 8px; font-size: 11px; line-height: 1.5;
+  word-break: break-word;
+}
+.cfgsync-msg.ok { color: var(--ok); background: var(--ok-bg); }
+.cfgsync-msg.err { color: var(--err); background: var(--err-bg); }
+.cfgsync-msg.info { color: var(--muted); background: var(--glass); }
 
 /* ── Coming-soon toast ───────────────────────────────────────── */
 .toast {
@@ -4538,6 +4891,10 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   .shell[data-nav='left'] .appbar, .shell[data-nav='right'] .appbar { width: 168px; }
 }
 
+/* Bảng chọn Ultra View KHÔNG cần rule riêng cho menu dọc nữa: nó đã là modal
+   `position: fixed` neo giữa màn hình (xem .ultra-pop), nên không phụ thuộc chỗ
+   đặt của nút bấm. */
+
 /* Menu dọc: body sát sidebar hơn, bớt padding phí + không cần cột 256px đệm. */
 .shell[data-nav='left'] .body,
 .shell[data-nav='right'] .body {
@@ -4647,6 +5004,75 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   background: color-mix(in srgb, var(--err) 10%, transparent);
 }
 .mail-del-btn:hover:not(:disabled) { color: var(--err); border-color: color-mix(in srgb, var(--err) 55%, transparent); }
+
+/* ── Mail → Lịch (CalDAV) ────────────────────────────────────────────────── */
+
+/* Công tắc Thư / Lịch trên toolbar tab Mail. */
+.mail-view-switch { display: inline-flex; gap: 4px; margin-right: 4px; }
+
+/* Chấm màu của lịch trong rail — rỗng ruột khi lịch đang tắt. */
+.cal-swatch {
+  flex: none; width: 11px; height: 11px; border-radius: 3px;
+  border: 1.5px solid currentColor; box-sizing: border-box;
+}
+
+/* Lưới tháng: 7 cột đều nhau, 6 hàng cao bằng nhau và co theo khung. */
+.cal-grid {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 3px; margin: 6px 0 10px;
+}
+.cal-wd {
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  text-align: center; padding: 2px 0;
+}
+.cal-cell {
+  min-height: 84px; display: flex; flex-direction: column; gap: 3px;
+  padding: 4px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line, #2a2f3a);
+  background: color-mix(in srgb, var(--panel, #1a1d24) 60%, transparent);
+  transition: border-color .12s ease, background .12s ease;
+}
+.cal-cell:hover { border-color: color-mix(in srgb, var(--acc, #4a9eff) 45%, transparent); }
+/* Ngày của tháng khác — vẫn bấm được, chỉ mờ đi để mắt bám vào tháng đang xem. */
+.cal-cell.out { opacity: .45; }
+.cal-cell.today { border-color: color-mix(in srgb, var(--acc, #4a9eff) 70%, transparent); }
+.cal-cell.sel {
+  border-color: var(--acc, #4a9eff);
+  background: color-mix(in srgb, var(--acc, #4a9eff) 12%, transparent);
+}
+.cal-daynum { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.cal-cell.today .cal-daynum { color: var(--acc, #4a9eff); }
+
+.cal-chips { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cal-chip {
+  display: flex; align-items: baseline; gap: 4px; min-width: 0;
+  padding: 1px 4px; border: 0; border-left: 3px solid var(--acc, #4a9eff);
+  border-radius: 3px; cursor: pointer; text-align: left;
+  background: color-mix(in srgb, var(--fg, #e6e9ef) 8%, transparent);
+  font-size: 10.5px; line-height: 1.45; color: inherit;
+}
+.cal-chip:hover { background: color-mix(in srgb, var(--fg, #e6e9ef) 16%, transparent); }
+.cal-chip-time { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cal-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-more { font-size: 10px; color: var(--faint); padding-left: 4px; }
+
+/* Panel chi tiết ngày đang chọn — dưới lưới, cuộn riêng khi nhiều sự kiện. */
+.cal-day-panel {
+  border-top: 1px solid var(--line, #2a2f3a); padding-top: 8px;
+  max-height: 34vh; overflow: auto;
+}
+.cal-item {
+  display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; margin: 4px 0;
+  border-left: 3px solid var(--acc, #4a9eff); border-radius: 6px;
+  background: color-mix(in srgb, var(--fg, #e6e9ef) 5%, transparent);
+}
+.cal-item-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.cal-item-desc { white-space: pre-line; overflow-wrap: anywhere; color: var(--muted); }
+
+/* Modal sự kiện: hai ô thời gian cạnh nhau, xuống dòng khi hẹp. */
+.cal-time-pair { display: flex; gap: 8px; flex-wrap: wrap; }
+.cal-time-pair > label { flex: 1 1 200px; display: flex; flex-direction: column; gap: 2px; }
+.cal-check { display: flex; align-items: center; gap: 6px; margin: 6px 0 2px; }
 
 /* ── Sheet: nâng cấp hiển thị đúng chuẩn Excel ── */
 /* Lưới xlsx dùng độ rộng cột thật của file (colgroup + fixed). */
@@ -4799,6 +5225,16 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-chip.ur { background: color-mix(in srgb, var(--err) 24%, transparent); }
 .wk-chip.lo { background: color-mix(in srgb, var(--muted) 18%, transparent); }
 .wk-chip.more { background: transparent; color: var(--faint); }
+/* Ngày GIỮA của việc có deadline ("đang chạy") — nền rỗng + viền gạch, để mốc
+   bắt đầu / deadline vẫn là chip đặc, nhìn ra ngay đâu là mốc thật. */
+.wk-chip.span {
+  background: transparent; border: 1px dashed var(--glass-brd); color: var(--muted); opacity: .8;
+}
+.wk-chip.span.hi { border-color: color-mix(in srgb, var(--warn, #d29922) 55%, transparent); }
+.wk-chip.span.ur { border-color: color-mix(in srgb, var(--err) 55%, transparent); }
+.wk-chip.span.no { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+/* Giờ bắt đầu của việc trong ngày, in ở đầu chip. */
+.wk-chip-t { font-family: var(--mono); font-size: 9px; opacity: .85; }
 
 .wk-side { flex: none; width: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .wk-task {
@@ -4813,6 +5249,9 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-task.st-ac { border-left: 3px solid var(--accent); }
 .wk-task.st-dn { border-left: 3px solid var(--ok); }
 .wk-task.st-cx { border-left: 3px solid var(--err); }
+/* Việc trong ngày — không trạng thái nên không mờ, không gạch ngang; vạch xám
+   trung tính chỉ để phân biệt khỏi việc có deadline. */
+.wk-task.st-day { border-left: 3px solid color-mix(in srgb, var(--muted) 40%, transparent); }
 .wk-task-acts { flex: none; display: flex; gap: 2px; }
 .wk-task-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .wk-task-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -4836,6 +5275,30 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   font-size: 9.5px; font-weight: 700; color: var(--err); padding: 1px 5px;
   border: 1px solid color-mix(in srgb, var(--err) 50%, transparent); border-radius: 6px;
 }
+/* Badge trung tính (vd "từ 05/08" ở nhóm đang chạy) — khác wk-badge-dl đỏ, vì
+   việc chưa tới hạn thì không có gì phải báo động. */
+.wk-badge-dl.soft {
+  color: var(--muted); border-color: var(--glass-brd); font-weight: 600;
+}
+/* Khung giờ của việc trong ngày. */
+.wk-span { font-family: var(--mono); color: var(--muted); }
+
+/* ── Tab chọn LOẠI công việc trong form thêm/sửa ── */
+.wk-kindtabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+.wk-kindtab {
+  display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left;
+  padding: 7px 9px; border-radius: 9px; cursor: pointer; color: var(--muted);
+  background: transparent; border: 1px solid var(--glass-brd);
+}
+.wk-kindtab > b { font-size: 12.5px; }
+.wk-kindtab > .small { font-size: 10.5px; line-height: 1.35; color: var(--faint); }
+.wk-kindtab:hover:not(:disabled) { border-color: var(--glass-brd-hover); }
+.wk-kindtab.on {
+  border-color: var(--accent); color: var(--text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.wk-kindtab.on > .small { color: var(--muted); }
+
 .wk-up {
   display: flex; align-items: center; gap: 7px; padding: 6px 8px; cursor: pointer;
   border-radius: 8px; background: transparent; border: 1px solid var(--glass-brd);
@@ -4873,6 +5336,9 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-st.ac { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
 .wk-st.dn { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
 .wk-st.cx { background: color-mix(in srgb, var(--err) 18%, transparent); color: var(--err); }
+/* .kd = badge LOẠI thay cho badge trạng thái ở việc trong ngày (loại này không
+   có trạng thái nào để hiện). */
+.wk-st.kd { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
 
 .wk-st-switch { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
 .wk-st-btn {
@@ -4886,6 +5352,8 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-st-btn.ac.on { background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: var(--accent); color: var(--accent); }
 .wk-st-btn.dn.on { background: color-mix(in srgb, var(--ok) 20%, transparent); border-color: var(--ok); color: var(--ok); }
 .wk-st-btn.cx.on { background: color-mix(in srgb, var(--err) 20%, transparent); border-color: var(--err); color: var(--err); }
+/* .kd = chip lọc theo LOẠI công việc (trong ngày / deadline). */
+.wk-st-btn.kd.on { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); color: var(--text); }
 .wk-st-btn:disabled { cursor: default; }
 .wk-st-n { font-family: var(--mono); opacity: .75; }
 .wk-stfilter { display: flex; gap: 4px; flex-wrap: wrap; }

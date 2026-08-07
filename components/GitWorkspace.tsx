@@ -23,6 +23,11 @@ import {
   type ListMrsResult,
   type MergeMrResult,
   type GitLabTokenStatusResult,
+  type ListGitLabTokensResult,
+  type ListNamespacesResult,
+  type NamespaceOption,
+  type CreateRepoResult,
+  GITLAB_PATH_RE,
 } from '@/lib/git';
 import FolderPicker from './FolderPicker';
 
@@ -87,6 +92,8 @@ export default function GitWorkspace() {
   const [manageOpen, setManageOpen] = useState(false);
   // Clone dialog — clones a remote repo into the active project's root folder.
   const [cloneOpen, setCloneOpen] = useState(false);
+  // Create dialog — creates a NEW GitLab project, then clones it into that root.
+  const [createOpen, setCreateOpen] = useState(false);
   const [repos, setRepos] = useState<RepoInfo[]>([]);
   const [reposLoading, setReposLoading] = useState(false);
   const [repo, setRepo] = useState<string>('');
@@ -416,6 +423,18 @@ export default function GitWorkspace() {
     flash(`Đã clone ${res.name}`);
   }
 
+  // A new GitLab project was created. When it was cloned too, treat it exactly
+  // like a fresh clone. When the clone failed the project still exists on GitLab,
+  // so the modal stays open to show the URL + the reason — don't close it here.
+  async function afterCreate(res: CreateRepoResult) {
+    if (!res.clone) return;
+    setCreateOpen(false);
+    await loadRepos(projectRef.current);
+    setRepo(res.clone.path);
+    overviewFetchedAt.current = 0; // overview is stale — a repo appeared
+    flash(`Đã tạo & clone ${res.project.pathWithNamespace}`);
+  }
+
   async function doCommit() {
     if (!message.trim() || !staged.length) return;
     await run('Commit', () => gitAction('commit', { repo, message: message.trim() }));
@@ -556,6 +575,14 @@ export default function GitWorkspace() {
           <span style={{ flex: 1 }} />
           <button
             className="ghost sm"
+            onClick={() => setCreateOpen(true)}
+            disabled={busy || !!commandRunning}
+            title={`Tạo repo mới trên GitLab rồi clone về ${activeProject.root}`}
+          >
+            ⊕ Tạo repo…
+          </button>
+          <button
+            className="ghost sm"
             onClick={() => setCloneOpen(true)}
             disabled={busy || !!commandRunning}
             title={`git clone một repo về ${activeProject.root}`}
@@ -574,7 +601,7 @@ export default function GitWorkspace() {
             <p>
               Không tìm thấy repo git nào trong <code className="small">{activeProject?.root ?? 'thư mục này'}</code>.
               Chọn/ thêm một project trỏ tới thư mục chứa các repo (bấm <b>Quản lý</b> phía trên), hoặc{' '}
-              <b>Clone repo…</b> để tải một repo về thư mục này.
+              <b>Clone repo…</b> để tải một repo về thư mục này, hoặc <b>Tạo repo…</b> để tạo repo mới trên GitLab.
             </p>
           )}
         </div>
@@ -1042,6 +1069,17 @@ export default function GitWorkspace() {
         />
       )}
 
+      {createOpen && activeProject && (
+        <CreateRepoModal
+          projectId={activeProjectId}
+          projectName={activeProject.name}
+          root={activeProject.root}
+          existingNames={repos.map((r) => r.name)}
+          onClose={() => setCreateOpen(false)}
+          onCreated={afterCreate}
+        />
+      )}
+
       {mrModalOpen && repo && (
         <MergeRequestsModal
           repo={repo}
@@ -1183,6 +1221,352 @@ function CloneRepoModal({ projectId, projectName, root, existingNames, onClose, 
           <div className="small" style={{ color: 'var(--muted)', marginTop: 8 }}>
             Đang tải repo về — với repo lớn có thể mất vài phút.
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Create repo modal (new GitLab project → clone) ──────────────────────────────
+
+interface CreateRepoModalProps {
+  /** Project whose root folder the new repo is cloned into. */
+  projectId: string;
+  projectName: string;
+  root: string;
+  /** Repo folder names already in the root — used to warn before submitting. */
+  existingNames: string[];
+  onClose: () => void;
+  onCreated: (res: CreateRepoResult) => void;
+}
+
+/**
+ * Create a brand-new project on GitLab and clone it into the active project's
+ * root — the other half of CloneRepoModal, which only brings down repos that
+ * already exist.
+ *
+ * The host can't be derived from a repo's `origin` here (there is no repo yet),
+ * so it is typed, with the hosts that already have a saved PAT offered as
+ * suggestions. Namespaces load from the host once it's known, so the user picks a
+ * group instead of remembering a numeric namespace id.
+ */
+function CreateRepoModal({ projectId, projectName, root, existingNames, onClose, onCreated }: CreateRepoModalProps) {
+  const [host, setHost] = useState('');
+  const [knownHosts, setKnownHosts] = useState<string[]>([]);
+  const [namespaces, setNamespaces] = useState<NamespaceOption[]>([]);
+  const [namespaceId, setNamespaceId] = useState('');
+  const [nsLoading, setNsLoading] = useState(false);
+  const [nsError, setNsError] = useState<string | null>(null);
+  const [projPath, setProjPath] = useState('');
+  const [name, setName] = useState('');
+  // Until the user edits the display name, it follows the path.
+  const [nameEdited, setNameEdited] = useState(false);
+  const [visibility, setVisibility] = useState('private');
+  const [description, setDescription] = useState('');
+  const [initReadme, setInitReadme] = useState(true);
+  const [doClone, setDoClone] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [tokenOpen, setTokenOpen] = useState(false);
+  // Set when the project was created but the clone failed — the project EXISTS,
+  // so the form must not be resubmitted as-is.
+  const [created, setCreated] = useState<CreateRepoResult | null>(null);
+
+  const path = projPath.trim();
+  const label = (nameEdited ? name : projPath).trim();
+  const pathValid = !path || GITLAB_PATH_RE.test(path);
+  const taken = !!path && existingNames.includes(path);
+  const canSubmit = !busy && !created && !!host.trim() && !!path && pathValid && (!doClone || !taken);
+
+  // Hosts with a saved PAT — offered as suggestions, and the first one is a safe
+  // default since it's the only host we can authenticate against anyway.
+  useEffect(() => {
+    let alive = true;
+    gitAction<ListGitLabTokensResult>('list-gitlab-tokens')
+      .then((res) => {
+        if (!alive) return;
+        const hosts = res.tokens.map((t) => t.host);
+        setKnownHosts(hosts);
+        setHost((h) => h || hosts[0] || '');
+      })
+      .catch(() => {
+        /* suggestions are optional — the host can always be typed */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Load the namespaces of `host` (needs its saved token). Called on blur and
+  // after a token is saved, not on every keystroke.
+  const loadNamespaces = useCallback(async () => {
+    const h = host.trim();
+    if (!h) return;
+    setNsLoading(true);
+    setNsError(null);
+    try {
+      const res = await gitAction<ListNamespacesResult>('list-gitlab-namespaces', { host: h });
+      setNamespaces(res.namespaces);
+      // Default to the personal namespace, which listNamespaces sorts first.
+      setNamespaceId((cur) => cur || (res.namespaces[0] ? String(res.namespaces[0].id) : ''));
+    } catch (e) {
+      setNamespaces([]);
+      setNsError((e as Error).message);
+    } finally {
+      setNsLoading(false);
+    }
+  }, [host]);
+
+  // Auto-load once for the prefilled host so the namespace picker is ready.
+  const autoLoaded = useRef('');
+  useEffect(() => {
+    const h = host.trim();
+    if (h && autoLoaded.current !== h) {
+      autoLoaded.current = h;
+      loadNamespaces();
+    }
+  }, [host, loadNamespaces]);
+
+  const submit = useCallback(async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await gitAction<CreateRepoResult>('create-repo', {
+        projectId,
+        host: host.trim(),
+        path,
+        name: label,
+        namespaceId: namespaceId || undefined,
+        visibility,
+        description: description.trim(),
+        initReadme,
+        clone: doClone,
+      });
+      setCreated(res);
+      // Clone failures keep the modal open (the caller no-ops) so the user can see
+      // the project URL and clone it manually.
+      if (res.cloneError) setErr(res.cloneError);
+      onCreated(res);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [canSubmit, projectId, host, path, label, namespaceId, visibility, description, initReadme, doClone, onCreated]);
+
+  const onEnter = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && canSubmit) submit();
+  };
+  const fieldStyle: React.CSSProperties = { width: '100%', fontFamily: 'var(--mono)', fontSize: 12, marginTop: 4 };
+
+  return (
+    // Backdrop click is ignored while working — closing mid-create would hide an
+    // operation that already changed state on GitLab.
+    <div className="modal-backdrop" onClick={() => !busy && onClose()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(560px, 94vw)' }}>
+        <div className="status-line" style={{ marginBottom: 10 }}>
+          <h3 style={{ margin: 0, flex: 1 }}>Tạo repo mới → {projectName}</h3>
+          <button className="ghost sm" onClick={onClose} disabled={busy}>✕</button>
+        </div>
+
+        <div className="small" style={{ color: 'var(--muted)', marginBottom: 10 }}>
+          Tạo project trên GitLab qua API{doClone ? <> rồi clone vào <code className="small">{root}</code></> : null}.
+          Dùng Personal Access Token đã lưu cho host (scope <code>api</code>).
+        </div>
+
+        {/* ── Host + namespace ──────────────────────────────────────────────── */}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 200px' }}>
+            <label className="small" style={{ color: 'var(--muted)' }}>Host GitLab</label>
+            <input
+              type="text"
+              list="gitlab-known-hosts"
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              onBlur={loadNamespaces}
+              placeholder="gitlab.example.com"
+              autoFocus
+              disabled={busy}
+              style={fieldStyle}
+            />
+            <datalist id="gitlab-known-hosts">
+              {knownHosts.map((h) => (
+                <option key={h} value={h} />
+              ))}
+            </datalist>
+          </div>
+          <div style={{ flex: '1 1 200px' }}>
+            <label className="small" style={{ color: 'var(--muted)' }}>
+              Namespace {nsLoading ? '· đang tải…' : namespaces.length ? `· ${namespaces.length}` : ''}
+            </label>
+            <select
+              value={namespaceId}
+              onChange={(e) => setNamespaceId(e.target.value)}
+              disabled={busy || nsLoading || !namespaces.length}
+              style={fieldStyle}
+            >
+              {!namespaces.length && <option value="">— chưa tải được —</option>}
+              {namespaces.map((ns) => (
+                <option key={ns.id} value={String(ns.id)}>
+                  {ns.fullPath}{ns.kind === 'user' ? ' (cá nhân)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {nsError && (
+          <div className="small" style={{ color: 'var(--err)', marginTop: 6 }}>
+            {nsError}
+            {/token|401|403/i.test(nsError) && (
+              <button className="sm" style={{ marginLeft: 8 }} onClick={() => setTokenOpen(true)}>
+                🔑 Nhập token GitLab
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* ── Path + display name ───────────────────────────────────────────── */}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
+          <div style={{ flex: '1 1 200px' }}>
+            <label className="small" style={{ color: 'var(--muted)' }}>Path (slug) *</label>
+            <input
+              type="text"
+              value={projPath}
+              onChange={(e) => setProjPath(e.target.value)}
+              onKeyDown={onEnter}
+              placeholder="my-service"
+              disabled={busy}
+              style={fieldStyle}
+            />
+          </div>
+          <div style={{ flex: '1 1 200px' }}>
+            <label className="small" style={{ color: 'var(--muted)' }}>Tên hiển thị</label>
+            <input
+              type="text"
+              value={label}
+              onChange={(e) => {
+                setNameEdited(true);
+                setName(e.target.value);
+              }}
+              onKeyDown={onEnter}
+              placeholder="mặc định = path"
+              disabled={busy}
+              style={fieldStyle}
+            />
+          </div>
+        </div>
+
+        {/* ── Visibility + description ──────────────────────────────────────── */}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
+          <div style={{ flex: '0 1 150px' }}>
+            <label className="small" style={{ color: 'var(--muted)' }}>Visibility</label>
+            <select
+              value={visibility}
+              onChange={(e) => setVisibility(e.target.value)}
+              disabled={busy}
+              style={fieldStyle}
+            >
+              <option value="private">private</option>
+              <option value="internal">internal</option>
+              <option value="public">public</option>
+            </select>
+          </div>
+          <div style={{ flex: '1 1 240px' }}>
+            <label className="small" style={{ color: 'var(--muted)' }}>Mô tả (tùy chọn)</label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              onKeyDown={onEnter}
+              disabled={busy}
+              style={{ ...fieldStyle, fontFamily: 'inherit' }}
+            />
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 12 }}>
+          <label className="small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input type="checkbox" checked={initReadme} onChange={(e) => setInitReadme(e.target.checked)} disabled={busy} />
+            Khởi tạo README (repo có default branch)
+          </label>
+          <label className="small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input type="checkbox" checked={doClone} onChange={(e) => setDoClone(e.target.checked)} disabled={busy} />
+            Clone về máy sau khi tạo
+          </label>
+        </div>
+
+        {!pathValid && (
+          <div className="badge warn" style={{ marginTop: 10 }}>
+            ⚠ Path chỉ gồm chữ/số/<code>._-</code> và phải bắt đầu bằng chữ hoặc số.
+          </div>
+        )}
+        {doClone && taken && (
+          <div className="badge warn" style={{ marginTop: 10 }}>
+            ⚠ Thư mục <b>{path}</b> đã có trong project — đổi path khác hoặc bỏ tick clone.
+          </div>
+        )}
+
+        {/* The project already exists on GitLab — say so plainly, since a retry of
+            the same path would now be rejected as taken. */}
+        {created && (
+          <div className="small" style={{ marginTop: 10 }}>
+            <span className="badge ok">✓ Đã tạo trên GitLab</span>{' '}
+            <a href={created.project.webUrl} target="_blank" rel="noreferrer">
+              {created.project.pathWithNamespace}
+            </a>
+            <div style={{ color: 'var(--muted)', marginTop: 4, fontFamily: 'var(--mono)' }}>{created.project.httpUrl}</div>
+            {created.cloneError && (
+              <div style={{ marginTop: 6 }}>
+                Chưa clone được — dùng <b>⧉ Clone repo…</b> với URL trên để thử lại.
+              </div>
+            )}
+          </div>
+        )}
+
+        {err && <pre className="code" style={{ color: 'var(--err)', margin: '10px 0 0' }}>{err}</pre>}
+        {err && !created && /token|401|403/i.test(err) && (
+          <button className="sm" style={{ marginTop: 8 }} onClick={() => setTokenOpen(true)}>
+            🔑 Nhập token GitLab
+          </button>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 14 }}>
+          {/* A token is filed per host, so the host must be known before saving one. */}
+          <button
+            className="ghost sm"
+            onClick={() => setTokenOpen(true)}
+            disabled={busy || !host.trim()}
+            title={host.trim() ? `Token GitLab cho ${host.trim()}` : 'Nhập host GitLab trước'}
+          >
+            🔑 Token
+          </button>
+          <span style={{ flex: 1 }} />
+          <button className="ghost sm" onClick={onClose} disabled={busy}>
+            {created ? 'Đóng' : 'Hủy'}
+          </button>
+          <button className="sm" onClick={submit} disabled={!canSubmit} title="Tạo project trên GitLab">
+            {busy ? <><span className="spinner" aria-hidden /> Đang tạo…</> : '⊕ Tạo repo'}
+          </button>
+        </div>
+
+        {busy && doClone && (
+          <div className="small" style={{ color: 'var(--muted)', marginTop: 8 }}>
+            Tạo project rồi clone về — có thể mất chút thời gian.
+          </div>
+        )}
+
+        {tokenOpen && (
+          <GitLabTokenModal
+            host={host.trim()}
+            onClose={() => setTokenOpen(false)}
+            onSaved={() => {
+              setTokenOpen(false);
+              setErr(null);
+              loadNamespaces();
+            }}
+          />
         )}
       </div>
     </div>
@@ -1399,7 +1783,10 @@ function MergeRequestsModal({ repo, repoName, highlightBranch, onClose, onMerged
 // ── GitLab token modal ──────────────────────────────────────────────────────────
 
 interface GitLabTokenModalProps {
-  repo: string;
+  /** Authorized repo whose `origin` names the host. Omit when `host` is given. */
+  repo?: string;
+  /** Explicit host — used when there is no repo yet (creating a new project). */
+  host?: string;
   onClose: () => void;
   /** Called after a successful save/remove so the caller can retry its request. */
   onSaved: () => void;
@@ -1410,12 +1797,13 @@ interface GitLabTokenModalProps {
  *
  * This is deliberately separate from the credential `git push` uses: a self-hosted
  * instance may accept an account password over HTTPS for git, but the REST API
- * only accepts a PAT. The host is derived server-side from the repo's own origin
- * remote — not typed here — so the token can't be filed under the wrong host.
+ * only accepts a PAT. With a `repo`, the host is derived server-side from its own
+ * origin remote so the token can't be filed under the wrong host; the explicit
+ * `host` form exists for creating a NEW project, where no repo exists yet.
  * The token is write-only from the browser's point of view: the server returns
  * just a redacted preview, never the value back.
  */
-function GitLabTokenModal({ repo, onClose, onSaved }: GitLabTokenModalProps) {
+function GitLabTokenModal({ repo, host, onClose, onSaved }: GitLabTokenModalProps) {
   const [status, setStatus] = useState<GitLabTokenStatusResult | null>(null);
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1426,13 +1814,21 @@ function GitLabTokenModal({ repo, onClose, onSaved }: GitLabTokenModalProps) {
     setLoading(true);
     setErr(null);
     try {
-      setStatus(await gitAction<GitLabTokenStatusResult>('gitlab-token-status', { repo }));
+      if (host) {
+        // No repo to read `origin` from — match the typed host against the saved
+        // list to get the same redacted status the repo-scoped action returns.
+        const { tokens } = await gitAction<ListGitLabTokensResult>('list-gitlab-tokens');
+        const key = host.trim().toLowerCase();
+        setStatus({ host: key, token: tokens.find((t) => t.host === key) ?? null });
+      } else {
+        setStatus(await gitAction<GitLabTokenStatusResult>('gitlab-token-status', { repo }));
+      }
     } catch (e) {
       setErr((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [repo]);
+  }, [repo, host]);
 
   useEffect(() => {
     refresh();
