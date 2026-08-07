@@ -12,7 +12,7 @@
 //
 // Credentials nằm server-side (.mailaccounts.json); UI chỉ thấy account public.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   mAccounts, mAccountAdd, mAccountAddOAuth, mGoogleAuthUrl, mAccountRemove, mAccountRename,
   mFolders, mList, mMessage, mSend, mDelete, mMarkAllSeen, mContacts, mContactAdd,
@@ -62,7 +62,7 @@ const PRESETS: Preset[] = [
     smtpHost: 'smtp.office365.com', smtpPort: 587, smtpSecure: false,
   },
   {
-    key: 'zimbra', label: 'Zimbra / mail nội bộ', hint: 'tự điền host IMAP/SMTP của tổ chức bạn',
+    key: 'zimbra', label: 'Zimbra / mail nội bộ', hint: 'dùng lại host của hòm thư nội bộ đã có',
     imapHost: '', imapPort: 993, imapSecure: true,
     smtpHost: '', smtpPort: 465, smtpSecure: true,
   },
@@ -73,7 +73,45 @@ const PRESETS: Preset[] = [
   },
 ];
 
-function AddAccountForm({ onDone, onCancel }: { onDone: (list: MailAccountPub[]) => void; onCancel?: () => void }) {
+/**
+ * Host IMAP/SMTP cho preset Zimbra, SUY RA TỪ hòm thư nội bộ đã cấu hình.
+ *
+ * VÌ SAO không hardcode: host mail nội bộ là dữ liệu của tổ chức, thuộc
+ * configs/ chứ không thuộc source (xem chú thích của PRESETS). VÌ SAO không suy
+ * từ domain email: hai hòm thư có thể khác domain mà CHUNG một server —
+ * tamtd@vihat.vn vẫn nhận thư trên mail.vihatgroup.com — nên "mail." + domain
+ * sẽ trỏ sai server.
+ *
+ * Bỏ qua các nhà cung cấp công cộng: tài khoản Gmail/Outlook đã có không nói
+ * lên điều gì về mail server nội bộ.
+ */
+const PUBLIC_MAIL_HOST = /(^|\.)(gmail|googlemail|google|outlook|office365|hotmail|live|yahoo|icloud)\.[a-z.]+$/i;
+
+function guessInternalEndpoints(accounts: MailAccountPub[] | undefined): Pick<
+  Preset, 'imapHost' | 'imapPort' | 'imapSecure' | 'smtpHost' | 'smtpPort' | 'smtpSecure'
+> | null {
+  // Gần nhất trước: hòm thư thêm sau cùng phản ánh cấu hình đang dùng.
+  for (let i = (accounts?.length ?? 0) - 1; i >= 0; i--) {
+    const a = accounts![i];
+    if (!a.imap?.host || PUBLIC_MAIL_HOST.test(a.imap.host)) continue;
+    return {
+      imapHost: a.imap.host, imapPort: a.imap.port, imapSecure: a.imap.secure,
+      // SMTP thường cùng host với IMAP ở Zimbra, nhưng nếu tài khoản cũ khai
+      // khác thì tôn trọng đúng cái nó khai.
+      smtpHost: a.smtp?.host || a.imap.host,
+      smtpPort: a.smtp?.port ?? 465,
+      smtpSecure: a.smtp?.secure ?? true,
+    };
+  }
+  return null;
+}
+
+function AddAccountForm({ onDone, onCancel, accounts }: {
+  onDone: (list: MailAccountPub[]) => void;
+  onCancel?: () => void;
+  /** Hòm thư đã có — nguồn suy ra host cho preset Zimbra. */
+  accounts?: MailAccountPub[];
+}) {
   const [preset, setPreset] = useState<Preset>(PRESETS[0]);
   const [email, setEmail] = useState('');
   const [pass, setPass] = useState('');
@@ -90,10 +128,16 @@ function AddAccountForm({ onDone, onCancel }: { onDone: (list: MailAccountPub[])
   const [authUrl, setAuthUrl] = useState<string | null>(null); // consent Google trong app
   const [showAppPw, setShowAppPw] = useState(false);           // mở lại cách cũ nếu cần
 
+  /** Host nội bộ suy từ hòm thư đã có — null khi đây là tài khoản đầu tiên. */
+  const guessed = useMemo(() => guessInternalEndpoints(accounts), [accounts]);
+
   const pickPreset = (p: Preset) => {
     setPreset(p);
-    setImapHost(p.imapHost); setImapPort(p.imapPort);
-    setSmtpHost(p.smtpHost); setSmtpPort(p.smtpPort);
+    // Zimbra: điền sẵn host của hòm thư nội bộ đã có, để chỉ còn phải nhập
+    // user/pass. Chưa có hòm thư nào thì rơi về rỗng và form hiện ô nhập host.
+    const src = p.key === 'zimbra' && guessed ? guessed : p;
+    setImapHost(src.imapHost); setImapPort(src.imapPort);
+    setSmtpHost(src.smtpHost); setSmtpPort(src.smtpPort);
   };
 
   const submit = async () => {
@@ -176,7 +220,21 @@ function AddAccountForm({ onDone, onCancel }: { onDone: (list: MailAccountPub[])
           </button>
         ))}
       </div>
-      <p className="small" style={{ color: 'var(--muted)', margin: '2px 0 8px' }}>{preset.hint}</p>
+      {/* Zimbra đã suy được host thì NÓI RA host nào — người dùng không nhập nó
+          nên phải thấy được app đang định nối tới đâu, và có đường đổi khi hòm
+          thư mới nằm trên server khác. */}
+      {preset.key === 'zimbra' && imapHost.trim() ? (
+        <p className="small" style={{ color: 'var(--muted)', margin: '2px 0 8px' }}>
+          Máy chủ: <b>{imapHost.trim()}</b>{' '}
+          <button className="ghost sm" style={{ marginLeft: 4 }}
+            onClick={() => { setImapHost(''); setSmtpHost(''); }}
+            title="Nhập host IMAP/SMTP khác cho hòm thư này">
+            đổi máy chủ
+          </button>
+        </p>
+      ) : (
+        <p className="small" style={{ color: 'var(--muted)', margin: '2px 0 8px' }}>{preset.hint}</p>
+      )}
 
       {/* Gmail: ưu tiên OAuth. Google Workspace thường TẮT App Password
           ("The setting you are looking for is not available for your account")
@@ -218,7 +276,12 @@ function AddAccountForm({ onDone, onCancel }: { onDone: (list: MailAccountPub[])
         <input className="input" placeholder="Tên người gửi khi gửi mail (mặc định: email)" value={label}
           onChange={(e) => setLabel(e.target.value)}
           title="Người nhận thấy tên này ở header From." />
-        {preset.key === 'custom' && (
+        {/* Hiện ô nhập host khi CHƯA CÓ host — chốt theo giá trị thực tế chứ
+            không theo key preset, vì Zimbra có thể đã được điền sẵn từ hòm thư
+            nội bộ đã có (guessInternalEndpoints). canSubmit đòi imapHost +
+            smtpHost, nên giấu ô lúc host còn rỗng là nút "Thêm tài khoản" mờ
+            vĩnh viễn, không có đường nào bấm được. */}
+        {!imapHost.trim() && (
           <>
             <div className="mail-add-pair">
               <input className="input" data-f="imapHost" placeholder="IMAP host" value={imapHost} onChange={(e) => setImapHost(e.target.value)} />
@@ -1116,7 +1179,8 @@ export default function MailWorkspace() {
               <span style={{ flex: 1 }} />
               <button className="ghost sm" onClick={() => setAdding(false)} title="Đóng">✕</button>
             </div>
-            <AddAccountForm onDone={onAccountsChanged} onCancel={() => setAdding(false)} />
+            <AddAccountForm onDone={onAccountsChanged} onCancel={() => setAdding(false)}
+              accounts={accounts} />
           </div>
         </div>
       )}
