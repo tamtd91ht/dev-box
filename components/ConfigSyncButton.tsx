@@ -9,6 +9,11 @@
 //
 // VÌ SAO PUSH KHÔNG HỎI PASSPHRASE: age mã hoá bằng public key (recipient mode),
 // chỉ giải mã mới cần private key. Xem lib/configSync.ts.
+//
+// LƯU Ý ELECTRON: panel này sống ở footer nhưng bung LÊN đè vùng workspace, nên
+// phải tự lo hai chuyện mà panel thường không cần — đẩy webview đi chỗ khác để
+// không bị che, và đòi lại focus để ô passphrase gõ được. Chi tiết ở effect
+// `data-modal-over-webview` bên dưới.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -28,10 +33,25 @@ interface SyncStatus {
   git?: GitInfo;
 }
 
+/** Vault sắp bị đẩy hụt — kèm theo lỗi SHRINK để liệt kê cái sắp mất. */
+interface ShrinkDetail {
+  missing: string[];
+  newCount: number;
+  oldCount?: number;
+  newKb: number;
+  oldKb: number;
+  comparedTo: string;
+}
+
 /** Lỗi kèm `code` để phân biệt trường hợp xử lý được bằng nút. */
 class ApiError extends Error {
   code?: string;
-  constructor(message: string, code?: string) { super(message); this.code = code; }
+  detail?: ShrinkDetail;
+  constructor(message: string, code?: string, detail?: ShrinkDetail) {
+    super(message);
+    this.code = code;
+    this.detail = detail;
+  }
 }
 
 async function api<T>(action: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -41,7 +61,9 @@ async function api<T>(action: string, params: Record<string, unknown> = {}): Pro
     body: JSON.stringify({ action, ...params }),
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok || data.ok === false) throw new ApiError(data.error || `HTTP ${r.status}`, data.code);
+  if (!r.ok || data.ok === false) {
+    throw new ApiError(data.error || `HTTP ${r.status}`, data.code, data.detail);
+  }
   return data.result as T;
 }
 
@@ -62,6 +84,8 @@ export default function ConfigSyncButton() {
   const [busy, setBusy] = useState<'' | 'push' | 'pull' | 'setup'>('');
   /** Pull bị chặn vì hai máy cùng sửa → hiện nút ghi đè. */
   const [diverged, setDiverged] = useState(false);
+  /** Push bị lưới an toàn chặn vì sẽ làm hụt vault → hiện cái sắp mất + nút ép. */
+  const [shrink, setShrink] = useState<ShrinkDetail | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err' | 'info'; text: string } | null>(null);
   const [askPass, setAskPass] = useState(false);
   const [pass, setPass] = useState('');
@@ -95,19 +119,51 @@ export default function ConfigSyncButton() {
         setOpen(false);
         setAskPass(false);
         setPass('');
+        setShrink(null);
       }
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [open, busy]);
 
-  useEffect(() => { if (askPass) passRef.current?.focus(); }, [askPass]);
+  // Panel mở ĐÈ lên vùng workspace, mà <webview> của Electron vẽ ở tầng native
+  // nằm trên mọi phần tử HTML bất kể z-index — ở tab Links/Browser/Workspace nó
+  // che mất cả panel. Cờ trên <html> đẩy tạm các pane webview ra ngoài màn hình
+  // (CSS lo phần còn lại); guest vẫn sống, vẫn giữ phiên. Giống UltraBar.
+  //
+  // Kèm theo: KÉO FOCUS VỀ HOST. Electron bug — khi một <webview> guest đang giữ
+  // focus thì mọi input trên host page chết, nhìn y như bị disable (xem
+  // workspace:focusHost trong electron/main.cjs). Ô passphrase bên dưới dính
+  // đúng ca này: đang ở tab Zalo/Links, bấm sang tab khác rồi mở Sync — guest đã
+  // đi offscreen nhưng vẫn cầm focus, gõ vào ô không ra chữ nào.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (open) {
+      root.setAttribute('data-modal-over-webview', '1');
+      void window.workspace?.focusHost?.().catch(() => {});
+    } else {
+      root.removeAttribute('data-modal-over-webview');
+    }
+    return () => root.removeAttribute('data-modal-over-webview');
+  }, [open]);
 
-  const doPush = async () => {
+  // Đòi focus về host TRƯỚC rồi mới focus ô: nếu guest còn cầm focus thì
+  // .focus() ở đây chỉ đặt được :focus trên DOM, phím gõ vẫn rơi vào guest.
+  useEffect(() => {
+    if (!askPass) return;
+    void Promise.resolve(window.workspace?.focusHost?.())
+      .catch(() => {})
+      .finally(() => passRef.current?.focus());
+  }, [askPass]);
+
+  const doPush = async (force = false) => {
     setBusy('push');
-    setMsg({ kind: 'info', text: 'Đang đóng gói và mã hoá…' });
+    setMsg({ kind: 'info', text: force ? 'Đang ghi đè vault…' : 'Đang đóng gói và mã hoá…' });
     try {
-      const r = await api<{ files: number; vaultKb: number; committed: boolean; pushed: boolean; skipped: string[] }>('push');
+      const r = await api<{ files: number; vaultKb: number; committed: boolean; pushed: boolean; skipped: string[] }>(
+        'push', { force },
+      );
+      setShrink(null);
       if (!r.committed) setMsg({ kind: 'info', text: 'Không có gì thay đổi — vault đã khớp với máy.' });
       else {
         setMsg({
@@ -119,7 +175,11 @@ export default function ConfigSyncButton() {
       }
       await refresh();
     } catch (e) {
-      setMsg({ kind: 'err', text: (e as Error).message });
+      const err = e as ApiError;
+      // Máy này sắp xoá mất config của máy khác. Không tự quyết hộ — bày ra
+      // đúng file nào sắp mất rồi để người dùng chọn.
+      if (err.code === 'SHRINK' && err.detail) setShrink(err.detail);
+      setMsg({ kind: 'err', text: err.message });
     } finally { setBusy(''); }
   };
 
@@ -193,7 +253,12 @@ export default function ConfigSyncButton() {
         <div className="cfgsync-panel" ref={panelRef}>
           <div className="cfgsync-head">
             <b>Đồng bộ config</b>
-            <button className="cfgsync-x" onClick={() => { setOpen(false); setAskPass(false); setPass(''); }}>×</button>
+            <button
+              className="cfgsync-x"
+              onClick={() => { setOpen(false); setAskPass(false); setPass(''); setShrink(null); }}
+            >
+              ×
+            </button>
           </div>
 
           {!st ? (
@@ -239,18 +304,54 @@ export default function ConfigSyncButton() {
               </div>
 
               <div className="cfgsync-actions">
-                <button className="cfgsync-go" onClick={doPush} disabled={!!busy || !st.canPush}>
+                {/* doPush() không tham số — truyền thẳng hàm cho onClick thì
+                    React nhét event vào chỗ `force` (event truthy → ép ghi đè). */}
+                <button className="cfgsync-go" onClick={() => void doPush()} disabled={!!busy || !st.canPush}>
                   {busy === 'push' ? 'Đang đẩy…' : '↑ Đẩy lên'}
                 </button>
                 <button
                   className="cfgsync-go alt"
-                  onClick={() => { setAskPass((v) => !v); setMsg(null); }}
+                  onClick={() => { setAskPass((v) => !v); setMsg(null); setShrink(null); }}
                   disabled={!!busy || !st.canPull}
                   title={st.canPull ? 'Cần passphrase để giải mã' : 'Repo chưa có age-key.enc'}
                 >
                   ↓ Kéo về…
                 </button>
               </div>
+
+              {/* Lưới an toàn chặn push: liệt kê thẳng file sắp mất rồi mới cho
+                  ép. Chuỗi "còn N file" quan trọng hơn con số KB — người dùng
+                  nhận ra "ủa máy này có mỗi 1 file" nhanh hơn nhiều. */}
+              {shrink && (
+                <>
+                  <div className="cfgsync-row warn small">
+                    Bản trên <code>{shrink.comparedTo}</code>{' '}
+                    {shrink.oldCount !== undefined
+                      ? <>có <b>{shrink.oldCount} file</b></>
+                      : <>nặng <b>{shrink.oldKb} KB</b></>}
+                    {' '}· máy này gói được <b>{shrink.newCount} file</b> ({shrink.newKb} KB).
+                  </div>
+                  {shrink.missing.length > 0 && (
+                    <div className="cfgsync-row small">
+                      Đẩy lên sẽ xoá mất:{' '}
+                      {shrink.missing.map((n) => <code key={n}>{n}</code>)}
+                    </div>
+                  )}
+                  <button
+                    className="cfgsync-go danger"
+                    onClick={() => void doPush(true)}
+                    disabled={!!busy}
+                    title="Thay hẳn vault trên GitHub bằng bản của máy này"
+                  >
+                    ⚠ Vẫn đẩy, ghi đè
+                  </button>
+                  <div className="cfgsync-row muted small">
+                    Máy này chưa Kéo về lần nào thì <b>Kéo về trước</b> — đẩy lên
+                    bây giờ là xoá config của máy khác. Lỡ đẩy rồi vẫn lấy lại
+                    được bằng <code>git revert</code>, nhưng đừng dựa vào đó.
+                  </div>
+                </>
+              )}
 
               {askPass && (
                 <div className="cfgsync-pass">

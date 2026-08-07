@@ -1170,6 +1170,10 @@ audio { width: 100%; margin-top: 12px; }
 .cfgsync-go.danger { background: var(--err-bg); color: var(--err); border-color: var(--err); }
 .cfgsync-go.danger:hover:not(:disabled) { background: var(--err); color: #2a0710; }
 
+/* Danh sách file sắp mất khi push bị lưới an toàn chặn — các chip <code> nằm
+   sát nhau thì đọc thành một cục, phải tách ra. */
+.cfgsync-row code + code { margin-left: 5px; }
+
 .cfgsync-pass { display: flex; gap: 8px; }
 .cfgsync-pass input {
   flex: 1; min-width: 0; padding: 6px 9px; font-size: 11.5px;

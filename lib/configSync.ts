@@ -31,6 +31,8 @@ const KEY_FILE = path.join(REPO_DIR, 'age-key.enc');
 const PUB_FILE = path.join(REPO_DIR, 'age-recipient.txt');
 const MACHINE_FILE = path.join(REPO_DIR, 'machine.json');
 const MANIFEST_FILE = path.join(REPO_DIR, 'manifest.json');
+/** Danh sách TÊN file có trong vault — plaintext, cạnh vault. Xem baselineVault(). */
+const INDEX_FILE = path.join(REPO_DIR, 'vault', 'devbox-configs.index.json');
 
 /** Thư mục tạm riêng cho mỗi lần chạy — tránh hai lần sync đè nhau. */
 function tmpDir(tag: string): string {
@@ -315,14 +317,98 @@ export async function setup(): Promise<SetupResult> {
   return { log, status: await getStatus() };
 }
 
+// ── Lưới an toàn: đừng để một máy rỗng xoá sạch vault ──────────────────────
+//
+// SỰ CỐ 2026-08-07: máy mới setup xong, configs/ mới có đúng một file rỗng, bấm
+// "Đẩy lên" → vault 38.600 bytes của máy kia bị thay bằng 2.760 bytes. Lấy lại
+// được bằng git revert (push không dùng --force nên lịch sử còn nguyên), nhưng
+// không được để xảy ra lần nữa.
+//
+// Vì sao push mù: nó gói những gì đang có trong configs/ rồi GHI ĐÈ TRỌN vault,
+// mà vault là ciphertext — muốn biết mình sắp xoá gì thì phải giải mã, mà giải
+// mã cần passphrase, mà push thì cố tình không hỏi passphrase. Bế tắc.
+//
+// Lối ra: mỗi lần push ghi kèm một INDEX PHẲNG cạnh vault, chỉ gồm TÊN file,
+// không có nội dung. Không lộ thêm gì — mấy cái tên đó đã nằm sẵn trong
+// manifest.json được commit từ đầu. Lần push sau đọc index trên origin là biết
+// chính xác mình sắp làm mất file nào, không cần passphrase.
+//
+// Repo còn ở commit cũ chưa có index thì lùi về so KÍCH THƯỚC vault — thô hơn,
+// không nói được mất file nào, nhưng vẫn bắt đúng ca đã xảy ra.
+
+/** Không có index để so thì vault mới nhỏ hơn ngần này lần bản cũ là đáng ngờ
+ *  (0.6 = mất hơn 40% dung lượng). Nới tay có chủ ý: ciphertext co giãn theo
+ *  nội dung, xoá bớt vài link không nên bị chặn — chỉ chặn ca sụp hẳn. */
+const SHRINK_RATIO = 0.6;
+
+/** Kèm theo lỗi SHRINK để UI kể được chuyện gì sắp mất. */
+export interface ShrinkDetail {
+  /** File có ở bản cũ mà bản sắp đẩy không có — cái sẽ mất. */
+  missing: string[];
+  newCount: number;
+  oldCount?: number;
+  newKb: number;
+  oldKb: number;
+  /** So với `origin/<branch>`, hay chỉ `HEAD` khi máy đang offline. */
+  comparedTo: string;
+}
+
+interface VaultSnapshot { files?: string[]; bytes: number; ref: string }
+
+/**
+ * Ảnh chụp vault đang được coi là "bản chuẩn" để đối chiếu trước khi ghi đè.
+ *
+ * Ưu tiên `origin/<branch>` (mới fetch) vì đó mới là cái người khác đang dùng;
+ * offline thì lùi về HEAD — vẫn hơn không so gì. `null` = repo chưa có vault
+ * nào (máy đầu tiên), không có gì để mất, cho đẩy thoải mái.
+ */
+async function baselineVault(): Promise<VaultSnapshot | null> {
+  let branch = 'main';
+  try {
+    const { stdout } = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], REPO_DIR);
+    branch = stdout.trim() || 'main';
+  } catch { /* repo chưa có commit nào */ }
+
+  const refs: string[] = [];
+  try {
+    await run('git', ['fetch', 'origin', '--quiet'], REPO_DIR);
+    refs.push(`origin/${branch}`);
+  } catch { /* offline — vẫn so được với HEAD */ }
+  refs.push('HEAD');
+
+  for (const ref of refs) {
+    let bytes: number;
+    try {
+      const { stdout } = await run('git', ['cat-file', '-s', `${ref}:vault/devbox-configs.tar.age`], REPO_DIR);
+      bytes = Number(stdout.trim());
+    } catch { continue; }
+    if (!Number.isFinite(bytes) || bytes <= 0) continue;
+
+    let files: string[] | undefined;
+    try {
+      const { stdout } = await run('git', ['show', `${ref}:vault/devbox-configs.index.json`], REPO_DIR);
+      const idx = JSON.parse(stdout) as { files?: unknown };
+      if (Array.isArray(idx.files)) files = idx.files.filter((n): n is string => typeof n === 'string');
+    } catch { /* commit cũ chưa có index → so bằng kích thước */ }
+
+    return { files, bytes, ref };
+  }
+  return null;
+}
+
+const toKb = (bytes: number): number => Math.round((bytes / 1024) * 10) / 10;
+
 // ── PUSH ───────────────────────────────────────────────────────────────────
 export interface PushResult { files: number; skipped: string[]; vaultKb: number; committed: boolean; pushed: boolean; log: string[] }
 
 /**
  * Đóng gói configs/ → mã hoá → commit → push. KHÔNG cần passphrase: age mã hoá
  * bằng public key (recipient mode).
+ *
+ * `force` bỏ qua lưới an toàn chống ghi đè hụt (xem baselineVault) — chỉ đặt
+ * khi người dùng đã đọc danh sách file sắp mất và bấm xác nhận.
  */
-export async function push(opts: { remote?: boolean } = {}): Promise<PushResult> {
+export async function push(opts: { remote?: boolean; force?: boolean } = {}): Promise<PushResult> {
   const log: string[] = [];
   const st = await getStatus();
   if (!st.ready) throw new Error(st.reason || 'Repo config chưa sẵn sàng.');
@@ -335,8 +421,12 @@ export async function push(opts: { remote?: boolean } = {}): Promise<PushResult>
 
   const stage = tmpDir('push');
   await fs.mkdir(stage, { recursive: true });
+  // Vault mới dựng ở chỗ tạm rồi mới chuyển vào repo. Nếu lưới an toàn chặn lại
+  // thì working tree còn nguyên vẹn — không phải git checkout để dọn nửa chừng.
+  const tar = path.join(os.tmpdir(), `devbox-push-${Date.now()}.tar`);
+  const newVault = `${tar}.age`;
   const skipped: string[] = [];
-  let count = 0;
+  const names: string[] = [];
 
   try {
     const src = configDir();
@@ -346,27 +436,74 @@ export async function push(opts: { remote?: boolean } = {}): Promise<PushResult>
       let text = await fs.readFile(path.join(src, name), 'utf8');
       if (tokenize.has(name)) text = toTokens(text, machine);
       await fs.writeFile(path.join(stage, name), text, 'utf8');
-      count++;
+      names.push(name);
     }
-    log.push(`đóng gói ${count} file` + (skipped.length ? ` (bỏ qua ${skipped.join(', ')})` : ''));
+    names.sort();
+    log.push(`đóng gói ${names.length} file` + (skipped.length ? ` (bỏ qua ${skipped.join(', ')})` : ''));
 
-    const tar = path.join(os.tmpdir(), `devbox-push-${Date.now()}.tar`);
     await run(tarPath(), ['-cf', tar, '-C', stage, '.']);
-    await fs.mkdir(path.dirname(VAULT_FILE), { recursive: true });
-    // -o ghi đè vault cũ; age không tự ghi đè nên phải xoá trước.
-    await fs.rm(VAULT_FILE, { force: true });
-    await run(await agePath(), ['-r', recipient, '-o', VAULT_FILE, tar]);
-    await fs.rm(tar, { force: true });
+    await run(await agePath(), ['-r', recipient, '-o', newVault, tar]);
+    const newBytes = (await fs.stat(newVault)).size;
+    const vaultKb = toKb(newBytes);
 
-    const vaultKb = Math.round(((await fs.stat(VAULT_FILE)).size / 1024) * 10) / 10;
+    // ── Lưới an toàn ────────────────────────────────────────────────────────
+    const base = opts.force ? null : await baselineVault();
+    if (base) {
+      const missing = base.files ? base.files.filter((n) => !names.includes(n)) : [];
+      // Không có index để so tên thì mới xét kích thước — có index rồi thì tin
+      // danh sách tên, vì ciphertext co lại do sửa nội dung là chuyện bình thường.
+      const collapsed = !base.files && newBytes < base.bytes * SHRINK_RATIO;
+      if (missing.length || collapsed) {
+        const detail: ShrinkDetail = {
+          missing,
+          newCount: names.length,
+          oldCount: base.files?.length,
+          newKb: vaultKb,
+          oldKb: toKb(base.bytes),
+          comparedTo: base.ref,
+        };
+        const err = new Error(
+          `Chặn đẩy lên: bản trên ${base.ref} `
+          + (base.files ? `có ${base.files.length} file` : `nặng ${toKb(base.bytes)} KB`)
+          + `, còn máy này chỉ gói được ${names.length} file (${vaultKb} KB). `
+          + (missing.length
+            ? `Đẩy lên sẽ XOÁ: ${missing.join(', ')}. `
+            : 'Vault sẽ hụt đi quá nửa. ')
+          + 'Nếu máy này chưa Kéo về lần nào thì Kéo về trước đã. '
+          + 'Chắc chắn muốn thay hẳn thì bấm "Vẫn đẩy, ghi đè".',
+        );
+        (err as Error & { code?: string; detail?: ShrinkDetail }).code = 'SHRINK';
+        (err as Error & { code?: string; detail?: ShrinkDetail }).detail = detail;
+        throw err;
+      }
+    }
+
+    await fs.mkdir(path.dirname(VAULT_FILE), { recursive: true });
+    await fs.rm(VAULT_FILE, { force: true });
+    await fs.copyFile(newVault, VAULT_FILE);
     log.push(`mã hoá → vault ${vaultKb} KB`);
+
+    // Index cho lần push sau đối chiếu. Chỉ TÊN file, tuyệt đối không nội dung.
+    await fs.writeFile(
+      INDEX_FILE,
+      `${JSON.stringify({
+        _comment: 'Tu dong sinh boi lib/configSync.ts. CHI ten file trong vault, '
+          + 'khong co noi dung — de lan push sau biet minh sap xoa mat gi ma '
+          + 'khong can passphrase. Dung sua tay.',
+        machine: machine.name || os.hostname(),
+        at: new Date().toISOString(),
+        count: names.length,
+        files: names,
+      }, null, 2)}\n`,
+      'utf8',
+    );
 
     // Commit. Hook pre-commit vẫn chạy — nó là lưới an toàn cuối.
     await run('git', ['add', '-A'], REPO_DIR);
     const { stdout: staged } = await run('git', ['diff', '--cached', '--name-only'], REPO_DIR);
     if (!staged.trim()) {
       log.push('không có gì thay đổi');
-      return { files: count, skipped, vaultKb, committed: false, pushed: false, log };
+      return { files: names.length, skipped, vaultKb, committed: false, pushed: false, log };
     }
 
     const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
@@ -379,9 +516,11 @@ export async function push(opts: { remote?: boolean } = {}): Promise<PushResult>
       pushed = true;
       log.push('đã đẩy lên GitHub');
     }
-    return { files: count, skipped, vaultKb, committed: true, pushed, log };
+    return { files: names.length, skipped, vaultKb, committed: true, pushed, log };
   } finally {
     await fs.rm(stage, { recursive: true, force: true });
+    await fs.rm(tar, { force: true });
+    await fs.rm(newVault, { force: true });
   }
 }
 

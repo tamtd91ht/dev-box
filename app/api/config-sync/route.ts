@@ -3,7 +3,9 @@
 //   POST { action }:
 //     'status' {}                     → SyncStatus (sẵn sàng chưa, lần push cuối, ahead/behind)
 //     'setup'  {}                     → cài age + clone repo + sinh machine.json (máy mới)
-//     'push'   {}                     → đóng gói + mã hoá + commit + push. KHÔNG cần passphrase.
+//     'push'   {force?}               → đóng gói + mã hoá + commit + push. KHÔNG cần passphrase.
+//                                       Bị chặn (code SHRINK) nếu bản sắp đẩy làm hụt
+//                                       vault trên origin; force: bỏ qua, ghi đè hẳn.
 //     'pull'   {passphrase, force?}   → git pull + giải mã + ghi vào configs/. CẦN passphrase.
 //                                       force: reset --hard origin, bỏ thay đổi local.
 //
@@ -32,7 +34,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, result: await setup() });
     }
     if (action === 'push') {
-      return NextResponse.json({ ok: true, result: await push({ remote: body.remote }) });
+      return NextResponse.json({
+        ok: true,
+        result: await push({ remote: body.remote, force: body.force }),
+      });
     }
     if (action === 'pull') {
       if (!body.passphrase) {
@@ -44,8 +49,12 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     // Thông báo lỗi từ configSync đã viết cho người đọc — trả nguyên văn.
     // `code` để UI biết đây là trường hợp xử lý được bằng nút (vd DIVERGED →
-    // hiện "Ghi đè bằng bản trên GitHub") thay vì chỉ in lỗi ra.
-    const err = e as Error & { code?: string };
-    return NextResponse.json({ ok: false, error: err.message, code: err.code }, { status: 500 });
+    // hiện "Ghi đè bằng bản trên GitHub"), `detail` để nó liệt kê được cụ thể
+    // file nào sắp mất (SHRINK) chứ không bắt người dùng đoán.
+    const err = e as Error & { code?: string; detail?: unknown };
+    return NextResponse.json(
+      { ok: false, error: err.message, code: err.code, detail: err.detail },
+      { status: 500 },
+    );
   }
 }
