@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import FolderPicker from './FolderPicker';
 import OfficeNewFileModal from './OfficeNewFileModal';
 import WordFormatBar from './WordFormatBar';
-import WordDocView, { type Block, type CellRef, type TextRange } from './WordDocView';
+import WordDocView, { type Block, type CellRef, type DocWidth, type TextRange } from './WordDocView';
 import WordFindPanel from './WordFindPanel';
 import WordOutline from './WordOutline';
 import WordHeaderFooterModal from './WordHeaderFooterModal';
@@ -34,6 +34,16 @@ import {
 } from '@/lib/wordDocUtils';
 
 const RECENT_KEY = 'word.recent';
+const VIEW_KEY = 'word.view';
+
+/** Các nấc phóng to của khung soạn thảo (Ctrl+= / Ctrl+− nhảy theo nấc). */
+const ZOOMS = [80, 90, 100, 110, 125, 150, 175, 200];
+
+const WIDTHS: { v: DocWidth; label: string; hint: string }[] = [
+  { v: 'page', label: 'Khổ giấy', hint: 'Đúng khổ khai trong file — nhìn sát bản in' },
+  { v: 'wide', label: 'Rộng', hint: 'Nới trang ra ~1180px, lề mô phỏng hẹp lại' },
+  { v: 'full', label: 'Kín khung', hint: 'Trang chiếm hết bề ngang khung soạn thảo' },
+];
 
 const TEMPLATES = [
   { v: 'blank', label: 'Trang trắng', hint: 'Bắt đầu từ tài liệu trống', icon: '📄' },
@@ -56,6 +66,31 @@ function saveRecent(list: string[]) {
   try {
     window.localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 10)));
   } catch { /* recents are a nicety */ }
+}
+
+/**
+ * Cách hiển thị trang giấy (bề rộng + phóng to).
+ *
+ * Nhớ giữa các phiên và DÙNG CHUNG cho mọi tab: đây là thói quen nhìn của người
+ * dùng ("màn hình mình rộng, cho chữ to lên"), không phải thuộc tính của một
+ * file — mở file khác mà phải chỉnh lại từ đầu thì rất phiền.
+ */
+interface ViewPrefs { width: DocWidth; zoom: number }
+
+const DEFAULT_VIEW: ViewPrefs = { width: 'page', zoom: 100 };
+
+function loadView(): ViewPrefs {
+  try {
+    const raw = window.localStorage.getItem(VIEW_KEY);
+    if (!raw) return DEFAULT_VIEW;
+    const v = JSON.parse(raw) as Partial<ViewPrefs>;
+    return {
+      width: WIDTHS.some((w) => w.v === v.width) ? (v.width as DocWidth) : DEFAULT_VIEW.width,
+      zoom: typeof v.zoom === 'number' && ZOOMS.includes(v.zoom) ? v.zoom : DEFAULT_VIEW.zoom,
+    };
+  } catch {
+    return DEFAULT_VIEW;
+  }
 }
 
 /** Folder part of an absolute path (for pre-filling the create-new dialog). */
@@ -164,6 +199,9 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
   const [hfOpen, setHfOpen] = useState<'header' | 'footer' | null>(null);
   const [tableOpen, setTableOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(true);
+  // Đọc từ localStorage trong effect (không phải initializer) — component này
+  // vẫn được render trước ở server, đụng `window` ở đó là vỡ.
+  const [view, setView] = useState<ViewPrefs>(DEFAULT_VIEW);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -180,8 +218,25 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
   }, []);
   useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
 
+  /** Đổi cách hiển thị và nhớ luôn — chỉ là hiển thị, KHÔNG sinh op nào. */
+  const patchView = useCallback((p: Partial<ViewPrefs>) => {
+    const next = { ...view, ...p };
+    setView(next);
+    try {
+      window.localStorage.setItem(VIEW_KEY, JSON.stringify(next));
+    } catch { /* view prefs are a nicety */ }
+  }, [view]);
+
+  const zoomBy = useCallback((dir: -1 | 1) => {
+    const cur = ZOOMS.indexOf(view.zoom);
+    const at = cur < 0 ? ZOOMS.indexOf(100) : cur;
+    const next = ZOOMS[Math.min(ZOOMS.length - 1, Math.max(0, at + dir))];
+    if (next !== view.zoom) patchView({ zoom: next });
+  }, [view.zoom, patchView]);
+
   useEffect(() => {
     setRecent(loadRecent());
+    setView(loadView());
     fetchWordFlags()
       .then((f) => { setFlags(f); setEnabled(true); })
       .catch((e) => {
@@ -648,6 +703,11 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
       else if (k === 'i') { e.preventDefault(); applyRunFormat({ i: 1 }); }
       else if (k === 'u') { e.preventDefault(); applyRunFormat({ u: 1 }); }
       else if (k === 'p') { e.preventDefault(); doPrint(); }
+      // Phóng to khung soạn thảo — chặn zoom của cả app (Chromium cũng bắt
+      // Ctrl +/−) để chỉ trang giấy to lên, thanh công cụ giữ nguyên cỡ.
+      else if (k === '=' || k === '+') { e.preventDefault(); zoomBy(1); }
+      else if (k === '-' || k === '_') { e.preventDefault(); zoomBy(-1); }
+      else if (k === '0') { e.preventDefault(); patchView({ zoom: 100 }); }
       else if (k === 's') {
         e.preventDefault();
         if (allowWrite && ops.length > 0) setSaveOpen(true);
@@ -655,7 +715,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [file, active, applyRunFormat, doPrint, allowWrite, ops.length]);
+  }, [file, active, applyRunFormat, doPrint, allowWrite, ops.length, zoomBy, patchView]);
 
   // ── Dẫn xuất cho thanh công cụ ──────────────────────────────────────────────
 
@@ -875,6 +935,26 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
           {outlineOpen ? '◧' : '▢'} Mục lục
         </button>
         <span style={{ flex: 1 }} />
+
+        {/* Cách nhìn trang giấy — chỉ đổi hiển thị, không đụng vào nội dung file. */}
+        <select
+          className="sheet-fmt-select word-width-select"
+          value={view.width}
+          onChange={(e) => patchView({ width: e.target.value as DocWidth })}
+          title={`Bề rộng trang trên màn hình — ${WIDTHS.find((w) => w.v === view.width)?.hint}`}
+          aria-label="Bề rộng trang"
+        >
+          {WIDTHS.map((w) => <option key={w.v} value={w.v}>▭ {w.label}</option>)}
+        </select>
+        <span className="word-zoom" title="Phóng to khung soạn thảo (Ctrl + / Ctrl − / Ctrl 0) — cỡ chữ trong file KHÔNG đổi">
+          <button className="sheet-fmt-btn tiny" onClick={() => zoomBy(-1)}
+            disabled={view.zoom <= ZOOMS[0]} aria-label="Thu nhỏ">−</button>
+          <button className="sheet-fmt-btn tiny word-zoom-val" onClick={() => patchView({ zoom: 100 })}
+            title="Về 100%">{view.zoom}%</button>
+          <button className="sheet-fmt-btn tiny" onClick={() => zoomBy(1)}
+            disabled={view.zoom >= ZOOMS[ZOOMS.length - 1]} aria-label="Phóng to">＋</button>
+        </span>
+
         <span className="badge" title="Ước tính — bố cục thật do Word quyết định">
           {stats.words.toLocaleString('vi')} từ · {stats.chars.toLocaleString('vi')} ký tự
           {' · '}{stats.paras} đoạn{stats.tables > 0 && ` · ${stats.tables} bảng`}
@@ -916,6 +996,8 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
           editingCell={editingCell}
           hits={hits}
           focusBlock={focusBlock}
+          docWidth={view.width}
+          zoom={view.zoom}
           onSelect={(i) => { setSel(i); setEditing(null); setRange(null); if (blocks[i ?? -1]?.kind !== 'tbl') setCell(null); }}
           onEdit={(i) => { setEditing(i); setCell(null); }}
           onCommit={commitEdit}

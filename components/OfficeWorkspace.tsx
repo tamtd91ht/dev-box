@@ -60,6 +60,15 @@ export default function OfficeWorkspace() {
   const [picking, setPicking] = useState<Kind | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * Tràn viền: cả tab Office phủ kín cửa sổ.
+   *
+   * Ẩn KHUNG NGOÀI của app (thanh menu, rail bên trái, chân trang) chứ không
+   * ẩn gì của editor — dãy tab tài liệu, ribbon định dạng, thanh trạng thái
+   * đều còn nguyên, chỉ là giờ được cả màn hình. Không nhớ qua phiên: mở app
+   * lên mà thấy mất thanh menu thì hoảng.
+   */
+  const [zen, setZen] = useState(false);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -69,6 +78,21 @@ export default function OfficeWorkspace() {
     window.addEventListener('mousedown', away);
     return () => window.removeEventListener('mousedown', away);
   }, [menuOpen]);
+
+  // Esc để thoát tràn viền — nhưng nhường trước cho những thứ Esc đang phục vụ:
+  // hộp thoại đang mở, và ô đang gõ dở (Esc ở đó là "hủy sửa đoạn này").
+  useEffect(() => {
+    if (!zen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || el.isContentEditable)) return;
+      if (document.querySelector('.modal-backdrop')) return;
+      setZen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zen]);
 
   const openTab = useCallback((kind: Kind, initialPath?: string) => {
     const t: OfficeTab = { id: nextId(), kind, initialPath, path: initialPath ?? null, dirtyCount: 0 };
@@ -140,7 +164,7 @@ export default function OfficeWorkspace() {
   }, [dirtyTotal]);
 
   return (
-    <div className="office-layout">
+    <div className={`office-layout${zen ? ' zen' : ''}`}>
       <div className="office-tabs" role="tablist" aria-label="Tài liệu đang mở">
         {tabs.map((t) => {
           const on = t.id === activeId;
@@ -193,6 +217,17 @@ export default function OfficeWorkspace() {
             </div>
           )}
         </div>
+
+        <button
+          className={`office-zen-btn${zen ? ' on' : ''}`}
+          onClick={() => setZen((v) => !v)}
+          title={zen
+            ? 'Thu về khung thường — hiện lại thanh menu của app (Esc)'
+            : 'Tràn viền: tài liệu chiếm cả cửa sổ, ẩn thanh menu / rail / chân trang của app. Mọi thanh công cụ của editor vẫn còn.'}
+          aria-pressed={zen}
+        >
+          <span aria-hidden>{zen ? '⤡' : '⤢'}</span> {zen ? 'Thu lại' : 'Tràn viền'}
+        </button>
       </div>
 
       <div className="office-body">

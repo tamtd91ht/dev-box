@@ -3343,6 +3343,32 @@ pre.kafka-drawer-body {
 .office-layout { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
 .office-body { display: grid; flex: 1; min-height: 0; }
 
+/* Tràn viền (⤢): cả tab Office phủ kín cửa sổ — ẩn khung ngoài của app (thanh
+   menu, rail, chân trang), GIỮ nguyên dãy tab tài liệu + mọi thanh công cụ của
+   editor. z-index 45 = trên .appbar (40) nhưng dưới các lớp toàn app (QuickTabs
+   90, Ultra 9090) để chúng vẫn bấm được; hộp thoại của editor nằm BÊN TRONG
+   overlay nên vẫn nổi lên bình thường.
+   Không cần tự tắt khi đổi tab workspace: pane bị ẩn bằng visibility:hidden,
+   thứ này là con của pane nên biến mất theo (xem paneStyle trong app/page.tsx). */
+.office-layout.zen {
+  position: fixed; inset: 0; z-index: 45;
+  padding: 10px 14px 12px; gap: 8px;
+  background: var(--bg-0, var(--bg));
+}
+.office-zen-btn {
+  margin-left: auto; flex: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 11px; border-radius: 10px; font-size: 12px;
+  background: transparent; border: 1px solid var(--glass-brd); color: var(--muted);
+  transition: background .15s, border-color .15s, color .15s;
+}
+.office-zen-btn:hover { color: var(--text); background: var(--glass-2); }
+.office-zen-btn.on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 /* Dãy nút đổi section — tab Office không dùng nữa (đã chuyển sang dãy tab tài
    liệu bên dưới) nhưng tab Google và Tools vẫn dùng. */
 .office-subnav { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -3527,6 +3553,14 @@ pre.kafka-drawer-body {
 .word-fmtbar .sheet-fmt-select.ls { min-width: 88px; }
 .word-fmt-hint { font-size: 10.5px; color: var(--accent); align-self: center; }
 .word-subbar { margin-top: 6px; }
+
+/* Cách nhìn trang giấy: bề rộng + phóng to (chỉ hiển thị, không sửa file). */
+.word-width-select { width: 118px; }
+.word-zoom {
+  display: inline-flex; align-items: center; gap: 1px; padding: 1px;
+  border: 1px solid var(--glass-brd); border-radius: 8px;
+}
+.word-zoom-val { min-width: 46px; justify-content: center; font-variant-numeric: tabular-nums; }
 
 .word-hl-menu button { display: flex; align-items: center; gap: 8px; }
 .word-hl-swatch {

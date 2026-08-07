@@ -23,6 +23,24 @@ export interface CellRef { block: number; r: number; c: number }
 /** Vùng bôi đen trong đoạn đang sửa (offset ký tự). */
 export interface TextRange { from: number; to: number }
 
+/**
+ * Trần bề rộng của trang giấy trong khung soạn thảo.
+ *
+ * `page` = đúng khổ giấy khai trong file (nhìn sát bản in, nhưng trên màn hình
+ * rộng thì cột chữ chỉ chiếm giữa màn hình). `wide` / `full` ưu tiên chỗ gõ.
+ */
+export type DocWidth = 'page' | 'wide' | 'full';
+
+/** Trần bề rộng theo từng chế độ (`full` = hết chỗ khung cho phép). */
+const WIDTH_CAP: Record<DocWidth, string | undefined> = {
+  page: undefined, // lấy theo page.w của file
+  wide: '1180px',
+  full: 'none',
+};
+
+/** Lề mô phỏng tối đa khi nới rộng — xem lý do ở chỗ dùng. */
+const WIDE_MARGIN_CAP = 40;
+
 // ── Định dạng → CSS ──────────────────────────────────────────────────────────
 
 /** Bảng tô sáng của Word → màu CSS. */
@@ -214,6 +232,10 @@ export interface WordDocViewProps {
   hits: Set<number>;
   /** Block đang được cuộn tới (từ mục lục / tìm kiếm). */
   focusBlock: number | null;
+  /** Trần bề rộng trang giấy — chỉ ảnh hưởng cách hiển thị, không đụng vào file. */
+  docWidth: DocWidth;
+  /** Phóng to khung soạn thảo, % (100 = nguyên bản). Cũng chỉ là hiển thị. */
+  zoom: number;
   onSelect: (i: number | null) => void;
   onEdit: (i: number) => void;
   onCommit: (i: number, text: string) => void;
@@ -228,11 +250,18 @@ export interface WordDocViewProps {
 
 const WordDocView = forwardRef<HTMLDivElement, WordDocViewProps>(function WordDocView({
   blocks, page, headers, footers, sel, editing, cell, editingCell, hits, focusBlock,
+  docWidth, zoom,
   onSelect, onEdit, onCommit, onCancel, onSelectionChange,
   onPickCell, onEditCell, onCommitCell, onCancelCell,
 }, ref) {
   const defaultHeader = headers.find((h) => h.type === 'default');
   const defaultFooter = footers.find((f) => f.type === 'default');
+
+  // Nới rộng thì kẹp luôn lề mô phỏng lại: lề Word hay là 72pt mỗi bên, giữ
+  // nguyên thì nới trần bề rộng xong cột chữ vẫn hụt mất gần 200px.
+  const wide = docWidth !== 'page';
+  const ml = wide ? Math.min(page.ml, WIDE_MARGIN_CAP) : page.ml;
+  const mr = wide ? Math.min(page.mr, WIDE_MARGIN_CAP) : page.mr;
 
   // Số thứ tự cho danh sách đánh số: đếm lại mỗi khi chuỗi list bị ngắt.
   let ordinal = 0;
@@ -242,11 +271,15 @@ const WordDocView = forwardRef<HTMLDivElement, WordDocViewProps>(function WordDo
       <div
         className="word-doc"
         style={{
-          maxWidth: `${page.w}pt`,
-          paddingLeft: `${page.ml}pt`,
-          paddingRight: `${page.mr}pt`,
+          maxWidth: WIDTH_CAP[docWidth] ?? `${page.w}pt`,
+          paddingLeft: `${ml}pt`,
+          paddingRight: `${mr}pt`,
           paddingTop: `${Math.min(page.mt, 54)}pt`,
           paddingBottom: `${Math.min(page.mb, 54)}pt`,
+          // `zoom` (không phải transform: scale) để bố cục được tính lại theo
+          // tỉ lệ mới — chữ, bảng và cả textarea đang gõ đều to lên mà trang
+          // vẫn tự vừa khung, không sinh thanh cuộn ngang như scale.
+          ...(zoom === 100 ? {} : { zoom: zoom / 100 }),
         }}
       >
         {defaultHeader && <HeaderFooterView hf={defaultHeader} kind="header" />}
