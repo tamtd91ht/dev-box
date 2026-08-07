@@ -139,6 +139,12 @@ export interface SyncStatus {
   ready: boolean;
   /** Vì sao chưa ready — hiện cho người dùng biết phải làm gì. */
   reason?: string;
+  /** Việc app TỰ LÀM ĐƯỢC để hết `reason` — nút "Thiết lập" gọi setup().
+   *  'clone'   chưa có repo config trên máy
+   *  'machine' có repo rồi nhưng chưa khai đường dẫn của máy này
+   *  'age'     chưa cài age.exe (winget install)
+   *  null      không tự làm được, phải người xử lý (xem reason) */
+  fixable?: 'clone' | 'machine' | 'age' | null;
   repoDir: string;
   machineName?: string;
   /** Có public key → push được (không cần passphrase). */
@@ -161,19 +167,33 @@ export async function getStatus(): Promise<SyncStatus> {
     st.localFiles = (await fs.readdir(configDir())).filter((f) => f.endsWith('.json')).length;
   } catch { /* configs/ chưa có — vẫn báo được các phần khác */ }
 
+  // age.exe kiểm trước: thiếu nó thì clone về cũng không giải mã được.
+  try { await agePath(); } catch {
+    st.reason = 'Chưa cài age (công cụ mã hoá). Bấm "Thiết lập" để cài tự động.';
+    st.fixable = 'age';
+    return st;
+  }
+
   if (!await exists(REPO_DIR)) {
-    st.reason = `Chưa clone repo config về ${REPO_DIR}`;
+    st.reason = 'Máy này chưa có repo config. Bấm "Thiết lập" để tải về.';
+    st.fixable = 'clone';
     return st;
   }
   if (!await exists(MACHINE_FILE)) {
-    st.reason = 'Repo đã có nhưng thiếu machine.json — copy machine.example.json rồi sửa đường dẫn.';
+    st.reason = 'Chưa khai đường dẫn của máy này. Bấm "Thiết lập" để tạo tự động.';
+    st.fixable = 'machine';
     return st;
   }
 
   st.canPush = await exists(PUB_FILE);
   st.canPull = await exists(KEY_FILE);
   if (!st.canPush) {
-    st.reason = 'Chưa tạo khoá. Chạy một lần: .\\scripts\\bootstrap.ps1 -Init';
+    // Khoá nằm trong repo nên clone về là có. Thiếu nó nghĩa là repo rỗng —
+    // chưa máy nào chạy -Init. Việc này KHÔNG tự làm được: passphrase phải do
+    // người đặt, và chỉ làm MỘT LẦN trên máy đầu tiên.
+    st.reason = 'Repo config chưa có khoá mã hoá — máy đầu tiên phải tạo khoá trước '
+      + '(chạy .\\scripts\\bootstrap.ps1 -Init ở repo config), rồi máy này mới kéo về được.';
+    st.fixable = null;
     return st;
   }
 
@@ -202,6 +222,97 @@ export async function getStatus(): Promise<SyncStatus> {
 
   st.ready = true;
   return st;
+}
+
+// ── SETUP: dựng repo config trên máy mới, không cần chạy lệnh tay ──────────
+export const CONFIG_REPO_URL = process.env.DEVBOX_CONFIG_REPO_URL
+  || 'https://github.com/tamtd91ht/dev-box-config.git';
+
+export interface SetupResult { log: string[]; status: SyncStatus }
+
+/**
+ * Làm những việc mà trước đây bắt người dùng chạy script: cài age, clone repo
+ * config, sinh machine.json cho máy này. Sau khi xong thì Pull được ngay.
+ *
+ * KHÔNG tạo khoá (-Init): passphrase phải do người đặt và chỉ làm một lần trên
+ * máy đầu tiên. Máy thứ 2 trở đi lấy khoá từ repo (age-key.enc đã bọc).
+ */
+export async function setup(): Promise<SetupResult> {
+  const log: string[] = [];
+
+  // 1. age.exe
+  try {
+    await agePath();
+    log.push('age đã có');
+  } catch {
+    log.push('đang cài age…');
+    await run('winget', [
+      'install', '--id', 'FiloSottile.age', '--source', 'winget',
+      '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity',
+    ]);
+    agePathCache = null; // buộc dò lại sau khi cài
+    await agePath();
+    log.push('đã cài age');
+  }
+
+  // 2. clone repo config
+  if (!await exists(REPO_DIR)) {
+    log.push(`đang tải repo config về ${REPO_DIR}…`);
+    await run('git', ['clone', CONFIG_REPO_URL, REPO_DIR]);
+    log.push('đã tải repo config');
+  } else {
+    log.push('repo config đã có');
+  }
+
+  // 3. machine.json — suy đường dẫn từ chỗ app đang chạy.
+  if (!await exists(MACHINE_FILE)) {
+    const devboxRoot = process.cwd();          // dev-box đang chạy ở đây
+    const toolRoot = path.dirname(devboxRoot); // ...\tool\vhs
+    // SOURCES_ROOT: quy ước của máy đầu là <ổ>\vihat\sources. Dò vài chỗ hay
+    // gặp, không thấy thì để trống — người dùng sửa sau nếu cần. Để trống vẫn
+    // pull được, chỉ là đường dẫn project trong gitprojects.json không khớp.
+    const guesses = [
+      path.join(path.dirname(toolRoot), 'sources'),          // ...\vihat\sources
+      path.join(path.parse(devboxRoot).root, 'vihat', 'sources'),
+      path.join(path.dirname(devboxRoot), 'sources'),
+    ];
+    let sourcesRoot = '';
+    for (const g of guesses) {
+      if (await exists(g)) { sourcesRoot = g; break; }
+    }
+
+    const machine = {
+      _comment: 'Duong dan rieng cua may nay. File nay KHONG duoc commit. '
+        + 'App tu sinh khi bam "Thiet lap" — sua lai neu duong dan doan sai.',
+      name: os.hostname(),
+      paths: {
+        DEVBOX_ROOT: devboxRoot,
+        TOOL_ROOT: toolRoot,
+        SOURCES_ROOT: sourcesRoot || path.join(path.dirname(toolRoot), 'sources'),
+      },
+    };
+    await fs.writeFile(MACHINE_FILE, JSON.stringify(machine, null, 2), 'utf8');
+    log.push(`đã tạo machine.json (${machine.name})`);
+    log.push(`  DEVBOX_ROOT  = ${devboxRoot}`);
+    log.push(`  TOOL_ROOT    = ${toolRoot}`);
+    log.push(`  SOURCES_ROOT = ${machine.paths.SOURCES_ROOT}${sourcesRoot ? '' : '  (đoán — sửa nếu sai)'}`);
+  } else {
+    log.push('machine.json đã có');
+  }
+
+  // 4. cài pre-commit hook (git không clone hook theo repo)
+  try {
+    const hookSrc = path.join(REPO_DIR, 'scripts', 'pre-commit');
+    const hookDst = path.join(REPO_DIR, '.git', 'hooks', 'pre-commit');
+    if (await exists(hookSrc) && !await exists(hookDst)) {
+      // Hook là shell script — phải LF, nếu CRLF thì sh báo "bad interpreter".
+      const text = (await fs.readFile(hookSrc, 'utf8')).replace(/\r\n/g, '\n');
+      await fs.writeFile(hookDst, text, 'utf8');
+      log.push('đã cài pre-commit hook (lưới an toàn chống lộ secret)');
+    }
+  } catch { /* không có hook thì bỏ qua, không phải lỗi chặn */ }
+
+  return { log, status: await getStatus() };
 }
 
 // ── PUSH ───────────────────────────────────────────────────────────────────
@@ -284,7 +395,7 @@ export interface PullResult { files: number; created: string[]; changed: string[
  * vẫn đọc được — nhưng phải khởi động lại app để nó nạp config mới, vì phần lớn
  * store đọc file một lần lúc start.
  */
-export async function pull(passphrase: string): Promise<PullResult> {
+export async function pull(passphrase: string, opts: { force?: boolean } = {}): Promise<PullResult> {
   const log: string[] = [];
   const st = await getStatus();
   if (!st.ready) throw new Error(st.reason || 'Repo config chưa sẵn sàng.');
@@ -294,16 +405,32 @@ export async function pull(passphrase: string): Promise<PullResult> {
   const manifest = await readManifest();
   const tokenize = new Set(manifest.devbox?.tokenize || []);
 
-  try {
-    await run('git', ['pull', '--ff-only'], REPO_DIR);
-    log.push('git pull');
-  } catch (e) {
-    // --ff-only: hai máy cùng sửa thì dừng, không tự merge ciphertext (vô nghĩa).
-    throw new Error(
-      'git pull thất bại — có thể hai máy cùng push. Xử lý tay trong repo config: '
-      + 'git log --oneline --all, rồi git reset --hard origin/main (lấy bản trên GitHub) '
-      + `hoặc git push --force (giữ bản máy này). Chi tiết: ${(e as Error).message}`,
-    );
+  if (opts.force) {
+    // LẤY HẲN BẢN TRÊN GITHUB, bỏ mọi commit/thay đổi chỉ có ở máy này.
+    // Dùng khi hai máy cùng push và bạn đã chọn bên GitHub thắng.
+    await run('git', ['fetch', 'origin'], REPO_DIR);
+    const { stdout: br } = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], REPO_DIR);
+    const branch = br.trim() || 'main';
+    await run('git', ['reset', '--hard', `origin/${branch}`], REPO_DIR);
+    // Vault/machine.json không bị clean vì đã gitignore; -fd chỉ dọn rác lạ.
+    await run('git', ['clean', '-fd'], REPO_DIR);
+    log.push(`ghi đè: đã lấy hẳn origin/${branch}`);
+  } else {
+    try {
+      await run('git', ['pull', '--ff-only'], REPO_DIR);
+      log.push('git pull');
+    } catch (e) {
+      // --ff-only: hai máy cùng sửa thì DỪNG, không tự merge ciphertext (merge
+      // hai file .age là ra file hỏng). Ném lỗi có dấu hiệu để UI hiện nút
+      // "Kéo về và ghi đè" thay vì bắt người dùng chạy git tay.
+      const err = new Error(
+        'Hai máy cùng sửa config nên không kéo về thẳng được. '
+        + 'Chọn "Ghi đè bằng bản trên GitHub" để lấy bản trên mạng '
+        + '(thay đổi chưa đẩy của máy này sẽ mất), hoặc Đẩy lên trước nếu máy này mới hơn.',
+      );
+      (err as Error & { code?: string }).code = 'DIVERGED';
+      throw err;
+    }
   }
 
   const idFile = await unwrapKey(passphrase);

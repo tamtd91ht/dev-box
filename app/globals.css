@@ -1165,6 +1165,10 @@ audio { width: 100%; margin-top: 12px; }
 .cfgsync-go:disabled { opacity: 0.45; cursor: not-allowed; }
 .cfgsync-go.alt { color: var(--text); background: var(--glass-2); border-color: var(--glass-brd); }
 .cfgsync-go.alt:hover:not(:disabled) { border-color: var(--accent); }
+/* Hành động bỏ dữ liệu (ghi đè bằng bản trên GitHub) — màu cảnh báo để không
+   bấm nhầm khi đang nhắm nút "Giải mã" ngay trên. */
+.cfgsync-go.danger { background: var(--err-bg); color: var(--err); border-color: var(--err); }
+.cfgsync-go.danger:hover:not(:disabled) { background: var(--err); color: #2a0710; }
 
 .cfgsync-pass { display: flex; gap: 8px; }
 .cfgsync-pass input {

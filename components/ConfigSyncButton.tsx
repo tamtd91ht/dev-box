@@ -16,6 +16,8 @@ interface GitInfo { ahead: number; behind: number; dirty: boolean; lastCommit?: 
 interface SyncStatus {
   ready: boolean;
   reason?: string;
+  /** App tự xử lý được cái đang thiếu → hiện nút "Thiết lập". */
+  fixable?: 'clone' | 'machine' | 'age' | null;
   repoDir: string;
   machineName?: string;
   canPush: boolean;
@@ -26,6 +28,12 @@ interface SyncStatus {
   git?: GitInfo;
 }
 
+/** Lỗi kèm `code` để phân biệt trường hợp xử lý được bằng nút. */
+class ApiError extends Error {
+  code?: string;
+  constructor(message: string, code?: string) { super(message); this.code = code; }
+}
+
 async function api<T>(action: string, params: Record<string, unknown> = {}): Promise<T> {
   const r = await fetch('/api/config-sync', {
     method: 'POST',
@@ -33,7 +41,7 @@ async function api<T>(action: string, params: Record<string, unknown> = {}): Pro
     body: JSON.stringify({ action, ...params }),
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok || data.ok === false) throw new Error(data.error || `HTTP ${r.status}`);
+  if (!r.ok || data.ok === false) throw new ApiError(data.error || `HTTP ${r.status}`, data.code);
   return data.result as T;
 }
 
@@ -51,7 +59,9 @@ function fmtAgo(iso?: string): string {
 export default function ConfigSyncButton() {
   const [open, setOpen] = useState(false);
   const [st, setSt] = useState<SyncStatus | null>(null);
-  const [busy, setBusy] = useState<'' | 'push' | 'pull'>('');
+  const [busy, setBusy] = useState<'' | 'push' | 'pull' | 'setup'>('');
+  /** Pull bị chặn vì hai máy cùng sửa → hiện nút ghi đè. */
+  const [diverged, setDiverged] = useState(false);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err' | 'info'; text: string } | null>(null);
   const [askPass, setAskPass] = useState(false);
   const [pass, setPass] = useState('');
@@ -113,14 +123,32 @@ export default function ConfigSyncButton() {
     } finally { setBusy(''); }
   };
 
-  const doPull = async () => {
+  const doSetup = async () => {
+    setBusy('setup');
+    setMsg({ kind: 'info', text: 'Đang thiết lập — có thể mất một phút nếu phải cài age…' });
+    try {
+      const r = await api<{ log: string[]; status: SyncStatus }>('setup');
+      setSt(r.status);
+      setMsg({
+        kind: r.status.ready ? 'ok' : 'info',
+        text: r.log.join(' · ') + (r.status.ready ? ' — xong, bấm "Kéo về" để lấy config.' : ''),
+      });
+    } catch (e) {
+      setMsg({ kind: 'err', text: (e as Error).message });
+    } finally { setBusy(''); }
+  };
+
+  const doPull = async (force = false) => {
     if (!pass) { setMsg({ kind: 'err', text: 'Nhập passphrase đã.' }); return; }
     setBusy('pull');
-    setMsg({ kind: 'info', text: 'Đang kéo về và giải mã…' });
+    setMsg({ kind: 'info', text: force ? 'Đang ghi đè bằng bản trên GitHub…' : 'Đang kéo về và giải mã…' });
     try {
-      const r = await api<{ files: number; created: string[]; changed: string[] }>('pull', { passphrase: pass });
+      const r = await api<{ files: number; created: string[]; changed: string[] }>(
+        'pull', { passphrase: pass, force },
+      );
       setPass('');
       setAskPass(false);
+      setDiverged(false);
       const parts = [`Đã ghi ${r.files} file`];
       if (r.created.length) parts.push(`mới: ${r.created.join(', ')}`);
       if (r.changed.length) parts.push(`cập nhật: ${r.changed.join(', ')}`);
@@ -131,7 +159,11 @@ export default function ConfigSyncButton() {
       setNeedReload(r.files > 0);
       await refresh();
     } catch (e) {
-      setMsg({ kind: 'err', text: (e as Error).message });
+      const err = e as ApiError;
+      // Hai máy cùng sửa → không kéo về thẳng được. Giữ passphrase đã nhập và
+      // hiện nút ghi đè, để người dùng quyết chứ không tự ý bỏ dữ liệu của họ.
+      if (err.code === 'DIVERGED') setDiverged(true);
+      setMsg({ kind: 'err', text: err.message });
     } finally { setBusy(''); }
   };
 
@@ -169,12 +201,23 @@ export default function ConfigSyncButton() {
           ) : !st.ready ? (
             <>
               <div className="cfgsync-row warn">{st.reason}</div>
-              <div className="cfgsync-row muted small">
-                Repo: <code>{st.repoDir}</code>
-              </div>
-              <div className="cfgsync-row muted small">
-                Xem hướng dẫn ở <code>HUONG-DAN.md</code> trong repo config.
-              </div>
+              {st.fixable ? (
+                <>
+                  {/* Máy mới: app tự cài age, tải repo config, sinh machine.json.
+                      Trước đây bắt chạy 7 lệnh PowerShell — không có lý gì. */}
+                  <button className="cfgsync-go" onClick={doSetup} disabled={!!busy}>
+                    {busy === 'setup' ? 'Đang thiết lập…' : '⚙ Thiết lập tự động'}
+                  </button>
+                  <div className="cfgsync-row muted small">
+                    Sẽ cài <code>age</code> nếu thiếu, tải repo config về{' '}
+                    <code>{st.repoDir}</code>, và khai đường dẫn cho máy này.
+                  </div>
+                </>
+              ) : (
+                <div className="cfgsync-row muted small">
+                  Repo: <code>{st.repoDir}</code> — xem <code>HUONG-DAN.md</code>.
+                </div>
+              )}
             </>
           ) : (
             <>
@@ -217,16 +260,40 @@ export default function ConfigSyncButton() {
                     placeholder="Passphrase"
                     value={pass}
                     onChange={(e) => setPass(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') void doPull(); if (e.key === 'Escape') { setAskPass(false); setPass(''); } }}
+                    onKeyDown={(e) => {
+                      // Gọi doPull() không tham số — KHÔNG truyền hàm trực tiếp cho
+                      // onClick/onKeyDown, vì React đưa event vào chỗ `force`
+                      // (event là truthy → hoá ra luôn ghi đè).
+                      if (e.key === 'Enter') void doPull();
+                      if (e.key === 'Escape') { setAskPass(false); setPass(''); setDiverged(false); }
+                    }}
                     autoComplete="off"
                   />
-                  <button className="cfgsync-go" onClick={doPull} disabled={!!busy || !pass}>
+                  <button className="cfgsync-go" onClick={() => void doPull()} disabled={!!busy || !pass}>
                     {busy === 'pull' ? 'Đang kéo…' : 'Giải mã'}
                   </button>
                 </div>
               )}
 
-              {askPass && (
+              {askPass && diverged && (
+                <>
+                  <button
+                    className="cfgsync-go danger"
+                    onClick={() => void doPull(true)}
+                    disabled={!!busy || !pass}
+                    title="git reset --hard origin — bỏ commit/thay đổi chỉ có ở máy này"
+                  >
+                    ⚠ Ghi đè bằng bản trên GitHub
+                  </button>
+                  <div className="cfgsync-row muted small">
+                    Máy này và GitHub đã lệch nhau. Ghi đè sẽ <b>bỏ</b> thay đổi chưa
+                    đẩy của máy này và lấy hẳn bản trên GitHub. Nếu config máy này
+                    mới hơn thì <b>Đẩy lên</b> trước, đừng ghi đè.
+                  </div>
+                </>
+              )}
+
+              {askPass && !diverged && (
                 <div className="cfgsync-row muted small">
                   Kéo về sẽ ghi đè config trên máy (bản cũ lưu thành <code>.bak-*</code>).
                   Nên đẩy lên trước nếu máy này có thay đổi chưa lưu.
