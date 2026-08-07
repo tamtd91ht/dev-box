@@ -138,7 +138,25 @@ function dirOf(p: string): string {
   return p.replace(/[\\/][^\\/]*$/, '');
 }
 
-export default function SheetWorkspace() {
+/**
+ * Editor này là MỘT tài liệu. Mở nhiều file = mount nhiều instance (xem
+ * OfficeWorkspace) — mọi state file nằm trong đây nên các tab hoàn toàn độc lập.
+ */
+export interface SheetWorkspaceProps {
+  /** Mở sẵn file này lúc mount (tab được tạo từ "Mở bảng tính"); bỏ trống → hiện màn hình chào. */
+  initialPath?: string;
+  /** Báo tên file + số thay đổi chưa lưu lên dãy tab của Office. */
+  onDocState?: (s: { path: string | null; dirtyCount: number }) => void;
+  /**
+   * Tab này có đang được xem không — nhận cho ĐỒNG BỘ với WordWorkspace (host
+   * truyền như nhau cho cả hai loại). Editor này không cần dùng tới: phím tắt của
+   * nó bắt trên chính lưới (onGridKeyDown) chứ không phải `window`, nên bản bị
+   * che vốn đã không thể nhận phím.
+   */
+  active?: boolean;
+}
+
+export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspaceProps = {}) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [flags, setFlags] = useState<SheetFlags | null>(null);
 
@@ -262,6 +280,21 @@ export default function SheetWorkspace() {
       setBusy(false);
     }
   }, [applyOpen]);
+
+  // Tab được tạo kèm đường dẫn → mở luôn, khỏi bắt bấm lại lần nữa. Đợi
+  // `enabled` để không gọi API khi tool đang tắt; ref chặn mở lại nếu người dùng
+  // đã đóng file đó trong cùng tab.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (!initialPath || seededRef.current || enabled !== true) return;
+    seededRef.current = true;
+    void openPath(initialPath);
+  }, [initialPath, enabled, openPath]);
+
+  // Dãy tab của Office cần tên file + số thay đổi để hiện dấu ●.
+  useEffect(() => {
+    onDocState?.({ path: file?.path ?? null, dirtyCount });
+  }, [file?.path, dirtyCount, onDocState]);
 
   const doCreate = useCallback(async (dir: string, name: string) => {
     setBusy(true); setErr(null);

@@ -122,7 +122,24 @@ function spliceRuns(prev: RunSpan[], next: string): RunSpan[] {
   ]);
 }
 
-export default function WordWorkspace() {
+/**
+ * Editor này là MỘT tài liệu. Mở nhiều file = mount nhiều instance (xem
+ * OfficeWorkspace) — mọi state file nằm trong đây nên các tab hoàn toàn độc lập.
+ */
+export interface WordWorkspaceProps {
+  /** Mở sẵn file này lúc mount (tab được tạo từ "Mở văn bản"); bỏ trống → hiện màn hình chào. */
+  initialPath?: string;
+  /** Báo tên file + số thay đổi chưa lưu lên dãy tab của Office. */
+  onDocState?: (s: { path: string | null; dirtyCount: number }) => void;
+  /**
+   * Tab này có đang được xem không. Nhiều instance cùng MOUNT một lúc (mỗi tab
+   * một tài liệu) mà phím tắt lại bắt trên `window`, nên bản bị che PHẢI bỏ qua
+   * — không thì Ctrl+S mở hộp thoại lưu của cả tài liệu đang không nhìn thấy.
+   */
+  active?: boolean;
+}
+
+export default function WordWorkspace({ initialPath, onDocState, active = true }: WordWorkspaceProps = {}) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [flags, setFlags] = useState<WordFlags | null>(null);
 
@@ -200,6 +217,21 @@ export default function WordWorkspace() {
       setBusy(false);
     }
   }, [applyOpen]);
+
+  // Tab được tạo kèm đường dẫn → mở luôn, khỏi bắt bấm lại lần nữa. Đợi
+  // `enabled` để không gọi API khi tool đang tắt; ref chặn mở lại nếu người dùng
+  // đã đóng file đó trong cùng tab.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (!initialPath || seededRef.current || enabled !== true) return;
+    seededRef.current = true;
+    void openPath(initialPath);
+  }, [initialPath, enabled, openPath]);
+
+  // Dãy tab của Office cần tên file + số thay đổi để hiện dấu ●.
+  useEffect(() => {
+    onDocState?.({ path: file?.path ?? null, dirtyCount });
+  }, [file?.path, dirtyCount, onDocState]);
 
   const doCreate = useCallback(async (dir: string, name: string, template?: string) => {
     setBusy(true); setErr(null);
@@ -605,7 +637,8 @@ export default function WordWorkspace() {
   const allowWrite = flags?.allowWrite === true;
 
   useEffect(() => {
-    if (!file) return;
+    // Tab bị che không nhận phím tắt — xem `active` trong WordWorkspaceProps.
+    if (!file || !active) return;
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
@@ -622,7 +655,7 @@ export default function WordWorkspace() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [file, applyRunFormat, doPrint, allowWrite, ops.length]);
+  }, [file, active, applyRunFormat, doPrint, allowWrite, ops.length]);
 
   // ── Dẫn xuất cho thanh công cụ ──────────────────────────────────────────────
 

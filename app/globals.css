@@ -3337,6 +3337,10 @@ pre.kafka-drawer-body {
 
 /* ── Office workspace shell (▦ Bảng tính · 🗎 Văn bản) ──────────────── */
 .office-layout { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
+.office-body { display: grid; flex: 1; min-height: 0; }
+
+/* Dãy nút đổi section — tab Office không dùng nữa (đã chuyển sang dãy tab tài
+   liệu bên dưới) nhưng tab Google và Tools vẫn dùng. */
 .office-subnav { display: flex; gap: 6px; flex-wrap: wrap; }
 .office-subnav-btn {
   display: inline-flex; align-items: center; gap: 9px; cursor: pointer;
@@ -3354,7 +3358,60 @@ pre.kafka-drawer-body {
 .office-subnav-ico { font-size: 16px; }
 .office-subnav-text { display: flex; flex-direction: column; gap: 1px; font-size: 13px; line-height: 1.15; }
 .office-subnav-hint { font-size: 10px; font-weight: 400; color: var(--faint); letter-spacing: .02em; }
-.office-body { display: grid; flex: 1; min-height: 0; }
+
+/* ── Dãy tab tài liệu (mỗi tab = 1 file đang mở, xem OfficeWorkspace) ── */
+.office-tabs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+/* Tab = tiêu đề + nút ✕ nằm cạnh nhau, viền chung — bọc div vì không lồng
+   được <button> trong <button>. */
+.office-tab {
+  display: inline-flex; align-items: stretch; border-radius: 10px; overflow: hidden;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+  transition: background .15s, border-color .15s;
+  max-width: 260px;
+}
+.office-tab:hover { background: var(--glass-2); }
+.office-tab.on {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.office-tab-main {
+  display: inline-flex; align-items: center; gap: 7px; min-width: 0; cursor: pointer;
+  padding: 6px 4px 6px 11px; background: transparent; border: 0; color: var(--muted);
+  font-size: 12.5px; line-height: 1.2;
+}
+.office-tab.on .office-tab-main { color: var(--text); font-weight: 600; }
+.office-tab-ico { font-size: 14px; flex: none; }
+.office-tab.on .office-tab-ico { color: var(--accent); }
+.office-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Dấu ● = còn thay đổi chưa lưu (cùng ngôn ngữ với sheet-dirty-badge). */
+.office-tab-dot { flex: none; font-size: 9px; color: var(--warn, #d29922); }
+.office-tab-x {
+  flex: none; cursor: pointer; padding: 0 8px; background: transparent; border: 0;
+  color: var(--faint); font-size: 11px; line-height: 1;
+}
+.office-tab-x:hover { color: var(--err); background: color-mix(in srgb, var(--err) 14%, transparent); }
+
+.office-tab-add { position: relative; }
+.office-tab-addbtn {
+  display: inline-flex; align-items: center; gap: 1px; cursor: pointer;
+  padding: 6px 9px; border-radius: 10px; font-size: 13px;
+  background: transparent; border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.office-tab-addbtn:hover { color: var(--text); background: var(--glass-2); }
+.office-tab-caret { font-size: 9px; opacity: .8; }
+.office-tab-menu {
+  position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; min-width: 190px;
+  display: flex; flex-direction: column; padding: 4px;
+  border-radius: 10px; background: var(--panel, var(--glass)); border: 1px solid var(--glass-brd);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .34);
+}
+.office-tab-menu > button {
+  display: flex; align-items: center; gap: 8px; cursor: pointer; text-align: left;
+  padding: 7px 10px; border-radius: 7px; font-size: 12.5px;
+  background: transparent; border: 0; color: var(--text);
+}
+.office-tab-menu > button:hover { background: var(--glass-2); }
+.office-tab-menu-sep { height: 1px; margin: 4px 6px; background: var(--glass-brd); }
 
 /* ── Word editor ────────────────────────────────────────────────────── */
 /* Bố cục: [mục lục] | [trang giấy cuộn được]. Trang giấy mô phỏng khổ A4 —
