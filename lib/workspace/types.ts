@@ -116,6 +116,10 @@ export interface WorkspaceBridge {
   /** window.open() từ chính UI DevBox → mở TRONG app thay vì Edge/Chrome; đích
    *  do defaultTargetFor() quyết định. Optional: preload cũ chưa expose. */
   onOpenInApp?(cb: (url: string) => void): () => void;
+  /** Phím tắt khung app bấm khi con trỏ đang ở TRONG một <webview> (đang chat
+   *  Zalo chẳng hạn): phím không bubble ra host page, main process bắt hộ rồi
+   *  chuyển về đây. Trả về hàm hủy đăng ký. Optional: preload cũ chưa expose. */
+  onShortcut?(cb: (name: 'quickTabs' | 'prevTab' | 'ultraView') => void): () => void;
   /** Niêm phong mật khẩu bằng safeStorage (DPAPI) trước khi ghi xuống đĩa.
    *  error='unavailable' khi OS không hỗ trợ → caller lưu plaintext + cảnh báo.
    *  Optional: preload cũ chưa expose. */

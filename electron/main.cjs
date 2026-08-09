@@ -379,6 +379,21 @@ function wireDownloadPolicy(ses, label) {
   });
 }
 
+/**
+ * Phím tắt của KHUNG APP cần chạy kể cả khi con trỏ đang ở trong <webview>.
+ * Trả về tên phím tắt, hoặc null nếu tổ hợp không phải của app.
+ *
+ * Nhận diện theo `input.code` (vị trí phím vật lý) đúng như host page làm, để
+ * layout AZERTY/JIS vẫn bấm đúng ngón — riêng Tab thì `key` mới ổn định.
+ */
+function appShortcutOf(input) {
+  if (!input.control || input.alt || input.meta) return null;
+  if (!input.shift && input.code === 'Backquote') return 'quickTabs';
+  if (!input.shift && input.key === 'Tab') return 'prevTab';
+  if (input.shift && input.code === 'KeyU') return 'ultraView';
+  return null;
+}
+
 /** Harden + instrument each <webview> guest as it attaches to the window. */
 function wireWebviewHardening(win) {
   const wc = win.webContents;
@@ -533,11 +548,29 @@ function wireWebviewHardening(win) {
     //     (phím trong guest không bubble ra host nên phải bắt ở before-input-event).
     //   · Chuột phải → menu Cut/Copy/Paste + "Inspect element" đúng vị trí click
     //     (webview mặc định không có context menu nào).
-    guest.on('before-input-event', (_e, input) => {
+    //
+    // Cùng lý do đó, PHÍM TẮT CỦA APP (Ctrl+` · Ctrl+Tab · Ctrl+Shift+U) cũng
+    // chết khi con trỏ đang nằm trong webview: đang chat Zalo thì phím đi thẳng
+    // vào trang Zalo, host page không bao giờ thấy keydown. Bắt hộ ở đây rồi
+    // chuyển cho renderer — chỉ đúng ba tổ hợp này, phím khác vẫn để guest xử lý
+    // nguyên vẹn.
+    guest.on('before-input-event', (event, input) => {
       if (input.type !== 'keyDown') return;
       if (input.key === 'F12' || (input.control && input.shift && (input.key === 'I' || input.key === 'i'))) {
         guest.toggleDevTools();
+        return;
       }
+      const shortcut = appShortcutOf(input);
+      if (!shortcut) return;
+      event.preventDefault(); // guest không nhận phím này nữa
+      if (win.isDestroyed()) return;
+      // Kéo focus về host TRƯỚC khi báo: overlay tiếp cận nhanh có ô tìm kiếm,
+      // focus còn kẹt trong guest thì mở ra cũng không gõ được. Cùng cặp lệnh
+      // với ipc 'workspace:focusHost' — chỉ win.webContents.focus() đôi khi
+      // không rứt nổi focus khỏi frame của guest.
+      win.focus();
+      win.webContents.focus();
+      win.webContents.send('desktop:shortcut', shortcut);
     });
     guest.on('context-menu', (_e, params) => {
       const menu = Menu.buildFromTemplate([

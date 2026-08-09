@@ -49,6 +49,14 @@ contextBridge.exposeInMainWorld('workspace', {
     ipcRenderer.on('workspace:openInApp', handler);
     return () => ipcRenderer.removeListener('workspace:openInApp', handler);
   },
+  /** Phím tắt khung app (Ctrl+` · Ctrl+Tab · Ctrl+Shift+U) bấm khi con trỏ đang
+   *  ở TRONG một <webview>: phím không bubble ra host page nên main process bắt
+   *  hộ ở before-input-event rồi chuyển về đây. Trả về hàm hủy đăng ký. */
+  onShortcut: (cb) => {
+    const handler = (_evt, name) => cb(name);
+    ipcRenderer.on('desktop:shortcut', handler);
+    return () => ipcRenderer.removeListener('desktop:shortcut', handler);
+  },
   /** In HTML ra PDF bằng Chromium của app (tab Tools → Chuyển đổi file).
    *  Next server không gọi được Electron nên renderer làm cầu nối.
    *  → { ok: true, base64 } | { ok: false, error } */

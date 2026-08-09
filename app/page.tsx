@@ -259,6 +259,20 @@ export default function Home() {
     return () => window.removeEventListener('keydown', onKey);
   }, [mode]);
 
+  // Ba phím tắt trên chỉ chạy khi bàn phím đang thuộc về HOST PAGE. Đang gõ dở
+  // trong Zalo/Telegram/Browser thì phím đi thẳng vào <webview> — keydown ở đây
+  // không bao giờ nổ. Main process bắt hộ tại before-input-event của guest rồi
+  // bắn về qua kênh này (xem electron/main.cjs · appShortcutOf), nên xử lý y hệt
+  // nhánh keydown phía trên. Bản chạy trên trình duyệt thường không có bridge —
+  // optional chaining là đủ.
+  useEffect(() => window.workspace?.onShortcut?.((name) => {
+    if (name === 'quickTabs') setQuickOpen((v) => !v);
+    else if (name === 'prevTab') {
+      const prev = recentTabs.previous(mode);
+      if (prev) setMode(prev);
+    } else if (name === 'ultraView') ultraView.toggle(mode);
+  }), [mode]);
+
   /** Chỗ đặt pane `key`: Ultra View thì theo cột, không thì theo tab đang chọn.
    *  Mọi <main> bên dưới đều đi qua đây nên hai chế độ dùng CHUNG một cây pane
    *  — bật/tắt không dựng lại workspace nào. */
