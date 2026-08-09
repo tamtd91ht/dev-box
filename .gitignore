@@ -21,6 +21,10 @@ configs/*
 # không có secret. Nhờ nó, ai pull dev-box về cũng biết project này gồm những
 # repo nào và clone lại được. Xem lib/gitManifest.ts.
 !configs/gitprojects.shared.json
+# NGOẠI LỆ THỨ HAI — manifest app dùng chung của tab Apps. Cùng lý do: nó chỉ có
+# tên app, lệnh `npm run`, cổng, tag; root theo máy nằm ở configs/apps.json và
+# KHÔNG được commit. Xem lib/appManifest.ts.
+!configs/apps.shared.json
 # Các dòng .xxx.json bên dưới là DI SẢN: file cũ ở repo-root, tự động được
 # migrate vào configs/ khi chạy. Giữ lại phòng máy nào chưa migrate xong.
 

@@ -1,0 +1,23 @@
+{
+  "apps": [
+    {
+      "name": "CallBot Session Mockup",
+      "project": "OMICRM",
+      "cmd": "dev",
+      "port": 3001,
+      "tags": [
+        "Mockup"
+      ],
+      "rel": "omicrm-microservice/callbot-web-client"
+    },
+    {
+      "name": "OMICX-Review-MR",
+      "project": "OMICX",
+      "cmd": "bot",
+      "tags": [
+        "Claude"
+      ],
+      "rel": "omicx/omicx-local-all-in-one"
+    }
+  ]
+}

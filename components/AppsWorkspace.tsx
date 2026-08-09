@@ -29,6 +29,15 @@ async function api<T>(action: string, params: Record<string, unknown> = {}): Pro
   return (data as { result: T }).result;
 }
 
+/** Một app trong manifest dùng chung (configs/apps.shared.json) — xem lib/appManifest.ts. */
+interface MissingApp {
+  name: string; cmd: string; project?: string; port?: number;
+  description?: string; tags?: string[]; rel?: string; anchor?: string;
+  /** Thư mục DevBox tự dò ra trên máy này (đã kiểm có package.json). */
+  suggestedRoot?: string;
+}
+interface ManifestStatus { present: boolean; total: number; missing: MissingApp[]; extra: string[] }
+
 type Draft = { name?: string; root?: string; cmd?: string; port?: string; project?: string; description?: string; tagsText?: string };
 const splitTags = (s?: string) => (s ?? '').split(',').map((t) => t.trim()).filter(Boolean);
 
@@ -71,6 +80,99 @@ function Fields({ d, onChange }: { d: Draft; onChange: (d: Draft) => void }) {
   );
 }
 
+/**
+ * Dải "app dùng chung" — đối chiếu configs/apps.shared.json (đi theo repo) với
+ * app đã đăng ký trên máy này. Máy mới chỉ thấy tab Apps trắng trơn nếu không có
+ * cái này: apps.json chứa đường dẫn theo máy nên cố ý không sync.
+ *
+ * Thiếu app nào thì DevBox tự dò thư mục qua project tab Git; dò ra là bấm một
+ * nút, dò không ra thì tự chọn thư mục.
+ */
+function ManifestBar({ status, onAdopted, onError }: {
+  status: ManifestStatus;
+  onAdopted: (r: ListResult & { manifest: ManifestStatus }) => void;
+  onError: (m: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [picking, setPicking] = useState<MissingApp | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const adopt = async (m: MissingApp, root: string) => {
+    setBusy(m.name);
+    try {
+      onAdopted(await api<ListResult & { manifest: ManifestStatus }>('adopt', {
+        name: m.name, cmd: m.cmd, port: m.port, project: m.project,
+        description: m.description, tags: m.tags, root,
+      }));
+    } catch (e) { onError((e as Error).message); }
+    finally { setBusy(null); setPicking(null); }
+  };
+
+  if (!status.present && status.missing.length === 0) return null;
+
+  return (
+    <div className="app-manifest">
+      <button className="app-manifest-head" onClick={() => setOpen((v) => !v)}>
+        <span className="es-tree-caret" aria-hidden>{open ? '▾' : '▸'}</span>
+        <b>App dùng chung</b>
+        <span className="small" style={{ color: 'var(--muted)' }}>
+          {status.total} app trong manifest
+          {status.missing.length > 0 && ` · máy này thiếu ${status.missing.length}`}
+        </span>
+        {status.missing.length > 0 && <span className="app-manifest-badge">{status.missing.length}</span>}
+      </button>
+
+      {open && (
+        <div className="app-manifest-body">
+          <p className="es-hint">
+            Danh sách này đi theo repo dev-box (<code>configs/apps.shared.json</code>) — chỉ gồm tên,
+            lệnh <code>npm run</code>, cổng và tag. Thư mục gốc là của riêng từng máy nên phải trỏ tại chỗ.
+          </p>
+          {status.missing.length === 0 && (
+            <p className="empty">Máy này đã có đủ app trong manifest.</p>
+          )}
+          {status.missing.map((m) => (
+            <div key={`${m.project ?? ''}/${m.name}`} className="app-manifest-row">
+              <span className="app-manifest-name">
+                <b>{m.name}</b>
+                <code>npm run {m.cmd}</code>
+                {m.project && <span className="badge">📁 {m.project}</span>}
+                {m.rel && <span className="small" style={{ color: 'var(--muted)' }} title={m.anchor ? `Tính từ root project Git "${m.anchor}"` : undefined}>…/{m.rel}</span>}
+              </span>
+              {m.suggestedRoot ? (
+                <button className="sm" disabled={busy === m.name} title={`Thêm với thư mục ${m.suggestedRoot}`}
+                  onClick={() => void adopt(m, m.suggestedRoot as string)}>
+                  {busy === m.name ? <span className="spinner" aria-hidden /> : '＋'} Thêm ({m.suggestedRoot})
+                </button>
+              ) : (
+                <button className="ghost sm" disabled={busy === m.name} onClick={() => setPicking(m)}
+                  title="DevBox chưa dò ra thư mục — chọn tay">📂 Trỏ thư mục…</button>
+              )}
+            </div>
+          ))}
+          {status.extra.length > 0 && (
+            <p className="es-hint">
+              Máy này có {status.extra.length} app chưa nằm trong manifest ({status.extra.join(', ')}) —
+              bấm <b>⇪ Đồng bộ manifest</b> nếu muốn chia sẻ cho máy khác.
+            </p>
+          )}
+        </div>
+      )}
+
+      {picking && (
+        <FolderPicker
+          initial={picking.suggestedRoot}
+          title={`Thư mục gốc của "${picking.name}" trên máy này`}
+          hint="Thư mục hợp lệ có package.json (được đánh dấu trong danh sách)."
+          marker="package.json"
+          onPick={(p) => void adopt(picking, p)}
+          onClose={() => setPicking(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 /** Khung log live của một app — poll 1.5s, tự cuộn đáy. */
 function LogPane({ id }: { id: string }) {
   const [lines, setLines] = useState<{ seq: number; line: string }[]>([]);
@@ -108,6 +210,8 @@ export default function AppsWorkspace() {
   const [logId, setLogId] = useState<string | null>(null);
   const [fProject, setFProject] = useState<string | null>(null);
   const [fTag, setFTag] = useState<string | null>(null);
+  const [manifest, setManifest] = useState<ManifestStatus | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
   const apply = (r: ListResult) => { setApps(r.apps); setRunning(r.running); setInstalled(r.installed ?? {}); };
   const reload = useCallback(async () => {
@@ -115,10 +219,18 @@ export default function AppsWorkspace() {
   }, []);
   useEffect(() => { void reload(); const t = setInterval(() => void reload(), 5000); return () => clearInterval(t); }, [reload]);
 
+  // Manifest chỉ đọc lại khi danh sách app đổi — nó chạm đĩa (dò thư mục) nên
+  // không nên bám nhịp poll 5s của trạng thái process.
+  const reloadManifest = useCallback(async () => {
+    try { setManifest((await api<{ manifest: ManifestStatus }>('manifest')).manifest); }
+    catch { /* manifest hỏng không được chặn tab Apps */ }
+  }, []);
+  useEffect(() => { void reloadManifest(); }, [reloadManifest, apps.length]);
+
   const act = async (action: string, params: Record<string, unknown>, id?: string) => {
     setErr(null); if (id) setBusyId(id);
     try { apply(await api<ListResult>(action, params)); } catch (e) { setErr((e as Error).message); }
-    finally { setBusyId(null); }
+    finally { setBusyId(null); void reloadManifest(); }
   };
 
   const projects = [...new Set(apps.map((a) => a.project).filter(Boolean) as string[])].sort();
@@ -133,8 +245,28 @@ export default function AppsWorkspace() {
           <span className="small" style={{ color: 'var(--muted)' }}>start/stop project local — npm run &lt;lệnh&gt;</span>
           <span style={{ flex: 1 }} />
           <button className={`chip-btn${showAdd ? ' on' : ''}`} onClick={() => setShowAdd((v) => !v)}>＋ Thêm app</button>
+          <button
+            className="chip-btn"
+            disabled={syncing || apps.length === 0}
+            title={'Ghi đè configs/apps.shared.json bằng danh sách app của MÁY NÀY, rồi commit theo repo dev-box '
+              + 'để máy khác thấy. Chỉ ghi tên/lệnh/cổng/tag — thư mục gốc vẫn là của riêng từng máy.'}
+            onClick={async () => {
+              setSyncing(true); setErr(null);
+              try { setManifest((await api<{ manifest: ManifestStatus }>('syncManifest')).manifest); }
+              catch (e) { setErr((e as Error).message); }
+              finally { setSyncing(false); }
+            }}
+          >{syncing ? <span className="spinner" aria-hidden /> : '⇪'} Đồng bộ manifest</button>
           <button className="ghost sm" onClick={() => void reload()} title="Tải lại">↻</button>
         </div>
+
+        {manifest && (
+          <ManifestBar
+            status={manifest}
+            onAdopted={(r) => { apply(r); setManifest(r.manifest); }}
+            onError={setErr}
+          />
+        )}
         {showAdd && (
           <div className="glink-meta-form">
             <Fields d={draft} onChange={setDraft} />

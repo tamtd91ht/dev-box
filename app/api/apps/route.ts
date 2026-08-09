@@ -4,6 +4,9 @@
 //   POST { action, ... }:
 //     'list'   {}            → { apps: AppEntry[], running: {[id]}, installed: {[id]: boolean} }
 //     'add'    {root,cmd,..} → như list        'update' {id,...} / 'remove' {id} → như list
+//     'manifest'     {}      → { manifest: AppManifestStatus }  (đối chiếu apps.shared.json)
+//     'syncManifest' {}      → ghi đè manifest bằng app của máy này
+//     'adopt'  {name,cmd,root,..} → dựng app local từ một mục manifest
 //     'start'  {id}          → npm run <cmd> (set PORT + -p; tự dò cổng trống nếu bận)
 //     'install'{id}          → chạy npm install (khi app thiếu node_modules)
 //     'stop'   {id}          → kill cả cây process (taskkill /T trên Windows)
@@ -18,6 +21,7 @@ import net from 'net';
 import fs from 'fs';
 import path from 'path';
 import { listApps, addApp, updateApp, removeApp, getApp, type AppMeta } from '@/lib/appRegistry';
+import { recordApp, forgetApp, syncAppManifest, appManifestStatus } from '@/lib/appManifest';
 
 export const runtime = 'nodejs';
 
@@ -148,9 +152,52 @@ export async function POST(req: NextRequest) {
     let result: unknown;
     switch (action) {
       case 'list': result = await state(); break;
-      case 'add': await addApp(meta); result = await state(); break;
-      case 'update': await updateApp(id, meta); result = await state(); break;
-      case 'remove': await removeApp(id); result = await state(); break;
+      // Thêm/sửa app xong thì ghi luôn vào manifest dùng chung, để nó không lệch
+      // mà không cần ai nhớ bấm "Đồng bộ". Manifest hỏng KHÔNG được làm hỏng
+      // thao tác chính — app đã lưu rồi, cùng lắm là thiếu một dòng dùng chung.
+      case 'add': {
+        const apps = await addApp(meta);
+        await recordApp(apps[0]).catch(() => {});
+        result = await state();
+        break;
+      }
+      case 'update': {
+        const apps = await updateApp(id, meta);
+        const changed = apps.find((a) => a.id === id);
+        if (changed) await recordApp(changed).catch(() => {});
+        result = await state();
+        break;
+      }
+      // Xoá app chỉ gỡ ở MÁY NÀY. Manifest là của chung — máy khác có thể vẫn
+      // dùng app đó, nên chỉ gỡ khỏi manifest khi người dùng nói rõ (alsoShared).
+      case 'remove': {
+        const app = await getApp(id).catch(() => null);
+        await removeApp(id);
+        if (app && body.alsoShared === true) await forgetApp(app.name, app.project).catch(() => {});
+        result = await state();
+        break;
+      }
+      case 'manifest': result = { manifest: await appManifestStatus() }; break;
+      case 'syncManifest':
+        await syncAppManifest();
+        result = { manifest: await appManifestStatus() };
+        break;
+      // Dựng entry local từ một mục manifest: chỉ thiếu mỗi `root` của máy này.
+      case 'adopt': {
+        const root = String(body.root ?? '').trim();
+        if (!root) throw new Error('Cần thư mục gốc của app trên máy này.');
+        await addApp({
+          root,
+          name: String(body.name ?? '').trim(),
+          cmd: String(body.cmd ?? '').trim(),
+          port: body.port as number | undefined,
+          project: String(body.project ?? '').trim() || undefined,
+          description: String(body.description ?? '').trim() || undefined,
+          tags: Array.isArray(body.tags) ? (body.tags as string[]) : undefined,
+        });
+        result = { ...(await state()), manifest: await appManifestStatus() };
+        break;
+      }
       case 'start': await start(id); result = await state(); break;
       case 'install': await install(id); result = await state(); break;
       case 'stop': await stop(id); result = await state(); break;
