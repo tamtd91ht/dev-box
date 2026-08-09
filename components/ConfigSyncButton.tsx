@@ -203,7 +203,7 @@ export default function ConfigSyncButton() {
     setBusy('pull');
     setMsg({ kind: 'info', text: force ? 'Đang ghi đè bằng bản trên GitHub…' : 'Đang kéo về và giải mã…' });
     try {
-      const r = await api<{ files: number; created: string[]; changed: string[] }>(
+      const r = await api<{ files: number; created: string[]; changed: string[]; skipped: string[] }>(
         'pull', { passphrase: pass, force },
       );
       setPass('');
@@ -212,6 +212,9 @@ export default function ConfigSyncButton() {
       const parts = [`Đã ghi ${r.files} file`];
       if (r.created.length) parts.push(`mới: ${r.created.join(', ')}`);
       if (r.changed.length) parts.push(`cập nhật: ${r.changed.join(', ')}`);
+      // File trong danh sách exclude giữ nguyên bản của máy này — nói rõ ra,
+      // nếu không người dùng tưởng kéo về xong là mọi thứ đã giống máy kia.
+      if (r.skipped?.length) parts.push(`giữ nguyên của máy này: ${r.skipped.join(', ')}`);
       setMsg({ kind: 'ok', text: parts.join(' · ') + '.' });
       // Phần lớn store đọc file mỗi request nên tải lại trang là đủ để thấy
       // config mới — không cần khởi động lại cả app. Chỉ gợi ý, không tự làm:

@@ -12,9 +12,16 @@
 // Nhờ vậy việc bạn làm thường xuyên (push) không có ma sát, còn việc hiếm (pull,
 // thường chỉ khi sang máy mới) mới phải nhập.
 //
-// ĐƯỜNG DẪN THEO MÁY: gitprojects.json/apps.json… chứa đường dẫn tuyệt đối
+// ĐƯỜNG DẪN THEO MÁY: apps.json/links.json… chứa đường dẫn tuyệt đối
 // (E:\vihat\sources). Lúc push đổi thành ${SOURCES_ROOT}, lúc pull đổi lại theo
 // machine.json của máy đang chạy — nhờ vậy máy ổ E: và máy ổ D: dùng chung vault.
+//
+// File nào token hoá cũng không cứu nổi thì cho hẳn vào `exclude` của
+// manifest.json — exclude chặn CẢ push LẪN pull, file đó là của riêng từng máy.
+// Quy tắc: config có trường trỏ tới THƯ MỤC trên ổ đĩa (gitprojects.json,
+// apps.json, apiintegrations.json — đều là `root`) thì exclude, vì mỗi máy clone
+// source ra một chỗ, có máy còn không clone repo đó. Chỉ chứa URL / ID /
+// connection string thì cứ sync bình thường.
 
 import { promises as fs } from 'fs';
 import { execFile } from 'child_process';
@@ -525,7 +532,7 @@ export async function push(opts: { remote?: boolean; force?: boolean } = {}): Pr
 }
 
 // ── PULL ───────────────────────────────────────────────────────────────────
-export interface PullResult { files: number; created: string[]; changed: string[]; log: string[] }
+export interface PullResult { files: number; created: string[]; changed: string[]; skipped: string[]; log: string[] }
 
 /**
  * Kéo từ remote → giải mã → ghi vào configs/. CẦN passphrase để mở private key.
@@ -540,9 +547,9 @@ export async function pull(passphrase: string, opts: { force?: boolean } = {}): 
   if (!st.ready) throw new Error(st.reason || 'Repo config chưa sẵn sàng.');
   if (!st.canPull) throw new Error('Không có age-key.enc trong repo — chưa thể giải mã.');
 
+  // machine.json là của riêng máy này (gitignore) nên đọc trước được — và đọc
+  // trước là cố ý: thiếu nó thì dừng ngay, chưa đụng tới `git reset --hard`.
   const machine = await readMachine();
-  const manifest = await readManifest();
-  const tokenize = new Set(manifest.devbox?.tokenize || []);
 
   if (opts.force) {
     // LẤY HẲN BẢN TRÊN GITHUB, bỏ mọi commit/thay đổi chỉ có ở máy này.
@@ -572,6 +579,19 @@ export async function pull(passphrase: string, opts: { force?: boolean } = {}): 
     }
   }
 
+  // ĐỌC MANIFEST SAU KHI GIT PULL, không phải trước.
+  //
+  // manifest.json nằm trong chính repo config, nên lần kéo về ngay sau khi ai đó
+  // sửa danh sách exclude là lần mà bản trên đĩa còn CŨ. Đọc trước git pull thì
+  // luật vừa thêm chưa có hiệu lực, file đáng lẽ được giữ lại vẫn bị đè — phải
+  // kéo lần thứ hai mới đúng. Đọc sau thì luật mới ăn ngay từ lần đầu.
+  //
+  // `exclude` chặn CẢ HAI CHIỀU: push không gói file đó lên, pull không ghi đè
+  // bản của máy này — kể cả khi vault cũ vẫn còn chứa nó.
+  const manifest = await readManifest();
+  const tokenize = new Set(manifest.devbox?.tokenize || []);
+  const exclude = new Set(manifest.devbox?.exclude || []);
+
   const idFile = await unwrapKey(passphrase);
   const out = tmpDir('pull');
   try {
@@ -585,10 +605,12 @@ export async function pull(passphrase: string, opts: { force?: boolean } = {}): 
     await fs.mkdir(dst, { recursive: true });
     const created: string[] = [];
     const changed: string[] = [];
+    const skipped: string[] = [];
     let files = 0;
 
     for (const name of await fs.readdir(out)) {
       if (!name.endsWith('.json')) continue;
+      if (exclude.has(name)) { skipped.push(name); continue; }
       let text = await fs.readFile(path.join(out, name), 'utf8');
       if (tokenize.has(name)) text = fromTokens(text, machine);
       const target = path.join(dst, name);
@@ -604,8 +626,13 @@ export async function pull(passphrase: string, opts: { force?: boolean } = {}): 
       files++;
     }
 
-    log.push(`ghi ${files} file` + (created.length ? `, mới: ${created.length}` : '') + (changed.length ? `, đổi: ${changed.length}` : ''));
-    return { files, created, changed, log };
+    log.push(
+      `ghi ${files} file`
+      + (created.length ? `, mới: ${created.length}` : '')
+      + (changed.length ? `, đổi: ${changed.length}` : '')
+      + (skipped.length ? `, giữ nguyên bản máy này: ${skipped.join(', ')}` : ''),
+    );
+    return { files, created, changed, skipped, log };
   } finally {
     await shred(idFile);
     await fs.rm(out, { recursive: true, force: true });
