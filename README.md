@@ -67,7 +67,8 @@ double-click icon ngoài Desktop hoặc nhấn nút Windows gõ "VHS DevBox".
   rail nên nhìn là biết ngay. Báo tin chưa đọc lên tận tab. `lib/workspace/README.md`.
 - **🤖 Automation** — một engine cho mọi nhóm: 💬 *social* (tin nhắn từ tab Workspace) và
   📡 *infrastructure* (watch chỉ số Redis/Mongo/ES/Kafka/Rabbit/PG từ chính registry kết nối).
-  Sự kiện → điều kiện → hành động (notify · webhook · log · kafka · reply-chờ-duyệt). Mặc định an
+  Sự kiện → điều kiện → hành động (notify · **gọi API** · **gửi Telegram** · log · kafka ·
+  reply-chờ-duyệt). Mặc định an
   toàn: đọc tin nhắn OFF, theo dõi hạ tầng OFF, cho phép gửi OFF, quy tắc mới luôn chạy thử.
   `lib/automation/README.md`.
 

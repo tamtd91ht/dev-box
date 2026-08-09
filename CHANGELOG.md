@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Tab 🤖 Automation — thêm hai loại hành động: 🌐 gọi API và ✈️ gửi Telegram.** Trước đây muốn
+  đẩy một cảnh báo ra ngoài chỉ có `webhook` trần (URL + POST/PUT/GET + body), header phải sửa tay
+  trong `.automation.json` vì editor không có ô nhập.
+  **🌐 Gọi API** là chính `webhook` đó lớn lên (giữ nguyên discriminator nên **quy tắc cũ chạy y
+  nguyên**, không phải sửa gì): thêm `PATCH`/`DELETE`, **query params** (tên *và* giá trị đều
+  `{{template}}`, tự encode), **bảng header**, **xác thực** (Bearer · Basic · API key trong header
+  tự đặt tên) tách riêng khỏi `headers` để editor che được và chỗ ghép `Authorization` chỉ có một,
+  **kiểu body** `json`/`text`/`form` quyết định `content-type` khi bạn không tự đặt, **timeout**
+  1–60s (mặc định 10, kẹp cả khi sửa tay file), và tuỳ chọn **giữ 500 ký tự đầu của response**
+  trong tab Hoạt động — thứ duy nhất trả lời được "API nhận rồi nhưng nó nói gì".
+  **✈️ Gửi Telegram** mặc định **dùng lại bot sẵn có của máy**: `TELEGRAM_BOT_TOKEN` /
+  `TELEGRAM_ALLOWED_CHAT_ID` trong `.env.local` mà `bot/` (MR-review) đang dùng — token đọc lúc
+  gửi, **không** chép vào `.automation.json`, **không** đi xuống renderer, và các chat id khai báo
+  sẵn hiện thành chip bấm một cái là xong; muốn bot khác thì chọn "nhập token". Kèm `parse_mode`,
+  gửi im lặng, tắt xem trước link (mặc định bật), `message_thread_id` cho nhóm có chủ đề, cắt nội
+  dung ở 4000 ký tự thay vì để Telegram trả 400, và nút **Kiểm tra bot** (`getMe` + `getChat`, đọc
+  thôi, không gửi tin) để phát hiện sai token / bot chưa vào nhóm ngay lúc soạn quy tắc.
+  Cả hai chạy **phía server** (`/api/automation/dispatch`): không dính CORS, token không lọt vào
+  network log của browser. Lỗi trả về đã **xoá token** khỏi chuỗi (một lỗi mạng có thể kéo nguyên
+  URL kèm token vào tab Hoạt động), và tab Thử che `botToken`/`token` trong bản dump plan.
+  (`lib/automation/{types,normalize,engine,catalog,runtime,telegram}.ts` ·
+  `app/api/automation/{dispatch,telegram}/route.ts` · `components/automation/ActionCard.tsx` tách
+  ra từ `RuleEditor.tsx` · `app/globals.css`.)
+
 - **Tab ▦ Office › Bảng tính — thanh định dạng như Excel + chèn dòng/cột đủ 4 hướng.** Trước đây
   chỉ sửa được nội dung ô: không đổi được font, màu, căn lề, không trộn ô, và chèn thì chỉ chèn
   được *xuống dưới* / *bên phải*. Nay có **ribbon** phía trên lưới (chỉ `.xlsx` — CSV là text

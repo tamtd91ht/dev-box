@@ -39,7 +39,13 @@ export interface EsQuickFind {
   name: string;
   /** id of a saved PublicEsConnection. */
   connectionId: string;
-  index: string;
+  /**
+   * Index mặc định — CÓ THỂ ĐỂ RỖNG. Nhiều index đặt theo thời gian
+   * (…_11_2025, …_12_2025) nên chốt cứng trong preset là vô nghĩa; lúc bấm
+   * chạy luôn chọn lại được, preset chỉ điền sẵn cho đỡ thao tác.
+   * ES tìm được nhiều index một lượt nên đây là MẢNG.
+   */
+  indices: string[];
   fields: EsQuickFindField[];
   /** Page size when running (server clamps to ≤200). */
   limit: number;
@@ -58,9 +64,15 @@ function isQuickFind(v: unknown): v is EsQuickFind {
     typeof p.id === 'string' &&
     typeof p.name === 'string' &&
     typeof p.connectionId === 'string' &&
-    typeof p.index === 'string' &&
     Array.isArray(p.fields) && p.fields.every(isField)
   );
+}
+
+/** Preset đời cũ lưu `index: string` (có thể là "a,b") — quy về mảng. */
+function normIndices(p: EsQuickFind & { index?: unknown }): string[] {
+  if (Array.isArray(p.indices)) return p.indices.filter((i): i is string => typeof i === 'string' && !!i.trim());
+  if (typeof p.index === 'string') return p.index.split(',').map((s) => s.trim()).filter(Boolean);
+  return [];
 }
 
 export function loadEsQuickFinds(): EsQuickFind[] {
@@ -70,7 +82,11 @@ export function loadEsQuickFinds(): EsQuickFind[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed)
-      ? parsed.filter(isQuickFind).map((p) => ({ ...p, limit: Number.isInteger(p.limit) && p.limit > 0 ? Math.min(p.limit, 200) : 50 }))
+      ? parsed.filter(isQuickFind).map((p) => ({
+          ...p,
+          indices: normIndices(p),
+          limit: Number.isInteger(p.limit) && p.limit > 0 ? Math.min(p.limit, 200) : 50,
+        }))
       : [];
   } catch {
     return [];

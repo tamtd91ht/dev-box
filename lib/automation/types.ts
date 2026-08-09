@@ -116,14 +116,78 @@ export interface NotifyAction {
   sound?: boolean;
 }
 
-/** POST/PUT to an HTTP endpoint. Runs server-side (no CORS, no browser leak). */
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+/**
+ * How to authenticate an API call. Kept out of `headers` on purpose: the editor
+ * can then mask the secret, and the dispatcher knows which value must never be
+ * echoed back into an outcome detail.
+ */
+export interface ApiAuth {
+  kind: 'none' | 'bearer' | 'basic' | 'header';
+  /** bearer → the token · basic → the password · header → the value. Templated. */
+  token?: string;
+  /** basic → the username. */
+  user?: string;
+  /** header → the header name. Empty → X-API-Key. */
+  header?: string;
+}
+
+/**
+ * Call an HTTP API. Runs server-side: no CORS, and the auth header never shows
+ * up in the browser's network log.
+ *
+ * The discriminator stays `'webhook'` — this action started life as a bare
+ * webhook and rules saved back then must keep working untouched (url + method +
+ * headers + bodyTemplate still mean exactly what they meant).
+ */
 export interface WebhookAction {
   type: 'webhook';
   url: string;
-  method: 'POST' | 'PUT' | 'GET';
+  method: HttpMethod;
+  /** Appended to the URL as a query string. Keys and values are templated. */
+  query?: Record<string, string>;
   headers?: Record<string, string>;
-  /** Templated body. Empty → the whole event as JSON. */
+  auth?: ApiAuth;
+  /** Decides the content-type when the user did not set one. Empty → json. */
+  bodyType?: 'json' | 'text' | 'form';
+  /** Templated body. Empty → the whole event as JSON. Ignored by GET/DELETE. */
   bodyTemplate?: string;
+  /** Seconds, clamped 1…60 by normalize. Empty → 10. */
+  timeoutSec?: number;
+  /** Keep the response body (truncated) in the activity feed — for debugging. */
+  captureResponse?: boolean;
+}
+
+/**
+ * Send a message through a Telegram bot. Runs server-side — the token stays out
+ * of the browser entirely.
+ *
+ * `env` is the default source: this machine already configures a bot for the
+ * MR-review process (`TELEGRAM_BOT_TOKEN` / `TELEGRAM_ALLOWED_CHAT_ID` in
+ * .env.local, see bot/README.md). Reusing it means the token is read at dispatch
+ * time and NEVER written into `.automation.json` — one bot, one place to rotate
+ * it. `inline` is for a second bot that env doesn't know about.
+ */
+export interface TelegramAction {
+  type: 'telegram';
+  /** Where the bot token comes from. Empty → 'env'. */
+  tokenSource?: 'env' | 'inline';
+  /** Only for tokenSource 'inline': the token from @BotFather ("123456:AA…"). */
+  botToken?: string;
+  /** Numeric chat id, or @channelusername. Templated.
+   *  Empty + 'env' → the first id in TELEGRAM_ALLOWED_CHAT_ID. */
+  chatId: string;
+  /** Templated. Empty → the event title + text. */
+  text?: string;
+  /** Telegram's formatting mode. 'none' = plain text (never fails to parse). */
+  parseMode?: 'none' | 'Markdown' | 'MarkdownV2' | 'HTML';
+  /** Deliver without a notification sound. */
+  silent?: boolean;
+  /** Don't unfurl links. Default true — alert spam with previews is unreadable. */
+  noPreview?: boolean;
+  /** Forum topic / thread id inside a supergroup. Templated. */
+  threadId?: string;
 }
 
 /** Append one JSON line per hit to a local file. Runs server-side. */
@@ -145,6 +209,32 @@ export interface KafkaAction {
 }
 
 /**
+ * Send a message from a workspace account (Zalo…) to conversations the user
+ * tagged in that app and synced into `configs/wstargets.json`.
+ *
+ * Why targets are a SAVED LIST rather than a name typed here: chat.zalo.me
+ * exposes no per-conversation id, so a recipient can only be identified by its
+ * display name — which is safe exactly when the set is small and curated. The
+ * rule therefore points at a synced (account × label) entry, and the recipients
+ * are visible in DevBox before sending is ever switched on.
+ *
+ * GUARDED like `reply`: needs config.allowSend, obeys rule dry-run, and the
+ * runtime applies a hard floor between sends (a personal account blasting
+ * messages is what gets it restricted).
+ */
+export interface WorkspaceSendAction {
+  type: 'wsSend';
+  /** `${pluginId}::${instanceId}` — which logged-in account sends. */
+  accountKey: string;
+  /** Id of a target group in the address book (account × label). */
+  targetGroupId: string;
+  /** Cached label, so the editor can name it without loading the store. */
+  targetLabel?: string;
+  /** Templated message. */
+  text: string;
+}
+
+/**
  * Send a reply back into a social workspace. GUARDED: requires
  * config.allowSend AND, by default, per-send approval. Automated sending on a
  * personal account is what gets accounts flagged — the engine treats this as a
@@ -157,7 +247,14 @@ export interface ReplyAction {
   requireApproval?: boolean;
 }
 
-export type AutomationAction = NotifyAction | WebhookAction | LogAction | KafkaAction | ReplyAction;
+export type AutomationAction =
+  | NotifyAction
+  | WebhookAction
+  | TelegramAction
+  | WorkspaceSendAction
+  | LogAction
+  | KafkaAction
+  | ReplyAction;
 export type ActionType = AutomationAction['type'];
 
 // ── Rules ──────────────────────────────────────────────────────────────────
@@ -168,6 +265,16 @@ export interface RuleScope {
   sourceIds: string[];
   /** Account instance ids or connection ids. */
   instanceIds: string[];
+  /**
+   * SOCIAL: restrict to specific conversations, by display name — a person for
+   * a 1-1 chat, the group name for a group. Empty = every conversation of the
+   * accounts in scope.
+   *
+   * Matched case-insensitively against `fields.conversation`. Names, not ids,
+   * for the same measured reason the send directory uses names: chat.zalo.me
+   * exposes no per-conversation id anywhere in the page.
+   */
+  conversations?: string[];
 }
 
 /** Active-hours window. Outside it the rule is skipped (quiet hours). */
@@ -260,6 +367,28 @@ export interface AutomationConfig {
   allowSend: boolean;
   /** INFRA: run the watch pollers. Off = no background probing. */
   watchEnabled: boolean;
+  /**
+   * Drop an incoming message that automation itself sent.
+   *
+   * Without it: a rule sends into a group where ANOTHER linked account is also
+   * a member → that account's collector sees a new message → the rule fires
+   * again → the two accounts ping-pong. Per-rule cooldowns do not stop it,
+   * because each bounce is a genuinely new message to a different account.
+   *
+   * Recognition is by an invisible WATERMARK on everything automation sends
+   * (lib/automation/mark.ts) — never by comparing text. Comparing text guesses,
+   * and every version of that guess ended up blocking real messages.
+   */
+  loopGuard: boolean;
+  /**
+   * Feature groups allowed to raise an OS (Electron) notification.
+   *
+   * Empty by DEFAULT — in-app toasts only. An OS notification opens a separate
+   * window per firing, stacks outside the app and outlives it; during a
+   * feedback loop that buried the desktop. Opt in per group, for the alerts
+   * that are worth interrupting you when DevBox is not in front of you.
+   */
+  osNotify: EventCategory[];
   /** How many recent events the activity feed keeps in memory. */
   activityLimit: number;
   rules: AutomationRule[];
@@ -273,6 +402,8 @@ export const DEFAULT_AUTOMATION_CONFIG: AutomationConfig = {
   storeMessageText: true,
   allowSend: false, // sending is off until deliberately enabled
   watchEnabled: false, // opt-in: no background polling until asked for
+  loopGuard: true, // ON by default — a feedback loop is worse than a missed event
+  osNotify: [], // no OS pop-ups until asked for, per group
   activityLimit: 200,
   rules: [],
   watches: [],
@@ -281,6 +412,7 @@ export const DEFAULT_AUTOMATION_CONFIG: AutomationConfig = {
 // ── Engine output ──────────────────────────────────────────────────────────
 
 export type SkipReason =
+  | 'echo'
   | 'config-disabled'
   | 'rule-disabled'
   | 'trigger'

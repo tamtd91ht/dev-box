@@ -15,7 +15,9 @@
 //      never string-concatenated into the URL. `script` / `script_score` keys
 //      are rejected anywhere in the query (no server-side scripting from an
 //      ops tool — mirrors the Mongo tab's $where ban).
-//   5. Index names are validated (no leading '-', no '..', no '/').
+//   5. Index names are validated (no leading '-', no '..', no '/'). A request
+//      may target SEVERAL indices ("a,b") — every name is validated one by one
+//      and re-encoded per segment, so a comma can never smuggle a path in.
 
 import type { EsConnection } from '@/lib/esConnections';
 
@@ -90,13 +92,31 @@ async function getMajor(conn: EsConnection): Promise<number> {
   }
 }
 
+/**
+ * Nhận MỘT HOẶC NHIỀU index, cách nhau dấu phẩy — ES tìm được nhiều index một
+ * lượt và tab Tìm nhanh dùng đúng việc đó (index chia theo tháng: …_11_2025,
+ * …_12_2025). Từng tên vẫn phải qua đủ các phép kiểm cũ.
+ */
 function requireIndex(raw: unknown): string {
   const s = String(raw ?? '').trim();
   if (!s) throw new Error('index is required');
-  if (s.includes('/') || s.includes('?') || s.includes(' ') || s.startsWith('-') || s.includes('..')) {
-    throw new Error(`invalid index name: "${s}"`);
+  const parts = s.split(',').map((x) => x.trim());
+  if (parts.some((x) => !x)) throw new Error(`invalid index name: "${s}"`);
+  for (const p of parts) {
+    if (p.includes('/') || p.includes('?') || p.includes(' ') || p.startsWith('-') || p.includes('..')) {
+      throw new Error(`invalid index name: "${p}"`);
+    }
   }
-  return s;
+  return parts.join(',');
+}
+
+/**
+ * Phần index trong URL. Encode TỪNG tên rồi nối lại bằng dấu phẩy THẬT —
+ * encodeURIComponent cả chuỗi sẽ biến dấu phẩy thành %2C, lúc đó ES hiểu là
+ * một index tên "a,b" chứ không phải hai index.
+ */
+function indexPath(idx: string): string {
+  return idx.split(',').map(encodeURIComponent).join(',');
 }
 
 /** Reject scripting keys anywhere in a client-supplied query tree. */
@@ -268,7 +288,7 @@ export async function listIndices(conn: EsConnection): Promise<EsIndexInfo[]> {
 /** Full mapping of one index, pretty-printed (capped). */
 export async function getMapping(conn: EsConnection, index: string): Promise<{ json: string; truncated: boolean }> {
   const idx = requireIndex(index);
-  const m = await esFetch<Record<string, unknown>>(conn, `/${encodeURIComponent(idx)}/_mapping`);
+  const m = await esFetch<Record<string, unknown>>(conn, `/${indexPath(idx)}/_mapping`);
   const pretty = JSON.stringify(m, null, 2);
   if (pretty.length <= DOC_JSON_CAP) return { json: pretty, truncated: false };
   return { json: pretty.slice(0, DOC_JSON_CAP), truncated: true };
@@ -346,7 +366,7 @@ export async function search(conn: EsConnection, index: string, input: EsSearchI
   const res = await esFetch<{
     took?: number;
     hits?: { total?: number | { value?: number; relation?: string }; hits?: { _id: string; _source?: Record<string, unknown> }[] };
-  }>(conn, `/${encodeURIComponent(idx)}/_search`, body);
+  }>(conn, `/${indexPath(idx)}/_search`, body);
   const tookMs = Date.now() - t0;
 
   const rawTotal = res.hits?.total;
@@ -362,7 +382,7 @@ export async function count(conn: EsConnection, index: string, rawQuery: unknown
   forbidScripts(query);
   const body = Object.keys(query).length ? { query } : undefined;
   const t0 = Date.now();
-  const res = await esFetch<{ count?: number }>(conn, `/${encodeURIComponent(idx)}/_count`, body ?? { query: { match_all: {} } });
+  const res = await esFetch<{ count?: number }>(conn, `/${indexPath(idx)}/_count`, body ?? { query: { match_all: {} } });
   return { count: Number(res.count ?? 0), tookMs: Date.now() - t0 };
 }
 

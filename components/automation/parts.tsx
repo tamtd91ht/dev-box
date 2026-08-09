@@ -4,7 +4,7 @@
 // so the rule/watch editors read as a description of the model instead of a
 // wall of <div className="…"><label>.
 
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 export function Field({
   label,
@@ -107,6 +107,48 @@ export function ListInput({
         )
       }
     />
+  );
+}
+
+/**
+ * A collapsible section of the rule editor.
+ *
+ * The editor is a long single column — scope, conditions, several action cards,
+ * schedule — and editing the last one meant scrolling past everything above it
+ * every time. Folding a finished part lifts the rest into view.
+ */
+export function Section({
+  title,
+  extra,
+  defaultOpen = true,
+  children,
+}: {
+  title: string;
+  /** Controls rendered next to the title, e.g. the all/any selector. */
+  extra?: ReactNode;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className={`auto-sec${open ? '' : ' is-closed'}`}>
+      <h4>
+        <button
+          type="button"
+          className="auto-fold"
+          aria-expanded={open}
+          title={open ? 'Thu gọn' : 'Mở ra'}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? '▾' : '▸'}
+        </button>
+        <button type="button" className="auto-sec-title" onClick={() => setOpen((v) => !v)}>
+          {title}
+        </button>
+        {extra}
+      </h4>
+      {open ? children : null}
+    </section>
   );
 }
 

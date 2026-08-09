@@ -15,18 +15,21 @@ import { useEffect, useState } from 'react';
 import { useAutomation } from '@/lib/automation/useAutomation';
 import { automation } from '@/lib/automation/runtime';
 import type { AutomationConfig } from '@/lib/automation/types';
+import { GROUPS } from '@/lib/automation/catalog';
 import ActivityPanel from './ActivityPanel';
+import CapturePanel from './CapturePanel';
 import RulesPanel from './RulesPanel';
 import TestPanel from './TestPanel';
 import WatchesPanel from './WatchesPanel';
 import { Toggle } from './parts';
 
-type Tab = 'rules' | 'watches' | 'activity' | 'test';
+type Tab = 'rules' | 'watches' | 'activity' | 'capture' | 'test';
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'rules', label: 'Quy tắc', icon: '⚙' },
   { key: 'watches', label: 'Theo dõi hạ tầng', icon: '📡' },
   { key: 'activity', label: 'Hoạt động', icon: '🕓' },
+  { key: 'capture', label: 'Thu tin', icon: '🔬' },
   { key: 'test', label: 'Thử', icon: '🧪' },
 ];
 
@@ -103,9 +106,47 @@ export default function AutomationWorkspace() {
             checked={cfg.allowSend}
             onChange={(v) => flip({ allowSend: v })}
             label="Cho phép gửi"
-            hint="mở khoá hành động trả lời — vẫn phải duyệt tay"
+            // Từ khi có `wsSend`, công tắc này mở khoá việc gửi THẬT bằng tài
+            // khoản cá nhân — không còn "vẫn phải duyệt tay" như hồi chỉ có
+            // `reply`. Chú thích phải nói đúng thứ nó mở ra.
+            hint="mở khoá 💬 Gửi Zalo (gửi thật, tự động) và ↩ trả lời (vẫn chờ duyệt)"
             tone="risk"
           />
+          <Toggle
+            checked={cfg.loopGuard}
+            onChange={(v) => flip({ loopGuard: v })}
+            label="Chặn vòng lặp"
+            hint="bỏ qua tin do chính automation vừa gửi — tắt là có thể tự bắn vòng tròn"
+          />
+        </div>
+
+        {/* Thông báo hệ điều hành: TẮT hết theo mặc định. Mỗi lần bắn là một cửa
+            sổ Electron riêng, nằm ngoài app và sống lâu hơn app — lúc dính vòng
+            lặp thì nó phủ kín màn hình. Bật lại theo từng nhóm nếu thật sự cần
+            biết khi không nhìn vào DevBox. */}
+        <div className="auto-osnoti">
+          <span className="auto-hint">Thông báo hệ điều hành:</span>
+          {GROUPS.map((g) => {
+            const on = cfg.osNotify.includes(g.id);
+            return (
+              <button
+                key={g.id}
+                type="button"
+                className={`auto-chip${on ? ' on' : ''}`}
+                title={on ? `${g.label}: có bật cửa sổ thông báo ngoài app` : `${g.label}: chỉ hiện toast trong app`}
+                onClick={() =>
+                  flip({
+                    osNotify: on
+                      ? cfg.osNotify.filter((x) => x !== g.id)
+                      : [...cfg.osNotify, g.id],
+                  })
+                }
+              >
+                {g.icon} {g.label}
+              </button>
+            );
+          })}
+          {!cfg.osNotify.length && <span className="auto-hint">đang tắt hết — chỉ toast trong app</span>}
         </div>
 
         <div className="auto-top-right">
@@ -137,6 +178,7 @@ export default function AutomationWorkspace() {
       {tab === 'rules' ? <RulesPanel config={cfg} onChange={edit} /> : null}
       {tab === 'watches' ? <WatchesPanel config={cfg} onChange={edit} /> : null}
       {tab === 'activity' ? <ActivityPanel activity={snap.activity} /> : null}
+      {tab === 'capture' ? <CapturePanel /> : null}
       {tab === 'test' ? <TestPanel /> : null}
     </div>
   );

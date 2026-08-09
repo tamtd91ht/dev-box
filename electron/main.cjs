@@ -187,6 +187,9 @@ const configuredPartitions = new Set();
  * nhau — nhieu webview mount cung mot nhip render (Zalo + Telegram + tab Links)
  * la thu tu xen vao nhau, va luat cua workspace se ap sai guest.
  */
+/** Live guest webContents by partition — for main-process input injection. */
+const guestByPartition = new Map();
+
 function partitionOf(guest) {
   for (const part of configuredPartitions) {
     try {
@@ -415,6 +418,17 @@ function wireWebviewHardening(win) {
     const partition = partitionOf(guest);
     const isWorkspaceApp = WORKSPACE_PARTITION.test(partition);
     log('WebViewCreated', `${partition || 'default'} · ${guest.getURL()}`);
+
+    // Track the guest's webContents by partition so `workspace:sendKey` can
+    // reach it. A background webview cannot receive a trusted key from the
+    // renderer's element-level sendInputEvent; the main process can focus this
+    // webContents and inject the key regardless of which tab is showing.
+    if (partition) {
+      guestByPartition.set(partition, guest);
+      guest.on('destroyed', () => {
+        if (guestByPartition.get(partition) === guest) guestByPartition.delete(partition);
+      });
+    }
 
     // Popups (target=_blank, window.open) → khong bao gio de mo mot cua so roi
     // trong app.
@@ -795,6 +809,46 @@ ipcMain.handle('workspace:focusHost', (evt) => {
     evt.sender.focus();
     return { ok: true };
   } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
+// Bơm một phím THẬT vào guest của một partition (automation gửi tin Zalo).
+//
+// Vì sao phải ở main process, không phải renderer: ô soạn React của Zalo bỏ
+// qua sự kiện giả (isTrusted=false) nên Enter phải là sự kiện thật;
+// `<webview>.sendInputEvent` ở renderer chỉ ăn khi webview đang focus, mà rule
+// chạy từ tab khác thì webview ở nền. Ở đây focus đúng webContents của guest
+// (không đổi cửa sổ đang hiện của người dùng) rồi bơm phím.
+//
+// Chỉ nhận các phím trong danh sách trắng — không để renderer bơm chuỗi tùy ý.
+const SEND_KEYS = { Return: 'Enter', Enter: 'Enter' };
+ipcMain.handle('workspace:sendKey', (_evt, partition, keyCode) => {
+  const code = SEND_KEYS[keyCode];
+  if (!code) return { ok: false, error: 'key not allowed' };
+  if (typeof partition !== 'string' || !WORKSPACE_PARTITION.test(partition)) {
+    return { ok: false, error: 'bad partition' };
+  }
+  const guest = guestByPartition.get(partition);
+  if (!guest || guest.isDestroyed()) {
+    log('SendKey', `${partition} · ✗ guest not found`);
+    return { ok: false, error: 'guest not found' };
+  }
+  try {
+    guest.focus(); // focus THIS guest's webContents; does not change the visible tab
+    const focused = guest.isFocused();
+    // A full physical keystroke: keyDown → char → keyUp. The earlier version
+    // sent only keyDown/keyUp with 'Return' and Zalo did not submit even though
+    // the event arrived (focused=true). A contenteditable that sends on Enter
+    // often needs the char event too, and 'Enter' is the keyCode Chromium maps
+    // to key:'Enter', keyCode:13 — what the app's handler checks.
+    guest.sendInputEvent({ type: 'keyDown', keyCode: code });
+    guest.sendInputEvent({ type: 'char', keyCode: code });
+    guest.sendInputEvent({ type: 'keyUp', keyCode: code });
+    log('SendKey', `${partition} · ${code} · focused=${focused}`);
+    return { ok: true, focused };
+  } catch (err) {
+    log('SendKey', `${partition} · ✗ ${err && err.message}`);
     return { ok: false, error: err && err.message };
   }
 });

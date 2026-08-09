@@ -111,6 +111,85 @@ if(!window.__wsLinkHook){
 }
 `;
 
+/**
+ * Zalo: đọc tin mới THẲNG TỪ DANH SÁCH HỘI THOẠI, không chờ thông báo.
+ *
+ * VÌ SAO: đo được — khi tab Workspace KHÔNG phải tab đang mở, webview Zalo ở nền
+ * và Zalo NGỪNG bắn `new Notification`, nên collector (vốn chỉ nghe thông báo)
+ * không bắt được tin nào cho tới khi quay lại tab Workspace. Đọc DOM không phụ
+ * thuộc vào việc Zalo có bắn thông báo hay không.
+ *
+ * Chạy trong mỗi nhịp poll (3s), là extraScript của collector nên có sẵn `push`.
+ *
+ * Ba cái bẫy đã né:
+ *   1. Danh sách là react-virtualized: ở nền có thể render 0 dòng. CHỈ khi 0
+ *      dòng thì cuộn về đầu + phát 'scroll' để nó render các hội thoại MỚI NHẤT
+ *      cho nhịp sau — chỉ làm lúc trống nên không phá cuộn của người đang xem.
+ *   2. Chuỗi so sánh BỎ thời gian ("2 giờ"→"3 giờ") và số chưa đọc, nếu không
+ *      mỗi phút trôi lại tưởng có tin mới.
+ *   3. Nhịp đầu chỉ ghi mốc, không phát (không thì vừa mở là bắn cả trăm dòng);
+ *      bỏ tin của mình ("Bạn:"); bỏ hội thoại vừa có thông báo (khỏi tính 2 lần).
+ */
+const ZALO_DOM_CAPTURE = `
+(function(){
+  try {
+    if(!window.__wsCap) return;
+    var rows = document.querySelectorAll('.conv-item');
+    if(!rows.length){
+      // List chưa render (ở nền). Cuộn về đầu để nhịp sau có dòng mới nhất.
+      try {
+        var sc = document.querySelector('.virtualized-scroll') || document.querySelector('.ReactVirtualized__Grid');
+        var g=0; while(sc && g++<6){ if(sc.scrollHeight > sc.clientHeight+20) break; sc = sc.parentElement; }
+        if(sc){ sc.scrollTop = 0; sc.dispatchEvent(new Event('scroll',{bubbles:true})); }
+      } catch(_){}
+      return;
+    }
+    var prev = window.__wsDomPrev = window.__wsDomPrev || {};
+    var first = !window.__wsDomInit;
+    var notiAt = window.__wsNotiByConv = window.__wsNotiByConv || {};
+    var now = Date.now();
+    function meat(s){
+      var str = String(s||'').replace(/\\s+/g,' ').trim();
+      // Nhãn thời gian tương đối ("Vài giây", "3 phút") của conv-item thường
+      // DÍNH LIỀN snippet trong textContent: "Vài giâyautomation nè". Tách đơn
+      // vị thời gian khỏi chữ theo sau để bước lọc token bên dưới cắt được nó.
+      str = str.replace(/(giây|giay|phút|phut|giờ|gio|ngày|ngay|tuần|tuan)(?=[^\\s\\d])/gi, '$1 ');
+      var parts = str.split(' '), keep=[];
+      for(var i=0;i<parts.length;i++){ var w=parts[i]; if(!w) continue;
+        if(/^\\d+\\+?$/.test(w)) continue;
+        if(/^\\d{1,2}[\\/:]\\d{1,2}(\\/\\d{2,4})?$/.test(w)) continue;
+        if(/^(giờ|gio|phút|phut|ngày|ngay|giây|giay|tuần|tuan|thg)$/i.test(w)) continue;
+        if(/^(hôm|hom|qua|nay|vừa|vua|xong|vài|vai|trước|truoc)$/i.test(w)) continue;
+        keep.push(w);
+      }
+      return keep.join(' ');
+    }
+    for(var i=0;i<rows.length;i++){
+      var r = rows[i];
+      var nameEl = r.querySelector('.conv-item-title__name');
+      var name = nameEl ? String(nameEl.textContent||'').replace(/\\s+/g,' ').trim() : '';
+      if(!name) continue;
+      var whole = String(r.textContent||'').replace(/\\s+/g,' ').trim();
+      var at = whole.indexOf(name);
+      var rest = at>=0 ? (whole.slice(0,at)+' '+whole.slice(at+name.length)) : whole;
+      var sig = meat(rest);
+      if(!sig) continue;
+      var had = Object.prototype.hasOwnProperty.call(prev, name);
+      if(had && prev[name] === sig) continue;
+      prev[name] = sig;
+      if(first || !had) continue;                                  // nhịp đầu: chỉ ghi mốc
+      if(/^(bạn|ban|you)\\s*:/i.test(sig)) continue;                // tin của mình
+      if(notiAt[name] && now - notiAt[name] < 20000) continue;     // thông báo đã bắt
+      var sender=name, text=sig, colon=sig.indexOf(':');
+      if(colon>0 && colon<=40){ sender=sig.slice(0,colon).trim(); text=sig.slice(colon+1).trim(); }
+      if(!text) continue;
+      push(sender, name, text, 'dom');
+    }
+    window.__wsDomInit = true;
+  } catch(_){}
+})();
+`;
+
 export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
   {
     id: 'zalo',
@@ -128,7 +207,75 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
       // nhóm), body = "Tên: nội dung" khi ở trong nhóm.
       genericTitles: ['Zalo', 'Zalo Web'],
       bodySenderSeparator: ': ',
-      extraScript: ZALO_LINK_CLICK,
+      // Thông báo là kênh chính khi tab Workspace mở; đọc DOM là kênh bắt tin
+      // khi ở tab khác (webview nền không bắn thông báo). Cả hai chạy cùng, có
+      // chống trùng theo hội thoại (notiByConv) + engine dedup theo id.
+      extraScript: ZALO_LINK_CLICK + ZALO_DOM_CAPTURE,
+    },
+    // Đọc danh sách hội thoại để dựng danh bạ đích NGOÀI Zalo. Các selector này
+    // ĐO ĐƯỢC từ chat.zalo.me thật (xem lib/workspace/directory.ts), không phải
+    // phỏng đoán:
+    //
+    // - Danh sách chạy bằng react-virtualized: chỉ ~13 dòng tồn tại trong DOM
+    //   một lúc, khối cuộn thật là `.ReactVirtualized__Grid` bọc ngoài (bắt
+    //   được bằng cách đi lên từ innerScrollContainer), còn `nav.flx.h100` bao
+    //   ngoài thì `overflow:hidden` — đặt scrollTop lên nó không nhúc nhích.
+    // - `.conv-item` phải khớp ĐÚNG TOKEN class. `[class*="conv-item"]` khớp
+    //   luôn `conv-item__avatar`, `conv-item-title__name`, `conv-item-title__more`
+    //   → một hội thoại nở thành 4-5 "dòng" rác, mỗi mảnh nhặt một chữ khác nhau
+    //   (giờ "30/07", "26 phút", tiền tố "Bạn:").
+    // - Tên nằm trong `.conv-item-title__name`; hàng còn lại là giờ và xem
+    //   trước tin nhắn, KHÔNG được nhặt nhầm làm tên.
+    // - Không có id hội thoại nào trong DOM (mọi dòng chỉ chung một
+    //   `data-id="div_TabMsg_ThrdChItem"` của component) → danh bạ phải bám tên.
+    directory: {
+      listSelectors: ['.ReactVirtualized__Grid__innerScrollContainer', '.virtualized-scroll'],
+      itemSelectors: ['.conv-item'],
+      nameSelectors: ['.conv-item-title__name'],
+      idAttrs: [],
+      // Avatar <img id> LÀ id Zalo thật của đối phương — thứ định danh ổn định
+      // duy nhất trang này lộ ra. Chỉ dùng khi hội thoại có ĐÚNG một avatar:
+      // ảnh ghép của nhóm mang id của từng thành viên, không cái nào là id nhóm.
+      avatarIdSelectors: ['.conv-item__avatar img[id]'],
+      groupSelectors: ['.zavatar-multi'],
+      passes: 30, // ~9100px danh sách / ~700px khung nhìn
+    },
+    // Nút "Phân loại" nằm ngay trên danh sách (đo được ở ~283,102). Tìm theo
+    // CHỮ chứ không theo đường dẫn: class của Zalo là chuỗi tiện ích ngắn
+    // (flx, flx-al-c…) nên đường dẫn đổi theo mọi thay đổi bố cục, còn nhãn
+    // hiển thị thì không.
+    // Menu Phân loại — ĐO ĐƯỢC từ chat.zalo.me thật. Nút tìm theo CHỮ (class của
+    // Zalo là chuỗi tiện ích `flx`, `flx-al-c`… nên đường dẫn đổi theo bố cục),
+    // còn bên trong popup thì bám `data-id` — đây là mã component ổn định, khác
+    // hẳn class. Mỗi nhãn là một ô TICK, nên bấm lần nữa là tắt lọc.
+    labels: {
+      filterText: 'Phân loại',
+      popupSelectors: ['.popover-v3'],
+      itemSelectors: ['[data-id="div_DetailLabelList_Label"]'],
+      nameSelectors: ['[data-id="div_MiniLabelList_Label"]'],
+    },
+    // Gửi tin. CHƯA đo được DOM khung soạn — các selector dưới là phỏng đoán
+    // theo lối đặt tên của Zalo, và script gửi (lib/workspace/send.ts) được
+    // viết để **báo cáo** thay vì đoán: không khớp thì nó tự tìm ô soạn ở nửa
+    // dưới màn hình và liệt kê mọi phần tử nhập liệu nhìn thấy (`editables`),
+    // đủ để ghim selector đúng sau MỘT lần chạy thử.
+    send: {
+      composerSelectors: [
+        '#richInput',
+        '[data-id="div_Chat_InputMessage"]',
+        '.chat-input [contenteditable="true"]',
+        '#chatInput [contenteditable="true"]',
+      ],
+      sendButtonSelectors: ['[data-id="btn_Chat_SendMessage"]', '.btn-send', '[title="Gửi tin nhắn"]'],
+      messageSelectors: ['.chat-body .msg-item', '[data-id="div_Chat_MessageItem"]', '.message-item'],
+      enterToSend: true,
+      // BẬT — log chứng minh cần thiết: gửi xong mà để hội thoại ĐANG MỞ thì
+      // Zalo coi như người dùng đang đọc và NGỪNG bắn thông báo cho tin mới của
+      // hội thoại đó → thu tin chết tới khi mở workspace xem lại ("chỉ chạy
+      // được một lần"). Đỗ sang chat với chính mình ("My Documents") để không
+      // hội thoại thật nào bị bỏ mở → thông báo của chúng tiếp tục về.
+      parkAfterSend: true,
+      parkNames: ['My Documents', 'Cloud của tôi', 'Cloud của bạn'],
     },
   },
   {

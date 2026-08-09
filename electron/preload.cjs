@@ -26,6 +26,17 @@ contextBridge.exposeInMainWorld('workspace', {
   clearSession: (partition) => ipcRenderer.invoke('workspace:clearSession', partition),
   /** Kéo focus về host page sau khi hủy <webview> (fix input "chết"). */
   focusHost: () => ipcRenderer.invoke('workspace:focusHost'),
+  /**
+   * Gửi một phím THẬT vào guest của một partition, từ main process.
+   *
+   * Automation gửi tin Zalo bằng cách gõ chữ (được) rồi nhấn Enter. Ô soạn của
+   * Zalo bỏ qua sự kiện giả (isTrusted=false), nên Enter phải là sự kiện thật.
+   * `<webview>.sendInputEvent` ở renderer chỉ ăn khi webview đang focus — mà
+   * lúc rule chạy từ tab khác thì webview ở nền. Main process focus đúng
+   * webContents của guest rồi bơm phím, không phụ thuộc webview có đang hiện.
+   * → { ok } | { ok:false, error }
+   */
+  sendKey: (partition, keyCode) => ipcRenderer.invoke('workspace:sendKey', partition, keyCode),
   /** Niêm phong/mở niêm phong mật khẩu đã lưu bằng safeStorage (DPAPI). Chỉ
    *  main process có safeStorage, và Next server là process riêng nên không
    *  dùng được — renderer là nơi duy nhất thấy plaintext.

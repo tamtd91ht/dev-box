@@ -1,13 +1,21 @@
 'use client';
 
 // Quick-find for Elasticsearch — same experience as the Mongo tab: named preset
-// buttons (connection + index + curated queryable fields), run = tick fields,
+// buttons (connection + curated queryable fields), run = tick fields,
 // fill values, AND across them (bool.filter). Field types map to ES clauses
 // (Exact→term · Text→match · Số/Boolean→term); list mode ("a,b") → terms /
 // bool.should. Pressing Run collapses the setup panel into a one-line summary
 // so results get the screen; a second tab picks the returned fields (_source),
 // chip-suggested from live sample documents. Results: one document per row,
 // click → pretty-JSON modal. Export re-queries everything into a styled .xlsx.
+//
+// ĐÍCH TÌM CHỌN LÚC CHẠY, KHÔNG CHỐT TRONG PRESET. Index ở đây phần lớn chia
+// theo thời gian (…_11_2025, …_12_2025) nên preset chỉ giữ index MẶC ĐỊNH và
+// được phép để trống; mỗi lần bấm nút đều chọn lại được, CHỌN NHIỀU INDEX một
+// lượt (ES nhận "a,b"). Thiếu index thì tới lúc bấm Chạy mới báo, không chặn
+// từ lúc lưu preset.
+// Mọi chỗ chọn index đều là DANH SÁCH THẬT lấy từ cluster (TargetPicker) —
+// không có ô gõ tay, vì gõ sai một cái tên thì query trả rỗng mà không ai biết.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -30,9 +38,28 @@ import {
   type EsQuickFieldType,
 } from '@/lib/esQuickFinds';
 import ExportModal from './ExportModal';
+import TargetPicker from '../TargetPicker';
 
 export interface QuickFindViewProps {
   connections: PublicEsConnection[];
+}
+
+/** Index nào cũng chọn từ danh sách thật của cluster — dùng chung cho ô cấu
+ *  hình preset và ô chọn lúc chạy, nên gom vào một hook nhỏ. */
+function useIndexOptions(connectionId: string) {
+  const [options, setOptions] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const load = useCallback(() => {
+    if (!connectionId) { setOptions([]); return; }
+    setLoading(true);
+    listEsIndices(connectionId)
+      .then((is) => setOptions(is.map((i) => i.name).sort((a, b) => a.localeCompare(b))))
+      .catch(() => setOptions([]))
+      .finally(() => setLoading(false));
+  }, [connectionId]);
+  // Đổi cluster thì danh sách cũ vô nghĩa — xoá ngay, đợi mở picker mới nạp.
+  useEffect(() => { setOptions([]); }, [connectionId]);
+  return { options, loading, load };
 }
 
 interface RunField extends EsQuickFindField {
@@ -59,6 +86,12 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [edit, setEdit] = useState<EsQuickFind | 'new' | null>(null);
   const [run, setRun] = useState<EsQuickFind | null>(null);
   const [runFields, setRunFields] = useState<RunField[]>([]);
+  /** Index dùng CHO LẦN CHẠY NÀY — lấy sẵn từ preset nhưng đổi thoải mái, vì
+   *  index theo tháng thì preset không thể chốt cứng được. */
+  const [runIndices, setRunIndices] = useState<string[]>([]);
+  const runIdx = useIndexOptions(run?.connectionId ?? '');
+  /** Chuỗi index gửi cho ES — nhiều index thì nối bằng dấu phẩy. */
+  const indexArg = runIndices.join(',');
 
   const [panelOpen, setPanelOpen] = useState(true);
   const [runTab, setRunTab] = useState<RunTab>('conditions');
@@ -89,6 +122,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const startRun = useCallback((p: EsQuickFind) => {
     setRun(p);
     setRunFields(p.fields.map((f) => ({ ...f, checked: false, value: '', list: false })));
+    setRunIndices(p.indices);
     setPanelOpen(true); setRunTab('conditions');
     setSrcSuggestions([]); setSrcSelected([]); setSrcCustom('');
     setResult(null); setFrom(0); setError(null); setSelectedDoc(null);
@@ -101,13 +135,19 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
 
   const doRun = useCallback(async (over?: { from?: number }) => {
     if (!run) return;
+    // Preset để trống index là chuyện bình thường (index theo tháng) — chỉ tới
+    // lúc bấm tìm mà vẫn chưa chọn thì mới báo.
+    if (runIndices.length === 0) {
+      setError('Chưa chọn index — bấm “Index” ở trên và chọn ít nhất một cái từ danh sách.');
+      return;
+    }
     const effFrom = over?.from ?? 0;
     setBusy(true); setError(null);
     try {
       const query = buildEsQuickQuery(
         runFields.filter((f) => f.checked).map((f) => ({ path: f.path, type: f.type, value: f.value, list: f.list })),
       );
-      const r = await searchEs(run.connectionId, run.index, {
+      const r = await searchEs(run.connectionId, indexArg, {
         query, sort: '', source: buildSource(), size: run.limit, from: effFrom,
       });
       setResult(r);
@@ -116,20 +156,20 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
       setPanelOpen(false);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [run, runFields, buildSource]);
+  }, [run, runFields, buildSource, runIndices, indexArg]);
 
   const openSourceTab = useCallback(async () => {
     setRunTab('source');
-    if (!run || srcSuggestions.length > 0) return;
+    if (!run || srcSuggestions.length > 0 || runIndices.length === 0) return;
     const have = result?.docs?.length ? result.docs : null;
     if (have) { setSrcSuggestions(deriveFieldNames(have)); return; }
     setSrcLoading(true);
     try {
-      const sample = await searchEs(run.connectionId, run.index, { query: '', sort: '', source: '', size: 5, from: 0 });
+      const sample = await searchEs(run.connectionId, indexArg, { query: '', sort: '', source: '', size: 5, from: 0 });
       setSrcSuggestions(deriveFieldNames(sample.docs));
     } catch { /* best-effort */ }
     finally { setSrcLoading(false); }
-  }, [run, result, srcSuggestions.length]);
+  }, [run, result, srcSuggestions.length, runIndices.length, indexArg]);
 
   const enabledCount = runFields.filter((f) => f.checked).length;
 
@@ -149,8 +189,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
 
       {quickFinds.length === 0 && !edit && (
         <p className="empty">
-          Chưa có nút tìm nhanh nào. Tạo một nút (ví dụ “Tìm customer”), chọn cluster + index và khai
-          báo sẵn các field hay query — lúc chạy chỉ việc tích và điền giá trị.
+          Chưa có nút tìm nhanh nào. Tạo một nút (ví dụ “Tìm customer”), chọn cluster và khai báo sẵn
+          các field hay query — lúc chạy chọn index rồi tích field, điền giá trị. Index để trống trong
+          cấu hình cũng được: index theo tháng thì chọn ngay lúc tìm.
         </p>
       )}
 
@@ -161,7 +202,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
             <div key={p.id} className={`es-qf-chip${run?.id === p.id ? ' active' : ''}`}>
               <button
                 className="es-qf-chip-main"
-                title={missing ? 'Connection của preset này đã bị xoá — sửa lại preset' : `${connName(p.connectionId)} · ${p.index}`}
+                title={missing
+                  ? 'Connection của preset này đã bị xoá — sửa lại preset'
+                  : `${connName(p.connectionId)} · ${p.indices.length ? p.indices.join(', ') : 'chưa đặt index — chọn lúc chạy'}`}
                 onClick={() => startRun(p)}
               >
                 🔎 {p.name}{missing && ' ⚠'}
@@ -194,8 +237,35 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           <div className="status-line" style={{ justifyContent: 'space-between' }}>
             <strong>🔎 {run.name}</strong>
             <span className="badge">
-              {connName(run.connectionId) ?? '⚠ connection đã xoá'} · <code>{run.index}</code> · size {run.limit}
+              {connName(run.connectionId) ?? '⚠ connection đã xoá'} · size {run.limit}
             </span>
+          </div>
+
+          {/* Đích tìm của LẦN CHẠY NÀY. Preset chỉ điền sẵn — index đặt theo
+              tháng thì đổi ở đây, không phải quay vào sửa preset. */}
+          <div className="es-qf-target">
+            <TargetPicker
+              label="Index"
+              multi
+              options={runIdx.options}
+              loading={runIdx.loading}
+              value={runIndices}
+              onChange={(v) => { setRunIndices(v); setSrcSuggestions([]); }}
+              onOpen={() => { if (runIdx.options.length === 0) runIdx.load(); }}
+              onReload={runIdx.load}
+              placeholder="— chọn index để tìm —"
+            />
+            {runIndices.length > 0 && (
+              <span className="small" style={{ color: 'var(--faint)' }}>
+                tìm trên {runIndices.length} index một lượt
+              </span>
+            )}
+            {run.indices.length > 0 && indexArg !== run.indices.join(',') && (
+              <button className="chip-btn" title={`Về index mặc định của preset: ${run.indices.join(', ')}`}
+                onClick={() => { setRunIndices(run.indices); setSrcSuggestions([]); }}>
+                ↺ Về mặc định
+              </button>
+            )}
           </div>
 
           {!panelOpen && (
@@ -373,7 +443,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
       {exportOpen && run && result && (
         <ExportModal
           connectionId={run.connectionId}
-          index={run.index}
+          index={indexArg}
           query={lastQuery}
           querySummary={querySummary}
           fieldSuggestions={[...new Set(['_id', ...srcSuggestions, ...srcSelected, ...run.fields.map((f) => f.path), ...deriveFieldNames(result.docs)])]}
@@ -406,28 +476,25 @@ function QuickFindForm({
 }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [connectionId, setConnectionId] = useState(initial?.connectionId ?? connections[0]?.id ?? '');
-  const [index, setIndex] = useState(initial?.index ?? '');
+  const [indices, setIndices] = useState<string[]>(initial?.indices ?? []);
   const [limit, setLimit] = useState(initial?.limit ?? 50);
   const [fields, setFields] = useState<EsQuickFindField[]>(
     initial?.fields?.length ? initial.fields : [{ label: 'Tenant', path: 'tenantId', type: 'keyword' }],
   );
 
-  const [idxOptions, setIdxOptions] = useState<string[]>([]);
-  useEffect(() => {
-    if (!connectionId) { setIdxOptions([]); return; }
-    listEsIndices(connectionId).then((is) => setIdxOptions(is.map((i) => i.name))).catch(() => setIdxOptions([]));
-  }, [connectionId]);
+  const idx = useIndexOptions(connectionId);
 
   const validFields = useMemo(
     () => fields.filter((f) => f.label.trim() && f.path.trim()),
     [fields],
   );
-  const canSave = !!name.trim() && !!connectionId && !!index.trim() && validFields.length > 0;
+  // Index KHÔNG bắt buộc — thiếu thì lúc chạy chọn, chỉ bấm tìm mới báo lỗi.
+  const canSave = !!name.trim() && !!connectionId && validFields.length > 0;
 
   const saveBody = (): Omit<EsQuickFind, 'id'> => ({
     name: name.trim(),
     connectionId,
-    index: index.trim(),
+    indices,
     fields: validFields.map((f) => ({ label: f.label.trim(), path: f.path.trim(), type: f.type })),
     limit: Math.min(Math.max(Number(limit) || 50, 1), 200),
   });
@@ -443,7 +510,7 @@ function QuickFindForm({
         </label>
         <label className="es-field" style={{ flex: 1 }}>
           <span>Elastic connection</span>
-          <select className="input" value={connectionId} onChange={(e) => { setConnectionId(e.target.value); setIndex(''); }}>
+          <select className="input" value={connectionId} onChange={(e) => { setConnectionId(e.target.value); setIndices([]); }}>
             {connections.map((c) => <option key={c.id} value={c.id}>{c.project} / {c.name}</option>)}
           </select>
         </label>
@@ -451,10 +518,22 @@ function QuickFindForm({
 
       <div className="es-form-row">
         <label className="es-field" style={{ flex: 1 }}>
-          <span>Index</span>
-          <input className="input mono" list="es-qf-indices" value={index}
-            onChange={(e) => setIndex(e.target.value)} placeholder="customers_v2" />
-          <datalist id="es-qf-indices">{idxOptions.map((i) => <option key={i} value={i} />)}</datalist>
+          <span>Index mặc định <i style={{ color: 'var(--faint)', fontStyle: 'normal' }}>(không bắt buộc)</i></span>
+          <TargetPicker
+            label="Index"
+            multi
+            options={idx.options}
+            loading={idx.loading}
+            value={indices}
+            onChange={setIndices}
+            onOpen={() => { if (idx.options.length === 0) idx.load(); }}
+            onReload={idx.load}
+            disabled={!connectionId}
+            placeholder="— để trống, chọn lúc chạy —"
+          />
+          <span className="es-hint">
+            Index đặt theo thời gian thì cứ để trống — lúc bấm tìm nhanh chọn sau. Chọn được nhiều index một lượt.
+          </span>
         </label>
         <label className="es-field" style={{ flex: '0 0 90px' }}>
           <span>Size ≤200</span>
@@ -491,7 +570,7 @@ function QuickFindForm({
         <button
           className="sm"
           disabled={!canSave}
-          title={canSave ? 'Lưu preset' : 'Cần tên + connection + index + ít nhất 1 field đủ label/path'}
+          title={canSave ? 'Lưu preset' : 'Cần tên + connection + ít nhất 1 field đủ label/path'}
           onClick={() => onSaved(initial ? updateEsQuickFind(initial.id, saveBody()) : addEsQuickFind(saveBody()))}
         >{initial ? 'Lưu' : 'Tạo'}</button>
       </div>

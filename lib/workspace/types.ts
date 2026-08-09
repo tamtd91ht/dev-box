@@ -11,6 +11,9 @@
 // simply the first consumer of the framework.
 
 import type { CaptureSpec } from './capture';
+import type { DirectorySpec } from './directory';
+import type { LabelSpec } from './labels';
+import type { SendSpec } from './send';
 
 /**
  * Visual identity of a workspace. Every place an account surfaces (rail group,
@@ -76,6 +79,26 @@ export interface WorkspacePlugin {
    * `capture` but forfeits message capture (it returns a number, not a batch).
    */
   unreadScript?: string;
+  /**
+   * Chat apps: hints for reading this app's conversation list, so send targets
+   * can be managed in DevBox instead of inside the app (see
+   * lib/workspace/directory.ts). Declaring it (even as `{}`) is what puts the
+   * "quét hội thoại" button on this workspace's toolbar — the heuristic runs
+   * with or without selectors.
+   */
+  directory?: DirectorySpec;
+  /**
+   * Chat apps with their own label/category feature (Zalo: "Phân loại").
+   * Filtering by a label the user already maintains is how a send-target list
+   * stays small, human-curated and safe to key by name.
+   */
+  labels?: LabelSpec;
+  /**
+   * How to send a message as this account. Declaring it is what makes the
+   * workspace available to the automation "gửi tin nhắn" action — a plugin
+   * without it can never be written to.
+   */
+  send?: SendSpec;
 }
 
 /** Runtime knobs (from userData/workspace.config.json, merged over defaults). */
@@ -106,6 +129,10 @@ export interface WorkspaceBridge {
   /** Kéo focus về host page sau khi hủy <webview> giữ focus (fix input "chết").
    *  Optional: preload cũ (trước khi có handler này) chưa expose. */
   focusHost?(): Promise<{ ok: boolean; error?: string }>;
+  /** Bơm một phím THẬT vào guest của một partition (automation gửi tin Zalo:
+   *  gõ chữ rồi nhấn Enter thật, vì ô soạn React bỏ qua sự kiện giả). Chỉ nhận
+   *  phím trong danh sách trắng ở main. Optional: preload cũ chưa expose. */
+  sendKey?(partition: string, keyCode: string): Promise<{ ok: boolean; error?: string }>;
   /** Mở URL bằng trình duyệt ngoài của máy (nút ↗ ở tab Google, link hướng dẫn
    *  trong panel lỗi mail). Optional: preload cũ chưa expose. */
   openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;

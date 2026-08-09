@@ -85,11 +85,18 @@ function listensTo(rule: AutomationRule, event: AutomationEvent): boolean {
  * globally unique) and rules saved before the change keep matching.
  */
 function inScope(rule: AutomationRule, event: AutomationEvent): boolean {
-  const { sourceIds, instanceIds } = rule.scope ?? { sourceIds: [], instanceIds: [] };
+  const { sourceIds, instanceIds, conversations } = rule.scope ?? { sourceIds: [], instanceIds: [] };
   if (sourceIds?.length && !sourceIds.includes(event.sourceId)) return false;
   if (instanceIds?.length) {
     const qualified = `${event.sourceId}::${event.instanceId}`;
     if (!instanceIds.includes(qualified) && !instanceIds.includes(event.instanceId ?? '')) return false;
+  }
+  if (conversations?.length) {
+    // Case- and spacing-insensitive: the name comes from a notification title,
+    // and "OMITeam " vs "OMITeam" must not decide whether an alert fires.
+    const norm = (s: string) => (s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const here = norm(String(event.fields?.conversation ?? ''));
+    if (!here || !conversations.some((c) => norm(c) === here)) return false;
   }
   return true;
 }
@@ -97,6 +104,20 @@ function inScope(rule: AutomationRule, event: AutomationEvent): boolean {
 /** Content-dedupe key: same rule, same headline + body. */
 const contentKey = (rule: AutomationRule, event: AutomationEvent) =>
   `${rule.id}|${event.title}|${event.text}`;
+
+/** Render a header / query map. Entries whose key renders empty are dropped. */
+function renderMap(
+  map: Record<string, string> | undefined,
+  vars: Record<string, string>,
+  templateKeys = false,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(map ?? {})) {
+    const key = templateKeys ? render(k, vars) || k : k;
+    if (key.trim()) out[key] = render(v, vars);
+  }
+  return out;
+}
 
 /** Render every templated string of an action against the event's variables. */
 export function renderAction(action: AutomationAction, vars: Record<string, string>): AutomationAction {
@@ -112,9 +133,21 @@ export function renderAction(action: AutomationAction, vars: Record<string, stri
         ...action,
         url: render(action.url, vars),
         bodyTemplate: action.bodyTemplate ? render(action.bodyTemplate, vars) : vars.json,
-        headers: Object.fromEntries(
-          Object.entries(action.headers ?? {}).map(([k, v]) => [k, render(v, vars)]),
-        ),
+        headers: renderMap(action.headers, vars),
+        // Keys are templated too: `{{metric}}=...` is a legitimate query.
+        query: renderMap(action.query, vars, true),
+        auth: action.auth
+          ? { ...action.auth, token: render(action.auth.token, vars), user: render(action.auth.user, vars) }
+          : undefined,
+      };
+    case 'telegram':
+      return {
+        ...action,
+        chatId: render(action.chatId, vars),
+        // Empty template → headline + body, which is what an alert reads like
+        // anyway. Rendering to an empty string would make Telegram reject it.
+        text: render(action.text, vars) || [vars.title, vars.text].filter(Boolean).join('\n') || vars.json,
+        threadId: render(action.threadId, vars),
       };
     case 'kafka':
       return {
@@ -123,6 +156,8 @@ export function renderAction(action: AutomationAction, vars: Record<string, stri
         key: render(action.key, vars) || vars.instanceId,
         valueTemplate: action.valueTemplate ? render(action.valueTemplate, vars) : vars.json,
       };
+    case 'wsSend':
+      return { ...action, text: render(action.text, vars) };
     case 'reply':
       return { ...action, text: render(action.text, vars) };
     case 'log':
@@ -272,7 +307,13 @@ export function blankRule(category: AutomationRule['category'] = 'social', name?
     scope: { sourceIds: [], instanceIds: [] },
     match: { mode: 'all', conditions: [{ ...FIRST_CONDITION[category] }] },
     actions: [{ type: 'notify', level: category === 'infra' ? 'warn' : 'info' }],
-    limits: { dedupeSec: 30 },
+    // Content-dedupe suits a metric that keeps breaching the same threshold.
+    // It does NOT suit chat: a person sending the same sentence twice is two
+    // real events, and swallowing the second looks exactly like a broken rule
+    // — three identical messages, one reply. Re-delivery of the SAME captured
+    // message is already dropped by the engine's event-id check, so social
+    // needs nothing here.
+    limits: category === 'social' ? {} : { dedupeSec: 30 },
   };
 }
 

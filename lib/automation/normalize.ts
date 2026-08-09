@@ -14,6 +14,7 @@ import {
   type AutomationRule,
   type ConditionOp,
   type EventCategory,
+  type HttpMethod,
   type InfraStack,
   type InfraWatch,
   type TriggerType,
@@ -36,7 +37,8 @@ const OPS: ConditionOp[] = [
   'lt',
   'lte',
 ];
-const ACTION_TYPES: ActionType[] = ['notify', 'webhook', 'log', 'kafka', 'reply'];
+const ACTION_TYPES: ActionType[] = ['notify', 'webhook', 'telegram', 'wsSend', 'log', 'kafka', 'reply'];
+const HTTP_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 const CATEGORIES: EventCategory[] = ['social', 'infra', 'system'];
 const TRIGGERS: TriggerType[] = ['message.received', 'infra.metric', 'infra.recovered', 'system.test'];
 const STACKS: InfraStack[] = ['mongo', 'redis', 'es', 'kafka', 'rabbit', 'pg'];
@@ -66,6 +68,15 @@ const num = (v: unknown, fallback = 0): number => {
   const n = typeof v === 'number' ? v : Number(v);
   return Number.isFinite(n) ? n : fallback;
 };
+/** A hand-editable string→string map (query params, headers). Drops junk keys. */
+const strMap = (v: unknown): Record<string, string> =>
+  v && typeof v === 'object' && !Array.isArray(v)
+    ? Object.fromEntries(
+        Object.entries(v as Record<string, unknown>)
+          .filter(([k, val]) => k.trim() && typeof val === 'string')
+          .map(([k, val]) => [k.trim(), val as string]),
+      )
+    : {};
 /** Field names are open (they resolve against event.fields) but must be tame. */
 const fieldName = (v: unknown, fallback = 'text'): string => {
   const s = str(v).trim();
@@ -96,22 +107,44 @@ function normAction(raw: unknown): AutomationAction | null {
         body: str(a.body),
         sound: bool(a.sound),
       };
-    case 'webhook':
+    case 'webhook': {
+      const auth = (a.auth ?? {}) as Record<string, unknown>;
+      const kind = (['none', 'bearer', 'basic', 'header'] as const).includes(auth.kind as 'none')
+        ? (auth.kind as 'none' | 'bearer' | 'basic' | 'header')
+        : 'none';
       return {
         type,
         url: str(a.url),
-        method: (['POST', 'PUT', 'GET'] as const).includes(a.method as 'POST')
-          ? (a.method as 'POST' | 'PUT' | 'GET')
-          : 'POST',
-        headers:
-          a.headers && typeof a.headers === 'object'
-            ? Object.fromEntries(
-                Object.entries(a.headers as Record<string, unknown>)
-                  .filter(([, v]) => typeof v === 'string')
-                  .map(([k, v]) => [k, v as string]),
-              )
-            : {},
+        method: HTTP_METHODS.includes(a.method as HttpMethod) ? (a.method as HttpMethod) : 'POST',
+        query: strMap(a.query),
+        headers: strMap(a.headers),
+        // 'none' carries no secret, so it is stored flat rather than as a null.
+        auth: { kind, token: str(auth.token), user: str(auth.user), header: str(auth.header) },
+        bodyType: (['json', 'text', 'form'] as const).includes(a.bodyType as 'json')
+          ? (a.bodyType as 'json' | 'text' | 'form')
+          : 'json',
         bodyTemplate: str(a.bodyTemplate),
+        // A hand-edited 600s timeout would pin the dispatch open while the poll
+        // loop waits behind it — one minute is already generous.
+        timeoutSec: Math.min(60, Math.max(1, posInt(a.timeoutSec) ?? 10)),
+        captureResponse: bool(a.captureResponse),
+      };
+    }
+    case 'telegram':
+      return {
+        type,
+        tokenSource: a.tokenSource === 'inline' ? 'inline' : 'env',
+        botToken: str(a.botToken),
+        chatId: str(a.chatId),
+        text: str(a.text),
+        parseMode: (['none', 'Markdown', 'MarkdownV2', 'HTML'] as const).includes(a.parseMode as 'none')
+          ? (a.parseMode as 'none' | 'Markdown' | 'MarkdownV2' | 'HTML')
+          : 'none',
+        silent: bool(a.silent),
+        // Defaults TRUE: an alert whose link unfurls into a preview card buries
+        // the next alert.
+        noPreview: bool(a.noPreview, true),
+        threadId: str(a.threadId),
       };
     case 'log':
       return { type, file: str(a.file) };
@@ -122,6 +155,14 @@ function normAction(raw: unknown): AutomationAction | null {
         topic: str(a.topic),
         key: str(a.key),
         valueTemplate: str(a.valueTemplate),
+      };
+    case 'wsSend':
+      return {
+        type,
+        accountKey: str(a.accountKey),
+        targetGroupId: str(a.targetGroupId),
+        targetLabel: str(a.targetLabel),
+        text: str(a.text),
       };
     case 'reply':
       // requireApproval defaults TRUE — an omitted flag must never mean
@@ -159,6 +200,9 @@ function normRule(raw: unknown, index: number): AutomationRule | null {
     scope: {
       sourceIds: strArr(scope.sourceIds),
       instanceIds: strArr(scope.instanceIds),
+      conversations: strArr(scope.conversations)
+        .map((s) => s.replace(/\s+/g, ' ').trim())
+        .filter(Boolean),
     },
     match: {
       mode: match.mode === 'any' ? 'any' : 'all',
@@ -244,6 +288,14 @@ export function normalizeConfig(raw: unknown): AutomationConfig {
     storeMessageText: bool(c.storeMessageText, d.storeMessageText),
     allowSend: bool(c.allowSend, d.allowSend),
     watchEnabled: bool(c.watchEnabled, d.watchEnabled),
+    // Defaults TRUE: an omitted flag in a hand-edited file must not silently
+    // remove the only thing standing between two linked accounts and a
+    // ping-pong loop.
+    loopGuard: bool(c.loopGuard, d.loopGuard),
+    // Unknown/missing → no group gets OS pop-ups. Opting IN must be explicit.
+    osNotify: strArr(c.osNotify).filter((g): g is EventCategory =>
+      CATEGORIES.includes(g as EventCategory),
+    ),
     activityLimit: Math.min(2000, posInt(c.activityLimit) ?? d.activityLimit),
     rules,
     watches,

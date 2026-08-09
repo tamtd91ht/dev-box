@@ -3059,6 +3059,48 @@ pre.kafka-drawer-body {
 .ws-canvas { position: relative; flex: 1; min-height: 0; }
 .ws-webview { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
 
+/* Quét danh sách hội thoại (components/WorkspaceScan.tsx) — modal thường, nên
+   nó nổi trên <webview> giống hộp thoại "Mở link ở đâu?". */
+.ws-scan { width: min(880px, 94vw); gap: 10px; }
+.ws-scan-spacer { flex: 1; }
+.ws-scan-sum { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
+.ws-scan-sum code { font-family: var(--mono); font-size: 11px; }
+.ws-scan-ok { color: var(--ok, #3fb950); }
+.ws-scan-warn { color: var(--warn, #d29922); }
+.ws-scan-bad { color: var(--bad, #f85149); font-size: 12.5px; margin: 0; }
+.ws-scan-list {
+  /* flex:none là BẮT BUỘC. .modal là flex-column có max-height, mà bảng này lại
+     overflow:auto → mặc định flex-shrink:1 cho phép nó bị co về gần 0 khi nội
+     dung modal dài. Đúng là chuyện đã xảy ra: bảng hội thoại biến mất, chỉ còn
+     bảng chẩn đoán (nằm lồng trong div khác nên thoát). */
+  flex: none;
+  overflow: auto; max-height: 46vh; border: 1px solid var(--glass-brd); border-radius: 10px;
+}
+.ws-scan-list table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ws-scan-list th {
+  position: sticky; top: 0; z-index: 1; text-align: left; padding: 6px 8px;
+  font-size: 10.5px; font-weight: 600; color: var(--muted);
+  background: color-mix(in srgb, var(--bg-1) 96%, transparent);
+  border-bottom: 1px solid var(--glass-brd);
+}
+.ws-scan-list td { padding: 5px 8px; border-top: 1px solid var(--glass-brd); vertical-align: top; }
+.ws-scan-list td code { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.ws-scan-i { width: 1%; text-align: right; font-family: var(--mono); color: var(--faint); }
+.ws-scan-diag { display: flex; flex-direction: column; gap: 8px; }
+.ws-scan-h { margin: 4px 0 0; font-size: 13px; font-weight: 600; color: var(--text); }
+.ws-scan-list tr.is-picked { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.ws-scan-list input[type="checkbox"] { cursor: pointer; }
+/* Giỏ chọn: những hội thoại sẽ được đưa vào danh bạ gửi. */
+.ws-scan-cart {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.ws-scan-cart .status-line { margin-bottom: 0; }
+.ws-scan-name { flex: 0 1 260px; }
+.ws-scan-raw summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.ws-scan-raw .auto-probe { margin-top: 8px; max-height: 240px; }
+
 .ws-overlay {
   position: absolute; inset: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 12px; text-align: center;
@@ -3962,6 +4004,12 @@ pre.kafka-drawer-body {
   border-radius: 6px; padding: 3px 8px;
 }
 .auto-switches { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.auto-osnoti { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.auto-cap { display: flex; flex-direction: column; gap: 12px; }
+.auto-cap-row {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  border: 1px solid var(--glass-brd); border-radius: 10px; background: var(--glass-2);
+}
 
 .auto-toggle {
   display: inline-flex; align-items: center; gap: 8px; margin: 0;
@@ -4046,9 +4094,28 @@ pre.kafka-drawer-body {
 .auto-sec h4 {
   margin: 0; font-size: 10.5px; font-weight: 700; letter-spacing: .06em;
   text-transform: uppercase; color: var(--muted);
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 6px;
 }
-.auto-sec h4 .auto-mode { width: auto; padding: 3px 8px; font-size: 11px; }
+.auto-sec h4 .auto-mode { width: auto; padding: 3px 8px; font-size: 11px; margin-left: 4px; }
+/* Gập/mở: mục đã đóng không còn khoảng trống thừa, để phần dưới trồi lên. */
+.auto-sec.is-closed { gap: 0; padding-bottom: 8px; }
+.auto-sec.is-closed h4 { margin-bottom: 0; }
+.auto-fold {
+  flex: none; width: 20px; padding: 0; line-height: 1; font-size: 11px;
+  background: none; border: none; color: var(--muted); cursor: pointer;
+}
+.auto-fold:hover { color: var(--text); background: none; box-shadow: none; transform: none; }
+.auto-sec-title {
+  padding: 0; background: none; border: none; cursor: pointer;
+  font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit;
+}
+.auto-sec-title:hover { background: none; box-shadow: none; transform: none; color: var(--text); }
+.auto-sec-tools { margin-left: auto; display: flex; gap: 6px; }
+.auto-action.is-closed { gap: 0; padding: 6px 10px; }
+.auto-action-sum {
+  flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted); cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .auto-sec > button { align-self: flex-start; }
 
 .auto-checks { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -4077,6 +4144,19 @@ pre.kafka-drawer-body {
 }
 .auto-action-head { display: flex; align-items: center; gap: 8px; }
 .auto-action-head select { width: auto; flex: 1; }
+/* Bodies/templates are multi-line but sit inside a card — the page-wide 130px
+   textarea would push the rest of the rule off screen. */
+.auto-action textarea { min-height: 66px; font-size: 12px; }
+.auto-switches.wide, .auto-probe.wide, .auto-hint.auto-wide,
+.ws-scan-bad.auto-wide { grid-column: 1 / -1; }
+.auto-probe.wide { max-height: 300px; }
+
+/* Query params & headers: key = value rows. */
+.auto-kv { display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+.auto-kv-row { display: flex; align-items: center; gap: 6px; width: 100%; }
+.auto-kv-row input:first-child { flex: 0 1 190px; min-width: 90px; font-family: var(--mono); font-size: 11.5px; }
+.auto-kv-row input:nth-child(2) { flex: 1; min-width: 110px; }
+.auto-kv-row > button { flex: none; }
 
 .auto-probe {
   margin: 0; padding: 10px; border-radius: 10px; max-height: 220px; overflow: auto;
@@ -4102,6 +4182,9 @@ pre.kafka-drawer-body {
   font-style: normal; font-size: 10px; font-weight: 700; letter-spacing: .03em;
   border-radius: 4px; padding: 1px 6px; border: 1px solid var(--glass-brd); color: var(--muted);
 }
+/* Chip giờ mang cả LÝ DO (vì sao skipped/error), nên phải xuống dòng được thay
+   vì kéo dài ra ngoài hàng. */
+.auto-out { max-width: 100%; overflow-wrap: anywhere; font-weight: 600; }
 .auto-out.st-ok { color: var(--ok, #3fb950); border-color: color-mix(in srgb, var(--ok, #3fb950) 45%, transparent); }
 .auto-out.st-error { color: var(--bad, #f85149); border-color: color-mix(in srgb, var(--bad, #f85149) 45%, transparent); }
 .auto-out.st-dry-run { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
@@ -4748,6 +4831,73 @@ iframe.tools-view-box { background: #fff; }
   /* Xếp dọc thì tỉ lệ ngang không còn nghĩa — trả hai ô về chia đều. */
   .tools-main > .tools-pane { flex: 1 1 auto !important; }
   .tools-splitter { display: none; }
+}
+
+/* ── Chọn đích dữ liệu: index / database / collection (TargetPicker.tsx) ──
+   Nút hiện lựa chọn hiện tại, bấm ra danh sách THẬT lấy từ server + ô lọc.
+   Không có chỗ nào gõ tay ra giá trị — chỉ bấm chọn. */
+.tp { position: relative; display: inline-flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tp-btn {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer; max-width: 100%;
+  padding: 6px 10px; border-radius: 9px; font-size: 12.5px; font-weight: 500;
+  background: var(--glass-2); border: 1px solid var(--glass-brd); color: var(--text);
+  box-shadow: none;
+}
+.tp-btn:hover:not(:disabled) { border-color: var(--glass-brd-hover); transform: none; }
+.tp-btn:disabled { opacity: .5; cursor: not-allowed; }
+.tp-btn.on { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.tp-btn-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); flex: none; }
+.tp-btn-val {
+  font-family: var(--mono); font-size: 12px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tp-btn:not(.on) .tp-btn-val { color: var(--faint); font-family: inherit; }
+.tp-btn-caret { font-size: 9px; opacity: .7; flex: none; }
+
+/* Chọn nhiều: liệt kê từng cái dưới nút cho thấy rõ đang tìm trên những đâu. */
+.tp-chips { display: flex; flex-wrap: wrap; gap: 4px; max-width: 420px; }
+.tp-chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+  padding: 1px 4px 1px 7px; border-radius: 6px; font-family: var(--mono); font-size: 10.5px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.tp-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-chip-x {
+  background: none; border: 0; box-shadow: none; color: var(--muted);
+  padding: 0 2px; font-size: 10px; cursor: pointer; flex: none;
+}
+.tp-chip-x:hover { color: var(--err); transform: none; }
+
+.tp-pop {
+  position: absolute; z-index: 40; top: calc(100% + 4px); left: 0;
+  width: max(280px, 100%); max-width: 460px;
+  display: flex; flex-direction: column; gap: 6px; padding: 8px;
+  border-radius: 10px; background: var(--panel, var(--bg-1)); border: 1px solid var(--glass-brd);
+  box-shadow: 0 10px 26px rgb(0 0 0 / .34);
+}
+.tp-pop-head { display: flex; align-items: center; gap: 6px; }
+.tp-filter { flex: 1; padding: 6px 9px; font-size: 12px; }
+.tp-list { display: flex; flex-direction: column; gap: 1px; max-height: 260px; overflow: auto; }
+.tp-item {
+  display: flex; align-items: center; gap: 7px; text-align: left; cursor: pointer;
+  padding: 5px 8px; border-radius: 6px; font-size: 12px;
+  background: transparent; border: 0; box-shadow: none; color: var(--text);
+}
+.tp-item:hover { background: var(--glass-2); transform: none; }
+.tp-item.on { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tp-item-box { flex: none; font-size: 11px; color: var(--accent); }
+.tp-item-name {
+  font-family: var(--mono); font-size: 11.5px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tp-pop-foot { display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--glass-brd); padding-top: 6px; }
+
+/* Hàng chọn đích trong bảng Tìm nhanh (ES + Mongo). */
+.es-qf-target, .mongo-qf-target {
+  display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid var(--glass-brd); border-radius: 10px;
+  background: var(--glass-2);
 }
 
 /* ── Thanh kéo đổi bề rộng cột (components/Splitter.tsx) ───────────────────

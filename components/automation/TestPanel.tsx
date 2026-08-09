@@ -9,10 +9,22 @@
 import { useMemo, useState } from 'react';
 import { GROUPS, groupOf, triggerDef } from '@/lib/automation/catalog';
 import { automation } from '@/lib/automation/useAutomation';
-import type { AutomationEvent, EvaluationResult, EventCategory, TriggerType } from '@/lib/automation/types';
+import type {
+  ActionPlan,
+  AutomationEvent,
+  EvaluationResult,
+  EventCategory,
+  TriggerType,
+} from '@/lib/automation/types';
 import { Field } from './parts';
 
 const CORE = new Set(['title', 'text', 'source', 'instance']);
+
+/** The plan dump is a debugging surface, not a place to put a bot token or an
+ *  API key on screen — those are typed into masked inputs for a reason. */
+const SECRETS = new Set(['botToken', 'token']);
+const dumpPlans = (plans: ActionPlan[]): string =>
+  JSON.stringify(plans, (k, v) => (SECRETS.has(k) && typeof v === 'string' && v ? '••••••' : v), 2);
 
 export default function TestPanel() {
   const [category, setCategory] = useState<EventCategory>('social');
@@ -118,7 +130,7 @@ export default function TestPanel() {
           Bắn thật
         </button>
         <span className="auto-hint">
-          “Bắn thật” đi qua đúng đường dẫn của sự kiện thật: có thể gửi webhook, ghi log, bắn Kafka.
+          “Bắn thật” đi qua đúng đường dẫn của sự kiện thật: có thể gọi API, gửi Telegram, ghi log, bắn Kafka.
         </span>
       </div>
 
@@ -135,7 +147,7 @@ export default function TestPanel() {
           </ul>
           <h4>Hành động ({result.plans.length})</h4>
           <pre className="auto-probe">
-            {result.plans.length ? JSON.stringify(result.plans, null, 2) : '— không có —'}
+            {result.plans.length ? dumpPlans(result.plans) : '— không có —'}
           </pre>
         </div>
       ) : null}

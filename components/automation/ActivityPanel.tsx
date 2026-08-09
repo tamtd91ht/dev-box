@@ -10,6 +10,7 @@ import type { ActionOutcome, ActivityEntry, RuleDecision, SkipReason } from '@/l
 import { Empty } from './parts';
 
 const SKIP: Record<SkipReason, string> = {
+  echo: 'tin do chính automation gửi (chặn vòng lặp)',
   'config-disabled': 'engine đang tắt',
   'rule-disabled': 'quy tắc tắt',
   trigger: 'khác loại sự kiện',
@@ -58,6 +59,11 @@ export default function ActivityPanel({ activity }: { activity: ActivityEntry[] 
 
       {activity.map((a, i) => {
         const matched = a.decisions.filter((d) => d.matched);
+        // Blocked by the loop guard: every rule was skipped for the same
+        // reason before evaluation even started. Without this the row read
+        // "không quy tắc nào khớp", which points at the conditions — exactly
+        // the wrong place to go looking.
+        const echoed = a.decisions.length > 0 && a.decisions.every((d) => d.skipped === 'echo');
         return (
           <div key={`${a.event.id}-${i}`} className="auto-act">
             <span className="auto-act-time">{time(a.event.ts)}</span>
@@ -73,10 +79,18 @@ export default function ActivityPanel({ activity }: { activity: ActivityEntry[] 
               </span>
               {a.event.text ? <span className="auto-act-text">{a.event.text}</span> : null}
               <span className="auto-act-meta">
-                {matched.length ? (
+                {echoed ? (
+                  <em className="auto-out st-error" title="Tắt công tắc “Chặn vòng lặp” ở đầu tab nếu đây là nhầm">
+                    ⛔ chặn vòng lặp — coi đây là tin do chính automation gửi
+                  </em>
+                ) : matched.length ? (
                   a.outcomes.map((o, j) => (
                     <em key={j} className={`auto-out st-${o.status}`} title={o.detail}>
                       {o.type} · {STATUS[o.status]}
+                      {/* The REASON used to live only in a tooltip, so "it just
+                          didn't send" had no visible explanation. Anything that
+                          is not a plain success shows why, right here. */}
+                      {o.detail && o.status !== 'ok' ? ` — ${o.detail}` : ''}
                     </em>
                   ))
                 ) : (

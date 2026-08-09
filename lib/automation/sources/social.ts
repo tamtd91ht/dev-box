@@ -32,6 +32,15 @@ export function socialEvent(
   const text = m.x || '';
   const ts = Number.isFinite(m.t) ? m.t : Date.now();
 
+  // Group or 1-1, derived rather than guessed by the UI.
+  //
+  // The collector splits a group notification ("OMITeam" / "Alice: hi") into
+  // conversation=OMITeam, sender=Alice; a 1-1 has no sender prefix, so both
+  // come out as the same person. Different names therefore mean a third party
+  // spoke — which only happens in a group. This is what makes {{sender}}
+  // meaningful: in a 1-1 it merely repeats the conversation name.
+  const chatType: 'group' | 'user' = conversation && sender && conversation !== sender ? 'group' : 'user';
+
   return {
     // Timestamp + content hash: a re-delivered batch after a guest reload maps
     // to the same id, and the engine drops it.
@@ -42,11 +51,15 @@ export function socialEvent(
     sourceId: plugin.id,
     instanceId: account.instanceId,
     instanceLabel: account.label,
-    title: sender || conversation || plugin.name,
+    // Headline reads like the chat list does: a group shows the group, a 1-1
+    // shows the person.
+    title: (chatType === 'group' ? conversation : sender) || conversation || sender || plugin.name,
     text,
     fields: {
       sender,
       conversation,
+      /** 'group' | 'user' — lets a rule ask for group messages only. */
+      chatType,
       app: plugin.name,
       /** 'notification' (an app toast) or 'dom' (a plugin's extraScript). */
       capture: m.k || 'notification',

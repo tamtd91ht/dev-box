@@ -18,27 +18,19 @@ import {
   type FieldDef,
 } from '@/lib/automation/catalog';
 import { blankRule } from '@/lib/automation/engine';
-import { listConnections, connLabel, type ConnOption } from '@/lib/automation/connections';
+import { listConnections, connLabel } from '@/lib/automation/connections';
 import type {
-  AutomationAction,
   AutomationCondition,
   AutomationRule,
-  ActionType,
   EventCategory,
   InfraStack,
   TriggerType,
 } from '@/lib/automation/types';
 import { accountKey, loadAccounts } from '@/lib/workspace/accounts';
+import type { TargetGroup } from '@/lib/workspace/targets';
 import { messagingPlugins } from '@/lib/workspace/plugins';
-import { Field, Num, Toggle } from './parts';
-
-const ACTION_LABEL: Record<ActionType, string> = {
-  notify: '🔔 Thông báo',
-  webhook: '🌐 Gọi webhook',
-  log: '📄 Ghi file log',
-  kafka: '≋ Bắn Kafka',
-  reply: '↩ Trả lời (cần duyệt)',
-};
+import { Field, Num, Section, Toggle } from './parts';
+import ActionCard, { defaultAction } from './ActionCard';
 
 const DAYS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
 
@@ -128,6 +120,107 @@ function CheckList({
   );
 }
 
+/**
+ * Conversations a social rule can be limited to.
+ *
+ * Offered from the send-target directory (`configs/wstargets.json`) — the same
+ * lists built in the Workspace tab's 🔎 panel, so a conversation you already
+ * curated once is one click here. Free text stays available: a rule may need a
+ * conversation you never send to.
+ */
+function ConversationScope({
+  value,
+  onChange,
+  accountKeys,
+}: {
+  value: string[];
+  onChange: (v: string[]) => void;
+  /** Accounts the rule is scoped to; empty = offer every saved conversation. */
+  accountKeys: string[];
+}) {
+  const [known, setKnown] = useState<{ name: string; kind: 'group' | 'user' }[]>([]);
+  const [custom, setCustom] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    void fetch('/api/ws-targets')
+      .then((r) => r.json())
+      .then((d: { groups?: TargetGroup[] }) => {
+        if (!alive) return;
+        const seen = new Map<string, 'group' | 'user'>();
+        for (const g of d.groups ?? []) {
+          if (accountKeys.length && !accountKeys.includes(g.accountKey)) continue;
+          for (const t of g.targets) if (!seen.has(t.name)) seen.set(t.name, t.kind);
+        }
+        setKnown([...seen.entries()].map(([name, kind]) => ({ name, kind })));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountKeys.join(',')]);
+
+  const toggle = (name: string) =>
+    onChange(value.includes(name) ? value.filter((x) => x !== name) : [...value, name]);
+
+  const add = () => {
+    const n = custom.replace(/\s+/g, ' ').trim();
+    if (n && !value.includes(n)) onChange([...value, n]);
+    setCustom('');
+  };
+
+  // Names the rule uses that are not in the directory — still removable.
+  const extra = value.filter((v) => !known.some((k) => k.name === v));
+
+  return (
+    <>
+      <div className="auto-checks">
+        <button type="button" className={`auto-chip${!value.length ? ' on' : ''}`} onClick={() => onChange([])}>
+          Mọi hội thoại
+        </button>
+        {known.map((k) => (
+          <button
+            key={k.name}
+            type="button"
+            className={`auto-chip${value.includes(k.name) ? ' on' : ''}`}
+            onClick={() => toggle(k.name)}
+          >
+            {k.kind === 'group' ? '👥' : '👤'} {k.name}
+          </button>
+        ))}
+        {extra.map((n) => (
+          <button key={n} type="button" className="auto-chip on" onClick={() => toggle(n)}>
+            {n} ✕
+          </button>
+        ))}
+      </div>
+      <div className="auto-cond" style={{ marginTop: 6 }}>
+        <input
+          value={custom}
+          placeholder="tên hội thoại khác — gõ đúng như hiện trong Zalo"
+          onChange={(e) => setCustom(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              add();
+            }
+          }}
+        />
+        <button type="button" className="ghost sm" disabled={!custom.trim()} onClick={add}>
+          ＋ thêm
+        </button>
+      </div>
+      {!known.length && (
+        <span className="auto-hint">
+          Chưa có danh sách nào trong danh bạ — vào tab 🧭 Workspace → 🔎 để quét và lưu, hoặc gõ tay
+          tên hội thoại ở trên.
+        </span>
+      )}
+    </>
+  );
+}
+
 // ── Conditions ─────────────────────────────────────────────────────────────
 
 function ConditionRow({
@@ -190,156 +283,6 @@ function ConditionRow({
   );
 }
 
-// ── Actions ────────────────────────────────────────────────────────────────
-
-function ActionCard({
-  action,
-  allowed,
-  onChange,
-  onRemove,
-}: {
-  action: AutomationAction;
-  allowed: ActionType[];
-  onChange: (a: AutomationAction) => void;
-  onRemove: () => void;
-}) {
-  const [kafkaConns, setKafkaConns] = useState<ConnOption[]>([]);
-  useEffect(() => {
-    if (action.type !== 'kafka') return;
-    void listConnections('kafka').then(setKafkaConns);
-  }, [action.type]);
-
-  const switchType = (type: ActionType) => {
-    if (type === action.type) return;
-    onChange(defaultAction(type));
-  };
-
-  return (
-    <div className="auto-action">
-      <div className="auto-action-head">
-        <select value={action.type} onChange={(e) => switchType(e.target.value as ActionType)}>
-          {allowed.map((t) => (
-            <option key={t} value={t}>
-              {ACTION_LABEL[t]}
-            </option>
-          ))}
-        </select>
-        <button type="button" className="ghost sm" onClick={onRemove} title="Xoá hành động">
-          ✕
-        </button>
-      </div>
-
-      {action.type === 'notify' ? (
-        <div className="auto-grid">
-          <Field label="Mức độ">
-            <select
-              value={action.level}
-              onChange={(e) => onChange({ ...action, level: e.target.value as typeof action.level })}
-            >
-              <option value="info">Thông tin</option>
-              <option value="warn">Cảnh báo</option>
-              <option value="urgent">Khẩn (không tự tắt)</option>
-            </select>
-          </Field>
-          <Field label="Tiêu đề" hint="để trống = tiêu đề sự kiện">
-            <input value={action.title ?? ''} onChange={(e) => onChange({ ...action, title: e.target.value })} />
-          </Field>
-          <Field label="Nội dung" wide hint="dùng {{sender}}, {{text}}, {{value}}…">
-            <input value={action.body ?? ''} onChange={(e) => onChange({ ...action, body: e.target.value })} />
-          </Field>
-          <Toggle
-            checked={!!action.sound}
-            onChange={(v) => onChange({ ...action, sound: v })}
-            label="Có tiếng"
-            hint="kêu cả khi workspace đang tắt tiếng"
-          />
-        </div>
-      ) : null}
-
-      {action.type === 'webhook' ? (
-        <div className="auto-grid">
-          <Field label="Phương thức">
-            <select
-              value={action.method}
-              onChange={(e) => onChange({ ...action, method: e.target.value as typeof action.method })}
-            >
-              <option>POST</option>
-              <option>PUT</option>
-              <option>GET</option>
-            </select>
-          </Field>
-          <Field label="URL" wide hint="chạy phía server — không dính CORS">
-            <input value={action.url} placeholder="https://…" onChange={(e) => onChange({ ...action, url: e.target.value })} />
-          </Field>
-          <Field label="Body" wide hint="để trống = toàn bộ sự kiện dạng JSON">
-            <input
-              value={action.bodyTemplate ?? ''}
-              placeholder='{"text":"{{title}}"}'
-              onChange={(e) => onChange({ ...action, bodyTemplate: e.target.value })}
-            />
-          </Field>
-        </div>
-      ) : null}
-
-      {action.type === 'log' ? (
-        <Field label="Tên file" hint="cùng thư mục DevBox, đuôi .jsonl — để trống = .automation-log.jsonl">
-          <input value={action.file ?? ''} placeholder=".automation-log.jsonl" onChange={(e) => onChange({ ...action, file: e.target.value })} />
-        </Field>
-      ) : null}
-
-      {action.type === 'kafka' ? (
-        <div className="auto-grid">
-          <Field label="Kết nối">
-            <select value={action.connectionId} onChange={(e) => onChange({ ...action, connectionId: e.target.value })}>
-              <option value="">— chọn —</option>
-              {kafkaConns.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {connLabel(c)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Topic">
-            <input value={action.topic} onChange={(e) => onChange({ ...action, topic: e.target.value })} />
-          </Field>
-          <Field label="Key" hint="để trống = instanceId">
-            <input value={action.key ?? ''} onChange={(e) => onChange({ ...action, key: e.target.value })} />
-          </Field>
-          <Field label="Value" wide hint="để trống = toàn bộ sự kiện dạng JSON">
-            <input
-              value={action.valueTemplate ?? ''}
-              onChange={(e) => onChange({ ...action, valueTemplate: e.target.value })}
-            />
-          </Field>
-        </div>
-      ) : null}
-
-      {action.type === 'reply' ? (
-        <div className="auto-grid">
-          <Field label="Nội dung trả lời" wide hint="LUÔN cần bật 'cho phép gửi' + duyệt tay — không bao giờ tự gửi">
-            <input value={action.text} onChange={(e) => onChange({ ...action, text: e.target.value })} />
-          </Field>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function defaultAction(type: ActionType): AutomationAction {
-  switch (type) {
-    case 'notify':
-      return { type: 'notify', level: 'info' };
-    case 'webhook':
-      return { type: 'webhook', url: '', method: 'POST' };
-    case 'log':
-      return { type: 'log', file: '' };
-    case 'kafka':
-      return { type: 'kafka', connectionId: '', topic: '' };
-    case 'reply':
-      return { type: 'reply', text: '', requireApproval: true };
-  }
-}
-
 // ── The editor ─────────────────────────────────────────────────────────────
 
 export default function RuleEditor({
@@ -349,6 +292,29 @@ export default function RuleEditor({
   rule: AutomationRule;
   onChange: (r: AutomationRule) => void;
 }) {
+  /**
+   * Which action cards are open, by index. Absent = open.
+   *
+   * Kept HERE rather than inside each card so "thu gọn tất cả" can reach them,
+   * and so the map can be re-indexed when a card is removed — otherwise
+   * deleting the second card would fold whichever card took its place.
+   */
+  const [folded, setFolded] = useState<Record<number, boolean>>({});
+  const isOpen = (i: number) => folded[i] !== true;
+  const toggleAt = (i: number) => setFolded((f) => ({ ...f, [i]: !f[i] }));
+  const foldAll = (v: boolean) =>
+    setFolded(Object.fromEntries(rule.actions.map((_, i) => [i, v])));
+  const dropAt = (i: number) =>
+    setFolded((f) => {
+      const next: Record<number, boolean> = {};
+      for (const [k, v] of Object.entries(f)) {
+        const n = Number(k);
+        if (n < i) next[n] = v;
+        else if (n > i) next[n - 1] = v;
+      }
+      return next;
+    });
+
   const group = groupOf(rule.category);
   const trig = triggerDef(rule.trigger) ?? group.triggers[0];
   const fields = trig?.fields ?? [];
@@ -405,8 +371,7 @@ export default function RuleEditor({
         />
       </div>
 
-      <section className="auto-sec">
-        <h4>Phạm vi</h4>
+      <Section title="Phạm vi">
         <Field label={rule.category === 'infra' ? 'Stack' : 'Ứng dụng'}>
           <CheckList
             options={sources}
@@ -423,11 +388,23 @@ export default function RuleEditor({
             allLabel="Tất cả"
           />
         </Field>
-      </section>
+        {rule.category === 'social' && (
+          <Field
+            label="Hội thoại"
+            hint="giới hạn theo TÊN hội thoại — nhóm hoặc chat 1-1. Để trống = mọi hội thoại của các tài khoản trên"
+          >
+            <ConversationScope
+              value={rule.scope.conversations ?? []}
+              onChange={(v) => set({ scope: { ...rule.scope, conversations: v } })}
+              accountKeys={rule.scope.instanceIds}
+            />
+          </Field>
+        )}
+      </Section>
 
-      <section className="auto-sec">
-        <h4>
-          Điều kiện
+      <Section
+        title={`Điều kiện (${rule.match.conditions.length})`}
+        extra={
           <select
             className="auto-mode"
             value={rule.match.mode}
@@ -436,7 +413,8 @@ export default function RuleEditor({
             <option value="all">thoả TẤT CẢ</option>
             <option value="any">thoả BẤT KỲ</option>
           </select>
-        </h4>
+        }
+      >
         {rule.match.conditions.map((c, i) => (
           <ConditionRow
             key={i}
@@ -472,17 +450,35 @@ export default function RuleEditor({
         {!rule.match.conditions.length ? (
           <div className="auto-hint">không có điều kiện = khớp mọi sự kiện trong phạm vi</div>
         ) : null}
-      </section>
+      </Section>
 
-      <section className="auto-sec">
-        <h4>Hành động</h4>
+      <Section
+        title={`Hành động (${rule.actions.length})`}
+        extra={
+          rule.actions.length > 1 ? (
+            <span className="auto-sec-tools">
+              <button type="button" className="ghost sm" onClick={() => foldAll(true)}>
+                thu gọn tất cả
+              </button>
+              <button type="button" className="ghost sm" onClick={() => foldAll(false)}>
+                mở tất cả
+              </button>
+            </span>
+          ) : undefined
+        }
+      >
         {rule.actions.map((a, i) => (
           <ActionCard
             key={i}
             action={a}
             allowed={group.actions}
+            open={isOpen(i)}
+            onToggle={() => toggleAt(i)}
             onChange={(next) => set({ actions: rule.actions.map((x, j) => (i === j ? next : x)) })}
-            onRemove={() => set({ actions: rule.actions.filter((_, j) => j !== i) })}
+            onRemove={() => {
+              dropAt(i);
+              set({ actions: rule.actions.filter((_, j) => j !== i) });
+            }}
           />
         ))}
         <button
@@ -492,10 +488,9 @@ export default function RuleEditor({
         >
           ＋ hành động
         </button>
-      </section>
+      </Section>
 
-      <section className="auto-sec">
-        <h4>Khung giờ & giới hạn</h4>
+      <Section title="Khung giờ & giới hạn" defaultOpen={false}>
         <div className="auto-grid">
           <Field label="Chỉ chạy trong khung giờ">
             <Toggle
@@ -551,7 +546,7 @@ export default function RuleEditor({
             <Num value={rule.limits?.maxPerHour} onChange={(v) => set({ limits: { ...rule.limits, maxPerHour: v } })} />
           </Field>
         </div>
-      </section>
+      </Section>
 
       <Field label="Ghi chú" wide>
         <input value={rule.notes ?? ''} onChange={(e) => set({ notes: e.target.value })} />

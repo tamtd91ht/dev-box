@@ -78,6 +78,22 @@ export function buildCollectorScript(spec: CaptureSpec = {}): string {
       window.__wsPush = function(sender, conversation, text, source){
         try {
           window.__wsNoti = (window.__wsNoti||0) + 1;
+          // Diagnostics: proof that the hook FIRED, kept separately from the
+          // queue so it survives the drain. Without this there is no way to
+          // tell "the app never notified" from "we never delivered it" — and
+          // debugging the wrong half of that costs days. No message text here.
+          window.__wsPushN = (window.__wsPushN||0) + 1;
+          window.__wsLastPush = Date.now();
+          var lg = window.__wsPushLog = window.__wsPushLog || [];
+          lg.push({ t: Date.now(), s: String(sender||''), c: String(conversation||''), k: source||'notification' });
+          if(lg.length > 20) lg.splice(0, lg.length - 20);
+          // Which conversations a NOTIFICATION just covered. A DOM-scraping
+          // plugin reads this to skip the same message: two sources for one
+          // arrival would fire every rule twice.
+          if((source||'notification') === 'notification' && conversation){
+            window.__wsNotiByConv = window.__wsNotiByConv || {};
+            window.__wsNotiByConv[String(conversation)] = Date.now();
+          }
           if(!window.__wsCap) return;                 // capture off → count only
           var q = window.__wsMsgQ;
           q.push({ t: Date.now(), s: String(sender||''), c: String(conversation||''),
@@ -113,6 +129,7 @@ export function buildCollectorScript(spec: CaptureSpec = {}): string {
           Hooked.requestPermission = function(){ return Orig.requestPermission.apply(Orig, arguments); };
           try { Object.defineProperty(window,'Notification',{configurable:true,writable:true,value:Hooked}); }
           catch(_){ window.Notification = Hooked; }
+          window.__wsNotiHooked = true;
         }
       } catch(_){}
 
@@ -127,6 +144,7 @@ export function buildCollectorScript(spec: CaptureSpec = {}): string {
                   window.__wsPush(p.sender, p.conv, p.text, 'notification'); } catch(_){}
             return origShow.apply(this, arguments);
           };
+          window.__wsSwHooked = true;
         }
       } catch(_){}
 
@@ -210,3 +228,64 @@ export function buildCollectorScript(spec: CaptureSpec = {}): string {
 
 /** Flip the in-page capture flag (renderer → guest). */
 export const captureFlagScript = (on: boolean) => `window.__wsCap=${on ? 'true' : 'false'};`;
+
+/** What the guest can tell us about WHY messages are or aren't arriving. */
+export interface CaptureDiag {
+  /** The one-time page hooks are installed. */
+  hooked: boolean;
+  /** `window.Notification` was replaced (the classic path Zalo uses). */
+  notiHooked: boolean;
+  /** ServiceWorkerRegistration.showNotification was wrapped (PWA path). */
+  swHooked: boolean;
+  /** Message TEXT may be recorded — mirrors the automation capture switch. */
+  cap: boolean;
+  /** Notification permission as the page sees it. */
+  permission: string;
+  /** How many times the hook has fired since the page loaded. */
+  pushes: number;
+  /** Epoch ms of the last hook firing (0 = never). */
+  lastPush: number;
+  /** Messages waiting to be drained by the next poll. */
+  queued: number;
+  /** The page's own unread counter. */
+  noti: number;
+  /** Does the page believe it is visible / focused? Both suppress toasts. */
+  visibility: string;
+  focused: boolean;
+  /** Last hook firings: time + sender + conversation, NEVER the text. */
+  log: { t: number; s: string; c: string; k: string }[];
+  url: string;
+}
+
+/**
+ * Read the collector's own state.
+ *
+ * Message capture has four stages — the app raises a notification, the hook
+ * catches it, the poll drains it, the engine evaluates it — and a rule that
+ * "stops working" looks identical at every one of them. This answers which
+ * stage is silent: `pushes` counts hook firings, so `pushes` not rising while
+ * you send messages means the APP never notified, and no amount of fixing the
+ * engine will help.
+ */
+export const captureDiagScript = (): string => `(function(){
+  try {
+    return {
+      hooked: !!window.__wsHook,
+      notiHooked: !!window.__wsNotiHooked,
+      swHooked: !!window.__wsSwHooked,
+      cap: !!window.__wsCap,
+      permission: (typeof Notification !== 'undefined' && Notification.permission) ? Notification.permission : 'n/a',
+      pushes: window.__wsPushN || 0,
+      lastPush: window.__wsLastPush || 0,
+      queued: (window.__wsMsgQ || []).length,
+      noti: window.__wsNoti || 0,
+      visibility: document.visibilityState || '',
+      focused: (function(){ try { return document.hasFocus(); } catch(_){ return false; } })(),
+      log: (window.__wsPushLog || []).slice(-10),
+      url: location.href
+    };
+  } catch(e){
+    return { hooked:false, notiHooked:false, swHooked:false, cap:false, permission:'lỗi: '+e,
+             pushes:0, lastPush:0, queued:0, noti:0, visibility:'', focused:false, log:[], url:'' };
+  }
+})()`;

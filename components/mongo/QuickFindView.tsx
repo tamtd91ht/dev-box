@@ -24,6 +24,12 @@
 // horizontally-scrollable strip; clicking a row opens the full pretty JSON in
 // a modal (same flow as the Kafka message search → drawer).
 //
+// ĐÍCH TÌM CHỌN LÚC CHẠY, KHÔNG CHỐT TRONG PRESET: database/collection trong
+// cấu hình chỉ là MẶC ĐỊNH và được phép để trống (collection chia theo tháng
+// thì chốt cứng là vô nghĩa). Mỗi lần chạy đều chọn lại được từ DANH SÁCH THẬT
+// của server (TargetPicker — không có ô gõ tay); thiếu đích thì tới lúc bấm
+// Chạy mới báo lỗi.
+//
 // Presets live in localStorage (lib/mongoQuickFinds) — personal bookmarks,
 // like Kafka's. Queries reuse the same /api/mongo find action as the data
 // browser, so every server-side bound (maxTimeMS, limit clamp) applies here too.
@@ -50,6 +56,7 @@ import {
   type QuickFieldType,
 } from '@/lib/mongoQuickFinds';
 import ExportModal from './ExportModal';
+import TargetPicker from '../TargetPicker';
 
 export interface QuickFindViewProps {
   connections: PublicMongoConnection[];
@@ -81,6 +88,14 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [quickFinds, setQuickFinds] = useState<MongoQuickFind[]>([]);
   const [edit, setEdit] = useState<MongoQuickFind | 'new' | null>(null);
   const [run, setRun] = useState<MongoQuickFind | null>(null);
+  /** Đích của LẦN CHẠY NÀY — preset chỉ điền sẵn. Collection đặt theo tháng thì
+   *  đổi thẳng ở đây, khỏi quay vào sửa preset. */
+  const [runDb, setRunDb] = useState('');
+  const [runColl, setRunColl] = useState('');
+  const [dbOpts, setDbOpts] = useState<string[]>([]);
+  const [collOpts, setCollOpts] = useState<string[]>([]);
+  const [dbBusy, setDbBusy] = useState(false);
+  const [collBusy, setCollBusy] = useState(false);
   const [runFields, setRunFields] = useState<RunField[]>([]);
 
   // Setup panel visibility + tab. Collapsed after a successful run.
@@ -113,10 +128,33 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
     [connections],
   );
 
+  const loadDbs = useCallback(() => {
+    if (!run) return;
+    setDbBusy(true);
+    listMongoDatabases(run.connectionId)
+      .then((ds) => setDbOpts(ds.map((d) => d.name).sort((a, b) => a.localeCompare(b))))
+      .catch(() => setDbOpts([]))
+      .finally(() => setDbBusy(false));
+  }, [run]);
+
+  const loadColls = useCallback(() => {
+    if (!run || !runDb) { setCollOpts([]); return; }
+    setCollBusy(true);
+    listMongoCollections(run.connectionId, runDb)
+      .then((cs) => setCollOpts(cs.map((c) => c.name).sort((a, b) => a.localeCompare(b))))
+      .catch(() => setCollOpts([]))
+      .finally(() => setCollBusy(false));
+  }, [run, runDb]);
+
+  // Đổi database thì danh sách collection cũ vô nghĩa.
+  useEffect(() => { setCollOpts([]); }, [runDb]);
+
   /** Open the run panel for a preset — every field starts unticked and empty. */
   const startRun = useCallback((p: MongoQuickFind) => {
     setRun(p);
     setRunFields(p.fields.map((f) => ({ ...f, checked: false, value: '', list: false })));
+    setRunDb(p.database); setRunColl(p.collection);
+    setDbOpts([]); setCollOpts([]);
     setPanelOpen(true); setRunTab('conditions');
     setProjSuggestions([]); setProjSelected([]); setProjKeepId(true); setProjCustom('');
     setResult(null); setSkip(0); setError(null); setSelectedDoc(null);
@@ -133,13 +171,19 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
 
   const doRun = useCallback(async (over?: { skip?: number }) => {
     if (!run) return;
+    // Preset để trống database/collection là hợp lệ — chỉ lúc bấm tìm mà vẫn
+    // chưa chọn thì mới báo.
+    if (!runDb || !runColl) {
+      setError(`Chưa chọn ${!runDb ? 'database' : 'collection'} — bấm nút ở trên rồi chọn từ danh sách.`);
+      return;
+    }
     const effSkip = over?.skip ?? 0;
     setBusy(true); setError(null);
     try {
       const filter = buildQuickFilter(
         runFields.filter((f) => f.checked).map((f) => ({ path: f.path, type: f.type, value: f.value, list: f.list })),
       );
-      const r = await findMongo(run.connectionId, run.database, run.collection, {
+      const r = await findMongo(run.connectionId, runDb, runColl, {
         filter, projection: buildProjection(), sort: '', limit: run.limit, skip: effSkip,
       });
       setResult(r);
@@ -148,7 +192,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
       setPanelOpen(false); // results take the screen; the summary bar carries the query
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [run, runFields, buildProjection]);
+  }, [run, runFields, buildProjection, runDb, runColl]);
 
   /**
    * Discover projectable fields when the tab opens: reuse the docs we already
@@ -156,18 +200,18 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
    */
   const openProjectionTab = useCallback(async () => {
     setRunTab('projection');
-    if (!run || projSuggestions.length > 0) return;
+    if (!run || projSuggestions.length > 0 || !runDb || !runColl) return;
     const have = result?.docs?.length ? result.docs : null;
     if (have) { setProjSuggestions(deriveFieldNames(have)); return; }
     setProjLoading(true);
     try {
-      const sample = await findMongo(run.connectionId, run.database, run.collection, {
+      const sample = await findMongo(run.connectionId, runDb, runColl, {
         filter: '', projection: '', sort: '', limit: 5, skip: 0,
       });
       setProjSuggestions(deriveFieldNames(sample.docs));
     } catch { /* suggestions are best-effort — free-text add still works */ }
     finally { setProjLoading(false); }
-  }, [run, result, projSuggestions.length]);
+  }, [run, result, projSuggestions.length, runDb, runColl]);
 
   const toggleProj = useCallback((f: string) => {
     setProjSelected((sel) => (sel.includes(f) ? sel.filter((x) => x !== f) : [...sel, f]));
@@ -201,8 +245,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
 
       {quickFinds.length === 0 && !edit && (
         <p className="empty">
-          Chưa có nút tìm nhanh nào. Tạo một nút (ví dụ “Tìm tenant”), chọn cluster + database +
-          collection và khai báo sẵn các field hay query — lúc chạy chỉ việc tích và điền giá trị.
+          Chưa có nút tìm nhanh nào. Tạo một nút (ví dụ “Tìm tenant”), chọn cluster và khai báo sẵn
+          các field hay query — lúc chạy chọn database/collection rồi tích field, điền giá trị.
+          Để trống trong cấu hình cũng được: collection theo tháng thì chọn ngay lúc tìm.
         </p>
       )}
 
@@ -215,7 +260,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                 className="mongo-qf-chip-main"
                 title={missing
                   ? 'Connection của preset này đã bị xoá — sửa lại preset'
-                  : `${connName(p.connectionId)} · ${p.database}.${p.collection}`}
+                  : `${connName(p.connectionId)} · ${p.database && p.collection ? `${p.database}.${p.collection}` : 'chưa đặt đích — chọn lúc chạy'}`}
                 onClick={() => startRun(p)}
               >
                 🔎 {p.name}{missing && ' ⚠'}
@@ -250,8 +295,39 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           <div className="status-line" style={{ justifyContent: 'space-between' }}>
             <strong>🔎 {run.name}</strong>
             <span className="badge">
-              {connName(run.connectionId) ?? '⚠ connection đã xoá'} · <code>{run.database}.{run.collection}</code> · limit {run.limit}
+              {connName(run.connectionId) ?? '⚠ connection đã xoá'} · limit {run.limit}
             </span>
+          </div>
+
+          {/* Đích tìm của LẦN CHẠY NÀY — preset chỉ điền sẵn. */}
+          <div className="mongo-qf-target">
+            <TargetPicker
+              label="Database"
+              options={dbOpts}
+              loading={dbBusy}
+              value={runDb ? [runDb] : []}
+              onChange={(v) => { setRunDb(v[0] ?? ''); setRunColl(''); setProjSuggestions([]); }}
+              onOpen={() => { if (dbOpts.length === 0) loadDbs(); }}
+              onReload={loadDbs}
+              placeholder="— chọn database —"
+            />
+            <TargetPicker
+              label="Collection"
+              options={collOpts}
+              loading={collBusy}
+              value={runColl ? [runColl] : []}
+              onChange={(v) => { setRunColl(v[0] ?? ''); setProjSuggestions([]); }}
+              onOpen={() => { if (collOpts.length === 0) loadColls(); }}
+              onReload={loadColls}
+              disabled={!runDb}
+              placeholder={runDb ? '— chọn collection —' : '— chọn database trước —'}
+            />
+            {(run.database || run.collection) && `${runDb}.${runColl}` !== `${run.database}.${run.collection}` && (
+              <button className="chip-btn" title={`Về mặc định của preset: ${run.database}.${run.collection}`}
+                onClick={() => { setRunDb(run.database); setRunColl(run.collection); setProjSuggestions([]); }}>
+                ↺ Về mặc định
+              </button>
+            )}
           </div>
 
           {/* Collapsed: one-line query summary, results get the screen. */}
@@ -427,8 +503,8 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
       {exportOpen && run && result && (
         <ExportModal
           connectionId={run.connectionId}
-          db={run.database}
-          coll={run.collection}
+          db={runDb}
+          coll={runColl}
           filter={lastFilter}
           querySummary={querySummary}
           fieldSuggestions={[...new Set(['_id', ...projSuggestions, ...projSelected, ...run.fields.map((f) => f.path), ...deriveFieldNames(result.docs)])]}
@@ -474,20 +550,37 @@ function QuickFindForm({
   // suggestions; the inputs still accept free text).
   const [dbOptions, setDbOptions] = useState<string[]>([]);
   const [collOptions, setCollOptions] = useState<string[]>([]);
-  useEffect(() => {
+  const [dbBusy, setDbBusy] = useState(false);
+  const [collBusy, setCollBusy] = useState(false);
+
+  const loadDbs = useCallback(() => {
     if (!connectionId) { setDbOptions([]); return; }
-    listMongoDatabases(connectionId).then((ds) => setDbOptions(ds.map((d) => d.name))).catch(() => setDbOptions([]));
+    setDbBusy(true);
+    listMongoDatabases(connectionId)
+      .then((ds) => setDbOptions(ds.map((d) => d.name).sort((a, b) => a.localeCompare(b))))
+      .catch(() => setDbOptions([]))
+      .finally(() => setDbBusy(false));
   }, [connectionId]);
-  useEffect(() => {
-    if (!connectionId || !database.trim()) { setCollOptions([]); return; }
-    listMongoCollections(connectionId, database.trim()).then((cs) => setCollOptions(cs.map((c) => c.name))).catch(() => setCollOptions([]));
+
+  const loadColls = useCallback(() => {
+    if (!connectionId || !database) { setCollOptions([]); return; }
+    setCollBusy(true);
+    listMongoCollections(connectionId, database)
+      .then((cs) => setCollOptions(cs.map((c) => c.name).sort((a, b) => a.localeCompare(b))))
+      .catch(() => setCollOptions([]))
+      .finally(() => setCollBusy(false));
   }, [connectionId, database]);
+  // Đổi connection/database thì danh sách cũ vô nghĩa — xoá, mở picker mới nạp.
+  useEffect(() => { setDbOptions([]); setCollOptions([]); }, [connectionId]);
+  useEffect(() => { setCollOptions([]); }, [database]);
 
   const validFields = useMemo(
     () => fields.filter((f) => f.label.trim() && f.path.trim()),
     [fields],
   );
-  const canSave = !!name.trim() && !!connectionId && !!database.trim() && !!collection.trim() && validFields.length > 0;
+  // Database/collection KHÔNG bắt buộc — collection theo tháng thì chọn lúc
+  // chạy, chỉ khi bấm tìm mà vẫn trống mới báo lỗi.
+  const canSave = !!name.trim() && !!connectionId && validFields.length > 0;
 
   const saveBody = (): Omit<MongoQuickFind, 'id'> => ({
     name: name.trim(),
@@ -517,16 +610,32 @@ function QuickFindForm({
 
       <div className="mongo-form-row">
         <label className="mongo-field" style={{ flex: 1 }}>
-          <span>Database</span>
-          <input className="input mono" list="mongo-qf-dbs" value={database}
-            onChange={(e) => { setDatabase(e.target.value); setCollection(''); }} placeholder="app_data_prod" />
-          <datalist id="mongo-qf-dbs">{dbOptions.map((d) => <option key={d} value={d} />)}</datalist>
+          <span>Database mặc định <i style={{ color: 'var(--faint)', fontStyle: 'normal' }}>(không bắt buộc)</i></span>
+          <TargetPicker
+            label="Database"
+            options={dbOptions}
+            loading={dbBusy}
+            value={database ? [database] : []}
+            onChange={(v) => { setDatabase(v[0] ?? ''); setCollection(''); }}
+            onOpen={() => { if (dbOptions.length === 0) loadDbs(); }}
+            onReload={loadDbs}
+            disabled={!connectionId}
+            placeholder="— để trống, chọn lúc chạy —"
+          />
         </label>
         <label className="mongo-field" style={{ flex: 1 }}>
-          <span>Collection</span>
-          <input className="input mono" list="mongo-qf-colls" value={collection}
-            onChange={(e) => setCollection(e.target.value)} placeholder="tenants" />
-          <datalist id="mongo-qf-colls">{collOptions.map((c) => <option key={c} value={c} />)}</datalist>
+          <span>Collection mặc định <i style={{ color: 'var(--faint)', fontStyle: 'normal' }}>(không bắt buộc)</i></span>
+          <TargetPicker
+            label="Collection"
+            options={collOptions}
+            loading={collBusy}
+            value={collection ? [collection] : []}
+            onChange={(v) => setCollection(v[0] ?? '')}
+            onOpen={() => { if (collOptions.length === 0) loadColls(); }}
+            onReload={loadColls}
+            disabled={!database}
+            placeholder={database ? '— để trống, chọn lúc chạy —' : '— chọn database trước —'}
+          />
         </label>
         <label className="mongo-field" style={{ flex: '0 0 90px' }}>
           <span>Limit ≤200</span>
@@ -563,7 +672,7 @@ function QuickFindForm({
         <button
           className="sm"
           disabled={!canSave}
-          title={canSave ? 'Lưu preset' : 'Cần tên + connection + database + collection + ít nhất 1 field đủ label/path'}
+          title={canSave ? 'Lưu preset' : 'Cần tên + connection + ít nhất 1 field đủ label/path'}
           onClick={() => onSaved(initial ? updateQuickFind(initial.id, saveBody()) : addQuickFind(saveBody()))}
         >{initial ? 'Lưu' : 'Tạo'}</button>
       </div>

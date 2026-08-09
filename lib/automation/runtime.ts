@@ -10,14 +10,16 @@
 // reset the engine history on every remount.
 //
 //   source → automation.submit(event) → evaluate() → plans
-//                                     ├─ notify        → here (toast + OS)
-//                                     ├─ webhook / log → POST /api/automation/dispatch
-//                                     ├─ kafka         → /api/kafka produce
-//                                     └─ reply         → held for approval
+//                                     ├─ notify                   → here (toast + OS)
+//                                     ├─ webhook / telegram / log → POST /api/automation/dispatch
+//                                     ├─ kafka                    → /api/kafka produce
+//                                     └─ reply                    → held for approval
 //
 // Subscribe with useSyncExternalStore (see useAutomation()).
 
 import { produceKafkaMessage } from '@/lib/kafka';
+import { sendToTargetGroup } from './wsSend';
+import { hasMark, stripMark } from './mark';
 import { createEngineState, evaluate, isDuplicateEvent, type EngineState } from './engine';
 import { normalizeConfig } from './normalize';
 import {
@@ -28,7 +30,9 @@ import {
   type AutomationConfig,
   type AutomationEvent,
   type EvaluationResult,
+  type EventCategory,
   type NotifyAction,
+  type RuleDecision,
 } from './types';
 
 export interface AutomationSnapshot {
@@ -215,7 +219,26 @@ class AutomationRuntime {
       if (!this.loaded) await this.load();
       if (isDuplicateEvent(this.state, event)) return null;
 
+      // Our own message coming back. Recorded in the activity feed rather than
+      // dropped in silence — "the rule didn't fire" with no trace is the worst
+      // possible way to learn about a loop guard.
+      if (this.config.loopGuard && event.category === 'social') {
+        this.traceEcho(event); // record the comparison, matched or not, for diagnosis
+      }
+      if (this.config.loopGuard && this.isEcho(event)) {
+        const decisions = this.config.rules.map((r) => ({
+          ruleId: r.id,
+          ruleName: r.name,
+          matched: false,
+          skipped: 'echo' as const,
+        }));
+        this.record({ event: this.forStorage(event), decisions, outcomes: [] });
+        if (event.category === 'social') void this.logIncoming(event, true, decisions);
+        return { event, decisions, plans: [] };
+      }
+
       const result = evaluate(this.config, event, this.state);
+      if (event.category === 'social') void this.logIncoming(event, false, result.decisions);
       const outcomes = await this.execute(result);
       this.record({ event: this.forStorage(event), decisions: result.decisions, outcomes });
       return result;
@@ -224,10 +247,13 @@ class AutomationRuntime {
     }
   }
 
-  /** Strip message text from what we KEEP when the user asked us not to store it. */
+  /** Strip message text from what we KEEP when the user asked not to store it.
+   *  Also drops the watermark: invisible characters that survive into a copied
+   *  bug report are their own kind of confusing. */
   private forStorage(event: AutomationEvent): AutomationEvent {
-    if (this.config.storeMessageText || event.category !== 'social') return event;
-    return { ...event, text: event.text ? '••••' : '', fields: { ...event.fields, text: '' } };
+    const clean = { ...event, title: stripMark(event.title), text: stripMark(event.text) };
+    if (this.config.storeMessageText || clean.category !== 'social') return clean;
+    return { ...clean, text: clean.text ? '••••' : '', fields: { ...clean.fields, text: '' } };
   }
 
   private record(entry: ActivityEntry): void {
@@ -243,8 +269,9 @@ class AutomationRuntime {
 
     const local: ActionPlan[] = [];
     const server: ActionPlan[] = [];
+    const SERVER_SIDE: ActionPlan['action']['type'][] = ['webhook', 'telegram', 'log'];
     for (const p of plans) {
-      if (p.action.type === 'webhook' || p.action.type === 'log') server.push(p);
+      if (SERVER_SIDE.includes(p.action.type)) server.push(p);
       else local.push(p);
     }
 
@@ -257,6 +284,14 @@ class AutomationRuntime {
 
   private async dispatch(event: AutomationEvent, plans: ActionPlan[]): Promise<ActionOutcome[]> {
     if (!plans.length) return [];
+    // Telegram lands in the same trap as Zalo: send into a group a linked
+    // Telegram workspace account also reads, and the reply comes straight back
+    // in as a new message. Record it so the trigger skips that echo.
+    if (this.config.loopGuard) {
+      for (const p of plans) {
+        if (!p.dryRun && p.action.type === 'telegram') this.noteSentEcho('', p.action.text ?? '');
+      }
+    }
     try {
       const r = await fetch('/api/automation/dispatch', {
         method: 'POST',
@@ -282,7 +317,12 @@ class AutomationRuntime {
 
     // Dry-run still produces a toast for `notify` — that IS the point of a
     // dry-run: see what the rule would say, without any outside side effect.
-    if (plan.dryRun && action.type !== 'notify') return { ...base, status: 'dry-run' };
+    // `wsSend` is also let through: ITS dry-run walks the whole path (open the
+    // conversation, type the message) and then clears the box without sending,
+    // which is the only way to find out that a selector broke BEFORE 3am.
+    if (plan.dryRun && action.type !== 'notify' && action.type !== 'wsSend') {
+      return { ...base, status: 'dry-run' };
+    }
 
     switch (action.type) {
       case 'notify': {
@@ -297,7 +337,7 @@ class AutomationRuntime {
           dryRun: plan.dryRun,
           at: Date.now(),
         });
-        if (!plan.dryRun) this.osNotify(title, body, action);
+        if (!plan.dryRun && this.osAllowed(event.category)) this.osNotify(title, body, !!action.sound);
         return { ...base, status: plan.dryRun ? 'dry-run' : 'ok' };
       }
       case 'kafka': {
@@ -311,6 +351,39 @@ class AutomationRuntime {
             value: action.valueTemplate || JSON.stringify(event),
           });
           return { ...base, status: 'ok', detail: `partition ${res.partition} @ ${res.offset}` };
+        } catch (e) {
+          return { ...base, status: 'error', detail: (e as Error).message };
+        }
+      }
+      case 'wsSend': {
+        if (!action.accountKey || !action.targetGroupId) {
+          return { ...base, status: 'error', detail: 'chưa chọn tài khoản gửi hoặc danh sách đích' };
+        }
+        // The guards below stop a message going OUT. A dry run never sends, so
+        // gating it would only stop you from checking the path works before
+        // enabling sending — the exact thing dry-run exists for.
+        if (!plan.dryRun) {
+          if (!this.config.allowSend) {
+            return { ...base, status: 'skipped', detail: 'công tắc “cho phép gửi” đang tắt' };
+          }
+          // Hard floor, independent of the rule's own limits: a personal account
+          // firing messages back to back is exactly what gets it restricted.
+          const gate = this.sendGate(action.accountKey);
+          if (gate) return { ...base, status: 'skipped', detail: gate };
+        }
+        try {
+          // Record the echo BEFORE the send returns — the message can bounce
+          // back the instant it goes out, before this line would run otherwise.
+          // (Handled per-target inside runtime just below is too late.)
+          const res = await sendToTargetGroup(action, plan.dryRun, (conv) => {
+            if (this.config.loopGuard && !plan.dryRun) this.noteSentEcho(conv, action.text);
+          });
+          this.noteSend(action.accountKey, res.sent);
+          return {
+            ...base,
+            status: res.status,
+            detail: res.detail,
+          };
         } catch (e) {
           return { ...base, status: 'error', detail: (e as Error).message };
         }
@@ -333,6 +406,180 @@ class AutomationRuntime {
     for (const l of this.toastListeners) l(t);
   }
 
+  // ── send throttle (workspace accounts) ───────────────────────────────────
+  //
+  // A hard floor that a rule cannot opt out of. Rule limits protect against a
+  // noisy RULE; this protects the ACCOUNT, which is the thing that gets
+  // restricted when messages go out back to back.
+
+  // ── loop guard ───────────────────────────────────────────────────────────
+  //
+  // Everything automation sends is remembered briefly. An incoming message
+  // whose text matches one of those is OUR OWN message coming back — through a
+  // second linked account that shares the group, or through the app echoing it
+  // — and evaluating it would start a ping-pong that per-rule cooldowns cannot
+  // stop, because every bounce is a genuinely new message.
+
+  /**
+   * A record of one message automation sent, so its echo can be recognised
+   * WITHOUT relying on anything surviving the app's round trip.
+   *
+   * The invisible watermark was supposed to do this, but Zalo strips zero-width
+   * characters from a message before it comes back — so the mark never arrives
+   * and the loop guard missed its own echo. Remembering the send is the signal
+   * that cannot be stripped.
+   */
+  private echoes: { at: number; conv: string; text: string }[] = [];
+  /** How long a sent message can still be recognised as its own echo. An echo
+   *  returns within seconds; past this, identical text is a human, not a loop. */
+  private static readonly ECHO_WINDOW_MS = 120_000;
+
+  private static echoNorm(s: string): string {
+    return stripMark(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+  /** "Tâm: nội dung" → "nội dung": a group notification carries the sender. */
+  private static echoBody(s: string): string {
+    const i = s.indexOf(':');
+    return AutomationRuntime.echoNorm(i > 0 && i <= 40 ? s.slice(i + 1) : s);
+  }
+
+  /**
+   * A visible trail of the echo comparison — the thing I kept guessing at.
+   *
+   * For each incoming social message it captures what came in (conversation +
+   * normalised body) beside the records present, and whether they matched. Read
+   * live in the 🔬 Thu tin tab: if an automation message triggers a rule, this
+   * shows EXACTLY why its record did not match — wrong conversation name,
+   * truncated text, extra prefix — instead of leaving it to speculation.
+   */
+  echoTrace: {
+    at: number;
+    conv: string;
+    body: string;
+    matched: boolean;
+    records: { conv: string; text: string; age: number }[];
+  }[] = [];
+
+  private traceEcho(event: AutomationEvent): void {
+    const now = Date.now();
+    const conv = AutomationRuntime.echoNorm(String(event.fields?.conversation ?? ''));
+    const body = AutomationRuntime.echoBody(event.text || event.title);
+    const records = this.echoes
+      .filter((e) => now - e.at < AutomationRuntime.ECHO_WINDOW_MS)
+      .map((e) => ({ conv: e.conv, text: e.text, age: Math.round((now - e.at) / 1000) }));
+    const matched =
+      (hasMark(event.text) || hasMark(event.title)) || records.some((e) => e.text === body);
+    this.echoTrace.unshift({ at: now, conv, body, matched, records });
+    if (this.echoTrace.length > 12) this.echoTrace.length = 12;
+  }
+
+  /**
+   * Log what happened to ONE incoming social message, to the same debug file as
+   * the send trace. This answers the real question — "why don't later messages
+   * trigger?" — by showing each arrival's disposition: was it caught, was it
+   * dropped as an echo, and what every rule decided (matched / skip reason).
+   */
+  private async logIncoming(
+    event: AutomationEvent,
+    echo: boolean,
+    decisions: RuleDecision[],
+  ): Promise<void> {
+    try {
+      await fetch('/api/ws-sendlog', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'incoming',
+          account: event.instanceLabel,
+          conversation: String(event.fields?.conversation ?? ''),
+          sender: String(event.fields?.sender ?? ''),
+          chatType: String(event.fields?.chatType ?? ''),
+          text: stripMark(event.text).slice(0, 80),
+          droppedAsEcho: echo,
+          decisions: decisions.map((d) => ({
+            rule: d.ruleName,
+            matched: d.matched,
+            skip: d.skipped ?? '',
+          })),
+          pendingEchoes: this.echoes.map((e) => e.text.slice(0, 40)),
+        }),
+      });
+    } catch {
+      /* logging must never break the pipeline */
+    }
+  }
+
+  /** Remember a message just sent, so the trigger can skip its echo. */
+  noteSentEcho(conversation: string, text: string): void {
+    const t = AutomationRuntime.echoNorm(text);
+    if (!t) return;
+    this.echoes.push({ at: Date.now(), conv: AutomationRuntime.echoNorm(conversation), text: t });
+    if (this.echoes.length > 100) this.echoes.splice(0, this.echoes.length - 100);
+  }
+
+  /**
+   * Is this event automation's own message coming back?
+   *
+   * Matches an incoming message against what we RECORDED sending, by EXACT text
+   * within the window. Match-and-KEEP, NOT consume-once.
+   *
+   * Consume-once was the loop bug: ONE sent message is seen by MORE THAN ONE
+   * capture surface. The recipient account sees it, AND the sender's own account
+   * sees the very same text mirrored under a different conversation name (a group
+   * both accounts are in, "Tâm 2"/group/"Vài giâyBạn"). The first surface
+   * consumed the single record; the second found nothing, was treated as fresh,
+   * re-triggered, and the template re-wrapped the text — "[Automation]
+   * [Automation] …" growing without bound (see ws-send-debug.log 15:39). Keeping
+   * the record suppresses EVERY surface that carries that text inside the window.
+   *
+   * NOT scoped by conversation — the mirror surface reports a different name, so
+   * a conversation check would let it through. The cost of keep-not-consume is
+   * dropping identical human text for up to the window (2 min) after a send;
+   * automation text is distinctive and an unbounded loop is far worse.
+   */
+  private isEcho(event: AutomationEvent): boolean {
+    if (hasMark(event.text) || hasMark(event.title)) return true; // belt, if a mark ever survives
+
+    const now = Date.now();
+    this.echoes = this.echoes.filter((e) => now - e.at < AutomationRuntime.ECHO_WINDOW_MS);
+    if (!this.echoes.length) return false;
+
+    const body = AutomationRuntime.echoBody(event.text || event.title);
+    if (!body) return false;
+
+    // Keep the record: a single send has multiple echoes (recipient view +
+    // sender's own mirror), and each must be dropped.
+    return this.echoes.some((e) => e.text === body);
+  }
+
+  /** accountKey → timestamps of sends inside the last hour. */
+  private sendLog = new Map<string, number[]>();
+  private static readonly SEND_GAP_MS = 5_000;
+  private static readonly SEND_PER_HOUR = 20;
+
+  /** '' when a send may proceed, otherwise the reason to show. */
+  private sendGate(accountKey: string): string {
+    const now = Date.now();
+    const list = (this.sendLog.get(accountKey) ?? []).filter((t) => now - t < 3_600_000);
+    this.sendLog.set(accountKey, list);
+    const last = list[list.length - 1];
+    if (last && now - last < AutomationRuntime.SEND_GAP_MS) {
+      return `nghỉ giữa 2 tin (${Math.ceil((AutomationRuntime.SEND_GAP_MS - (now - last)) / 1000)}s nữa)`;
+    }
+    if (list.length >= AutomationRuntime.SEND_PER_HOUR) {
+      return `vượt trần ${AutomationRuntime.SEND_PER_HOUR} tin/giờ của tài khoản này`;
+    }
+    return '';
+  }
+
+  private noteSend(accountKey: string, n: number): void {
+    if (n <= 0) return;
+    const now = Date.now();
+    const list = this.sendLog.get(accountKey) ?? [];
+    for (let i = 0; i < n; i++) list.push(now);
+    this.sendLog.set(accountKey, list);
+  }
+
   /** Toast + OS notification phát từ một host hệ thống NGOÀI rule engine
    *  (vd: tiến trình tự pull Git). Dùng chung kênh với action `notify` nên
    *  hiển thị y hệt trong AutomationHost. */
@@ -346,13 +593,28 @@ class AutomationRuntime {
       dryRun: false,
       at: Date.now(),
     });
-    this.osNotify(title, body, { type: 'notify', level, sound: level !== 'info' });
+    // Git auto-pull & friends ride the `system` group's setting.
+    if (this.osAllowed('system')) this.osNotify(title, body, level !== 'info');
   }
 
-  private osNotify(title: string, body: string, action: NotifyAction): void {
+  /** Is this group allowed to interrupt the desktop? Default: none is. */
+  private osAllowed(category: EventCategory): boolean {
+    return (this.config.osNotify ?? []).includes(category);
+  }
+
+  /**
+   * OS-level notification — OFF for every group by default.
+   *
+   * It opens a separate "Electron" window per firing, stacks outside the app
+   * and outlives it; during a feedback loop that buried the desktop. The in-app
+   * toast carries the same text, sits next to the activity feed that explains
+   * it, and disappears with the window. Turn a group back on only for alerts
+   * worth interrupting you when DevBox is not in front of you.
+   */
+  private osNotify(title: string, body: string, sound: boolean): void {
     try {
       if (typeof Notification === 'undefined') return;
-      const show = () => new Notification(title, { body, silent: !action.sound });
+      const show = () => new Notification(title, { body, silent: !sound });
       if (Notification.permission === 'granted') show();
       else if (Notification.permission !== 'denied') void Notification.requestPermission().then((p) => {
         if (p === 'granted') show();

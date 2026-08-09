@@ -47,7 +47,7 @@ export const GROUPS: GroupDef[] = [
     label: 'Social',
     icon: '💬',
     blurb: 'Tin nhắn đến từ các workspace nhắn tin (Zalo, Telegram, WhatsApp…).',
-    actions: ['notify', 'webhook', 'log', 'kafka', 'reply'],
+    actions: ['notify', 'webhook', 'telegram', 'wsSend', 'log', 'kafka', 'reply'],
     triggers: [
       {
         type: 'message.received',
@@ -55,8 +55,24 @@ export const GROUPS: GroupDef[] = [
         blurb: 'Bắt từ thông báo của chính ứng dụng trong workspace.',
         fields: [
           ...CORE_FIELDS,
-          { name: 'sender', label: 'Người gửi', kind: 'text' },
-          { name: 'conversation', label: 'Hội thoại / nhóm', kind: 'text' },
+          {
+            name: 'conversation',
+            label: 'Hội thoại',
+            kind: 'text',
+            hint: 'tên nhóm, hoặc tên người khi chat 1-1',
+          },
+          {
+            name: 'sender',
+            label: 'Người gửi',
+            kind: 'text',
+            hint: 'trong nhóm là người vừa nhắn; chat 1-1 thì trùng tên hội thoại',
+          },
+          {
+            name: 'chatType',
+            label: 'Loại hội thoại',
+            kind: 'text',
+            hint: 'group = nhóm · user = chat 1-1',
+          },
           { name: 'capture', label: 'Cách bắt', kind: 'text', hint: 'notification · dom' },
         ],
       },
@@ -67,7 +83,7 @@ export const GROUPS: GroupDef[] = [
     label: 'Infrastructure',
     icon: '🖥',
     blurb: 'Cảnh báo hạ tầng từ chính các kết nối đã khai báo trong DevBox.',
-    actions: ['notify', 'webhook', 'log', 'kafka'],
+    actions: ['notify', 'webhook', 'telegram', 'wsSend', 'log', 'kafka'],
     triggers: [
       {
         type: 'infra.metric',
@@ -102,7 +118,7 @@ export const GROUPS: GroupDef[] = [
     label: 'System',
     icon: '🧪',
     blurb: 'Sự kiện do chính DevBox phát ra — hiện dùng cho bảng thử quy tắc.',
-    actions: ['notify', 'webhook', 'log', 'kafka'],
+    actions: ['notify', 'webhook', 'telegram', 'wsSend', 'log', 'kafka'],
     triggers: [
       {
         type: 'system.test',

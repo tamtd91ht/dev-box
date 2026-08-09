@@ -12,8 +12,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BrandMark from './BrandMark';
 import { menuFor } from '@/lib/workspace/plugins';
 import type { WebviewElement, WorkspaceConfig, WorkspacePlugin } from '@/lib/workspace/types';
-import { type WorkspaceAccount, partitionForAccount } from '@/lib/workspace/accounts';
+import { type WorkspaceAccount, accountKey, partitionForAccount } from '@/lib/workspace/accounts';
 import { type CollectResult, buildCollectorScript, captureFlagScript } from '@/lib/workspace/capture';
+import { registerGuest } from '@/lib/workspace/guests';
+import WorkspaceScan from './WorkspaceScan';
 
 type Status = 'loading' | 'ready' | 'failed' | 'crashed';
 
@@ -72,6 +74,7 @@ export default function WorkspaceView({
   const [canBack, setCanBack] = useState(false);
   const [canForward, setCanForward] = useState(false);
   const [failInfo, setFailInfo] = useState<string>('');
+  const [scanOpen, setScanOpen] = useState(false);
   const autoReloaded = useRef(false);
 
   // Keep the latest onUnread/viewing without re-subscribing the (mount-once) listeners.
@@ -288,6 +291,59 @@ export default function WorkspaceView({
     onUnreadRef.current?.(0);
   }, [viewing]);
 
+  // Publish this guest so code OUTSIDE the workspace tree (directory sync, and
+  // later the automation send action) can run script in it. Re-registered when
+  // the label or readiness changes so callers never act on a stale snapshot.
+  const key = accountKey(plugin.id, account.instanceId);
+  useEffect(
+    () =>
+      registerGuest({
+        accountKey: key,
+        pluginId: plugin.id,
+        instanceId: account.instanceId,
+        label: account.label,
+        ready: status === 'ready',
+        exec: (script: string, userGesture = false) => {
+          const el = ref.current;
+          if (!el) return Promise.reject(new Error('guest chưa gắn'));
+          try {
+            return el.executeJavaScript(script, userGesture) as Promise<unknown>;
+          } catch (e) {
+            return Promise.reject(e as Error);
+          }
+        },
+        pressKey: async (keyCode: string) => {
+          // PRIMARY: main process injects the key into this guest's webContents.
+          const bridge = window.workspace as unknown as {
+            sendKey?: (
+              partition: string,
+              keyCode: string,
+            ) => Promise<{ ok: boolean; focused?: boolean; error?: string }>;
+          };
+          if (bridge?.sendKey) {
+            const r = await bridge.sendKey(partition, keyCode);
+            if (r?.ok) return { ...r, via: 'main' };
+            // fall through to the element path on failure
+          }
+          const el = ref.current as unknown as {
+            focus?: () => void;
+            sendInputEvent?: (e: Record<string, unknown>) => void;
+          } | null;
+          if (!el?.sendInputEvent) return { ok: false, error: 'không gửi được phím vào guest', via: 'none' };
+          try {
+            el.focus?.();
+          } catch {
+            /* focus is best-effort */
+          }
+          el.sendInputEvent({ type: 'keyDown', keyCode });
+          el.sendInputEvent({ type: 'char', keyCode });
+          el.sendInputEvent({ type: 'keyUp', keyCode });
+          return { ok: true, via: 'element' };
+        },
+      }),
+    [key, account.label, plugin.id, account.instanceId, status],
+  );
+
   const retry = useCallback(() => {
     autoReloaded.current = false;
     setStatus('loading');
@@ -434,6 +490,15 @@ export default function WorkspaceView({
         </div>
 
         <div className="ws-actions">
+          {plugin.directory && (
+            <button
+              className={scanOpen ? 'is-on' : ''}
+              onClick={() => setScanOpen((v) => !v)}
+              title="Quét danh sách hội thoại — dựng danh bạ đích gửi"
+            >
+              🔎
+            </button>
+          )}
           {config.enableDevTools && (
             <button onClick={() => ref.current?.openDevTools()} title="DevTools">
               ⚙
@@ -457,6 +522,16 @@ export default function WorkspaceView({
           partition={partition}
           {...webviewAttrs}
         />
+
+        {scanOpen && plugin.directory && (
+          <WorkspaceScan
+            accountKey={key}
+            accountLabel={account.label}
+            spec={plugin.directory}
+            labelSpec={plugin.labels}
+            onClose={() => setScanOpen(false)}
+          />
+        )}
 
         {status === 'loading' && (
           <div className="ws-overlay">

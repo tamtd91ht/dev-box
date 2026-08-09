@@ -57,6 +57,7 @@ A plugin is a pure declaration. Append to `lib/workspace/plugins.ts`:
 | `keepAlive`    | Keep the guest in memory when you switch away (e.g. Zalo).    |
 | `multiAccount` | Allow several independent accounts of this app at once.      |
 | `capture`      | Declarative knobs for the shared collector (unread + messages). |
+| `directory`    | Gợi ý đọc danh sách hội thoại (bật nút 🔎 quét trên thanh công cụ). |
 | `userAgent`    | Optional User-Agent override.                                |
 
 Allowed `permissions`: `notifications`, `media` (mic/cam for calls), `clipboard-read`,
@@ -116,12 +117,113 @@ Privacy is enforced **inside the guest**: message text is recorded only while th
 `captureEnabled` switch — which is **OFF by default**. With capture off the guest counts unread
 and stores nothing at all. `storeMessageText: false` additionally reduces what is kept to `••••`.
 
+### Thu tin khi ở tab khác — đọc DOM thay vì chờ thông báo (Zalo)
+
+Đo được: khi tab Workspace KHÔNG phải tab đang mở, webview Zalo ở nền và Zalo **ngừng bắn**
+`new Notification`, nên collector (chỉ nghe thông báo) không bắt được tin cho tới khi quay lại tab
+Workspace. Vì automation phải chạy nền (người dùng ở tab Kafka/Redis…), điều này làm hỏng mục đích.
+
+Chữa: Zalo có thêm `extraScript` **đọc thẳng danh sách hội thoại** (`.conv-item`) mỗi nhịp poll,
+không phụ thuộc thông báo. Ba điểm cốt để không bắn sai:
+- danh sách là react-virtualized, ở nền render 0 dòng → CHỈ khi 0 dòng thì cuộn về đầu + phát
+  `scroll` cho nhịp sau render (không phá cuộn của người đang xem);
+- chữ ký so sánh **bỏ thời gian + số chưa đọc** (không thì mỗi phút lại tưởng có tin mới);
+- nhịp đầu chỉ ghi mốc; bỏ tin của mình (`Bạn:`); bỏ hội thoại vừa có thông báo (`__wsNotiByConv`,
+  tránh tính hai lần). Trùng còn lại do engine dedup theo id sự kiện.
+
+Thông báo vẫn là kênh chính khi tab Workspace mở; DOM là kênh bù khi ở tab khác.
+
+### Gửi tin làm chết việc thu tin — và cách chữa (`alwaysUnfocused`)
+
+Đo được, không phải suy đoán: **không** chạy action gửi thì mọi tin đều khớp rule; **có** gửi một
+lần thì các tin sau không vào rule nữa — kể cả hội thoại khác.
+
+Nguyên nhân: để gửi, script phải **bấm chuột vào trang Zalo**. App chat chỉ bắn thông báo khi tin
+rằng **không ai đang ngồi đó**; vừa có tương tác là nó coi người dùng đang dùng app và **ngừng bắn
+thông báo** — mà thông báo là kênh **duy nhất** nội dung tin đi vào engine.
+
+Chữa bằng đòn bẩy hẹp nhất: ghi đè `document.hasFocus()` để trang **luôn** tin là không ai xem.
+Không giả `visibilityState` vì cái đó còn bóp timer và ảnh hưởng đánh dấu đã đọc. Giá trị thật giữ
+ở `window.__wsRealHasFocus` để tab 🔬 Thu tin vẫn nói được sự thật — che mà giấu luôn thì lần sau
+lại mất thêm một buổi đi tìm.
+
+Bật theo plugin (`capture.alwaysUnfocused`), hiện chỉ Zalo. Telegram/WhatsApp không bị đụng tới.
+
+### Chẩn đoán: tab 🔬 Thu tin (`components/automation/CapturePanel.tsx`)
+
+Một tin đi qua 4 chặng — ① app bắn thông báo → ② hook bắt → ③ poll hút → ④ engine đánh giá — và
+hỏng ở chặng nào cũng **im lặng y hệt nhau**. Panel đọc thẳng counter của collector:
+`hook bắt được` (số lần hook chạy), `đang chờ hút`, `quyền thông báo`, `app thấy focus`, và 10 lần
+bắt gần nhất (thời điểm + người gửi + hội thoại, **không** có nội dung).
+
+`hook bắt được` đứng yên khi bạn nhắn ⇒ chặng ① chết, sửa engine bao nhiêu cũng vô ích.
+
+## Guest bridge + conversation directory (đang dựng)
+
+Một `<webview>` chỉ điều khiển được từ component giữ ref của nó, trong khi thứ *muốn* điều khiển
+(automation) lại nằm ngoài cây đó. `guests.ts` là chỗ duy nhất ánh xạ `accountKey` (`zalo::a3f1c`)
+→ guest đang sống, kèm `exec(script)`. `WorkspaceView` đăng ký lúc mount, huỷ lúc unmount.
+
+⚠ Pane Workspace chỉ mount **sau khi tab được mở lần đầu** trong phiên (`visited.workspace` ở
+`app/page.tsx`). Chưa mở tab lần nào thì không có guest nào — `requireGuest()` trả về đúng câu đó
+thay vì im lặng không làm gì.
+
+`directory.ts` đọc **danh sách hội thoại** của app để dựng danh bạ đích gửi **bên ngoài** app chat
+(quản lý trong DevBox, không phải ghim trong khung Zalo). Script không biết gì về Zalo: thử
+selector plugin khai trước, không khớp thì tự tìm theo cách người ta nhìn — cột hẹp bên trái gồm
+nhiều dòng giống nhau có chữ — rồi **cuộn từng nấc** vì danh sách nào cũng ảo hoá. Mỗi dòng trả về
+mọi thuộc tính dạng id (của chính nó và 2 cấp cha), vài đoạn text đầu, số ảnh, kèm HTML thô của
+một dòng mẫu — đủ để biết app có lộ **id ổn định** hay chỉ có tên hiển thị.
+
+Nút 🔎 trên thanh công cụ workspace (hiện khi plugin khai `directory`) mở
+`components/WorkspaceScan.tsx`: quét, hiện bảng, và cho chép JSON thô. Chỉ đọc — chưa lưu gì.
+Đoán sai khối thì bảng chẩn đoán có nút **dùng khối này** để tự chỉ lại, không cần sửa code.
+
+### Đã đo được ở chat.zalo.me (2026-08)
+
+| Thứ | Giá trị |
+|---|---|
+| Danh sách | `.ReactVirtualized__Grid__innerScrollContainer` — react-virtualized, **~13 dòng** tồn tại trong DOM một lúc, tổng cao ~9000px |
+| Khối cuộn | `.ReactVirtualized__Grid` bọc ngoài. `nav.flx.h100` bao ngoài cùng là `overflow:hidden` → đặt `scrollTop` lên nó **không nhúc nhích** |
+| Dòng | `.conv-item` — **đúng token class**. `[class*="conv-item"]` khớp luôn `conv-item__avatar`, `conv-item-title__name`… → 1 hội thoại nở thành 4-5 dòng rác |
+| Tên | `.conv-item-title__name`. Text node đầu tiên của dòng là **giờ** ("30/07", "26 phút") hoặc tiền tố xem trước ("Bạn:") |
+| id hội thoại | Không có trong thuộc tính dòng (mọi dòng chung `data-id="div_TabMsg_ThrdChItem"` — mã component). **Nhưng** `.conv-item__avatar img[id]` mang **id Zalo thật**; chỉ tin khi dòng có ĐÚNG một avatar, vì ảnh ghép của nhóm mang id từng thành viên |
+| Nhóm vs cá nhân | `.zavatar-multi` (ảnh ghép). Nhóm đặt avatar riêng vẫn bị đoán nhầm thành cá nhân — chỉ là gợi ý |
+| Vị trí cuộn | Danh sách giữ nguyên chỗ người dùng để lại → **phải về đầu trước khi quét**, nếu không mất sạch phần phía trên mà vẫn báo `complete: true` |
+| Phân loại | Có nút **"Phân loại"** ở ~(283,102). Tìm theo **chữ**, không theo đường dẫn: class của Zalo là chuỗi tiện ích (`flx`, `flx-al-c`…) nên path đổi theo mọi thay đổi bố cục |
+| Nhóm vs cá nhân (bổ sung) | Tiền tố người gửi trong dòng xem trước (`"QuiDN:"`) ⇒ nhóm; `"Bạn:"` không kết luận được gì |
+
+`labels.ts` là bộ dò **tự mô tả** cho menu Phân loại: bấm nút, so sánh cây DOM trước/sau, báo về đúng
+những phần tử vừa hiện ra kèm HTML của popup — rồi Esc để đóng. Viết selector mò cho một menu chưa
+nhìn thấy chính là thứ đã tốn ba vòng ở danh sách hội thoại; bộ dò này để không lặp lại.
+
+### Menu Phân loại (đo được)
+
+```
+div.popover-v3 > div.zmenu-body.expand > div.zl-scroll-menu > div.expand
+  ├ span[data-translate-inner="STR_FILTER_BY_TAG"]        "Theo thẻ phân loại"
+  └ div-14.zmenu-item[data-id="div_DetailLabelList_Label"]   ← MỘT NHÃN
+      ├ div[data-id="div_MiniLabelList_LabelCheckbox"]        ô tick
+      ├ i.fa-Tag_24_Filled                                    màu nhãn
+      └ div[data-id="div_MiniLabelList_Label"]                tên nhãn
+```
+
+Bên trong popup bám `data-id` (mã component, ổn định) chứ không bám class. Mỗi nhãn là **ô tick**
+nên `buildLabelScanScript` bật lọc → đọc danh sách ngắn → **bấm lại để tắt**; `restored: false`
+nghĩa là Zalo còn đang bị lọc và UI phải nói ra.
+
+⚠ React StrictMode gọi effect **hai lần** ở dev — hai lần quét chạy song song cùng cuộn một danh
+sách ảo hoá thì kết quả lộn xộn (đầu danh sách bị ghép vào cuối). `WorkspaceScan` giữ một token
+chạy để bỏ kết quả cũ.
+
 ## Layout
 
 ```
 lib/workspace/
   types.ts      shared types (plugin, brand, config, bridge, webview) + JSX/Window augmentation
   plugins.ts    the plugin registry (declarations only) — Zalo, Telegram, WhatsApp (commented)
+  guests.ts     accountKey → guest đang sống (exec script từ ngoài cây workspace)
+  directory.ts  đọc danh sách hội thoại (spec khai báo + heuristic + cuộn) → danh bạ đích
   config.ts     defaults, isDesktop(), resolveConfig()
   accounts.ts   multi-account instances (per-account partition) + persistence
   capture.ts    the generic guest collector (unread + messages) + CaptureSpec
