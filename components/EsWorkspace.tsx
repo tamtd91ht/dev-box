@@ -24,20 +24,26 @@ import ConnRail from './es/ConnRail';
 import OverviewView from './es/OverviewView';
 import BrowserView from './es/BrowserView';
 import QuickFindView from './es/QuickFindView';
+import ConsoleView from './es/ConsoleView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 const LAST_CONN_KEY = 'es.lastConn';
 
-type SubView = 'overview' | 'browser' | 'quickfind';
+type SubView = 'overview' | 'browser' | 'console' | 'quickfind';
 
 const SUB_VIEWS: { key: SubView; label: string }[] = [
   { key: 'overview', label: 'Tổng quan' },
   { key: 'browser', label: 'Dữ liệu' },
+  { key: 'console', label: '⌨ Console' },
   { key: 'quickfind', label: '🔎 Tìm nhanh' },
 ];
 
 export default function EsWorkspace() {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const rail = useSplit({ varName: '--es-rail', min: 180, max: 560, gap: 14 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [connections, setConnections] = useState<PublicEsConnection[]>([]);
   const [activeId, setActiveId] = useState<string>('');
@@ -154,7 +160,7 @@ export default function EsWorkspace() {
   }
 
   return (
-    <div className="es-layout">
+    <div className="es-layout" ref={rail.ref} style={rail.style}>
       <ConnRail
         connections={connections}
         activeId={activeId}
@@ -221,11 +227,14 @@ export default function EsWorkspace() {
               <BrowserView key={activeId} connectionId={activeId} initialIndex={jumpIndex} />
             )}
 
+            {subView === 'console' && <ConsoleView key={activeId} connection={active} />}
+
             {/* Quick-find targets its OWN saved connection (per preset). */}
             {subView === 'quickfind' && <QuickFindView connections={connections} />}
           </>
         )}
       </main>
+      <Splitter {...rail.grip} />
     </div>
   );
 }

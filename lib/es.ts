@@ -153,6 +153,29 @@ export function countEs(connectionId: string, index: string, query: string): Pro
   return esAction<{ count: number; tookMs: number }>('count', { connectionId, index, query });
 }
 
+export interface EsConsoleResult {
+  method: string;
+  path: string;
+  status: number;
+  ok: boolean;
+  /** Response đã pretty-print (server cắt bớt nếu quá dài). */
+  json: string;
+  truncated: boolean;
+  tookMs: number;
+  node: string;
+}
+
+/**
+ * Gọi một lệnh REST nguyên bản (tab Console). Server chỉ cho GET/HEAD/POST và
+ * chặn mọi endpoint đổi trạng thái — nên lệnh ghi sẽ bị từ chối kèm lý do.
+ */
+export function esConsole(
+  connectionId: string,
+  cmd: { method: string; path: string; body?: string },
+): Promise<EsConsoleResult> {
+  return esAction<EsConsoleResult>('console', { connectionId, ...cmd });
+}
+
 // ── Shared formatters ─────────────────────────────────────────────────────────
 
 export { fmtBytes, fmtCount, prettyDoc } from '@/lib/mongo';

@@ -9,8 +9,12 @@
 //     'mapping' { connectionId, index }         → { ok, result: { json, truncated } }
 //     'search'  { connectionId, index, query?, source?, sort?, size?, from? } → { ok, result: EsSearchResult }
 //     'count'   { connectionId, index, query? } → { ok, result: { count, tookMs } }
+//     'console' { connectionId, method, path, body? } → { ok, result: EsConsoleResult }
 //
 // There is NO write action — the tool cannot index/delete/change settings.
+// 'console' passes a raw REST call through, but only after esClient vets it
+// (GET/HEAD/POST only, deny-list of state-changing endpoints, POST restricted
+// to read endpoints) — so the read-only guarantee still holds.
 // Every search is server-bounded (size ≤200, result window, 15s timeout,
 // scripting keys rejected). Gated by ES_TOOL_ENABLED (403 when off).
 
@@ -24,6 +28,7 @@ import {
   getMapping,
   search,
   count,
+  consoleRequest,
 } from '@/lib/esClient';
 import { getConnection, buildUnsavedConnection } from '@/lib/esConnections';
 
@@ -96,6 +101,10 @@ export async function POST(req: NextRequest) {
         break;
       case 'count':
         result = await count(conn, String(body.index ?? ''), body.query);
+        break;
+      case 'console':
+        // Lệnh REST thô từ tab Console — read-only được giữ bằng allowlist trong esClient.
+        result = await consoleRequest(conn, { method: body.method, path: body.path, body: body.body });
         break;
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });

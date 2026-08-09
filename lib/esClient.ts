@@ -5,7 +5,10 @@
 //   1. Gated by ES_TOOL_ENABLED — the API routes 403 unless truthy.
 //   2. ONLY read endpoints are reachable: GET /, _cluster/health, _cat/indices,
 //      _mapping, _search, _count. There is no code path that issues a write —
-//      the tool cannot index, delete, or change settings.
+//      the tool cannot index, delete, or change settings. The Dev-Tools console
+//      (`consoleRequest`) lets the user type a raw REST call, and keeps that
+//      promise with its own method allowlist + endpoint deny/allow lists —
+//      see the "Console" section at the bottom of this file.
 //   3. Every search is bounded: size ≤ 200/page, from+size ≤ 10 000 (the ES
 //      window), request timeout 15 s (AbortController) + ES-side "timeout".
 //   4. Query DSL from the client is parsed JSON passed as a request BODY —
@@ -361,4 +364,175 @@ export async function count(conn: EsConnection, index: string, rawQuery: unknown
   const t0 = Date.now();
   const res = await esFetch<{ count?: number }>(conn, `/${encodeURIComponent(idx)}/_count`, body ?? { query: { match_all: {} } });
   return { count: Number(res.count ?? 0), tookMs: Date.now() - t0 };
+}
+
+// ── Console (Dev Tools) ───────────────────────────────────────────────────────
+//
+// Cho gõ NGUYÊN một lệnh REST (`GET my_index/_search` + body) như Kibana Dev
+// Tools — nhưng vẫn giữ nguyên lời hứa read-only của cả tab. Ba lớp chặn:
+//
+//   1. method chỉ được GET / HEAD / POST.
+//   2. Danh sách ĐEN các endpoint đổi trạng thái (bulk, reindex, delete_by_query,
+//      close/open, forcemerge, security…) — chặn ở MỌI method.
+//   3. Với POST (method duy nhất có thể ghi), endpoint `_…` cuối cùng phải nằm
+//      trong danh sách TRẮNG các endpoint đọc. Không có segment `_…` nào thì
+//      POST bị từ chối luôn — `POST /my_index` chính là lệnh index document.
+//
+// Khác `esFetch`: mọi HTTP response (kể cả 4xx/5xx) đều được TRẢ VỀ chứ không
+// throw — console phải hiện được body lỗi của ES, đó mới là thứ cần đọc.
+
+const CONSOLE_METHODS = new Set(['GET', 'HEAD', 'POST']);
+
+/** Endpoint đổi trạng thái cluster/dữ liệu — cấm ở mọi method. */
+const CONSOLE_BLOCKED = new Set([
+  '_bulk', '_delete_by_query', '_update_by_query', '_reindex', '_update', '_delete',
+  '_close', '_open', '_forcemerge', '_flush', '_refresh', '_shrink', '_split', '_clone',
+  '_freeze', '_unfreeze', '_cache', '_scripts', '_restore', '_rollover', '_upgrade',
+  '_ccr', '_ilm', '_slm', '_security', '_shutdown', '_license', '_watcher', '_enrich',
+  '_transform', '_ml', '_graph', '_execute', '_pit', '_async_search',
+]);
+
+/** Endpoint đọc được phép gọi bằng POST (POST là method duy nhất có thể ghi). */
+const CONSOLE_POST_OK = new Set([
+  '_search', '_count', '_msearch', '_mget', '_explain', '_validate', '_field_caps',
+  '_analyze', '_termvectors', '_mtermvectors', '_rank_eval', '_search_shards',
+  '_resolve', '_knn_search',
+]);
+
+const CONSOLE_JSON_CAP = 500_000;
+
+export interface EsConsoleInput {
+  method?: unknown;
+  /** Đường dẫn REST, có/không dấu `/` đầu, kèm được query string. */
+  path?: unknown;
+  /** Body JSON (string hoặc object) — bỏ trống với GET thuần. */
+  body?: unknown;
+}
+
+export interface EsConsoleResult {
+  method: string;
+  path: string;
+  status: number;
+  ok: boolean;
+  /** Response đã pretty-print (cắt bớt nếu quá dài). */
+  json: string;
+  truncated: boolean;
+  tookMs: number;
+  /** Node thực sự trả lời (danh sách node có failover). */
+  node: string;
+}
+
+/** Chuẩn hoá + kiểm duyệt lệnh console. Throw kèm lý do đọc được nếu bị chặn. */
+function vetConsoleCommand(input: EsConsoleInput): { method: string; path: string } {
+  const method = String(input.method ?? 'GET').trim().toUpperCase();
+  if (!CONSOLE_METHODS.has(method)) {
+    throw new Error(`method ${method} bị chặn — console chỉ chạy GET / HEAD / POST (tab này read-only)`);
+  }
+
+  let raw = String(input.path ?? '').trim();
+  if (!raw) throw new Error('thiếu đường dẫn — ví dụ: GET my_index/_search');
+  if (!raw.startsWith('/')) raw = `/${raw}`;
+  if (raw.includes('..')) throw new Error('đường dẫn không hợp lệ (chứa "..")');
+  if (/\s/.test(raw)) throw new Error('đường dẫn không được chứa khoảng trắng');
+
+  const [pathname] = raw.split('?', 1);
+  const segments = pathname.split('/').filter(Boolean);
+  const underscores = segments.filter((s) => s.startsWith('_'));
+
+  for (const s of underscores) {
+    if (CONSOLE_BLOCKED.has(s)) {
+      throw new Error(`endpoint "${s}" bị chặn — nó đổi dữ liệu/trạng thái, tab này chỉ đọc`);
+    }
+  }
+
+  if (method === 'POST') {
+    const endpoint = underscores.length ? underscores[underscores.length - 1] : null;
+    if (!endpoint) {
+      throw new Error(`POST ${pathname} bị chặn — POST vào index chính là lệnh ghi document. Dùng GET, hoặc POST tới _search/_count/_mget…`);
+    }
+    if (!CONSOLE_POST_OK.has(endpoint)) {
+      throw new Error(`POST "${endpoint}" không nằm trong danh sách endpoint đọc được phép (${[...CONSOLE_POST_OK].join(', ')})`);
+    }
+  }
+
+  return { method, path: raw };
+}
+
+/** Gọi REST thô, failover theo node, KHÔNG throw khi cluster trả 4xx/5xx. */
+async function esRaw(
+  conn: EsConnection,
+  method: string,
+  pathAndQuery: string,
+  body: string | undefined,
+): Promise<{ status: number; text: string; node: string }> {
+  const scheme = conn.tls ? 'https' : 'http';
+  let lastErr: Error | null = null;
+  for (const node of conn.nodes) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${scheme}://${node}${pathAndQuery}`, {
+        method,
+        headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+        body,
+        signal: ctrl.signal,
+        cache: 'no-store',
+      });
+      return { status: res.status, text: await res.text(), node };
+    } catch (e) {
+      lastErr = (e as Error).name === 'AbortError'
+        ? new Error(`node ${node} không phản hồi trong ${REQUEST_TIMEOUT_MS / 1000}s`)
+        : new Error(`node ${node}: ${(e as Error).message}`);
+      // lỗi tầng kết nối → thử node kế tiếp
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr ?? new Error('connection has no nodes');
+}
+
+export async function consoleRequest(conn: EsConnection, input: EsConsoleInput): Promise<EsConsoleResult> {
+  const { method, path } = vetConsoleCommand(input);
+
+  let bodyText: string | undefined;
+  const rawBody = input.body;
+  if (typeof rawBody === 'string' ? rawBody.trim() : rawBody != null) {
+    if (method === 'HEAD') throw new Error('HEAD không gửi được body');
+    // _msearch/_bulk-style NDJSON: giữ nguyên text, còn lại parse để chặn script.
+    const isNdjson = path.split('?', 1)[0].endsWith('/_msearch');
+    if (isNdjson && typeof rawBody === 'string') {
+      bodyText = rawBody.endsWith('\n') ? rawBody : `${rawBody}\n`;
+      for (const line of bodyText.split('\n')) {
+        if (line.trim()) forbidScripts(JSON.parse(line));
+      }
+    } else {
+      let parsed: unknown = rawBody;
+      if (typeof rawBody === 'string') {
+        try { parsed = JSON.parse(rawBody); }
+        catch (e) { throw new Error(`body không phải JSON hợp lệ: ${(e as Error).message}`); }
+      }
+      forbidScripts(parsed);
+      bodyText = JSON.stringify(parsed);
+    }
+  }
+
+  const t0 = Date.now();
+  const res = await esRaw(conn, method, path, bodyText);
+  const tookMs = Date.now() - t0;
+
+  let pretty: string;
+  try { pretty = JSON.stringify(JSON.parse(res.text), null, 2); }
+  catch { pretty = res.text; } // _cat trả text thuần
+  const truncated = pretty.length > CONSOLE_JSON_CAP;
+
+  return {
+    method,
+    path,
+    status: res.status,
+    ok: res.status >= 200 && res.status < 300,
+    json: truncated ? pretty.slice(0, CONSOLE_JSON_CAP) : pretty,
+    truncated,
+    tookMs,
+    node: res.node,
+  };
 }

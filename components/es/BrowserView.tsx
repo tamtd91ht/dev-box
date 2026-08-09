@@ -21,6 +21,10 @@ import {
   type EsSearchResult,
   type WireDoc,
 } from '@/lib/es';
+import { flattenEsMapping, type EsField } from '@/lib/esDsl';
+import QueryEditor from './QueryEditor';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from '../Splitter';
 
 export interface BrowserViewProps {
   connectionId: string;
@@ -33,6 +37,8 @@ type IdxTab = 'docs' | 'mapping' | 'info';
 const DEFAULT_SIZE = 50;
 
 export default function BrowserView({ connectionId, initialIndex }: BrowserViewProps) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const tree = useSplit({ varName: '--es-tree', min: 160, max: 520, gap: 12 });
   const [indices, setIndices] = useState<EsIndexInfo[]>([]);
   const [idxLoading, setIdxLoading] = useState(false);
   const [treeFilter, setTreeFilter] = useState('');
@@ -48,6 +54,8 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
   const [result, setResult] = useState<EsSearchResult | null>(null);
   const [countInfo, setCountInfo] = useState<string | null>(null);
   const [mapping, setMapping] = useState<WireDoc | null>(null);
+  /** Field trải từ mapping — nuôi autocomplete tên field trong ô Query DSL. */
+  const [fields, setFields] = useState<EsField[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -85,8 +93,11 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
   const loadMapping = useCallback(async () => {
     if (!selected) return;
     setBusy(true); setError(null);
-    try { setMapping(await esMapping(connectionId, selected)); }
-    catch (e) { setError((e as Error).message); }
+    try {
+      const m = await esMapping(connectionId, selected);
+      setMapping(m);
+      setFields(flattenEsMapping(m.json));
+    } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }, [connectionId, selected]);
 
@@ -94,8 +105,19 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
     setSelected(name);
     setIdxTab('docs');
     setQuery(''); setSort(''); setSource(''); setSize(DEFAULT_SIZE); setFrom(0);
-    setResult(null); setCountInfo(null); setMapping(null); setError(null);
+    setResult(null); setCountInfo(null); setMapping(null); setFields([]); setError(null);
   }, []);
+
+  // Mapping nạp ngầm ngay khi chọn index (không chặn UI, lỗi thì im lặng) — cần
+  // sớm vì nó là nguồn gợi ý tên field cho ô Query DSL, không chỉ cho tab Mapping.
+  useEffect(() => {
+    if (!selected) return;
+    let alive = true;
+    esMapping(connectionId, selected)
+      .then((m) => { if (alive) { setMapping(m); setFields(flattenEsMapping(m.json)); } })
+      .catch(() => { /* tab Mapping vẫn có nút tải lại */ });
+    return () => { alive = false; };
+  }, [connectionId, selected]);
 
   // Jump from Overview: select the requested index once.
   const jumpedRef = useRef('');
@@ -121,7 +143,7 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
   const filteredIndices = indices.filter((i) => !treeFilter || i.name.includes(treeFilter));
 
   return (
-    <div className="es-browser">
+    <div className="es-browser" ref={tree.ref} style={tree.style}>
       {/* ── Indices list ─────────────────────────────────────────────── */}
       <div className="es-tree">
         <div className="status-line" style={{ justifyContent: 'space-between' }}>
@@ -172,16 +194,13 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
             {idxTab === 'docs' && (
               <>
                 <div className="es-querybar">
-                  <label className="es-field"><span>Query DSL — chỉ phần {'"query"'} (trống = match_all; script bị chặn)</span>
-                    <textarea
-                      className="input mono"
-                      rows={3}
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { setFrom(0); void runSearch({ from: 0 }); } }}
-                      placeholder='{"bool": {"filter": [{"term": {"tenantId": "t_123"}}]}}'
-                    />
-                  </label>
+                  <QueryEditor
+                    value={query}
+                    onChange={setQuery}
+                    onRun={() => { setFrom(0); void runSearch({ from: 0 }); }}
+                    fields={fields}
+                    label={`Query DSL — chỉ phần "query" (trống = match_all; script bị chặn)${fields.length ? ` · ${fields.length} field từ mapping` : ''}`}
+                  />
                   <div className="es-form-row">
                     <label className="es-field" style={{ flex: 1 }}><span>Sort</span>
                       <input className="input mono" value={sort} onChange={(e) => setSort(e.target.value)} placeholder='[{"createdAt": "desc"}]' />
@@ -254,6 +273,7 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
           </>
         )}
       </div>
+      <Splitter {...tree.grip} />
     </div>
   );
 }
