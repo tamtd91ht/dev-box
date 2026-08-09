@@ -43,6 +43,9 @@ import { dList, dSave, dRemove, dSaveFile, dReadFile, dFileExists, type SavedDoc
 import { fmtRel } from '@/lib/google';
 import FolderPicker from './FolderPicker';
 import ConvertPanel from './ConvertPanel';
+import EpochPanel from './EpochPanel';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 const KINDS: { key: FormatKind; label: string }[] = [
   { key: 'json', label: 'JSON' },
@@ -95,7 +98,12 @@ function fmtSize(bytes: number): string {
 }
 
 export default function ToolsWorkspace() {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const railSplit = useSplit({ varName: '--tools-rail', min: 150, max: 460, gap: 12 });
   const [kind, setKind] = useState<FormatKind>('json');
+  /** Tab "Thời gian" — công cụ riêng (epoch ⇄ ngày giờ), không dùng editor nên
+   *  chiếm trọn thân panel và ẩn hết nút liên quan tới file/format. */
+  const [showEpoch, setShowEpoch] = useState(false);
   const [text, setText] = useState('');
   const [err, setErr] = useState<string | null>(null);
   /** Bật ô xem bên phải (mặc định bật — nhớ lựa chọn qua localStorage). */
@@ -132,7 +140,7 @@ export default function ToolsWorkspace() {
   useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
 
   /** Ô xem đang thực sự hiện (tab hỗ trợ + người dùng bật). */
-  const showView = split && SPLITTABLE.has(kind) && !media;
+  const showView = split && SPLITTABLE.has(kind) && !media && !showEpoch;
 
   /** Bề rộng ô NGUỒN tính theo % — kéo thanh giữa để đổi, nhớ qua localStorage. */
   const [ratio, setRatio] = useState(50);
@@ -419,14 +427,22 @@ export default function ToolsWorkspace() {
       <div className="g-toolbar">
         <div className="office-subnav" role="tablist" aria-label="Format kind">
           {KINDS.map((k) => (
-            <button key={k.key} role="tab" aria-selected={kind === k.key}
-              className={`office-subnav-btn${kind === k.key ? ' on' : ''}`}
-              onClick={() => { setKind(k.key); setErr(null); }}>
+            <button key={k.key} role="tab" aria-selected={!showEpoch && kind === k.key}
+              className={`office-subnav-btn${!showEpoch && kind === k.key ? ' on' : ''}`}
+              onClick={() => { setKind(k.key); setShowEpoch(false); setErr(null); }}>
               <span className="office-subnav-text">{k.label}</span>
             </button>
           ))}
+          <button role="tab" aria-selected={showEpoch}
+            className={`office-subnav-btn${showEpoch ? ' on' : ''}`}
+            onClick={() => { setShowEpoch(true); setErr(null); }}
+            title="Đổi epoch ⇄ ngày giờ, hai chiều, chọn được múi giờ">
+            <span className="office-subnav-text">🕘 Thời gian</span>
+          </button>
         </div>
         <span style={{ flex: 1 }} />
+        {!showEpoch && (
+        <>
         {kind !== 'text' && (
           <button className="sm" onClick={format}
             title={kind === 'md' ? 'Chuẩn hoá Markdown (bullet, dòng trống, khoảng trắng thừa)' : 'Định dạng đẹp (Format / Beautify)'}>
@@ -479,11 +495,14 @@ export default function ToolsWorkspace() {
             📄 {openFilePath.split(/[\\/]/).pop()}{dirty ? ' •' : ''}
           </span>
         )}
+        </>
+        )}
       </div>
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '4px 0' }}>{err}</pre>}
       {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '4px 0' }}>{notice}</div>}
 
-      <div className="tools-body">
+      {showEpoch ? <EpochPanel /> : (
+      <div className="tools-body" ref={railSplit.ref} style={railSplit.style}>
         {/* Rail trái: snippet đã lưu */}
         <aside className="g-rail tools-rail">
           <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', gap: 6 }}>
@@ -620,8 +639,10 @@ export default function ToolsWorkspace() {
           </>
           )}
         </div>
+        <Splitter {...railSplit.grip} />
       </div>
-      {dirty && openId && <span className="small" style={{ color: 'var(--muted)', padding: '2px 6px' }}>• có thay đổi chưa lưu</span>}
+      )}
+      {!showEpoch && dirty && openId && <span className="small" style={{ color: 'var(--muted)', padding: '2px 6px' }}>• có thay đổi chưa lưu</span>}
 
       {/* Modal: đặt tên lưu vào kho */}
       {modal === 'store' && (

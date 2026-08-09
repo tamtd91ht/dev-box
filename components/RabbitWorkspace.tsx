@@ -66,6 +66,8 @@ import ConnectionsLiveView from './rabbit/ConnectionsLiveView';
 import PublishModal from './rabbit/PublishModal';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 const LAST_CONN_KEY = 'rabbit.lastConn';
 const DEFAULT_PEEK = 10;
@@ -81,6 +83,8 @@ const SUB_VIEWS: { key: SubView; label: string }[] = [
 ];
 
 export default function RabbitWorkspace() {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const railSplit = useSplit({ varName: '--rabbit-rail', min: 180, max: 560, gap: 14 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [connections, setConnections] = useState<PublicRabbitConnection[]>([]);
   const [activeId, setActiveId] = useState<string>('');
@@ -402,7 +406,7 @@ export default function RabbitWorkspace() {
   }
 
   return (
-    <div className="rabbit-layout">
+    <div className="rabbit-layout" ref={railSplit.ref} style={railSplit.style}>
       <BrokerRail
         connections={connections}
         activeId={activeId}
@@ -538,6 +542,7 @@ export default function RabbitWorkspace() {
           onPublish={(payload) => publishRabbitMessage(activeId, payload)}
         />
       )}
+      <Splitter {...railSplit.grip} />
     </div>
   );
 }

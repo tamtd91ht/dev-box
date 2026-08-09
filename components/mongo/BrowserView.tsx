@@ -29,6 +29,8 @@ import {
   type AggregateResult,
 } from '@/lib/mongo';
 import UpdateModal from './UpdateModal';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from '../Splitter';
 
 export interface BrowserViewProps {
   connectionId: string;
@@ -44,6 +46,8 @@ type QueryMode = 'find' | 'aggregate';
 const DEFAULT_LIMIT = 50;
 
 export default function BrowserView({ connectionId, readOnly, allowWrite, initialDb }: BrowserViewProps) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const tree = useSplit({ varName: '--mongo-tree', min: 160, max: 520, gap: 12 });
   // ── Tree state ──────────────────────────────────────────────────────────────
   const [dbs, setDbs] = useState<DatabaseInfo[]>([]);
   const [dbsLoading, setDbsLoading] = useState(false);
@@ -180,7 +184,7 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
   const writeArmed = allowWrite && !readOnly;
 
   return (
-    <div className="mongo-browser">
+    <div className="mongo-browser" ref={tree.ref} style={tree.style}>
       {/* ── Tree: databases → collections ─────────────────────────────── */}
       <div className="mongo-tree">
         <div className="status-line" style={{ justifyContent: 'space-between' }}>
@@ -410,6 +414,7 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
           }}
         />
       )}
+      <Splitter {...tree.grip} />
     </div>
   );
 }

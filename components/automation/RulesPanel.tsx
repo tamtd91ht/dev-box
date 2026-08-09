@@ -9,6 +9,8 @@ import { blankRule, newId } from '@/lib/automation/engine';
 import type { AutomationConfig, AutomationRule, EventCategory } from '@/lib/automation/types';
 import { Empty } from './parts';
 import RuleEditor from './RuleEditor';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from '../Splitter';
 
 const actionSummary = (r: AutomationRule): string =>
   r.actions.length ? r.actions.map((a) => a.type).join(' · ') : 'chưa có hành động';
@@ -20,6 +22,8 @@ export default function RulesPanel({
   config: AutomationConfig;
   onChange: (next: AutomationConfig) => void;
 }) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const railSplit = useSplit({ varName: '--auto-list', min: 200, max: 640, gap: 12 });
   const [filter, setFilter] = useState<EventCategory | 'all'>('all');
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -60,7 +64,7 @@ export default function RulesPanel({
   };
 
   return (
-    <div className="auto-split">
+    <div className="auto-split" ref={railSplit.ref} style={railSplit.style}>
       <div className="auto-list panel">
         <div className="auto-list-head">
           <div className="auto-checks">
@@ -136,6 +140,7 @@ export default function RulesPanel({
           <Empty icon="👈" text="Chọn một quy tắc để sửa, hoặc tạo quy tắc mới." />
         )}
       </div>
+      <Splitter {...railSplit.grip} />
     </div>
   );
 }

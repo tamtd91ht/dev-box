@@ -16,6 +16,8 @@ import {
   localInput, rangeLabel,
   type CalCollection, type CalEvent, type EventInput,
 } from '@/lib/cal';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 /** Màu của lịch, fallback theo màu nhấn của app. */
 const calColor = (c?: CalCollection) => c?.color || 'var(--acc, #4a9eff)';
@@ -207,6 +209,8 @@ function CalUrlModal({ account, current, onClose, onSaved }: {
 // ── Lịch tháng ─────────────────────────────────────────────────────────────
 
 export default function MailCalendar({ account }: { account: MailAccountPub }) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const railSplit = useSplit({ varName: '--gp-rail', min: 170, max: 520, gap: 12 });
   const [calendars, setCalendars] = useState<CalCollection[] | null>(null);
   const [root, setRoot] = useState('');
   const [hidden, setHidden] = useState<Set<string>>(() => new Set()); // lịch đang tắt
@@ -287,7 +291,7 @@ export default function MailCalendar({ account }: { account: MailAccountPub }) {
   }
 
   return (
-    <div className="g-projects">
+    <div className="g-projects" ref={railSplit.ref} style={railSplit.style}>
       <aside className="g-rail">
         <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ flex: 1 }}>Lịch</span>
@@ -426,6 +430,7 @@ export default function MailCalendar({ account }: { account: MailAccountPub }) {
           onSaved={() => { setUrlModal(false); void loadCalendars(); }}
         />
       )}
+      <Splitter {...railSplit.grip} />
     </div>
   );
 }

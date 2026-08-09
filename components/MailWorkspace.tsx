@@ -27,6 +27,8 @@ import { fmtRel } from '@/lib/google';
 import PasswordInput from './PasswordInput';
 import { MAIL_REFRESH_EVENT } from './MailWatchHost';
 import { MAIL_MUTED_EVENT, loadMutedMail, toggleMutedMail } from '@/lib/mailMuted';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 /** Báo cho MailWatchHost đếm lại số mail chưa đọc NGAY (badge tab Mail). */
 function pingMailWatch() {
@@ -716,6 +718,8 @@ function MailboxView({ account, onCompose }: {
   account: MailAccountPub;
   onCompose: (draft: ComposeDraft) => void;
 }) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const railSplit = useSplit({ varName: '--gp-rail', min: 170, max: 520, gap: 12 });
   const [folders, setFolders] = useState<MailFolder[]>([]);
   const [path, setPath] = useState('INBOX');
   const [items, setItems] = useState<MailListItem[]>([]);
@@ -817,7 +821,7 @@ function MailboxView({ account, onCompose }: {
   };
 
   return (
-    <div className="g-projects">
+    <div className="g-projects" ref={railSplit.ref} style={railSplit.style}>
       <aside className="g-rail">
         <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ flex: 1 }}>Thư mục</span>
@@ -911,6 +915,7 @@ function MailboxView({ account, onCompose }: {
           </>
         )}
       </div>
+      <Splitter {...railSplit.grip} />
     </div>
   );
 }

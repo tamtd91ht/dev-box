@@ -23,6 +23,8 @@ import { lAdd } from '@/lib/links';
 import GoogleDocViewer from './GoogleDocViewer';
 import GoogleFilePreview from './GoogleFilePreview';
 import GoogleAuthWindow from './GoogleAuthWindow';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 /** What the in-app viewer is currently showing (desktop shell only). */
 interface ViewerTarget { name: string; url: string }
@@ -176,6 +178,8 @@ function ProjectsView({ accountId, onOpen, onOpenUrl }: {
   /** Mở folder bằng giao diện Drive (webview) — "Quản lý trong Drive". */
   onOpenUrl: OpenInApp;
 }) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const railSplit = useSplit({ varName: '--gp-rail', min: 170, max: 520, gap: 12 });
   const [roots, setRoots] = useState<GRoot[]>([]);
   const [activeRoot, setActiveRoot] = useState<GRoot | null>(null);
   /** Breadcrumb path inside the active root; [0] is the root itself. */
@@ -239,7 +243,7 @@ function ProjectsView({ accountId, onOpen, onOpenUrl }: {
   const files = listing?.files.filter((f) => f.mimeType !== G_MIME.folder) ?? [];
 
   return (
-    <div className="g-projects">
+    <div className="g-projects" ref={railSplit.ref} style={railSplit.style}>
       <aside className="g-rail">
         <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ flex: 1 }}>Thư mục dự án</span>
@@ -331,6 +335,7 @@ function ProjectsView({ accountId, onOpen, onOpenUrl }: {
           </>
         )}
       </div>
+      <Splitter {...railSplit.grip} />
     </div>
   );
 }

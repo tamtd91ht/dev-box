@@ -13,6 +13,8 @@ import { watcher } from '@/lib/automation/watcher';
 import { useWatcher } from '@/lib/automation/useAutomation';
 import type { AutomationConfig, InfraStack, InfraWatch } from '@/lib/automation/types';
 import { Empty, Field, Num, Toggle } from './parts';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from '../Splitter';
 
 const OPS: { op: InfraWatch['op']; label: string }[] = [
   { op: 'gt', label: '>' },
@@ -161,6 +163,8 @@ export default function WatchesPanel({
   config: AutomationConfig;
   onChange: (next: AutomationConfig) => void;
 }) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const railSplit = useSplit({ varName: '--auto-list', min: 200, max: 640, gap: 12 });
   const [selected, setSelected] = useState<string | null>(null);
   const { samples, running } = useWatcher();
   const watches = config.watches;
@@ -176,7 +180,7 @@ export default function WatchesPanel({
   };
 
   return (
-    <div className="auto-split">
+    <div className="auto-split" ref={railSplit.ref} style={railSplit.style}>
       <div className="auto-list panel">
         <div className="auto-list-head">
           <span className={`auto-runstate${running ? ' on' : ''}`}>
@@ -255,6 +259,7 @@ export default function WatchesPanel({
           <Empty icon="👈" text="Chọn một mục theo dõi, hoặc tạo mới." />
         )}
       </div>
+      <Splitter {...railSplit.grip} />
     </div>
   );
 }

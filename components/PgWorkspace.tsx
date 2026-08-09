@@ -25,6 +25,8 @@ import BrowserView from './pg/BrowserView';
 import QuickFindView from './pg/QuickFindView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 const LAST_CONN_KEY = 'pg.lastConn';
 
@@ -37,6 +39,8 @@ const SUB_VIEWS: { key: SubView; label: string }[] = [
 ];
 
 export default function PgWorkspace() {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const rail = useSplit({ varName: '--pg-rail', min: 180, max: 560, gap: 14 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [allowWrite, setAllowWrite] = useState(false);
   const [connections, setConnections] = useState<PublicPgConnection[]>([]);
@@ -133,7 +137,7 @@ export default function PgWorkspace() {
   }
 
   return (
-    <div className="pg-layout">
+    <div className="pg-layout" ref={rail.ref} style={rail.style}>
       <ConnRail
         connections={connections}
         activeId={activeId}
@@ -212,6 +216,7 @@ export default function PgWorkspace() {
           </>
         )}
       </main>
+      <Splitter {...rail.grip} />
     </div>
   );
 }

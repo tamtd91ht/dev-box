@@ -33,6 +33,8 @@ import BrowserView from './mongo/BrowserView';
 import QuickFindView from './mongo/QuickFindView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 const LAST_CONN_KEY = 'mongo.lastConn';
 
@@ -45,6 +47,8 @@ const SUB_VIEWS: { key: SubView; label: string }[] = [
 ];
 
 export default function MongoWorkspace() {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const rail = useSplit({ varName: '--mongo-rail', min: 180, max: 560, gap: 14 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [allowWrite, setAllowWrite] = useState(false);
   const [connections, setConnections] = useState<PublicMongoConnection[]>([]);
@@ -191,7 +195,7 @@ export default function MongoWorkspace() {
   }
 
   return (
-    <div className="mongo-layout">
+    <div className="mongo-layout" ref={rail.ref} style={rail.style}>
       <ConnRail
         connections={connections}
         activeId={activeId}
@@ -277,6 +281,7 @@ export default function MongoWorkspace() {
           </>
         )}
       </main>
+      <Splitter {...rail.grip} />
     </div>
   );
 }

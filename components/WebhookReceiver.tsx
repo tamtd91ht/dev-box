@@ -74,6 +74,8 @@ function chipHost(url: string): string {
 
 /** localStorage key holding this browser's quick webhook id (client-generated). */
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 const QUICK_ID_KEY = 'tool.webhook.quickId';
 
@@ -158,6 +160,8 @@ export default function WebhookReceiver({
   onOpenSettings,
   onCloseSettings,
 }: Props) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const listSplit = useSplit({ varName: '--split-rail', min: 180, max: 560, gap: 18 });
   const [links, setLinks] = useState<WebhookLink[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [captures, setCaptures] = useState<CapturedRequest[]>([]);
@@ -674,7 +678,7 @@ export default function WebhookReceiver({
         </details>
       </div>
 
-    <div className="layout">
+    <div className="layout" ref={listSplit.ref} style={listSplit.style}>
       {/* ── Left: link list + create ─────────────────────────────────────── */}
       <div className="panel">
         <h3>Webhook links</h3>
@@ -884,6 +888,7 @@ export default function WebhookReceiver({
           </div>
         )}
       </div>
+      <Splitter {...listSplit.grip} />
     </div>
 
       {/* ── Settings drawer: connection + realtime socket ─────────────────── */}

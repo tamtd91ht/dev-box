@@ -28,6 +28,8 @@ import {
 } from '@/lib/workspace/accounts';
 import { automation, useAutomation } from '@/lib/automation/useAutomation';
 import { socialEvent } from '@/lib/automation/sources/social';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 interface Props {
   /** Report the total unread across all workspaces (for the header tab badge). */
@@ -84,6 +86,8 @@ function useChime(): () => void {
 }
 
 export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const railSplit = useSplit({ varName: '--ws-rail', min: 120, max: 420, gap: 14 });
   const desktop = isDesktop();
   const cfg = useMemo(() => resolveConfig(), []);
   const plugins = WORKSPACE_PLUGINS;
@@ -315,7 +319,7 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
   }
 
   return (
-    <div className="ws-shell">
+    <div className="ws-shell" ref={railSplit.ref} style={railSplit.style}>
       <aside className="ws-rail">
         <div className="ws-rail-head">
           <span className="ws-rail-head-t">Workspaces</span>
@@ -496,6 +500,7 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
           );
         })}
       </div>
+      <Splitter {...railSplit.grip} />
     </div>
   );
 }

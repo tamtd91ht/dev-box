@@ -16,6 +16,8 @@ import {
 import { parseCurl, resolveVars } from '@/lib/curlParse';
 import { formatText } from '@/lib/format';
 import { fmtRel } from '@/lib/google';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 const BLANK: Draft = { name: '', method: 'GET', url: '', headers: [{ key: '', value: '' }], body: '', bodyType: 'none' };
@@ -36,6 +38,8 @@ function methodClass(m: string): string {
 }
 
 export default function ApiWorkspace() {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const railSplit = useSplit({ varName: '--api-rail', min: 160, max: 480, gap: 12 });
   const [data, setData] = useState<ApiData>({ requests: [], environments: [] });
   const [draft, setDraft] = useState<Draft>(BLANK);
   const [tab, setTab] = useState<'params' | 'headers' | 'body'>('headers');
@@ -177,7 +181,7 @@ export default function ApiWorkspace() {
 
   return (
     <div className="panel sheet-panel">
-      <div className="api-root">
+      <div className="api-root" ref={railSplit.ref} style={railSplit.style}>
         {/* ── Rail: collection + environment ── */}
         <aside className="g-rail api-rail">
           <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', gap: 6 }}>
@@ -306,6 +310,7 @@ export default function ApiWorkspace() {
             </div>
           )}
         </div>
+        <Splitter {...railSplit.grip} />
       </div>
 
       {/* Modal lưu request (đặt tên + folder) */}

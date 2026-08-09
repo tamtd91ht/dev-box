@@ -27,6 +27,8 @@ import {
   type WireRow,
 } from '@/lib/pg';
 import UpdateModal from './UpdateModal';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from '../Splitter';
 
 export interface BrowserViewProps {
   connectionId: string;
@@ -40,6 +42,8 @@ export interface BrowserViewProps {
 type TableTab = 'rows' | 'columns' | 'indexes';
 
 export default function BrowserView({ connectionId, defaultDb, readOnly, allowWrite, initialDb }: BrowserViewProps) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const tree = useSplit({ varName: '--pg-tree', min: 160, max: 520, gap: 12 });
   // ── Tree ────────────────────────────────────────────────────────────────────
   const [dbs, setDbs] = useState<PgDatabaseInfo[]>([]);
   const [dbsLoading, setDbsLoading] = useState(false);
@@ -147,7 +151,7 @@ export default function BrowserView({ connectionId, defaultDb, readOnly, allowWr
   );
 
   return (
-    <div className="pg-browser">
+    <div className="pg-browser" ref={tree.ref} style={tree.style}>
       {/* ── Tree: databases → tables ──────────────────────────────────── */}
       <div className="pg-tree">
         <div className="status-line" style={{ justifyContent: 'space-between' }}>
@@ -356,6 +360,7 @@ export default function BrowserView({ connectionId, defaultDb, readOnly, allowWr
           }}
         />
       )}
+      <Splitter {...tree.grip} />
     </div>
   );
 }

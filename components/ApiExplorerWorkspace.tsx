@@ -29,6 +29,8 @@ import {
   type LocalConfig,
   type GlobalVars,
 } from '@/lib/persist';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 interface ManifestService {
   id: string;
@@ -49,6 +51,11 @@ export interface IntegrationView {
 }
 
 export default function ApiExplorerWorkspace({ packId }: { packId: string }) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  // Hai thanh: rail bên ngoài, và danh sách Endpoints/Flows bên trong (hai
+  // mục này loại trừ nhau nên dùng chung một thanh, đổi mục vẫn giữ bề rộng).
+  const railSplit = useSplit({ varName: '--apix-rail', min: 180, max: 520, gap: 14 });
+  const listSplit = useSplit({ varName: '--split-rail', min: 180, max: 560, gap: 18 });
   const [pack, setPack] = useState<IntegrationView | null | undefined>(undefined);
   const [activeServiceId, setActiveServiceId] = useState('');
   const [section, setSection] = useState<'explore' | 'flows'>('explore');
@@ -185,7 +192,7 @@ export default function ApiExplorerWorkspace({ packId }: { packId: string }) {
   }
 
   return (
-    <div className="apix-layout">
+    <div className="apix-layout" ref={railSplit.ref} style={railSplit.style}>
       {/* ── Rail: THIS pack's identity + services ───────────────────────── */}
       <aside className="panel">
         <div className="apix-pack-head">
@@ -305,7 +312,7 @@ export default function ApiExplorerWorkspace({ packId }: { packId: string }) {
             {loadError && <div className="warn-box">Failed to load catalog: {loadError}</div>}
 
             {section === 'explore' && (
-              <div className="layout">
+              <div className="layout" ref={listSplit.ref} style={listSplit.style}>
                 <div className="panel">
                   <h3>Endpoints</h3>
                   <div className="endpoint-list">
@@ -345,11 +352,12 @@ export default function ApiExplorerWorkspace({ packId }: { packId: string }) {
                     </div>
                   )}
                 </div>
+                <Splitter {...listSplit.grip} />
               </div>
             )}
 
             {section === 'flows' && (
-              <div className="layout">
+              <div className="layout" ref={listSplit.ref} style={listSplit.style}>
                 <div className="panel">
                   <h3>Flows</h3>
                   <div className="endpoint-list">
@@ -384,11 +392,13 @@ export default function ApiExplorerWorkspace({ packId }: { packId: string }) {
                     </div>
                   )}
                 </div>
+                <Splitter {...listSplit.grip} />
               </div>
             )}
           </>
         )}
       </main>
+      <Splitter {...railSplit.grip} />
     </div>
   );
 }

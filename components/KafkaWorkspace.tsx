@@ -36,6 +36,8 @@ import {
 
 /** localStorage key remembering the last-selected connection. */
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 const LAST_CONN_KEY = 'kafka.lastConn';
 /** Default number of messages a "peek" pulls. */
@@ -128,6 +130,8 @@ function toLocalInput(ms: number): string {
  * never talks to Kafka directly — every op goes through /api/kafka.
  */
 export default function KafkaWorkspace() {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const railSplit = useSplit({ varName: '--kafka-rail', min: 180, max: 560, gap: 18 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [connections, setConnections] = useState<PublicKafkaConnection[]>([]);
   const [activeId, setActiveId] = useState<string>('');
@@ -526,7 +530,7 @@ export default function KafkaWorkspace() {
   const grouped = groupByProject(connections);
 
   return (
-    <div className="kafka-layout">
+    <div className="kafka-layout" ref={railSplit.ref} style={railSplit.style}>
       {/* ── Left rail: connections ─────────────────────────────────────── */}
       <aside className="panel">
         <div className="status-line" style={{ justifyContent: 'space-between' }}>
@@ -980,6 +984,7 @@ export default function KafkaWorkspace() {
           }}
         />
       )}
+      <Splitter {...railSplit.grip} />
     </div>
   );
 }

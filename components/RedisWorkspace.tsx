@@ -25,6 +25,8 @@ import MonitorStrip from './redis/MonitorStrip';
 
 /** localStorage key remembering the last-selected connection. */
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 const LAST_CONN_KEY = 'redis.lastConn';
 /** Keys fetched per SCAN round. */
@@ -89,6 +91,8 @@ function typeIcon(t: RedisKeyType): string {
  * The browser never talks to Redis directly — every op goes through /api/redis.
  */
 export default function RedisWorkspace() {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const railSplit = useSplit({ varName: '--redis-rail', min: 180, max: 560, gap: 18 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [connections, setConnections] = useState<PublicRedisConnection[]>([]);
   const [activeId, setActiveId] = useState<string>('');
@@ -489,7 +493,7 @@ export default function RedisWorkspace() {
   }
 
   return (
-    <div className="redis-layout">
+    <div className="redis-layout" ref={railSplit.ref} style={railSplit.style}>
       {/* ── Left: connections grouped by project ─────────────────────────────── */}
       <div className="panel redis-conn-rail">
         <div className="status-line">
@@ -776,6 +780,7 @@ export default function RedisWorkspace() {
           onSaved={(next) => { applyChanged(next, editConn.id); setEditConn(null); }}
         />
       )}
+      <Splitter {...railSplit.grip} />
     </div>
   );
 }
