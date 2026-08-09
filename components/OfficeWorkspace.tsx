@@ -11,27 +11,31 @@
 // WordWorkspace tự giữ hết (file, ops, dirty). Shell chỉ biết danh sách tab và
 // nhận lại tên file + số thay đổi qua onDocState để vẽ tiêu đề tab + dấu ●.
 //
+// THÊM TAB chỉ hỏi đúng MỘT câu — bảng tính hay văn bản:
+//   ＋  mở ngay tab cùng loại với tab đang xem (không bung menu)
+//   ▾   bung menu hai mục để chọn loại khác
+// Không có "Mở …" ở đây nữa: tab mới luôn trống và màn hình chào của chính
+// editor mới là chỗ mở file có sẵn / tạo file mới / bấm lại file gần đây — gộp
+// vào menu thì vừa lặp, vừa thiếu mất danh sách gần đây.
+//
 // Markdown (.md) KHÔNG ở đây — nó là định dạng text nên nằm ở tab Tools cùng
 // JSON / XML / HTML (xem components/ToolsWorkspace.tsx).
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import FolderPicker from './FolderPicker';
 import SheetWorkspace from './SheetWorkspace';
 import WordWorkspace from './WordWorkspace';
 
 type Kind = 'sheet' | 'word';
 
-const KIND_META: Record<Kind, { icon: string; label: string; exts: string[]; pickTitle: string }> = {
-  sheet: { icon: '▦', label: 'Bảng tính', exts: ['xlsx', 'csv'], pickTitle: 'Chọn file .xlsx / .csv' },
-  word: { icon: '🗎', label: 'Văn bản', exts: ['docx'], pickTitle: 'Chọn file .docx' },
+const KIND_META: Record<Kind, { icon: string; label: string; hint: string }> = {
+  sheet: { icon: '▦', label: 'Bảng tính', hint: 'Excel .xlsx / .csv' },
+  word: { icon: '🗎', label: 'Văn bản', hint: 'Word .docx' },
 };
 
 interface OfficeTab {
   /** Khóa ổn định — dùng làm React key nên KHÔNG bao giờ đổi trong đời tab. */
   id: string;
   kind: Kind;
-  /** Đường dẫn mở lúc tạo tab (undefined = tab trống, editor hiện màn hình chào). */
-  initialPath?: string;
   /** Đường dẫn THẬT hiện tại + số thay đổi, do editor báo lên. */
   path: string | null;
   dirtyCount: number;
@@ -56,8 +60,6 @@ export default function OfficeWorkspace() {
   const first = useRef<OfficeTab>({ id: nextId(), kind: 'sheet', path: null, dirtyCount: 0 });
   const [tabs, setTabs] = useState<OfficeTab[]>([first.current]);
   const [activeId, setActiveId] = useState<string>(first.current.id);
-  /** Đang chọn file để mở vào tab MỚI (null = không mở hộp thoại nào). */
-  const [picking, setPicking] = useState<Kind | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   /**
@@ -75,8 +77,18 @@ export default function OfficeWorkspace() {
     const away = (e: MouseEvent) => {
       if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
     };
+    // Esc đóng menu — bắt ở giai đoạn capture để không đụng Esc thoát tràn viền.
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setMenuOpen(false);
+    };
     window.addEventListener('mousedown', away);
-    return () => window.removeEventListener('mousedown', away);
+    window.addEventListener('keydown', esc, true);
+    return () => {
+      window.removeEventListener('mousedown', away);
+      window.removeEventListener('keydown', esc, true);
+    };
   }, [menuOpen]);
 
   // Esc để thoát tràn viền — nhưng nhường trước cho những thứ Esc đang phục vụ:
@@ -94,8 +106,10 @@ export default function OfficeWorkspace() {
     return () => window.removeEventListener('keydown', onKey);
   }, [zen]);
 
-  const openTab = useCallback((kind: Kind, initialPath?: string) => {
-    const t: OfficeTab = { id: nextId(), kind, initialPath, path: initialPath ?? null, dirtyCount: 0 };
+  /** Tab mới luôn mở TRỐNG — màn hình chào của editor lo phần mở file có sẵn /
+   *  tạo file mới / danh sách gần đây, nên shell không cần biết đường dẫn. */
+  const openTab = useCallback((kind: Kind) => {
+    const t: OfficeTab = { id: nextId(), kind, path: null, dirtyCount: 0 };
     setTabs((prev) => [...prev, t]);
     setActiveId(t.id);
     setMenuOpen(false);
@@ -152,6 +166,9 @@ export default function OfficeWorkspace() {
   }, []);
 
   const dirtyTotal = tabs.reduce((n, t) => n + t.dirtyCount, 0);
+  /** Loại của tab đang xem — nút ＋ mở thêm tab cùng loại (đang làm bảng tính
+   *  thì thường là muốn thêm bảng tính nữa). */
+  const activeKind: Kind = tabs.find((t) => t.id === activeId)?.kind ?? 'sheet';
 
   // Cảnh báo khi đóng cả cửa sổ mà còn thay đổi chưa lưu ở BẤT KỲ tab nào —
   // trước đây mỗi editor là một tab duy nhất nên nhìn thấy ngay, giờ tab kia có
@@ -194,26 +211,37 @@ export default function OfficeWorkspace() {
           );
         })}
 
+        {/* Thêm tab: ＋ mở thẳng một tab CÙNG LOẠI với tab đang xem (việc hay làm
+            nhất, khỏi qua menu), ▾ mới bung menu để đổi loại. Menu chỉ còn HAI
+            mục — chọn loại thôi, còn mở file có sẵn hay tạo file mới thì làm
+            ngay trên màn hình chào của tab vừa mở (ở đó có cả file gần đây). */}
         <div className="office-tab-add" ref={menuRef}>
-          <button className="office-tab-addbtn" onClick={() => setMenuOpen((v) => !v)} title="Mở tài liệu trong tab mới">
-            ＋<span className="office-tab-caret" aria-hidden>▾</span>
-          </button>
+          <div className="office-tab-addgrp">
+            <button
+              className="office-tab-addbtn"
+              onClick={() => openTab(activeKind)}
+              title={`Tab ${KIND_META[activeKind].label.toLowerCase()} mới — bấm ▾ để chọn loại khác`}
+            >＋</button>
+            <button
+              className="office-tab-addcaret"
+              onClick={() => setMenuOpen((v) => !v)}
+              title="Chọn loại tài liệu cho tab mới"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="Chọn loại tài liệu"
+            ><span aria-hidden>▾</span></button>
+          </div>
           {menuOpen && (
             <div className="office-tab-menu" role="menu">
-              <button role="menuitem" onClick={() => { setMenuOpen(false); setPicking('sheet'); }}>
-                <span aria-hidden>▦</span> Mở bảng tính…
-              </button>
-              <button role="menuitem" onClick={() => { setMenuOpen(false); setPicking('word'); }}>
-                <span aria-hidden>🗎</span> Mở văn bản…
-              </button>
-              <span className="office-tab-menu-sep" aria-hidden />
-              {/* Tab trống → editor hiện màn hình chào (có recents + Tạo file mới). */}
-              <button role="menuitem" onClick={() => openTab('sheet')}>
-                <span aria-hidden>▦</span> Bảng tính mới
-              </button>
-              <button role="menuitem" onClick={() => openTab('word')}>
-                <span aria-hidden>🗎</span> Văn bản mới
-              </button>
+              {(Object.keys(KIND_META) as Kind[]).map((k) => (
+                <button key={k} role="menuitem" onClick={() => openTab(k)}>
+                  <span className="office-tab-menu-ico" aria-hidden>{KIND_META[k].icon}</span>
+                  <span className="office-tab-menu-txt">
+                    <b>{KIND_META[k].label}</b>
+                    <span className="office-tab-menu-hint">{KIND_META[k].hint}</span>
+                  </span>
+                </button>
+              ))}
             </div>
           )}
         </div>
@@ -243,21 +271,12 @@ export default function OfficeWorkspace() {
             {/* `active`: phím tắt bắt trên window (Ctrl+S của Word) chỉ được
                 chạy ở tab đang xem — xem WordWorkspaceProps.active. */}
             {t.kind === 'sheet'
-              ? <SheetWorkspace initialPath={t.initialPath} onDocState={reporterFor(t.id)} active={t.id === activeId} />
-              : <WordWorkspace initialPath={t.initialPath} onDocState={reporterFor(t.id)} active={t.id === activeId} />}
+              ? <SheetWorkspace onDocState={reporterFor(t.id)} active={t.id === activeId} />
+              : <WordWorkspace onDocState={reporterFor(t.id)} active={t.id === activeId} />}
           </div>
         ))}
       </div>
 
-      {picking && (
-        <FolderPicker
-          title={KIND_META[picking].pickTitle}
-          fileExts={KIND_META[picking].exts}
-          onPickFile={(p) => { openTab(picking, p); setPicking(null); }}
-          onPick={() => {}}
-          onClose={() => setPicking(null)}
-        />
-      )}
     </div>
   );
 }
