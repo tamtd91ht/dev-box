@@ -230,11 +230,26 @@ export async function fetchGitProjects(): Promise<GitProjectsResponse> {
 // Folder browsing now lives in components/FolderPicker.tsx (shared by the Git
 // workspace and ＋ Projects) and talks to /api/fs-browse.
 
-/** POST/PUT/DELETE a project mutation. Throws Error(message) on non-2xx. */
+/** Trạng thái sau một mutation — kèm `configured` để client khỏi GET lại. */
+export interface GitProjectsState {
+  projects: GitProject[];
+  /** false = chưa cấu hình bao giờ, danh sách đang là thư mục tự nhận diện. */
+  configured: boolean;
+  base: string;
+}
+
+/**
+ * POST/PUT/DELETE a project mutation. Throws Error(message) on non-2xx.
+ *
+ * Trả về TRỌN trạng thái mới (danh sách + `configured`) chứ không chỉ mảng
+ * project: danh sách rỗng có thể là "chưa cấu hình" hoặc "vừa xoá hết", client
+ * không tự đoán được, mà GET lại thì thừa một vòng và một cú lỗi vặt ở đó đủ
+ * làm cả tab Git tưởng mình bị tắt.
+ */
 export async function mutateGitProject(
   method: 'POST' | 'PUT' | 'DELETE',
   body: Record<string, unknown>,
-): Promise<GitProject[]> {
+): Promise<GitProjectsState> {
   const r = await fetch('/api/git-projects', {
     method,
     headers: { 'content-type': 'application/json' },
@@ -242,7 +257,8 @@ export async function mutateGitProject(
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
-  return (data as { projects: GitProject[] }).projects;
+  const d = data as Partial<GitProjectsState>;
+  return { projects: d.projects ?? [], configured: d.configured ?? true, base: d.base ?? '' };
 }
 
 /** GET capability probe — never throws; returns disabled on any error. */

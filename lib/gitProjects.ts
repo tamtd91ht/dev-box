@@ -62,10 +62,21 @@ export async function validateRoot(root: unknown): Promise<string> {
   return resolved;
 }
 
-/** Read the persisted project list (raw). Returns [] on missing/unparseable file. */
-async function readRaw(): Promise<GitProject[]> {
+/**
+ * Read the persisted project list.
+ *
+ * `null` = CHƯA CÓ file (chưa từng cấu hình, hoặc file hỏng) — khác hẳn với `[]`
+ * = có file nhưng danh sách rỗng, tức người dùng đã CHỦ Ý xoá hết. Phân biệt hai
+ * ca này là bắt buộc: xem listProjects().
+ */
+async function readPersisted(): Promise<GitProject[] | null> {
+  let raw: string;
   try {
-    const raw = await fs.readFile(PROJECTS_FILE, 'utf8');
+    raw = await fs.readFile(PROJECTS_FILE, 'utf8');
+  } catch {
+    return null; // chưa có file
+  }
+  try {
     const parsed = JSON.parse(raw);
     const arr = Array.isArray(parsed?.projects) ? parsed.projects : Array.isArray(parsed) ? parsed : [];
     return arr
@@ -75,8 +86,13 @@ async function readRaw(): Promise<GitProject[]> {
       })
       .map((p: GitProject) => ({ id: p.id, name: p.name, root: path.resolve(p.root) }));
   } catch {
-    return [];
+    return null; // file hỏng → coi như chưa cấu hình, đừng nuốt mất fallback
   }
+}
+
+/** Danh sách đã lưu, coi "chưa có file" như rỗng — dùng cho các hàm ghi. */
+async function readRaw(): Promise<GitProject[]> {
+  return (await readPersisted()) ?? [];
 }
 
 async function writeRaw(projects: GitProject[]): Promise<void> {
@@ -98,14 +114,22 @@ function defaultProject(): GitProject {
 }
 
 /**
- * Effective project list shown to the client: the persisted list, or — when it's
- * empty — a single implicit default so first-run is never a blank screen. The
- * `configured` flag lets the UI tell "user set this up" from "auto fallback".
+ * Effective project list shown to the client: the persisted list, or — when the
+ * user has never configured anything — a single implicit default so first-run is
+ * never a blank screen. The `configured` flag lets the UI tell "user set this up"
+ * from "auto fallback".
+ *
+ * DANH SÁCH RỖNG KHÁC VỚI CHƯA CẤU HÌNH. Trước đây cả hai đều rơi vào fallback,
+ * nên xoá project CUỐI CÙNG là nó "mọc lại" ngay: default lấy tên + root từ thư
+ * mục cha của app, trùng khít với project mà nhiều người tự thêm, nên nhìn y hệt
+ * cái vừa xoá — mà lúc đó `configured` thành false nên bảng Quản lý còn giấu
+ * luôn nút Xóa, hết đường xoá lại. File đã tồn tại nghĩa là người dùng từng lưu:
+ * rỗng thì phải trả về rỗng.
  */
 export async function listProjects(): Promise<{ projects: GitProject[]; configured: boolean; base: string }> {
-  const persisted = await readRaw();
-  if (persisted.length > 0) return { projects: persisted, configured: true, base: browseStart() };
-  return { projects: [defaultProject()], configured: false, base: browseStart() };
+  const persisted = await readPersisted();
+  if (persisted === null) return { projects: [defaultProject()], configured: false, base: browseStart() };
+  return { projects: persisted, configured: true, base: browseStart() };
 }
 
 /** Roots the git actions are allowed to operate under (all effective projects). */

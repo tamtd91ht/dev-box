@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchGitProjects,
   mutateGitProject,
+  type GitProjectsState,
   gitAction,
   codeLabel,
   defaultCloneName,
@@ -33,6 +34,8 @@ import FolderPicker from './FolderPicker';
 
 /** localStorage keys remembering the last-selected project + repo. */
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 const LAST_REPO_KEY = 'git.lastRepo';
 const LAST_PROJECT_KEY = 'git.lastProject';
@@ -83,6 +86,8 @@ function repoOptionLabel(name: string, ov?: RepoOverview): string {
  * checkout / create branches. Independent of the API-explorer service selection.
  */
 export default function GitWorkspace() {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const listSplit = useSplit({ varName: '--split-rail', min: 180, max: 560, gap: 18 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   // ── Projects (named root folders) ───────────────────────────────────────────
   const [projects, setProjects] = useState<GitProject[]>([]);
@@ -541,25 +546,24 @@ export default function GitWorkspace() {
         projects={projects}
         activeId={activeProjectId}
         configured={projectsConfigured}
-        base={safeBase}
         manageOpen={manageOpen}
         onSelect={(id) => setActiveProjectId(id)}
         onToggleManage={() => setManageOpen((o) => !o)}
-        onChanged={(nextProjects, preferId) => {
-          setProjects(nextProjects);
-          setProjectsConfigured(nextProjects.length > 0);
-          if (nextProjects.length === 0) {
-            // Fell back to auto-default — reload to pick it up.
-            loadProjects();
-          } else {
-            setActiveProjectId((cur) =>
-              preferId && nextProjects.some((p) => p.id === preferId)
-                ? preferId
-                : nextProjects.some((p) => p.id === cur)
-                  ? cur
-                  : nextProjects[0].id,
-            );
-          }
+        onChanged={(next, preferId) => {
+          // Server trả kèm `configured` nên áp thẳng, KHÔNG GET lại: danh sách
+          // rỗng có thể là "chưa cấu hình" hoặc "vừa xoá hết" — chỉ server phân
+          // biệt được (xem listProjects trong lib/gitProjects) — mà thêm một
+          // vòng GET nữa thì chỉ cần nó lỗi vặt là cả tab Git chuyển sang màn
+          // "Git tool đang tắt".
+          setProjects(next.projects);
+          setProjectsConfigured(next.configured);
+          if (next.base) setSafeBase(next.base);
+          setActiveProjectId((cur) => {
+            const candidates = [preferId, cur].filter(Boolean) as string[];
+            return candidates.find((id) => next.projects.some((p) => p.id === id))
+              ?? next.projects[0]?.id
+              ?? '';
+          });
         }}
       />
 
@@ -822,7 +826,7 @@ export default function GitWorkspace() {
         </div>
       ) : (
       /* ── Changes + diff ─────────────────────────────────────────────────── */
-      <div className="layout">
+      <div className="layout" ref={listSplit.ref} style={listSplit.style}>
         {/* Left: file groups */}
         <div className="panel">
           <div className="status-line">
@@ -954,6 +958,7 @@ export default function GitWorkspace() {
             </div>
           )}
         </div>
+        <Splitter {...listSplit.grip} />
       </div>
       )}
         </>
@@ -1937,11 +1942,10 @@ interface ProjectTabsProps {
   projects: GitProject[];
   activeId: string;
   configured: boolean;
-  base: string;
   manageOpen: boolean;
   onSelect: (id: string) => void;
   onToggleManage: () => void;
-  onChanged: (projects: GitProject[], preferId?: string) => void;
+  onChanged: (state: GitProjectsState, preferId?: string) => void;
 }
 
 /** Horizontal project tab-bar + inline add/edit/remove manager. Each tab is a
@@ -1951,7 +1955,6 @@ function ProjectTabs({
   projects,
   activeId,
   configured,
-  base,
   manageOpen,
   onSelect,
   onToggleManage,
@@ -1981,7 +1984,8 @@ function ProjectTabs({
       } else {
         const next = await mutateGitProject('POST', { name: name.trim(), root: root.trim() });
         // Prefer the newly added project (its root is unique → find by root).
-        const added = next.find((p) => p.root === root.trim()) ?? next.find((p) => !projects.some((q) => q.id === p.id));
+        const added = next.projects.find((p) => p.root === root.trim())
+          ?? next.projects.find((p) => !projects.some((q) => q.id === p.id));
         onChanged(next, added?.id);
       }
       resetForm();
@@ -1993,8 +1997,12 @@ function ProjectTabs({
   }, [editingId, name, root, projects, onChanged]);
 
   const remove = useCallback(
-    async (id: string) => {
-      if (!window.confirm('Xóa project này khỏi danh sách? (không xóa thư mục trên đĩa)')) return;
+    async (id: string, isAuto = false) => {
+      const msg = isAuto
+        ? 'Bỏ thư mục tự nhận diện khỏi tab Git?\n\nTab Git sẽ trống cho tới khi bạn thêm project. '
+          + 'Không xóa gì trên đĩa.'
+        : 'Xóa project này khỏi danh sách? (không xóa thư mục trên đĩa)';
+      if (!window.confirm(msg)) return;
       setBusy(true);
       setErr(null);
       try {
@@ -2048,27 +2056,47 @@ function ProjectTabs({
           {!configured && (
             <div className="small" style={{ color: 'var(--muted)', marginBottom: 8 }}>
               Chưa cấu hình project nào — đang dùng thư mục tự nhận diện. Thêm một project để cố định
-              danh sách repo cho máy này (lưu ở <code className="small">.gitprojects.json</code>, đã gitignore).
+              danh sách repo cho máy này (lưu ở <code className="small">configs/gitprojects.json</code>, đã gitignore).
             </div>
           )}
 
-          {configured && projects.length > 0 && (
+          {projects.length === 0 && (
+            <div className="small" style={{ color: 'var(--muted)', marginBottom: 8 }}>
+              Danh sách project đang trống — tab Git chưa trỏ vào thư mục nào. Thêm một project bên dưới.
+            </div>
+          )}
+
+          {/* Hiện cả khi `!configured`: lúc đó danh sách chỉ có thư mục TỰ NHẬN
+              DIỆN, và nó cũng phải bỏ được — nếu không, người dùng xoá project
+              cuối cùng xong sẽ thấy nó "mọc lại" mà không còn nút nào để bỏ. */}
+          {projects.length > 0 && (
             <div className="proj-list">
               {projects.map((p) => (
                 <div key={p.id} className={`proj-list-row ${p.id === editingId ? 'editing' : ''}`}>
                   <code className="proj-list-name">{p.name}</code>
+                  {!configured && <span className="proj-tab-badge" title="Thư mục app tự nhận diện, chưa phải project bạn thêm">auto</span>}
                   <code className="small proj-list-root" title={p.root}>{p.root}</code>
-                  <button className="ghost sm" onClick={() => startEdit(p)} disabled={busy}>Sửa</button>
-                  <button className="ghost sm" onClick={() => remove(p.id)} disabled={busy}>Xóa</button>
+                  {configured && <button className="ghost sm" onClick={() => startEdit(p)} disabled={busy}>Sửa</button>}
+                  <button
+                    className="ghost sm"
+                    onClick={() => remove(p.id, !configured)}
+                    disabled={busy}
+                    title={configured
+                      ? 'Bỏ project khỏi danh sách của app (không đụng thư mục trên đĩa)'
+                      : 'Bỏ thư mục tự nhận diện — tab Git sẽ trống cho tới khi bạn thêm project'}
+                  >{configured ? 'Xóa' : 'Bỏ'}</button>
                 </div>
               ))}
             </div>
           )}
 
           <div className="proj-form" style={{ marginTop: configured ? 10 : 0 }}>
+            {/* KHÔNG nhắc `base` ở đây nữa: nó chỉ là thư mục MỞ SẴN của hộp
+                chọn, không phải giới hạn. validateRoot chấp nhận mọi thư mục có
+                thật trên máy (xem lib/gitProjects) — câu "phải nằm trong…" cũ
+                làm người dùng tưởng không thêm được project ở ổ/nhánh khác. */}
             <div className="small" style={{ color: 'var(--muted)', marginBottom: 6 }}>
-              {editingId ? 'Sửa project' : 'Thêm project'} — thư mục gốc phải nằm trong{' '}
-              <code className="small">{base || '(base an toàn)'}</code>
+              {editingId ? 'Sửa project' : 'Thêm project'} — thư mục gốc là thư mục <b>chứa các repo git</b>.
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <input
