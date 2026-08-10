@@ -60,6 +60,23 @@ type Status = 'loading' | 'ready' | 'failed';
 type LogKind = 'info' | 'recv' | 'send' | 'err';
 interface LogLine { at: number; kind: LogKind; text: string }
 
+/** Lý do một rule KHÔNG khớp, dịch sang câu người đọc hành động được. */
+function skipReason(s?: string): string {
+  switch (s) {
+    case 'config-disabled': return 'Automation đang tắt (công tắc tổng)';
+    case 'rule-disabled': return 'quy tắc đang tắt';
+    case 'trigger': return 'khác nhóm/loại sự kiện (không phải social message.received)';
+    case 'scope': return 'ngoài phạm vi — sai tài khoản/nguồn, hoặc scope "Hội thoại" không khớp TÊN';
+    case 'window': return 'ngoài khung giờ hoạt động';
+    case 'no-match': return 'điều kiện không thoả (xem lại "Nội dung chứa …")';
+    case 'dedupe': return 'trùng nội dung gần đây (dedupe)';
+    case 'cooldown': return 'đang trong thời gian nghỉ (cooldown)';
+    case 'rate-limit': return 'vượt trần số lần/giờ';
+    case 'echo': return 'bị coi là tin của chính automation (loopGuard)';
+    default: return s || 'không rõ';
+  }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  MỘT tài khoản — webview + kết nối + nhận + console. Mount-and-keep.
 // ════════════════════════════════════════════════════════════════════════════
@@ -238,6 +255,16 @@ function ZaloApiAccountView({
       const info = await zaloApiLogin({ accountKey, ...creds });
       setSession(info);
       log('info', `Đã kết nối · uid ${info.uid}`);
+      // NHẢ webview Zalo: Zalo chỉ cho 1 kết nối/tài khoản. Nếu webview vẫn giữ
+      // Zalo Web mở thì nó + listener server tranh nhau → Zalo đá qua lại (cmd
+      // 3000 "trùng kết nối"), tin không về ổn định. Điều hướng webview sang
+      // trang trống để listener server độc chiếm. Bấm "Tải lại" để về Zalo khi
+      // cần quét QR / chat tay.
+      try {
+        ref.current?.loadURL('about:blank');
+        setStatus('loading');
+        log('info', 'Đã nhả webview Zalo (about:blank) — listener server độc chiếm kết nối. Bấm ⟳ để mở lại Zalo.');
+      } catch { /* webview chưa gắn — bỏ qua */ }
     } catch (e) {
       setSession(null);
       log('err', 'Kết nối lỗi: ' + (e as Error).message);
@@ -296,10 +323,23 @@ function ZaloApiAccountView({
         for (const m of r.messages) {
           const who = m.fromName || m.fromId || 'ẩn danh';
           log('recv', `${who}${m.group ? ' (nhóm)' : ''}${m.threadId ? ` [${m.threadId}]` : ''}: ${m.text}`);
-          if (captureRef.current) {
-            const ev = zaloIncomingEvent(m, account.instanceId, account.label);
-            if (ev) void automation.submit(ev);
+          if (!captureRef.current) {
+            log('info', '↳ capture TẮT → không đưa vào Automation (bật Capture ở tab Automation)');
+            continue;
           }
+          const ev = zaloIncomingEvent(m, account.instanceId, account.label);
+          if (!ev) { log('info', '↳ tin rỗng, bỏ qua'); continue; }
+          // Nhật ký ENGINE: event vào rồi TỪNG rule quyết gì (match / skip vì
+          // lý do gì). Đây là chỗ thấy thẳng "vì sao rule không match".
+          void automation.submit(ev).then((res) => {
+            if (!res) { log('info', '↳ engine bỏ (trùng id hoặc echo loopGuard)'); return; }
+            log('info', `↳ vào Automation: conversation="${ev.fields.conversation}" sender="${ev.fields.sender}" threadId=${ev.fields.threadId || '—'}`);
+            if (!res.decisions.length) { log('info', '↳ chưa có quy tắc social nào'); return; }
+            for (const d of res.decisions) {
+              if (d.matched) log('info', `↳ ✓ khớp: "${d.ruleName}"`);
+              else log('info', `↳ ✗ "${d.ruleName}" — ${skipReason(d.skipped)}`);
+            }
+          }).catch(() => { /* submit không bao giờ ném, nhưng phòng xa */ });
         }
         // Đếm chưa đọc: cộng khi KHÔNG đang nhìn tài khoản này (đang xem coi như
         // đã đọc). Bỏ tin của chính mình (fromId == uid).
@@ -374,7 +414,11 @@ function ZaloApiAccountView({
         >
           Console{logs.length ? ` (${logs.length})` : ''}
         </button>
-        <button onClick={() => ref.current?.reload()} className="za-btn" title="Tải lại trang Zalo">⟳</button>
+        <button
+          onClick={() => { try { ref.current?.loadURL(ZALO_URL); setStatus('loading'); } catch { /* chưa gắn */ } }}
+          className="za-btn"
+          title="Mở lại trang Zalo (để quét QR / chat tay). Lưu ý: mở Zalo sẽ tranh kết nối với listener."
+        >⟳ Mở Zalo</button>
       </div>
 
       <div className="za-stage">
@@ -511,6 +555,17 @@ export default function ZaloApiWorkspace({
   }
 
   return (
+    <div className="za-multiwrap">
+      {/* Băng-rôn KHÔNG THỂ BỎ QUA khi nhánh chưa bật — nguyên nhân "kết nối rồi
+          chẳng có gì": route /api/zaloapi trả 403 trước mọi thao tác, listener
+          không bao giờ chạy. Thông báo/badge vẫn có vì đó là hook trong guest. */}
+      {flags && !flags.enabled && (
+        <div className="za-offbanner">
+          ⚠ Nhánh Zalo API đang <b>TẮT</b> — nên nhận tin / gửi / automation đều KHÔNG chạy (chỉ có thông báo hệ thống).
+          Thêm <code>ZALOAPI_TOOL_ENABLED=true</code> (và <code>ZALOAPI_ALLOW_SEND=true</code> nếu muốn gửi) vào
+          <code> .env.local</code> rồi <b>đóng hẳn app và mở lại</b>.
+        </div>
+      )}
     <div className="za-multishell">
       {/* Rail tài khoản */}
       <aside className="za-rail">
@@ -579,6 +634,7 @@ export default function ZaloApiWorkspace({
           ))
         )}
       </div>
+    </div>
     </div>
   );
 }

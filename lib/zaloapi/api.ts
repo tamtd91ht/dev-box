@@ -93,6 +93,36 @@ export interface ZaloListenerState {
   queued?: number;
 }
 
+/** Một hội thoại trong danh bạ đích (id thật + tên + nhóm). */
+export interface ZaloContact {
+  accountKey: string;
+  threadId: string;
+  name: string;
+  group: boolean;
+  lastSeen: number;
+  manual?: boolean;
+}
+
+/** Danh bạ đích của một tài khoản (tự học từ tin đến + thêm tay). */
+export function zaloApiContacts(accountKey: string): Promise<ZaloContact[]> {
+  return call<ZaloContact[]>('contacts', { accountKey });
+}
+
+/** Thêm/sửa một contact thủ công. Trả danh bạ mới của tài khoản. */
+export function zaloApiContactAdd(p: {
+  accountKey: string;
+  threadId: string;
+  name?: string;
+  group?: boolean;
+}): Promise<ZaloContact[]> {
+  return call<ZaloContact[]>('contactAdd', p);
+}
+
+/** Xoá một contact. Trả danh bạ mới của tài khoản. */
+export function zaloApiContactRemove(accountKey: string, threadId: string): Promise<ZaloContact[]> {
+  return call<ZaloContact[]>('contactRemove', { accountKey, threadId });
+}
+
 /** Bật listener NHẬN tin server-side (cần đã login). Idempotent. */
 export function zaloApiListen(accountKey: string): Promise<ZaloListenerState> {
   return call<ZaloListenerState>('listen', { accountKey });

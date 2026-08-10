@@ -30,6 +30,7 @@ import { accountKey, loadAccounts } from '@/lib/workspace/accounts';
 import type { TargetGroup } from '@/lib/workspace/targets';
 import { messagingPlugins } from '@/lib/workspace/plugins';
 import { loadZaloApiAccounts, zaloApiAccountKey } from '@/lib/zaloapi/accounts';
+import { zaloApiContacts } from '@/lib/zaloapi/api';
 import { Field, Num, Section, Toggle } from './parts';
 import ActionCard, { defaultAction } from './ActionCard';
 
@@ -156,18 +157,36 @@ function ConversationScope({
 
   useEffect(() => {
     let alive = true;
-    void fetch('/api/ws-targets')
-      .then((r) => r.json())
-      .then((d: { groups?: TargetGroup[] }) => {
-        if (!alive) return;
-        const seen = new Map<string, 'group' | 'user'>();
-        for (const g of d.groups ?? []) {
-          if (accountKeys.length && !accountKeys.includes(g.accountKey)) continue;
-          for (const t of g.targets) if (!seen.has(t.name)) seen.set(t.name, t.kind);
-        }
-        setKnown([...seen.entries()].map(([name, kind]) => ({ name, kind })));
-      })
-      .catch(() => undefined);
+    const seen = new Map<string, 'group' | 'user'>();
+
+    // Danh bạ Workspace (bám tên) + danh bạ Zalo API (tự học từ tin đến).
+    const jobs: Promise<unknown>[] = [
+      fetch('/api/ws-targets')
+        .then((r) => r.json())
+        .then((d: { groups?: TargetGroup[] }) => {
+          for (const g of d.groups ?? []) {
+            if (accountKeys.length && !accountKeys.includes(g.accountKey)) continue;
+            for (const t of g.targets) if (!seen.has(t.name)) seen.set(t.name, t.kind);
+          }
+        })
+        .catch(() => undefined),
+    ];
+
+    // Nếu scope trống hoặc có tài khoản zaloapi::* → nạp danh bạ Zalo API. Tên
+    // phải KHỚP cách zaloIncomingEvent đặt fields.conversation (tên người gửi /
+    // tên hội thoại), nếu không rule scope theo tên sẽ không bao giờ match.
+    const zaKeys = accountKeys.length ? accountKeys.filter((k) => k.startsWith('zaloapi::')) : ['zaloapi::main'];
+    for (const key of zaKeys) {
+      jobs.push(
+        zaloApiContacts(key)
+          .then((cs) => { for (const c of cs) if (!seen.has(c.name)) seen.set(c.name, c.group ? 'group' : 'user'); })
+          .catch(() => undefined),
+      );
+    }
+
+    void Promise.all(jobs).then(() => {
+      if (alive) setKnown([...seen.entries()].map(([name, kind]) => ({ name, kind })));
+    });
     return () => {
       alive = false;
     };

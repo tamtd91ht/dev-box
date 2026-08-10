@@ -46,6 +46,28 @@ export function decodeAES(secretKey: string, data: string, retry = 0): string | 
 }
 
 /**
+ * Giải mã RESPONSE LOGIN — khoá là encryptKey (chuỗi UTF-8), KHÁC decodeAES
+ * (khoá base64). Port `decodeRespAES` của zca-js.
+ *
+ * Vì sao có hai hàm giải mã: response LOGIN mã hoá bằng encryptKey UTF-8 (do
+ * ParamsEncryptor sinh), còn response sau-login (message) mã hoá bằng secretKey
+ * base64. Dùng nhầm hàm → "giải mã response thất bại" dù request đã đúng.
+ */
+export function decodeRespAES(key: string, data: string): string | null {
+  try {
+    const raw = decodeURIComponent(data);
+    const parsedKey = CryptoJS.enc.Utf8.parse(key);
+    return CryptoJS.AES.decrypt(
+      { ciphertext: CryptoJS.enc.Base64.parse(raw) } as CryptoJS.lib.CipherParams,
+      parsedKey,
+      { iv: ZERO_IV, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 },
+    ).toString(CryptoJS.enc.Utf8);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Chữ ký request: MD5("zsecure" + type + <các value đã sắp xếp theo key>).
  * Port nguyên từ getSignKey của zca-js.
  */
@@ -90,7 +112,7 @@ export class ParamsEncryptor {
   private createZcid(type: number, imei: string, firstLaunchTime: number): void {
     if (!type || !imei || !firstLaunchTime) throw new Error('createZcid: thiếu tham số');
     const msg = `${type},${imei},${firstLaunchTime}`;
-    this.zcid = ParamsEncryptor.encodeAESHex('3FC4F0D2AB50057BCE0D90D9187A22B1', msg, true);
+    this.zcid = ParamsEncryptor.encodeAES('3FC4F0D2AB50057BCE0D90D9187A22B1', msg, 'hex', true);
   }
 
   private createEncryptKey(depth = 0): boolean {
@@ -113,19 +135,27 @@ export class ParamsEncryptor {
     return true;
   }
 
-  /** AES-CBC hex (khoá là chuỗi UTF-8) — dành cho zcid. */
-  private static encodeAESHex(key: string, message: string, upper: boolean, retry = 0): string | null {
+  /**
+   * AES-CBC với khoá là chuỗi UTF-8 (KHÁC encodeAES tự do ở dưới — cái kia parse
+   * khoá base64). Port `ParamsEncryptor.encodeAES` của zca-js. Ra hex hoặc base64.
+   *
+   * PHẢI dùng đúng cái này cho payload login: zcid dùng hex+uppercase, còn dữ
+   * liệu login dùng base64+thường. Trước đây login lỡ dùng `encodeAES` (khoá
+   * base64) → mã hoá rác → Zalo trả 18060 "Invalid encryption protocol".
+   */
+  static encodeAES(key: string, message: string, type: 'hex' | 'base64', upper: boolean, retry = 0): string | null {
     if (!message) return null;
     try {
       const k = CryptoJS.enc.Utf8.parse(key);
+      const encoder = type === 'hex' ? CryptoJS.enc.Hex : CryptoJS.enc.Base64;
       const enc = CryptoJS.AES.encrypt(message, k, {
         iv: ZERO_IV,
         mode: CryptoJS.mode.CBC,
         padding: CryptoJS.pad.Pkcs7,
-      }).ciphertext.toString(CryptoJS.enc.Hex);
+      }).ciphertext.toString(encoder);
       return upper ? enc.toUpperCase() : enc;
     } catch {
-      return retry < 3 ? ParamsEncryptor.encodeAESHex(key, message, upper, retry + 1) : null;
+      return retry < 3 ? ParamsEncryptor.encodeAES(key, message, type, upper, retry + 1) : null;
     }
   }
 

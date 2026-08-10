@@ -240,6 +240,15 @@ class AutomationRuntime {
 
       const result = evaluate(this.config, event, this.state);
       if (event.category === 'social') void this.logIncoming(event, false, result.decisions);
+      // Nhật ký engine cho event Zalo API — in ra console (terminal) mỗi quyết
+      // định của từng rule, để chẩn đoán "vì sao không match" ngoài tab Zalo API.
+      if (event.sourceId === 'zaloapi') {
+        const summary = result.decisions
+          .map((d) => `${d.matched ? '✓' : '✗'}${d.ruleName}${d.skipped ? `(${d.skipped})` : ''}`)
+          .join(', ') || '(chưa có rule social)';
+        // eslint-disable-next-line no-console
+        console.log(`ZALOAPI_AUTOMATION conv="${event.fields?.conversation ?? ''}" text="${String(event.text).slice(0, 40)}" → ${summary}`);
+      }
       const outcomes = await this.execute(result);
       this.record({ event: this.forStorage(event), decisions: result.decisions, outcomes });
       return result;

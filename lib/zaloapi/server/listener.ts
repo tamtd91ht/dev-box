@@ -15,7 +15,8 @@
 
 import WebSocket from 'ws';
 import { decodeEventData } from './crypto';
-import type { ZaloContext } from './client';
+import { trace } from './trace';
+import { API_TYPE, API_VERSION, type ZaloContext } from './client';
 
 /** Một tin nhận được, đã chuẩn hoá tối thiểu cho tầng trên. */
 export interface IncomingMessage {
@@ -164,20 +165,35 @@ export class ZaloListener {
     const base = this.ctx.wsUrls[0];
     if (!base) {
       this.onState('error', 'không có zpw_ws — bản build này không lộ URL WebSocket');
+      trace('connect', 'KHÔNG có zpw_ws — không nối được', { wsUrls: this.ctx.wsUrls });
       return;
     }
-    const url = base + (base.includes('?') ? '&' : '?') + 't=' + Date.now();
-    this.onState('connecting', `đang nối ${new URL(base).host}`);
+    // URL WebSocket PHẢI kèm zpw_ver + zpw_type (như makeURL apiVersion=true của
+    // zca-js) + t. Thiếu version params là Zalo từ chối handshake → 1002.
+    const u = new URL(base);
+    u.searchParams.set('t', String(Date.now()));
+    if (!u.searchParams.has('zpw_ver')) u.searchParams.set('zpw_ver', String(API_VERSION));
+    if (!u.searchParams.has('zpw_type')) u.searchParams.set('zpw_type', String(API_TYPE));
+    const url = u.toString();
+    this.onState('connecting', `đang nối ${u.host}`);
+    trace('connect', `đang nối ${u.host}`, { base });
 
     let ws: WebSocket;
     try {
+      // Bộ header KHỚP zca-js — thiếu/khác là Zalo đá handshake (1002). Đặc biệt
+      // `sec-websocket-extensions` (permessage-deflate) + connection/upgrade.
       ws = new WebSocket(url, {
         headers: {
-          'accept-encoding': 'gzip, deflate, br',
-          'accept-language': 'vi-VN,vi;q=0.9',
+          'accept-encoding': 'gzip, deflate, br, zstd',
+          'accept-language': 'en-US,en;q=0.9',
           'cache-control': 'no-cache',
-          host: new URL(url).host,
+          connection: 'Upgrade',
+          host: u.host,
           origin: 'https://chat.zalo.me',
+          pragma: 'no-cache',
+          'sec-websocket-extensions': 'permessage-deflate; client_max_window_bits',
+          'sec-websocket-version': '13',
+          upgrade: 'websocket',
           'user-agent': this.ctx.userAgent,
           cookie: this.ctx.cookie,
         },
@@ -194,6 +210,7 @@ export class ZaloListener {
       this.attempt = 0;
       this.awaitingPong = false;
       this.onState('open', 'đã mở, chờ cipher key');
+      trace('open', 'socket đã mở, chờ cipher key');
     });
 
     ws.on('message', (data: WebSocket.RawData) => {
@@ -205,8 +222,9 @@ export class ZaloListener {
     ws.on('pong', () => { this.awaitingPong = false; });
     ws.on('ping', () => { this.awaitingPong = false; });
 
-    ws.on('close', () => {
+    ws.on('close', (code: number, reason: Buffer) => {
       this.clearTimers();
+      trace('close', `socket đóng code=${code}`, { reason: reason?.toString?.().slice(0, 120), stats: this.stats });
       if (!this.stopped) {
         this.onState('closed', 'rớt kết nối, sẽ nối lại');
         this.scheduleReconnect();
@@ -215,6 +233,7 @@ export class ZaloListener {
 
     ws.on('error', (err: Error) => {
       this.onState('error', 'lỗi socket: ' + err.message);
+      trace('error', 'lỗi socket: ' + err.message);
       // 'close' sẽ theo sau và lo việc nối lại.
     });
   }
@@ -303,7 +322,14 @@ export class ZaloListener {
     try {
       parsed = JSON.parse(new TextDecoder('utf-8').decode(buf.subarray(4)));
     } catch {
-      return; // khung không phải JSON — bỏ
+      // Khung không phải JSON — ghi lại cmd để biết Zalo gửi dạng gì.
+      if (this.stats.frames <= 12) trace('frame', `khung #${this.stats.frames} KHÔNG-JSON`, { version, cmd, subCmd, bytes: buf.length });
+      return;
+    }
+    // Ghi 12 khung đầu (kèm cmd + các khoá top-level) để biết Zalo dùng cmd nào
+    // cho tin — nếu không phải 501/521 thì đây là chỗ lộ ra.
+    if (this.stats.frames <= 12) {
+      trace('frame', `khung #${this.stats.frames}`, { version, cmd, subCmd, keys: Object.keys(parsed).slice(0, 8), encrypt: parsed['encrypt'] });
     }
 
     // Handshake: nhận cipherKey (KHÁC secretKey) để giải mã tin.
@@ -312,6 +338,14 @@ export class ZaloListener {
       this.stats.hasCipher = true;
       this.startPing();
       this.onState('ready', 'đã nhận cipher key — đang nghe tin');
+      trace('handshake', 'nhận cipher key — bắt đầu nghe tin');
+      return;
+    }
+
+    // cmd 3000 = "trùng kết nối" — Zalo báo có client khác cùng tài khoản (webview
+    // Zalo còn mở). Ghi để xác nhận đã hết sau khi webview nhả về about:blank.
+    if (cmd === 3000) {
+      trace('dup', 'Zalo báo TRÙNG KẾT NỐI (cmd 3000) — còn client khác mở cùng tài khoản (webview Zalo?)');
       return;
     }
 
@@ -326,9 +360,16 @@ export class ZaloListener {
         if (msg) {
           this.stats.extracted += 1;
           this.onMessage(msg);
+          trace('msg', `RÚT được tin cmd=${cmd}`, { group, threadId: msg.threadId, from: msg.fromName || msg.fromId, text: msg.text.slice(0, 40) });
+        } else {
+          // Giải mã được nhưng KHÔNG rút ra tin → schema khác. Ghi hình dạng
+          // payload (khoá top-level) để sửa extractMessage cho đúng.
+          const shape = decoded && typeof decoded === 'object' ? Object.keys(decoded as object).slice(0, 10) : typeof decoded;
+          trace('msg', `giải mã OK nhưng KHÔNG rút được tin cmd=${cmd}`, { group, shape });
         }
-      } catch {
+      } catch (e) {
         this.stats.decodeErr += 1;
+        trace('msg', `LỖI giải mã cmd=${cmd}`, { hasCipher: this.stats.hasCipher, err: (e as Error).message });
         /* một khung giải mã lỗi không được làm chết listener */
       }
     }

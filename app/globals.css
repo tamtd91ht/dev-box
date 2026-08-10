@@ -6174,7 +6174,14 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 
 /* ── Zalo API — nhiều tài khoản: rail + khung tài khoản đang chọn ── */
-.za-multishell { display: flex; height: 100%; min-height: 0; }
+.za-multiwrap { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.za-offbanner {
+  flex: 0 0 auto; padding: 10px 14px; font-size: 12.5px; line-height: 1.5;
+  color: var(--warn); background: var(--warn-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+}
+.za-offbanner code { font-family: var(--mono); font-size: 11px; }
+.za-multishell { display: flex; flex: 1 1 auto; min-height: 0; }
 .za-rail {
   flex: 0 0 190px; display: flex; flex-direction: column; min-height: 0;
   border-right: 1px solid var(--glass-brd); background: var(--glass);

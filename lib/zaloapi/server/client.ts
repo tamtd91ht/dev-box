@@ -11,11 +11,12 @@
 // memory). KHÔNG generateZaloUUID lại: phần UUID ngẫu nhiên sẽ khác, cookie gắn
 // với imei gốc bị từ chối.
 
-import { encodeAES, decodeAES, getSignKey, ParamsEncryptor } from './crypto';
+import { encodeAES, decodeAES, decodeRespAES, getSignKey, ParamsEncryptor } from './crypto';
+import { trace } from './trace';
 
 /** Hằng số API — port từ ctx mặc định của zca-js. Đổi khi Zalo nâng version. */
-const API_TYPE = 30;
-const API_VERSION = 671;
+export const API_TYPE = 30;
+export const API_VERSION = 671;
 const LOGIN_URL = 'https://wpa.chat.zalo.me/api/login/getLoginInfo';
 const SERVERINFO_URL = 'https://wpa.chat.zalo.me/api/login/getServerInfo';
 
@@ -125,20 +126,24 @@ function getEncryptParam(ctx: ZaloCreds, type: string) {
 
   const encryptor = new ParamsEncryptor({ type: API_TYPE, imei: ctx.imei, firstLaunchTime });
   const stddata = JSON.stringify(data);
-  const encryptedData = encodeAES(encryptor.getEncryptKey(), stddata);
+  // PHẢI mã hoá bằng encryptKey (khoá UTF-8) ra BASE64 — port đúng
+  // ParamsEncryptor.encodeAES của zca-js. Trước đây lỡ dùng encodeAES (parse
+  // khoá base64) nên payload rác → Zalo trả 18060 "Invalid encryption protocol".
+  const encryptedData = ParamsEncryptor.encodeAES(encryptor.getEncryptKey(), stddata, 'base64', false);
   const encParams = encryptor.getParams(); // {zcid, zcid_ext, enc_ver}
 
+  // Top-level params: CHỈ encrypted_params (spread) + params + type +
+  // client_version + signkey. KHÔNG thêm computer_name/imei ở top-level — chúng
+  // nằm trong encrypted_data rồi; thêm dư làm signkey tính sai object → 18060.
   const params: Record<string, unknown> = {};
   if (encryptedData && encParams) {
-    params.params = encryptedData;
     params.zcid = encParams.zcid;
     params.zcid_ext = encParams.zcid_ext;
     params.enc_ver = encParams.enc_ver;
+    params.params = encryptedData;
   }
   params.type = API_TYPE;
   params.client_version = API_VERSION;
-  params.computer_name = 'Web';
-  params.imei = ctx.imei;
 
   params.signkey =
     type === 'getserverinfo'
@@ -153,9 +158,28 @@ function getEncryptParam(ctx: ZaloCreds, type: string) {
   return { params, enk: encryptor.getEncryptKey() };
 }
 
-/** decryptResp — giải mã data.data của response login bằng encryptKey. */
+/**
+ * decryptResp — giải mã data.data của response LOGIN bằng encryptKey (UTF-8).
+ * PHẢI dùng decodeRespAES (khoá UTF-8), KHÔNG phải decodeAES (khoá base64) —
+ * dùng nhầm là "giải mã response thất bại" dù request đã đúng.
+ */
 function decryptResp(enk: string, data: string): unknown {
-  const dec = decodeAES(enk, data);
+  const dec = decodeRespAES(enk, data);
+  if (!dec) return null;
+  try {
+    return JSON.parse(dec);
+  } catch {
+    return dec;
+  }
+}
+
+/**
+ * Giải mã response SAU-LOGIN (message send/receive) bằng secretKey (base64) —
+ * KHÁC decryptResp (login, khoá UTF-8). Hai response mã hoá bằng hai khoá khác
+ * kiểu, dùng nhầm là ra rỗng.
+ */
+function decryptRespSecret(secretKey: string, data: string): unknown {
+  const dec = decodeAES(secretKey, data);
   if (!dec) return null;
   try {
     return JSON.parse(dec);
@@ -173,6 +197,21 @@ function decryptResp(enk: string, data: string): unknown {
 export async function login(creds: ZaloCreds): Promise<ZaloContext> {
   // Kiểu có language BẮT BUỘC ngay từ đây → phía dưới khỏi ?? 'vi' lặp lại.
   const ctx: ZaloCreds & { language: string } = { ...creds, language: creds.language ?? 'vi' };
+
+  // CHẨN ĐOÁN credential (đã che) TRƯỚC khi gửi — 102 thường do imei không khớp
+  // cookie. Đọc trace là biết imei có rỗng/lệch không mà không cần gửi thêm lần
+  // nào. Cookie hết hạn cũng ra 102 → nhìn cookie có zpsid/zpw_sek không.
+  const cookieNames = ctx.cookie.split(';').map((c) => c.split('=')[0].trim()).filter(Boolean);
+  const mask = (v: string) => (!v ? '(RỖNG)' : v.length <= 8 ? v[0] + '…' : v.slice(0, 6) + '…' + v.slice(-3));
+  trace('login', 'gửi credential', {
+    imei: mask(ctx.imei),
+    imeiLen: ctx.imei.length,
+    ua: ctx.userAgent.slice(0, 40),
+    cookieNames,
+    hasZpsid: cookieNames.includes('zpsid'),
+    hasZpwSek: cookieNames.includes('zpw_sek'),
+  });
+
   const ep = getEncryptParam(ctx, 'getlogininfo');
   const url = makeURL(LOGIN_URL, { ...(ep.params as Record<string, string | number>), nretry: 0 });
 
@@ -182,10 +221,27 @@ export async function login(creds: ZaloCreds): Promise<ZaloContext> {
   }
   if (!raw.data) throw new Error('login: response không có data (cookie/imei/UA có thể sai)');
 
-  const info = decryptResp(ep.enk, raw.data) as Record<string, unknown> | null;
-  if (!info || typeof info === 'string') throw new Error('login: giải mã response thất bại');
+  const decoded = decryptResp(ep.enk, raw.data) as Record<string, unknown> | null;
+  if (!decoded || typeof decoded === 'string') throw new Error('login: giải mã response thất bại');
 
+  // Response login hay bọc một lớp: { error_code, data: { zpw_enk, ... } }. Bóc
+  // lớp `data` nếu có; nếu không thì dùng thẳng object top-level.
+  const inner = (decoded['data'] && typeof decoded['data'] === 'object')
+    ? (decoded['data'] as Record<string, unknown>)
+    : decoded;
+  const info = inner;
+
+  // CHẨN ĐOÁN: nếu vẫn thiếu zpw_enk, ghi ra TÊN các key thật (không lộ giá trị)
+  // ở cả lớp ngoài lẫn lớp trong — để biết đúng tên/vị trí thay vì đoán.
   const secretKey = String(info['zpw_enk'] ?? '');
+  if (!secretKey) {
+    trace('login', 'response thiếu zpw_enk — dump keys', {
+      outerKeys: Object.keys(decoded).slice(0, 20),
+      innerKeys: info !== decoded ? Object.keys(info).slice(0, 30) : '(không có lớp data)',
+      error_code: decoded['error_code'],
+      error_message: decoded['error_message'],
+    });
+  }
   const uid = String(info['send2me_id'] ?? info['uid'] ?? info['userId'] ?? '');
   const serviceMap = (info['zpw_service_map_v3'] ?? {}) as Record<string, string[]>;
   // zpw_ws: danh sách URL WebSocket nhận tin. Có thể vắng ở vài bản build — khi
@@ -213,12 +269,30 @@ export async function login(creds: ZaloCreds): Promise<ZaloContext> {
   return base;
 }
 
-/** Lấy thông tin server (settings/extra_ver) — tùy chọn, listener cần. */
+/**
+ * Lấy thông tin server (settings/ping_interval) — listener cần.
+ *
+ * Port đúng zca-js: getserverinfo CHỈ gửi {imei, type, client_version,
+ * computer_name, signkey} với apiVersion=false (KHÔNG đính zpw_ver/zpw_type,
+ * KHÔNG gửi blob mã hoá). signkey vẫn tính qua getEncryptParam để đúng công thức.
+ */
 export async function getServerInfo(ctx: ZaloContext): Promise<unknown> {
   const ep = getEncryptParam(ctx, 'getserverinfo');
-  const url = makeURL(SERVERINFO_URL, { ...(ep.params as Record<string, string | number>), nretry: 0 });
+  const url = makeURL(
+    SERVERINFO_URL,
+    {
+      imei: ctx.imei,
+      type: API_TYPE,
+      client_version: API_VERSION,
+      computer_name: 'Web',
+      signkey: String(ep.params.signkey ?? ''),
+    },
+    false,
+  );
   const raw = await fetchZalo(url, { method: 'GET', headers: headers(ctx) }, 'getServerInfo');
-  return raw.data ? decryptResp(ep.enk, raw.data) : null;
+  // getserverinfo trả data KHÔNG mã hoá (không có enk cho nó) — parse thẳng.
+  if (!raw.data) return null;
+  try { return JSON.parse(raw.data); } catch { return raw.data; }
 }
 
 export interface SendResult {
@@ -280,7 +354,7 @@ export async function sendMessage(
   if (raw.error_code && raw.error_code !== 0) {
     return { ok: false, detail: `Zalo trả lỗi ${raw.error_code}: ${raw.error_message ?? ''}`, raw };
   }
-  const decoded = raw.data ? decryptResp(ctx.secretKey, raw.data) : null;
+  const decoded = raw.data ? decryptRespSecret(ctx.secretKey, raw.data) : null;
   const msgId =
     decoded && typeof decoded === 'object'
       ? String((decoded as Record<string, unknown>)['msgId'] ?? (decoded as Record<string, unknown>)['msgID'] ?? '')

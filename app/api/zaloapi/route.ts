@@ -33,6 +33,8 @@ import {
   listSessions,
 } from '@/lib/zaloapi/server/session';
 import { startListener, pollMessages, listenerState, stopListener } from '@/lib/zaloapi/server/listenerHub';
+import { contactsFor, upsertContact, removeContact } from '@/lib/zaloapi/server/contacts';
+import { trace } from '@/lib/zaloapi/server/trace';
 
 export const runtime = 'nodejs';
 
@@ -81,6 +83,7 @@ export async function POST(req: NextRequest) {
           language: typeof body.language === 'string' ? body.language : undefined,
         };
         const ctx = await login(creds);
+        trace('login', `login OK ${accountKey}`, { uid: ctx.uid, wsUrls: ctx.wsUrls.length, hasChat: !!ctx.serviceMap?.chat?.length, ping: ctx.pingIntervalMs });
         // Cất cả creds: nhờ đó listener + send tự login lại được khi phiên hỏng,
         // không bắt người dùng bấm Kết nối lại mỗi lần cookie bị Zalo xoay.
         putSession(accountKey, ctx, creds);
@@ -145,13 +148,19 @@ export async function POST(req: NextRequest) {
           );
         }
         const r = startListener(accountKey, ctx);
+        trace('listen', `bật listener ${accountKey}`, { ok: r.ok, detail: r.detail, wsUrls: ctx.wsUrls.length, hasChat: !!ctx.serviceMap?.chat?.length });
         return NextResponse.json({ ok: r.ok, result: { ...listenerState(accountKey), detail: r.detail } });
       }
 
       // Hút tin listener đã nhận từ lần poll trước + trạng thái kết nối.
       case 'poll': {
         const accountKey = need(body.accountKey, 'accountKey');
-        return NextResponse.json({ ok: true, result: pollMessages(accountKey) });
+        const res = pollMessages(accountKey);
+        // Chỉ trace khi CÓ gì đáng chú ý (tin, hoặc đổi trạng thái) để khỏi spam.
+        if (res.messages.length || res.state !== 'ready') {
+          trace('poll', `state=${res.state} msgs=${res.messages.length}`, { detail: res.detail, stats: res.stats });
+        }
+        return NextResponse.json({ ok: true, result: res });
       }
 
       case 'logout': {
@@ -163,10 +172,36 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, result: { dropped, stoppedListener } });
       }
 
+      // ── Danh bạ đích (tự học từ tin đến + thêm tay) ──────────────────────
+      case 'contacts': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        return NextResponse.json({ ok: true, result: await contactsFor(accountKey) });
+      }
+
+      case 'contactAdd': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        const threadId = need(body.threadId, 'threadId');
+        const store = await upsertContact({
+          accountKey,
+          threadId,
+          name: typeof body.name === 'string' ? body.name : '',
+          group: !!body.group,
+        });
+        return NextResponse.json({ ok: true, result: store.contacts.filter((c) => c.accountKey === accountKey) });
+      }
+
+      case 'contactRemove': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        const threadId = need(body.threadId, 'threadId');
+        const store = await removeContact(accountKey, threadId);
+        return NextResponse.json({ ok: true, result: store.contacts.filter((c) => c.accountKey === accountKey) });
+      }
+
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
     }
   } catch (err) {
+    trace('error', `op '${action}' lỗi`, { msg: (err as Error).message });
     return NextResponse.json(
       { ok: false, error: (err as Error).message || 'Zalo API thất bại' },
       { status: 400 },

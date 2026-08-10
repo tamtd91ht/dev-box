@@ -894,17 +894,21 @@ ipcMain.handle('zaloapi:readCookies', async (_evt, partition, names) => {
   }
   try {
     const ses = session.fromPartition(partition);
-    // Lay tat ca cookie cua domain zalo.me (bao gom subdomain chat/wpa).
-    const all = await ses.cookies.get({ domain: 'zalo.me' });
+    // LAY MOI COOKIE cua session roi loc theo domain zalo — KHONG dung
+    // `.get({domain:'zalo.me'})` vi Electron loc theo domain do BO SOT cookie
+    // gan o subdomain nhu `.chat.zalo.me` (dac biet `zpw_sek` — cookie ky phien
+    // HttpOnly). Thieu `zpw_sek` la Zalo tra 102 "session key improperly
+    // submitted" — dung loi da gap. Lay het roi loc ten cho chac.
+    const raw = await ses.cookies.get({});
+    const all = raw.filter((c) => /(^|\.)zalo\.me$/i.test(c.domain || ''));
     const wanted = Array.isArray(names) && names.length ? names : ['zpsid', 'zpw_sek', 'zpw_enk', 'app.event.zalo.me', 'zoaw_sek'];
     const out = {};
     for (const c of all) {
       if (wanted.includes(c.name)) out[c.name] = c.value;
     }
-    // `header`: TOAN BO cookie ghep lai nhu trinh duyet gui di. Buoc dang nhap
-    // server-side can nguyen chuoi nay — loc theo ten se thieu nhung cookie phu
-    // ma Zalo van kiem tra, va thieu mot cai la bi tu choi ca luot.
-    // Trung ten (khac domain/path) thi giu cai DAU tien, dung thu tu Electron tra.
+    // `header`: TOAN BO cookie zalo ghep lai nhu trinh duyet gui di. Buoc dang
+    // nhap server-side can nguyen chuoi nay — thieu mot cai la bi tu choi ca luot.
+    // Trung ten (khac domain/path) thi giu cai DAU tien.
     const seenNames = new Set();
     const parts = [];
     for (const c of all) {
@@ -913,8 +917,8 @@ ipcMain.handle('zaloapi:readCookies', async (_evt, partition, names) => {
       parts.push(`${c.name}=${c.value}`);
     }
     const header = parts.join('; ');
-    log('ZaloApiCookies', `${partition} · ${all.length} cookie · lay ${Object.keys(out).length}/${wanted.length}`);
-    return { ok: true, cookies: out, header, seen: all.map((c) => c.name) };
+    log('ZaloApiCookies', `${partition} · ${all.length}/${raw.length} cookie zalo · zpw_sek=${!!out['zpw_sek']}`);
+    return { ok: true, cookies: out, header, seen: all.map((c) => `${c.name}@${c.domain}`) };
   } catch (err) {
     log('ZaloApiCookiesError', `${partition} · ${err && err.message}`);
     return { ok: false, error: err && err.message };

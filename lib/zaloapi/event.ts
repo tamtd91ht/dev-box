@@ -58,7 +58,12 @@ export function zaloIncomingEvent(
   if (!text) return null;
   const ts = Number.isFinite(m.at) ? m.at : Date.now();
   const sender = m.fromName || m.fromId || '';
-  const conversation = m.threadId || sender;
+  // `conversation` phải là TÊN (không phải threadId), để scope "Hội thoại" theo
+  // tên khớp được — giống nguồn DOM. threadId thật giữ riêng ở fields.threadId.
+  // 1-1: tên người gửi. Nhóm: listener chưa có tên nhóm → tạm dùng name nếu có,
+  // không thì threadId (người dùng đặt tên qua danh bạ). Tránh để trống kẻo scope
+  // "mọi hội thoại" vẫn ok nhưng scope theo tên thì không có gì để khớp.
+  const conversation = sender || m.threadId || '';
   return {
     id: `zaloapi:${instanceId}:${ts}:${hash(m.threadId + '|' + m.fromId + '|' + text)}`,
     ts,

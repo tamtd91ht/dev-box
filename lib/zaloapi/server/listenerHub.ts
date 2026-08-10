@@ -11,6 +11,7 @@
 import { ZaloListener, type IncomingMessage, type ListenerState } from './listener';
 import type { ZaloContext } from './client';
 import { getFreshContext } from './session';
+import { learnContact } from './contacts';
 
 interface Hub {
   listener: ZaloListener;
@@ -41,6 +42,16 @@ export function startListener(accountKey: string, ctx: ZaloContext): { ok: boole
     (msg) => {
       hub.queue.push(msg);
       if (hub.queue.length > MAX_QUEUE) hub.queue.splice(0, hub.queue.length - MAX_QUEUE);
+      // TỰ HỌC danh bạ: hội thoại vừa nhắn tới → có mặt trong danh bạ (id thật +
+      // tên + nhóm), để rule chỉ việc chọn thay vì gõ threadId. Ghi đĩa best-effort.
+      if (msg.threadId) {
+        void learnContact({
+          accountKey,
+          threadId: msg.threadId,
+          name: msg.group ? msg.threadId : (msg.fromName || msg.fromId || msg.threadId),
+          group: msg.group,
+        }).catch(() => { /* học danh bạ không được làm hỏng nhận tin */ });
+      }
     },
     (state, detail) => {
       hub.state = state;

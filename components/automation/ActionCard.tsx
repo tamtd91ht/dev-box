@@ -7,12 +7,13 @@
 // knows nothing about which actions a group allows — it renders the `allowed`
 // list it is handed (see catalog.ts).
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listConnections, connLabel, type ConnOption } from '@/lib/automation/connections';
 import type { TargetGroup } from '@/lib/workspace/targets';
 import { sendToTargetGroup, type WsSendOutcome } from '@/lib/automation/wsSend';
 import { sendViaZaloApi, type ZaloApiSendOutcome } from '@/lib/automation/zaloApiSend';
 import { loadZaloApiAccounts, zaloApiAccountKey } from '@/lib/zaloapi/accounts';
+import { zaloApiContacts, zaloApiContactAdd, type ZaloContact } from '@/lib/zaloapi/api';
 import { useAutomation } from '@/lib/automation/useAutomation';
 import { requireGuest } from '@/lib/workspace/guests';
 import type { ActionType, AutomationAction, HttpMethod } from '@/lib/automation/types';
@@ -648,6 +649,43 @@ function ZaloApiSendFields({
   // Danh sách tài khoản Zalo API để chọn (multi-account).
   const zaAccounts = useMemo(() => loadZaloApiAccounts(), []);
 
+  // Danh bạ đích của tài khoản đang chọn (tự học từ tin đến + thêm tay). Rule
+  // chỉ CHỌN từ đây — thấy tên, không phải gõ threadId. Nạp lại khi đổi tài khoản.
+  const [contacts, setContacts] = useState<ZaloContact[]>([]);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [manualId, setManualId] = useState('');
+  const [manualName, setManualName] = useState('');
+  const [manualGroup, setManualGroup] = useState(false);
+
+  const reloadContacts = useCallback(() => {
+    if (!action.accountKey) { setContacts([]); return; }
+    void zaloApiContacts(action.accountKey).then(setContacts).catch(() => setContacts([]));
+  }, [action.accountKey]);
+  useEffect(reloadContacts, [reloadContacts]);
+
+  // Giá trị dropdown: '' = gửi cho chính mình; '__tpl' = dùng threadId template
+  // (nâng cao); còn lại là threadId của một contact.
+  const isTemplate = !!action.threadId && action.threadId.includes('{{');
+  const selectValue = isTemplate ? '__tpl' : (action.threadId ?? '');
+
+  const pickContact = (val: string) => {
+    if (val === '__tpl') { setShowAdvanced(true); return; }
+    if (!val) { onChange({ ...action, threadId: '', group: false, threadLabel: '' }); return; }
+    const c = contacts.find((x) => x.threadId === val);
+    onChange({ ...action, threadId: val, group: !!c?.group, threadLabel: c?.name ?? val });
+  };
+
+  const addManual = async () => {
+    const id = manualId.trim();
+    if (!id || !action.accountKey) return;
+    try {
+      const list = await zaloApiContactAdd({ accountKey: action.accountKey, threadId: id, name: manualName.trim(), group: manualGroup });
+      setContacts(list);
+      onChange({ ...action, threadId: id, group: manualGroup, threadLabel: manualName.trim() || id });
+      setManualId(''); setManualName(''); setManualGroup(false);
+    } catch { /* giữ nguyên form để thử lại */ }
+  };
+
   const runTest = async () => {
     setTesting(true);
     setTest(null);
@@ -662,8 +700,8 @@ function ZaloApiSendFields({
   return (
     <div className="auto-grid">
       <div className="auto-warn-inline auto-wide">
-        🟦 Gửi qua API nội bộ của Zalo Web, theo <b>threadId thật</b> (không phải tên). Vi phạm điều
-        khoản Zalo và dễ bị đánh dấu hơn đường DOM — chỉ dùng tài khoản phù hợp. Trần cứng: 5s/tin, 20 tin/giờ.
+        🟦 Gửi qua API nội bộ của Zalo Web, theo <b>threadId thật</b>. Chọn hội thoại từ danh bạ — nó tự
+        ghi lại khi có người nhắn tới. Vi phạm điều khoản Zalo, chỉ dùng tài khoản phù hợp. Trần: 5s/tin, 20 tin/giờ.
       </div>
 
       <Field label="Tài khoản Zalo API" hint="chọn tài khoản đã thêm trong tab Zalo API">
@@ -680,30 +718,42 @@ function ZaloApiSendFields({
         </select>
       </Field>
 
-      <Field label="threadId đích" hint="id hội thoại thật — để TRỐNG = gửi cho chính mình (an toàn khi thử)">
-        <input
-          value={action.threadId ?? ''}
-          placeholder="(trống = chính mình) · hỗ trợ {{fields.threadId}}"
-          onChange={(e) => onChange({ ...action, threadId: e.target.value })}
-        />
+      <Field label="Gửi tới" hint="danh bạ tự ghi khi có người nhắn tới — hoặc thêm tay ở dưới">
+        <select value={selectValue} onChange={(e) => pickContact(e.target.value)}>
+          <option value="">— Gửi cho chính mình —</option>
+          {contacts.map((c) => (
+            <option key={c.threadId} value={c.threadId}>
+              {c.group ? '👥 ' : '👤 '}{c.name}{c.manual ? '' : ''}
+            </option>
+          ))}
+          <option value="__tpl">{isTemplate ? `⚙ threadId động: ${action.threadId}` : '⚙ Dùng threadId động / nâng cao…'}</option>
+        </select>
       </Field>
 
-      <Field label="Nhãn (chỉ để dễ nhìn)">
-        <input
-          value={action.threadLabel ?? ''}
-          placeholder="vd: Nhóm CSKH"
-          onChange={(e) => onChange({ ...action, threadLabel: e.target.value })}
-        />
-      </Field>
-
-      <div className="auto-wide">
-        <Toggle
-          checked={!!action.group}
-          onChange={(v) => onChange({ ...action, group: v })}
-          label="Hội thoại nhóm"
-          hint="bật nếu threadId là nhóm — endpoint khác với chat cá nhân"
-        />
+      <div className="auto-wide" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button type="button" className="ghost sm" onClick={reloadContacts} title="Nạp lại danh bạ">↻ Làm mới</button>
+        <button type="button" className="ghost sm" onClick={() => setShowAdvanced((v) => !v)}>
+          {showAdvanced ? 'Ẩn thêm thủ công' : '＋ Thêm hội thoại thủ công'}
+        </button>
+        <span className="auto-hint" style={{ margin: 0 }}>{contacts.length} hội thoại trong danh bạ</span>
       </div>
+
+      {showAdvanced && (
+        <div className="auto-wide" style={{ display: 'grid', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <input style={{ flex: '2 1 160px' }} placeholder="threadId thật (hoặc {{fields.threadId}})" value={manualId} onChange={(e) => setManualId(e.target.value)} />
+            <input style={{ flex: '1 1 120px' }} placeholder="tên để dễ nhìn" value={manualName} onChange={(e) => setManualName(e.target.value)} />
+            <label className="auto-hint" style={{ display: 'flex', alignItems: 'center', gap: 4, margin: 0 }}>
+              <input type="checkbox" checked={manualGroup} onChange={(e) => setManualGroup(e.target.checked)} /> nhóm
+            </label>
+            <button type="button" className="ghost sm" onClick={() => void addManual()} disabled={!manualId.trim() || !action.accountKey}>Lưu vào danh bạ</button>
+          </div>
+          <p className="auto-hint" style={{ margin: 0 }}>
+            Dùng khi hội thoại chưa ai nhắn tới, hoặc muốn trả lời động: điền
+            <code> {'{{fields.threadId}}'} </code> vào ô trên rồi Lưu — rule sẽ trả về đúng hội thoại vừa đến.
+          </p>
+        </div>
+      )}
 
       <Field label="Nội dung" wide hint="hỗ trợ {{title}}, {{text}}, {{fields.sender}}…">
         <textarea

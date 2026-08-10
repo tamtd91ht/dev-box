@@ -36,7 +36,14 @@ export function buildExtractScript(): string {
     }
     function findInBlob(re){ try { var m = blob.match(re); if(m && m[1]) return m[1]; } catch(_){} return ''; }
 
-    var imei = findByKeys(ls, ['imei','deviceid','device_id']) || findInBlob(/"(?:imei|deviceId|device_id)"\\s*:\\s*"([^"]+)"/i);
+    // imei của Zalo Web (zca-js sinh) có DẠNG rất riêng: uuid + '-' + md5hex, ví
+    // dụ "550e8400-e29b-41d4-a716-446655440000-5d41402abc4b2a76b9719d911017c592"
+    // (8-4-4-4-12 rồi -32 hex). Ưu tiên KHỚP DẠNG này trong toàn bộ storage —
+    // chắc hơn dò theo tên khoá (tên đổi theo bản build). Sai imei là lỗi 102.
+    var imeiShape = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9a-f]{32})/i;
+    var imei = findInBlob(imeiShape)
+      || findByKeys(ls, ['imei','deviceid','device_id'])
+      || findInBlob(/"(?:imei|deviceId|device_id)"\\s*:\\s*"([^"]+)"/i);
     var uid = findInBlob(/"(?:uid|userId|ownerId|send2me_id)"\\s*:\\s*"?(\\d{6,})"?/i);
 
     // ── IndexedDB: Zalo Web mới lưu credential ở đây ─────────────────────────
@@ -53,6 +60,7 @@ export function buildExtractScript(): string {
               try { rows = await new Promise(function(res,rej){ var tx=db.transaction(stores[s],'readonly'); var rq=tx.objectStore(stores[s]).getAll(); rq.onsuccess=function(){res(rq.result||[]);}; rq.onerror=function(){rej(rq.error);}; }); } catch(_){ continue; }
               for(var r2=0; r2<rows.length; r2++){
                 var txt=''; try { txt = JSON.stringify(rows[r2]); } catch(_){ continue; }
+                if(!imei){ var ms = txt.match(imeiShape); if(ms) imei=ms[1]; }
                 if(!imei){ var mi = txt.match(/"(?:imei|deviceId|device_id)"\\s*:\\s*"([^"]+)"/i); if(mi) imei=mi[1]; }
                 if(!uid){ var mu = txt.match(/"(?:uid|userId|ownerId|send2me_id)"\\s*:\\s*"?(\\d{6,})"?/i); if(mu) uid=mu[1]; }
               }
