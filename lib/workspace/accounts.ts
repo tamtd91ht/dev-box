@@ -26,6 +26,16 @@ export interface WorkspaceAccount {
    * Vắng mặt = false, nên tài khoản cũ đã lưu từ trước vẫn báo bình thường.
    */
   muted?: boolean;
+  /**
+   * Ảnh đại diện thật của tài khoản, dạng data URL, đọc được từ trong guest
+   * (xem lib/workspace/avatar.ts). Lưu xuống localStorage để mở app lên là rail
+   * có mặt ngay, không phải đợi guest đăng nhập xong mới hiện.
+   *
+   * Vắng mặt = chưa đọc được (chưa đăng nhập, app không khai `avatar`, hoặc ảnh
+   * khác gốc không cho canvas đọc) → rail lui về BrandMark. Ảnh 44px PNG nên cỡ
+   * vài KB, không đụng hạn mức localStorage.
+   */
+  avatar?: string;
 }
 
 const storeKey = (pluginId: string) => `ws:accounts:${pluginId}`;
@@ -44,13 +54,20 @@ export function defaultAccount(plugin: WorkspacePlugin): WorkspaceAccount {
   return { pluginId: plugin.id, instanceId: 'main', label: plugin.name };
 }
 
-/** Load the persisted account list (single-account plugins always return one). */
+/**
+ * Load the persisted account list (single-account plugins always return one).
+ *
+ * Danh sách RỖNG đã lưu là một lựa chọn có thật: người dùng vừa gỡ hết tài khoản
+ * của app đó. Phải trả về rỗng chứ không gieo lại — nếu không, gỡ xong mở lại là
+ * nó mọc về, coi như nút gỡ không có tác dụng. Chỉ khi CHƯA có gì trong
+ * localStorage (lần đầu) mới gieo một tài khoản mặc định.
+ */
 export function loadAccounts(plugin: WorkspacePlugin): WorkspaceAccount[] {
   if (!plugin.multiAccount || typeof window === 'undefined') return [defaultAccount(plugin)];
   try {
     const raw = localStorage.getItem(storeKey(plugin.id));
     const arr = raw ? (JSON.parse(raw) as WorkspaceAccount[]) : null;
-    if (Array.isArray(arr) && arr.length) return arr;
+    if (Array.isArray(arr)) return arr;
   } catch {
     /* fall through to seed */
   }
@@ -68,9 +85,18 @@ export function saveAccounts(pluginId: string, list: WorkspaceAccount[]): void {
   }
 }
 
-/** A fresh account for a multiAccount plugin, numbered for a default label. */
-export function newAccount(plugin: WorkspacePlugin, ordinal: number): WorkspaceAccount {
-  return { pluginId: plugin.id, instanceId: uid(), label: `${plugin.name} ${ordinal}` };
+/**
+ * A fresh account for a multiAccount plugin, numbered for a default label.
+ *
+ * Số thứ tự lấy theo chỗ TRỐNG đầu tiên, không lấy theo độ dài danh sách: gỡ
+ * "Zalo 1" rồi thêm lại mà đánh số theo length thì ra "Zalo 2" trùng ngay với
+ * cái đang có.
+ */
+export function newAccount(plugin: WorkspacePlugin, existing: WorkspaceAccount[] = []): WorkspaceAccount {
+  const taken = new Set(existing.map((a) => a.label));
+  let n = 1;
+  while (taken.has(`${plugin.name} ${n}`)) n += 1;
+  return { pluginId: plugin.id, instanceId: uid(), label: `${plugin.name} ${n}` };
 }
 
 /**

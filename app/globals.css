@@ -3207,6 +3207,31 @@ pre.kafka-drawer-body {
 }
 .ws-acct-add:hover { border-color: var(--glass-brd-hover); color: var(--text); background: var(--glass); }
 
+/* ── Ảnh đại diện thật của tài khoản ───────────────────────────────────────
+   Hai dòng Zalo cạnh nhau chỉ khác nhau ở đây, nên ảnh chiếm chỗ chính còn
+   huy hiệu app nép xuống góc dưới-phải (vẫn phải biết dòng này thuộc app nào).
+   Viền theo màu app để cụm nhìn vẫn liền một khối với nhóm của nó. */
+.ws-acct-ava {
+  position: relative; flex: 0 0 auto; width: 22px; height: 22px; line-height: 0;
+}
+.ws-acct-ava img {
+  width: 22px; height: 22px; border-radius: 50%; object-fit: cover; display: block;
+  background: var(--glass); box-shadow: 0 0 0 1.5px var(--brand, var(--accent));
+}
+/* Huy hiệu app ở góc: viền cùng màu nền rail để nó "đè" lên ảnh cho rõ mép. */
+.ws-acct-ava .ws-acct-ava-mark {
+  position: absolute; right: -3px; bottom: -3px;
+  border-radius: 4px; box-shadow: 0 0 0 1.5px var(--bg-1);
+}
+/* Tài khoản chưa mở (guest chưa dựng) thì làm nhạt, khớp với BrandMark faded. */
+.ws-acct-ava.is-faded { opacity: .55; }
+
+/* Cụm "Đã gỡ" — đường về cho app vừa bị gỡ hết tài khoản. Để nhạt và tách khỏi
+   các app đang dùng: nó là chỗ khôi phục, không phải một app đang chạy. */
+.ws-group-restore { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--glass-brd); opacity: .8; }
+.ws-group-restore:hover { opacity: 1; }
+.ws-group-restore .ws-rail-name { font-size: 11.5px; font-weight: 600; letter-spacing: .02em; }
+
 /* ── App identity: every account carries its app's mark + hue ──────────────
    With Zalo and Telegram side by side, the label alone is not enough — each
    group owns a colour (--brand, set inline from the plugin) and a vector mark
@@ -3308,7 +3333,14 @@ pre.kafka-drawer-body {
   border-bottom: 1px solid color-mix(in srgb, var(--warn) 25%, transparent);
 }
 /* Shared Office empty state — hero card + recent files (Sheet + Word) */
-.office-hero-panel { padding: 26px 26px 18px; }
+/* Panel chào phải TỰ CUỘN. Danh sách "Mở gần đây" dài ra theo số file đã mở,
+   panel thì `margin:auto` nên vượt chiều cao khung là bị cắt cụt ở cả hai đầu —
+   không thấy nút, không cuộn tới được. max-height + overflow-y giữ nó luôn nằm
+   trong khung; `100%` ăn theo pane (đã min-height:0) nên không cần đo tay. */
+.office-hero-panel {
+  padding: 26px 26px 18px;
+  max-height: 100%; overflow-y: auto; overflow-x: hidden;
+}
 .office-hero {
   display: flex; flex-direction: column; align-items: center; gap: 10px;
   text-align: center; padding: 14px 0 10px;
@@ -3370,7 +3402,9 @@ pre.kafka-drawer-body {
   border-radius: 8px; padding: 6px 10px; font-size: 12px;
 }
 
-.sheet-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--glass-brd); border-radius: 10px; }
+/* min-width:0 đi kèm min-height:0: thiếu nó thì flex item không được co dưới bề
+   ngang nội dung, nên bảng rộng đẩy cả pane ra thay vì tự cuộn trong khung. */
+.sheet-scroll { flex: 1; min-height: 0; min-width: 0; overflow: auto; border: 1px solid var(--glass-brd); border-radius: 10px; }
 .sheet-table { border-collapse: collapse; font-size: 12.5px; font-family: var(--mono); }
 /* KHÔNG dùng `width: max-content; min-width: 100%`: khi bảng hẹp hơn khung
    nhìn, min-width kéo giãn bảng và `table-layout: fixed` CHIA LẠI phần dư cho
@@ -3484,7 +3518,18 @@ pre.kafka-drawer-body {
 
 /* ── Office workspace shell (▦ Bảng tính · 🗎 Văn bản) ──────────────── */
 .office-layout { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
-.office-body { display: grid; flex: 1; min-height: 0; }
+/* Mọi pane tài liệu chồng lên nhau trong MỘT ô lưới.
+   `grid-template-columns: minmax(0, 1fr)` là bắt buộc, không phải trang trí: cột
+   ngầm mặc định co giãn theo `max-content`, nên chỉ cần MỘT pane có nội dung
+   rộng (lưới bảng tính đã mở) là cả track phình quá bề ngang cửa sổ. Lúc đó
+   pane rỗng ("Excel / CSV Editor") lấy `margin:auto` căn giữa cái track phình
+   ấy → panel bị đẩy lệch hẳn sang phải, kèm một thanh cuộn ngang cho cả tab.
+   min-width/min-height 0 để pane con được phép co lại thay vì đẩy lưới ra. */
+.office-body {
+  display: grid; grid-template-columns: minmax(0, 1fr);
+  flex: 1; min-height: 0; min-width: 0; overflow: hidden;
+}
+.office-body > * { min-width: 0; }
 
 /* Tràn viền (⤢): cả tab Office phủ kín cửa sổ — ẩn khung ngoài của app (thanh
    menu, rail, chân trang), GIỮ nguyên dãy tab tài liệu + mọi thanh công cụ của
@@ -3600,7 +3645,8 @@ pre.kafka-drawer-body {
 .word-body { display: flex; gap: 8px; flex: 1; min-height: 0; margin-top: 8px; }
 .word-body > .word-scroll { flex: 1; min-width: 0; }
 
-.word-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--glass-brd); border-radius: 10px; }
+/* min-width:0 — cùng lý do như .sheet-scroll ở trên. */
+.word-scroll { flex: 1; min-height: 0; min-width: 0; overflow: auto; border: 1px solid var(--glass-brd); border-radius: 10px; }
 .word-doc {
   margin: 14px auto; padding: 28px 34px;
   background: color-mix(in srgb, var(--bg-1) 70%, transparent);
@@ -6076,3 +6122,126 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   border: 1px solid var(--glass-brd); border-radius: 4px;
   box-shadow: 0 1px 0 var(--glass-brd);
 }
+
+/* ── Zalo API — nhiều tài khoản: rail + khung tài khoản đang chọn ── */
+.za-multishell { display: flex; height: 100%; min-height: 0; }
+.za-rail {
+  flex: 0 0 190px; display: flex; flex-direction: column; min-height: 0;
+  border-right: 1px solid var(--glass-brd); background: var(--glass);
+}
+.za-rail-head { padding: 10px 12px; font-size: 12px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--glass-brd); }
+.za-rail-list { flex: 1 1 auto; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 3px; }
+.za-rail-item {
+  display: flex; align-items: center; gap: 4px; padding: 7px 9px; border-radius: 8px;
+  cursor: pointer; font-size: 12.5px; color: var(--muted); border: 1px solid transparent;
+}
+.za-rail-item:hover { background: var(--glass-2); }
+.za-rail-item.is-active { background: var(--glass-2); border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--text); }
+.za-rail-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.za-rail-unread {
+  flex: 0 0 auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  display: inline-grid; place-items: center; font-size: 10px; font-weight: 700;
+  color: #fff; background: var(--err, #e5484d);
+}
+.za-rail-btn {
+  flex: 0 0 auto; width: 20px; height: 20px; line-height: 1; display: grid; place-items: center;
+  background: transparent; border: 0; color: var(--faint); border-radius: 5px; cursor: pointer; font-size: 12px; opacity: 0;
+}
+.za-rail-item:hover .za-rail-btn { opacity: 1; }
+.za-rail-btn:hover { background: var(--glass-brd); color: var(--text); }
+.za-rail-btn.danger:hover { color: var(--err); }
+.za-rail-input { margin: 0 6px; padding: 6px 8px; font-size: 12.5px; border-radius: 8px; background: var(--glass-2); border: 1px solid var(--glass-brd-hover); color: var(--text); }
+.za-rail-add {
+  margin: 4px 2px 0; padding: 7px 9px; font-size: 12px; text-align: left;
+  background: transparent; border: 1px dashed var(--glass-brd); color: var(--muted); border-radius: 8px; cursor: pointer;
+}
+.za-rail-add:hover { border-color: var(--glass-brd-hover); color: var(--text); }
+.za-multistage { position: relative; flex: 1 1 auto; min-width: 0; }
+.za-view { display: flex; flex-direction: column; width: 100%; height: 100%; }
+
+/* ── Zalo API — trang Zalo Web full màn hình + thanh trạng thái + console ── */
+.za-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+
+/* thanh mỏng phía trên — thứ duy nhất DevBox thêm ngoài trang Zalo */
+.za-bar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; border-bottom: 1px solid var(--glass-brd);
+  background: var(--glass); font-size: 12px;
+}
+.za-bar-state { color: var(--text); }
+.za-bar-spacer { flex: 1 1 auto; }
+.za-bar-off { color: var(--muted); }
+.za-bar-off code { font-family: var(--mono); font-size: 11px; }
+.za-bar code { font-family: var(--mono); font-size: 11px; }
+
+.za-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.za-dot--off { background: var(--faint); }
+.za-dot--warn { background: var(--warn); }
+.za-dot--bad { background: var(--err); }
+.za-dot--ok { background: var(--ok); box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 70%, transparent); }
+
+.za-badge { font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--glass-2); color: var(--muted); border: 1px solid var(--glass-brd); }
+.za-badge--ok { background: var(--ok-bg); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.za-badge--warn { background: var(--warn-bg); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+
+.za-btn {
+  background: var(--glass-2); border: 1px solid var(--glass-brd); color: var(--muted);
+  border-radius: 8px; padding: 4px 11px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.za-btn:hover:not(:disabled) { border-color: var(--glass-brd-hover); color: var(--text); }
+.za-btn:disabled { opacity: 0.5; cursor: default; }
+.za-btn.is-on { border-color: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent); }
+.za-btn--go { background: var(--accent-solid); color: #fff; border-color: transparent; }
+.za-btn--go:hover:not(:disabled) { filter: brightness(1.08); color: #fff; }
+
+
+/* trang Zalo Web — chiếm hết phần còn lại */
+.za-stage { position: relative; flex: 1 1 auto; min-height: 0; }
+.za-webview { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+.za-overlay {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 10px; background: color-mix(in srgb, var(--bg-1) 80%, transparent);
+  color: var(--muted); font-size: 13px;
+}
+.za-overlay button {
+  background: var(--glass-2); border: 1px solid var(--glass-brd); color: var(--muted);
+  border-radius: 7px; padding: 4px 10px; cursor: pointer; font-size: 12px;
+}
+
+/* console — mở dưới hoặc phải (mặc định ẩn). Màn ngang thường hợp 'right' hơn. */
+.za-console {
+  position: absolute; display: flex; flex-direction: column;
+  background: color-mix(in srgb, var(--bg-1) 96%, transparent);
+}
+.za-console--bottom {
+  left: 0; right: 0; bottom: 0; height: 42%; min-height: 160px;
+  border-top: 1px solid var(--glass-brd-hover);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.28);
+}
+.za-console--right {
+  top: 0; right: 0; bottom: 0; width: 40%; min-width: 320px; max-width: 640px;
+  border-left: 1px solid var(--glass-brd-hover);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.28);
+}
+.za-console-head {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--muted);
+  border-bottom: 1px solid var(--glass-brd);
+}
+.za-console-btns { display: flex; gap: 4px; }
+.za-console-btns button {
+  background: var(--glass-2); border: 1px solid var(--glass-brd); color: var(--muted);
+  border-radius: 6px; padding: 2px 9px; cursor: pointer; font-size: 11px;
+}
+.za-console-btns button:hover { border-color: var(--glass-brd-hover); color: var(--text); }
+.za-console-body { flex: 1 1 auto; overflow-y: auto; padding: 6px 12px; font-family: var(--mono); font-size: 11.5px; }
+.za-console-empty { color: var(--faint); font-family: inherit; }
+.za-log { display: flex; gap: 8px; padding: 2px 0; line-height: 1.5; }
+.za-log-time { color: var(--faint); flex: 0 0 auto; }
+.za-log-tag { flex: 0 0 auto; width: 12px; text-align: center; }
+.za-log-text { color: var(--text); overflow-wrap: anywhere; }
+.za-log--recv .za-log-tag { color: var(--ok); }
+.za-log--send .za-log-tag { color: var(--accent); }
+.za-log--err .za-log-tag { color: var(--err); }
+.za-log--err .za-log-text { color: var(--err); }
+.za-log--info .za-log-tag { color: var(--muted); }

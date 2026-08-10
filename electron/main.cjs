@@ -17,7 +17,7 @@
 // It knows NOTHING about Zalo specifically — plugins are declared in the
 // renderer (lib/workspace/plugins.ts). Nothing here is hardcoded per website.
 
-const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard } = require('electron');
+const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard, net } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -109,6 +109,21 @@ function log(tag, msg) {
  * (persist:ws-google-viewer) — khong ap luat cua workspace vao chung.
  */
 const WORKSPACE_PARTITION = /^(persist:)?ws-(?!google-viewer\b)[a-z0-9-]+$/i;
+
+/**
+ * Tab "Zalo API" (thu nghiem) — partition rieng `persist:zaloapi-*`.
+ *
+ * Tach han khoi WORKSPACE_PARTITION vi day la nhanh THU NGHIEM: tai su dung API
+ * noi bo cua Zalo Web sau khi quet QR. Duoc cap cung quyen guest (permission +
+ * sendKey) nhu workspace, nhung nhan dien rieng de log/kiem toan khong lan voi
+ * luong DOM cu. Doc cookie HttpOnly cua phien nay la buoc rieng — xem handler
+ * `zaloapi:readCookies` ben duoi.
+ */
+const ZALOAPI_PARTITION = /^(persist:)?zaloapi-[a-z0-9-]+$/i;
+
+/** Guest partition duoc dieu khien tu ngoai (workspace cu HOAC nhanh Zalo API). */
+const CONTROLLABLE_PARTITION = (p) =>
+  typeof p === 'string' && (WORKSPACE_PARTITION.test(p) || ZALOAPI_PARTITION.test(p));
 
 /**
  * Cua so an tra cho `window.open()` cua guest song bao lau truoc khi bi huy.
@@ -798,6 +813,114 @@ ipcMain.handle('workspace:clearSession', async (_evt, partition) => {
   }
 });
 
+// Anh dai dien tai khoan: tai anh HO renderer, tra ve data URL.
+//
+// VI SAO PHAI O MAIN PROCESS: avatar duoc phuc vu tu CDN khac goc
+// (s160-26-ava-talk.zadn.vn, scontent.*, cdn5.telesco.pe) va KHONG kem header
+// CORS. Trong guest thi:
+//   - fetch()      -> ERR_FAILED, vi khong co Access-Control-Allow-Origin
+//   - canvas       -> toDataURL nem SecurityError, vi canvas bi "tainted"
+// Ca hai duong deu chet dung voi loai anh ta can. `net.request` cua Electron
+// chay o tang mang, KHONG co khai niem CORS — va di qua `session` cua partition
+// nen van gui dung cookie, tai duoc anh rieng tu.
+//
+// CHI cho partition workspace (`ws-*`) va chi tra ve anh: day la mot cai fetch
+// tuy y do renderer dieu khien, nen phai khoa lai bang partition + kiem
+// Content-Type + gioi han kich thuoc, khong bien no thanh proxy chung.
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024; // 2MB — avatar that chi vai chuc KB
+
+ipcMain.handle('workspace:fetchImage', async (_evt, partition, url) => {
+  if (typeof partition !== 'string' || !WORKSPACE_PARTITION.test(partition)) {
+    return { ok: false, error: 'partition khong hop le' };
+  }
+  let parsed;
+  try {
+    parsed = new URL(String(url || ''));
+  } catch {
+    return { ok: false, error: 'url khong hop le' };
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { ok: false, error: 'chi ho tro http(s)' };
+  }
+  try {
+    const ses = session.fromPartition(partition);
+    const res = await new Promise((resolve, reject) => {
+      const req = net.request({ url: parsed.toString(), session: ses, useSessionCookies: true });
+      req.on('response', (r) => {
+        const chunks = [];
+        let size = 0;
+        r.on('data', (c) => {
+          size += c.length;
+          if (size > AVATAR_MAX_BYTES) {
+            try { r.destroy(); } catch { /* da dong */ }
+            reject(new Error('anh qua lon'));
+            return;
+          }
+          chunks.push(c);
+        });
+        r.on('end', () =>
+          resolve({ status: r.statusCode, type: String(r.headers['content-type'] || ''), body: Buffer.concat(chunks) }),
+        );
+        r.on('error', reject);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    if (res.status < 200 || res.status >= 300) return { ok: false, error: `http ${res.status}` };
+    // Header co the la "image/jpeg; charset=..." — chi can tien to.
+    const mime = (Array.isArray(res.type) ? res.type[0] : res.type).split(';')[0].trim();
+    if (!/^image\//i.test(mime)) return { ok: false, error: `khong phai anh (${mime || 'trong'})` };
+    return { ok: true, dataUrl: `data:${mime};base64,${res.body.toString('base64')}` };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || 'that bai' };
+  }
+});
+
+// Zalo API (thu nghiem): doc cookie HttpOnly cua mot phien.
+//
+// VI SAO PHAI O MAIN PROCESS: zpsid / zpw_sek (va doi khi zpw_enk) la cookie
+// HttpOnly — `document.cookie` trong guest KHONG doc duoc chung, do dinh nghia.
+// Chi tang session cua Electron (`session.cookies.get`) moi thay. Day chinh la
+// manh ma script trich xuat o renderer bao "phai lay o tang Electron".
+//
+// CHI cho partition zaloapi-* (nhanh thu nghiem da opt-in), khong mo cho moi
+// partition — cookie phien la toan quyen tai khoan, khong phoi bua.
+//
+// Tra ve cac cookie theo TEN yeu cau (mask do ben renderer lo), kem danh sach
+// ten cookie thay duoc de chan doan khi thieu manh nao.
+ipcMain.handle('zaloapi:readCookies', async (_evt, partition, names) => {
+  if (!ZALOAPI_PARTITION.test(String(partition || ''))) {
+    return { ok: false, error: 'partition khong phai zaloapi-*' };
+  }
+  try {
+    const ses = session.fromPartition(partition);
+    // Lay tat ca cookie cua domain zalo.me (bao gom subdomain chat/wpa).
+    const all = await ses.cookies.get({ domain: 'zalo.me' });
+    const wanted = Array.isArray(names) && names.length ? names : ['zpsid', 'zpw_sek', 'zpw_enk', 'app.event.zalo.me', 'zoaw_sek'];
+    const out = {};
+    for (const c of all) {
+      if (wanted.includes(c.name)) out[c.name] = c.value;
+    }
+    // `header`: TOAN BO cookie ghep lai nhu trinh duyet gui di. Buoc dang nhap
+    // server-side can nguyen chuoi nay — loc theo ten se thieu nhung cookie phu
+    // ma Zalo van kiem tra, va thieu mot cai la bi tu choi ca luot.
+    // Trung ten (khac domain/path) thi giu cai DAU tien, dung thu tu Electron tra.
+    const seenNames = new Set();
+    const parts = [];
+    for (const c of all) {
+      if (seenNames.has(c.name)) continue;
+      seenNames.add(c.name);
+      parts.push(`${c.name}=${c.value}`);
+    }
+    const header = parts.join('; ');
+    log('ZaloApiCookies', `${partition} · ${all.length} cookie · lay ${Object.keys(out).length}/${wanted.length}`);
+    return { ok: true, cookies: out, header, seen: all.map((c) => c.name) };
+  } catch (err) {
+    log('ZaloApiCookiesError', `${partition} · ${err && err.message}`);
+    return { ok: false, error: err && err.message };
+  }
+});
+
 // Tra focus ve host page — workaround Electron bug: huy <webview> dang giu
 // focus xong host van tuong guest giu focus, moi input tren trang chet (nhin
 // nhu bi disable) cho toi khi user click ra ngoai cua so. UI goi sau khi dong
@@ -826,7 +949,7 @@ const SEND_KEYS = { Return: 'Enter', Enter: 'Enter' };
 ipcMain.handle('workspace:sendKey', (_evt, partition, keyCode) => {
   const code = SEND_KEYS[keyCode];
   if (!code) return { ok: false, error: 'key not allowed' };
-  if (typeof partition !== 'string' || !WORKSPACE_PARTITION.test(partition)) {
+  if (!CONTROLLABLE_PARTITION(partition)) {
     return { ok: false, error: 'bad partition' };
   }
   const guest = guestByPartition.get(partition);

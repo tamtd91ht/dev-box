@@ -29,6 +29,7 @@ import type {
 import { accountKey, loadAccounts } from '@/lib/workspace/accounts';
 import type { TargetGroup } from '@/lib/workspace/targets';
 import { messagingPlugins } from '@/lib/workspace/plugins';
+import { loadZaloApiAccounts, zaloApiAccountKey } from '@/lib/zaloapi/accounts';
 import { Field, Num, Section, Toggle } from './parts';
 import ActionCard, { defaultAction } from './ActionCard';
 
@@ -37,7 +38,14 @@ const DAYS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
 /** Source options for the scope picker, per feature group. */
 function useSourceOptions(category: EventCategory): { id: string; label: string }[] {
   return useMemo(() => {
-    if (category === 'social') return messagingPlugins().map((p) => ({ id: p.id, label: p.name }));
+    if (category === 'social') {
+      // Workspace (DOM) + nhánh Zalo API (sourceId 'zaloapi'). Zalo API không
+      // phải workspace plugin nên phải thêm tay ở đây.
+      return [
+        ...messagingPlugins().map((p) => ({ id: p.id, label: p.name })),
+        { id: 'zaloapi', label: '🟦 Zalo API' },
+      ];
+    }
     if (category === 'infra') return STACKS.map((s) => ({ id: s.id, label: `${s.icon} ${s.label}` }));
     return [];
   }, [category]);
@@ -73,12 +81,17 @@ function useInstanceOptions(category: EventCategory, sourceIds: string[]): { id:
     // Qualify with the plugin id: every plugin's first account is `main`, so a
     // bare instanceId collides across apps (duplicate React keys, and a scope
     // entry that can't tell Zalo's "main" from Telegram's).
-    return plugins.flatMap((p) =>
+    const workspace = plugins.flatMap((p) =>
       loadAccounts(p).map((a) => ({
         id: accountKey(p.id, a.instanceId),
         label: `${p.name} — ${a.label}`,
       })),
     );
+    // Tài khoản nhánh Zalo API (accountKey 'zaloapi::<id>').
+    const zaloApi = !sourceIds.length || sourceIds.includes('zaloapi')
+      ? loadZaloApiAccounts().map((a) => ({ id: zaloApiAccountKey(a.instanceId), label: `Zalo API — ${a.label}` }))
+      : [];
+    return [...workspace, ...zaloApi];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [category, infra, sourceIds.join(',')]);
 }

@@ -235,6 +235,38 @@ export interface WorkspaceSendAction {
 }
 
 /**
+ * Zalo API (THỬ NGHIỆM): gửi tin qua API nội bộ của Zalo Web thay vì gõ DOM.
+ *
+ * Khác `wsSend` ở MỘT điểm cốt lõi và đó là lý do nó tồn tại: đích được định
+ * bằng `threadId` THẬT (ổn định), không phải tên hiển thị. Luồng DOM buộc phải
+ * bám tên vì chat.zalo.me không lộ id ra trang; nhánh API đọc được id nên gửi
+ * chính xác kể cả khi hai hội thoại trùng tên.
+ *
+ * GÁC CHẶT HƠN cả `wsSend` — vì đây là nhánh dễ bị Zalo đánh dấu nhất:
+ *   • cần config.allowSend (chung công tắc với các action gửi khác);
+ *   • đi qua đúng sendGate (nghỉ giữa 2 tin + trần/giờ) theo accountKey;
+ *   • loopGuard ghi lại echo y như wsSend/telegram;
+ *   • dry-run dựng request rồi in ra, KHÔNG bắn đi.
+ * Chạy trong RENDERER (như wsSend) vì phải exec script trong guest webview.
+ */
+export interface ZaloApiSendAction {
+  type: 'zaloApiSend';
+  /** `zaloapi::<instanceId>` — tài khoản Zalo API nào gửi. */
+  accountKey: string;
+  /**
+   * threadId đích. Rỗng = gửi cho chính mình (self-chat) — an toàn nhất khi thử.
+   * Có thể là template ({{fields.threadId}}) để trả lời đúng hội thoại vừa đến.
+   */
+  threadId?: string;
+  /** Hội thoại nhóm hay cá nhân (hai endpoint khác nhau). Empty → cá nhân. */
+  group?: boolean;
+  /** Nhãn hội thoại, chỉ để hiển thị trong trình soạn rule. */
+  threadLabel?: string;
+  /** Nội dung, có template. */
+  text: string;
+}
+
+/**
  * Send a reply back into a social workspace. GUARDED: requires
  * config.allowSend AND, by default, per-send approval. Automated sending on a
  * personal account is what gets accounts flagged — the engine treats this as a
@@ -252,6 +284,7 @@ export type AutomationAction =
   | WebhookAction
   | TelegramAction
   | WorkspaceSendAction
+  | ZaloApiSendAction
   | LogAction
   | KafkaAction
   | ReplyAction;

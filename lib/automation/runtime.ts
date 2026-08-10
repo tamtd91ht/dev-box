@@ -19,6 +19,7 @@
 
 import { produceKafkaMessage } from '@/lib/kafka';
 import { sendToTargetGroup } from './wsSend';
+import { sendViaZaloApi } from './zaloApiSend';
 import { hasMark, stripMark } from './mark';
 import { createEngineState, evaluate, isDuplicateEvent, type EngineState } from './engine';
 import { normalizeConfig } from './normalize';
@@ -320,7 +321,7 @@ class AutomationRuntime {
     // `wsSend` is also let through: ITS dry-run walks the whole path (open the
     // conversation, type the message) and then clears the box without sending,
     // which is the only way to find out that a selector broke BEFORE 3am.
-    if (plan.dryRun && action.type !== 'notify' && action.type !== 'wsSend') {
+    if (plan.dryRun && action.type !== 'notify' && action.type !== 'wsSend' && action.type !== 'zaloApiSend') {
       return { ...base, status: 'dry-run' };
     }
 
@@ -384,6 +385,34 @@ class AutomationRuntime {
             status: res.status,
             detail: res.detail,
           };
+        } catch (e) {
+          return { ...base, status: 'error', detail: (e as Error).message };
+        }
+      }
+      case 'zaloApiSend': {
+        if (!action.accountKey) {
+          return { ...base, status: 'error', detail: 'chưa chọn tài khoản Zalo API gửi' };
+        }
+        // Same guards as wsSend — sending on a personal account is what gets it
+        // flagged, and the API path has none of the UI's natural rate limit, so
+        // the floor matters MORE here, not less. Dry-run skips the guards on
+        // purpose: it never sends, so gating it defeats its purpose.
+        if (!plan.dryRun) {
+          if (!this.config.allowSend) {
+            return { ...base, status: 'skipped', detail: 'công tắc “cho phép gửi” đang tắt' };
+          }
+          const gate = this.sendGate(action.accountKey);
+          if (gate) return { ...base, status: 'skipped', detail: gate };
+        }
+        try {
+          // Record the echo BEFORE the send, by threadId: an API send can bounce
+          // back through the WebSocket feed as a new event just like a DOM send.
+          if (this.config.loopGuard && !plan.dryRun) {
+            this.noteSentEcho(action.threadLabel ?? action.threadId ?? '', action.text);
+          }
+          const res = await sendViaZaloApi(action, plan.dryRun);
+          this.noteSend(action.accountKey, res.sent);
+          return { ...base, status: res.status, detail: res.detail };
         } catch (e) {
           return { ...base, status: 'error', detail: (e as Error).message };
         }

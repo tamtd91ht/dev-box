@@ -41,7 +41,7 @@ interface Props {
 }
 
 /** A short two-note chime for a new message. Lazily creates the AudioContext. */
-function useChime(): () => void {
+export function useChime(): () => void {
   const ctxRef = useRef<AudioContext | null>(null);
   useEffect(() => {
     // Prime the audio context on the first user gesture (autoplay policy).
@@ -99,6 +99,11 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
     return map;
   });
   const allAccounts = useMemo(() => plugins.flatMap((p) => accounts[p.id] ?? []), [plugins, accounts]);
+  /** App đã bị gỡ sạch tài khoản — hiện ở cụm "Đã gỡ" cuối rail để thêm lại. */
+  const removed = useMemo(
+    () => plugins.filter((p) => !(accounts[p.id] ?? []).length),
+    [plugins, accounts],
+  );
 
   // keepAlive plugins (e.g. Zalo) open eagerly even under lazyLoad — they exist
   // to run in the background and raise new-message alerts, which requires their
@@ -116,6 +121,8 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
   // Unread per open account → aggregate for badges + chime.
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [editingKey, setEditingKey] = useState<string | null>(null);
+  /** Tài khoản đã gỡ, đang chờ xoá phiên trên đĩa sau khi guest unmount. */
+  const [pendingWipe, setPendingWipe] = useState<{ key: string; partition: string }[]>([]);
   const [muted, setMuted] = useState(false);
   useEffect(() => {
     setMuted(typeof window !== 'undefined' && localStorage.getItem('ws:muted') === '1');
@@ -233,7 +240,7 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
       if (!plugin) return;
       setAccounts((prev) => {
         const list = prev[pluginId] ?? [];
-        const acc = newAccount(plugin, list.length + 1);
+        const acc = newAccount(plugin, list);
         const next = [...list, acc];
         saveAccounts(pluginId, next);
         // Open the new account right away.
@@ -255,6 +262,19 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
     });
   }, []);
 
+  /** Ảnh đại diện đọc được từ guest → ghim vào tài khoản (và xuống đĩa). */
+  const setAccountAvatar = useCallback((pluginId: string, instanceId: string, avatar: string) => {
+    setAccounts((prev) => {
+      const list = prev[pluginId] ?? [];
+      // Ảnh không đổi thì thôi: mỗi lần ghi là một lượt render cả rail + một
+      // lượt JSON.stringify xuống localStorage.
+      if (list.some((a) => a.instanceId === instanceId && a.avatar === avatar)) return prev;
+      const next = list.map((a) => (a.instanceId === instanceId ? { ...a, avatar } : a));
+      saveAccounts(pluginId, next);
+      return { ...prev, [pluginId]: next };
+    });
+  }, []);
+
   const renameAccount = useCallback((pluginId: string, instanceId: string, label: string) => {
     setAccounts((prev) => {
       const next = (prev[pluginId] ?? []).map((a) =>
@@ -266,14 +286,36 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
   }, []);
 
   const removeAccount = useCallback(
-    async (pluginId: string, instanceId: string) => {
+    (pluginId: string, instanceId: string) => {
       const plugin = getPlugin(pluginId);
       if (!plugin) return;
-      const label = (accounts[pluginId] ?? []).find((a) => a.instanceId === instanceId)?.label ?? '';
-      if (!window.confirm(`Xoá "${label}" và đăng xuất phiên này trên máy?`)) return;
-      // Wipe the on-disk session for this account.
-      await window.workspace?.clearSession(partitionForAccount(plugin, instanceId, cfg));
+      const list = accounts[pluginId] ?? [];
+      const label = list.find((a) => a.instanceId === instanceId)?.label ?? '';
+      // Gỡ cái CUỐI CÙNG là cả app biến khỏi rail — nói thẳng ra, kèm đường về,
+      // để không ai bấm xong rồi tưởng mất luôn không thêm lại được.
+      const last = list.length <= 1;
+      if (
+        !window.confirm(
+          last
+            ? `Gỡ "${label}" và đăng xuất phiên này trên máy?\n\n` +
+              `Đây là tài khoản cuối của ${plugin.name} — gỡ xong ${plugin.name} sẽ biến khỏi danh sách ` +
+              `Workspaces. Bấm "＋ ${plugin.name}" ở cuối rail là thêm lại được (phải đăng nhập lại).`
+            : `Xoá "${label}" và đăng xuất phiên này trên máy?`,
+        )
+      )
+        return;
       const key = accountKey(pluginId, instanceId);
+      // THỨ TỰ QUAN TRỌNG: bỏ tài khoản khỏi state TRƯỚC, xoá phiên SAU.
+      //
+      // Xoá phiên trong lúc <webview> của nó còn sống thì guest vẫn đang chạy:
+      // lúc gỡ xuống nó ghi nốt cookie/localStorage ra đĩa, đè lên phần vừa
+      // xoá — gỡ xong mở lại vẫn thấy đăng nhập. Nên chỉ đánh dấu ở đây, để
+      // effect bên dưới xoá sau khi React đã unmount guest thật sự.
+      setPendingWipe((prev) =>
+        prev.some((w) => w.key === key)
+          ? prev
+          : [...prev, { key, partition: partitionForAccount(plugin, instanceId, cfg) }],
+      );
       setAccounts((prev) => {
         const next = (prev[pluginId] ?? []).filter((a) => a.instanceId !== instanceId);
         saveAccounts(pluginId, next);
@@ -289,6 +331,38 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
     },
     [accounts, cfg],
   );
+
+  /**
+   * Xoá phiên trên đĩa SAU KHI guest đã unmount.
+   *
+   * Effect chạy sau commit, mà lúc commit đó `openKeys` đã bỏ key ra rồi nên
+   * <webview> tương ứng đã bị gỡ khỏi DOM — tới đây mới không còn ai ghi ngược
+   * vào partition nữa. Chờ thêm một nhịp macrotask để Electron kịp huỷ hẳn
+   * webContents trước khi clearStorageData chạy.
+   */
+  useEffect(() => {
+    if (!pendingWipe.length) return;
+    // Guest chưa gỡ hết thì chưa xoá — đợi commit sau.
+    const ready = pendingWipe.filter((w) => !openKeys.includes(w.key));
+    if (!ready.length) return;
+    let alive = true;
+    const t = setTimeout(async () => {
+      for (const w of ready) {
+        try {
+          await window.workspace?.clearSession(w.partition);
+        } catch {
+          /* phiên xoá hụt thì lần gỡ sau vẫn xoá lại được — không chặn UI */
+        }
+      }
+      if (!alive) return;
+      const done = new Set(ready.map((w) => w.key));
+      setPendingWipe((prev) => prev.filter((w) => !done.has(w.key)));
+    }, 0);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [pendingWipe, openKeys]);
 
   const toggleMute = useCallback(() => {
     setMuted((m) => {
@@ -344,6 +418,10 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
             (sum, a) => sum + audible(accountKey(plugin.id, a.instanceId)),
             0,
           );
+
+          // Gỡ hết tài khoản = app không còn trong rail. Nó quay lại qua hàng
+          // "＋" ở cuối rail, nên ở đây chỉ việc không vẽ.
+          if (!list.length) return null;
 
           return (
             <div
@@ -403,9 +481,18 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
                         (acc.muted ? ' · đang ẩn thông báo' : '')
                       }
                     >
-                      {/* The app mark repeats on every row: a renamed account
-                          ("Sếp", "CSKH") must still say which app it lives in. */}
-                      <BrandMark plugin={plugin} size={14} faded={!alive} />
+                      {/* Có ảnh đại diện thật thì hiện mặt người — hai tài khoản
+                          Zalo cạnh nhau chỉ phân biệt được bằng cái này. Huy hiệu
+                          app lùi xuống góc, KHÔNG bỏ hẳn: dòng "Sếp" vẫn phải nói
+                          được nó nằm ở app nào. Chưa có ảnh thì như cũ. */}
+                      {acc.avatar ? (
+                        <span className={`ws-acct-ava${alive ? '' : ' is-faded'}`}>
+                          <img src={acc.avatar} alt="" width={22} height={22} />
+                          <BrandMark plugin={plugin} size={11} className="ws-acct-ava-mark" />
+                        </span>
+                      ) : (
+                        <BrandMark plugin={plugin} size={14} faded={!alive} />
+                      )}
                       <span className="ws-acct-name">{acc.label}</span>
                       {/* Số THẬT, kể cả khi đang ẩn: ẩn là không dội ra ngoài,
                           chứ ngay tại dòng này vẫn phải thấy có gì mới. Ẩn thì
@@ -443,18 +530,19 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
                           >
                             ✎
                           </button>
-                          {list.length > 1 && (
-                            <button
-                              className="ws-acct-btn danger"
-                              title="Xoá tài khoản"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void removeAccount(plugin.id, acc.instanceId);
-                              }}
-                            >
-                              ×
-                            </button>
-                          )}
+                          {/* Gỡ được cả tài khoản cuối: một app không dùng thì
+                              phải bỏ hẳn khỏi rail được, không thì "sửa được mà
+                              không xoá được". Thêm lại ở hàng "＋" cuối rail. */}
+                          <button
+                            className="ws-acct-btn danger"
+                            title={list.length > 1 ? 'Gỡ tài khoản' : `Gỡ tài khoản — ${plugin.name} sẽ biến khỏi danh sách`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeAccount(plugin.id, acc.instanceId);
+                            }}
+                          >
+                            ×
+                          </button>
                         </>
                       )}
                     </div>
@@ -470,6 +558,28 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
             </div>
           );
         })}
+
+        {/* Đường về cho những app đã gỡ hết tài khoản — không có hàng này thì
+            "gỡ" thành một chiều, muốn dùng lại phải xoá localStorage. */}
+        {removed.length > 0 && (
+          <div className="ws-group ws-group-restore">
+            <div className="ws-group-head">
+              <span className="ws-rail-name ws-muted">Đã gỡ</span>
+            </div>
+            <div className="ws-acct-list">
+              {removed.map((plugin) => (
+                <button
+                  key={plugin.id}
+                  className="ws-acct-add"
+                  title={`Thêm lại ${plugin.name} (phải đăng nhập lại)`}
+                  onClick={() => addAccount(plugin.id)}
+                >
+                  ＋ {plugin.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </aside>
 
       <div className="ws-stage">
@@ -496,6 +606,7 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
               onUnread={(n) => setInstanceUnread(key, n)}
               capture={captureOn}
               onMessages={(batch) => feedAutomation(plugin, acc, batch)}
+              onAvatar={(url) => setAccountAvatar(pluginId, instanceId, url)}
             />
           );
         })}

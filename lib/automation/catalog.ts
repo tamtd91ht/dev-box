@@ -46,8 +46,8 @@ export const GROUPS: GroupDef[] = [
     id: 'social',
     label: 'Social',
     icon: '💬',
-    blurb: 'Tin nhắn đến từ các workspace nhắn tin (Zalo, Telegram, WhatsApp…).',
-    actions: ['notify', 'webhook', 'telegram', 'wsSend', 'log', 'kafka', 'reply'],
+    blurb: 'Tin nhắn đến từ các workspace nhắn tin (Zalo, Telegram, WhatsApp…) và nhánh Zalo API.',
+    actions: ['notify', 'webhook', 'telegram', 'wsSend', 'zaloApiSend', 'log', 'kafka', 'reply'],
     triggers: [
       {
         type: 'message.received',
@@ -73,7 +73,13 @@ export const GROUPS: GroupDef[] = [
             kind: 'text',
             hint: 'group = nhóm · user = chat 1-1',
           },
-          { name: 'capture', label: 'Cách bắt', kind: 'text', hint: 'notification · dom' },
+          { name: 'capture', label: 'Cách bắt', kind: 'text', hint: 'notification · dom · ws (Zalo API)' },
+          {
+            name: 'threadId',
+            label: 'threadId (Zalo API)',
+            kind: 'text',
+            hint: 'id hội thoại thật — chỉ nhánh Zalo API mới có; DOM để trống',
+          },
         ],
       },
     ],

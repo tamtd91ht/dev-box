@@ -11,6 +11,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { listConnections, connLabel, type ConnOption } from '@/lib/automation/connections';
 import type { TargetGroup } from '@/lib/workspace/targets';
 import { sendToTargetGroup, type WsSendOutcome } from '@/lib/automation/wsSend';
+import { sendViaZaloApi, type ZaloApiSendOutcome } from '@/lib/automation/zaloApiSend';
+import { loadZaloApiAccounts, zaloApiAccountKey } from '@/lib/zaloapi/accounts';
 import { useAutomation } from '@/lib/automation/useAutomation';
 import { requireGuest } from '@/lib/workspace/guests';
 import type { ActionType, AutomationAction, HttpMethod } from '@/lib/automation/types';
@@ -21,6 +23,7 @@ export const ACTION_LABEL: Record<ActionType, string> = {
   webhook: '🌐 Gọi API',
   telegram: '✈️ Gửi Telegram',
   wsSend: '💬 Gửi Zalo / workspace',
+  zaloApiSend: '🟦 Gửi Zalo API',
   log: '📄 Ghi file log',
   kafka: '≋ Bắn Kafka',
   reply: '↩ Trả lời (cần duyệt)',
@@ -626,6 +629,114 @@ function WorkspaceSendFields({
   );
 }
 
+// ── Zalo API send (THỬ NGHIỆM) ──────────────────────────────────────────────
+//
+// Khác WorkspaceSendFields ở chỗ: không có danh bạ đồng bộ. Đích là threadId
+// thật gõ thẳng (trống = gửi cho chính mình). Nút "gửi thử" dựng request rồi in
+// ra mà không bắn đi — đúng tinh thần một bước thử.
+function ZaloApiSendFields({
+  action,
+  onChange,
+}: {
+  action: Extract<AutomationAction, { type: 'zaloApiSend' }>;
+  onChange: (a: AutomationAction) => void;
+}) {
+  const [testing, setTesting] = useState(false);
+  const [test, setTest] = useState<ZaloApiSendOutcome | null>(null);
+  const { config } = useAutomation();
+  const guestProblem = action.accountKey ? requireGuest(action.accountKey).error : '';
+  // Danh sách tài khoản Zalo API để chọn (multi-account).
+  const zaAccounts = useMemo(() => loadZaloApiAccounts(), []);
+
+  const runTest = async () => {
+    setTesting(true);
+    setTest(null);
+    try {
+      setTest(await sendViaZaloApi(action, true));
+    } catch (e) {
+      setTest({ status: 'error', detail: (e as Error).message, sent: 0, result: null });
+    }
+    setTesting(false);
+  };
+
+  return (
+    <div className="auto-grid">
+      <div className="auto-warn-inline auto-wide">
+        🟦 Gửi qua API nội bộ của Zalo Web, theo <b>threadId thật</b> (không phải tên). Vi phạm điều
+        khoản Zalo và dễ bị đánh dấu hơn đường DOM — chỉ dùng tài khoản phù hợp. Trần cứng: 5s/tin, 20 tin/giờ.
+      </div>
+
+      <Field label="Tài khoản Zalo API" hint="chọn tài khoản đã thêm trong tab Zalo API">
+        <select
+          value={action.accountKey}
+          onChange={(e) => onChange({ ...action, accountKey: e.target.value })}
+        >
+          {!zaAccounts.some((a) => zaloApiAccountKey(a.instanceId) === action.accountKey) && (
+            <option value={action.accountKey}>{action.accountKey || '(chọn tài khoản)'}</option>
+          )}
+          {zaAccounts.map((a) => (
+            <option key={a.instanceId} value={zaloApiAccountKey(a.instanceId)}>{a.label}</option>
+          ))}
+        </select>
+      </Field>
+
+      <Field label="threadId đích" hint="id hội thoại thật — để TRỐNG = gửi cho chính mình (an toàn khi thử)">
+        <input
+          value={action.threadId ?? ''}
+          placeholder="(trống = chính mình) · hỗ trợ {{fields.threadId}}"
+          onChange={(e) => onChange({ ...action, threadId: e.target.value })}
+        />
+      </Field>
+
+      <Field label="Nhãn (chỉ để dễ nhìn)">
+        <input
+          value={action.threadLabel ?? ''}
+          placeholder="vd: Nhóm CSKH"
+          onChange={(e) => onChange({ ...action, threadLabel: e.target.value })}
+        />
+      </Field>
+
+      <div className="auto-wide">
+        <Toggle
+          checked={!!action.group}
+          onChange={(v) => onChange({ ...action, group: v })}
+          label="Hội thoại nhóm"
+          hint="bật nếu threadId là nhóm — endpoint khác với chat cá nhân"
+        />
+      </div>
+
+      <Field label="Nội dung" wide hint="hỗ trợ {{title}}, {{text}}, {{fields.sender}}…">
+        <textarea
+          rows={3}
+          value={action.text}
+          onChange={(e) => onChange({ ...action, text: e.target.value })}
+        />
+      </Field>
+
+      {guestProblem && <p className="auto-hint auto-wide ws-scan-bad">⚠ {guestProblem}</p>}
+      {!config.allowSend && (
+        <p className="auto-hint auto-wide">
+          Công tắc <b>cho phép gửi</b> ở đầu tab Automation đang tắt — quy tắc chỉ chạy thử.
+        </p>
+      )}
+
+      <div className="auto-wide">
+        <button
+          type="button"
+          className="ghost"
+          disabled={testing || !action.accountKey || !action.text.trim()}
+          onClick={() => void runTest()}
+        >
+          {testing ? 'đang thử…' : '▶ Gửi thử (dựng request, KHÔNG bắn đi)'}
+        </button>
+        {test && (
+          <span className={test.status === 'error' ? 'ws-scan-bad' : 'ws-scan-ok'}> {test.detail}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── The card ───────────────────────────────────────────────────────────────
 
 export function defaultAction(type: ActionType): AutomationAction {
@@ -638,6 +749,8 @@ export function defaultAction(type: ActionType): AutomationAction {
       return { type: 'telegram', tokenSource: 'env', chatId: '', parseMode: 'none', noPreview: true };
     case 'wsSend':
       return { type: 'wsSend', accountKey: '', targetGroupId: '', text: '' };
+    case 'zaloApiSend':
+      return { type: 'zaloApiSend', accountKey: 'zaloapi::main', threadId: '', group: false, text: '' };
     case 'log':
       return { type: 'log', file: '' };
     case 'kafka':
@@ -661,6 +774,8 @@ function summarize(a: AutomationAction): string {
       return `→ ${a.chatId || (a.tokenSource === 'inline' ? 'bot riêng' : 'chat trong .env.local')}`;
     case 'wsSend':
       return `→ ${a.targetLabel || '(chưa chọn danh sách)'}${a.text ? ` · ${a.text.split('\n')[0]}` : ''}`;
+    case 'zaloApiSend':
+      return `→ ${a.threadLabel || a.threadId || 'chính mình'}${a.text ? ` · ${a.text.split('\n')[0]}` : ''}`;
     case 'log':
       return a.file || '.automation-log.jsonl';
     case 'kafka':
@@ -763,6 +878,8 @@ export default function ActionCard({
       {action.type === 'telegram' ? <TelegramFields action={action} onChange={onChange} /> : null}
 
       {action.type === 'wsSend' ? <WorkspaceSendFields action={action} onChange={onChange} /> : null}
+
+      {action.type === 'zaloApiSend' ? <ZaloApiSendFields action={action} onChange={onChange} /> : null}
 
       {action.type === 'log' ? (
         <Field label="Tên file" hint="cùng thư mục DevBox, đuôi .jsonl — để trống = .automation-log.jsonl">

@@ -158,6 +158,15 @@ export function renderAction(action: AutomationAction, vars: Record<string, stri
       };
     case 'wsSend':
       return { ...action, text: render(action.text, vars) };
+    case 'zaloApiSend':
+      return {
+        ...action,
+        // threadId là template có chủ đích ({{fields.threadId}}) — đó là cách
+        // "trả lời đúng hội thoại vừa đến" mà nhánh API hứa ở types.ts. Thiếu
+        // case này thì threadId đi nguyên chuỗi "{{...}}" và gửi lạc địa chỉ.
+        threadId: action.threadId ? render(action.threadId, vars) : action.threadId,
+        text: render(action.text, vars),
+      };
     case 'reply':
       return { ...action, text: render(action.text, vars) };
     case 'log':

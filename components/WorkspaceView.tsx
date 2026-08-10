@@ -13,6 +13,7 @@ import BrandMark from './BrandMark';
 import { menuFor } from '@/lib/workspace/plugins';
 import type { WebviewElement, WorkspaceConfig, WorkspacePlugin } from '@/lib/workspace/types';
 import { type WorkspaceAccount, accountKey, partitionForAccount } from '@/lib/workspace/accounts';
+import { type AvatarProbe, buildAvatarScript } from '@/lib/workspace/avatar';
 import { type CollectResult, buildCollectorScript, captureFlagScript } from '@/lib/workspace/capture';
 import { registerGuest } from '@/lib/workspace/guests';
 import WorkspaceScan from './WorkspaceScan';
@@ -38,6 +39,9 @@ interface Props {
   capture?: boolean;
   /** Messages collected since the previous poll (only when `capture` is on). */
   onMessages?: (batch: CollectResult['m']) => void;
+  /** Ảnh đại diện tài khoản đọc được trong guest (data URL), để rail hiện mặt
+   *  thật thay vì huy hiệu app. Chỉ bắn khi ĐỔI so với lần trước. */
+  onAvatar?: (dataUrl: string) => void;
 }
 
 // Default unread detector (evaluated inside the guest): parse a leading "(N)"
@@ -50,6 +54,10 @@ const DEFAULT_UNREAD_EXPR =
 /** How often we poll the guest for its unread count (ms). */
 const UNREAD_POLL_MS = 3000;
 
+/** Nhịp dò ảnh đại diện khi CHƯA đọc được (chưa đăng nhập / trang chưa dựng).
+ *  Đọc được là dừng, nên đây chỉ là nhịp chờ — để thưa cho nhẹ guest. */
+const AVATAR_POLL_MS = 15000;
+
 export default function WorkspaceView({
   plugin,
   account,
@@ -59,6 +67,7 @@ export default function WorkspaceView({
   onUnread,
   capture = false,
   onMessages,
+  onAvatar,
 }: Props) {
   const ref = useRef<WebviewElement | null>(null);
   const partition = partitionForAccount(plugin, account.instanceId, config);
@@ -82,6 +91,8 @@ export default function WorkspaceView({
   onUnreadRef.current = onUnread;
   const onMessagesRef = useRef(onMessages);
   onMessagesRef.current = onMessages;
+  const onAvatarRef = useRef(onAvatar);
+  onAvatarRef.current = onAvatar;
   const viewingRef = useRef(viewing);
   viewingRef.current = viewing;
 
@@ -250,6 +261,91 @@ export default function WorkspaceView({
       clearInterval(timer);
     };
   }, [plugin.unreadScript, plugin.capture]);
+
+  /**
+   * Đọc ảnh đại diện tài khoản trong guest, đẩy ra rail.
+   *
+   * Nhịp CHẬM (AVATAR_POLL_MS) chứ không đi ké nhịp đếm tin: ảnh đại diện gần
+   * như không đổi, mà mỗi lần đọc là một lượt fetch trong trang của người ta —
+   * chạy 3 giây một lần thì phí. Đọc được rồi thì dừng hẳn, chỉ bật lại khi
+   * guest điều hướng (đăng nhập tài khoản khác, hoặc vừa đổi ảnh).
+   *
+   * Hụt thì log ra console host kèm LÝ DO + số phần tử mỗi selector khớp. Đây
+   * là thứ duy nhất chỉnh được selector cho một trang mình không kiểm soát:
+   * không có nó thì "không lên ảnh" là một hộp đen.
+   */
+  useEffect(() => {
+    const el = ref.current;
+    if (!plugin.avatar) return;
+    if (!el) return;
+    const expr = buildAvatarScript(plugin.avatar);
+    let stopped = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+
+    const read = () => {
+      if (stopped) return;
+      let p: Promise<unknown> | undefined;
+      try {
+        p = el.executeJavaScript(expr, false);
+      } catch {
+        return; // guest chưa gắn
+      }
+      const done = (dataUrl: string) => {
+        if (stopped) return;
+        onAvatarRef.current?.(dataUrl);
+        // Có ảnh rồi thì thôi đọc — 'did-navigate' bên dưới sẽ bật lại.
+        if (timer) clearInterval(timer);
+        timer = undefined;
+      };
+      const miss = (probe: unknown) => {
+        // eslint-disable-next-line no-console
+        console.debug('[ws:avatar] chưa lấy được', plugin.id, account.instanceId, probe);
+      };
+
+      p?.then(async (raw) => {
+        if (stopped) return;
+        const probe = raw as AvatarProbe | null;
+        if (probe?.ok && probe.dataUrl?.startsWith('data:image/')) {
+          done(probe.dataUrl);
+          return;
+        }
+        // Tìm thấy avatar nhưng guest không tải nổi (CORS) — nhờ main process.
+        if (probe?.why === 'need-fetch' && probe.src) {
+          const r = await window.workspace?.fetchImage?.(partition, probe.src);
+          if (stopped) return;
+          if (r?.ok && r.dataUrl?.startsWith('data:image/')) {
+            done(r.dataUrl);
+            return;
+          }
+          miss({ ...probe, fetchError: r?.error ?? 'bridge thiếu fetchImage' });
+          return;
+        }
+        miss(probe);
+      }).catch(() => {
+        /* đang điều hướng / mất kết nối — bỏ nhịp này */
+      });
+    };
+
+    const start = () => {
+      if (stopped) return;
+      if (timer) clearInterval(timer);
+      read();
+      timer = setInterval(read, AVATAR_POLL_MS);
+    };
+
+    // Chưa đăng nhập thì không có ảnh — đăng nhập xong trang điều hướng, đó là
+    // lúc đọc lại. Cũng bắt luôn ca đổi ảnh rồi F5.
+    const first = setTimeout(start, 2500); // đợi trang dựng xong
+    el.addEventListener('did-navigate', start);
+    el.addEventListener('did-navigate-in-page', start);
+    return () => {
+      stopped = true;
+      clearTimeout(first);
+      if (timer) clearInterval(timer);
+      el.removeEventListener('did-navigate', start);
+      el.removeEventListener('did-navigate-in-page', start);
+    };
+  }, [plugin.avatar, plugin.id, account.instanceId, partition]);
 
   // Push the privacy switch into the page. A guest reloads on its own (and the
   // flag is a plain page global), so re-assert it on every poll interval too —

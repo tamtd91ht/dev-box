@@ -27,6 +27,15 @@ contextBridge.exposeInMainWorld('workspace', {
   /** Kéo focus về host page sau khi hủy <webview> (fix input "chết"). */
   focusHost: () => ipcRenderer.invoke('workspace:focusHost'),
   /**
+   * Tải một ảnh bằng phiên của partition, trả về data URL.
+   *
+   * Dùng cho ảnh đại diện tài khoản: avatar nằm ở CDN khác gốc không kèm CORS,
+   * nên trong guest thì fetch() lẫn canvas.toDataURL() đều chết. Main process
+   * tải ở tầng mạng, không có CORS, mà vẫn gửi đúng cookie phiên.
+   * → { ok, dataUrl } | { ok:false, error }
+   */
+  fetchImage: (partition, url) => ipcRenderer.invoke('workspace:fetchImage', partition, url),
+  /**
    * Gửi một phím THẬT vào guest của một partition, từ main process.
    *
    * Automation gửi tin Zalo bằng cách gõ chữ (được) rồi nhấn Enter. Ô soạn của
@@ -82,6 +91,12 @@ contextBridge.exposeInMainWorld('workspace', {
   /** Chép một chuỗi vào clipboard (nút "chép mật khẩu" ở tab Remote — mật khẩu
    *  chỉ được mở niêm phong ngay lúc bấm, không hiện ra màn hình). */
   copyText: (text) => ipcRenderer.invoke('workspace:copyText', text),
+  /** Zalo API (thử nghiệm): đọc cookie HttpOnly (zpsid/zpw_sek/…) của một phiên
+   *  zaloapi-*. Renderer không đọc được cookie HttpOnly qua document.cookie, nên
+   *  main process đọc hộ qua session.cookies.get.
+   *  → { ok:true, cookies:{name:value}, header:"a=1; b=2", seen:[…] } | { ok:false, error }
+   *  `header` là toàn bộ cookie đã ghép — bước đăng nhập server-side cần nó. */
+  readZaloCookies: (partition, names) => ipcRenderer.invoke('zaloapi:readCookies', partition, names),
 });
 
 // In-app console: the shell + `next dev` log stream the main process buffers

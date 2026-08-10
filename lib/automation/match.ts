@@ -192,8 +192,21 @@ export function templateVars(event: AutomationEvent, captures: Captures = []): R
 /**
  * Replace {{var}} placeholders. Unknown names render empty — a typo must never
  * leak `{{sendr}}` into a webhook payload. No escaping, no nesting.
+ *
+ * Chấp nhận CẢ HAI cách viết cho field riêng của nguồn: `{{sender}}` và
+ * `{{fields.sender}}`. templateVars() trải fields ra thẳng tên, nhưng UI và
+ * tài liệu (ActionCard, types.ts) lâu nay vẫn dạy dạng có tiền tố `fields.` —
+ * trước đây regex không nhận dấu chấm nên mọi `{{fields.*}}` âm thầm render ra
+ * chuỗi rỗng. Nhận cả hai để thứ đã dạy người dùng là thứ chạy đúng.
  */
 export function render(tpl: string | undefined, vars: Record<string, string>): string {
   if (!tpl) return '';
-  return tpl.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, name: string) => vars[name] ?? '');
+  return tpl.replace(/\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g, (_m, name: string) => {
+    const hit = vars[name];
+    if (hit !== undefined) return hit;
+    // `fields.x` → `x` (templateVars đã trải phẳng). Chỉ bóc đúng tiền tố này,
+    // không bóc dấu chấm bất kỳ, để `{{a.b}}` sai vẫn ra rỗng như trước.
+    const bare = name.startsWith('fields.') ? vars[name.slice(7)] : undefined;
+    return bare ?? '';
+  });
 }

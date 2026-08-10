@@ -37,7 +37,7 @@ const OPS: ConditionOp[] = [
   'lt',
   'lte',
 ];
-const ACTION_TYPES: ActionType[] = ['notify', 'webhook', 'telegram', 'wsSend', 'log', 'kafka', 'reply'];
+const ACTION_TYPES: ActionType[] = ['notify', 'webhook', 'telegram', 'wsSend', 'zaloApiSend', 'log', 'kafka', 'reply'];
 const HTTP_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 const CATEGORIES: EventCategory[] = ['social', 'infra', 'system'];
 const TRIGGERS: TriggerType[] = ['message.received', 'infra.metric', 'infra.recovered', 'system.test'];
@@ -162,6 +162,15 @@ function normAction(raw: unknown): AutomationAction | null {
         accountKey: str(a.accountKey),
         targetGroupId: str(a.targetGroupId),
         targetLabel: str(a.targetLabel),
+        text: str(a.text),
+      };
+    case 'zaloApiSend':
+      return {
+        type,
+        accountKey: str(a.accountKey) || 'zaloapi::main',
+        threadId: str(a.threadId),
+        threadLabel: str(a.threadLabel),
+        group: bool(a.group),
         text: str(a.text),
       };
     case 'reply':

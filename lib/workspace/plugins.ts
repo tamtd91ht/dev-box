@@ -212,6 +212,27 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
       // chống trùng theo hội thoại (notiByConv) + engine dedup theo id.
       extraScript: ZALO_LINK_CLICK + ZALO_DOM_CAPTURE,
     },
+    // Ảnh đại diện của CHÍNH tài khoản: nút mở menu cá nhân ở đầu thanh dọc
+    // bên trái. `.nav__avatar`/`#nav-profile-item` là khung nút; script tự lấy
+    // <img> bên trong. KHÔNG được trỏ vào `.conv-item__avatar` — đó là mặt
+    // người khác trong danh sách hội thoại.
+    avatar: {
+      selectors: [
+        '#nav-profile-item img',
+        '.nav__avatar img',
+        '.nav-profile img',
+        '[data-id="div_MainTab_Avatar"] img',
+      ],
+      // Zalo dựng avatar của mình bằng CÙNG component `zavatar` với avatar hội
+      // thoại, nên bám class rất dễ trượt. Cứu bằng vị trí: thanh dọc trái rộng
+      // ~64px, avatar của mình nằm trên đỉnh nó. Loại thẳng mọi ảnh nằm trong
+      // danh sách hội thoại — đó là mặt người khác.
+      probeCorner: {
+        width: 80,
+        height: 160,
+        excludeSelectors: ['.conv-item', '.ReactVirtualized__Grid'],
+      },
+    },
     // Đọc danh sách hội thoại để dựng danh bạ đích NGOÀI Zalo. Các selector này
     // ĐO ĐƯỢC từ chat.zalo.me thật (xem lib/workspace/directory.ts), không phải
     // phỏng đoán:
@@ -295,6 +316,25 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
       genericTitles: ['Telegram', 'Telegram Web'],
       bodySenderSeparator: ': ',
     },
+    // Web A: ảnh của mình nằm trong ngăn kéo bên trái (mở bằng ☰). Ngăn kéo
+    // đóng thì phần tử vẫn ở trong DOM nên vẫn đọc được. Telegram hay vẽ avatar
+    // bằng chữ cái trên nền màu thay vì <img>; lúc đó không có ảnh để lấy và
+    // rail giữ nguyên huy hiệu app — đúng như thiết kế.
+    avatar: {
+      selectors: [
+        '#LeftMainHeader .ChatInfo .Avatar img',
+        '.left-header .Avatar img',
+        '#Settings .ProfileInfo .Avatar img',
+        '.settings-container .Avatar img',
+      ],
+      // Ngăn kéo trái. Loại danh sách chat (.chat-list / .ListItem) để không
+      // vớ phải avatar người đang nhắn.
+      probeCorner: {
+        width: 300,
+        height: 120,
+        excludeSelectors: ['.chat-list', '.ListItem', '#LeftColumn .chat-item-clickable'],
+      },
+    },
   },
   {
     id: 'whatsapp',
@@ -312,6 +352,20 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
       // hai dạng. Tiêu đề là tên hội thoại, thân là "Người gửi: nội dung".
       genericTitles: ['WhatsApp', 'WhatsApp Web'],
       bodySenderSeparator: ': ',
+    },
+    // WhatsApp Web: avatar của mình ở thanh công cụ trên cùng bên trái. Ảnh
+    // được tải qua blob: URL cùng gốc nên canvas đọc được bình thường.
+    avatar: {
+      selectors: [
+        'header [data-testid="default-user"] img',
+        '#side header img[draggable="false"]',
+        'header .x1n2onr6 img[src^="blob:"]',
+      ],
+      probeCorner: {
+        width: 420,
+        height: 90,
+        excludeSelectors: ['#pane-side', '[role="listitem"]', '[data-testid="cell-frame-container"]'],
+      },
     },
   },
   {
@@ -342,6 +396,27 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
       // lọc ra để không đẩy thành thông báo rác.
       genericTitles: ['Messenger', 'Facebook', 'Facebook Messenger'],
       bodySenderSeparator: ': ',
+    },
+    // Một workspace chạy trên HAI miền, nên khai selector cho cả hai: facebook
+    // .com để avatar ở nút tài khoản góc phải trên, messenger.com để ở thanh
+    // bên trái. Ảnh của Meta phục vụ từ scontent.* (khác gốc) — nếu thiếu CORS
+    // thì canvas ném và script trả null, rail lui về huy hiệu app.
+    avatar: {
+      selectors: [
+        '[aria-label="Tài khoản của bạn"] img',
+        '[aria-label="Your profile"] img',
+        'div[role="banner"] [role="button"] image',
+        'div[role="navigation"] svg image',
+      ],
+      // Facebook để avatar ở góc trên-PHẢI (nút tài khoản trên thanh xanh),
+      // ngược với đám app chat. Messenger thì ở trái, nhưng selector phía trên
+      // đã phủ; probe chỉ là lưới an toàn cuối.
+      probeCorner: {
+        fromRight: true,
+        width: 260,
+        height: 70,
+        excludeSelectors: ['[role="feed"]', '[role="article"]', '[role="grid"]'],
+      },
     },
   },
 ];

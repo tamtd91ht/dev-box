@@ -10,6 +10,7 @@
 // contains no browser logic (that lives in the engine / main process). Zalo is
 // simply the first consumer of the framework.
 
+import type { AvatarSpec } from './avatar';
 import type { CaptureSpec } from './capture';
 import type { DirectorySpec } from './directory';
 import type { LabelSpec } from './labels';
@@ -74,6 +75,12 @@ export interface WorkspacePlugin {
    */
   capture?: CaptureSpec;
   /**
+   * Chỗ tìm ảnh đại diện của tài khoản đang đăng nhập, để rail hiện mặt thật
+   * thay vì huy hiệu app chung chung (xem lib/workspace/avatar.ts). Bỏ trống
+   * thì rail vẫn chạy, chỉ là mọi tài khoản cùng app trông giống hệt nhau.
+   */
+  avatar?: AvatarSpec;
+  /**
    * Escape hatch: a raw JS expression returning the unread count, for a
    * workspace the generic collector cannot handle. Takes precedence over
    * `capture` but forfeits message capture (it returns a number, not a batch).
@@ -129,6 +136,11 @@ export interface WorkspaceBridge {
   /** Kéo focus về host page sau khi hủy <webview> giữ focus (fix input "chết").
    *  Optional: preload cũ (trước khi có handler này) chưa expose. */
   focusHost?(): Promise<{ ok: boolean; error?: string }>;
+  /** Tải ảnh bằng phiên của partition → data URL. Dùng cho ảnh đại diện tài
+   *  khoản: avatar ở CDN khác gốc không kèm CORS nên trong guest fetch() và
+   *  canvas đều chết; main process tải ở tầng mạng, không vướng CORS.
+   *  Optional: preload cũ chưa expose. */
+  fetchImage?(partition: string, url: string): Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
   /** Bơm một phím THẬT vào guest của một partition (automation gửi tin Zalo:
    *  gõ chữ rồi nhấn Enter thật, vì ô soạn React bỏ qua sự kiện giả). Chỉ nhận
    *  phím trong danh sách trắng ở main. Optional: preload cũ chưa expose. */
@@ -166,6 +178,20 @@ export interface WorkspaceBridge {
     Promise<{ ok: boolean; manual?: boolean; error?: string }>;
   /** Chép chuỗi vào clipboard (nút chép mật khẩu ở tab Remote). */
   copyText?(text: string): Promise<{ ok: boolean; error?: string }>;
+  /** Zalo API (thử nghiệm): đọc cookie HttpOnly của một phiên `zaloapi-*` —
+   *  zpsid/zpw_sek/… mà renderer không thấy qua document.cookie. Optional:
+   *  preload cũ chưa expose. */
+  readZaloCookies?(
+    partition: string,
+    names?: string[],
+  ): Promise<{
+    ok: boolean;
+    cookies?: Record<string, string>;
+    /** Toàn bộ cookie đã ghép "name=value; …" — bước đăng nhập server cần nguyên chuỗi này. */
+    header?: string;
+    seen?: string[];
+    error?: string;
+  }>;
 }
 
 /** Minimal surface of an Electron <webview> element we actually drive. */

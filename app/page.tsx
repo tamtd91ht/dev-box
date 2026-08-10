@@ -27,6 +27,7 @@ import ToolsWorkspace from '@/components/ToolsWorkspace';
 import ApiWorkspace from '@/components/ApiWorkspace';
 import BrowserTabWorkspace from '@/components/BrowserTabWorkspace';
 import BrowserWorkspace from '@/components/BrowserWorkspace';
+import ZaloApiWorkspace from '@/components/ZaloApiWorkspace';
 import RemoteWorkspace from '@/components/RemoteWorkspace';
 import AutomationWorkspace from '@/components/automation/AutomationWorkspace';
 import AutomationHost from '@/components/AutomationHost';
@@ -177,6 +178,7 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'api', icon: '📮', label: 'API', badge: 'http' },
   { key: 'webhooks', icon: '⚡', label: 'Webhooks', badge: 'tool' },
   { key: 'workspace', icon: '🧭', label: 'Workspace', badge: 'browser' },
+  { key: 'zaloapi', icon: '🟦', label: 'Zalo API', badge: 'api' },
   { key: 'automation', icon: '🤖', label: 'Automation', badge: 'engine' },
 ];
 
@@ -324,9 +326,13 @@ export default function Home() {
   // Unread messages across all browser workspaces (Zalo, …) — badges the
   // Workspace tab + the window title so new messages are visible from any tab.
   const [wsUnread, setWsUnread] = useState(0);
+  // Tin chưa đọc của tab Zalo API (nhánh API) — riêng với Workspace vì hai luồng
+  // độc lập, nhưng dồn chung vào tiêu đề cửa sổ.
+  const [zaUnread, setZaUnread] = useState(0);
   useEffect(() => {
-    document.title = wsUnread > 0 ? `(${wsUnread}) VHS DevBox` : 'VHS DevBox';
-  }, [wsUnread]);
+    const total = wsUnread + zaUnread;
+    document.title = total > 0 ? `(${total}) VHS DevBox` : 'VHS DevBox';
+  }, [wsUnread, zaUnread]);
 
   // Registered integration packs — each one is a top-level "Projects" tab.
   const [packs, setPacks] = useState<IntegrationView[]>([]);
@@ -369,7 +375,9 @@ export default function Home() {
   // Exception: the browser Workspace mounts from startup — its whole point is
   // alerting about new messages (Zalo) while you work on OTHER tabs, so its
   // guests must be running before the tab is ever clicked.
-  const [visited, setVisited] = useState<Record<string, boolean>>({ workspace: true });
+  // 'workspace' + 'zaloapi' đều mount NGAY từ đầu: cả hai cần guest sống nền để
+  // nhận tin (WebSocket của Zalo API) và gửi được từ tab khác — giống keepAlive.
+  const [visited, setVisited] = useState<Record<string, boolean>>({ workspace: true, zaloapi: true });
   useEffect(() => {
     setVisited((v) => (v[mode] ? v : { ...v, [mode]: true }));
   }, [mode]);
@@ -477,6 +485,8 @@ export default function Home() {
                 // Chuông chỉ nháy khi tab đó KHÔNG hiện trên màn hình — Ultra
                 // View đang mở sẵn Mail thì thôi đừng réo nữa.
                 t.key === 'workspace' && wsUnread > 0 && !shown('workspace') ? 'ms-alert' : '',
+                // Zalo API: tin đến (nhánh API) — nháy khi đang ở tab khác.
+                t.key === 'zaloapi' && zaUnread > 0 && !shown('zaloapi') ? 'ms-alert' : '',
                 // Mail đến chưa đọc — nháy khi đang ở tab khác.
                 t.key === 'mail' && mailUnread > 0 && !shown('mail') ? 'ms-alert' : '',
                 nUnread > 0 && !shown(t.key) ? 'ms-alert' : '',
@@ -492,6 +502,14 @@ export default function Home() {
                 >
                   <span className="ms-bell-ico" aria-hidden>🔔</span>
                   {wsUnread > 99 ? '99+' : wsUnread}
+                </span>
+              ) : t.key === 'zaloapi' && zaUnread > 0 ? (
+                <span
+                  className={`ms-unread ms-bell${!shown('zaloapi') ? ' ringing' : ''}`}
+                  title={`${zaUnread} tin nhắn mới (Zalo API)`}
+                >
+                  <span className="ms-bell-ico" aria-hidden>🔔</span>
+                  {zaUnread > 99 ? '99+' : zaUnread}
                 </span>
               ) : t.key === 'mail' && mailUnread > 0 ? (
                 // Bộ đếm sống: hiện cả khi ĐANG ở tab Mail (như hòm thư thật),
@@ -680,6 +698,11 @@ export default function Home() {
         {visited.workspace && (
           <main className="workspace" data-webview style={pane('workspace', true)} aria-hidden={!shown('workspace')}>
             <BrowserWorkspace onUnread={setWsUnread} visible={shown('workspace')} />
+          </main>
+        )}
+        {visited.zaloapi && (
+          <main className="workspace" data-webview style={pane('zaloapi', true)} aria-hidden={!shown('zaloapi')}>
+            <ZaloApiWorkspace onUnread={setZaUnread} visible={shown('zaloapi')} />
           </main>
         )}
         {visited.automation && (
