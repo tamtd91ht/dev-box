@@ -3355,8 +3355,22 @@ pre.kafka-drawer-body {
 
 .sheet-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--glass-brd); border-radius: 10px; }
 .sheet-table { border-collapse: collapse; font-size: 12.5px; font-family: var(--mono); }
-.sheet-grid { width: max-content; min-width: 100%; }
+/* KHÔNG dùng `width: max-content; min-width: 100%`: khi bảng hẹp hơn khung
+   nhìn, min-width kéo giãn bảng và `table-layout: fixed` CHIA LẠI phần dư cho
+   MỌI cột — đè mất độ rộng <col> mình đặt (đo được: khai 96px, ra 227px). Đó
+   chính là lỗi "cột thì kéo được cột không, không kéo tự do được".
+   Cách đúng (đã đo): `width: 100%` + một cột đệm cuối KHÔNG khai width — cột
+   đệm nuốt trọn phần dư, các cột thật giữ nguyên đúng px. */
+.sheet-grid { width: 100%; }
 .sheet-grid td, .sheet-grid th { white-space: nowrap; }
+/* Cột đệm cuối bảng: hứng khoảng trống bên phải khi bảng hẹp hơn khung nhìn,
+   thay cho `min-width: 100%` (thứ từng đè mất độ rộng cột). Không viền, không
+   bấm được — chỉ để nền trải hết bề ngang cho gọn mắt. */
+/* Ô đệm cuối dòng/cột: chỉ để nuốt chỗ trống, không phải ô dữ liệu — bỏ viền
+   phải và không nhận tô nền theo hover/chọn để nó "vô hình". */
+.sheet-filler { padding: 0; border-right: 0; cursor: default; }
+.sheet-grid tbody tr:hover td.sheet-filler,
+.sheet-grid.paper tbody tr:hover td.sheet-filler { background: transparent; }
 .sheet-table th, .sheet-table td {
   padding: 4px 8px; border-bottom: 1px solid var(--glass-brd); border-right: 1px solid var(--glass-brd);
   text-align: left; max-width: 420px; overflow: hidden; text-overflow: ellipsis;
@@ -5598,6 +5612,65 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* Đầu cột bấm được (chọn cả cột) */
 .sheet-colhead { cursor: pointer; user-select: none; }
 .sheet-colhead:hover { color: var(--text); }
+
+/* ── Kéo đổi kích thước cột/dòng (như Excel) ──────────────────────────────
+   Hai cái bẫy từng làm tay nắm "có hình mà bấm không được":
+     1. `.sheet-table th` có `overflow: hidden` → phần tay nắm thò ra ngoài mép
+        bị cắt mất. Vì vậy tay nắm nằm GỌN trong ô (inset 0, không âm) và hai
+        ô đầu dòng/cột được trả lại `overflow: visible`.
+     2. Đặt `height: 100%` cho con absolute của <th>: ô cao `auto` nên phần
+        trăm quy ra 0 → vùng bấm 9px×0px. Luôn căng bằng CẶP INSET
+        (top+bottom hoặc left+right), không dùng phần trăm.
+   Đầu CỘT thêm <div class="sheet-head-inner"> để chiều cao tay nắm bám đúng
+   chiều cao ô; đầu DÒNG thì treo thẳng vào <th> (đã sticky → là containing
+   block sẵn) để tay nắm luôn nằm đúng đáy dòng dù dòng cao bao nhiêu.
+   Đã đo bằng trình duyệt thật: cột 96→176px, dòng 23→73px, mỗi lần kéo 1 op. */
+.sheet-table thead th.sheet-colhead,
+.sheet-table th.sheet-rownum { overflow: visible; }
+
+.sheet-head-inner {
+  position: relative;
+  display: block;
+  /* Kéo giãn ra sát mép ô, bù đúng phần padding của th (4px 8px) — nhờ vậy
+     tay nắm nằm ngay trên đường kẻ chứ không lùi vào trong. */
+  margin: -4px -8px;
+  padding: 4px 8px;
+  min-height: 15px;
+}
+
+.sheet-resize-col,
+.sheet-resize-row { position: absolute; z-index: 6; }
+.sheet-resize-col {
+  top: 0; bottom: 0; right: 0; width: 9px;
+  cursor: col-resize;
+}
+.sheet-resize-row {
+  left: 0; right: 0; bottom: 0; height: 9px;
+  cursor: row-resize;
+}
+.sheet-resize-col::after,
+.sheet-resize-row::after {
+  content: ''; position: absolute; background: var(--accent);
+  opacity: 0; transition: opacity .12s;
+}
+.sheet-resize-col::after { top: 0; bottom: 0; right: 0; width: 3px; }
+.sheet-resize-row::after { left: 0; right: 0; bottom: 0; height: 3px; }
+.sheet-resize-col:hover::after,
+.sheet-resize-row:hover::after,
+.sheet-resize-col.on::after,
+.sheet-resize-row.on::after { opacity: 1; }
+
+/* Số đo hiện lên trong lúc kéo mép */
+.sheet-resize-readout {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 22px; z-index: 45;
+  padding: 5px 12px; border-radius: 999px; pointer-events: none;
+  background: var(--bg-1, var(--bg)); border: 1px solid var(--accent);
+  color: var(--text); font-family: var(--mono); font-size: 12px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .34);
+}
+
+/* Đang kéo: khoá bôi đen chữ toàn lưới + giữ con trỏ đúng kiểu. */
+.sheet-scroll.resizing { user-select: none; }
 
 /* Menu chuột phải trên lưới / đầu dòng / đầu cột */
 .sheet-ctx-backdrop { position: fixed; inset: 0; z-index: 40; }

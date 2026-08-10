@@ -162,7 +162,45 @@ export type SheetOp =
   /** Định dạng một vùng (font/màu/nền/căn lề/viền/numFmt) — chỉ .xlsx. */
   | { op: 'style'; r1: number; c1: number; r2: number; c2: number; st: StylePatch }
   | { op: 'merge'; r1: number; c1: number; r2: number; c2: number }
-  | { op: 'unmerge'; r1: number; c1: number; r2: number; c2: number };
+  | { op: 'unmerge'; r1: number; c1: number; r2: number; c2: number }
+  /** Đổi độ rộng cột / chiều cao dòng (px trên màn hình) — chỉ .xlsx.
+   *  px = null → trả về mặc định của Excel. */
+  | { op: 'colWidth'; c: number; px: number | null }
+  | { op: 'rowHeight'; r: number; px: number | null };
+
+// ── Kích thước dòng/cột: px trên màn hình ↔ đơn vị của Excel ────────────────
+// Excel đo cột theo "số ký tự" của font mặc định (≈7px/ký tự + 5px padding) và
+// đo dòng theo point (1pt = 4/3 px). Client làm việc bằng px cho trực quan, hai
+// hàm này là chỗ DUY NHẤT quy đổi — server đọc và ghi đều dùng chung.
+
+export const PX_PER_CHAR = 7;
+export const COL_PAD_PX = 5;
+
+/** Độ rộng cột: đơn vị Excel → px màn hình. */
+export function colWidthToPx(w: number): number {
+  return Math.round(w * PX_PER_CHAR + COL_PAD_PX);
+}
+
+/** Độ rộng cột: px màn hình → đơn vị Excel. */
+export function pxToColWidth(px: number): number {
+  return Math.max(0, (px - COL_PAD_PX) / PX_PER_CHAR);
+}
+
+/** Chiều cao dòng: point (Excel) → px. */
+export function rowHeightToPx(h: number): number {
+  return Math.round((h * 4) / 3);
+}
+
+/** Chiều cao dòng: px → point (Excel). */
+export function pxToRowHeight(px: number): number {
+  return Math.max(0, (px * 3) / 4);
+}
+
+/** Giới hạn kéo (px) — khớp trần của Excel: cột 255 ký tự, dòng 409.5pt. */
+export const MIN_COL_PX = 8;
+export const MAX_COL_PX = colWidthToPx(255);
+export const MIN_ROW_PX = 8;
+export const MAX_ROW_PX = rowHeightToPx(409.5);
 
 export interface SheetSaveResult {
   backupPath: string;

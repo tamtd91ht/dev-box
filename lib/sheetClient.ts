@@ -8,7 +8,7 @@
 //      refused because ExcelJS drops VBA), stat'ed as a real file, size-capped.
 //   4. Save is READ-MODIFY-WRITE with an op log: the file is re-read fresh and
 //      the client's ops (set cell / insert-delete row-col / định dạng vùng /
-//      trộn-bỏ trộn ô) are replayed in
+//      trộn-bỏ trộn ô / độ rộng cột - chiều cao dòng) are replayed in
 //      order. Untouched cells keep styles/widths/merges/formulas — sending the
 //      whole grid back instead would flatten every formula to its value.
 //      Known ExcelJS limits: charts/pivots/slicers may not round-trip.
@@ -21,7 +21,17 @@ import { promises as fs } from 'fs';
 import ExcelJS from 'exceljs';
 import Papa from 'papaparse';
 import type { BorderPreset, CellType, SheetOp, SheetOpenResult, SheetSaveResult, StylePatch, WireCell, WireMerge, WireSheet, WireStyle } from './sheet';
-import { borderEdges } from './sheet';
+import {
+  borderEdges,
+  colWidthToPx,
+  pxToColWidth,
+  rowHeightToPx,
+  pxToRowHeight,
+  MIN_COL_PX,
+  MAX_COL_PX,
+  MIN_ROW_PX,
+  MAX_ROW_PX,
+} from './sheet';
 import { formatNumFmt, isDateFmt } from './numFmt';
 import { OFFICE_ALLOW_WRITE } from './officeFlags';
 import {
@@ -262,8 +272,8 @@ function sheetToWire(ws: ExcelJS.Worksheet): WireSheet {
   for (let c = 1; c <= cc; c++) {
     const col = ws.getColumn(c);
     colStyles[c] = col?.style;
-    // Excel width tính theo ký tự font mặc định ≈ 7px/char + 5px padding.
-    colW.push(typeof col?.width === 'number' ? Math.round(col.width * 7 + 5) : null);
+    // Excel width tính theo ký tự font mặc định — quy ra px (xem lib/sheet.ts).
+    colW.push(typeof col?.width === 'number' ? colWidthToPx(col.width) : null);
     if (col?.hidden) hiddenCols.push(c);
   }
 
@@ -275,7 +285,7 @@ function sheetToWire(ws: ExcelJS.Worksheet): WireSheet {
 
   for (let r = 1; r <= rc; r++) {
     const row = ws.getRow(r);
-    rowH.push(typeof row.height === 'number' ? Math.round((row.height * 4) / 3) : null);
+    rowH.push(typeof row.height === 'number' ? rowHeightToPx(row.height) : null);
     if (row.hidden) hiddenRows.push(r);
     // ExcelJS Row có .style ở runtime nhưng typings không khai — cast hẹp.
     const rowStyle = (row as unknown as { style?: Partial<ExcelJS.Style> }).style;
@@ -606,6 +616,14 @@ function applyStyleOp(ws: ExcelJS.Worksheet, op: Extract<SheetOp, { op: 'style' 
   }
 }
 
+/** px của op đổi kích thước: null (về mặc định) hoặc số đã kẹp vào [min,max]. */
+function sanitizeSizePx(raw: unknown, min: number, max: number, what: string): number | null {
+  if (raw === null || raw === undefined) return null;
+  const px = Number(raw);
+  if (!Number.isFinite(px)) throw new Error(`op ${what} có px không hợp lệ: ${String(raw)}`);
+  return Math.min(max, Math.max(min, Math.round(px)));
+}
+
 function sanitizeOps(raw: unknown): SheetOp[] {
   if (!Array.isArray(raw)) throw new Error('ops phải là mảng.');
   return raw.map((o): SheetOp => {
@@ -618,6 +636,16 @@ function sanitizeOps(raw: unknown): SheetOp[] {
       const c = Number(op.c);
       if (!Number.isInteger(c) || c < 1 || c > 16_384) throw new Error(`op ${op.op} có c không hợp lệ: ${op.c}`);
       return { op: op.op, c };
+    }
+    if (op.op === 'colWidth') {
+      const c = Number(op.c);
+      if (!Number.isInteger(c) || c < 1 || c > 16_384) throw new Error(`op colWidth có c không hợp lệ: ${op.c}`);
+      return { op: 'colWidth', c, px: sanitizeSizePx(op.px, MIN_COL_PX, MAX_COL_PX, 'colWidth') };
+    }
+    if (op.op === 'rowHeight') {
+      const r = Number(op.r);
+      if (!Number.isInteger(r) || r < 1 || r > 1_048_576) throw new Error(`op rowHeight có r không hợp lệ: ${op.r}`);
+      return { op: 'rowHeight', r, px: sanitizeSizePx(op.px, MIN_ROW_PX, MAX_ROW_PX, 'rowHeight') };
     }
     const r = Number(op.r);
     if (!Number.isInteger(r) || r < 1 || r > 1_048_576) throw new Error(`op có r không hợp lệ: ${op.r}`);
@@ -708,6 +736,13 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
           ws.mergeCells(op.r1, op.c1, op.r2, op.c2);
         } else if (op.op === 'unmerge') {
           ws.unMergeCells(op.r1, op.c1, op.r2, op.c2);
+        } else if (op.op === 'colWidth') {
+          // undefined = bỏ width riêng → cột về mặc định của sheet.
+          ws.getColumn(op.c).width = op.px === null ? undefined : pxToColWidth(op.px);
+        } else if (op.op === 'rowHeight') {
+          // Setter của ExcelJS nhận undefined để BỎ chiều cao riêng (dòng về
+          // mặc định), nhưng typings khai là number — cast hẹp đúng chỗ này.
+          (ws.getRow(op.r) as { height?: number }).height = op.px === null ? undefined : pxToRowHeight(op.px);
         }
       }
     }
@@ -723,7 +758,8 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
     const n = (k: SheetOp['op']) => s.ops.filter((o) => o.op === k).length;
     return `${s.name}(set=${n('set')},insRow=${n('insertRow')},delRow=${n('deleteRow')}`
       + `,insCol=${n('insertCol')},delCol=${n('deleteCol')}`
-      + `,style=${n('style')},merge=${n('merge')},unmerge=${n('unmerge')})`;
+      + `,style=${n('style')},merge=${n('merge')},unmerge=${n('unmerge')}`
+      + `,colW=${n('colWidth')},rowH=${n('rowHeight')})`;
   }).join(' ');
   // Audit line → server stdout (same convention as PG_AUDIT / MONGO_AUDIT).
   // eslint-disable-next-line no-console

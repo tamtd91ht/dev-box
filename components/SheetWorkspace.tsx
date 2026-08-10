@@ -15,6 +15,10 @@
 // Chèn/xóa dòng-cột có đủ 4 hướng (trên/dưới/trái/phải) — cả ở ribbon lẫn
 // menu chuột phải trên đầu dòng/cột.
 //
+// KÍCH THƯỚC: kéo mép phải đầu cột để đổi độ rộng, mép dưới đầu dòng để đổi
+// chiều cao (double-click = vừa nội dung / về mặc định). Với .xlsx kích thước
+// lưu vào file qua op colWidth/rowHeight; CSV chỉ đổi trong phiên xem.
+//
 // Editing model giữ nguyên: working copy + OP LOG per sheet (set / insertRow /
 // deleteRow / insertCol / deleteCol / style / merge / unmerge, 1-based). Save
 // ships the ops; server re-reads file rồi replay — ô không đụng giữ nguyên
@@ -35,6 +39,10 @@ import {
   colLetter,
   fmtBytes,
   applyStylePatch,
+  MIN_COL_PX,
+  MAX_COL_PX,
+  MIN_ROW_PX,
+  MAX_ROW_PX,
   type SheetFlags,
   type SheetOp,
   type SheetOpenResult,
@@ -127,6 +135,8 @@ function cellCss(st: WireStyle | undefined, nc: string | undefined): CSSProperti
 }
 
 const DEFAULT_COL_PX = 96;
+/** Chiều cao dòng mặc định (px) — khớp padding của .sheet-cell trong CSS. */
+const DEFAULT_ROW_PX = 25;
 
 interface Editing extends Pos {
   /** Ký tự vừa gõ để bắt đầu sửa (thay nội dung cũ, kiểu Excel). */
@@ -176,6 +186,18 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const styleIdxRef = useRef<Map<string, number>[]>([]);
   /** Vùng merge làm việc per-sheet (file + do user trộn trong phiên). */
   const [mergesW, setMergesW] = useState<WireMerge[][]>([]);
+  /** Kích thước LÀM VIỆC per-sheet: px cột/dòng đã kéo (seed từ file).
+   *  Map thưa 1-based — chỉ chứa cột/dòng có kích thước riêng, còn lại mặc định. */
+  const [colWW, setColWW] = useState<Map<number, number>[]>([]);
+  const [rowHW, setRowHW] = useState<Map<number, number>[]>([]);
+  /** Đang kéo mép cột/dòng — vẽ đường dóng và cập nhật kích thước theo chuột. */
+  const [resizing, setResizing] = useState<
+    { kind: 'col'; idx: number; px: number } | { kind: 'row'; idx: number; px: number } | null
+  >(null);
+  /** Đã nhắc "CSV không lưu được kích thước" chưa (nhắc một lần mỗi phiên). */
+  const csvSizeHintRef = useRef(false);
+  /** Badge số đo lúc kéo — cập nhật bằng textContent để khỏi render lại lưới. */
+  const readoutRef = useRef<HTMLDivElement | null>(null);
   /** Menu chuột phải: trên đầu dòng, đầu cột, hay trong lưới. */
   const [ctx, setCtx] = useState<{ x: number; y: number; kind: 'row' | 'col' | 'cell' } | null>(null);
 
@@ -263,6 +285,28 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       return m;
     });
     setMergesW(res.sheets.map((s) => (s.merges ?? []).map((m) => ({ ...m }))));
+    // Kích thước từ file → map thưa 1-based (bỏ qua ô null = dùng mặc định).
+    // CSV không mang độ rộng: lưới giờ là table-layout fixed nên phải tự ước
+    // lượng theo nội dung, kẻo mọi cột đều 96px và text dài bị cắt hết.
+    setColWW(res.sheets.map((s) => {
+      const m = new Map<number, number>();
+      (s.colW ?? []).forEach((w, i) => { if (typeof w === 'number') m.set(i + 1, w); });
+      if (res.kind === 'csv') {
+        const sample = s.rows.slice(0, 200);
+        const cols = sample.reduce((n, row) => Math.max(n, row.length), 0);
+        for (let c = 1; c <= cols; c++) {
+          if (m.has(c)) continue;
+          const widest = sample.reduce((n, row) => Math.max(n, row[c - 1]?.v.length ?? 0), 0);
+          m.set(c, Math.min(320, Math.max(DEFAULT_COL_PX, widest * 7 + 18)));
+        }
+      }
+      return m;
+    }));
+    setRowHW(res.sheets.map((s) => {
+      const m = new Map<number, number>();
+      (s.rowH ?? []).forEach((h, i) => { if (typeof h === 'number') m.set(i + 1, h); });
+      return m;
+    }));
     setActive(0);
     resetView();
     setPickerOpen(false);
@@ -476,6 +520,25 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     )));
   }, [active]);
 
+  /**
+   * Chèn/xóa dòng-cột làm mọi thứ phía sau dịch chỗ — kích thước riêng phải
+   * dịch theo, không thì kéo rộng cột C xong chèn cột trước nó là độ rộng nằm
+   * lại sai chỗ. delta > 0 = chèn, delta < 0 = xóa (bỏ luôn size của phần bị xóa).
+   */
+  const shiftSizes = useCallback((kind: 'col' | 'row', at: number, delta: number) => {
+    const set = kind === 'col' ? setColWW : setRowHW;
+    set((list) => list.map((m, i) => {
+      if (i !== active) return m;
+      const next = new Map<number, number>();
+      for (const [idx, px] of m) {
+        if (idx < at) { next.set(idx, px); continue; }
+        if (delta < 0 && idx < at - delta) continue; // nằm trong vùng bị xóa
+        next.set(idx + delta, px);
+      }
+      return next;
+    }));
+  }, [active]);
+
   const insertRowAt = useCallback((at: number, howMany = 1) => {
     const count = clampStep(howMany, 'dòng');
     setGrids((gs) => gs.map((g, i) => {
@@ -486,11 +549,12 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     }));
     // Chèn N lần tại cùng vị trí = N dòng trống liền nhau (server replay in order).
     pushOps(() => ({ op: 'insertRow', r: at }), count);
+    shiftSizes('row', at, count);
     setSel({ r: at, c: sel?.c ?? 1 });
     setSelRange(null);
     setEditing(null);
     setRowLimit((l) => (at > l ? at + RENDER_STEP : l));
-  }, [active, sel, pushOps, clampStep]);
+  }, [active, sel, pushOps, clampStep, shiftSizes]);
 
   const deleteRowAt = useCallback((at: number, howMany = 1) => {
     const count = clampStep(howMany, 'dòng');
@@ -505,9 +569,10 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     }));
     // Xóa N lần tại cùng vị trí = N dòng liên tiếp (mỗi lần xóa dồn lên).
     pushOps(() => ({ op: 'deleteRow', r: at }), count);
+    shiftSizes('row', at, -count);
     setSelRange(null);
     setEditing(null);
-  }, [active, grid, pushOps, clampStep]);
+  }, [active, grid, pushOps, clampStep, shiftSizes]);
 
   const insertColAt = useCallback((at: number, howMany = 1) => {
     const count = clampStep(howMany, 'cột');
@@ -521,10 +586,11 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       });
     }));
     pushOps(() => ({ op: 'insertCol', c: at }), count);
+    shiftSizes('col', at, count);
     setSel({ r: sel?.r ?? 1, c: at });
     setSelRange(null);
     setEditing(null);
-  }, [active, sel, pushOps, clampStep]);
+  }, [active, sel, pushOps, clampStep, shiftSizes]);
 
   const deleteColAt = useCallback((at: number, howMany = 1) => {
     const count = clampStep(howMany, 'cột');
@@ -543,9 +609,137 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       });
     }));
     pushOps(() => ({ op: 'deleteCol', c: at }), count);
+    shiftSizes('col', at, -count);
     setSelRange(null);
     setEditing(null);
-  }, [active, grid, pushOps, clampStep]);
+  }, [active, grid, pushOps, clampStep, shiftSizes]);
+
+  // ── Kéo đổi kích thước cột / dòng (như Excel) ──────────────────────────────
+  // Nắm mép phải đầu cột (hoặc mép dưới đầu dòng) rồi kéo.
+  //
+  // MƯỢT: trong lúc kéo KHÔNG setState — mỗi mousemove mà render lại cả lưới
+  // (hàng nghìn <td>) thì giật rõ rệt. Thay vào đó ghi thẳng vào DOM đúng một
+  // node: <col> của cột, hoặc <tr> của dòng. React chỉ vào cuộc MỘT lần lúc
+  // thả (setSize + 1 op) — kéo qua 200px không sinh 200 op và cũng không sinh
+  // 200 lần render.
+
+  const colPx = useCallback((c: number) => colWW[active]?.get(c) ?? DEFAULT_COL_PX, [colWW, active]);
+  const rowPx = useCallback((r: number) => rowHW[active]?.get(r) ?? DEFAULT_ROW_PX, [rowHW, active]);
+
+  /** Đặt kích thước (px) cho cột/dòng trong working copy. null = về mặc định. */
+  const setSize = useCallback((kind: 'col' | 'row', idx: number, px: number | null) => {
+    const set = kind === 'col' ? setColWW : setRowHW;
+    set((list) => list.map((m, i) => {
+      if (i !== active) return m;
+      const next = new Map(m);
+      if (px === null) next.delete(idx); else next.set(idx, px);
+      return next;
+    }));
+  }, [active]);
+
+  /** Ghi op đổi kích thước (chỉ .xlsx — CSV không lưu được kích thước). */
+  const pushSizeOp = useCallback((kind: 'col' | 'row', idx: number, px: number | null) => {
+    if (file?.kind !== 'xlsx') {
+      // CSV là text thuần: kéo vẫn đổi được để dễ đọc, nhưng chỉ trong phiên
+      // xem này — báo một lần cho khỏi tưởng đã lưu vào file.
+      if (!csvSizeHintRef.current) {
+        csvSizeHintRef.current = true;
+        flash('CSV không lưu được độ rộng cột — kích thước chỉ áp dụng khi đang xem.');
+      }
+      return;
+    }
+    const op: SheetOp = kind === 'col' ? { op: 'colWidth', c: idx, px } : { op: 'rowHeight', r: idx, px };
+    setOps((os) => os.map((o, i) => {
+      if (i !== active) return o;
+      // Kéo đi kéo lại cùng một cột → chỉ giữ op cuối (giá trị tuyệt đối).
+      const last = o[o.length - 1];
+      const sameTarget = last?.op === op.op
+        && (op.op === 'colWidth' ? (last as { c: number }).c === idx : (last as { r: number }).r === idx);
+      return sameTarget ? [...o.slice(0, -1), op] : [...o, op];
+    }));
+  }, [file, active, flash]);
+
+  /**
+   * mousedown trên tay nắm mép cột/dòng → kéo cho tới khi thả.
+   * Toàn bộ vòng kéo nằm gọn trong hàm này (listener gắn ngay, không đợi
+   * effect chạy sau render — đó chính là chỗ hay "trượt" mất nét kéo đầu tiên).
+   */
+  const startResize = useCallback((kind: 'col' | 'row', idx: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation(); // không để lọt xuống header (kẻo chọn cả cột/dòng)
+
+    const min = kind === 'col' ? MIN_COL_PX : MIN_ROW_PX;
+    const max = kind === 'col' ? MAX_COL_PX : MAX_ROW_PX;
+    // Node được sửa trực tiếp: <col> điều khiển cả cột, <tr> cả dòng.
+    const target: HTMLElement | null = kind === 'col'
+      ? gridRef.current?.querySelector(`col[data-c="${idx}"]`) ?? null
+      : gridRef.current?.querySelector(`tr[data-r="${idx}"]`) ?? null;
+    // Mốc kéo lấy từ kích thước ĐANG HIỂN THỊ, không lấy từ state: dòng/cột
+    // chưa có kích thước riêng thì state chỉ có giá trị mặc định ước lượng,
+    // lệch vài px so với thực tế → nét kéo đầu tiên bị "nhảy".
+    // <col> không có hộp riêng nên đo qua ô đầu cột tương ứng.
+    const measured = kind === 'col'
+      ? gridRef.current?.querySelectorAll('th.sheet-colhead')[idx - 1]?.getBoundingClientRect().width
+      : (target as HTMLElement | null)?.getBoundingClientRect().height;
+    const startPx = Math.round(measured ?? (kind === 'col' ? colPx(idx) : rowPx(idx)));
+    const start = kind === 'col' ? e.clientX : e.clientY;
+    let lastPx = startPx;
+    let frame = 0;
+    const paint = () => {
+      frame = 0;
+      if (target) {
+        if (kind === 'col') target.style.width = `${lastPx}px`;
+        else target.style.height = `${lastPx}px`;
+      }
+      // Đọc ref ở đây chứ không phải lúc mousedown: badge số đo chỉ mount SAU
+      // khi setResizing render xong, lúc bắt đầu kéo nó còn chưa tồn tại.
+      const readout = readoutRef.current;
+      if (readout) {
+        readout.textContent = kind === 'col'
+          ? `Độ rộng cột ${colLetter(idx - 1)}: ${lastPx} px`
+          : `Chiều cao dòng ${idx}: ${lastPx} px`;
+      }
+    };
+
+    const move = (ev: MouseEvent) => {
+      const delta = (kind === 'col' ? ev.clientX : ev.clientY) - start;
+      lastPx = Math.min(max, Math.max(min, Math.round(startPx + delta)));
+      // Gộp theo khung hình: chuột bắn ra 100+ event/giây, vẽ 60 là đủ mượt.
+      if (!frame) frame = requestAnimationFrame(paint);
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      if (frame) cancelAnimationFrame(frame);
+      // Giờ mới cho React biết — style inline vừa đặt bằng tay sẽ được
+      // render chính thức đè lên, không nhấp nháy vì cùng một giá trị.
+      setResizing(null);
+      setSize(kind, idx, lastPx);
+      pushSizeOp(kind, idx, lastPx);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+    setResizing({ kind, idx, px: startPx } as typeof resizing);
+  }, [colPx, rowPx, setSize, pushSizeOp]);
+
+  /** Double-click tay nắm: co giãn vừa nội dung (autofit) như Excel. */
+  const autoFitCol = useCallback((c: number) => {
+    let widest = 0;
+    const rows = Math.min(grid.length, 2000); // đủ mẫu, khỏi quét file khổng lồ
+    for (let r = 1; r <= rows; r++) {
+      const text = cellAt(r, c).v;
+      if (text) widest = Math.max(widest, text.length);
+    }
+    const px = Math.min(MAX_COL_PX, Math.max(MIN_COL_PX, widest * 7 + 18));
+    setSize('col', c, px);
+    pushSizeOp('col', c, px);
+  }, [grid, cellAt, setSize, pushSizeOp]);
+
+  const autoFitRow = useCallback((r: number) => {
+    // Chiều cao mặc định là "vừa một dòng chữ" — autofit = bỏ chiều cao riêng.
+    setSize('row', r, null);
+    pushSizeOp('row', r, null);
+  }, [setSize, pushSizeOp]);
 
   // ── Định dạng (chỉ .xlsx) ───────────────────────────────────────────────────
 
@@ -1122,20 +1316,27 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '6px 0' }}>{err}</pre>}
       {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '6px 0' }}>{notice}</div>}
 
-      <div className="sheet-scroll" ref={gridRef} tabIndex={0} onKeyDown={onGridKeyDown}>
+      <div
+        className={`sheet-scroll${resizing ? ' resizing' : ''}`}
+        ref={gridRef}
+        tabIndex={0}
+        onKeyDown={onGridKeyDown}
+      >
         {/* xlsx: nền "giấy trắng" như Excel thật — màu chữ/nền của file vốn
             thiết kế cho giấy trắng, render trên dark theme sẽ chìm nghỉm. */}
-        <table className={`sheet-table sheet-grid${file.kind === 'xlsx' ? ' fixed paper' : ''}`}>
-          {/* Độ rộng cột THẬT của file (table-layout fixed) — cột ẩn → width 0. */}
-          {file.kind === 'xlsx' && (
-            <colgroup>
-              <col style={{ width: 44 }} />
-              {Array.from({ length: dispCols }, (_, ci) => {
-                const w = hiddenColSet.has(ci + 1) ? 0 : sheetMeta?.colW?.[ci] ?? DEFAULT_COL_PX;
-                return <col key={ci} style={{ width: w ?? DEFAULT_COL_PX }} />;
-              })}
-            </colgroup>
-          )}
+        <table className={`sheet-table sheet-grid fixed${file.kind === 'xlsx' ? ' paper' : ''}`}>
+          {/* Độ rộng cột đang dùng (file + user kéo) — cột ẩn → width 0.
+              table-layout fixed cho cả CSV để kéo cột cũng ăn. */}
+          <colgroup>
+            <col style={{ width: 44 }} />
+            {Array.from({ length: dispCols }, (_, ci) => (
+              // data-c: chỗ neo để lúc kéo sửa thẳng width, khỏi render lại lưới.
+              <col key={ci} data-c={ci + 1} style={{ width: hiddenColSet.has(ci + 1) ? 0 : colPx(ci + 1) }} />
+            ))}
+            {/* Cột đệm: hứng chỗ trống bên phải. KHÔNG khai width — đó chính là
+                thứ khiến nó nuốt phần dư thay vì chia đều cho các cột thật. */}
+            <col />
+          </colgroup>
           <thead>
             <tr>
               <th className="sheet-rownum-h">#</th>
@@ -1152,21 +1353,40 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                       if (!selRange || c < selRange.c1 || c > selRange.c2) selectWholeCol(c);
                       setCtx({ x: e.clientX, y: e.clientY, kind: 'col' });
                     }}
-                    title={`Chọn cả cột ${colLetter(ci)} · chuột phải để chèn/xóa cột`}
+                    title={`Chọn cả cột ${colLetter(ci)} · kéo mép phải để đổi rộng · chuột phải để chèn/xóa cột`}
                   >
-                    {colLetter(ci)}
+                    {/* Bọc trong div: <th> không neo được con absolute một cách
+                        đáng tin (xem .sheet-head-inner trong globals.css). */}
+                    <div className="sheet-head-inner">
+                      {colLetter(ci)}
+                      {/* Tay nắm mép phải: kéo = đổi rộng, double-click = vừa nội dung. */}
+                      <span
+                        className={`sheet-resize-col${resizing?.kind === 'col' && resizing.idx === c ? ' on' : ''}`}
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label={`Đổi độ rộng cột ${colLetter(ci)}`}
+                        onMouseDown={(e) => startResize('col', c, e)}
+                        onClick={(e) => e.stopPropagation()}
+                        onContextMenu={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => { e.stopPropagation(); autoFitCol(c); }}
+                        title={`Kéo để đổi độ rộng cột ${colLetter(ci)} · double-click để vừa nội dung`}
+                      />
+                    </div>
                   </th>
                 );
               })}
+              {/* Ô đệm: nuốt chỗ trống bên phải (xem .sheet-grid trong CSS). */}
+              <th className="sheet-filler" aria-hidden />
             </tr>
           </thead>
           <tbody>
             {Array.from({ length: shownRows }, (_, ri) => {
               const r = ri + 1;
-              const rh = sheetMeta?.rowH?.[ri] ?? null;
+              const rh = rowHW[active]?.get(r) ?? null;
               return (
                 <tr
                   key={r}
+                  data-r={r}
                   style={{
                     ...(rh !== null ? { height: rh } : {}),
                     ...(hiddenRowSet.has(r) ? { display: 'none' } : {}),
@@ -1180,9 +1400,23 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                       if (!selRange || r < selRange.r1 || r > selRange.r2) selectWholeRow(r);
                       setCtx({ x: e.clientX, y: e.clientY, kind: 'row' });
                     }}
-                    title={`Chọn cả dòng ${r} · chuột phải để chèn/xóa dòng`}
+                    title={`Chọn cả dòng ${r} · kéo mép dưới để đổi cao · chuột phải để chèn/xóa dòng`}
                   >
                     {r}
+                    {/* Tay nắm mép dưới là con TRỰC TIẾP của <th>: căng bằng cặp
+                        inset left+right nên luôn rộng đúng bằng ô, và bám đáy ô
+                        dù dòng cao bao nhiêu. */}
+                    <span
+                      className={`sheet-resize-row${resizing?.kind === 'row' && resizing.idx === r ? ' on' : ''}`}
+                      role="separator"
+                      aria-orientation="horizontal"
+                      aria-label={`Đổi chiều cao dòng ${r}`}
+                      onMouseDown={(e) => startResize('row', r, e)}
+                      onClick={(e) => e.stopPropagation()}
+                      onContextMenu={(e) => e.stopPropagation()}
+                      onDoubleClick={(e) => { e.stopPropagation(); autoFitRow(r); }}
+                      title={`Kéo để đổi chiều cao dòng ${r} · double-click để về mặc định`}
+                    />
                   </th>
                   {Array.from({ length: dispCols }, (_, ci) => {
                     const c = ci + 1;
@@ -1270,6 +1504,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                       </td>
                     );
                   })}
+                  {/* Ô đệm cuối dòng — cặp với <col> đệm, xem .sheet-grid. */}
+                  <td className="sheet-filler" aria-hidden />
                 </tr>
               );
             })}
@@ -1286,6 +1522,17 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           </div>
         )}
       </div>
+
+      {/* Đang kéo mép: hiện số đo như Excel ("Độ rộng: 128 px").
+          Nội dung do vòng kéo ghi thẳng qua ref (xem startResize) — React chỉ
+          dựng/gỡ cái khung này chứ không render lại theo từng pixel. */}
+      {resizing && (
+        <div className="sheet-resize-readout" role="status" ref={readoutRef}>
+          {resizing.kind === 'col'
+            ? `Độ rộng cột ${colLetter(resizing.idx - 1)}: ${resizing.px} px`
+            : `Chiều cao dòng ${resizing.idx}: ${resizing.px} px`}
+        </div>
+      )}
 
       {/* Status bar kiểu Excel: quét vùng là thấy Sum/Avg/Count ngay. */}
       {rangeStats && rangeStats.count > 0 && (
@@ -1429,6 +1676,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                 if (n('style') > 0) parts.push(`${n('style')} lần định dạng`);
                 if (n('merge') > 0) parts.push(`${n('merge')} vùng trộn`);
                 if (n('unmerge') > 0) parts.push(`${n('unmerge')} vùng bỏ trộn`);
+                if (n('colWidth') > 0) parts.push(`${n('colWidth')} cột đổi rộng`);
+                if (n('rowHeight') > 0) parts.push(`${n('rowHeight')} dòng đổi cao`);
                 return <li key={s.name}><b>{s.name}</b>: {parts.join(' · ')}</li>;
               })}
             </ul>
