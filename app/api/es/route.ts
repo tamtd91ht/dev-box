@@ -7,8 +7,9 @@
 //     'indices' { connectionId }                → { ok, result: EsIndexInfo[] }
 //     'nodes'   { connectionId }                → { ok, result: EsNodeInfo[] }   (heap/disk/cpu/load)
 //     'mapping' { connectionId, index }         → { ok, result: { json, truncated } }
-//     'search'  { connectionId, index, query?, source?, sort?, size?, from? } → { ok, result: EsSearchResult }
-//     'count'   { connectionId, index, query? } → { ok, result: { count, tookMs } }
+//     'search'  { connectionId, index, body? | (query?, aggs?, source?, sort?, size?), from? } → { ok, result: EsSearchResult }
+//               (body = nguyên body _search kiểu Dev Tools — ưu tiên nếu có)
+//     'count'   { connectionId, index, query? | body? } → { ok, result: { count, tookMs } }
 //     'console' { connectionId, method, path, body? } → { ok, result: EsConsoleResult }
 //
 // There is NO write action — the tool cannot index/delete/change settings.
@@ -92,7 +93,9 @@ export async function POST(req: NextRequest) {
         break;
       case 'search':
         result = await search(conn, String(body.index ?? ''), {
+          body: body.body,
           query: body.query,
+          aggs: body.aggs,
           source: body.source,
           sort: body.sort,
           size: body.size,
@@ -100,7 +103,7 @@ export async function POST(req: NextRequest) {
         });
         break;
       case 'count':
-        result = await count(conn, String(body.index ?? ''), body.query);
+        result = await count(conn, String(body.index ?? ''), { query: body.query, body: body.body });
         break;
       case 'console':
         // Lệnh REST thô từ tab Console — read-only được giữ bằng allowlist trong esClient.

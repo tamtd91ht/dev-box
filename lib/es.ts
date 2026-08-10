@@ -70,6 +70,8 @@ export interface EsSearchResult {
   size: number;
   from: number;
   tookMs: number;
+  /** Kết quả `aggregations` — null khi request không có aggs. */
+  aggs: WireDoc | null;
 }
 
 // ── Connection registry (CRUD) ────────────────────────────────────────────────
@@ -138,19 +140,25 @@ export function esMapping(connectionId: string, index: string): Promise<WireDoc>
 }
 
 export interface EsSearchParams {
-  query: string;
-  source: string;
-  sort: string;
-  size: number;
-  from: number;
+  /** NGUYÊN body _search (JSON, kiểu Kibana Dev Tools) — có thì các field rời bị bỏ qua. */
+  body?: string;
+  query?: string;
+  /** Phần `aggs` của body _search (JSON) — bỏ trống nếu không thống kê. */
+  aggs?: string;
+  source?: string;
+  sort?: string;
+  /** 0 = chỉ lấy aggregations. */
+  size?: number;
+  /** Phân trang — đè lên `from` trong body (nếu có). */
+  from?: number;
 }
 
 export function searchEs(connectionId: string, index: string, p: EsSearchParams): Promise<EsSearchResult> {
   return esAction<EsSearchResult>('search', { connectionId, index, ...p });
 }
 
-export function countEs(connectionId: string, index: string, query: string): Promise<{ count: number; tookMs: number }> {
-  return esAction<{ count: number; tookMs: number }>('count', { connectionId, index, query });
+export function countEs(connectionId: string, index: string, query: string, body?: string): Promise<{ count: number; tookMs: number }> {
+  return esAction<{ count: number; tookMs: number }>('count', { connectionId, index, query, body });
 }
 
 export interface EsConsoleResult {

@@ -22,20 +22,40 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   esQueryContext,
   esSuggestions,
+  esBodySuggestions,
   needsLeadingComma,
   formatEsQuery,
   ES_TEMPLATES,
+  ES_BODY_TEMPLATES,
   type EsField,
+  type EsQueryContext,
+  type EsSuggestion,
 } from '@/lib/esDsl';
 import { defineEsThemes, useEsTheme, ES_MONO } from './esMonaco';
 
 const SCHEME = 'es-query';
 
-// Field của index theo từng model. Đây LUÔN là cổng gác của provider: model nào
+/**
+ * Ô này nhập gì: `query` = chỉ phần "query" (Tìm nhanh cũ) · `body` = NGUYÊN
+ * body _search kiểu Kibana Dev Tools (query/aggs/sort/_source/size chung một ô).
+ */
+export type QueryEditorMode = 'query' | 'body';
+
+const SUGGEST_BY_MODE: Record<QueryEditorMode, (ctx: EsQueryContext, fields: EsField[]) => EsSuggestion[]> = {
+  query: esSuggestions,
+  body: esBodySuggestions,
+};
+
+const TEMPLATES_BY_MODE: Record<QueryEditorMode, typeof ES_TEMPLATES> = {
+  query: ES_TEMPLATES,
+  body: ES_BODY_TEMPLATES,
+};
+
+// Field + mode của từng model. Đây LUÔN là cổng gác của provider: model nào
 // không có trong map thì không phải ô query ES → không gợi ý. Dùng WeakMap trên
 // chính đối tượng model nên không phụ thuộc cách monaco chuẩn hoá uri, và model
 // bị dispose là tự rụng khỏi map.
-const fieldsByModel = new WeakMap<MonacoEditorNs.ITextModel, EsField[]>();
+const metaByModel = new WeakMap<MonacoEditorNs.ITextModel, { fields: EsField[]; mode: QueryEditorMode }>();
 
 const wired = new WeakSet<object>();
 let seq = 0;
@@ -56,12 +76,12 @@ function ensureEsSetup(monaco: Monaco) {
   monaco.languages.registerCompletionItemProvider('json', {
     triggerCharacters: ['"', ':', ',', '{', '[', ' ', '.'],
     provideCompletionItems(model: MonacoEditorNs.ITextModel, position: MonacoPosition) {
-      const fields = fieldsByModel.get(model);
-      if (!fields) return { suggestions: [] }; // model .json khác (tab Code) — không đụng vào
+      const meta = metaByModel.get(model);
+      if (!meta) return { suggestions: [] }; // model .json khác (tab Code) — không đụng vào
 
       const text = model.getValue();
       const ctx = esQueryContext(text, model.getOffsetAt(position));
-      const items = esSuggestions(ctx, fields);
+      const items = SUGGEST_BY_MODE[meta.mode](ctx, meta.fields);
       if (items.length === 0) return { suggestions: [] };
 
       const start = model.getPositionAt(ctx.replaceStart);
@@ -103,9 +123,13 @@ export interface QueryEditorProps {
   fields?: EsField[];
   /** Nhãn nhỏ phía trên ô nhập. */
   label?: string;
+  /** Chữ mờ trong ô khi trống (như placeholder của input) — để ô tự mô tả nó là gì. */
+  placeholder?: string;
+  /** Ô nhập phần `query` (mặc định) hay nguyên `body` _search. */
+  mode?: QueryEditorMode;
 }
 
-export default function QueryEditor({ value, onChange, onRun, fields = [], label }: QueryEditorProps) {
+export default function QueryEditor({ value, onChange, onRun, fields = [], label, placeholder, mode = 'query' }: QueryEditorProps) {
   const theme = useEsTheme();
   const editorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null);
   const [modelPath] = useState(() => `${SCHEME}:/browser/q-${++seq}.json`);
@@ -116,11 +140,11 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
   const runRef = useRef(onRun);
   runRef.current = onRun;
 
-  // Provider chạy ngoài vòng đời React → đẩy field vào registry mỗi lần đổi.
+  // Provider chạy ngoài vòng đời React → đẩy field + mode vào registry mỗi lần đổi.
   useEffect(() => {
     const model = editorRef.current?.getModel();
-    if (model) fieldsByModel.set(model, fields);
-  }, [fields, mounted]);
+    if (model) metaByModel.set(model, { fields, mode });
+  }, [fields, mode, mounted]);
 
   const lines = Math.max(3, Math.min(value.split('\n').length + 1, 18));
   const height = lines * 19 + 14;
@@ -146,16 +170,18 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
   return (
     <div className="es-qed">
       <div className="es-qed-bar">
-        <span className="es-qed-label">{label ?? 'Query DSL — chỉ phần "query" (trống = match_all)'}</span>
+        <span className="es-qed-label">
+          {label ?? 'Query DSL — chỉ phần "query" (trống = match_all)'}
+        </span>
         <span className="es-qed-tpls">
-          {ES_TEMPLATES.map((t) => (
+          {TEMPLATES_BY_MODE[mode].map((t) => (
             <button key={t.label} className="chip-btn" title={t.title} onClick={() => insertTemplate(t.body)}>
               {t.label}
             </button>
           ))}
         </span>
         <button className="chip-btn" title="Pretty-print JSON (Shift+Alt+F)" onClick={doFormat}>⟲ Format</button>
-        <button className="chip-btn" title="Xoá nội dung query" disabled={!value} onClick={() => { onChange(''); setFormatErr(null); }}>✕</button>
+        <button className="chip-btn" title="Xoá nội dung" disabled={!value} onClick={() => { onChange(''); setFormatErr(null); }}>✕</button>
       </div>
 
       <div className="es-qed-box" style={{ height }}>
@@ -173,7 +199,7 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
           onMount={(editor, monaco) => {
             editorRef.current = editor;
             const model = editor.getModel();
-            if (model) fieldsByModel.set(model, fields);
+            if (model) metaByModel.set(model, { fields, mode });
             setMounted(true);
             editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runRef.current());
             editor.addAction({
@@ -191,6 +217,7 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
           }}
           loading={<span className="spinner" aria-hidden />}
           options={{
+            placeholder,
             fontSize: 12.5,
             fontFamily: ES_MONO,
             lineNumbers: 'on',

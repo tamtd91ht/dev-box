@@ -369,6 +369,44 @@ export const ES_TEMPLATES: EsTemplate[] = [
   },
 ];
 
+/**
+ * Mẫu chèn nhanh cho ô BODY _search (tab Dữ liệu — kiểu Kibana Dev Tools).
+ * Mẫu `khung` là body trọn vẹn; các mẫu còn lại là MỘT key cấp body để chèn
+ * thêm vào body đang có (đặt con trỏ vào trong `{ }` rồi bấm).
+ */
+export const ES_BODY_TEMPLATES: EsTemplate[] = [
+  {
+    label: 'khung',
+    title: 'Body đầy đủ: query + sort + size',
+    body: '{\n  "query": {\n    "bool": {\n      "filter": [\n        { "term": { "${1:field}": "${2:value}" } }\n      ]\n    }\n  },\n  "sort": [{ "${3:createdAt}": "desc" }],\n  "size": ${4:50}\n}',
+  },
+  {
+    label: 'query',
+    title: 'Phần query (bool filter)',
+    body: '"query": {\n  "bool": {\n    "filter": [\n      $0\n    ]\n  }\n}',
+  },
+  {
+    label: 'aggs',
+    title: 'Thống kê gom nhóm — thêm "size": 0 nếu chỉ cần số liệu',
+    body: '"aggs": {\n  "${1:ten_agg}": {\n    "terms": { "field": "${2:field.keyword}", "size": ${3:10} }\n  }\n}',
+  },
+  {
+    label: 'date_histogram',
+    title: 'Đếm document theo mốc thời gian',
+    body: '"aggs": {\n  "${1:theo_ngay}": {\n    "date_histogram": { "field": "${2:createdAt}", "calendar_interval": "${3:1d}", "time_zone": "+07:00" }\n  }\n}',
+  },
+  {
+    label: 'sort',
+    title: 'Sắp xếp kết quả',
+    body: '"sort": [{ "${1:createdAt}": "${2:desc}" }]',
+  },
+  {
+    label: '_source',
+    title: 'Chỉ trả về các field cần xem',
+    body: '"_source": ["${1:field}"]',
+  },
+];
+
 // ── Bộ quét ngữ cảnh ─────────────────────────────────────────────────────────
 
 export interface EsQueryContext {
@@ -727,6 +765,13 @@ export function esBodySuggestions(ctx: EsQueryContext, fields: EsField[]): EsSug
   const last = path.length ? path[path.length - 1] : null;
   const parent = path.length > 1 ? path[path.length - 2] : null;
 
+  // Đang ở TRONG "sort": [...] (kể cả sort của top_hits) → bộ gợi ý sort riêng.
+  // Bỏ qua khi "sort" chỉ là TÊN FIELD trong một clause (vd. {"term": {"sort": …}}).
+  const si = path.lastIndexOf('sort');
+  if (si !== -1 && (si === 0 || !FIELD_KEYED.has(path[si - 1]))) {
+    return esSortSuggestions({ ...ctx, path: path.slice(si + 1) }, fields);
+  }
+
   if (expecting === 'key') {
     if (path.length === 0) return optionItems(ES_SEARCH_BODY_KEYS);
 
@@ -763,15 +808,65 @@ export function esBodySuggestions(ctx: EsQueryContext, fields: EsField[]): EsSug
   // ── expecting === 'value' ──────────────────────────────────────────────────
   if (valueKey === 'track_total_hits') return valueItems(['true', 'false'], false);
   if (valueKey === 'size' || valueKey === 'from' || valueKey === 'min_score') return [];
-  if (valueKey === 'sort' && inArray) {
-    return [
-      { label: '_score', kind: 'value', detail: 'theo điểm khớp', insert: '"_score"', sort: '0000' },
-      ...fieldItems(fields, (f) => `{ "${f.path}": "\${1:desc}" }`),
-    ];
-  }
   if (valueKey === '_source' && inArray) return fieldItems(fields, (f) => `"${f.path}"`);
   if (valueKey === 'calendar_interval') return valueItems(['1m', '1h', '1d', '1w', '1M', '1q', '1y'], true);
   return esSuggestions(ctx, fields);
+}
+
+// ── Gợi ý cho phần sort ──────────────────────────────────────────────────────
+
+/** Tuỳ chọn khi sort một field viết dạng object: `{"createdAt": {│}}`. */
+const SORT_FIELD_OPTIONS: OptionSpec[] = [
+  opt('order', 'asc / desc', '"${1:desc}"'),
+  opt('missing', 'document thiếu field xếp ở đâu', '"${1:_last}"'),
+  opt('mode', 'field nhiều giá trị thì lấy gì để so', '"${1:min}"'),
+  opt('unmapped_type', 'kiểu giả định khi index không có field', '"${1:keyword}"'),
+  opt('format', 'định dạng date trong kết quả sort', '"${1:yyyy-MM-dd}"'),
+  opt('nested', 'sort theo field trong nested', '{ "path": "${1:parent}" }'),
+];
+
+/** Enum riêng của sort — để cục bộ, không nhét vào ENUM_VALUES kẻo lây sang query/aggs. */
+const SORT_ENUMS: Record<string, string[]> = {
+  order: ['desc', 'asc'],
+  mode: ['min', 'max', 'sum', 'avg', 'median'],
+  missing: ['_last', '_first'],
+};
+
+/**
+ * Gợi ý cho ô Sort (tab Dữ liệu) — nội dung ô là giá trị của `"sort"` trong
+ * body _search: `[{"field": "desc"}]`, `{"field": "desc"}` hay `["_score"]`.
+ */
+export function esSortSuggestions(ctx: EsQueryContext, fields: EsField[]): EsSuggestion[] {
+  const { path, expecting, inArray, valueKey } = ctx;
+
+  if (expecting === 'key') {
+    // `{"createdAt": {│}}` (path sâu ≥1) → tuỳ chọn sort của field đó.
+    if (path.length >= 1) return optionItems(SORT_FIELD_OPTIONS);
+    // `{│}` — key chính là tên field.
+    return fieldItems(fields, (f) => `"${f.path}": "\${1:desc}"`);
+  }
+
+  // ── expecting === 'value' ──────────────────────────────────────────────────
+  if (valueKey && SORT_ENUMS[valueKey]) return valueItems(SORT_ENUMS[valueKey], true);
+  if (valueKey === 'path') return fieldItems(fields, (f) => `"${f.path}"`);
+  if (valueKey && !inArray) {
+    // `{"createdAt": │}` — hướng sắp xếp, hoặc dạng object đầy đủ.
+    return [
+      ...valueItems(['desc', 'asc'], true),
+      {
+        label: 'tuỳ chọn đầy đủ',
+        kind: 'clause',
+        detail: 'order + missing…',
+        insert: '{ "order": "${1:desc}", "missing": "${2:_last}" }',
+        sort: '0100',
+      },
+    ];
+  }
+  // Gốc ô / phần tử mảng mới → một mục sort hoàn chỉnh.
+  return [
+    { label: '_score', kind: 'value', detail: 'theo điểm khớp', insert: '"_score"', sort: '0000' },
+    ...fieldItems(fields, (f) => `{ "${f.path}": "\${1:desc}" }`),
+  ];
 }
 
 /** Có cần chèn dấu phẩy trước gợi ý không (con trỏ ngay sau một phần tử khác). */
@@ -857,8 +952,10 @@ export interface EsFormatResult {
 /**
  * Pretty-print query. Nhận cả JSON "lỏng" hay gặp khi copy từ log/Kibana:
  * key không nháy, nháy đơn, dấu phẩy thừa — sửa xong mới parse.
+ * `style: 'compact'` gọn về MỘT dòng (cho ô nhỏ như Sort) — an toàn vì
+ * JSON.stringify đã escape hết xuống-dòng trong chuỗi.
  */
-export function formatEsQuery(raw: string): EsFormatResult {
+export function formatEsQuery(raw: string, style: 'pretty' | 'compact' = 'pretty'): EsFormatResult {
   const src = raw.trim();
   if (!src) return { ok: true, text: '' };
 
@@ -866,7 +963,10 @@ export function formatEsQuery(raw: string): EsFormatResult {
   for (const candidate of attempts) {
     try {
       const v: unknown = JSON.parse(candidate);
-      return { ok: true, text: JSON.stringify(v, null, 2) };
+      const text = style === 'compact'
+        ? JSON.stringify(v, null, 1).replace(/\n\s*/g, ' ')
+        : JSON.stringify(v, null, 2);
+      return { ok: true, text };
     } catch { /* thử biến thể tiếp theo */ }
   }
   try { JSON.parse(src); } catch (e) {

@@ -11,10 +11,10 @@
 //      see the "Console" section at the bottom of this file.
 //   3. Every search is bounded: size ≤ 200/page, from+size ≤ 10 000 (the ES
 //      window), request timeout 15 s (AbortController) + ES-side "timeout".
-//   4. Query DSL from the client is parsed JSON passed as a request BODY —
-//      never string-concatenated into the URL. `script` / `script_score` keys
-//      are rejected anywhere in the query (no server-side scripting from an
-//      ops tool — mirrors the Mongo tab's $where ban).
+//   4. Query DSL / aggs from the client are parsed JSON passed as a request
+//      BODY — never string-concatenated into the URL. `script` / `script_score`
+//      keys are rejected anywhere in the query AND aggs (no server-side
+//      scripting from an ops tool — mirrors the Mongo tab's $where ban).
 //   5. Index names are validated (no leading '-', no '..', no '/'). A request
 //      may target SEVERAL indices ("a,b") — every name is validated one by one
 //      and re-encoded per segment, so a comma can never smuggle a path in.
@@ -297,12 +297,22 @@ export async function getMapping(conn: EsConnection, index: string): Promise<{ j
 // ── Search / count ────────────────────────────────────────────────────────────
 
 export interface EsSearchInput {
+  /**
+   * NGUYÊN body _search (JSON string/object) — ô kiểu Kibana Dev Tools của tab
+   * Dữ liệu. Có body thì các field rời bên dưới bị bỏ qua (trừ `from` — phân
+   * trang Prev/Next đè lên from trong body). Vẫn qua đủ chốt an toàn:
+   * forbidScripts, size clamp 0–200, from+size ≤10k, timeout 15s.
+   */
+  body?: unknown;
   /** JSON string (or object): the `query` clause. Empty → match_all. */
   query?: unknown;
+  /** JSON string (or object): the `aggs` clause — optional, script-checked like query. */
+  aggs?: unknown;
   /** JSON string: _source include list (["a","b"]) — optional. */
   source?: unknown;
   /** JSON string: sort clause — optional. */
   sort?: unknown;
+  /** 0 được phép — nghĩa là chỉ lấy aggregations, không lấy document. */
   size?: unknown;
   from?: unknown;
 }
@@ -315,6 +325,8 @@ export interface EsSearchResult {
   size: number;
   from: number;
   tookMs: number;
+  /** Kết quả `aggregations` (JSON, capped) — null khi request không có aggs. */
+  aggs: { json: string; truncated: boolean } | null;
 }
 
 function parseSort(raw: unknown): unknown[] | undefined {
@@ -342,30 +354,54 @@ function parseSource(raw: unknown): string[] | undefined {
 
 export async function search(conn: EsConnection, index: string, input: EsSearchInput): Promise<EsSearchResult> {
   const idx = requireIndex(index);
-  const query = parseJson(input.query, 'query');
-  forbidScripts(query);
-  const size = Math.min(Math.max(Number(input.size) || SEARCH_SIZE_DEFAULT, 1), SEARCH_SIZE_MAX);
-  const fromRaw = Number(input.from);
-  const from = Math.min(Math.max(Number.isInteger(fromRaw) ? fromRaw : 0, 0), RESULT_WINDOW - size);
 
-  const body: Record<string, unknown> = {
-    query: Object.keys(query).length ? query : { match_all: {} },
-    size,
-    from,
-    timeout: '15s',
-  };
+  // Body đầy đủ (ô Dev Tools) — hoặc ráp từ các field rời (tab Tìm nhanh).
+  let body: Record<string, unknown>;
+  const full = parseJson(input.body, 'body');
+  if (Object.keys(full).length) {
+    forbidScripts(full);
+    body = full;
+  } else {
+    body = {};
+    const query = parseJson(input.query, 'query');
+    forbidScripts(query);
+    if (Object.keys(query).length) body.query = query;
+    const aggs = parseJson(input.aggs, 'aggs');
+    forbidScripts(aggs);
+    if (Object.keys(aggs).length) body.aggs = aggs;
+    const sort = parseSort(input.sort);
+    if (sort) body.sort = sort;
+    const source = parseSource(input.source);
+    if (source) body._source = source;
+    if (input.size !== undefined && input.size !== null && input.size !== '') body.size = input.size;
+  }
+
+  // Chốt an toàn chung — áp cho CẢ body tự gõ lẫn body ráp từ field rời:
+  if (body.query === undefined) body.query = { match_all: {} };
+  // size 0 hợp lệ (chỉ lấy aggregations) — vì thế không dùng `|| default` (0 là falsy).
+  const sizeRaw = Number(body.size);
+  const size = Number.isFinite(sizeRaw)
+    ? Math.min(Math.max(Math.trunc(sizeRaw), 0), SEARCH_SIZE_MAX)
+    : SEARCH_SIZE_DEFAULT;
+  body.size = size;
+  // `from` rời (phân trang Prev/Next) đè lên from trong body.
+  const fromRaw = Number(input.from ?? body.from);
+  const from = Math.min(Math.max(Number.isInteger(fromRaw) ? fromRaw : 0, 0), RESULT_WINDOW - size);
+  body.from = from;
+  body.timeout = '15s';
   // `track_total_hits` exists only from ES 7 — 6.8 rejects the unknown key
   // (its hits.total is an exact NUMBER already, normalized below).
-  if (await getMajor(conn) >= 7) body.track_total_hits = true;
-  const sort = parseSort(input.sort);
-  if (sort) body.sort = sort;
-  const source = parseSource(input.source);
-  if (source) body._source = source;
+  if (await getMajor(conn) >= 7) {
+    if (body.track_total_hits === undefined) body.track_total_hits = true;
+  } else {
+    delete body.track_total_hits;
+  }
 
   const t0 = Date.now();
   const res = await esFetch<{
     took?: number;
     hits?: { total?: number | { value?: number; relation?: string }; hits?: { _id: string; _source?: Record<string, unknown> }[] };
+    aggregations?: Record<string, unknown>;
   }>(conn, `/${indexPath(idx)}/_search`, body);
   const tookMs = Date.now() - t0;
 
@@ -373,16 +409,32 @@ export async function search(conn: EsConnection, index: string, input: EsSearchI
   const total = typeof rawTotal === 'number' ? rawTotal : Number(rawTotal?.value ?? 0);
   const totalRelation: 'eq' | 'gte' = typeof rawTotal === 'object' && rawTotal?.relation === 'gte' ? 'gte' : 'eq';
   const docs = (res.hits?.hits ?? []).map((h) => toWire({ _id: h._id, ...(h._source ?? {}) }));
-  return { docs, total, totalRelation, size, from, tookMs };
+  return { docs, total, totalRelation, size, from, tookMs, aggs: res.aggregations ? toWire(res.aggregations) : null };
 }
 
-export async function count(conn: EsConnection, index: string, rawQuery: unknown): Promise<{ count: number; tookMs: number }> {
+/**
+ * _count theo query. Nhận `query` rời, hoặc `body` là NGUYÊN body _search —
+ * khi đó chỉ rút phần `query` ra đếm (aggs/sort/size không có nghĩa với _count).
+ */
+export async function count(
+  conn: EsConnection,
+  index: string,
+  input: { query?: unknown; body?: unknown },
+): Promise<{ count: number; tookMs: number }> {
   const idx = requireIndex(index);
-  const query = parseJson(rawQuery, 'query');
-  forbidScripts(query);
-  const body = Object.keys(query).length ? { query } : undefined;
+  let query: Record<string, unknown>;
+  const full = parseJson(input.body, 'body');
+  if (Object.keys(full).length) {
+    forbidScripts(full);
+    const q = full.query;
+    query = q && typeof q === 'object' && !Array.isArray(q) ? (q as Record<string, unknown>) : {};
+  } else {
+    query = parseJson(input.query, 'query');
+    forbidScripts(query);
+  }
+  const body = { query: Object.keys(query).length ? query : { match_all: {} } };
   const t0 = Date.now();
-  const res = await esFetch<{ count?: number }>(conn, `/${indexPath(idx)}/_count`, body ?? { query: { match_all: {} } });
+  const res = await esFetch<{ count?: number }>(conn, `/${indexPath(idx)}/_count`, body);
   return { count: Number(res.count ?? 0), tookMs: Date.now() - t0 };
 }
 
