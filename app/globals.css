@@ -2314,6 +2314,10 @@ pre.kafka-drawer-body {
 /* ── Data browser: tree + main ─────────────────────────────────────────── */
 .es-browser {
   display: grid; grid-template-columns: var(--es-tree, minmax(220px, 280px)) minmax(0, 1fr);
+  /* grid-template-rows: minmax(0, 1fr) — KHÔNG bỏ được: hàng grid mặc định là
+     `auto`, tức nở theo nội dung, nên min-height:0 của con vô nghĩa và vùng
+     kết quả phình ra đẩy tràn trang thay vì cuộn trong khung. */
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px; min-height: 0; flex: 1;
 }
 @media (max-width: 900px) { .es-browser { grid-template-columns: 1fr; } }
@@ -2339,7 +2343,10 @@ pre.kafka-drawer-body {
 .es-coll-item:hover { background: var(--glass-bg); color: var(--text); }
 .es-coll-item.active { background: var(--glass-bg); color: var(--text); font-weight: 600; }
 
-.es-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+/* overflow:hidden để min-height:0 thực sự có hiệu lực với grid item: không có
+   nó, .es-main tự nở theo nội dung nên .es-results { flex:1 } chẳng còn gì để
+   chia và vùng kết quả phình ra đẩy tràn cả trang thay vì cuộn. */
+.es-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; overflow: hidden; }
 .es-ns { font-family: var(--mono); font-size: 13.5px; word-break: break-all; }
 
 .es-querybar {
@@ -2415,8 +2422,18 @@ pre.kafka-drawer-body {
 }
 
 /* ── Results: collapsible document cards ───────────────────────────────── */
-.es-results { display: flex; flex-direction: column; gap: 6px; overflow: auto; min-height: 0; max-height: 58vh; }
-.es-doc { border: 1px solid var(--glass-brd); border-radius: 8px; overflow: hidden; }
+/* Vùng kết quả ĂN HẾT chỗ còn lại của .es-main rồi tự cuộn bên trong, thay vì
+   chốt cứng 58vh (số cứng vừa chừa khoảng trống thừa dưới đáy trên màn hình
+   cao, vừa tràn trên màn hình thấp).
+   `flex-basis: 0` + `min-height: 0` đều bắt buộc: đây vừa là flex item vừa là
+   flex container, nên nếu để basis auto hoặc min-height dương thì 50 thẻ con
+   tự đẩy chiều cao lên và overflow KHÔNG BAO GIỜ kích hoạt. */
+.es-results { flex: 1 1 0; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; }
+/* flex: none BẮT BUỘC — thiếu nó là bug "tìm ra 50 doc mà chỉ thấy mấy vạch mỏng":
+   item flex mặc định có flex-shrink:1, nên khi tổng chiều cao vượt max-height thì
+   MỌI thẻ bị co lại (đo được: 4.6px/thẻ) và container KHÔNG cuộn, thay vì giữ
+   nguyên chiều cao rồi cho cuộn. */
+.es-doc { flex: none; border: 1px solid var(--glass-brd); border-radius: 8px; overflow: hidden; }
 .es-doc-head {
   display: flex; gap: 8px; align-items: center; padding: 5px 8px;
   background: var(--glass-bg); cursor: pointer; min-width: 0;
