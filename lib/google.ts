@@ -5,6 +5,21 @@
 export interface GoogleAccount {
   id: string;
   email?: string;
+  /** Scope Google đã cấp cho tài khoản này. */
+  scopes?: string[];
+  /** Tạo được file/thư mục mới chưa (đã có drive.file). Tài khoản đăng nhập từ
+   *  trước khi có tính năng tạo mới sẽ là false → UI mời cấp quyền lại. */
+  canWrite?: boolean;
+  /** Duyệt được Drive chưa (đã có drive.readonly). */
+  canRead?: boolean;
+}
+
+/** Một gốc của cây: My Drive, hoặc một Shared Drive. */
+export interface GDriveRoot {
+  /** Folder id để duyệt. My Drive dùng bí danh 'root'. */
+  id: string;
+  name: string;
+  kind: 'my' | 'shared';
 }
 
 export interface GoogleStatus {
@@ -54,13 +69,27 @@ async function googleAction<T>(action: string, params: Record<string, unknown> =
 }
 
 export const gStatus = () => googleAction<GoogleStatus>('status');
-export const gAuthUrl = () => googleAction<{ url: string }>('authUrl');
+/** URL consent. loginHint = gợi ý sẵn email, để cấp thêm quyền cho ĐÚNG tài
+ *  khoản đang xem thay vì để người dùng chọn lại (dễ chọn nhầm account khác). */
+export const gAuthUrl = (loginHint?: string) => googleAction<{ url: string }>('authUrl', { loginHint });
 export const gLogout = (accountId: string) => googleAction<{ done: boolean }>('logout', { accountId });
 export const gRoots = (accountId: string) => googleAction<GRoot[]>('roots', { accountId });
 export const gRootAdd = (accountId: string, url: string, name?: string) =>
   googleAction<GRoot[]>('rootAdd', { accountId, url, name });
 export const gRootRemove = (id: string) => googleAction<GRoot[]>('rootRemove', { id });
-export const gBrowse = (accountId: string, folderId: string) => googleAction<GList>('browse', { accountId, folderId });
+export const gBrowse = (accountId: string, folderId: string, pageToken?: string) =>
+  googleAction<GList>('browse', { accountId, folderId, pageToken });
+
+/** My Drive + mọi Shared Drive — tầng gốc của cây duyệt. */
+export const gDrives = (accountId: string) => googleAction<GDriveRoot[]>('drives', { accountId });
+
+/** Tạo thư mục / Google Docs / Google Sheets trống trong `parentId`. */
+export const gCreate = (
+  accountId: string,
+  kind: 'folder' | 'doc' | 'sheet',
+  name: string,
+  parentId: string,
+) => googleAction<GFile>('create', { accountId, kind, name, parentId });
 
 /** Một link tài liệu đã dán (mục 🔗 Tài liệu được share). */
 export interface GDocLink {

@@ -1,4 +1,4 @@
-// Server-only Google OAuth 2.0 for the Google tab (Drive read-only),
+// Server-only Google OAuth 2.0 for the Google tab,
 // MULTI-ACCOUNT: mỗi lần "＋ Thêm tài khoản" chạy lại consent flow và lưu thêm
 // một entry — mọi API call sau đó chỉ định accountId.
 //
@@ -13,9 +13,15 @@
 //      refreshes that account's token when stale.
 //
 // Tokens live in .googleauth.json (gitignored, per-machine):
-//   { accounts: [{ id, email, refresh_token, access_token, expiry }] }
-// Scope is drive.readonly — the tab MANAGES documents (browse/search/open);
-// editing happens on Google's own UI in the browser, so DevBox never writes.
+//   { accounts: [{ id, email, refresh_token, access_token, expiry, scope }] }
+//
+// SCOPE: drive.readonly (duyệt mọi thứ đã có) + drive.file (TẠO mới; Google chỉ
+// cho sửa/xoá đúng những file do app này tạo, nên tài liệu cũ của người dùng
+// không thể bị DevBox làm hỏng). Sửa nội dung vẫn mở UI của Google.
+//
+// `scope` được lưu lại vì đó là scope Google THỰC SỰ cấp — tài khoản đăng nhập
+// từ trước khi có tính năng tạo mới chỉ có readonly, và UI phải biết điều đó để
+// mời consent lại thay vì để người dùng ăn lỗi 403 khi bấm Tạo.
 
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -32,8 +38,21 @@ const REDIRECT_URI = (process.env.GOOGLE_OAUTH_REDIRECT ?? 'http://localhost:300
 export const GOOGLE_CONFIGURED = CLIENT_ID.length > 0 && CLIENT_SECRET.length > 0;
 
 const BASE_SCOPES = ['openid', 'email'];
-/** Tab Google — quản lý tài liệu Drive, chỉ đọc. */
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+/** Tab Google — DUYỆT toàn bộ Drive (My Drive + Shared Drives), chỉ đọc. */
+const DRIVE_READ_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+/**
+ * TẠO file/thư mục mới, và chỉ sửa được thứ DevBox tự tạo ra.
+ *
+ * Vì sao không xin scope `drive` toàn quyền: `drive.file` cho tạo mới thoải mái
+ * nhưng Google chỉ cấp quyền sửa/xoá trên đúng những file do app này tạo. Tức là
+ * một lỗi trong code DevBox KHÔNG thể làm hỏng tài liệu cũ của bạn — giới hạn đó
+ * do Google bảo đảm ở tầng token, không phải do mình tự giữ kỷ luật.
+ *
+ * Cặp readonly + file là có ý: readonly để DUYỆT được mọi thứ đã có, file để
+ * TẠO được cái mới. Thiếu readonly thì cây Drive trống trơn (drive.file không
+ * thấy file cũ); thiếu file thì không tạo được gì.
+ */
+const DRIVE_WRITE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 /** Tab Mail — IMAP/SMTP qua XOAUTH2. Google KHÔNG có scope hẹp hơn cho IMAP:
  *  https://mail.google.com/ là scope duy nhất mail server chấp nhận. */
 const MAIL_SCOPE = 'https://mail.google.com/';
@@ -43,12 +62,11 @@ const MAIL_SCOPE = 'https://mail.google.com/';
  *  người đã đăng nhập Drive trước đó không bị bắt consent lại. */
 export type GoogleFeature = 'drive' | 'mail';
 
-const FEATURE_SCOPES: Record<GoogleFeature, string> = {
-  drive: DRIVE_SCOPE,
-  mail: MAIL_SCOPE,
+/** Một feature có thể cần NHIỀU scope (drive = duyệt + tạo). */
+const FEATURE_SCOPES: Record<GoogleFeature, string[]> = {
+  drive: [DRIVE_READ_SCOPE, DRIVE_WRITE_SCOPE],
+  mail: [MAIL_SCOPE],
 };
-
-const SCOPES = [...BASE_SCOPES, DRIVE_SCOPE];
 
 const TOKEN_PATH = process.env.GOOGLE_TOKEN_PATH ? path.resolve(process.cwd(), process.env.GOOGLE_TOKEN_PATH) : configPath('googleauth.json', ['.googleauth.json']);
 
@@ -103,7 +121,7 @@ async function writeStore(store: TokenFile): Promise<void> {
 export function authUrl(features: GoogleFeature[] = ['drive'], loginHint?: string): string {
   if (!GOOGLE_CONFIGURED) throw new Error('Chưa cấu hình GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET trong .env.local.');
   const wanted = features.length > 0 ? features : ['drive' as GoogleFeature];
-  const scopes = [...new Set([...BASE_SCOPES, ...wanted.map((f) => FEATURE_SCOPES[f]).filter(Boolean)])];
+  const scopes = [...new Set([...BASE_SCOPES, ...wanted.flatMap((f) => FEATURE_SCOPES[f] ?? [])])];
   const u = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   u.searchParams.set('client_id', CLIENT_ID);
   u.searchParams.set('redirect_uri', REDIRECT_URI);
@@ -163,6 +181,8 @@ export async function exchangeCode(code: string): Promise<{ id: string; email?: 
   const email = jwtEmail(data.id_token);
   const store = await readStore();
   const existing = email ? store.accounts.find((a) => a.email === email) : undefined;
+  const granted = [...new Set([...(existing?.scope ?? '').split(' '), ...(data.scope ?? '').split(' ')])]
+    .filter(Boolean);
   const acc: AccountTokens = {
     id: existing?.id ?? (email ?? randomUUID()),
     email,
@@ -171,11 +191,40 @@ export async function exchangeCode(code: string): Promise<{ id: string; email?: 
     expiry: Date.now() + (data.expires_in - 60) * 1000,
     // Gộp với scope đã có: include_granted_scopes=true nên lần cấp quyền mail
     // vẫn giữ quyền Drive, nhưng response chỉ liệt kê scope của lần này.
-    scope: [...new Set([...(existing?.scope ?? '').split(' '), ...(data.scope ?? '').split(' ')])]
-      .filter(Boolean).join(' '),
+    scope: granted.join(' '),
   };
   store.accounts = [...store.accounts.filter((a) => a.id !== acc.id), acc];
   await writeStore(store);
+
+  /**
+   * CHẶN Ở ĐÂY, KHÔNG ĐỂ LỘ RA THÀNH LỖI Ở TẦNG DRIVE.
+   *
+   * Nếu Google chỉ cấp openid/email mà không có scope Drive nào, mọi lệnh Drive
+   * sau đó sẽ chết bằng "Request had insufficient authentication scopes" — một
+   * thông báo không hề nói rằng vấn đề nằm ở bước đăng nhập, nên rất khó truy.
+   * Đây là ca ĐÃ XẢY RA THẬT: token lưu trên máy chỉ có `openid email`.
+   *
+   * Hai nguyên nhân thường gặp, cả hai đều nằm ngoài code:
+   *   1. Màn hình consent có ô tick cho từng quyền, người dùng bấm "Tiếp tục"
+   *      mà chưa tick ô Drive → Google cấp đúng phần đã tick.
+   *   2. OAuth client trên console chưa khai scope Drive (hoặc app ở chế độ
+   *      Testing mà tài khoản không nằm trong danh sách test user).
+   * Token vẫn được LƯU (để không mất phiên đăng nhập), nhưng ta báo ngay và nói
+   * rõ phải làm gì.
+   */
+  const hasDrive = granted.some((s) => s === DRIVE_READ_SCOPE || s === DRIVE_WRITE_SCOPE);
+  if (!hasDrive) {
+    throw new Error(
+      'Google chỉ cấp quyền đăng nhập, KHÔNG cấp quyền Drive — nên tab Google sẽ báo ' +
+        '"insufficient authentication scopes" khi duyệt hay tạo file.\n\n' +
+        `Đã cấp: ${granted.join(', ') || '(không có gì)'}\n\n` +
+        'Cách sửa: bấm đăng nhập lại, và ở màn hình Google nhớ TICK các ô quyền ' +
+        'Google Drive rồi mới bấm Tiếp tục. Nếu màn hình không hiện ô Drive nào, ' +
+        'kiểm tra OAuth consent screen trên console.cloud.google.com đã thêm hai scope ' +
+        `"${DRIVE_READ_SCOPE}" và "${DRIVE_WRITE_SCOPE}" chưa (và nếu app đang ở chế độ ` +
+        'Testing thì email của bạn phải nằm trong Test users).',
+    );
+  }
   return { id: acc.id, email };
 }
 
@@ -212,6 +261,32 @@ export async function hasMailScope(accountId: string): Promise<boolean> {
   return (acc?.scope ?? '').split(' ').includes(MAIL_SCOPE);
 }
 
+/**
+ * Tài khoản này TẠO được file mới chưa (đã có `drive.file`)?
+ *
+ * Mọi tài khoản đã đăng nhập TRƯỚC khi có tính năng tạo mới chỉ mang
+ * `drive.readonly`, nên phải consent lại một lần. UI đọc cờ này để hiện nút
+ * "Cấp quyền tạo file" đúng chỗ, thay vì để người dùng bấm Tạo rồi ăn lỗi 403
+ * từ Google mà không hiểu vì sao.
+ */
+export async function hasDriveWriteScope(accountId: string): Promise<boolean> {
+  const store = await readStore();
+  const acc = store.accounts.find((a) => a.id === accountId);
+  return (acc?.scope ?? '').split(' ').includes(DRIVE_WRITE_SCOPE);
+}
+
+/** Token cho các lệnh GHI vào Drive. Chặn sớm với thông báo hiểu được, thay vì
+ *  để Google trả 403 "Insufficient Permission" trần trụi. */
+export async function getDriveWriteToken(accountId: string): Promise<string> {
+  if (!(await hasDriveWriteScope(accountId))) {
+    throw new Error(
+      'Tài khoản này chưa cấp quyền tạo file. Bấm "Cấp quyền tạo file" để consent lại — ' +
+        'DevBox chỉ sửa được file do chính nó tạo, không đụng tới tài liệu cũ của bạn.',
+    );
+  }
+  return getAccessToken(accountId);
+}
+
 /** Tìm tài khoản Google đã đăng nhập theo địa chỉ email (khớp không phân biệt
  *  hoa/thường). Dùng khi tab Mail muốn tái sử dụng phiên đã có. */
 export async function findAccountByEmail(email: string): Promise<GoogleAccountInfo | undefined> {
@@ -237,6 +312,10 @@ export interface GoogleAccountInfo {
   email?: string;
   /** Scope đã được cấp — UI biết tài khoản dùng được cho mail hay chưa. */
   scopes?: string[];
+  /** Tạo được file/thư mục mới chưa (đã có drive.file). */
+  canWrite?: boolean;
+  /** Duyệt được Drive chưa (đã có drive.readonly). */
+  canRead?: boolean;
 }
 
 export interface GoogleStatus {
@@ -249,9 +328,16 @@ export async function status(): Promise<GoogleStatus> {
   const store = await readStore();
   return {
     configured: GOOGLE_CONFIGURED,
-    accounts: store.accounts.map((a) => ({
-      id: a.id, email: a.email, scopes: (a.scope ?? '').split(' ').filter(Boolean),
-    })),
+    accounts: store.accounts.map((a) => {
+      const scopes = (a.scope ?? '').split(' ').filter(Boolean);
+      return {
+        id: a.id,
+        email: a.email,
+        scopes,
+        canWrite: scopes.includes(DRIVE_WRITE_SCOPE),
+        canRead: scopes.includes(DRIVE_READ_SCOPE),
+      };
+    }),
     redirectUri: REDIRECT_URI,
   };
 }

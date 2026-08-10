@@ -11,7 +11,10 @@
 //     'rootAdd'    { accountId, url, name? }     → { ok, result: GoogleRoot[] }  (validates via files.get)
 //     'rootRemove' { id }                        → { ok, result: GoogleRoot[] }  (all accounts' roots)
 //     'rootRename' { id, name }                  → { ok, result: GoogleRoot[] }
-//     'browse'     { accountId, folderId }       → { ok, result: DriveList }
+//     'browse'     { accountId, folderId, pageToken? } → { ok, result: DriveList }
+//     'drives'     { accountId }                 → { ok, result: DriveRootInfo[] } (My Drive + Shared Drives)
+//     'create'     { accountId, kind: 'folder'|'doc'|'sheet', name, parentId }
+//                                                → { ok, result: DriveFile }
 //     'list'       { accountId, kind: 'docs'|'sheets', q?, starred?, pageToken? } → { ok, result: DriveList }
 //   Mục 🔗 "Tài liệu được share" — dán link MỘT FILE (không cần thư mục dự án):
 //     'docLinks'      {}                         → { ok, result: GoogleDocLink[] }
@@ -25,15 +28,17 @@
 //     'docLinkTouch'  { id }                     → { ok, result: GoogleDocLink[] }
 // (Tab Links dán link web chung — xem /api/links.)
 //
-// Everything is READ-ONLY against Google (scope drive.readonly; only
-// files.list/files.get are called) — editing opens Google's own UI in the
-// browser. Gated by GOOGLE_TOOL_ENABLED (403 when off).
+// QUYỀN: scope drive.readonly (duyệt mọi thứ) + drive.file (TẠO mới, và chỉ sửa
+// được file do DevBox tạo). Lệnh ghi duy nhất ở đây là files.create — không có
+// update/delete, nên tài liệu cũ của người dùng không có đường nào bị sửa. Sửa
+// nội dung vẫn mở UI của Google trên browser.
+// Gated by GOOGLE_TOOL_ENABLED (403 when off).
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { GOOGLE_ENABLED, authUrl, logout, status } from '@/lib/googleAuth';
 import {
   browseFolder, listByKind, getFile, extractDriveId, MIME,
-  downloadContent, exportContent, type DriveFile,
+  downloadContent, exportContent, listDrives, createInFolder, type DriveFile,
 } from '@/lib/googleDrive';
 import { xlsxToSheets } from '@/lib/xlsxHtml';
 import { listRoots, addRoot, removeRoot, renameRoot } from '@/lib/googleRoots';
@@ -71,7 +76,9 @@ export async function POST(req: NextRequest) {
         result = await status();
         break;
       case 'authUrl':
-        result = { url: authUrl() };
+        result = {
+          url: authUrl(['drive'], typeof body.loginHint === 'string' ? body.loginHint : undefined),
+        };
         break;
       case 'logout':
         await logout(needAccount());
@@ -98,8 +105,28 @@ export async function POST(req: NextRequest) {
         result = await renameRoot(String(body.id ?? ''), String(body.name ?? ''));
         break;
       case 'browse':
-        result = await browseFolder(needAccount(), String(body.folderId ?? ''));
+        result = await browseFolder(
+          needAccount(),
+          String(body.folderId ?? ''),
+          typeof body.pageToken === 'string' ? body.pageToken : undefined,
+        );
         break;
+      // Tầng gốc của cây: My Drive + mọi Shared Drive của tài khoản.
+      case 'drives':
+        result = await listDrives(needAccount());
+        break;
+      // Tạo thư mục / Docs / Sheets trống trong thư mục đang đứng.
+      case 'create': {
+        const acc = needAccount();
+        const kind = body.kind;
+        if (kind !== 'folder' && kind !== 'doc' && kind !== 'sheet') {
+          throw new Error("kind phải là 'folder' | 'doc' | 'sheet'.");
+        }
+        const parentId = String(body.parentId ?? '').trim();
+        if (!parentId) throw new Error('Thiếu parentId — chưa biết tạo vào thư mục nào.');
+        result = await createInFolder(acc, kind, String(body.name ?? ''), parentId);
+        break;
+      }
       case 'list': {
         const kind = body.kind === 'sheets' ? 'sheets' : 'docs';
         result = await listByKind(needAccount(), {
