@@ -12,6 +12,7 @@ import { ZaloListener, type IncomingMessage, type ListenerState } from './listen
 import type { ZaloContext } from './client';
 import { getFreshContext } from './session';
 import { learnContact } from './contacts';
+import { recordIncoming } from './threadStore';
 
 interface Hub {
   listener: ZaloListener;
@@ -40,11 +41,20 @@ export function startListener(accountKey: string, ctx: ZaloContext): { ok: boole
   hub.listener = new ZaloListener(
     ctx,
     (msg) => {
-      hub.queue.push(msg);
-      if (hub.queue.length > MAX_QUEUE) hub.queue.splice(0, hub.queue.length - MAX_QUEUE);
-      // TỰ HỌC danh bạ: hội thoại vừa nhắn tới → có mặt trong danh bạ (id thật +
-      // tên + nhóm), để rule chỉ việc chọn thay vì gõ threadId. Ghi đĩa best-effort.
-      if (msg.threadId) {
+      // (1) Kho hội thoại LƯU MỌI tin (cả tin của chính mình dội về) để màn chat
+      // gom hai chiều vào đúng một luồng.
+      recordIncoming(accountKey, msg);
+
+      // (2) Hàng đợi AUTOMATION chỉ nhận tin của NGƯỜI KHÁC — tin của chính mình
+      // không nên kích rule (đã có loopGuard, nhưng chặn từ gốc thì sạch hơn).
+      if (!msg.isSelf) {
+        hub.queue.push(msg);
+        if (hub.queue.length > MAX_QUEUE) hub.queue.splice(0, hub.queue.length - MAX_QUEUE);
+      }
+
+      // (3) TỰ HỌC danh bạ: hội thoại vừa nhắn tới → có mặt trong danh bạ (id
+      // thật + tên + nhóm), để rule chỉ việc chọn thay vì gõ threadId.
+      if (msg.threadId && !msg.isSelf) {
         void learnContact({
           accountKey,
           threadId: msg.threadId,

@@ -263,6 +263,11 @@ function CheckList({
  * curated once is one click here. Free text stays available: a rule may need a
  * conversation you never send to.
  */
+/** Bỏ dấu tiếng Việt để search "tam" khớp "Tâm". */
+function stripAccents(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/gi, 'd').toLowerCase();
+}
+
 function ConversationScope({
   value,
   onChange,
@@ -275,6 +280,7 @@ function ConversationScope({
 }) {
   const [known, setKnown] = useState<{ name: string; kind: 'group' | 'user' }[]>([]);
   const [custom, setCustom] = useState('');
+  const [query, setQuery] = useState('');
 
   useEffect(() => {
     let alive = true;
@@ -323,31 +329,59 @@ function ConversationScope({
     setCustom('');
   };
 
-  // Names the rule uses that are not in the directory — still removable.
-  const extra = value.filter((v) => !known.some((k) => k.name === v));
+  // Lọc theo từ khoá (bỏ dấu). Mục ĐÃ CHỌN hiển thị riêng nên ở danh sách cuộn
+  // chỉ cần các mục CHƯA chọn để tránh trùng.
+  const q = stripAccents(query.trim());
+  const unpicked = known.filter((k) => !value.includes(k.name));
+  const filtered = q ? unpicked.filter((k) => stripAccents(k.name).includes(q)) : unpicked;
 
   return (
     <>
-      <div className="auto-checks">
+      <div className="auto-scope-bar">
         <button type="button" className={`auto-chip${!value.length ? ' on' : ''}`} onClick={() => onChange([])}>
           Mọi hội thoại
         </button>
-        {known.map((k) => (
-          <button
-            key={k.name}
-            type="button"
-            className={`auto-chip${value.includes(k.name) ? ' on' : ''}`}
-            onClick={() => toggle(k.name)}
-          >
-            {k.kind === 'group' ? '👥' : '👤'} {k.name}
+        <input
+          className="auto-scope-search"
+          value={query}
+          placeholder={`🔎 Tìm trong ${known.length} hội thoại…`}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        {value.length > 0 && (
+          <button type="button" className="ghost sm" onClick={() => onChange([])} title="Bỏ chọn tất cả">
+            đã chọn {value.length} · xoá
           </button>
-        ))}
-        {extra.map((n) => (
-          <button key={n} type="button" className="auto-chip on" onClick={() => toggle(n)}>
-            {n} ✕
-          </button>
-        ))}
+        )}
       </div>
+
+      {/* Mục ĐÃ CHỌN — luôn hiện để bỏ chọn được kể cả khi search lọc mất. */}
+      {value.length > 0 && (
+        <div className="auto-checks auto-scope-selected">
+          {value.map((n) => {
+            const k = known.find((x) => x.name === n);
+            return (
+              <button key={n} type="button" className="auto-chip on" onClick={() => toggle(n)}>
+                {k ? (k.kind === 'group' ? '👥 ' : '👤 ') : ''}{n} ✕
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Danh sách CUỘN — không còn tràn cả màn hình khi có hàng trăm hội thoại. */}
+      <div className="auto-scope-list">
+        <div className="auto-checks">
+          {filtered.map((k) => (
+            <button key={k.name} type="button" className="auto-chip" onClick={() => toggle(k.name)}>
+              {k.kind === 'group' ? '👥' : '👤'} {k.name}
+            </button>
+          ))}
+        </div>
+        {known.length > 0 && filtered.length === 0 && (
+          <span className="auto-hint">{q ? `Không có hội thoại khớp “${query}”.` : 'Đã chọn hết các hội thoại trong danh bạ.'}</span>
+        )}
+      </div>
+
       <div className="auto-cond" style={{ marginTop: 6 }}>
         <input
           value={custom}
@@ -366,7 +400,7 @@ function ConversationScope({
       </div>
       {!known.length && (
         <span className="auto-hint">
-          Chưa có danh sách nào trong danh bạ — vào tab 🧭 Workspace → 🔎 để quét và lưu, hoặc gõ tay
+          Chưa có danh sách nào trong danh bạ — quét ở tab Zalo API (nút ⟲) hoặc tab 🧭 Workspace → 🔎, hoặc gõ tay
           tên hội thoại ở trên.
         </span>
       )}

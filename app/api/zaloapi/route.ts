@@ -22,7 +22,7 @@
 // Mọi lượt gửi ghi một dòng ZALOAPI_AUDIT ra stdout, cùng quy ước SHEET_AUDIT.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { login, sendMessage } from '@/lib/zaloapi/server/client';
+import { login, sendMessage, uploadImage, sendPhoto, getGroupHistory, scanContacts } from '@/lib/zaloapi/server/client';
 import { ZALOAPI_ENABLED, ZALOAPI_ALLOW_SEND } from '@/lib/zaloapi/server/flags';
 import {
   putSession,
@@ -33,7 +33,17 @@ import {
   listSessions,
 } from '@/lib/zaloapi/server/session';
 import { startListener, pollMessages, listenerState, stopListener } from '@/lib/zaloapi/server/listenerHub';
-import { contactsFor, upsertContact, removeContact } from '@/lib/zaloapi/server/contacts';
+import { contactsFor, upsertContact, removeContact, bulkUpsertContacts, setContactTags } from '@/lib/zaloapi/server/contacts';
+import {
+  threadsFor,
+  messagesFor,
+  markThreadRead,
+  recordOutgoing,
+  setMessageStatus,
+  applyNames,
+  dropThreads,
+  prependHistory,
+} from '@/lib/zaloapi/server/threadStore';
 import { trace } from '@/lib/zaloapi/server/trace';
 
 export const runtime = 'nodejs';
@@ -128,13 +138,26 @@ export async function POST(req: NextRequest) {
         }
         const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
         const group = !!body.group;
-        const result = await sendMessage(ctx, { threadId, message: text, group });
+        // Định dạng chữ (tuỳ chọn): [{start,len,st}]. Lọc sơ để chắc kiểu.
+        const styles = Array.isArray(body.styles)
+          ? body.styles
+              .filter((s: unknown) => s && typeof s === 'object')
+              .map((s: Record<string, unknown>) => ({ start: Number(s.start) || 0, len: Number(s.len) || 0, st: String(s.st || '') }))
+              .filter((s: { len: number; st: string }) => s.len > 0 && s.st)
+          : undefined;
+        // Ghi LẠC QUAN vào kho hội thoại NGAY để màn chat hiện bong bóng liền,
+        // rồi cập nhật trạng thái theo kết quả. dest rỗng = tự gửi cho mình (uid).
+        const dest = threadId || ctx.uid;
+        const now = Date.now();
+        const echoId = dest ? recordOutgoing(accountKey, { threadId: dest, group, text, at: now, status: 'sending' }) : '';
+        const result = await sendMessage(ctx, { threadId, message: text, group, styles });
+        if (dest && echoId) setMessageStatus(accountKey, dest, echoId, result.ok ? 'sent' : 'failed');
         // eslint-disable-next-line no-console
         console.log(
           `ZALOAPI_AUDIT operation=SEND account=${accountKey} thread=${threadId || '(self)'} group=${group} `
           + `len=${text.length} ok=${result.ok} ts=${new Date().toISOString()}`,
         );
-        return NextResponse.json({ ok: true, result });
+        return NextResponse.json({ ok: true, result: { ...result, threadId: dest } });
       }
 
       // Bật listener NHẬN tin (server-side WebSocket). Cần phiên đã login.
@@ -163,9 +186,145 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, result: res });
       }
 
+      // ── Màn chat: danh sách hội thoại + lịch sử tin ──────────────────────
+      // GỘP hai nguồn: (a) kho RAM phiên này (có tin mới nhất + chưa đọc), và
+      // (b) DANH BẠ đã học lưu trên đĩa từ các phiên trước. Nhờ (b), vừa Kết nối
+      // là thấy ngay các hội thoại cũ để mở/nhắn, không phải chờ có tin mới.
+      case 'threads': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        // uid của CHÍNH tài khoản đang kết nối — nó KHÔNG phải một hội thoại, phải
+        // loại khỏi danh sách. Chỉ giữ khách (người khác) + nhóm.
+        const ownUid = getSession(accountKey)?.uid || '';
+        // Hội thoại rác cần loại: threadId rỗng, "0" (bug tin-của-mình cũ), hoặc
+        // chính là uid tài khoản đang đăng nhập.
+        const junk = (id: string) => !id || id === '0' || (!!ownUid && id === ownUid);
+        let contacts: Awaited<ReturnType<typeof contactsFor>> = [];
+        try {
+          contacts = await contactsFor(accountKey);
+          applyNames(accountKey, Object.fromEntries(contacts.map((c) => [c.threadId, c.name])));
+        } catch { /* thiếu danh bạ không chặn danh sách */ }
+        const live = threadsFor(accountKey).filter((t) => !junk(t.threadId));
+        const seen = new Set(live.map((t) => t.threadId));
+        const fromContacts = contacts
+          .filter((c) => !junk(c.threadId) && !seen.has(c.threadId))
+          .map((c) => ({ threadId: c.threadId, group: c.group, name: c.name, lastText: '', lastAt: c.lastSeen || 0, unread: 0 }));
+        const tagOf = new Map(contacts.map((c) => [c.threadId, c.tags ?? []]));
+        const merged = [...live, ...fromContacts]
+          .sort((a, b) => b.lastAt - a.lastAt)
+          .map((t) => ({ ...t, tags: tagOf.get(t.threadId) ?? [] }));
+        return NextResponse.json({ ok: true, result: merged });
+      }
+
+      // QUÉT nhóm + khách từ tài khoản Zalo về, lưu vào danh bạ rồi trả danh sách
+      // hội thoại đã gộp — để lần sau vào không còn trống.
+      case 'scan': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        let ctx;
+        try { ctx = await getFreshContext(accountKey); }
+        catch (err) { return NextResponse.json({ ok: false, error: `${(err as Error).message}` }, { status: 409 }); }
+        const { contacts: scanned, groups, friends, note } = await scanContacts(ctx);
+        if (scanned.length) await bulkUpsertContacts(accountKey, scanned);
+        trace('scan', `quét danh bạ: ${groups} nhóm · ${friends} khách`, { note });
+
+        const ownUid = ctx.uid;
+        const junk = (id: string) => !id || id === '0' || (!!ownUid && id === ownUid);
+        let contacts: Awaited<ReturnType<typeof contactsFor>> = [];
+        try {
+          contacts = await contactsFor(accountKey);
+          applyNames(accountKey, Object.fromEntries(contacts.map((c) => [c.threadId, c.name])));
+        } catch { /* ignore */ }
+        const live = threadsFor(accountKey).filter((t) => !junk(t.threadId));
+        const seen = new Set(live.map((t) => t.threadId));
+        const fromContacts = contacts
+          .filter((c) => !junk(c.threadId) && !seen.has(c.threadId))
+          .map((c) => ({ threadId: c.threadId, group: c.group, name: c.name, lastText: '', lastAt: c.lastSeen || 0, unread: 0 }));
+        const tagOf = new Map(contacts.map((c) => [c.threadId, c.tags ?? []]));
+        const merged = [...live, ...fromContacts]
+          .sort((a, b) => b.lastAt - a.lastAt)
+          .map((t) => ({ ...t, tags: tagOf.get(t.threadId) ?? [] }));
+        return NextResponse.json({ ok: true, result: { threads: merged, groups, friends, note } });
+      }
+
+      case 'history': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        const threadId = need(body.threadId, 'threadId');
+        markThreadRead(accountKey, threadId);
+        return NextResponse.json({ ok: true, result: messagesFor(accountKey, threadId) });
+      }
+
+      // Gửi ẢNH: nhận bytes base64 từ renderer → upload → gửi tin ảnh.
+      case 'sendImage': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        if (!ZALOAPI_ALLOW_SEND) {
+          return NextResponse.json({ ok: false, error: 'Gửi đang tắt. Đặt ZALOAPI_ALLOW_SEND=true trong .env.local.' }, { status: 403 });
+        }
+        const b64 = typeof body.dataBase64 === 'string' ? body.dataBase64 : '';
+        if (!b64) return NextResponse.json({ ok: false, error: 'thiếu dữ liệu ảnh' }, { status: 400 });
+        const buffer = Buffer.from(b64, 'base64');
+        if (!buffer.length) return NextResponse.json({ ok: false, error: 'ảnh rỗng' }, { status: 400 });
+        const fileName = (typeof body.fileName === 'string' && body.fileName.trim()) || `image_${Date.now()}.jpg`;
+        const caption = typeof body.caption === 'string' ? body.caption : '';
+        const group = !!body.group;
+        const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
+
+        let ctx;
+        try { ctx = await getFreshContext(accountKey); }
+        catch (err) { return NextResponse.json({ ok: false, error: `${(err as Error).message}` }, { status: 409 }); }
+
+        const dest = threadId || ctx.uid;
+        try {
+          const attachment = await uploadImage(ctx, { buffer, fileName, threadId, group });
+          const now = Date.now();
+          const echoId = dest ? recordOutgoing(accountKey, { threadId: dest, group, text: caption || '[ảnh]', at: now, status: 'sending', imageUrl: attachment.thumbUrl || attachment.normalUrl }) : '';
+          const result = await sendPhoto(ctx, { threadId, group, attachment, caption });
+          if (dest && echoId) setMessageStatus(accountKey, dest, echoId, result.ok ? 'sent' : 'failed');
+          // eslint-disable-next-line no-console
+          console.log(`ZALOAPI_AUDIT operation=SEND_IMAGE account=${accountKey} thread=${threadId || '(self)'} group=${group} size=${buffer.length} ok=${result.ok} ts=${new Date().toISOString()}`);
+          return NextResponse.json({ ok: true, result: { ...result, threadId: dest } });
+        } catch (err) {
+          return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 400 });
+        }
+      }
+
+      // Kéo LỊCH SỬ CŨ. Chỉ NHÓM có API (getGroupChatHistory); 1-1 Zalo không lộ.
+      case 'loadOlder': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        const threadId = need(body.threadId, 'threadId');
+        const group = !!body.group;
+        if (!group) {
+          return NextResponse.json({ ok: true, result: { supported: false, messages: messagesFor(accountKey, threadId) } });
+        }
+        let ctx;
+        try { ctx = await getFreshContext(accountKey); }
+        catch (err) { return NextResponse.json({ ok: false, error: `${(err as Error).message}` }, { status: 409 }); }
+        const count = Number.isFinite(Number(body.count)) ? Number(body.count) : 50;
+        const older = await getGroupHistory(ctx, threadId, count);
+        prependHistory(accountKey, threadId, true, older);
+        return NextResponse.json({ ok: true, result: { supported: true, messages: messagesFor(accountKey, threadId) } });
+      }
+
+      // Gán/đổi TAG cho một hội thoại (để lọc/tìm).
+      case 'setTags': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        const threadId = need(body.threadId, 'threadId');
+        const tags = Array.isArray(body.tags) ? body.tags.map((x: unknown) => String(x)) : [];
+        const name = typeof body.name === 'string' ? body.name : undefined;
+        const group = !!body.group;
+        await setContactTags({ accountKey, threadId, tags, name, group });
+        return NextResponse.json({ ok: true, result: { ok: true, tags } });
+      }
+
+      case 'markRead': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        const threadId = need(body.threadId, 'threadId');
+        markThreadRead(accountKey, threadId);
+        return NextResponse.json({ ok: true, result: { ok: true } });
+      }
+
       case 'logout': {
         const accountKey = need(body.accountKey, 'accountKey');
         const stoppedListener = stopListener(accountKey);
+        dropThreads(accountKey);
         const dropped = dropSession(accountKey);
         // eslint-disable-next-line no-console
         console.log(`ZALOAPI_AUDIT operation=LOGOUT account=${accountKey} dropped=${dropped} listener=${stoppedListener} ts=${new Date().toISOString()}`);

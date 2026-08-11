@@ -12,6 +12,7 @@
 // với imei gốc bị từ chối.
 
 import { encodeAES, decodeAES, decodeRespAES, getSignKey, ParamsEncryptor } from './crypto';
+import { readImageMeta } from './imageMeta';
 import { trace } from './trace';
 
 /** Hằng số API — port từ ctx mặc định của zca-js. Đổi khi Zalo nâng version. */
@@ -308,9 +309,17 @@ export interface SendResult {
  *   nhóm    → group[0]/api/group/sendmsg, params.grid
  * Body POST là URLSearchParams({ params: <encodeAES(secretKey, JSON)> }).
  */
+/** Một khoảng định dạng chữ — port style của Zalo (textProperties.styles). */
+export interface TextStyle {
+  start: number;
+  len: number;
+  /** 'b'|'i'|'u'|'s' | 'c_<hex6>' (màu) | 'f_<size>' (cỡ chữ). */
+  st: string;
+}
+
 export async function sendMessage(
   ctx: ZaloContext,
-  opts: { threadId: string; message: string; group: boolean },
+  opts: { threadId: string; message: string; group: boolean; styles?: TextStyle[] },
 ): Promise<SendResult> {
   const now = Date.now();
   const clientId = now;
@@ -326,6 +335,12 @@ export async function sendMessage(
   const payload: Record<string, unknown> = opts.group
     ? { grid: dest, message: opts.message, clientId, mentionInfo: '', ttl: 0, visibility: 0, imei: ctx.imei }
     : { toid: dest, message: opts.message, clientId, ttl: 0, imei: ctx.imei };
+
+  // Định dạng chữ (in đậm/nghiêng/màu…) đi kèm dưới dạng textProperties — port
+  // đúng zca-js: { styles:[{start,len,st}], ver:0 }.
+  if (opts.styles?.length) {
+    payload.textProperties = JSON.stringify({ styles: opts.styles, ver: 0 });
+  }
 
   const encrypted = encodeAES(ctx.secretKey, JSON.stringify(payload));
   if (!encrypted) return { ok: false, detail: 'mã hoá params thất bại' };
@@ -360,4 +375,342 @@ export async function sendMessage(
       ? String((decoded as Record<string, unknown>)['msgId'] ?? (decoded as Record<string, unknown>)['msgID'] ?? '')
       : '';
   return { ok: true, msgId: msgId || undefined, detail: 'đã gửi qua API' + (msgId ? ` · msgId ${msgId}` : ''), raw: decoded };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  GỬI ẢNH — port từ zca-js apis/uploadAttachment.ts + apis/sendMessage.ts.
+//
+//  Hai bước: (1) UPLOAD buffer ảnh lên file[0] (multipart, có thể nhiều chunk) →
+//  nhận {photoId, normalUrl, hdUrl, thumbUrl}; (2) SEND tin ảnh tham chiếu các
+//  URL đó. Khác gửi text: dùng host serviceMap.file, không có signkey.
+//
+//  ⚠ THỬ NGHIỆM chưa chạy thật được ở môi trường dev — hằng số nhạy phiên bản
+//  (type=2 cá nhân / 11 nhóm; đường /message vs /group). Nếu Zalo từ chối, đọc
+//  trace 'upload'/'sendPhoto' để biết error_code mà chỉnh.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Kích thước một chunk upload (byte). Ảnh thường < 1 chunk; ảnh lớn thì chia. */
+const UPLOAD_CHUNK = 1_000_000;
+
+export interface ImageAttachment {
+  photoId: string;
+  normalUrl: string;
+  hdUrl: string;
+  thumbUrl: string;
+  width: number;
+  height: number;
+  totalSize: number;
+}
+
+/** Lấy một object con lồng theo tên khoá (chịu được response bọc lớp `data`). */
+function unwrap(obj: unknown): Record<string, unknown> | null {
+  if (!obj || typeof obj !== 'object') return null;
+  const o = obj as Record<string, unknown>;
+  if (o['data'] && typeof o['data'] === 'object') return o['data'] as Record<string, unknown>;
+  return o;
+}
+
+/**
+ * Upload buffer ảnh. Trả ImageAttachment để sendPhoto tham chiếu.
+ * Port: params mã hoá nằm ở QUERY (khác gửi tin — params ở body), body là
+ * multipart field `chunkContent`.
+ */
+export async function uploadImage(
+  ctx: ZaloContext,
+  opts: { buffer: Buffer; fileName: string; threadId: string; group: boolean },
+): Promise<ImageAttachment> {
+  const host = ctx.serviceMap.file?.[0];
+  if (!host) throw new Error('serviceMap thiếu host file — bản build không lộ đường upload');
+  const dest = opts.threadId || ctx.uid;
+  if (!dest) throw new Error('không có threadId để upload ảnh');
+
+  const meta = readImageMeta(opts.buffer);
+  const totalSize = meta.totalSize;
+  const totalChunk = Math.max(1, Math.ceil(totalSize / UPLOAD_CHUNK));
+  const clientId = Date.now();
+  const typeParam = opts.group ? '11' : '2';
+  const path = `/api/${opts.group ? 'group' : 'message'}/photo_original/upload`;
+
+  let result: ImageAttachment | null = null;
+  for (let i = 0; i < totalChunk; i++) {
+    const chunk = opts.buffer.subarray(i * UPLOAD_CHUNK, (i + 1) * UPLOAD_CHUNK);
+    const params: Record<string, unknown> = {
+      totalChunk,
+      fileName: opts.fileName,
+      clientId,
+      totalSize,
+      imei: ctx.imei,
+      isE2EE: 0,
+      jxl: 0,
+      chunkId: i + 1,
+      [opts.group ? 'grid' : 'toid']: dest,
+    };
+    const encrypted = encodeAES(ctx.secretKey, JSON.stringify(params));
+    if (!encrypted) throw new Error('mã hoá params upload thất bại');
+    const url = makeURL(`${host}${path}`, { type: typeParam, params: encrypted });
+
+    const form = new FormData();
+    form.append('chunkContent', new Blob([new Uint8Array(chunk)], { type: 'application/octet-stream' }), opts.fileName);
+
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), REQ_TIMEOUT_MS);
+    let raw: ZaloEnvelope;
+    try {
+      const res = await fetch(url, { method: 'POST', headers: headers(ctx), body: form, signal: ac.signal });
+      const text = await res.text().catch(() => '');
+      if (!text.trim()) throw new Error(`upload: Zalo trả rỗng (HTTP ${res.status})`);
+      raw = JSON.parse(text) as ZaloEnvelope;
+    } catch (e) {
+      throw new Error(`upload chunk ${i + 1}/${totalChunk}: ${(e as Error).message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (raw.error_code && raw.error_code !== 0) {
+      trace('upload', `Zalo lỗi ${raw.error_code}`, { chunk: i + 1, totalChunk, msg: raw.error_message });
+      throw new Error(`upload ảnh lỗi ${raw.error_code}: ${raw.error_message ?? ''}`);
+    }
+    const decoded = raw.data ? unwrap(decryptRespSecret(ctx.secretKey, raw.data)) : null;
+    if (decoded && (decoded['photoId'] || decoded['normalUrl'])) {
+      result = {
+        photoId: String(decoded['photoId'] ?? ''),
+        normalUrl: String(decoded['normalUrl'] ?? decoded['oriUrl'] ?? ''),
+        hdUrl: String(decoded['hdUrl'] ?? ''),
+        thumbUrl: String(decoded['thumbUrl'] ?? ''),
+        width: meta.width,
+        height: meta.height,
+        totalSize,
+      };
+    }
+  }
+
+  if (!result) throw new Error('upload xong nhưng response không có photoId/normalUrl — xem trace');
+  trace('upload', 'upload ảnh OK', { photoId: result.photoId, hasUrls: !!result.normalUrl });
+  return result;
+}
+
+/** Gửi tin ẢNH tham chiếu attachment đã upload. Port từ nhánh photo của sendMessage. */
+export async function sendPhoto(
+  ctx: ZaloContext,
+  opts: { threadId: string; group: boolean; attachment: ImageAttachment; caption?: string },
+): Promise<SendResult> {
+  const host = ctx.serviceMap.file?.[0];
+  if (!host) return { ok: false, detail: 'serviceMap thiếu host file' };
+  const dest = opts.threadId || ctx.uid;
+  if (!dest) return { ok: false, detail: 'không có threadId để gửi ảnh' };
+  const a = opts.attachment;
+  const clientId = Date.now();
+  const isGroup = opts.group;
+
+  const payload: Record<string, unknown> = {
+    photoId: a.photoId,
+    clientId: String(clientId),
+    desc: opts.caption ?? '',
+    width: a.width,
+    height: a.height,
+    toid: isGroup ? undefined : String(dest),
+    grid: isGroup ? String(dest) : undefined,
+    rawUrl: a.normalUrl,
+    hdUrl: a.hdUrl,
+    thumbUrl: a.thumbUrl,
+    oriUrl: isGroup ? a.normalUrl : undefined,
+    normalUrl: isGroup ? undefined : a.normalUrl,
+    hdSize: String(a.totalSize),
+    zsource: -1,
+    ttl: 0,
+    jcp: '{"convertible":"jxl"}',
+  };
+
+  const encrypted = encodeAES(ctx.secretKey, JSON.stringify(payload));
+  if (!encrypted) return { ok: false, detail: 'mã hoá params gửi ảnh thất bại' };
+  const url = makeURL(`${host}/api/${isGroup ? 'group' : 'message'}/photo_original/send`, { nretry: 0 });
+  const body = new URLSearchParams({ params: encrypted });
+
+  let raw: ZaloEnvelope;
+  try {
+    raw = await fetchZalo(
+      url,
+      { method: 'POST', headers: { ...headers(ctx), 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() },
+      'gửi ảnh',
+    );
+  } catch (e) {
+    return { ok: false, detail: (e as Error).message };
+  }
+  if (raw.error_code && raw.error_code !== 0) {
+    trace('sendPhoto', `Zalo lỗi ${raw.error_code}`, { msg: raw.error_message });
+    return { ok: false, detail: `Zalo trả lỗi ${raw.error_code}: ${raw.error_message ?? ''}`, raw };
+  }
+  const decoded = raw.data ? decryptRespSecret(ctx.secretKey, raw.data) : null;
+  const msgId = decoded && typeof decoded === 'object' ? String((decoded as Record<string, unknown>)['msgId'] ?? '') : '';
+  return { ok: true, msgId: msgId || undefined, detail: 'đã gửi ảnh qua API', raw: decoded };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  LỊCH SỬ NHÓM — port nguyên từ zca-js apis/getGroupChatHistory.ts.
+//  GET group[0]/api/group/history?params=encodeAES({grid,count}). KHÔNG signkey.
+//  (Zalo Web KHÔNG có API tương đương cho chat 1-1 — lịch sử 1-1 chỉ dựng dần
+//  từ lúc kết nối; đây là giới hạn của nền tảng, không phải thiếu sót port.)
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Một tin lịch sử đã chuẩn hoá (khớp StoredMessage của threadStore). */
+export interface HistoryMessage {
+  id: string;
+  at: number;
+  self: boolean;
+  fromId: string;
+  fromName: string;
+  text: string;
+}
+
+function historyText(m: Record<string, unknown>): string {
+  const c = m['content'];
+  if (typeof c === 'string' && c) return c;
+  if (c && typeof c === 'object') {
+    const t = (c as Record<string, unknown>)['title'] ?? (c as Record<string, unknown>)['text'];
+    if (typeof t === 'string' && t) return t;
+  }
+  const alt = m['message'] ?? m['msg'];
+  return typeof alt === 'string' ? alt : '';
+}
+
+/** Lấy lịch sử tin của một NHÓM (mới → cũ tuỳ Zalo; ta sắp lại theo ts tăng). */
+export async function getGroupHistory(ctx: ZaloContext, groupId: string, count = 50): Promise<HistoryMessage[]> {
+  const host = ctx.serviceMap.group?.[0];
+  if (!host) throw new Error('serviceMap thiếu host group');
+  const encrypted = encodeAES(ctx.secretKey, JSON.stringify({ grid: groupId, count }));
+  if (!encrypted) throw new Error('mã hoá params lịch sử thất bại');
+  const url = makeURL(`${host}/api/group/history`, { params: encrypted });
+
+  const raw = await fetchZalo(url, { method: 'GET', headers: headers(ctx) }, 'lịch sử nhóm');
+  if (raw.error_code && raw.error_code !== 0) {
+    throw new Error(`lịch sử nhóm lỗi ${raw.error_code}: ${raw.error_message ?? ''}`);
+  }
+  const decoded = raw.data ? decryptRespSecret(ctx.secretKey, raw.data) : null;
+  const inner = unwrap(decoded);
+  const listRaw = inner?.['groupMsgs'];
+  const list = Array.isArray(listRaw) ? listRaw : [];
+
+  const out: HistoryMessage[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    const m = item as Record<string, unknown>;
+    const text = historyText(m);
+    if (!text) continue;
+    const fromId = String(m['uidFrom'] ?? m['fromId'] ?? '');
+    const at = Number(m['ts'] ?? m['at'] ?? 0) || 0;
+    out.push({
+      id: String(m['msgId'] ?? m['msgID'] ?? `${at}-${fromId}`),
+      at,
+      self: !!ctx.uid && fromId === ctx.uid,
+      fromId,
+      fromName: String(m['dName'] ?? m['fromName'] ?? ''),
+      text,
+    });
+  }
+  out.sort((a, b) => a.at - b.at);
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  QUÉT DANH BẠ — lấy DANH SÁCH NHÓM + KHÁCH (bạn) về, để danh sách hội thoại
+//  không trống trơn mỗi lần vào. Port từ zca-js:
+//    getAllGroups   GET  group_poll[0]/api/group/getlg/v4        → gridVerMap (ids)
+//    getGroupInfo   POST group[0]/api/group/getmg-v2            → tên nhóm
+//    getAllFriends  GET  profile[0]/api/social/friend/getfriends → khách 1-1
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Một mục danh bạ tối thiểu để nạp vào danh sách hội thoại. */
+export interface ContactLite {
+  threadId: string;
+  name: string;
+  group: boolean;
+}
+
+/** Danh sách id nhóm tài khoản đang tham gia. */
+async function getAllGroupIds(ctx: ZaloContext): Promise<string[]> {
+  const host = ctx.serviceMap.group_poll?.[0] ?? ctx.serviceMap.group?.[0];
+  if (!host) return [];
+  const url = makeURL(`${host}/api/group/getlg/v4`, {});
+  const raw = await fetchZalo(url, { method: 'GET', headers: headers(ctx) }, 'lấy danh sách nhóm');
+  if (raw.error_code && raw.error_code !== 0) throw new Error(`getlg lỗi ${raw.error_code}: ${raw.error_message ?? ''}`);
+  const decoded = raw.data ? unwrap(decryptRespSecret(ctx.secretKey, raw.data)) : null;
+  const map = decoded?.['gridVerMap'];
+  return map && typeof map === 'object' ? Object.keys(map as Record<string, unknown>) : [];
+}
+
+/** Tên nhóm theo id (chia lô để tránh payload quá lớn). */
+async function getGroupsInfo(ctx: ZaloContext, ids: string[]): Promise<ContactLite[]> {
+  const host = ctx.serviceMap.group?.[0];
+  if (!host || !ids.length) return [];
+  const out: ContactLite[] = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    const chunk = ids.slice(i, i + 50);
+    const gridVerMap = JSON.stringify(Object.fromEntries(chunk.map((id) => [id, 0])));
+    const encrypted = encodeAES(ctx.secretKey, JSON.stringify({ gridVerMap }));
+    if (!encrypted) continue;
+    const url = makeURL(`${host}/api/group/getmg-v2`, {});
+    const body = new URLSearchParams({ params: encrypted });
+    let raw: ZaloEnvelope;
+    try {
+      raw = await fetchZalo(url, { method: 'POST', headers: { ...headers(ctx), 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() }, 'thông tin nhóm');
+    } catch { continue; }
+    const decoded = raw.data ? unwrap(decryptRespSecret(ctx.secretKey, raw.data)) : null;
+    const infoMap = decoded?.['gridInfoMap'];
+    if (infoMap && typeof infoMap === 'object') {
+      for (const [gid, info] of Object.entries(infoMap as Record<string, Record<string, unknown>>)) {
+        out.push({ threadId: gid, name: String(info?.['name'] ?? gid), group: true });
+      }
+    }
+  }
+  return out;
+}
+
+/** Danh sách khách (bạn bè) 1-1. */
+async function getAllFriendContacts(ctx: ZaloContext): Promise<ContactLite[]> {
+  const host = ctx.serviceMap.profile?.[0];
+  if (!host) return [];
+  const params = { incInvalid: 1, page: 1, count: 20000, avatar_size: 120, actiontime: 0, imei: ctx.imei };
+  const encrypted = encodeAES(ctx.secretKey, JSON.stringify(params));
+  if (!encrypted) return [];
+  const url = makeURL(`${host}/api/social/friend/getfriends`, { params: encrypted });
+  const raw = await fetchZalo(url, { method: 'GET', headers: headers(ctx) }, 'danh sách bạn');
+  if (raw.error_code && raw.error_code !== 0) throw new Error(`getfriends lỗi ${raw.error_code}: ${raw.error_message ?? ''}`);
+  const decoded = raw.data ? decryptRespSecret(ctx.secretKey, raw.data) : null;
+  const arr = Array.isArray(decoded)
+    ? (decoded as unknown[])
+    : (() => { const d = unwrap(decoded); const v = d?.['data'] ?? d; return Array.isArray(v) ? (v as unknown[]) : []; })();
+  const out: ContactLite[] = [];
+  for (const item of arr) {
+    if (!item || typeof item !== 'object') continue;
+    const u = item as Record<string, unknown>;
+    const id = String(u['userId'] ?? u['uid'] ?? '');
+    if (!id) continue;
+    out.push({ threadId: id, name: String(u['displayName'] ?? u['zaloName'] ?? id), group: false });
+  }
+  return out;
+}
+
+/**
+ * Quét TẤT CẢ nhóm + khách về một lượt. Mỗi nguồn lỗi độc lập (không có nhóm,
+ * hoặc endpoint đổi) không làm hỏng nguồn kia. Loại chính uid tài khoản.
+ */
+export async function scanContacts(ctx: ZaloContext): Promise<{ contacts: ContactLite[]; groups: number; friends: number; note: string }> {
+  const notes: string[] = [];
+  let groups: ContactLite[] = [];
+  let friends: ContactLite[] = [];
+  try {
+    const ids = await getAllGroupIds(ctx);
+    groups = await getGroupsInfo(ctx, ids);
+  } catch (e) { notes.push('nhóm: ' + (e as Error).message); }
+  try {
+    friends = await getAllFriendContacts(ctx);
+  } catch (e) { notes.push('khách: ' + (e as Error).message); }
+
+  const seen = new Set<string>();
+  const contacts: ContactLite[] = [];
+  for (const c of [...groups, ...friends]) {
+    if (!c.threadId || c.threadId === ctx.uid || seen.has(c.threadId)) continue;
+    seen.add(c.threadId);
+    contacts.push(c);
+  }
+  return { contacts, groups: groups.length, friends: friends.length, note: notes.join(' · ') };
 }

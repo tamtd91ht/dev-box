@@ -224,8 +224,16 @@ export async function decodeEventData(
   }
 
   // encrypt=3 không nén; còn lại inflate (zlib) — dùng pako để khớp zca-js.
-  const pako = (await import('pako')).default;
-  const out = encryptType === 3 ? decrypted : pako.inflate(decrypted);
+  // pako v3 KHÔNG có `.default` (chỉ named export `inflate`); một số bundler lại
+  // gói dưới `.default`. Nhận cả hai, nếu không mọi tin encrypt:2 chết với
+  // "Cannot read properties of undefined (reading 'inflate')" — đúng lỗi đã gặp.
+  const pakoMod = (await import('pako')) as unknown as {
+    inflate?: (data: Uint8Array) => Uint8Array;
+    default?: { inflate: (data: Uint8Array) => Uint8Array };
+  };
+  const inflate = pakoMod.inflate ?? pakoMod.default?.inflate;
+  if (!inflate) throw new Error('decodeEventData: không nạp được pako.inflate');
+  const out = encryptType === 3 ? decrypted : inflate(decrypted);
   const text = Buffer.from(out).toString('utf-8');
   if (!text) return undefined;
   const JSONBig = (await import('json-bigint')).default;

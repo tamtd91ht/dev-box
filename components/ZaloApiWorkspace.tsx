@@ -51,6 +51,7 @@ import { isDesktop } from '@/lib/workspace/config';
 import { registerGuest } from '@/lib/workspace/guests';
 import { automation, useAutomation } from '@/lib/automation/useAutomation';
 import { useChime } from './BrowserWorkspace';
+import ZaloChatPanel from './ZaloChatPanel';
 
 const ZALO_URL = 'https://chat.zalo.me/';
 const POLL_MS = 2000;
@@ -105,6 +106,9 @@ function ZaloApiAccountView({
   const [session, setSession] = useState<ZaloSessionInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [wsState, setWsState] = useState<ZaloListenerState['state']>('off');
+  // Chế độ hiển thị: 'chat' = màn chat dựng trên API; 'web' = webview Zalo thật
+  // (quét QR / chat tay). Kết nối xong thì tự sang 'chat'.
+  const [viewMode, setViewMode] = useState<'chat' | 'web'>('web');
 
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [consolePos, setConsolePos] = useState<'bottom' | 'right'>('bottom');
@@ -221,7 +225,7 @@ function ZaloApiAccountView({
     void zaloApiStatus(accountKey)
       .then((s) => {
         setSession(s);
-        if (s) log('info', `Phiên còn sống · uid ${s.uid}`);
+        if (s) { setViewMode('chat'); log('info', `Phiên còn sống · uid ${s.uid}`); }
       })
       .catch(() => { /* chưa đăng nhập */ });
   }, [accountKey, log]);
@@ -254,6 +258,7 @@ function ZaloApiAccountView({
       credsRef.current = creds;
       const info = await zaloApiLogin({ accountKey, ...creds });
       setSession(info);
+      setViewMode('chat'); // kết nối xong → hiện màn chat luôn
       log('info', `Đã kết nối · uid ${info.uid}`);
       // NHẢ webview Zalo: Zalo chỉ cho 1 kết nối/tài khoản. Nếu webview vẫn giữ
       // Zalo Web mở thì nó + listener server tranh nhau → Zalo đá qua lại (cmd
@@ -393,6 +398,21 @@ function ZaloApiAccountView({
           </span>
         )}
 
+        {session && (
+          <div className="za-modes" role="tablist" aria-label="Chế độ hiển thị">
+            <button
+              className={`za-mode${viewMode === 'chat' ? ' is-on' : ''}`}
+              onClick={() => setViewMode('chat')}
+              title="Màn chat dựng trên API — quản lý hội thoại + gửi tin"
+            >💬 Chat</button>
+            <button
+              className={`za-mode${viewMode === 'web' ? ' is-on' : ''}`}
+              onClick={() => setViewMode('web')}
+              title="Trang Zalo thật — quét QR / chat tay (bấm ⟳ Mở Zalo nếu đang trống)"
+            >🌐 Trang Zalo</button>
+          </div>
+        )}
+
         <span className="za-bar-spacer" />
 
         {disabled ? (
@@ -415,7 +435,7 @@ function ZaloApiAccountView({
           Console{logs.length ? ` (${logs.length})` : ''}
         </button>
         <button
-          onClick={() => { try { ref.current?.loadURL(ZALO_URL); setStatus('loading'); } catch { /* chưa gắn */ } }}
+          onClick={() => { setViewMode('web'); try { ref.current?.loadURL(ZALO_URL); setStatus('loading'); } catch { /* chưa gắn */ } }}
           className="za-btn"
           title="Mở lại trang Zalo (để quét QR / chat tay). Lưu ý: mở Zalo sẽ tranh kết nối với listener."
         >⟳ Mở Zalo</button>
@@ -429,11 +449,24 @@ function ZaloApiAccountView({
           partition={partition}
           {...({ allowpopups: 'true' } as Record<string, string>)}
         />
-        {status === 'loading' && (
+        {status === 'loading' && viewMode === 'web' && (
           <div className="za-overlay"><div className="ws-spinner" /><p>Đang tải Zalo…</p></div>
         )}
-        {status === 'failed' && (
+        {status === 'failed' && viewMode === 'web' && (
           <div className="za-overlay"><p>Không tải được.</p><button onClick={() => ref.current?.reload()}>Thử lại</button></div>
+        )}
+
+        {/* Màn CHAT — lớp phủ kín stage khi ở chế độ chat; webview vẫn sống dưới
+            (guest registry + hook thông báo cần nó chạy nền). */}
+        {viewMode === 'chat' && (
+          <div className="za-chatlayer">
+            <ZaloChatPanel
+              accountKey={accountKey}
+              connected={!!session}
+              canSend={!!(flags?.enabled && flags?.allowSend)}
+              active={active}
+            />
+          </div>
         )}
 
         {consoleOpen && (

@@ -28,6 +28,8 @@ export interface ZaloContact {
   lastSeen: number;
   /** Người dùng tự thêm (không phải tự học từ tin đến). */
   manual?: boolean;
+  /** Nhãn phân loại người dùng gán để lọc/tìm (vd "khách VIP", "cần xử lý"). */
+  tags?: string[];
 }
 
 export interface ContactStore {
@@ -43,6 +45,10 @@ const EMPTY: ContactStore = { version: 1, contacts: [] };
 const str = (v: unknown, max = 200): string =>
   typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : '';
 
+/** Chuẩn hoá danh sách tag: cắt gọn, bỏ rỗng/trùng, trần 12 tag. */
+const strTags = (v: unknown): string[] =>
+  Array.isArray(v) ? [...new Set(v.map((x) => str(x, 40)).filter(Boolean))].slice(0, 12) : [];
+
 function norm(raw: unknown): ZaloContact | null {
   if (!raw || typeof raw !== 'object') return null;
   const c = raw as Record<string, unknown>;
@@ -50,6 +56,7 @@ function norm(raw: unknown): ZaloContact | null {
   const threadId = str(c.threadId, 80);
   if (!accountKey || !threadId) return null;
   const at = Number(c.lastSeen);
+  const tags = strTags(c.tags);
   return {
     accountKey,
     threadId,
@@ -57,6 +64,7 @@ function norm(raw: unknown): ZaloContact | null {
     group: !!c.group,
     lastSeen: Number.isFinite(at) && at > 0 ? at : 0,
     manual: !!c.manual,
+    ...(tags.length ? { tags } : {}),
   };
 }
 
@@ -123,6 +131,73 @@ export async function learnContact(input: {
     store.contacts.push({ accountKey, threadId, name: incomingName || threadId, group: !!input.group, lastSeen: now });
   }
   await write(store);
+}
+
+/**
+ * Nạp HÀNG LOẠT contact từ QUÉT DANH BẠ (nhóm + khách). Ghi đĩa MỘT lần. Không
+ * đè tên do người dùng đặt tay (manual) và không hạ cấp manual→false; contact
+ * mới thì thêm với lastSeen=0 (chưa có tin). Trả store mới.
+ */
+export async function bulkUpsertContacts(
+  accountKey: string,
+  items: Array<{ threadId: string; name: string; group: boolean }>,
+): Promise<ContactStore> {
+  const acc = str(accountKey, 80);
+  if (!acc) throw new Error('cần accountKey');
+  const store = await readContacts();
+  const idx = new Map(store.contacts.map((c, i) => [keyOf(c.accountKey, c.threadId), i]));
+  for (const it of items) {
+    const threadId = str(it.threadId, 80);
+    if (!threadId) continue;
+    const name = str(it.name);
+    const k = keyOf(acc, threadId);
+    const at = idx.get(k);
+    if (at != null) {
+      const prev = store.contacts[at];
+      store.contacts[at] = {
+        ...prev,
+        name: prev.manual ? prev.name : (name || prev.name),
+        group: !!it.group,
+      };
+    } else {
+      store.contacts.push({ accountKey: acc, threadId, name: name || threadId, group: !!it.group, lastSeen: 0 });
+      idx.set(k, store.contacts.length - 1);
+    }
+  }
+  return write(store);
+}
+
+/**
+ * Gán/đổi TAG cho một hội thoại. Tự tạo contact nếu chưa có (hội thoại mới chỉ
+ * có trong kho RAM). Trả store mới.
+ */
+export async function setContactTags(input: {
+  accountKey: string;
+  threadId: string;
+  tags: string[];
+  name?: string;
+  group?: boolean;
+}): Promise<ContactStore> {
+  const accountKey = str(input.accountKey, 80);
+  const threadId = str(input.threadId, 80);
+  if (!accountKey || !threadId) throw new Error('cần accountKey + threadId');
+  const tags = strTags(input.tags);
+  const store = await readContacts();
+  const k = keyOf(accountKey, threadId);
+  const idx = store.contacts.findIndex((c) => keyOf(c.accountKey, c.threadId) === k);
+  if (idx >= 0) {
+    store.contacts[idx] = { ...store.contacts[idx], tags };
+  } else {
+    store.contacts.push({
+      accountKey,
+      threadId,
+      name: str(input.name) || threadId,
+      group: !!input.group,
+      lastSeen: 0,
+      tags,
+    });
+  }
+  return write(store);
 }
 
 /** Thêm/sửa thủ công một contact (hội thoại chưa ai nhắn tới). */

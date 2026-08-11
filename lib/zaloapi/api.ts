@@ -22,6 +22,33 @@ export interface ZaloSendResult {
   msgId?: string;
   detail: string;
   raw?: unknown;
+  /** threadId đích thực tế đã gửi (dùng để refresh đúng hội thoại sau khi gửi). */
+  threadId?: string;
+}
+
+/** Tóm tắt một hội thoại cho cột trái màn chat. */
+export interface ZaloThreadSummary {
+  threadId: string;
+  group: boolean;
+  name: string;
+  lastText: string;
+  lastAt: number;
+  unread: number;
+  /** Nhãn phân loại người dùng gán (để lọc/tìm). */
+  tags?: string[];
+}
+
+/** Một tin đã lưu để dựng bong bóng chat. */
+export interface ZaloStoredMessage {
+  id: string;
+  at: number;
+  self: boolean;
+  fromId: string;
+  fromName: string;
+  text: string;
+  /** URL ảnh nếu là tin ảnh — UI hiện thumbnail. */
+  imageUrl?: string;
+  status?: 'sending' | 'sent' | 'failed';
 }
 
 export interface ZaloApiFlags {
@@ -63,11 +90,20 @@ export function zaloApiStatus(accountKey: string): Promise<ZaloSessionInfo | nul
   return call<ZaloSessionInfo | null>('status', { accountKey });
 }
 
+/** Một khoảng định dạng chữ (in đậm/nghiêng/màu…). */
+export interface ZaloTextStyle {
+  start: number;
+  len: number;
+  /** 'b'|'i'|'u'|'s' | 'c_<hex6>' | 'f_<size>'. */
+  st: string;
+}
+
 export function zaloApiSendMessage(params: {
   accountKey: string;
   threadId?: string;
   text: string;
   group?: boolean;
+  styles?: ZaloTextStyle[];
 }): Promise<ZaloSendResult> {
   return call<ZaloSendResult>('send', params);
 }
@@ -126,6 +162,63 @@ export function zaloApiContactRemove(accountKey: string, threadId: string): Prom
 /** Bật listener NHẬN tin server-side (cần đã login). Idempotent. */
 export function zaloApiListen(accountKey: string): Promise<ZaloListenerState> {
   return call<ZaloListenerState>('listen', { accountKey });
+}
+
+/** Danh sách hội thoại (mới nhất trước) cho cột trái màn chat. */
+export function zaloApiThreads(accountKey: string): Promise<ZaloThreadSummary[]> {
+  return call<ZaloThreadSummary[]>('threads', { accountKey });
+}
+
+/** Quét nhóm + khách từ tài khoản Zalo về danh bạ. Trả danh sách hội thoại mới. */
+export function zaloApiScan(accountKey: string): Promise<{
+  threads: ZaloThreadSummary[];
+  groups: number;
+  friends: number;
+  note: string;
+}> {
+  return call<{ threads: ZaloThreadSummary[]; groups: number; friends: number; note: string }>('scan', { accountKey });
+}
+
+/** Lịch sử tin của một hội thoại (cũ → mới). Gọi cũng đánh dấu đã đọc. */
+export function zaloApiHistory(accountKey: string, threadId: string): Promise<ZaloStoredMessage[]> {
+  return call<ZaloStoredMessage[]>('history', { accountKey, threadId });
+}
+
+/** Đánh dấu đã đọc một hội thoại. */
+export function zaloApiMarkRead(accountKey: string, threadId: string): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>('markRead', { accountKey, threadId });
+}
+
+/** Gán/đổi tag cho một hội thoại (để lọc/tìm). */
+export function zaloApiSetTags(p: {
+  accountKey: string;
+  threadId: string;
+  tags: string[];
+  name?: string;
+  group?: boolean;
+}): Promise<{ ok: boolean; tags: string[] }> {
+  return call<{ ok: boolean; tags: string[] }>('setTags', p);
+}
+
+/** Gửi ẢNH: bytes đã mã hoá base64 (không kèm tiền tố data:). */
+export function zaloApiSendImage(params: {
+  accountKey: string;
+  threadId?: string;
+  group?: boolean;
+  dataBase64: string;
+  fileName?: string;
+  caption?: string;
+}): Promise<ZaloSendResult> {
+  return call<ZaloSendResult>('sendImage', params);
+}
+
+/** Kéo lịch sử cũ (chỉ nhóm có API). Trả lại toàn bộ tin của hội thoại sau khi chèn. */
+export function zaloApiLoadOlder(
+  accountKey: string,
+  threadId: string,
+  group: boolean,
+): Promise<{ supported: boolean; messages: ZaloStoredMessage[] }> {
+  return call<{ supported: boolean; messages: ZaloStoredMessage[] }>('loadOlder', { accountKey, threadId, group });
 }
 
 /** Đếm chẩn đoán của listener — để trả lời "vì sao không có tin". */

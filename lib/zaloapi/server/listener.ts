@@ -23,10 +23,23 @@ export interface IncomingMessage {
   /** Thời điểm nhận (epoch ms). */
   at: number;
   group: boolean;
-  /** threadId thật (uidFrom cho cá nhân, groupId cho nhóm). */
+  /**
+   * threadId thật — cái để GOM tin theo hội thoại và để GỬI trả lời:
+   *   nhóm            → groupId
+   *   cá nhân, tin đến → uid người gửi (uidFrom)
+   *   cá nhân, tin MÌNH gửi (Zalo phản hồi về) → uid người nhận (idTo)
+   * Nhờ tính đúng cho cả tin của chính mình, màn chat gom được hai chiều vào
+   * cùng một hội thoại thay vì tách tin mình gửi ra một "hội thoại" riêng.
+   */
   threadId: string;
   /** uid người gửi. */
   fromId: string;
+  /** uid người nhận (idTo) — cần để định threadId cho tin mình gửi. */
+  toId: string;
+  /** Tin này do CHÍNH tài khoản đang đăng nhập gửi (fromId === uid). */
+  isSelf: boolean;
+  /** id tin (nếu payload có) — để khử trùng echo với tin gửi lạc quan. */
+  msgId: string;
   /** Tên hiển thị người gửi (nếu payload có). */
   fromName: string;
   /** Nội dung văn bản. */
@@ -47,46 +60,110 @@ function getHeader(buf: Buffer): [number, number, number] {
   return [buf[0], buf.readUInt16LE(1), buf[3]];
 }
 
-/** Lôi các trường tin nhắn ra khỏi payload đã giải mã, chịu được nhiều schema. */
-function extractMessage(group: boolean, decoded: unknown, at: number): IncomingMessage | null {
-  // Payload thường là { msgs: [...] } hoặc { data: {...} }; bọc nhiều lớp.
-  const root = decoded as Record<string, unknown> | null;
-  if (!root) return null;
-  const list =
-    (Array.isArray(root['msgs']) && (root['msgs'] as unknown[])) ||
-    (Array.isArray((root['data'] as Record<string, unknown>)?.['msgs']) &&
-      ((root['data'] as Record<string, unknown>)['msgs'] as unknown[])) ||
-    [root];
-  const m = (list[list.length - 1] ?? null) as Record<string, unknown> | null;
-  if (!m) return null;
-
-  const str = (...keys: string[]): string => {
-    for (const k of keys) {
-      const v = m[k];
-      if (typeof v === 'string' && v) return v;
-      if (typeof v === 'number' || typeof v === 'bigint') return String(v);
-    }
-    return '';
-  };
-  const text = str('content', 'message', 'msg', 'body');
-  if (!text) return null; // không có nội dung → bỏ (typing/seen… xử lý nơi khác)
-  return {
-    at,
-    group,
-    threadId: group ? str('groupId', 'idTo', 'gid') : str('uidFrom', 'fromId', 'idTo'),
-    fromId: str('uidFrom', 'fromId'),
-    fromName: str('dName', 'fromName', 'senderName'),
-    text,
-    raw: m,
-  };
+/** Đọc một trường chuỗi/số từ object, thử lần lượt nhiều tên khoá. */
+function pickStr(m: Record<string, unknown>, ...keys: string[]): string {
+  for (const k of keys) {
+    const v = m[k];
+    if (typeof v === 'string' && v) return v;
+    if (typeof v === 'number' || typeof v === 'bigint') return String(v);
+  }
+  return '';
 }
 
 /**
- * Nhịp heartbeat tầng WebSocket. Mỗi nhịp gửi một ping; nếu nhịp TRƯỚC đã ping
- * mà không có phản hồi (pong hoặc khung) thì mới coi là chết → thời gian phát
- * hiện đường chết thật ≈ 2×WS_PING_MS (~60s), đủ nhanh mà không nhầm im lặng.
+ * Rút NỘI DUNG VĂN BẢN từ một object tin. Zalo để text ở `content` khi là tin
+ * thường (string), nhưng tin có kèm (ảnh/file/link) thì `content` là OBJECT
+ * `{ title, description, ... }` — khi đó lấy `title`. Trả '' nếu không có chữ
+ * (ảnh trần, typing, seen…) để tầng trên bỏ qua.
  */
-const WS_PING_MS = 30_000;
+function pickText(m: Record<string, unknown>): string {
+  const c = m['content'];
+  if (typeof c === 'string' && c) return c;
+  if (c && typeof c === 'object') {
+    const t = pickStr(c as Record<string, unknown>, 'title', 'text', 'description');
+    if (t) return t;
+  }
+  return pickStr(m, 'message', 'msg', 'body');
+}
+
+/**
+ * Lôi TẤT CẢ tin văn bản ra khỏi payload đã giải mã, chịu được nhiều schema.
+ *
+ * Trước đây chỉ lấy tin CUỐI của khung và quyết group bằng số cmd (501/521).
+ * Bản build hiện tại đẩy tin qua cmd khác (thấy 621 trong trace) nên lọc theo
+ * cmd là bỏ sót. Nay: quét mọi tin trong khung, và suy NHÓM/CÁ NHÂN theo PAYLOAD
+ * (có groupId/gid → nhóm) — số cmd chỉ còn là gợi ý.
+ *
+ * `selfUid` để nhận ra tin do CHÍNH mình gửi (Zalo phản hồi tin của ta về các
+ * phiên khác): khi đó threadId phải là người NHẬN (idTo), không phải người gửi.
+ */
+function extractMessages(groupHint: boolean, decoded: unknown, at: number, selfUid: string): IncomingMessage[] {
+  const root = decoded as Record<string, unknown> | null;
+  if (!root) return [];
+  // Payload có nhiều dạng bọc tuỳ cmd: { msgs:[…] }, { data:[…] },
+  // { data:{ msgs:[…] } }, { data:{…tin…} }, hoặc chính là object tin. Gom hết
+  // về một mảng để quét — đoán sai lớp bọc là "rút 0" dù đã giải mã được.
+  const dataField = root['data'];
+  const dataObj = dataField && typeof dataField === 'object' ? (dataField as Record<string, unknown>) : null;
+  let list: unknown[];
+  if (Array.isArray(root['msgs'])) list = root['msgs'] as unknown[];
+  else if (Array.isArray(dataField)) list = dataField as unknown[];
+  else if (dataObj && Array.isArray(dataObj['msgs'])) list = dataObj['msgs'] as unknown[];
+  else if (dataObj) list = [dataObj];
+  else list = [root];
+
+  const out: IncomingMessage[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    const m = item as Record<string, unknown>;
+    const text = pickText(m);
+    if (!text) continue; // không có chữ → bỏ (ảnh trần/typing/seen…)
+
+    const groupId = pickStr(m, 'groupId', 'gid');
+    const group = groupHint || !!groupId;
+    const fromId = pickStr(m, 'uidFrom', 'fromId');
+    const toId = pickStr(m, 'idTo', 'toId', 'toUid', 'dId');
+    // Zalo đánh dấu tin do CHÍNH mình gửi (đồng bộ từ thiết bị khác) bằng
+    // uidFrom = "0" (nghĩa là "tôi"), KHÔNG phải uid thật. Không nhận ra thì tin
+    // mình gửi bị coi là tin đến, sinh hội thoại rác threadId "0" tách khỏi luồng
+    // thật của người kia — đúng lỗi "một người thành hai dòng".
+    const isSelf = fromId === '0' || (!!selfUid && fromId === selfUid);
+    // 1-1 luôn khoá hội thoại theo UID NGƯỜI KIA: tin đến → người gửi (fromId),
+    // tin mình gửi → người nhận (toId). Nhờ vậy hai chiều gom về một threadId.
+    const threadId = group ? (groupId || toId) : (isSelf ? toId : fromId);
+    if (!threadId || threadId === '0') continue; // không định được hội thoại → bỏ
+
+    out.push({
+      at,
+      group,
+      threadId,
+      fromId,
+      toId,
+      isSelf,
+      msgId: pickStr(m, 'msgId', 'msgID', 'cliMsgId', 'clientMsgId', 'realMsgId'),
+      fromName: pickStr(m, 'dName', 'fromName', 'senderName'),
+      text,
+      raw: m,
+    });
+  }
+  return out;
+}
+
+/**
+ * Nhịp ping tầng ỨNG DỤNG (khung cmd 2) để giữ phiên phía Zalo. Bản trước dựa
+ * vào pong tầng WebSocket (`ws.ping()`) để phán sống/chết, nhưng gateway Zalo
+ * KHÔNG trả pong WS → watchdog tự cắt kết nối khoẻ mỗi ~90s (thấy rõ trong
+ * trace: close 1006 đúng nhịp 3×30s). Đó chính là "mất realtime". Nay chỉ ping
+ * cmd 2 đều đặn và KHÔNG tự terminate vì thiếu pong.
+ */
+const APP_PING_MS = 60_000;
+
+/**
+ * Chỉ coi là đường chết khi IM HOÀN TOÀN (không một khung nào, kể cả phản hồi
+ * ping cmd 2) quá lâu. Nới rộng để im-vì-rảnh không bị nhầm là chết; nối lại
+ * là thao tác rẻ và không phá gì (reauth + mở lại), nên thà nới còn hơn cắt oan.
+ */
+const IDLE_TIMEOUT_MS = 240_000;
 
 /** Đổi context mới (login lại) khi listener nối lại. Trả null = không lấy được. */
 export type Reauth = () => Promise<ZaloContext | null>;
@@ -111,8 +188,8 @@ export class ZaloListener {
   private stopped = false;
   private id = 1;
   private attempt = 0;
-  /** Đã gửi ping ở nhịp trước và đang CHỜ phản hồi. Có khung/pong về → false. */
-  private awaitingPong = false;
+  /** Lúc nhận khung gần nhất (epoch ms) — watchdog đo im lặng từ đây. */
+  private lastFrameAt = 0;
 
   /**
    * Đếm chẩn đoán — để trả lời "vì sao không có tin" mà không phải đoán:
@@ -204,23 +281,23 @@ export class ZaloListener {
       return;
     }
     this.ws = ws;
-    this.awaitingPong = false;
+    this.lastFrameAt = Date.now();
 
     ws.on('open', () => {
       this.attempt = 0;
-      this.awaitingPong = false;
+      this.lastFrameAt = Date.now();
       this.onState('open', 'đã mở, chờ cipher key');
       trace('open', 'socket đã mở, chờ cipher key');
     });
 
     ws.on('message', (data: WebSocket.RawData) => {
-      // Có khung tới = đường CHẮC CHẮN sống → coi như pong.
-      this.awaitingPong = false;
+      // Có khung tới = đường còn sống → làm tươi mốc im lặng.
+      this.lastFrameAt = Date.now();
       void this.onFrame(data);
     });
-    // Pong trả lời cho ping của ta → đường còn sống.
-    ws.on('pong', () => { this.awaitingPong = false; });
-    ws.on('ping', () => { this.awaitingPong = false; });
+    // Pong/ping tầng WS (nếu Zalo có gửi) cũng tính là dấu hiệu sống.
+    ws.on('pong', () => { this.lastFrameAt = Date.now(); });
+    ws.on('ping', () => { this.lastFrameAt = Date.now(); });
 
     ws.on('close', (code: number, reason: Buffer) => {
       this.clearTimers();
@@ -264,31 +341,30 @@ export class ZaloListener {
     // 'close'; nếu không sẽ chạy chồng nhiều interval ping.
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.watchdogTimer) clearInterval(this.watchdogTimer);
-    this.awaitingPong = false;
-    // Ping ứng dụng (khung cmd=2) theo nhịp Zalo yêu cầu — giữ phiên phía Zalo.
-    const appEvery = this.ctx.pingIntervalMs > 0 ? this.ctx.pingIntervalMs : DEFAULT_PING_MS;
-    this.pingTimer = setInterval(() => this.sendPing(), appEvery);
+    this.lastFrameAt = Date.now();
 
-    // Heartbeat tầng WebSocket — CHỈ cắt khi ping có gửi mà KHÔNG có pong về.
-    //
-    // Bản trước cắt theo "im quá lâu không có KHUNG NÀO", nhưng Zalo im lặng khi
-    // không có tin là chuyện thường → nó tự ngắt liên tục, và tin đến rơi vào
-    // khoảng nối-lại = MISS. Sai lầm đó chính là "không còn realtime". Nay: mỗi
-    // nhịp gửi một ping; nếu chu kỳ TRƯỚC đã gửi ping mà chưa nhận gì (pong hoặc
-    // khung) thì mới coi là chết. Im lặng KHÔNG còn bị nhầm là chết.
+    // Ping ứng dụng (khung cmd 2) — giữ phiên phía Zalo. Nhịp = nhỏ hơn giữa cái
+    // Zalo quảng cáo và APP_PING_MS (đừng để tới 180s mới ping lần đầu; trace
+    // cho thấy Zalo đóng ở ~90s khi chưa nhận ping ứng dụng nào).
+    const advertised = this.ctx.pingIntervalMs > 0 ? this.ctx.pingIntervalMs : DEFAULT_PING_MS;
+    const appEvery = Math.min(advertised, APP_PING_MS);
+    this.pingTimer = setInterval(() => this.sendPing(), appEvery);
+    // Ping ngay một phát để Zalo thấy hoạt động sớm.
+    this.sendPing();
+
+    // Watchdog IM-LẶNG (không còn cắt-vì-thiếu-pong): chỉ nối lại khi tuyệt đối
+    // không có khung nào quá IDLE_TIMEOUT_MS. Ping cmd 2 của ta thường kéo về một
+    // khung phản hồi → đường bận rộn thì mốc luôn được làm tươi; chỉ khi đường
+    // chết thật (half-open, không cả phản hồi ping) mới chạm ngưỡng.
     this.watchdogTimer = setInterval(() => {
       const ws = this.ws;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      if (this.awaitingPong) {
-        // Đã ping ở nhịp trước, không có phản hồi nào → đường chết thật.
-        this.onState('error', 'ping không có phản hồi — nối lại');
+      if (Date.now() - this.lastFrameAt > IDLE_TIMEOUT_MS) {
+        this.onState('error', `im lặng quá ${IDLE_TIMEOUT_MS / 1000}s — nối lại`);
+        trace('idle', `im lặng quá ${IDLE_TIMEOUT_MS / 1000}s — terminate để nối lại`);
         try { ws.terminate(); } catch { /* ignore */ }
-        this.awaitingPong = false;
-        return;
       }
-      this.awaitingPong = true;
-      try { ws.ping(); } catch { this.awaitingPong = false; }
-    }, WS_PING_MS);
+    }, APP_PING_MS);
   }
 
   private sendPing(): void {
@@ -349,27 +425,34 @@ export class ZaloListener {
       return;
     }
 
-    // Tin cá nhân (501) / nhóm (521).
-    if (cmd === 501 || cmd === 521) {
+    // MỌI khung mang dữ liệu mã hoá là ỨNG VIÊN tin — KHÔNG lọc theo cmd nữa.
+    // Lý do: bản build hiện tại đẩy tin qua cmd 621 (không phải 501/521), và tên
+    // cmd đổi theo phiên bản Zalo. Ta giải mã rồi để extractMessages quyết theo
+    // PAYLOAD: có chữ thì là tin, không thì bỏ (ping/seen/typing…). cmd 521 vẫn
+    // dùng làm gợi ý "nhóm".
+    if (typeof parsed['data'] === 'string' && typeof parsed['encrypt'] === 'number') {
       this.stats.msgFrames += 1;
-      const group = cmd === 521;
+      const groupHint = cmd === 521;
       try {
         const decoded = await decodeEventData(parsed as { data: unknown; encrypt: unknown }, this.cipherKey ?? undefined);
         this.stats.decoded += 1;
-        const msg = extractMessage(group, decoded, Date.now());
-        if (msg) {
-          this.stats.extracted += 1;
-          this.onMessage(msg);
-          trace('msg', `RÚT được tin cmd=${cmd}`, { group, threadId: msg.threadId, from: msg.fromName || msg.fromId, text: msg.text.slice(0, 40) });
-        } else {
-          // Giải mã được nhưng KHÔNG rút ra tin → schema khác. Ghi hình dạng
-          // payload (khoá top-level) để sửa extractMessage cho đúng.
+        const msgs = extractMessages(groupHint, decoded, Date.now(), this.ctx.uid);
+        if (msgs.length) {
+          for (const msg of msgs) {
+            this.stats.extracted += 1;
+            this.onMessage(msg);
+          }
+          const last = msgs[msgs.length - 1];
+          trace('msg', `RÚT ${msgs.length} tin cmd=${cmd}`, { group: last.group, threadId: last.threadId, from: last.fromName || last.fromId, self: last.isSelf, text: last.text.slice(0, 40) });
+        } else if (this.stats.decoded <= 20) {
+          // Giải mã được nhưng KHÔNG có chữ → có thể là seen/typing, hoặc schema
+          // lạ. Ghi hình dạng (chỉ 20 lần đầu) để chẩn đoán nếu vẫn thiếu tin.
           const shape = decoded && typeof decoded === 'object' ? Object.keys(decoded as object).slice(0, 10) : typeof decoded;
-          trace('msg', `giải mã OK nhưng KHÔNG rút được tin cmd=${cmd}`, { group, shape });
+          trace('msg', `giải mã OK nhưng KHÔNG có chữ cmd=${cmd}`, { shape });
         }
       } catch (e) {
         this.stats.decodeErr += 1;
-        trace('msg', `LỖI giải mã cmd=${cmd}`, { hasCipher: this.stats.hasCipher, err: (e as Error).message });
+        if (this.stats.decodeErr <= 20) trace('msg', `LỖI giải mã cmd=${cmd}`, { hasCipher: this.stats.hasCipher, err: (e as Error).message });
         /* một khung giải mã lỗi không được làm chết listener */
       }
     }
