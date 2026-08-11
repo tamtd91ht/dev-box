@@ -2221,11 +2221,23 @@ pre.kafka-drawer-body {
 .es-layout {
   /* --es-rail: do thanh keo dat (lib/useSplit.ts); chua keo thi 300px. */
   display: grid; grid-template-columns: var(--es-rail, 300px) minmax(0, 1fr);
-  gap: 14px; align-items: start; min-height: 0; height: 100%;
+  gap: 14px; align-items: start; min-height: 0;
+  /* Con của .workspace (flex column) → `flex: 1` mới ăn hết chiều cao còn lại;
+     `height: 100%` một mình không đủ khi cha là flex item cao theo nội dung. */
+  flex: 1 1 auto; height: 100%;
 }
 @media (max-width: 1100px) { .es-layout { grid-template-columns: 1fr; } }
 
-.es-workspace-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+/*
+ * `align-self: stretch` ghi đè `align-items: start` của .es-layout — rail vẫn
+ * chỉ cao bằng danh sách cluster (đúng ý), còn khung nội dung cao HẾT chiều cao
+ * còn lại. Không có dòng này thì tab Console/Dữ liệu cao bằng nội dung và bỏ
+ * trống nửa dưới màn hình.
+ */
+.es-workspace-main {
+  display: flex; flex-direction: column; gap: 10px;
+  min-width: 0; min-height: 0; align-self: stretch; height: 100%;
+}
 
 .es-subnav { display: flex; gap: 4px; flex-wrap: wrap; }
 .es-subnav button {
@@ -2389,25 +2401,75 @@ pre.kafka-drawer-body {
 .es-qed-hint { font-size: 11px; }
 
 /* ── Tab Console (Dev Tools): editor | kết quả | lịch sử ───────────────── */
+/*
+ * Hai biến --es-con-* do lib/useConsoleSplit.ts đặt (kéo được + nhớ lại):
+ *   --es-con-left  % bề rộng cột editor trong phần co giãn
+ *   --es-con-hist  px bề rộng cột lịch sử
+ * Chưa kéo thì rơi về mặc định trong var() — CSS vẫn chạy khi JS chưa nạp.
+ *
+ * `height: 100%` + `min-height: 0` xuyên suốt: Console phải CAO HẾT khung, cả
+ * một chuỗi flex parent (.es-workspace-main → .es-console → .es-con-pane →
+ * .es-con-editor) nên chỉ cần một mắt thiếu min-height:0 là Monaco co lại bằng
+ * nội dung và để trống nửa dưới màn hình.
+ */
 .es-console {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 10px; flex: 1; min-height: 0;
+  display: grid;
+  grid-template-columns: var(--es-con-left, 50%) minmax(0, 1fr);
+  gap: 10px; flex: 1 1 auto; min-height: 0; height: 100%;
 }
-.es-console.with-hist { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 232px; }
-@media (max-width: 1100px) {
-  .es-console, .es-console.with-hist { grid-template-columns: 1fr; }
+.es-console.with-hist {
+  grid-template-columns: var(--es-con-left, 50%) minmax(0, 1fr) var(--es-con-hist, 232px);
+}
+@media (max-width: 700px) {
+  .es-console, .es-console.with-hist { grid-template-columns: 1fr; height: auto; }
+  .es-console .es-con-editor { min-height: 260px; }
 }
 
 .es-con-pane { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
-.es-con-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 30px; }
+.es-con-bar { display: flex; align-items: center; gap: 6px; min-height: 30px; }
 .es-con-cur {
   flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .es-con-restitle { font-size: 13px; margin-right: auto; }
 .es-con-editor {
-  flex: 1; min-height: 320px; display: flex; flex-direction: column;
+  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
   border: 1px solid var(--glass-brd); border-radius: 8px; overflow: hidden; background: var(--bg-1);
+}
+.es-con-blank {
+  margin: auto; padding: 16px; display: flex; flex-direction: column;
+  gap: 8px; text-align: center; max-width: 420px;
+}
+
+/* Method của lệnh đang chọn — tô theo mức nguy hiểm, thấy ngay trước khi bấm. */
+.es-con-rk { font-weight: 700; color: var(--accent); }
+.es-con-rk.write { color: var(--warn); }
+.es-con-rk.destructive { color: var(--err); }
+
+/* Badge GHI/XOÁ cạnh nút Chạy. */
+.es-con-risk {
+  flex: none; font-size: 10px; font-weight: 700; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 5px; border: 1px solid currentColor;
+}
+.es-con-risk.write { color: var(--warn); }
+.es-con-risk.destructive { color: var(--err); }
+.es-con-run.write { border-color: color-mix(in srgb, var(--warn) 60%, var(--glass-brd)); }
+.es-con-run.destructive { border-color: color-mix(in srgb, var(--err) 60%, var(--glass-brd)); }
+
+/* Modal xác nhận lệnh ghi (components/es/ConfirmRunModal.tsx). */
+.es-con-warnbox {
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px;
+}
+.es-con-cfm-grid {
+  display: grid; grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px; align-items: baseline; margin-bottom: 10px;
+}
+.es-con-cfm-cmd { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.es-con-cfm-body {
+  margin: 0; max-height: 220px; overflow: auto; font-size: 11.5px;
+  white-space: pre-wrap; word-break: break-word;
 }
 .es-con-editor > * { flex: 1; min-height: 0; }
 .es-con-editor:focus-within { border-color: color-mix(in srgb, var(--accent) 60%, var(--glass-brd)); }
@@ -4244,6 +4306,199 @@ pre.kafka-drawer-body {
 .auto-stop { color: var(--muted); border: 1px solid var(--glass-brd); }
 .auto-firing { color: var(--bad, #f85149); border: 1px solid color-mix(in srgb, var(--bad, #f85149) 55%, transparent); }
 
+/* Watch id, shown in the list because rules point at it. Dimmer than the
+   metric line so it reads as a reference, not as content. */
+.auto-rule-id {
+  font-size: 9.5px; font-family: var(--mono); color: var(--muted); opacity: .62;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.auto-watch-id {
+  display: flex; align-items: center; gap: 7px; margin-top: -4px;
+  font-size: 10.5px; color: var(--muted);
+}
+.auto-watch-id span { text-transform: uppercase; letter-spacing: .05em; font-size: 9.5px; }
+.auto-watch-id code {
+  font-family: var(--mono); font-size: 10.5px; padding: 2px 6px; border-radius: 4px;
+  background: var(--glass-bg, rgba(255,255,255,.04)); border: 1px solid var(--glass-brd);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── Section blurb + hover help ────────────────────────────── */
+/* One line under a section title saying what that section DECIDES. Scope and
+   Conditions both "filter events" and are indistinguishable without it. */
+.auto-sec-blurb {
+  margin: -2px 0 10px; font-size: 11px; line-height: 1.55; color: var(--muted);
+}
+.auto-sec-blurb b { color: var(--text); font-weight: 600; }
+.auto-sec-blurb code {
+  font-family: var(--mono); font-size: 10px; padding: 1px 4px; border-radius: 3px;
+  background: var(--glass-bg, rgba(255,255,255,.05)); color: var(--text);
+}
+
+/* The global `label` rule is display:block + uppercase; a field label carrying a
+   tip marker has to become a flex row, or the marker wraps onto its own line. */
+.auto-field > label { display: flex; align-items: center; }
+.auto-tip {
+  position: relative; display: inline-flex; margin-left: 5px; cursor: help; flex: none;
+  text-transform: none; letter-spacing: normal;
+}
+.auto-tip > span[aria-hidden] {
+  display: grid; place-items: center; width: 13px; height: 13px; border-radius: 50%;
+  font-size: 9px; font-weight: 700; line-height: 1;
+  color: var(--muted); border: 1px solid var(--glass-brd);
+}
+.auto-tip:hover > span[aria-hidden],
+.auto-tip:focus-visible > span[aria-hidden] { color: var(--accent); border-color: var(--accent); }
+/* Popover, not `title=`: the text is 2-3 sentences and a native tooltip both
+   truncates it and takes a second to appear. */
+.auto-tip-pop {
+  position: absolute; bottom: calc(100% + 7px); left: -6px; z-index: 40;
+  width: max-content; max-width: 330px; padding: 8px 10px;
+  font-size: 11px; line-height: 1.6; font-weight: 400; text-transform: none;
+  letter-spacing: normal; color: var(--text); white-space: normal;
+  background: var(--panel, var(--glass-1, #1b1b22)); border: 1px solid var(--glass-brd);
+  border-radius: 7px; box-shadow: 0 10px 26px rgba(0,0,0,.5);
+  opacity: 0; visibility: hidden; transition: opacity .12s ease, visibility .12s ease;
+}
+.auto-tip:hover .auto-tip-pop,
+.auto-tip:focus-visible .auto-tip-pop { opacity: 1; visibility: visible; }
+/* Flip below the label when there is no room above (first field in a section). */
+.auto-sec > .auto-grid > .auto-field:first-child .auto-tip-pop,
+.auto-sec > .auto-field:first-child .auto-tip-pop { bottom: auto; top: calc(100% + 7px); }
+
+/* ── Log storage + reports ─────────────────────────────────── */
+.auto-logpanel { display: flex; flex-direction: column; gap: 12px; padding: 12px; overflow-y: auto; }
+.auto-logmsg { font-size: 11px; padding: 6px 9px; border-radius: 6px; }
+.auto-logmsg.ok {
+  color: var(--ok, #3fb950); background: color-mix(in srgb, var(--ok, #3fb950) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok, #3fb950) 38%, transparent);
+}
+.auto-logmsg.bad {
+  color: var(--bad, #f85149); background: color-mix(in srgb, var(--bad, #f85149) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--bad, #f85149) 38%, transparent);
+}
+/* Pointing logging at an unreachable target loses the records you would need to
+   find out why — so "not yet proven" gets said out loud, not hinted. */
+.auto-logwarn {
+  font-size: 11px; line-height: 1.55; padding: 7px 9px; border-radius: 6px;
+  color: var(--warn, #d29922); background: color-mix(in srgb, var(--warn, #d29922) 11%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn, #d29922) 38%, transparent);
+}
+.auto-logwarn.bad {
+  color: var(--bad, #f85149); background: color-mix(in srgb, var(--bad, #f85149) 11%, transparent);
+  border-color: color-mix(in srgb, var(--bad, #f85149) 38%, transparent);
+}
+
+/* Report table scrolls inside its own box — the panel must never scroll sideways. */
+.auto-rpt-wrap { overflow-x: auto; border: 1px solid var(--glass-brd); border-radius: 8px; }
+.auto-rpt { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.auto-rpt th, .auto-rpt td {
+  padding: 5px 9px; text-align: left; white-space: nowrap;
+  border-bottom: 1px solid var(--glass-brd);
+}
+.auto-rpt th {
+  position: sticky; top: 0; background: var(--panel, var(--bg));
+  font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+}
+.auto-rpt td.n, .auto-rpt th.n { text-align: right; font-family: var(--mono); }
+.auto-rpt td.dim { color: var(--muted); }
+.auto-rpt tbody tr:last-child td { border-bottom: 0; }
+.auto-rpt tbody tr:hover { background: var(--glass-bg, rgba(255,255,255,.04)); }
+
+/* ── Watch list filters ────────────────────────────────────── */
+/* 150+ declared watches is a scroll, not a list. Sticky so the filters stay
+   reachable while scrolling the results underneath. */
+.auto-wfilter {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 8px 0 9px; margin-bottom: 2px;
+  background: var(--panel, var(--bg)); border-bottom: 1px solid var(--glass-brd);
+}
+.auto-wfilter-q { width: 100%; }
+.auto-wfilter-row { display: flex; flex-wrap: wrap; gap: 5px; }
+.auto-wfilter-row select { flex: 1 1 116px; min-width: 0; font-size: 11px; padding: 3px 5px; }
+.auto-wfilter-row button { flex: none; }
+.auto-wfilter-count { font-size: 10.5px; color: var(--muted); }
+/* Matching by id is precise but not automatic — a watch dropped from every
+   rule's list keeps measuring and tells nobody. That has to be visible. */
+.auto-wfilter-warn {
+  text-align: left; font-size: 10.5px; line-height: 1.5; padding: 5px 7px;
+  color: var(--warn, #d29922); background: color-mix(in srgb, var(--warn, #d29922) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn, #d29922) 40%, transparent);
+  border-radius: 6px; cursor: pointer;
+}
+.auto-wfilter-warn:hover { background: color-mix(in srgb, var(--warn, #d29922) 20%, transparent); }
+.auto-orphan {
+  margin-left: 7px; font-style: normal; font-size: 9.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .04em; border-radius: 4px; padding: 1px 5px;
+  color: var(--warn, #d29922);
+  border: 1px solid color-mix(in srgb, var(--warn, #d29922) 55%, transparent);
+}
+
+/* ── Probe cost / self-inflicted load ──────────────────────── */
+/* A monitor that loads what it monitors adds load exactly when the cluster is
+   already struggling — so the cost of polling is stated, not buried. */
+.auto-cost {
+  border: 1px solid var(--glass-brd); border-radius: 8px; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.auto-cost.lvl-medium { border-color: color-mix(in srgb, var(--warn, #d29922) 32%, var(--glass-brd)); }
+.auto-cost.lvl-heavy { border-color: color-mix(in srgb, var(--bad, #f85149) 32%, var(--glass-brd)); }
+.auto-cost.has-risk { background: color-mix(in srgb, var(--bad, #f85149) 8%, transparent); }
+.auto-cost.has-watch { background: color-mix(in srgb, var(--warn, #d29922) 8%, transparent); }
+.auto-cost-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.auto-cost-head b { font-size: 12px; color: var(--text); }
+.auto-cost-head em { font-style: normal; font-size: 11px; color: var(--muted); }
+.auto-cost-head em.bad { color: var(--bad, #f85149); font-weight: 600; }
+.auto-cost p { margin: 0; font-size: 11px; line-height: 1.55; color: var(--muted); }
+.auto-cost button { align-self: flex-start; }
+
+.auto-rpt td.warn { color: var(--warn, #d29922); }
+
+/* Trace viewer: many short lines, read newest-first. Capped height so it never
+   pushes the rest of the panel off screen. */
+.auto-trace {
+  max-height: 340px; overflow: auto; font-size: 10.5px; line-height: 1.6;
+  white-space: pre; tab-size: 2;
+}
+.auto-rpt td.bad { color: var(--bad, #f85149); }
+
+/* ── Watch picker (rule scope) ─────────────────────────────── */
+.auto-watchscope { display: flex; flex-direction: column; gap: 6px; }
+.auto-watchscope-bar { display: flex; gap: 6px; }
+.auto-watchscope-bar input { flex: 1; min-width: 0; }
+.auto-watchscope-note { font-size: 10.5px; color: var(--muted); }
+.auto-watchscope-empty {
+  font-size: 11px; color: var(--muted); padding: 10px; text-align: center;
+  border: 1px dashed var(--glass-brd); border-radius: 6px;
+}
+/* Capped so a 150-watch list scrolls inside the field instead of pushing the
+   rest of the editor off-screen. */
+.auto-watchscope-list {
+  max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px;
+  border: 1px solid var(--glass-brd); border-radius: 6px; padding: 3px;
+}
+.auto-watchscope-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px;
+  cursor: pointer;
+}
+.auto-watchscope-row:hover { background: var(--glass-bg, rgba(255,255,255,.05)); }
+.auto-watchscope-row.on { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.auto-watchscope-row input { flex: none; }
+.auto-watchscope-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.auto-watchscope-name {
+  font-size: 12px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.auto-watchscope-id {
+  font-size: 9.5px; font-family: var(--mono); color: var(--muted); opacity: .62;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.auto-watchscope-off {
+  margin-left: 6px; font-style: normal; font-size: 9.5px; color: var(--muted);
+  border: 1px solid var(--glass-brd); border-radius: 4px; padding: 0 4px;
+}
+
 /* ── Editors ──────────────────────────────────────────────── */
 .auto-editor { display: flex; flex-direction: column; gap: 14px; }
 .auto-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
@@ -4859,6 +5114,15 @@ pre.kafka-drawer-body {
 .glink-profile {
   background: color-mix(in srgb, var(--warn, #d90) 14%, transparent);
   color: var(--warn, #b80);
+}
+
+/* Hai tài khoản khác nhau chung một phiên đăng nhập — xem clashOf() trong
+   LinksWorkspace. Đỏ chứ không vàng như .glink-profile: đây là thứ ĐANG hỏng
+   (cookie ghi đè nhau), không phải nhãn thông tin. */
+.glink-clash {
+  background: var(--err-bg);
+  color: var(--err);
+  cursor: help;
 }
 
 /* Google tab: API-preview panel (GoogleFilePreview) */
