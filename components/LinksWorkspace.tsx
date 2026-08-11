@@ -201,6 +201,36 @@ export default function LinksWorkspace() {
   const shown = links.filter((l) =>
     (!fProject || l.project === fProject) && (!fTag || (l.tags ?? []).includes(fTag)));
 
+  /** Link ĐỤNG PHIÊN: cùng host, khác username, mà lại chung một partition.
+   *
+   *  partitionFor() gộp mọi link không profile vào `links-shared`, nên hai tài
+   *  khoản trên cùng service sẽ ghi đè cookie của nhau — đăng nhập cái này là
+   *  văng cái kia, lặp vô hạn. Đây là VẤN ĐỀ DỮ LIỆU (chưa gán profile) chứ
+   *  không phải lỗi code, và chỉ người dùng mới biết hai tài khoản đó nên tách
+   *  hay dùng chung — nên chỉ cảnh báo kèm cách sửa, không tự đoán.
+   *
+   *  Cùng host + cùng username thì KHÔNG cảnh báo: đó đúng là trường hợp muốn
+   *  dùng chung một phiên (vd nhiều link Rancher của cùng một account). */
+  const clashing = (() => {
+    const byKey = new Map<string, Set<string>>();
+    for (const l of links) {
+      const user = (l.username ?? '').trim();
+      if (!user) continue; // không biết tài khoản nào → không kết luận
+      let host = '';
+      try { host = new URL(l.url).host; } catch { continue; }
+      const key = `${host}|${partitionFor(l.profile)}`;
+      (byKey.get(key) ?? byKey.set(key, new Set()).get(key)!).add(user);
+    }
+    return new Set([...byKey].filter(([, users]) => users.size > 1).map(([key]) => key));
+  })();
+
+  const clashOf = (l: SavedLink): string | null => {
+    const user = (l.username ?? '').trim();
+    if (!user) return null;
+    try { return clashing.has(`${new URL(l.url).host}|${partitionFor(l.profile)}`) ? new URL(l.url).host : null; }
+    catch { return null; }
+  };
+
   return (
     <div className="panel sheet-panel">
       <div className="g-list-wrap" style={{ padding: '2px 0' }}>
@@ -282,6 +312,14 @@ export default function LinksWorkspace() {
                     {l.name}
                     {l.project && <span className="glink-badge" title={`Dự án ${l.project}`}>📁 {l.project}</span>}
                     {l.profile && <span className="glink-badge glink-profile" title={`Phiên đăng nhập "${l.profile}"`}>🔑 {l.profile}</span>}
+                    {clashOf(l) && (
+                      <span
+                        className="glink-badge glink-clash"
+                        title={`Đụng phiên: có link khác trên ${clashOf(l)} dùng tài khoản khác nhưng CHUNG một phiên đăng nhập.\n\nHai tài khoản sẽ ghi đè cookie của nhau — đăng nhập cái này là văng cái kia.\n\nSửa: bấm ✎ rồi đặt "profile" khác nhau cho mỗi tài khoản (vd "admin", "readonly").`}
+                      >
+                        ⚠ đụng phiên
+                      </span>
+                    )}
                     {(l.tags ?? []).map((t) => <span key={t} className="glink-tag">#{t}</span>)}
                   </span>
                   <span className="g-meta">

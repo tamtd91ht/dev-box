@@ -273,6 +273,67 @@ const SEC_CH_UA_FULL = `"Chromium";v="${CHROME_FULL}", "Google Chrome";v="${CHRO
 const CHROME_BRAND_HOSTS = /(^|\.)(whatsapp\.com|messenger\.com|facebook\.com|fbcdn\.net)$/i;
 
 /**
+ * Host duoc phep "thang cap" cookie phien thanh cookie luu ben (xem
+ * wireSessionCookiePersistence).
+ *
+ * Rancher phat `R_SESS` KHONG co Expires tru khi tick "Keep me logged in", nen
+ * Chromium giu no trong RAM va mat sach khi dong app — dung mot lan la phai go
+ * lai user/pass. Chrome that che giau dieu nay bang "Continue where you left
+ * off" (hoi sinh session cookie qua cac lan khoi dong); Electron khong co, nen
+ * ta lam phan tuong duong nhung CO GIOI HAN: chi cho dung nhung host noi bo
+ * duoc liet ke o day.
+ *
+ * KHONG mo rong thanh ".*": cookie phien la lua chon co chu dich cua trang web
+ * ("het phien thi dang xuat"). Ghi de no cho MOI trang la bien mot may dung
+ * chung thanh may luon-dang-nhap-san — chi lam voi cong cu noi bo cua minh.
+ */
+const PERSIST_SESSION_HOSTS =
+  /(^|\.)(rancher[a-z0-9-]*\.omicrm\.services|jenkins[a-z0-9-]*\.(omicrm\.services|vihatsoftware\.com)|gitlab\.vihatgroup\.com)$/i;
+
+/** Cookie phien duoc gia han bao lau khi thang cap thanh luu ben. */
+const SESSION_COOKIE_TTL_DAYS = 30;
+
+/**
+ * Thang cap cookie PHIEN (khong Expires) thanh cookie luu ben cho cac host o
+ * PERSIST_SESSION_HOSTS.
+ *
+ * `cookies.set` lai chinh cookie do kem `expirationDate` — Chromium ghi de ban
+ * ghi cu (cung domain+path+name) va lan nay ghi xuong dia. Viec set nay lai
+ * phat them mot su kien 'changed', nhung vong lap dung ngay: cookie moi co
+ * `session === false` nen lan hai bi loc o dieu kien dau.
+ *
+ * `cause === 'expired'|'evicted'|'expired-overwrite'` va `removed` deu bi bo
+ * qua: do la cookie dang bi go, dung lai la hoi sinh thu da chet.
+ */
+function wireSessionCookiePersistence(ses, part) {
+  ses.cookies.on('changed', (_evt, cookie, cause, removed) => {
+    if (removed || cookie.session !== true) return;
+    if (cause !== 'explicit' && cause !== 'overwrite') return;
+    if (!PERSIST_SESSION_HOSTS.test(cookie.domain || '')) return;
+
+    // Cookie co domain bat dau bang '.' la cookie ap cho ca subdomain; URL de
+    // set phai la host that, nen bo dau cham di.
+    const host = (cookie.domain || '').replace(/^\./, '');
+    const url = `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path || '/'}`;
+
+    ses.cookies
+      .set({
+        url,
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        secure: cookie.secure,
+        httpOnly: cookie.httpOnly,
+        sameSite: cookie.sameSite,
+        expirationDate: Date.now() / 1000 + SESSION_COOKIE_TTL_DAYS * 24 * 3600,
+      })
+      .then(() => log('CookiePersist', `${part} · ${host} · ${cookie.name}`))
+      .catch((err) => log('CookiePersistError', `${part} · ${host} · ${cookie.name} · ${err && err.message}`));
+  });
+}
+
+/**
  * Va lai `navigator.userAgentData` trong trang cho khop voi header o tren.
  *
  * Chay o `document-start` nen no vao truoc moi script cua trang — WhatsApp doc
@@ -366,6 +427,7 @@ function configurePartition(part) {
   ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
 
   wireDownloadPolicy(ses, part);
+  wireSessionCookiePersistence(ses, part);
 }
 
 /**

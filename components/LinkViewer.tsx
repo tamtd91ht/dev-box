@@ -220,35 +220,6 @@ export default function LinkViewer({
     }
   }, [onSaveLink, url, name]);
 
-  /** Điền username/password đã lưu vào form login của trang trong guest.
-   *  Set value qua native setter + bắn event input/change để React/Angular
-   *  (Rancher, Jenkins…) nhận giá trị như gõ tay. */
-  const fillLogin = useCallback(async () => {
-    if (!creds?.username && !creds?.password) return;
-    const code = `(() => {
-      const set = (el, v) => {
-        if (!el || v == null) return;
-        const d = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-        d.set.call(el, v);
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-      };
-      const pw = document.querySelector('input[type=password]');
-      const texts = [...document.querySelectorAll('input')].filter((i) =>
-        ['text','email','tel',''].includes((i.type||'').toLowerCase()) && i.offsetParent);
-      const user = texts.find((i) => /user|email|login|name/i.test(i.name + i.id + (i.placeholder||''))) || texts[0];
-      set(user, ${JSON.stringify(creds.username ?? null)});
-      set(pw, ${JSON.stringify(creds.password ?? null)});
-      return pw ? 'ok' : 'no-password-field';
-    })()`;
-    try {
-      const r = await ref.current?.executeJavaScript(code, true);
-      if (r === 'no-password-field') window.alert('Không thấy ô password trên trang này — mở đúng trang login rồi bấm 🔑 lại.');
-    } catch (e) {
-      window.alert('Không điền được: ' + (e as Error).message);
-    }
-  }, [creds]);
-
   // ── Trình quản lý mật khẩu kiểu Chrome ──────────────────────────────────
   // Guest bị sandbox và preload bị xóa (wireWebviewHardening trong main.cjs)
   // nên không cắm được script thường trú; ta executeJavaScript từ host:
@@ -316,17 +287,31 @@ export default function LinkViewer({
       if (window.__dbxPwdArmed) return 'already';
       window.__dbxPwdArmed = true;
       ${FIELD_JS}
-      const grab = () => {
+      // Giá trị gõ gần nhất, ghi lại NGAY khi người dùng gõ. Đây là bản sao
+      // sống sót: lúc submit thì SPA (Rancher, Argo…) đã kịp xóa/unmount form,
+      // đọc pw.value tại thời điểm đó rất hay ra chuỗi rỗng.
+      const last = { username: '', password: '', url: '' };
+      const remember = () => {
         const pw = pwEl();
         if (!pw || !pw.value) return;
         const u = userEl(pw);
-        window.__dbxPwd = {
-          username: (u && u.value) || '',
-          password: pw.value,
-          url: location.href,
-          at: Date.now(),
-        };
+        last.username = (u && u.value) || last.username;
+        last.password = pw.value;
+        last.url = location.href;
       };
+      // 'input' bắn SAU khi React commit value → đây là nguồn đáng tin nhất.
+      document.addEventListener('input', (e) => {
+        if (e.target instanceof HTMLInputElement) remember();
+      }, true);
+
+      const publish = () => {
+        if (!last.password) return;
+        window.__dbxPwd = { ...last, url: last.url || location.href, at: Date.now() };
+      };
+      // Vét một nhịp NỮA sau khi handler của trang chạy xong: người dùng có thể
+      // dán mật khẩu rồi bấm ngay, lúc pointerdown 'input' chưa kịp bắn.
+      const grab = () => { remember(); publish(); setTimeout(() => { remember(); publish(); }, 0); };
+
       // capture:true để chạy TRƯỚC handler của trang (SPA thường preventDefault
       // rồi xóa form ngay), và pointerdown để bắt cả nút không nằm trong <form>.
       document.addEventListener('submit', grab, true);
@@ -353,6 +338,30 @@ export default function LinkViewer({
   const currentUrl = useCallback(() => {
     try { return ref.current?.getURL() || url; } catch { return url; }
   }, [url]);
+
+  /** MỘT nguồn credential duy nhất cho cả autofill lẫn nút 🔑.
+   *
+   *  Trước đây có HAI kho không biết nhau: vault passwords.json (tra qua
+   *  pwMatch) và user/pass gắn thẳng vào link trong links.json (prop `creds`).
+   *  fillSaved() ưu tiên vault, còn nút lại hiện theo matchCount của vault —
+   *  nên link đã có sẵn creds (vd OMICX-ConfigMaps) vẫn không đường nào điền
+   *  được. Giờ gộp: vault trước (đã mã hóa, khớp theo origin thật sau redirect
+   *  SSO), creds của link là fallback cuối.
+   *
+   *  KHÔNG chép creds của link vào vault: links.json lưu plaintext còn vault
+   *  niêm phong bằng safeStorage — âm thầm bơm plaintext sang sẽ làm nhãn
+   *  `cipher` nói dối. Muốn nâng cấp thì bấm "Lưu" ở thanh hỏi mật khẩu. */
+  const resolveCreds = useCallback(async (): Promise<CredentialOpen[]> => {
+    const hits = passwordManager
+      ? await pwMatch(currentUrl(), profile).catch(() => [])
+      : [];
+    const linkCred = creds?.password || creds?.username
+      ? [{ id: '', username: creds.username ?? '', password: creds.password ?? '', profile }]
+      : [];
+    // Vault đã có tài khoản CÙNG username → bỏ bản của link (vault mới hơn).
+    const dup = new Set(hits.map((h) => h.username));
+    return [...hits, ...linkCred.filter((c) => !dup.has(c.username))];
+  }, [passwordManager, profile, currentUrl, creds]);
 
   /** user/pass bắt được, chờ trang mới tải xong mới đem ra hỏi. Ref (không phải
    *  state) để sống sót qua điều hướng mà không kéo theo re-render. */
@@ -383,20 +392,15 @@ export default function LinkViewer({
       })();
     };
 
-    // Đổi URL trong-trang (SPA) KHÔNG kéo theo did-stop-loading, nên phải hỏi
-    // ngay tại đây — nếu không thứ bắt được sẽ nằm mãi trong pendingRef.
-    const onInPage = () => {
+    /** Một vòng đầy đủ: cắm lại bẫy → xét lưu thứ vừa bắt → tra & tự điền.
+     *  Dùng chung cho did-stop-loading VÀ did-navigate-in-page: trang SPA
+     *  (Rancher) điều hướng in-page mà không bắn did-stop-loading, nên nếu chỉ
+     *  chạy ở did-stop-loading thì matchCount kẹt ở 0 → nút 🔑 biến mất và
+     *  autofill không bao giờ xảy ra trên đúng những trang cần nó nhất. */
+    const cycle = () => {
       void (async () => {
-        const got = (await readCaptured()) ?? pendingRef.current;
-        pendingRef.current = null;
-        if (!alive || !got?.password) return;
-        await considerSave(got);
-      })();
-    };
-
-    const onStopped = () => {
-      void (async () => {
-        const here = currentUrl();
+        // Điều hướng in-page giữ nguyên window nên bẫy cũ vẫn sống; armCapture
+        // idempotent (window.__dbxPwdArmed) nên gọi lại là vô hại.
         await armCapture();
 
         // 1) Thứ bắt được ở trang trước (hoặc ngay trang này nếu login SPA).
@@ -408,43 +412,54 @@ export default function LinkViewer({
         if (got?.password) await considerSave(got);
         if (!alive) return;
 
-        // 2) Trang hiện tại có mật khẩu đã lưu → tự điền (KHÔNG submit).
-        const hits = await pwMatch(here, profile).catch(() => []);
+        // 2) Trang hiện tại có mật khẩu đã lưu (vault HOẶC creds của link)
+        //    → tự điền (KHÔNG submit).
+        const hits = await resolveCreds();
         if (!alive) return;
         setMatchCount(hits.length);
         const best: CredentialOpen | undefined = hits[0];
-        if (best) {
+        if (!best) return;
+
+        // Form login của SPA thường mount SAU sự kiện điều hướng (Rancher render
+        // xong mới có <input type=password>), nên lần điền đầu hay trả 'no-form'.
+        // Thử lại vài nhịp thưa dần rồi thôi — 'kept' cũng dừng: người dùng đang
+        // gõ dở, không đạp lên.
+        for (const wait of [0, 300, 800, 1500]) {
+          if (wait) await new Promise((r) => setTimeout(r, wait));
+          if (!alive) return;
           const r = await injectFill(best.username, best.password);
-          if (r === 'ok') void pwTouch(best.id);
+          if (r === 'ok') { if (best.id) void pwTouch(best.id); return; }
+          if (r === 'kept') return;
         }
       })();
     };
 
     el.addEventListener('did-start-loading', onStart);
-    el.addEventListener('did-stop-loading', onStopped);
-    // Login SPA đổi URL mà không tải lại trang → cũng phải xét lưu.
-    el.addEventListener('did-navigate-in-page', onInPage);
+    el.addEventListener('did-stop-loading', cycle);
+    // Login SPA đổi URL mà không tải lại trang → cũng phải xét lưu + tra lại.
+    el.addEventListener('did-navigate-in-page', cycle);
     return () => {
       alive = false;
       el.removeEventListener('did-start-loading', onStart);
-      el.removeEventListener('did-stop-loading', onStopped);
-      el.removeEventListener('did-navigate-in-page', onInPage);
+      el.removeEventListener('did-stop-loading', cycle);
+      el.removeEventListener('did-navigate-in-page', cycle);
     };
-  }, [passwordManager, profile, currentUrl, armCapture, readCaptured, injectFill]);
+  }, [passwordManager, profile, armCapture, readCaptured, injectFill, resolveCreds]);
 
   /** Bấm 🔑: điền mật khẩu đã lưu theo origin (ưu tiên), fallback creds của link. */
   const fillSaved = useCallback(async () => {
-    if (passwordManager) {
-      const hits = await pwMatch(currentUrl(), profile).catch(() => []);
-      if (hits.length > 0) {
-        const r = await injectFill(hits[0].username, hits[0].password, true);
-        if (r === 'no-form') window.alert('Không thấy ô password trên trang này — mở đúng trang login rồi bấm 🔑 lại.');
-        else void pwTouch(hits[0].id);
-        return;
-      }
+    const all = await resolveCreds();
+    // Bấm tay = cơ hội cập nhật badge, kể cả khi chưa sự kiện nào chạy.
+    setMatchCount(all.length);
+    if (all.length === 0) {
+      window.alert('Chưa có mật khẩu nào lưu cho trang này.\n\nĐăng nhập một lần rồi bấm "Lưu" ở thanh hỏi mật khẩu, hoặc gán user/pass cho link trong danh sách.');
+      return;
     }
-    await fillLogin();
-  }, [passwordManager, profile, currentUrl, injectFill, fillLogin]);
+    const best = all[0];
+    const r = await injectFill(best.username, best.password, true);
+    if (r === 'no-form') window.alert('Không thấy ô password trên trang này — mở đúng trang login rồi bấm 🔑 lại.');
+    else if (best.id) void pwTouch(best.id); // id rỗng = creds của link, không có gì để touch
+  }, [resolveCreds, injectFill]);
 
   /** Chấp nhận thanh "Lưu mật khẩu?" */
   const acceptOffer = useCallback(async () => {
@@ -575,7 +590,11 @@ export default function LinkViewer({
                 {saveState === 'done' ? '✓' : '💾'}
               </button>
             )}
-            {(creds?.username || creds?.password || (passwordManager && matchCount > 0)) && (
+            {/* LUÔN hiện khi bật password manager: matchCount chỉ được cập nhật
+                sau khi tra store xong, mà trang SPA có thể chưa kịp bắn sự kiện
+                nào — ẩn nút theo matchCount làm nó biến mất đúng lúc cần bấm.
+                Không có gì để điền thì fillSaved() tự báo, đỡ hơn nút vô hình. */}
+            {(creds?.username || creds?.password || passwordManager) && (
               <button onClick={() => void fillSaved()}
                 title={matchCount > 0
                   ? `Điền mật khẩu đã lưu cho trang này (${matchCount} tài khoản)`
