@@ -69,6 +69,14 @@ contextBridge.exposeInMainWorld('workspace', {
     ipcRenderer.on('workspace:openInApp', handler);
     return () => ipcRenderer.removeListener('workspace:openInApp', handler);
   },
+  /** Link target=_blank / window.open bấm TRONG một tab của tab Browser → mở
+   *  thành tab mới ngay trong tab Browser (giữ phiên đăng nhập của profile).
+   *  Trả về hàm hủy đăng ký. */
+  onOpenInBrowserTab: (cb) => {
+    const handler = (_evt, url) => cb(url);
+    ipcRenderer.on('workspace:openInBrowserTab', handler);
+    return () => ipcRenderer.removeListener('workspace:openInBrowserTab', handler);
+  },
   /** Phím tắt khung app (Ctrl+` · Ctrl+Tab · Ctrl+Shift+U) bấm khi con trỏ đang
    *  ở TRONG một <webview>: phím không bubble ra host page nên main process bắt
    *  hộ ở before-input-event rồi chuyển về đây. Trả về hàm hủy đăng ký. */

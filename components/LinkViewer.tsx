@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WebviewElement } from '@/lib/workspace/types';
 import { pwMatch, pwSave, pwTouch, canEncrypt, type CredentialOpen } from '@/lib/passwords';
+import { normalizeUrl } from '@/lib/bookmarks';
 
 // Nhiều trang (Google sign-in, một số SSO) chặn "embedded browser" bằng cách
 // sniff UA có token Electron/app-name — trình mình đúng là Chrome bên dưới.
@@ -44,6 +45,12 @@ interface Props {
   passwordManager?: boolean;
   /** Profile session của tab — phân biệt 2 tài khoản trên cùng một origin. */
   profile?: string;
+  /** Hiện Ô ĐỊA CHỈ thật (URL hiện tại, gõ được để đi) thay cho dòng tiêu đề
+   *  chỉ-đọc. Tab Browser bật; tab Links/Google giữ tiêu đề gọn như cũ. */
+  addressBar?: boolean;
+  /** Link trong trang bấm "mở tab mới" (target=_blank / chuột giữa) → mở thành
+   *  TAB MỚI trong app thay vì đẩy ra trình duyệt ngoài. */
+  onOpenNewTab?: (url: string) => void;
 }
 
 /** Thanh "Lưu mật khẩu?" — user/pass vừa bắt được ở form submit. */
@@ -51,14 +58,23 @@ interface SaveOffer { url: string; username: string; password: string; update: b
 
 const hostOf = (u: string): string => { try { return new URL(u).host; } catch { return u; } };
 
+/** Tiền tố console mà guest dùng để báo "mở URL này ở tab mới" về host. */
+const NEWTAB_PREFIX = '[dbx-newtab] ';
+
 export default function LinkViewer({
   name, url, partition, onClose, onSaveLink, hidden, creds, passwordManager, profile,
+  addressBar, onOpenNewTab,
 }: Props) {
   const ref = useRef<WebviewElement | null>(null);
   const [status, setStatus] = useState<Status>('loading');
   const [failInfo, setFailInfo] = useState('');
   const [canBack, setCanBack] = useState(false);
   const [canForward, setCanForward] = useState(false);
+  /** URL guest ĐANG mở — bám theo mọi điều hướng/redirect (SSO nhảy vài chặng
+   *  rồi mới về trang thật), giống thanh địa chỉ trình duyệt. */
+  const [liveUrl, setLiveUrl] = useState(url);
+  /** Chữ trong ô địa chỉ khi người dùng đang gõ; null = đang bám theo liveUrl. */
+  const [draft, setDraft] = useState<string | null>(null);
   const [offer, setOffer] = useState<SaveOffer | null>(null); // thanh "Lưu mật khẩu?"
   const [savedNote, setSavedNote] = useState<string | null>(null);
   /** Số mật khẩu đã lưu khớp trang đang xem — badge trên nút 🔑. */
@@ -72,11 +88,15 @@ export default function LinkViewer({
       try {
         setCanBack(el.canGoBack());
         setCanForward(el.canGoForward());
+        // Ô địa chỉ bám URL THẬT của guest (sau redirect SSO / đổi trang trong
+        // SPA). Đang gõ dở thì thôi — không giật chữ khỏi tay người dùng.
+        const cur = el.getURL();
+        if (cur) setLiveUrl(cur);
       } catch {
         /* not attached yet */
       }
     };
-    const onStart = () => setStatus('loading');
+    const onStart = () => { setStatus('loading'); syncNav(); };
     const onStop = () => {
       setStatus((s) => (s === 'failed' ? s : 'ready'));
       syncNav();
@@ -111,7 +131,14 @@ export default function LinkViewer({
   // Esc đóng viewer (phím trong guest không bubble ra host). Tab nền bỏ qua.
   useEffect(() => {
     if (hidden) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    // Esc khi con trỏ đang ở ô địa chỉ = bỏ chữ đang gõ (input tự xử lý), KHÔNG
+    // đóng luôn cả tab — gõ nhầm rồi Esc mà mất tab thì rất khó chịu.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      onClose();
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose, hidden]);
@@ -135,6 +162,26 @@ export default function LinkViewer({
     }
     window.open(cur, '_blank');
   }, [url]);
+
+  /** Enter trong ô địa chỉ — như trình duyệt: là URL thì đi tới, không phải thì
+   *  tìm Google (dùng chung normalizeUrl với ô địa chỉ của tab Browser). */
+  const navigate = useCallback((raw: string) => {
+    const target = normalizeUrl(raw);
+    if (!target) return;
+    setDraft(null);
+    setStatus('loading');
+    setFailInfo('');
+    try { void ref.current?.loadURL(target); } catch { /* guest chưa attach */ }
+  }, []);
+
+  /** Chép URL đang xem — thao tác quen tay khi đã có thanh địa chỉ. */
+  const [copied, setCopied] = useState(false);
+  const copyUrl = useCallback(() => {
+    void navigator.clipboard?.writeText(liveUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  }, [liveUrl]);
 
   const logout = useCallback(async () => {
     if (!window.workspace) return;
@@ -413,6 +460,67 @@ export default function LinkViewer({
     }
   }, [offer, profile]);
 
+  // Ctrl+click / chuột giữa trên <a> trong trang = "mở trong tab mới" theo thói
+  // quen trình duyệt. Chrome xử lý hai cử chỉ này ở tầng NGOÀI window.open nên
+  // setWindowOpenHandler bên main không thấy gì — phải chặn ngay trong guest.
+  // Nghe ở capture để chạy trước handler của trang, và preventDefault để guest
+  // không tự điều hướng; URL đẩy về host qua console.log có tiền tố riêng
+  // (guest bị sandbox, preload bị xóa nên không có kênh IPC nào khác).
+  const armNewTab = useCallback(async () => {
+    if (!onOpenNewTab) return;
+    const code = `(() => {
+      if (window.__dbxNewTabArmed) return;
+      window.__dbxNewTabArmed = true;
+      const href = (e) => {
+        const a = e.target instanceof Element ? e.target.closest('a[href]') : null;
+        if (!a) return null;
+        const u = a.href || '';
+        return /^https?:/i.test(u) ? u : null;
+      };
+      document.addEventListener('click', (e) => {
+        if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+        const u = href(e);
+        if (!u) return;
+        e.preventDefault(); e.stopPropagation();
+        console.log(${JSON.stringify(NEWTAB_PREFIX)} + u);
+      }, true);
+      document.addEventListener('auxclick', (e) => {
+        if (e.button !== 1) return;
+        const u = href(e);
+        if (!u) return;
+        e.preventDefault(); e.stopPropagation();
+        console.log(${JSON.stringify(NEWTAB_PREFIX)} + u);
+      }, true);
+    })()`;
+    try { await ref.current?.executeJavaScript(code, true); } catch { /* guest chưa sẵn */ }
+  }, [onOpenNewTab]);
+
+  useEffect(() => {
+    if (!onOpenNewTab) return;
+    const el = ref.current;
+    if (!el) return;
+    // Electron 43 phát console-message dạng có cấu trúc (event.message); bản cũ
+    // để chuỗi ở event.args/arg thứ hai — nhận cả hai cho chắc (xem chú thích
+    // cùng vấn đề ở guest.on('console-message') trong electron/main.cjs).
+    const onConsole = (e: Event) => {
+      const ev = e as unknown as { message?: string; args?: unknown[] };
+      const msg = [ev.message, ...(ev.args ?? [])].find(
+        (v): v is string => typeof v === 'string' && v.startsWith(NEWTAB_PREFIX),
+      );
+      if (msg) onOpenNewTab(msg.slice(NEWTAB_PREFIX.length));
+    };
+    const arm = () => { void armNewTab(); };
+    el.addEventListener('console-message', onConsole as EventListener);
+    el.addEventListener('did-stop-loading', arm);
+    el.addEventListener('did-navigate-in-page', arm);
+    arm();
+    return () => {
+      el.removeEventListener('console-message', onConsole as EventListener);
+      el.removeEventListener('did-stop-loading', arm);
+      el.removeEventListener('did-navigate-in-page', arm);
+    };
+  }, [onOpenNewTab, armNewTab]);
+
   const webviewAttrs: Record<string, string> = { allowpopups: 'true' };
   if (CHROME_UA) webviewAttrs.useragent = CHROME_UA;
 
@@ -428,10 +536,32 @@ export default function LinkViewer({
             <button onClick={() => ref.current?.goForward()} disabled={!canForward} title="Tiến tới">→</button>
             <button onClick={() => ref.current?.reload()} title="Tải lại">⟳</button>
           </div>
-          <div className="ws-title">
-            <span className={`ws-dot ws-dot--${status === 'failed' ? 'loading' : status}`} />
-            <span className="ws-title-text" title={`${name} · phiên ${partition.replace(/^persist:links-/, '')}`}>{name}</span>
-          </div>
+          {addressBar ? (
+            /* Ô địa chỉ thật: hiện URL guest đang mở, gõ + Enter để đi tới,
+               Esc trả về URL hiện tại. Click chọn hết chữ như trình duyệt. */
+            <div className="ws-omni">
+              <span className={`ws-dot ws-dot--${status === 'failed' ? 'loading' : status}`} />
+              <input
+                className="ws-omni-input"
+                value={draft ?? liveUrl}
+                spellCheck={false}
+                placeholder="Gõ địa chỉ hoặc từ khóa tìm Google…"
+                title={liveUrl}
+                onChange={(e) => setDraft(e.target.value)}
+                onFocus={(e) => e.currentTarget.select()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') navigate(e.currentTarget.value);
+                  else if (e.key === 'Escape') { e.stopPropagation(); setDraft(null); e.currentTarget.blur(); }
+                }}
+              />
+              <button className="ws-omni-copy" onClick={copyUrl} title="Chép địa chỉ">{copied ? '✓' : '⧉'}</button>
+            </div>
+          ) : (
+            <div className="ws-title">
+              <span className={`ws-dot ws-dot--${status === 'failed' ? 'loading' : status}`} />
+              <span className="ws-title-text" title={`${name} · phiên ${partition.replace(/^persist:links-/, '')}`}>{name}</span>
+            </div>
+          )}
           <div className="ws-actions">
             <button
               onClick={() => { setStatus('loading'); void ref.current?.loadURL('https://accounts.google.com/'); }}

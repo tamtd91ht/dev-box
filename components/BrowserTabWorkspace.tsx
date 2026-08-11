@@ -39,6 +39,12 @@ export default function BrowserTabWorkspace() {
   // Id các tab đang mở — đọc đồng bộ trong openTab để biết tab đã tồn tại chưa
   // (state `tabs` trong closure có thể cũ khi mở liên tiếp nhiều tab).
   const existedRef = useRef<Set<string>>(new Set());
+  // Ảnh chụp mới nhất của tabs/activeId — listener IPC (đăng ký MỘT lần) đọc ra
+  // để biết tab nào đang xem, khỏi phải gỡ/gắn lại mỗi lần đổi tab.
+  const tabsRef = useRef<Tab[]>([]);
+  const activeRef = useRef<string | null>(null);
+  tabsRef.current = tabs;
+  activeRef.current = activeId;
 
   // Esc thoát tràn viền (chỉ host document; phím trong guest không bubble ra).
   useEffect(() => {
@@ -90,6 +96,18 @@ export default function BrowserTabWorkspace() {
   // OpenLinkDialog phát event hai lần (lo tab vừa mount chưa kịp nghe); openTab
   // dựng id từ partition+url nên gọi trùng chỉ kích hoạt lại đúng tab đó.
   useEffect(() => onOpenUrl('browser', (u) => openTab(u)), [openTab]);
+
+  // Link target=_blank / window.open bấm TRONG một tab → tab MỚI ngay ở đây,
+  // như trình duyệt thật (main.cjs, nhánh BROWSER_PARTITION). Mở nền: trang
+  // đang xem giữ nguyên, đúng thói quen "mở ngầm rồi đọc sau".
+  // Profile lấy theo tab đang hoạt động để tab con dùng chung phiên đăng nhập.
+  useEffect(() => {
+    if (!window.workspace?.onOpenInBrowserTab) return;
+    return window.workspace.onOpenInBrowserTab((u) => {
+      const from = tabsRef.current.find((t) => t.id === activeRef.current);
+      openTab(u, { profile: from?.profile, background: true });
+    });
+  }, [openTab]);
 
   const closeTab = useCallback((id: string) => {
     existedRef.current.delete(id);
@@ -252,6 +270,7 @@ export default function BrowserTabWorkspace() {
           <div className="lv-body">
             {tabs.map((t) => (
               <BrowserTab key={t.id} tab={t} hidden={t.id !== activeId} onClose={() => closeTab(t.id)}
+                onOpenNewTab={(u) => openTab(u, { profile: t.profile, background: true })}
                 onSaveBookmark={async (name, url) => {
                   await bmAdd(url, { name, profile: t.profile, ...t.creds });
                   reload();
@@ -330,8 +349,9 @@ export default function BrowserTabWorkspace() {
 }
 
 /** Một tab = LinkViewer với partition theo profile. */
-function BrowserTab({ tab, hidden, onClose, onSaveBookmark }: {
+function BrowserTab({ tab, hidden, onClose, onSaveBookmark, onOpenNewTab }: {
   tab: Tab; hidden: boolean; onClose: () => void; onSaveBookmark: (name: string, url: string) => Promise<void>;
+  onOpenNewTab: (url: string) => void;
 }) {
   return (
     <LinkViewer
@@ -342,6 +362,8 @@ function BrowserTab({ tab, hidden, onClose, onSaveBookmark }: {
       creds={tab.creds}
       profile={tab.profile}
       passwordManager
+      addressBar
+      onOpenNewTab={onOpenNewTab}
       onClose={onClose}
       onSaveLink={onSaveBookmark}
     />

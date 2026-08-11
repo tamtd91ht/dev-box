@@ -3088,6 +3088,22 @@ pre.kafka-drawer-body {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 12.5px; color: var(--muted);
 }
+/* Ô địa chỉ kiểu trình duyệt (tab Browser) — thay cho .ws-title chỉ-đọc: hiện
+   URL thật của trang đang xem, gõ được để đi tới. */
+.ws-omni {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+  padding: 0 4px 0 10px; height: 30px;
+  background: var(--glass-2); border: 1px solid var(--glass-brd); border-radius: 999px;
+}
+.ws-omni:focus-within { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.ws-omni-input {
+  flex: 1; min-width: 0; height: 100%;
+  background: transparent; border: 0; outline: none; padding: 0;
+  color: var(--text); font-size: 12.5px; text-overflow: ellipsis;
+}
+.ws-omni-input::placeholder { color: var(--faint); }
+.ws-toolbar .ws-omni-copy { width: 24px; height: 24px; font-size: 12px; flex: none; }
+
 .ws-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
 .ws-dot--ready { background: var(--ok); box-shadow: 0 0 7px color-mix(in srgb, var(--ok) 70%, transparent); }
 .ws-dot--loading { background: var(--warn); animation: pulse 1s ease-in-out infinite; }

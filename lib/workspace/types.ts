@@ -155,6 +155,9 @@ export interface WorkspaceBridge {
   /** window.open() từ chính UI DevBox → mở TRONG app thay vì Edge/Chrome; đích
    *  do defaultTargetFor() quyết định. Optional: preload cũ chưa expose. */
   onOpenInApp?(cb: (url: string) => void): () => void;
+  /** Link target=_blank bấm TRONG tab Browser → mở thành tab mới ngay trong tab
+   *  Browser (giữ phiên của profile). Optional: preload cũ chưa expose. */
+  onOpenInBrowserTab?(cb: (url: string) => void): () => void;
   /** Phím tắt khung app bấm khi con trỏ đang ở TRONG một <webview> (đang chat
    *  Zalo chẳng hạn): phím không bubble ra host page, main process bắt hộ rồi
    *  chuyển về đây. Trả về hàm hủy đăng ký. Optional: preload cũ chưa expose. */

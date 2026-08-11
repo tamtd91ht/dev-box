@@ -111,6 +111,16 @@ function log(tag, msg) {
 const WORKSPACE_PARTITION = /^(persist:)?ws-(?!google-viewer\b)[a-z0-9-]+$/i;
 
 /**
+ * Tab Browser (trinh duyet da tab trong app — partition `persist:browser-*`,
+ * xem bmPartition trong lib/bookmarks.ts).
+ *
+ * Rieng o day, target=_blank / window.open phai mo TAB MOI TRONG APP chu khong
+ * day ra Chrome/Edge: phien dang nhap cua profile nam trong partition nay,
+ * browser ngoai khong co cookie do nen link se ra trang login.
+ */
+const BROWSER_PARTITION = /^(persist:)?browser-[a-z0-9-]+$/i;
+
+/**
  * Tab "Zalo API" (thu nghiem) — partition rieng `persist:zaloapi-*`.
  *
  * Tach han khoi WORKSPACE_PARTITION vi day la nhanh THU NGHIEM: tai su dung API
@@ -493,6 +503,21 @@ function wireWebviewHardening(win) {
           log('OpenInWorkspace', url);
         } else {
           askOpenTarget(url);
+        }
+      } else if (BROWSER_PARTITION.test(partition)) {
+        // TAB BROWSER: day la trinh duyet trong app, nen target=_blank /
+        // window.open phai ra TAB MOI NGAY TRONG TAB BROWSER — dung nhu trinh
+        // duyet that. Truoc day day ra Chrome/Edge ngoai, roi khoi phien dang
+        // nhap cua profile (cookie nam trong partition cua app, browser ngoai
+        // khong co) — bam link la thanh trang login.
+        //
+        // Gui thang 'workspace:openInBrowserTab' (khong qua askOpenTarget) vi
+        // o day khong con gi de hoi: nguoi dung dang O TRONG tab Browser.
+        if (!win.isDestroyed()) {
+          win.webContents.send('workspace:openInBrowserTab', url);
+          log('OpenInBrowserTab', url);
+        } else {
+          shell.openExternal(url);
         }
       } else {
         shell.openExternal(url);
