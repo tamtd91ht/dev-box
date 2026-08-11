@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchGitProjects,
   mutateGitProject,
@@ -14,6 +14,7 @@ import {
   type RepoStatus,
   type BranchInfo,
   type ChangedFile,
+  type FileVersions,
   type CommitLog,
   type RepoOverview,
   type RepoState,
@@ -23,6 +24,7 @@ import {
   type MergeRequestSummary,
   type ListMrsResult,
   type MergeMrResult,
+  type MergeResult,
   type GitLabTokenStatusResult,
   type ListGitLabTokensResult,
   type ListNamespacesResult,
@@ -106,12 +108,21 @@ export default function GitWorkspace() {
   const [branchInfo, setBranchInfo] = useState<BranchInfo | null>(null);
   const [selected, setSelected] = useState<SelectedFile | null>(null);
   const [diff, setDiff] = useState<string>('');
+  /** File open in the side-by-side before/after viewer (null = closed). */
+  const [viewFile, setViewFile] = useState<{ file: ChangedFile; staged: boolean } | null>(null);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [newBranch, setNewBranch] = useState('');
   const [showBranches, setShowBranches] = useState(false);
+  // ── Local merge (branch A → branch hiện tại, kiểu SourceTree) ────────────────
+  // `mergeFrom` = ref được chọn để merge vào branch đang checkout; `mergeNoFf` ép
+  // tạo merge commit; `mergeConflicts` giữ danh sách file conflict của lần merge
+  // gần nhất để hiển thị ngay dưới panel.
+  const [mergeFrom, setMergeFrom] = useState('');
+  const [mergeNoFf, setMergeNoFf] = useState(false);
+  const [mergeConflicts, setMergeConflicts] = useState<string[]>([]);
   // ── Claude Code commands (/review-mr-dev, /scan-security) on the selected repo ─
   const [reviewBranch, setReviewBranch] = useState('');
   const [reviewPromptOpen, setReviewPromptOpen] = useState(false);
@@ -282,6 +293,7 @@ export default function GitWorkspace() {
     }
     setSelected(null);
     setDiff('');
+    setViewFile(null);
     setShowBranches(false);
     refresh(repo);
   }, [repo, refresh]);
@@ -452,6 +464,80 @@ export default function GitWorkspace() {
     const br = await gitAction<BranchInfo>('branches', { repo });
     if (repoRef.current === repo) setBranchInfo(br);
     if (create) setNewBranch('');
+    setMergeConflicts([]); // stale — they belonged to the previous branch
+    setSelected(null);
+  }
+
+  /**
+   * Merge the selected branch INTO the branch currently checked out — the
+   * SourceTree "Merge <branch> into <current>" action. Runs outside run() because
+   * a conflict is a legitimate outcome that must NOT be rendered as an error: the
+   * merge stays in progress and the conflicted files are listed for the user.
+   */
+  async function doMerge() {
+    const ref = mergeFrom.trim();
+    if (!ref || !repo || busy || !status) return;
+    const target = status.branch;
+    const summary = [
+      `Merge "${ref}" vào branch hiện tại "${target}"?`,
+      '',
+      mergeNoFf
+        ? '• Luôn tạo merge commit (--no-ff)'
+        : '• Fast-forward nếu có thể, ngược lại tạo merge commit',
+      '• Nếu conflict: merge được giữ lại để bạn xử lý thủ công',
+    ];
+    if (!window.confirm(summary.join('\n'))) return;
+
+    setBusy(true);
+    setError(null);
+    setMergeConflicts([]);
+    try {
+      const res = await gitAction<MergeResult>('merge', { repo, branch: ref, noFf: mergeNoFf });
+      if (repoRef.current === repo) {
+        setStatus(res.status);
+        setBranchInfo(res.branches);
+      }
+      overviewFetchedAt.current = 0; // ahead/behind moved
+      setSelected(null);
+      // Fetch hỏng nghĩa là đã merge bản local (có thể cũ) — phải nói rõ, vì đó
+      // đúng là tình huống mà fetch sinh ra để tránh.
+      const staleWarn = res.fetched && !res.fetched.ok
+        ? ` ⚠ không fetch được ${res.fetched.remote} (${res.fetched.error ?? 'lỗi'}) — đã merge bản local có thể đã cũ`
+        : '';
+      if (res.outcome === 'conflict') {
+        setMergeConflicts(res.conflicts);
+        setError(res.output + staleWarn);
+      } else {
+        setMergeFrom('');
+        const label =
+          res.outcome === 'up-to-date'
+            ? `"${target}" đã có sẵn "${ref}"`
+            : res.outcome === 'fast-forward'
+              ? `Fast-forward "${ref}" → "${target}"`
+              : `Đã merge "${ref}" → "${target}"`;
+        if (staleWarn) setError(label + staleWarn);
+        else flash(label);
+      }
+    } catch (e) {
+      setError(`Merge failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Abort the in-progress merge, restoring the pre-merge state. */
+  async function doAbortMerge() {
+    if (!repo || busy) return;
+    if (!window.confirm('Hủy merge đang dở dang và quay lại trạng thái trước khi merge?')) return;
+    await run('Hủy merge', async () => {
+      const res = await gitAction<{ output: string; status: RepoStatus; branches: BranchInfo }>(
+        'abort-merge',
+        { repo },
+      );
+      if (repoRef.current === repo) setBranchInfo(res.branches);
+      return { output: res.output, status: res.status };
+    });
+    setMergeConflicts([]);
     setSelected(null);
   }
 
@@ -749,6 +835,83 @@ export default function GitWorkspace() {
                 + Tạo & checkout
               </button>
             </div>
+
+            {/* ── Merge branch khác vào branch hiện tại (kiểu SourceTree) ────── */}
+            <div style={{ marginTop: 14, borderTop: '1px solid var(--border, rgba(127,127,127,.2))', paddingTop: 12 }}>
+              {branchInfo.merging ? (
+                // Merge dở dang: không cho merge tiếp — chỉ xử lý conflict rồi commit,
+                // hoặc hủy về trạng thái trước.
+                <>
+                  <div className="badge warn" style={{ marginBottom: 8 }}>
+                    ⚠ Đang có merge dở dang — xử lý conflict rồi <b>Commit</b> để hoàn tất, hoặc hủy merge.
+                  </div>
+                  <button className="ghost sm" onClick={doAbortMerge} disabled={busy || !!commandRunning} title="git merge --abort">
+                    ✕ Hủy merge
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="small" style={{ color: 'var(--muted)', marginBottom: 8 }}>
+                    Merge vào branch hiện tại{status && !status.detached ? <> (<b>{status.branch}</b>)</> : ''}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <select
+                      value={mergeFrom}
+                      onChange={(e) => setMergeFrom(e.target.value)}
+                      style={{ flex: 1, minWidth: 200, maxWidth: 300, fontFamily: 'var(--mono)', fontSize: 12 }}
+                      disabled={busy || !!commandRunning || !!status?.detached}
+                    >
+                      <option value="">— chọn branch nguồn —</option>
+                      {branchInfo.branches
+                        .filter((b) => b !== branchInfo.current)
+                        .map((b) => (
+                          <option key={b} value={b}>{b}</option>
+                        ))}
+                      {branchInfo.remotes.length > 0 && (
+                        <optgroup label="remote">
+                          {branchInfo.remotes.map((b) => (
+                            <option key={b} value={b}>{b}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                    <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--muted)' }} title="Luôn tạo merge commit kể cả khi fast-forward được">
+                      <input
+                        type="checkbox"
+                        checked={mergeNoFf}
+                        onChange={(e) => setMergeNoFf(e.target.checked)}
+                        disabled={busy || !!commandRunning}
+                      />
+                      no-ff
+                    </label>
+                    <button
+                      className="sm"
+                      onClick={doMerge}
+                      disabled={busy || !!commandRunning || !mergeFrom.trim() || !!status?.detached}
+                      title={`git merge ${mergeFrom || '<branch>'}`}
+                    >
+                      ⤵ Merge
+                    </button>
+                  </div>
+                  {status?.detached && (
+                    <div className="small" style={{ color: 'var(--muted)', marginTop: 6 }}>
+                      Đang detached HEAD — checkout một branch trước khi merge.
+                    </div>
+                  )}
+                </>
+              )}
+
+              {mergeConflicts.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  <div className="small" style={{ color: 'var(--err)', marginBottom: 4 }}>
+                    {mergeConflicts.length} file conflict:
+                  </div>
+                  <pre className="code" style={{ margin: 0, maxHeight: 140, overflow: 'auto' }}>
+                    {mergeConflicts.join('\n')}
+                  </pre>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -860,6 +1023,7 @@ export default function GitWorkspace() {
               staged
               selected={selected}
               onSelect={(f) => setSelected({ path: f.path, staged: true })}
+              onView={(f) => setViewFile({ file: f, staged: true })}
               onRow={(f) => unstageFiles([f.path])}
               rowLabel="unstage"
               onDiscard={(f) => discardStagedFiles([f.path])}
@@ -877,6 +1041,7 @@ export default function GitWorkspace() {
               staged={false}
               selected={selected}
               onSelect={(f) => setSelected({ path: f.path, staged: false })}
+              onView={(f) => setViewFile({ file: f, staged: false })}
               onRow={(f) => stageFiles([f.path])}
               rowLabel="stage"
               onDiscard={(f) => discardFiles([f.path])}
@@ -893,6 +1058,7 @@ export default function GitWorkspace() {
               staged={false}
               selected={selected}
               onSelect={(f) => setSelected({ path: f.path, staged: false })}
+              onView={(f) => setViewFile({ file: f, staged: false })}
               onRow={(f) => stageFiles([f.path])}
               rowLabel="stage"
               onDiscard={(f) => removeUntrackedFiles([f.path])}
@@ -1092,6 +1258,15 @@ export default function GitWorkspace() {
           highlightBranch={mrHighlight}
           onClose={() => setMrModalOpen(false)}
           onMerged={(mr) => flash(`Đã merge MR !${mr.iid} vào dev`)}
+        />
+      )}
+
+      {viewFile && repo && (
+        <DiffViewerModal
+          repo={repo}
+          file={viewFile.file}
+          staged={viewFile.staged}
+          onClose={() => setViewFile(null)}
         />
       )}
     </div>
@@ -2377,6 +2552,354 @@ function AllReposPanel({ activeRepo, projectId, rows, loading, onCheck, onOpenRe
   );
 }
 
+// ── Side-by-side file viewer ──────────────────────────────────────────────────
+
+/** One visual row of the split view: either side may be missing (a pure add or
+ *  delete), which is what renders as the greyed filler on the opposite side. */
+interface SideRow {
+  leftNo: number | null;
+  rightNo: number | null;
+  left: string | null;
+  right: string | null;
+  kind: 'same' | 'add' | 'del' | 'mod';
+}
+
+/**
+ * Align two files line-by-line so equal lines sit on the same row.
+ *
+ * Classic LCS over whole lines. The table is O(n·m), so above LCS_LIMIT lines
+ * we fall back to a naive positional zip — a 50k-line file would otherwise lock
+ * the browser for seconds to produce a diff nobody reads line-by-line anyway.
+ */
+const LCS_LIMIT = 3000;
+
+function alignLines(beforeText: string, afterText: string): SideRow[] {
+  const a = beforeText === '' ? [] : beforeText.replace(/\r\n/g, '\n').split('\n');
+  const b = afterText === '' ? [] : afterText.replace(/\r\n/g, '\n').split('\n');
+
+  if (a.length > LCS_LIMIT || b.length > LCS_LIMIT) {
+    const rows: SideRow[] = [];
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const l = i < a.length ? a[i] : null;
+      const r = i < b.length ? b[i] : null;
+      rows.push({
+        leftNo: l === null ? null : i + 1,
+        rightNo: r === null ? null : i + 1,
+        left: l,
+        right: r,
+        kind: l === r ? 'same' : l === null ? 'add' : r === null ? 'del' : 'mod',
+      });
+    }
+    return rows;
+  }
+
+  // lcs[i][j] = length of the longest common subsequence of a[i:] and b[j:].
+  const n = a.length;
+  const m = b.length;
+  const lcs: Uint32Array[] = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+
+  const rows: SideRow[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      rows.push({ leftNo: i + 1, rightNo: j + 1, left: a[i], right: b[j], kind: 'same' });
+      i++;
+      j++;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      rows.push({ leftNo: i + 1, rightNo: null, left: a[i], right: null, kind: 'del' });
+      i++;
+    } else {
+      rows.push({ leftNo: null, rightNo: j + 1, left: null, right: b[j], kind: 'add' });
+      j++;
+    }
+  }
+  while (i < n) rows.push({ leftNo: i + 1, rightNo: null, left: a[i], right: null, kind: 'del' });
+  while (j < m) rows.push({ leftNo: null, rightNo: j + 1, left: null, right: b[j], kind: 'add' });
+
+  // Pair each run of deletions with the additions that immediately follow it, so
+  // an edited line shows old-vs-new on one row instead of two stacked halves.
+  return pairRuns(rows);
+}
+
+/** Collapse adjacent del-run + add-run into paired 'mod' rows. */
+function pairRuns(rows: SideRow[]): SideRow[] {
+  const out: SideRow[] = [];
+  let k = 0;
+  while (k < rows.length) {
+    if (rows[k].kind !== 'del') {
+      out.push(rows[k]);
+      k++;
+      continue;
+    }
+    const dels: SideRow[] = [];
+    while (k < rows.length && rows[k].kind === 'del') dels.push(rows[k++]);
+    const adds: SideRow[] = [];
+    while (k < rows.length && rows[k].kind === 'add') adds.push(rows[k++]);
+
+    const pairs = Math.min(dels.length, adds.length);
+    for (let p = 0; p < pairs; p++) {
+      out.push({
+        leftNo: dels[p].leftNo,
+        rightNo: adds[p].rightNo,
+        left: dels[p].left,
+        right: adds[p].right,
+        kind: 'mod',
+      });
+    }
+    for (let p = pairs; p < dels.length; p++) out.push(dels[p]);
+    for (let p = pairs; p < adds.length; p++) out.push(adds[p]);
+  }
+  return out;
+}
+
+interface FileVersionsSummary {
+  added: number;
+  removed: number;
+  modified: number;
+}
+
+function summarize(rows: SideRow[]): FileVersionsSummary {
+  let added = 0;
+  let removed = 0;
+  let modified = 0;
+  for (const r of rows) {
+    if (r.kind === 'add') added++;
+    else if (r.kind === 'del') removed++;
+    else if (r.kind === 'mod') modified++;
+  }
+  return { added, removed, modified };
+}
+
+const SIDE_ROW_BG: Record<SideRow['kind'], { left: string; right: string }> = {
+  same: { left: 'transparent', right: 'transparent' },
+  add: { left: 'rgba(127,127,127,.06)', right: 'rgba(63,185,80,.14)' },
+  del: { left: 'rgba(248,81,73,.14)', right: 'rgba(127,127,127,.06)' },
+  mod: { left: 'rgba(248,81,73,.12)', right: 'rgba(63,185,80,.12)' },
+};
+
+interface DiffViewerModalProps {
+  repo: string;
+  file: ChangedFile;
+  /** Which comparison to show: staged → HEAD vs index, else index vs worktree. */
+  staged: boolean;
+  onClose: () => void;
+}
+
+/**
+ * Full-screen split view of ONE file: the content before the change on the left,
+ * after on the right, aligned line-for-line. This is deliberately separate from
+ * the unified patch in the right-hand panel — that one answers "what does the
+ * patch say", this one answers "what does the file look like on each side".
+ *
+ * Both panes scroll as one element (a single grid), so the two sides can never
+ * drift out of alignment.
+ */
+function DiffViewerModal({ repo, file, staged, onClose }: DiffViewerModalProps) {
+  const [data, setData] = useState<FileVersions | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  /** Hide unchanged lines, keeping a few lines of context around each change. */
+  const [onlyChanges, setOnlyChanges] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    gitAction<FileVersions>('file-versions', { repo, file: file.path, staged })
+      .then((r) => {
+        if (!cancelled) setData(r);
+      })
+      .catch((e) => {
+        if (!cancelled) setError((e as Error).message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repo, file.path, staged]);
+
+  // Esc closes, matching the other modals in this workspace.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const rows = useMemo(() => (data ? alignLines(data.before, data.after) : []), [data]);
+  const stats = useMemo(() => summarize(rows), [rows]);
+
+  // When collapsing, keep CONTEXT lines on each side of every changed row and
+  // mark the gaps so the user sees how much was skipped.
+  const CONTEXT = 3;
+  const visible = useMemo(() => {
+    if (!onlyChanges) return rows.map((r, i) => ({ row: r, index: i, gapBefore: 0 }));
+    const keep = new Set<number>();
+    rows.forEach((r, i) => {
+      if (r.kind === 'same') return;
+      for (let k = Math.max(0, i - CONTEXT); k <= Math.min(rows.length - 1, i + CONTEXT); k++) keep.add(k);
+    });
+    const out: { row: SideRow; index: number; gapBefore: number }[] = [];
+    let prev = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if (!keep.has(i)) continue;
+      out.push({ row: rows[i], index: i, gapBefore: i - prev - 1 });
+      prev = i;
+    }
+    return out;
+  }, [rows, onlyChanges]);
+
+  const mono: React.CSSProperties = {
+    fontFamily: 'var(--mono)',
+    fontSize: 12,
+    lineHeight: '18px',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    padding: '0 8px',
+    minWidth: 0,
+  };
+  const gutter: React.CSSProperties = {
+    fontFamily: 'var(--mono)',
+    fontSize: 11,
+    lineHeight: '18px',
+    color: 'var(--muted)',
+    textAlign: 'right',
+    padding: '0 6px',
+    userSelect: 'none',
+    borderRight: '1px solid var(--border, rgba(127,127,127,.2))',
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="modal"
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: 'min(1400px, 96vw)', maxWidth: '96vw', display: 'flex', flexDirection: 'column', maxHeight: '92vh' }}
+      >
+        <div className="status-line" style={{ gap: 8 }}>
+          <span className={`badge ${staged ? 'info' : ''}`}>{staged ? 'staged' : 'working'}</span>
+          <span className={`git-badge ${gitBadgeClass(file.code)}`} title={file.code} style={gitBadgeStyle(file.code)}>
+            {codeLabel(file.code)}
+          </span>
+          <code className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {file.origPath ? `${file.origPath} → ${file.path}` : file.path}
+          </code>
+          {!loading && !error && !data?.binary && (
+            <span className="small" style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+              <span style={{ color: 'var(--ok, #3fb950)' }}>+{stats.added}</span>{' '}
+              <span style={{ color: 'var(--err, #f85149)' }}>−{stats.removed}</span>{' '}
+              <span style={{ color: 'var(--accent, #6c8cff)' }}>~{stats.modified}</span>
+            </span>
+          )}
+          <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={onlyChanges} onChange={(e) => setOnlyChanges(e.target.checked)} />
+            Chỉ dòng thay đổi
+          </label>
+          <button className="ghost sm" onClick={onClose}>✕ Đóng</button>
+        </div>
+
+        {loading && (
+          <div className="empty" style={{ padding: '32px 8px' }}>
+            <span className="spinner" aria-hidden /> <span className="small">Đang tải nội dung…</span>
+          </div>
+        )}
+        {error && <p className="small" style={{ color: 'var(--err, #f85149)' }}>{error}</p>}
+
+        {!loading && !error && data && (
+          <>
+            {data.note && <p className="small" style={{ color: 'var(--muted)', margin: '8px 0 0' }}>{data.note}</p>}
+            {data.binary ? (
+              <div className="empty" style={{ padding: '32px 8px' }}>
+                <div className="empty-ico">⛃</div>
+                <p className="small">File nhị phân — không hiển thị được nội dung theo dòng.</p>
+              </div>
+            ) : (
+              <div
+                style={{
+                  marginTop: 10,
+                  border: '1px solid var(--border, rgba(127,127,127,.2))',
+                  borderRadius: 6,
+                  overflow: 'hidden',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  minHeight: 0,
+                  flex: 1,
+                }}
+              >
+                {/* Sticky headers — the two panes scroll together below. */}
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '48px 1fr 48px 1fr',
+                    borderBottom: '1px solid var(--border, rgba(127,127,127,.2))',
+                    background: 'var(--panel, rgba(127,127,127,.08))',
+                  }}
+                >
+                  <div />
+                  <div className="small" style={{ padding: '6px 8px', fontWeight: 600 }}>
+                    ← Trước · {data.beforeLabel}
+                  </div>
+                  <div />
+                  <div className="small" style={{ padding: '6px 8px', fontWeight: 600 }}>
+                    → Sau · {data.afterLabel}
+                  </div>
+                </div>
+
+                <div style={{ overflow: 'auto', flex: 1, minHeight: 0 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '48px 1fr 48px 1fr', alignItems: 'stretch' }}>
+                    {visible.map(({ row, index, gapBefore }) => {
+                      const bg = SIDE_ROW_BG[row.kind];
+                      return (
+                        <React.Fragment key={index}>
+                          {gapBefore > 0 && (
+                            <div
+                              style={{
+                                gridColumn: '1 / -1',
+                                padding: '2px 8px',
+                                fontSize: 11,
+                                color: 'var(--muted)',
+                                background: 'rgba(127,127,127,.08)',
+                                borderTop: '1px solid var(--border, rgba(127,127,127,.2))',
+                                borderBottom: '1px solid var(--border, rgba(127,127,127,.2))',
+                              }}
+                            >
+                              ⋯ bỏ qua {gapBefore} dòng không đổi
+                            </div>
+                          )}
+                          <div style={{ ...gutter, background: bg.left }}>{row.leftNo ?? ''}</div>
+                          <div style={{ ...mono, background: bg.left }}>{row.left ?? ''}</div>
+                          <div style={{ ...gutter, background: bg.right, borderLeft: '1px solid var(--border, rgba(127,127,127,.2))' }}>
+                            {row.rightNo ?? ''}
+                          </div>
+                          <div style={{ ...mono, background: bg.right }}>{row.right ?? ''}</div>
+                        </React.Fragment>
+                      );
+                    })}
+                    {!rows.length && (
+                      <div className="small" style={{ gridColumn: '1 / -1', padding: 16, color: 'var(--muted)' }}>
+                        Hai bên giống hệt nhau (không có thay đổi nội dung).
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── File group block ──────────────────────────────────────────────────────────
 
 interface GroupProps {
@@ -2386,6 +2909,8 @@ interface GroupProps {
   selected: SelectedFile | null;
   onSelect: (f: ChangedFile) => void;
   onRow: (f: ChangedFile) => void;
+  /** Open the side-by-side before/after viewer for this file. */
+  onView: (f: ChangedFile) => void;
   rowLabel: string;
   onDiscard?: (f: ChangedFile) => void;
   /** Tooltip for the ✕ discard/remove button (varies by group). */
@@ -2401,6 +2926,7 @@ function FileGroupBlock({
   selected,
   onSelect,
   onRow,
+  onView,
   rowLabel,
   onDiscard,
   discardTitle = 'Bỏ thay đổi (discard)',
@@ -2429,6 +2955,13 @@ function FileGroupBlock({
               <code className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {f.origPath ? `${f.origPath} → ${f.path}` : f.path}
               </code>
+              <button
+                className="ghost sm"
+                onClick={(e) => { e.stopPropagation(); onView(f); }}
+                title="Xem thay đổi 2 ô: nội dung trước ↔ sau"
+              >
+                ⇄ view
+              </button>
               {onDiscard && (
                 <button
                   className="ghost sm"

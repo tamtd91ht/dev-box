@@ -19,6 +19,7 @@ import {
   branches,
   log,
   diffFile,
+  fileVersions,
   stage,
   unstage,
   discard,
@@ -30,6 +31,8 @@ import {
   checkout,
   pull,
   push,
+  mergeBranch,
+  abortMerge,
 } from '@/lib/gitCore';
 import { getProject, allowedRoots, listProjects } from '@/lib/gitProjects';
 import { recordRepo } from '@/lib/gitManifest';
@@ -205,6 +208,13 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ diff: patch });
       }
 
+      case 'file-versions': {
+        // Before/after contents of ONE file, for the side-by-side viewer.
+        const file = String(body.file ?? '');
+        if (!file) return NextResponse.json({ error: 'file required' }, { status: 400 });
+        return NextResponse.json(await fileVersions(repo, file, !!body.staged));
+      }
+
       case 'stage':
         await stage(repo, asFiles(body.files));
         return NextResponse.json(await status(repo));
@@ -239,6 +249,30 @@ export async function POST(req: NextRequest) {
       case 'checkout': {
         const out = await checkout(repo, String(body.branch ?? ''), !!body.create);
         return NextResponse.json({ output: out, status: await status(repo), branches: await branches(repo) });
+      }
+
+      case 'merge': {
+        // Local merge of another branch INTO the checked-out one (SourceTree's
+        // "Merge <branch> into current"). A conflict is a normal outcome, not an
+        // error — the merge stays in progress and the UI lists the files.
+        const result = await mergeBranch(repo, body.branch, {
+          noFf: !!body.noFf,
+          message: typeof body.message === 'string' ? body.message : undefined,
+        });
+        return NextResponse.json({
+          ...result,
+          status: await status(repo),
+          branches: await branches(repo),
+        });
+      }
+
+      case 'abort-merge': {
+        const out = await abortMerge(repo);
+        return NextResponse.json({
+          output: out.trim() || 'đã hủy merge',
+          status: await status(repo),
+          branches: await branches(repo),
+        });
       }
 
       case 'pull': {

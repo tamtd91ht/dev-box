@@ -10,6 +10,16 @@ export interface ChangedFile {
   origPath?: string;
 }
 
+/** Before/after contents of one file — payload of the `file-versions` action. */
+export interface FileVersions {
+  before: string;
+  after: string;
+  beforeLabel: string;
+  afterLabel: string;
+  binary: boolean;
+  note?: string;
+}
+
 export interface RepoStatus {
   branch: string;
   upstream?: string;
@@ -22,6 +32,23 @@ export interface RepoStatus {
 export interface BranchInfo {
   current: string;
   branches: string[];
+  /** Remote-tracking branches ("origin/dev"), for merging a server-only branch. */
+  remotes: string[];
+  /** True when a merge is in progress (conflicts pending or ready to commit). */
+  merging: boolean;
+}
+
+/** Result of a local `git merge <ref>` into the current branch. */
+export interface MergeResult {
+  outcome: 'merged' | 'fast-forward' | 'up-to-date' | 'conflict';
+  output: string;
+  /** Conflicted file paths — non-empty only when outcome is 'conflict'. */
+  conflicts: string[];
+  /** Only for a remote source ref: the remote refreshed before merging, and
+   *  whether that fetch worked (on failure the merge used the local copy). */
+  fetched?: { remote: string; ok: boolean; error?: string };
+  status: RepoStatus;
+  branches: BranchInfo;
 }
 
 export interface RepoInfo {

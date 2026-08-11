@@ -376,6 +376,12 @@ export async function status(repo: string): Promise<RepoStatus> {
 export interface BranchInfo {
   current: string;
   branches: string[];
+  /** Remote-tracking branches (e.g. "origin/dev"), minus the symbolic origin/HEAD.
+   *  Lets the user merge a branch that exists on the server but not locally. */
+  remotes: string[];
+  /** True when the repo is sitting in an unfinished merge (MERGE_HEAD exists) —
+   *  the UI shows "resolve conflicts / abort" instead of offering a new merge. */
+  merging: boolean;
 }
 
 export async function branches(repo: string): Promise<BranchInfo> {
@@ -393,7 +399,32 @@ export async function branches(repo: string): Promise<BranchInfo> {
     branchList.push(name);
     if (isCurrent) current = name;
   }
-  return { current, branches: branchList };
+
+  // Remote-tracking refs. `origin/HEAD` is a symbolic alias for the default
+  // branch, not a branch to merge — drop it.
+  let remotes: string[] = [];
+  try {
+    const rout = await git(repo, ['branch', '--remotes', '--format=%(refname:short)']);
+    remotes = rout
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && !/\/HEAD$/.test(l) && !l.includes(' -> '));
+  } catch {
+    /* no remotes configured — leave empty */
+  }
+
+  return { current, branches: branchList, remotes, merging: await isMerging(repo) };
+}
+
+/** True when a merge is in progress (MERGE_HEAD present in the real git dir). */
+async function isMerging(repo: string): Promise<boolean> {
+  try {
+    const gitDir = path.resolve(repo, (await git(repo, ['rev-parse', '--git-dir'])).trim());
+    await fs.access(path.join(gitDir, 'MERGE_HEAD'));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ── Multi-repo overview (status check + pull all) ───────────────────────────────
@@ -584,6 +615,101 @@ export async function diffFile(repo: string, file: string, staged: boolean): Pro
   return git(repo, args);
 }
 
+/** The two sides of a file for the side-by-side viewer. */
+export interface FileVersions {
+  /** Content BEFORE the change. */
+  before: string;
+  /** Content AFTER the change. */
+  after: string;
+  /** Where each side came from, for the panel headers. */
+  beforeLabel: string;
+  afterLabel: string;
+  /** True when either side isn't valid UTF-8 text — the UI shows a note instead. */
+  binary: boolean;
+  /** Set when a side could not be read at all (e.g. file deleted on disk). */
+  note?: string;
+}
+
+/** NUL byte ⇒ treat as binary; git itself uses the same heuristic. */
+function looksBinary(buf: Buffer): boolean {
+  return buf.subarray(0, 8000).includes(0);
+}
+
+/**
+ * Read one blob out of git (`git show <rev>:<file>`) as a Buffer. Returns null
+ * when the path doesn't exist at that revision — a NEW file has no HEAD side,
+ * and that is a normal outcome, not an error.
+ */
+function showBlob(repo: string, rev: string, file: string): Promise<Buffer | null> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      ['show', `${rev}:${file}`],
+      { cwd: repo, maxBuffer: MAX_BUFFER, timeout: GIT_TIMEOUT_MS, windowsHide: true, encoding: 'buffer' },
+      (err, stdout, stderr) => {
+        if (err) {
+          const msg = (stderr?.toString() || (err as Error).message || '').trim();
+          // "exists on disk, but not in" / "does not exist" ⇒ absent at that rev.
+          if (/does not exist|exists on disk|unknown revision|invalid object name/i.test(msg)) {
+            resolve(null);
+            return;
+          }
+          reject(new Error(msg || 'git show failed'));
+          return;
+        }
+        resolve(stdout as unknown as Buffer);
+      },
+    );
+  });
+}
+
+/**
+ * The before/after contents of one file, for the side-by-side viewer.
+ *
+ *   staged=true  → HEAD  vs the index      (what `git diff --cached` compares)
+ *   staged=false → index vs the working tree (what `git diff` compares)
+ *
+ * The index side is read as `:file` — the same revision syntax git uses for a
+ * staged blob — so a partially-staged file shows the right middle state. When
+ * the file is untracked there is no index entry and `before` is simply empty.
+ */
+export async function fileVersions(repo: string, file: string, staged: boolean): Promise<FileVersions> {
+  const beforeRev = staged ? 'HEAD' : ':0';
+  const beforeLabel = staged ? 'HEAD (đã commit)' : 'Index (đã stage / HEAD)';
+  const afterLabel = staged ? 'Index (đã stage)' : 'Working tree (trên đĩa)';
+
+  const beforeBuf = await showBlob(repo, beforeRev, file);
+
+  let afterBuf: Buffer | null = null;
+  let note: string | undefined;
+  if (staged) {
+    afterBuf = await showBlob(repo, ':0', file);
+    if (!afterBuf) note = 'File không có trong index (đã stage xóa).';
+  } else {
+    // Working tree: read straight off disk. The path is confined to the
+    // authorized repo by resolve+prefix check, same guard as everywhere else.
+    const abs = path.resolve(repo, file);
+    const root = path.resolve(repo);
+    if (abs !== root && !abs.startsWith(root + path.sep)) throw new Error('path escapes repo');
+    try {
+      afterBuf = await fs.readFile(abs);
+    } catch {
+      afterBuf = null;
+      note = 'File không còn trên đĩa (đã xóa).';
+    }
+  }
+
+  const binary = (!!beforeBuf && looksBinary(beforeBuf)) || (!!afterBuf && looksBinary(afterBuf));
+  return {
+    before: beforeBuf && !binary ? beforeBuf.toString('utf8') : '',
+    after: afterBuf && !binary ? afterBuf.toString('utf8') : '',
+    beforeLabel,
+    afterLabel,
+    binary,
+    note,
+  };
+}
+
 // ── Mutations ────────────────────────────────────────────────────────────────
 
 export async function stage(repo: string, files: string[]): Promise<void> {
@@ -708,6 +834,178 @@ export async function checkout(repo: string, branch: string, create: boolean): P
 export async function pull(repo: string): Promise<string> {
   // --ff-only: never create a merge commit or leave a conflict in the tool.
   return git(repo, ['pull', '--ff-only']);
+}
+
+// ── Merge (local, SourceTree-style) ──────────────────────────────────────────
+
+export interface MergeResult {
+  /** 'merged' = commit created, 'fast-forward' = HEAD moved, 'up-to-date' =
+   *  nothing to do, 'conflict' = merge left in progress for the user to resolve. */
+  outcome: 'merged' | 'fast-forward' | 'up-to-date' | 'conflict';
+  /** git's own output (or the conflict explanation). */
+  output: string;
+  /** Files with conflicts, when outcome is 'conflict'. */
+  conflicts: string[];
+  /** Set only when the source was a remote-tracking ref: which remote was
+   *  refreshed first, and whether that fetch succeeded (a failure is not fatal —
+   *  the merge proceeds against the local copy). */
+  fetched?: { remote: string; ok: boolean; error?: string };
+}
+
+/**
+ * Validate a ref the user wants to merge FROM. Accepts a local branch, a
+ * remote-tracking ref (`origin/dev`) or a tag — anything git can resolve — but
+ * refuses characters git itself rejects in ref names and a leading dash (which
+ * would be read as a flag). The ref must also actually exist in this repo.
+ */
+function validateMergeRefSyntax(raw: unknown): string {
+  const ref = typeof raw === 'string' ? raw.trim() : '';
+  if (!ref) throw new Error('cần chọn branch để merge');
+  if (ref.startsWith('-')) throw new Error('tên branch không hợp lệ');
+  if (/[\s~^:?*[\]\\]/.test(ref) || ref.includes('..')) throw new Error('tên branch không hợp lệ');
+  return ref;
+}
+
+/** Assert the ref resolves to a commit in this repo. Separate from the syntax
+ *  check so a fetch can run in between — a pruned remote branch must be reported
+ *  as "not found", not as a raw git failure mid-merge. */
+async function assertMergeRefExists(repo: string, ref: string): Promise<void> {
+  try {
+    await git(repo, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  } catch {
+    throw new Error(`không tìm thấy branch/ref "${ref}" trong repo này`);
+  }
+}
+
+/**
+ * The remote a ref belongs to, or null when it is not a remote-tracking ref.
+ *
+ * A prefix match alone would be wrong: a local branch may legitimately be named
+ * `origin/foo`, and `git branch --list` would still show it. So the ref must both
+ * start with a CONFIGURED remote name and resolve as a remote-tracking ref
+ * (`refs/remotes/<ref>`) — that is what makes fetching it meaningful.
+ */
+async function remoteOfRef(repo: string, ref: string): Promise<string | null> {
+  const slash = ref.indexOf('/');
+  if (slash <= 0) return null;
+  const candidate = ref.slice(0, slash);
+  let names: string[] = [];
+  try {
+    names = (await git(repo, ['remote'])).split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return null;
+  }
+  if (!names.includes(candidate)) return null;
+  try {
+    await git(repo, ['rev-parse', '--verify', '--quiet', `refs/remotes/${ref}`]);
+  } catch {
+    return null;
+  }
+  return candidate;
+}
+
+/** Paths git reports as unmerged (conflicted) right now. */
+async function conflictedFiles(repo: string): Promise<string[]> {
+  try {
+    const out = await git(repo, ['diff', '--name-only', '--diff-filter=U']);
+    return out.split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Merge `ref` INTO the currently checked-out branch — the SourceTree
+ * "Merge <branch> into current branch" action.
+ *
+ * Preconditions are checked up front rather than letting git fail halfway:
+ * a detached HEAD has no branch to merge into, an already-running merge must be
+ * finished first, and a dirty working tree would make a conflict impossible to
+ * untangle (git itself refuses, but the message is much clearer from here).
+ *
+ * On conflict the merge is deliberately LEFT in progress — that is what the user
+ * wants to resolve in their editor. `abortMerge` is the escape hatch.
+ *
+ * `--no-ff` (opt-in) forces a merge commit even when a fast-forward is possible,
+ * matching SourceTree's "Create a commit even if merge resolved via fast-forward".
+ */
+export async function mergeBranch(
+  repo: string,
+  refRaw: unknown,
+  opts: { noFf?: boolean; message?: string } = {},
+): Promise<MergeResult> {
+  const ref = validateMergeRefSyntax(refRaw);
+
+  // Merging a remote-tracking ref (origin/dev) without fetching would merge a
+  // STALE local copy — silently missing whatever landed on the server since the
+  // last fetch. Update just that remote first. Best effort: offline / no
+  // credential must not block merging the copy we already have, so a failure is
+  // reported in the result instead of thrown.
+  let fetched: MergeResult['fetched'];
+  const remote = await remoteOfRef(repo, ref);
+  if (remote) {
+    try {
+      await git(repo, ['fetch', '--prune', '--', remote], { env: { GIT_TERMINAL_PROMPT: '0' } });
+      fetched = { remote, ok: true };
+    } catch (e) {
+      fetched = { remote, ok: false, error: ((e as Error).message || 'fetch failed').split('\n')[0] };
+    }
+  }
+
+  // After the fetch — a --prune may have just removed a branch deleted upstream.
+  await assertMergeRefExists(repo, ref);
+  const st = await status(repo);
+
+  if (st.detached) throw new Error('đang ở detached HEAD — checkout một branch trước khi merge');
+  if (await isMerging(repo)) {
+    throw new Error('đang có merge dở dang — xử lý conflict rồi commit, hoặc hủy merge trước');
+  }
+  if (ref === st.branch) throw new Error('không thể merge một branch vào chính nó');
+  // Any local modification (staged or not) blocks a safe merge. Untracked files
+  // are fine — git only complains if the merge would overwrite one, and it says so.
+  if (st.files.some((f) => f.group !== 'untracked')) {
+    throw new Error('working tree có thay đổi chưa commit — commit hoặc bỏ thay đổi trước khi merge');
+  }
+
+  const args = ['merge', '--no-edit'];
+  if (opts.noFf) args.push('--no-ff');
+  const msg = (opts.message || '').trim();
+  if (msg) args.push('-m', msg);
+  args.push('--', ref);
+
+  let output: string;
+  try {
+    output = await git(repo, args, { withStderr: true });
+  } catch (e) {
+    const raw = (e as Error).message || 'merge failed';
+    const conflicts = await conflictedFiles(repo);
+    if (conflicts.length || (await isMerging(repo))) {
+      return {
+        outcome: 'conflict',
+        output: `Merge "${ref}" bị conflict ở ${conflicts.length} file — xử lý rồi commit, hoặc hủy merge.`,
+        conflicts,
+        fetched,
+      };
+    }
+    throw new Error(raw.split('\n').slice(0, 4).join('\n'));
+  }
+
+  const text = output.trim();
+  if (/Already up to date|Already up-to-date/i.test(text)) {
+    return { outcome: 'up-to-date', output: text, conflicts: [], fetched };
+  }
+  return {
+    outcome: /Fast-forward/i.test(text) ? 'fast-forward' : 'merged',
+    output: text,
+    conflicts: [],
+    fetched,
+  };
+}
+
+/** Abort an in-progress merge, restoring the pre-merge state (`git merge --abort`). */
+export async function abortMerge(repo: string): Promise<string> {
+  if (!(await isMerging(repo))) throw new Error('không có merge nào đang dở dang');
+  return git(repo, ['merge', '--abort'], { withStderr: true });
 }
 
 export async function push(repo: string): Promise<string> {
