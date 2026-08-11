@@ -308,6 +308,16 @@ export interface RuleScope {
    * exposes no per-conversation id anywhere in the page.
    */
   conversations?: string[];
+  /**
+   * INFRA: the watches this rule answers for, BY ID. Empty = every watch that
+   * passes sourceIds/instanceIds.
+   *
+   * Ids, not names: a watch id is stable, so renaming "Campaign — RAM cao" never
+   * detaches it from its rule. (The first cut of this encoded severity as a
+   * `[P2]` prefix in the name and matched on the text — one rename silently took
+   * a watch off alerting, which is exactly what this field exists to prevent.)
+   */
+  watchIds?: string[];
 }
 
 /** Active-hours window. Outside it the rule is skipped (quiet hours). */
@@ -327,6 +337,23 @@ export interface RuleLimits {
   cooldownSec?: number;
   /** Hard cap per rolling hour. */
   maxPerHour?: number;
+  /**
+   * What `cooldownSec` / `maxPerHour` count over. This is a POLICY choice, not a
+   * technical one, which is why it is asked rather than assumed:
+   *
+   *   'rule'     one counter for the whole rule. Watch A or watch B fires → one
+   *              alert per cooldown. Use when the rule represents ONE concern
+   *              ("something is wrong with the message bus") and a second alert
+   *              adds nothing.
+   *   'watch'    a counter per watch. A and B each get their own alert. Use when
+   *              the rule covers many independent things — 40 clusters failing at
+   *              once must produce 40 alerts, not 1.
+   *   'instance' a counter per connection. Every watch on the same cluster shares
+   *              one counter; different clusters never silence each other.
+   *
+   * Empty → 'rule' (the narrowest, quietest choice; widen deliberately).
+   */
+  countBy?: 'rule' | 'watch' | 'instance';
 }
 
 export interface AutomationRule {
@@ -358,10 +385,31 @@ export interface AutomationRule {
 export type InfraStack = 'mongo' | 'redis' | 'es' | 'kafka' | 'rabbit' | 'pg';
 
 /**
- * One thing to keep an eye on. The runner polls the stack every `everySec`,
- * evaluates `metric op threshold`, and emits an `infra.metric` event when the
- * breach has held for `forSec` (plus `infra.recovered` when it clears). Rules
- * then decide what that means — notify, webhook, Kafka…
+ * How serious a breach of this watch is. PURE METADATA: it travels on the event
+ * as `fields.severity` so an alert can identify itself ("🔴 NGHIÊM TRỌNG"), and a
+ * rule may read it as a condition — but it routes nothing by itself. A rule picks
+ * its watches by id (`scope.watchIds`), never by severity.
+ *
+ * That separation is deliberate. Severity is a property of the MEASUREMENT ("a
+ * dead controller is worse than 81% RAM"); which channel to alert and how often
+ * is a property of the RULE. Encoding one in the other is what the earlier
+ * `[P2]`-in-the-name scheme did wrong.
+ */
+export type WatchSeverity = 'critical' | 'warning' | 'info';
+
+/**
+ * One thing to keep an eye on — the TRIGGER side of automation, and nothing more.
+ *
+ * The runner polls the stack every `everySec`, evaluates `metric op threshold`,
+ * and emits an `infra.metric` event once the breach has held for `forSec` (plus
+ * `infra.recovered` when it clears). It decides WHETHER something happened; a
+ * rule decides what that means and how loudly to say it.
+ *
+ * `forSec` lives here rather than on the rule because it is part of MEASURING —
+ * a metric that crosses a threshold for 20 seconds has not really breached it.
+ * Alert frequency (once an hour, per watch or per rule) belongs to the rule; see
+ * RuleLimits. A watch therefore emits on EVERY poll while breaching, and a rule
+ * that pays attention to a chatty watch must set its own limits.
  */
 export interface InfraWatch {
   id: string;
@@ -380,11 +428,105 @@ export interface InfraWatch {
   everySec: number;
   /** Breach must hold this long before firing (debounce). 0 = fire at once. */
   forSec?: number;
-  /** Minimum seconds between two alerts for this watch. */
-  cooldownSec?: number;
+  /** Alert identity, not routing. Empty → 'warning'. */
+  severity?: WatchSeverity;
+  /** Free-form labels for finding a watch in a long list. Never used to route. */
+  tags?: string[];
   /** Also emit infra.recovered when the metric returns to normal. */
   notifyRecovery?: boolean;
 }
+
+// ── Log storage ────────────────────────────────────────────────────────────
+
+/**
+ * Where automation writes its history.
+ *
+ * `local` is a JSONL file next to the config, pruned after `retentionDays` —
+ * good enough to answer "what fired last night" on this one machine.
+ * `mongo` writes documents to a collection instead, for history that outlives
+ * this machine and can be queried. Retention there is left to Mongo (a TTL
+ * index), because deleting other people's data on a shared cluster is not
+ * something a local tool should do behind their back.
+ */
+export type LogTarget = 'local' | 'mongo';
+
+export interface LogStoreConfig {
+  /** Off = nothing is written anywhere. The `log` action then reports skipped. */
+  enabled: boolean;
+  target: LogTarget;
+  /** local: file name inside the working dir. Empty → .automation-log.jsonl */
+  file?: string;
+  /** local: lines older than this are dropped on write. Empty → 7. */
+  retentionDays?: number;
+  /**
+   * mongo: id from the DevBox Mongo registry (configs/mongoconnections.json).
+   *
+   * An id, not a connection string: the credentials then live in ONE place, the
+   * Mongo tab already knows how to test/edit them, and this config carries no
+   * password of its own. A connection typed here is saved INTO that registry
+   * first, so it shows up in the Mongo tab like any other.
+   */
+  connectionId?: string;
+  /** mongo: cached label so the UI can name it without loading the registry. */
+  connectionLabel?: string;
+  /** mongo: database name. Empty → devbox. */
+  database?: string;
+  /** mongo: collection name. Empty → automation_log. */
+  collection?: string;
+  /**
+   * mongo: set once a write actually succeeded against this target.
+   *
+   * The UI requires that confirmation before switching the target over: silently
+   * pointing logging at an unreachable cluster loses exactly the records you
+   * would need to diagnose why.
+   */
+  verifiedAt?: number;
+}
+
+export const DEFAULT_LOG_STORE: LogStoreConfig = {
+  enabled: false, // opt-in, like every other side effect here
+  target: 'local',
+  retentionDays: 7,
+};
+
+/**
+ * Trace of the watch runner itself: "is the infrastructure campaign actually
+ * running right now?"
+ *
+ * Distinct from `logStore`, which records what the RULES did. A watch that polls
+ * every 60s and never breaches produces no rule activity at all, so the activity
+ * feed stays empty and there is no way to tell "quiet because healthy" from
+ * "quiet because the runner died". This answers that.
+ *
+ * Off by default and separate from the alert log because it is DEBUG volume: 153
+ * watches at 60s is ~150 lines a minute. Kept for one day, then dropped.
+ */
+export interface TraceConfig {
+  /** Print each poll to the DevTools console (renderer — that is where it runs). */
+  console: boolean;
+  /** Append each poll to a JSON-lines file, pruned to `retentionHours`. */
+  file: boolean;
+  /** File name in the working dir. Empty → .automation-trace.jsonl */
+  fileName?: string;
+  /** Hours to keep. Empty → 24. */
+  retentionHours?: number;
+  /**
+   * Trace every poll, or only the ones that mean something.
+   *
+   * 'all'      every poll, including "read 72%, still fine" — what you want for
+   *            ten minutes while checking the campaign runs at all.
+   * 'changes'  only breach / recovery / probe error, plus a periodic heartbeat.
+   *            Sustainable to leave on.
+   */
+  verbosity: 'all' | 'changes';
+}
+
+export const DEFAULT_TRACE: TraceConfig = {
+  console: false,
+  file: false,
+  retentionHours: 24,
+  verbosity: 'changes',
+};
 
 // ── The whole persisted configuration ──────────────────────────────────────
 
@@ -424,6 +566,10 @@ export interface AutomationConfig {
   osNotify: EventCategory[];
   /** How many recent events the activity feed keeps in memory. */
   activityLimit: number;
+  /** Where the `log` action writes. Off by default — see LogStoreConfig. */
+  logStore: LogStoreConfig;
+  /** Trace of the watch runner (is the campaign running?). Off by default. */
+  trace: TraceConfig;
   rules: AutomationRule[];
   watches: InfraWatch[];
 }
@@ -438,6 +584,8 @@ export const DEFAULT_AUTOMATION_CONFIG: AutomationConfig = {
   loopGuard: true, // ON by default — a feedback loop is worse than a missed event
   osNotify: [], // no OS pop-ups until asked for, per group
   activityLimit: 200,
+  logStore: DEFAULT_LOG_STORE, // opt-in: nothing is written to disk until asked for
+  trace: DEFAULT_TRACE, // opt-in: debug volume, not something to leave on by accident
   rules: [],
   watches: [],
 };

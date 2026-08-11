@@ -15,7 +15,8 @@
 // exactly what would have happened.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { appendLogLine } from '@/lib/automation/store';
+import { readAutomationConfig } from '@/lib/automation/store';
+import { buildLogEntry, writeLogEntry } from '@/lib/automation/logStore';
 import { envTelegram, telegramApi } from '@/lib/automation/telegram';
 import type { ActionOutcome, ActionPlan, AutomationEvent } from '@/lib/automation/types';
 
@@ -155,13 +156,20 @@ async function runLog(plan: ActionPlan, event: AutomationEvent): Promise<ActionO
   const action = plan.action;
   if (action.type !== 'log') return { ...base, status: 'skipped', detail: 'not a log action' };
   try {
-    const name = await appendLogLine(action.file, {
-      at: new Date().toISOString(),
-      rule: plan.ruleName,
-      ruleId: plan.ruleId,
-      event,
-    });
-    return { ...base, status: 'ok', detail: name };
+    // The storage target is a CONFIG-level choice (local file vs Mongo), read
+    // here rather than carried on the plan: the renderer would otherwise have to
+    // know about connection ids, and a stale plan could write somewhere the user
+    // has since switched away from.
+    const cfg = (await readAutomationConfig()).logStore;
+    if (!cfg.enabled) {
+      return { ...base, status: 'skipped', detail: 'lưu trữ log đang tắt (bật ở tab Automation)' };
+    }
+    const entry = buildLogEntry(event, { ruleId: plan.ruleId, ruleName: plan.ruleName, dryRun: plan.dryRun });
+    // `action.file` still overrides the configured local file, so rules written
+    // before this setting existed keep writing where they always did.
+    const target = action.file && cfg.target === 'local' ? { ...cfg, file: action.file } : cfg;
+    const r = await writeLogEntry(target, entry);
+    return { ...base, status: 'ok', detail: `${r.target}: ${r.where}` };
   } catch (e) {
     return { ...base, status: 'error', detail: (e as Error).message };
   }

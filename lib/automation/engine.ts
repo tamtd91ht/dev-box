@@ -85,11 +85,24 @@ function listensTo(rule: AutomationRule, event: AutomationEvent): boolean {
  * globally unique) and rules saved before the change keep matching.
  */
 function inScope(rule: AutomationRule, event: AutomationEvent): boolean {
-  const { sourceIds, instanceIds, conversations } = rule.scope ?? { sourceIds: [], instanceIds: [] };
+  const { sourceIds, instanceIds, conversations, watchIds } = rule.scope ?? {
+    sourceIds: [],
+    instanceIds: [],
+  };
   if (sourceIds?.length && !sourceIds.includes(event.sourceId)) return false;
   if (instanceIds?.length) {
     const qualified = `${event.sourceId}::${event.instanceId}`;
     if (!instanceIds.includes(qualified) && !instanceIds.includes(event.instanceId ?? '')) return false;
+  }
+  // INFRA ONLY: the rule names its watches by id. An infra event always carries
+  // fields.watchId, so a rule listing ids can never be fooled by a rename.
+  //
+  // Gated on the event category because watchIds survive a rule being switched
+  // from infra to social (nothing clears them, and the picker is only rendered
+  // for infra) — applying them to social events would fail every one of them on
+  // a missing watchId, silencing the rule with no visible cause.
+  if (event.category === 'infra' && watchIds?.length) {
+    if (!watchIds.includes(String(event.fields?.watchId ?? ''))) return false;
   }
   if (conversations?.length) {
     // Case- and spacing-insensitive: the name comes from a notification title,
@@ -104,6 +117,30 @@ function inScope(rule: AutomationRule, event: AutomationEvent): boolean {
 /** Content-dedupe key: same rule, same headline + body. */
 const contentKey = (rule: AutomationRule, event: AutomationEvent) =>
   `${rule.id}|${event.title}|${event.text}`;
+
+/**
+ * Key that `cooldownSec` / `maxPerHour` count against — see RuleLimits.countBy.
+ *
+ * 'rule' keeps ONE counter per rule, so any watch in the rule silences the rest
+ * for the cooldown. That is right when the rule is one concern and wrong when it
+ * covers many independent clusters, which is why it is the caller's choice and
+ * not a constant. An infra event without a watchId falls back to the rule key
+ * rather than inventing a bucket per event (which would disable the limit).
+ */
+function limitKey(rule: AutomationRule, event: AutomationEvent): string {
+  switch (rule.limits?.countBy) {
+    case 'watch': {
+      const w = String(event.fields?.watchId ?? '');
+      return w ? `${rule.id}|w:${w}` : rule.id;
+    }
+    case 'instance': {
+      const i = event.instanceId ?? '';
+      return i ? `${rule.id}|i:${i}` : rule.id;
+    }
+    default:
+      return rule.id;
+  }
+}
 
 /** Render a header / query map. Entries whose key renders empty are dropped. */
 function renderMap(
@@ -241,25 +278,28 @@ export function evaluate(
         continue;
       }
     }
+    // Both rate guards count over the SAME bucket, so "1/hour per watch" means
+    // one alert per watch rather than one per watch for cooldown and one overall.
+    const bucket = limitKey(rule, event);
     if (limits.cooldownSec && limits.cooldownSec > 0) {
-      const prev = state.lastFire.get(rule.id);
+      const prev = state.lastFire.get(bucket);
       if (prev && now - prev < limits.cooldownSec * 1000) {
         decisions.push({ ...base, matched: true, skipped: 'cooldown' });
         continue;
       }
     }
     if (limits.maxPerHour && limits.maxPerHour > 0) {
-      const list = (state.fires.get(rule.id) ?? []).filter((t) => now - t < HOUR_MS);
+      const list = (state.fires.get(bucket) ?? []).filter((t) => now - t < HOUR_MS);
       if (list.length >= limits.maxPerHour) {
-        state.fires.set(rule.id, list);
+        state.fires.set(bucket, list);
         decisions.push({ ...base, matched: true, skipped: 'rate-limit' });
         continue;
       }
     }
 
     // Fires. Record history BEFORE planning so a throwing action can't unbound it.
-    state.lastFire.set(rule.id, now);
-    state.fires.set(rule.id, [...(state.fires.get(rule.id) ?? []), now]);
+    state.lastFire.set(bucket, now);
+    state.fires.set(bucket, [...(state.fires.get(bucket) ?? []), now]);
     if (limits.dedupeSec) state.content.set(contentKey(rule, event), now);
 
     const vars = templateVars(event, captures);
@@ -316,17 +356,26 @@ export function blankRule(category: AutomationRule['category'] = 'social', name?
     scope: { sourceIds: [], instanceIds: [] },
     match: { mode: 'all', conditions: [{ ...FIRST_CONDITION[category] }] },
     actions: [{ type: 'notify', level: category === 'infra' ? 'warn' : 'info' }],
-    // Content-dedupe suits a metric that keeps breaching the same threshold.
-    // It does NOT suit chat: a person sending the same sentence twice is two
-    // real events, and swallowing the second looks exactly like a broken rule
-    // — three identical messages, one reply. Re-delivery of the SAME captured
-    // message is already dropped by the engine's event-id check, so social
-    // needs nothing here.
-    limits: category === 'social' ? {} : { dedupeSec: 30 },
+    // Content-dedupe does NOT suit chat: a person sending the same sentence
+    // twice is two real events, and swallowing the second looks exactly like a
+    // broken rule — three identical messages, one reply. Re-delivery of the SAME
+    // captured message is already dropped by the engine's event-id check, so
+    // social needs nothing here.
+    //
+    // Infra needs a real cooldown, not content-dedupe: a breaching watch emits
+    // on every poll, and its title carries the live measured value, so the
+    // content key changes each time and dedupe never bites. Ten minutes per
+    // watch is the old per-watch default, which is a sane place to start.
+    limits:
+      category === 'infra'
+        ? { cooldownSec: 600, countBy: 'watch' }
+        : category === 'social'
+          ? {}
+          : { dedupeSec: 30 },
   };
 }
 
-/** A blank infrastructure watch — 60s poll, 60s debounce, 10min cooldown. */
+/** A blank infrastructure watch — 60s poll, 60s debounce. */
 export function blankWatch(stack: import('./types').InfraStack = 'redis'): import('./types').InfraWatch {
   return {
     id: newId('w'),
@@ -339,7 +388,8 @@ export function blankWatch(stack: import('./types').InfraStack = 'redis'): impor
     threshold: 1,
     everySec: 60,
     forSec: 60,
-    cooldownSec: 600,
+    severity: 'warning',
+    tags: [],
     notifyRecovery: true,
   };
 }

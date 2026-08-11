@@ -6,6 +6,7 @@
 //     'describeTopic' { connectionId, topic }                  → TopicDetail
 //     'listGroups'    { connectionId }                         → GroupSummary[]
 //     'describeGroup' { connectionId, groupId }                → GroupDetail
+//     'consumerLag'   { connectionId }                         → KafkaConsumerLag  (every group, one sweep)
 //     'topicGroups'   { connectionId, topic }                  → TopicConsumerGroup[]
 //     'peek'          { connectionId, topic, limit? }          → MessagePage
 //     'search'        { connectionId, topic, fromMs, toMs, keyword } → MessagePage
@@ -27,6 +28,7 @@ import {
   describeTopic,
   listGroups,
   describeGroup,
+  consumerLag,
   listTopicGroups,
   peekMessages,
   searchMessages,
@@ -113,6 +115,9 @@ export async function POST(req: NextRequest) {
         break;
       case 'describeGroup':
         result = await describeGroup(conn, String(body.groupId ?? ''));
+        break;
+      case 'consumerLag': // every group's lag + stall age (monitor / automation)
+        result = await consumerLag(conn);
         break;
       case 'topicGroups':
         result = await listTopicGroups(conn, String(body.topic ?? ''));

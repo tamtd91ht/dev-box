@@ -63,3 +63,93 @@ export async function appendLogLine(file: string | undefined, entry: unknown): P
   await fs.appendFile(target, JSON.stringify(entry) + '\n', 'utf8');
   return path.basename(target);
 }
+
+// ── Retention for the local log ─────────────────────────────────────────────
+
+/** Rewrite the file without lines older than `days`. Returns how many went. */
+async function pruneLocalLog(target: string, days: number): Promise<number> {
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  let raw: string;
+  try {
+    raw = await fs.readFile(target, 'utf8');
+  } catch {
+    return 0; // nothing written yet
+  }
+  const lines = raw.split('\n').filter(Boolean);
+  const keep = lines.filter((line) => {
+    // A line we cannot parse or date is KEPT: retention exists to bound growth,
+    // not to quietly discard records whose shape we failed to recognise.
+    try {
+      const at = (JSON.parse(line) as { at?: string }).at;
+      if (!at) return true;
+      const ts = Date.parse(at);
+      return !Number.isFinite(ts) || ts >= cutoff;
+    } catch {
+      return true;
+    }
+  });
+  const dropped = lines.length - keep.length;
+  if (dropped > 0) await fs.writeFile(target, keep.length ? keep.join('\n') + '\n' : '', 'utf8');
+  return dropped;
+}
+
+/**
+ * Prune at most once an hour per file. Reading and rewriting the whole log on
+ * every append would make an alert storm quadratic in the number of lines.
+ */
+const lastPrune = new Map<string, number>();
+const PRUNE_EVERY_MS = 60 * 60 * 1000;
+
+export async function appendLocalLog(
+  file: string | undefined,
+  retentionDays: number,
+  entry: unknown,
+): Promise<string> {
+  const target = resolveLogFile(file);
+  await fs.appendFile(target, JSON.stringify(entry) + '\n', 'utf8');
+  const now = Date.now();
+  if (now - (lastPrune.get(target) ?? 0) >= PRUNE_EVERY_MS) {
+    lastPrune.set(target, now);
+    // Never let housekeeping fail the write that already succeeded.
+    try {
+      await pruneLocalLog(target, retentionDays);
+    } catch {
+      /* bỏ qua — dòng log đã ghi xong, dọn dẹp để lần sau */
+    }
+  }
+  return path.basename(target);
+}
+
+/** Force a prune now (the UI's "dọn ngay"). Returns lines removed. */
+export async function pruneLocalLogNow(file: string | undefined, retentionDays: number): Promise<number> {
+  const target = resolveLogFile(file);
+  lastPrune.set(target, Date.now());
+  return pruneLocalLog(target, retentionDays);
+}
+
+/** Size + line count of the local log, for the settings panel. */
+export async function localLogStats(
+  file: string | undefined,
+): Promise<{ name: string; bytes: number; lines: number; oldest?: string }> {
+  const target = resolveLogFile(file);
+  const name = path.basename(target);
+  try {
+    const [stat, raw] = await Promise.all([fs.stat(target), fs.readFile(target, 'utf8')]);
+    const lines = raw.split('\n').filter(Boolean);
+    let oldest: string | undefined;
+    for (const line of lines) {
+      try {
+        const at = (JSON.parse(line) as { at?: string }).at;
+        if (at) {
+          oldest = at;
+          break;
+        }
+      } catch {
+        /* dòng lỗi — bỏ qua khi tìm mốc cũ nhất */
+      }
+    }
+    return { name, bytes: stat.size, lines: lines.length, oldest };
+  } catch {
+    return { name, bytes: 0, lines: 0 };
+  }
+}

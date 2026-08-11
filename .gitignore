@@ -75,9 +75,13 @@ bot/.state.json
 bot/.status.json
 
 # Automation engine — local rules/watches (may embed webhook URLs + tokens) and
-# the default log-action sink (captured message text lands there) — never commit
+# the default log-action sink (captured message text lands there) — never commit.
+# The trace file is the watch runner's own diagnostic output: high volume, hours
+# of lifetime, and it names real cluster hosts. Local only.
 .automation.json
 .automation-log.jsonl
+.automation-trace.jsonl
+.automation-infra.jsonl
 
 # Electron desktop shell — build output + per-workspace browser profiles
 # (cookies/localStorage/IndexedDB/cache live here; machine-specific, never commit)

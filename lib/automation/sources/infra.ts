@@ -13,12 +13,12 @@
 // one probe + one StackDef.
 
 import { esHealth, listEsNodes } from '@/lib/es';
-import { kafkaClusterHealth } from '@/lib/kafka';
+import { kafkaClusterHealth, kafkaConsumerLag } from '@/lib/kafka';
 import { mongoMonitor } from '@/lib/mongo';
 import { pingPg } from '@/lib/pg';
 import { listRabbitNodes, rabbitOverview } from '@/lib/rabbit';
 import { redisStats } from '@/lib/redis';
-import type { AutomationEvent, InfraStack, InfraWatch } from '../types';
+import type { AutomationEvent, InfraStack, InfraWatch, WatchSeverity } from '../types';
 import { metricLabel, stackDef } from '../catalog';
 
 export type MetricMap = Record<string, number>;
@@ -103,7 +103,25 @@ async function probeEs(id: string): Promise<MetricMap> {
   return m;
 }
 
-async function probeKafka(id: string): Promise<MetricMap> {
+/**
+ * Metrics that require the consumer-lag sweep. That sweep costs one fetchOffsets
+ * per group, so — unlike cluster health — it runs ONLY when the asking watch
+ * actually reads one of these. A cluster-health watch polling every 30s must not
+ * drag a full lag sweep behind it.
+ */
+const KAFKA_LAG_METRICS = new Set([
+  'maxConsumerLag',
+  'totalConsumerLag',
+  'stalledGroups',
+  'emptyGroups',
+  'rebalancingGroups',
+  'lagGroupsUnknown',
+  'undescribedGroups',
+  'maxStalledSec',
+  'groups',
+]);
+
+async function probeKafka(id: string, metric?: string): Promise<MetricMap> {
   const h = await kafkaClusterHealth(id);
   const m: MetricMap = { up: 1 };
   put(m, 'brokers', h.brokers.length);
@@ -112,6 +130,34 @@ async function probeKafka(id: string): Promise<MetricMap> {
   put(m, 'offline', h.offline);
   put(m, 'topics', h.topicCount);
   put(m, 'partitions', h.partitionCount);
+
+  if (metric === undefined || KAFKA_LAG_METRICS.has(metric)) {
+    try {
+      const lag = await kafkaConsumerLag(id);
+      // A group whose own fetchOffsets failed has UNKNOWN lag. Counting it as 0
+      // would quietly report "no lag" for the one group that may be broken, so
+      // it is excluded from the maxima and surfaced as its own metric instead.
+      const ok = lag.groups.filter((g) => !g.error);
+      put(m, 'groups', lag.groups.length);
+      put(m, 'lagGroupsUnknown', lag.groups.length - ok.length);
+      put(m, 'maxConsumerLag', maxOf(ok.map((g) => g.totalLag)) ?? 0);
+      put(m, 'totalConsumerLag', sumOf(ok.map((g) => g.totalLag)));
+      // Stuck = behind AND not moving. Lag alone is not a fault; a group that is
+      // catching up is healthy, one frozen at 40k is a dead consumer.
+      const stuck = ok.filter((g) => g.totalLag > 0 && g.stalledSec !== null);
+      put(m, 'stalledGroups', stuck.length);
+      put(m, 'maxStalledSec', maxOf(stuck.map((g) => g.stalledSec)) ?? 0);
+      // A group with committed offsets but zero members has no consumer running.
+      // `described` guards it: when describeGroups fails (routine mid-rebalance)
+      // member counts are UNKNOWN, and treating unknown as zero would fire
+      // "no consumer" for every group on the cluster at once.
+      put(m, 'emptyGroups', ok.filter((g) => g.described && g.members === 0 && g.partitions > 0).length);
+      put(m, 'rebalancingGroups', ok.filter((g) => g.described && /rebalanc|preparing/i.test(g.state)).length);
+      put(m, 'undescribedGroups', ok.filter((g) => !g.described).length);
+    } catch {
+      /* cluster health alone still counts as up */
+    }
+  }
   return m;
 }
 
@@ -143,7 +189,7 @@ async function probePg(id: string): Promise<MetricMap> {
   return { up: 1, latencyMs: round(r.latencyMs) };
 }
 
-const PROBES: Record<InfraStack, (connectionId: string) => Promise<MetricMap>> = {
+const PROBES: Record<InfraStack, (connectionId: string, metric?: string) => Promise<MetricMap>> = {
   redis: probeRedis,
   mongo: probeMongo,
   es: probeEs,
@@ -155,19 +201,34 @@ const PROBES: Record<InfraStack, (connectionId: string) => Promise<MetricMap>> =
 /**
  * Poll one connection. NEVER throws: an unreachable host is itself a signal —
  * it comes back as `up: 0`, which is exactly what a "mất kết nối" watch matches.
+ *
+ * `metric` is the key the CALLING watch is about to read. A probe may use it to
+ * skip an expensive second call nothing will look at (Kafka's lag sweep). Omit it
+ * — as the editor's "Thử ngay" does — to collect everything the stack offers.
  */
-export async function probeStack(stack: InfraStack, connectionId: string): Promise<ProbeResult> {
+export async function probeStack(
+  stack: InfraStack,
+  connectionId: string,
+  metric?: string,
+): Promise<ProbeResult> {
   const at = Date.now();
   const run = PROBES[stack];
   if (!run) return { at, metrics: {}, error: `stack không hỗ trợ: ${stack}` };
   try {
-    return { at, metrics: await run(connectionId) };
+    return { at, metrics: await run(connectionId, metric) };
   } catch (e) {
     return { at, metrics: { up: 0 }, error: (e as Error).message || 'probe thất bại' };
   }
 }
 
 // ── Events ─────────────────────────────────────────────────────────────────
+
+/** What an alert calls itself. Recognition only — never routing. */
+const SEVERITY_LABEL: Record<WatchSeverity, string> = {
+  critical: '🔴 NGHIÊM TRỌNG',
+  warning: '🟠 CẢNH BÁO',
+  info: '🔵 THÔNG TIN',
+};
 
 const OP_TEXT: Record<InfraWatch['op'], string> = {
   gt: '>',
@@ -215,6 +276,11 @@ function baseEvent(watch: InfraWatch, value: number, at: number): Omit<Automatio
       op: watch.op,
       watch: watch.name,
       watchId: watch.id,
+      // Alert identity, for templates ({{fields.severityLabel}}) and conditions.
+      // Routing is by watchId — severity never decides which rule runs.
+      severity: watch.severity ?? 'warning',
+      severityLabel: SEVERITY_LABEL[watch.severity ?? 'warning'],
+      tags: (watch.tags ?? []).join(','),
     },
   };
 }

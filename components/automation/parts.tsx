@@ -6,20 +6,41 @@
 
 import { useState, type ReactNode } from 'react';
 
+/**
+ * Hover help. Separate from `hint` on purpose: a hint is short enough to sit
+ * under the input permanently, while a tip is the two or three sentences that
+ * explain how a control is meant to be USED — worth having, but not worth the
+ * vertical space in a form this long.
+ */
+export function Tip({ text }: { text: string }) {
+  return (
+    <span className="auto-tip" tabIndex={0} role="note" aria-label={text}>
+      <span aria-hidden>?</span>
+      <span className="auto-tip-pop">{text}</span>
+    </span>
+  );
+}
+
 export function Field({
   label,
   hint,
+  tip,
   wide,
   children,
 }: {
   label: string;
   hint?: string;
+  /** Longer "how to use this" text, shown on hover/focus of the ? marker. */
+  tip?: string;
   wide?: boolean;
   children: ReactNode;
 }) {
   return (
     <div className={`auto-field${wide ? ' wide' : ''}`}>
-      <label>{label}</label>
+      <label>
+        {label}
+        {tip ? <Tip text={tip} /> : null}
+      </label>
       {children}
       {hint ? <span className="auto-hint">{hint}</span> : null}
     </div>
@@ -120,12 +141,19 @@ export function ListInput({
 export function Section({
   title,
   extra,
+  blurb,
   defaultOpen = true,
   children,
 }: {
   title: string;
   /** Controls rendered next to the title, e.g. the all/any selector. */
   extra?: ReactNode;
+  /**
+   * One line saying what this section decides. Two adjacent sections that both
+   * "filter events" are indistinguishable without it — which is exactly how
+   * Scope and Conditions read side by side.
+   */
+  blurb?: ReactNode;
   defaultOpen?: boolean;
   children: ReactNode;
 }) {
@@ -147,7 +175,12 @@ export function Section({
         </button>
         {extra}
       </h4>
-      {open ? children : null}
+      {open ? (
+        <>
+          {blurb ? <p className="auto-sec-blurb">{blurb}</p> : null}
+          {children}
+        </>
+      ) : null}
     </section>
   );
 }

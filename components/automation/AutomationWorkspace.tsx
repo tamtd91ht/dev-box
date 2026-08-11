@@ -6,6 +6,7 @@
 //   ├ Quy tắc          rules, grouped by feature (social · infra · system)
 //   ├ Theo dõi hạ tầng watches that turn a metric into an event
 //   ├ Hoạt động        what the engine did, with skip reasons
+//   ├ Log & báo cáo    where history is kept, and what you can ask of it
 //   └ Thử              hand-written events, dry or live
 //
 // Edits live in a local draft until saved: the engine keeps running the last
@@ -18,17 +19,19 @@ import type { AutomationConfig } from '@/lib/automation/types';
 import { GROUPS } from '@/lib/automation/catalog';
 import ActivityPanel from './ActivityPanel';
 import CapturePanel from './CapturePanel';
+import LogPanel from './LogPanel';
 import RulesPanel from './RulesPanel';
 import TestPanel from './TestPanel';
 import WatchesPanel from './WatchesPanel';
 import { Toggle } from './parts';
 
-type Tab = 'rules' | 'watches' | 'activity' | 'capture' | 'test';
+type Tab = 'rules' | 'watches' | 'activity' | 'logs' | 'capture' | 'test';
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'rules', label: 'Quy tắc', icon: '⚙' },
   { key: 'watches', label: 'Theo dõi hạ tầng', icon: '📡' },
   { key: 'activity', label: 'Hoạt động', icon: '🕓' },
+  { key: 'logs', label: 'Log & báo cáo', icon: '🗄' },
   { key: 'capture', label: 'Thu tin', icon: '🔬' },
   { key: 'test', label: 'Thử', icon: '🧪' },
 ];
@@ -178,6 +181,7 @@ export default function AutomationWorkspace() {
       {tab === 'rules' ? <RulesPanel config={cfg} onChange={edit} /> : null}
       {tab === 'watches' ? <WatchesPanel config={cfg} onChange={edit} /> : null}
       {tab === 'activity' ? <ActivityPanel activity={snap.activity} /> : null}
+      {tab === 'logs' ? <LogPanel config={cfg} onChange={edit} /> : null}
       {tab === 'capture' ? <CapturePanel /> : null}
       {tab === 'test' ? <TestPanel /> : null}
     </div>

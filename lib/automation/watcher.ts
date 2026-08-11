@@ -11,7 +11,12 @@
 //
 //   breachSince  when the metric first went out of range  → debounce (forSec)
 //   firing       an alert is currently open               → recovery detection
-//   lastAlertAt  last emitted breach                      → cooldown / reminders
+//   lastAlertAt  last emitted breach                      → shown in the UI
+//
+// It does NOT ration alerts. A breaching watch emits on every poll, and the RULE
+// decides how often that turns into a notification (RuleLimits.cooldownSec /
+// maxPerHour / countBy). Watches measure; rules decide — a watch that also
+// throttled would silently cap what a rule is allowed to say.
 //
 // Emitted events go through automation.submit(), so infra alerts land in the
 // SAME rule engine, activity feed and action set as social messages.
@@ -19,10 +24,12 @@
 import { automation } from './runtime';
 import { MIN_WATCH_INTERVAL_SEC } from './normalize';
 import { breaches, infraBreachEvent, infraRecoveredEvent, probeStack, type ProbeResult } from './sources/infra';
+import { trace } from './trace';
 import type { AutomationConfig, InfraWatch } from './types';
 
 const TICK_MS = 2000;
-const DEFAULT_COOLDOWN_SEC = 600;
+/** How often the trace says "still running" when nothing else happens. */
+const HEARTBEAT_MS = 5 * 60 * 1000;
 
 /** What the UI shows next to each watch. */
 export interface WatchSample {
@@ -65,6 +72,7 @@ class InfraWatcher {
   private rev = 0;
   private unsubConfig: (() => void) | null = null;
   private started = false;
+  private lastBeat = 0;
 
   getSnapshot = (): WatcherSnapshot => this.snap;
 
@@ -152,6 +160,7 @@ class InfraWatcher {
   private async tick(): Promise<void> {
     const now = Date.now();
     const watches = this.activeWatches(automation.current);
+    this.heartbeat(now, watches.length);
     await Promise.all(
       watches.map(async (w) => {
         const st = this.states.get(w.id);
@@ -167,15 +176,54 @@ class InfraWatcher {
     );
   }
 
+  /**
+   * Periodic "still alive" line.
+   *
+   * Without it, `verbosity: 'changes'` on a healthy system writes nothing at all —
+   * which is indistinguishable from the runner having died, the exact confusion
+   * this trace exists to remove.
+   */
+  private heartbeat(now: number, active: number): void {
+    const cfg = automation.current.trace;
+    if (!cfg.console && !cfg.file) return;
+    if (now - this.lastBeat < HEARTBEAT_MS) return;
+    this.lastBeat = now;
+    trace(cfg, {
+      ts: now,
+      kind: 'heartbeat',
+      watchId: '',
+      watch: '(runner)',
+      stack: '',
+      instance: '',
+      note: `đang chạy · ${active} watch đang bật`,
+    });
+  }
+
   private async poll(watch: InfraWatch, st: WatchState): Promise<void> {
-    const res = await probeStack(watch.stack, watch.connectionId);
+    const cfg = automation.current.trace;
+    const t0 = Date.now();
+    const res = await probeStack(watch.stack, watch.connectionId, watch.metric);
+    const tookMs = Date.now() - t0;
     const value = res.metrics[watch.metric];
     const has = typeof value === 'number' && Number.isFinite(value);
+
+    const base = {
+      watchId: watch.id,
+      watch: watch.name,
+      stack: watch.stack,
+      instance: watch.connectionLabel || watch.connectionId,
+      metric: watch.metric,
+      op: watch.op,
+      threshold: watch.threshold,
+      tookMs,
+    };
 
     // A metric the probe could not read is NOT a breach — silence beats a false
     // alarm. `up` is always present, so "mất kết nối" still fires.
     if (!has) {
-      this.sample(watch.id, { at: res.at, breaching: false, firing: st.firing, error: res.error ?? `không đọc được chỉ số ${watch.metric}` });
+      const note = res.error ?? `không đọc được chỉ số ${watch.metric}`;
+      trace(cfg, { ...base, ts: res.at, kind: 'error', note });
+      this.sample(watch.id, { at: res.at, breaching: false, firing: st.firing, error: note });
       return;
     }
 
@@ -185,23 +233,38 @@ class InfraWatcher {
     if (breaching) {
       if (st.breachSince === null) st.breachSince = now;
       const heldSec = (now - st.breachSince) / 1000;
-      const cooldown = sec(watch.cooldownSec, DEFAULT_COOLDOWN_SEC);
-      const dueForReminder = st.lastAlertAt === 0 || now - st.lastAlertAt >= cooldown * 1000;
-      if (heldSec >= sec(watch.forSec, 0) && dueForReminder) {
+      // A watch reports on EVERY poll while the breach holds — it measures, it
+      // does not ration. How often that becomes an actual alert is the rule's
+      // call (RuleLimits.cooldownSec / maxPerHour / countBy), so a rule can say
+      // "once an hour per watch" without every watch having to agree.
+      if (heldSec >= sec(watch.forSec, 0)) {
         st.lastAlertAt = now;
         st.firing = true;
+        trace(cfg, { ...base, ts: now, kind: 'breach', value, note: `vượt ngưỡng ${Math.round(heldSec)}s` });
         void automation.submit(infraBreachEvent(watch, value, now));
+      } else {
+        // Breaching but still inside forSec — worth seeing, because "why did it
+        // not alert" is answered right here.
+        trace(cfg, {
+          ...base,
+          ts: now,
+          kind: 'ok',
+          value,
+          note: `vượt ngưỡng nhưng chưa đủ ${sec(watch.forSec, 0)}s (${Math.round(heldSec)}s)`,
+        });
       }
     } else if (st.firing) {
       const downSec = Math.round((now - (st.breachSince ?? now)) / 1000);
       st.firing = false;
       st.breachSince = null;
       st.lastAlertAt = 0;
+      trace(cfg, { ...base, ts: now, kind: 'recovered', value, note: `bình thường sau ${downSec}s` });
       if (watch.notifyRecovery !== false) {
         void automation.submit(infraRecoveredEvent(watch, value, now, downSec));
       }
     } else {
       st.breachSince = null;
+      trace(cfg, { ...base, ts: now, kind: 'ok', value });
     }
 
     this.sample(watch.id, { at: now, value, breaching, firing: st.firing, error: res.error });

@@ -250,7 +250,9 @@ class AutomationRuntime {
         console.log(`ZALOAPI_AUTOMATION conv="${event.fields?.conversation ?? ''}" text="${String(event.text).slice(0, 40)}" → ${summary}`);
       }
       const outcomes = await this.execute(result);
-      this.record({ event: this.forStorage(event), decisions: result.decisions, outcomes });
+      if (this.worthRecording(result)) {
+        this.record({ event: this.forStorage(event), decisions: result.decisions, outcomes });
+      }
       return result;
     } catch {
       return null;
@@ -264,6 +266,28 @@ class AutomationRuntime {
     const clean = { ...event, title: stripMark(event.title), text: stripMark(event.text) };
     if (this.config.storeMessageText || clean.category !== 'social') return clean;
     return { ...clean, text: clean.text ? '••••' : '', fields: { ...clean.fields, text: '' } };
+  }
+
+  /**
+   * Should this evaluation take a line in the activity feed?
+   *
+   * A breaching watch now emits on EVERY poll (rationing moved to the rules), so
+   * with 30s watches a handful of simultaneous breaches would churn the 200-line
+   * feed in about a minute and destroy its diagnostic value exactly when it is
+   * needed. Infra entries are therefore kept only when they say something:
+   *
+   *   • a rule actually ran            → what happened
+   *   • a rule matched but was held    → NOT kept: the limit doing its job is
+   *                                      not news, and it is the high-volume case
+   *   • nothing matched at all         → kept: means the config is wrong
+   *
+   * Social is untouched — one entry per message is the point there.
+   */
+  private worthRecording(result: EvaluationResult): boolean {
+    if (result.event.category !== 'infra') return true;
+    if (result.plans.length) return true;
+    const held = new Set(['dedupe', 'cooldown', 'rate-limit', 'window']);
+    return !result.decisions.some((d) => d.matched && d.skipped && held.has(d.skipped));
   }
 
   private record(entry: ActivityEntry): void {

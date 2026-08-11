@@ -222,6 +222,38 @@ export function describeKafkaGroup(connectionId: string, groupId: string): Promi
   return kafkaAction<GroupDetail>('describeGroup', { connectionId, groupId });
 }
 
+/** One consumer group's lag, as returned by the cluster-wide sweep. */
+export interface GroupLagSummary {
+  groupId: string;
+  state: string;
+  members: number;
+  /** False when describeGroups failed: `members`/`state` are UNKNOWN, not measured. */
+  described: boolean;
+  totalLag: number;
+  worstTopic: string | null;
+  worstTopicLag: number;
+  partitions: number;
+  /** Seconds the group's committed offsets have not moved; null = moving / first sight. */
+  stalledSec: number | null;
+  /** This group alone failed — its lag is UNKNOWN, not zero. */
+  error?: string;
+}
+
+export interface KafkaConsumerLag {
+  at: number;
+  groups: GroupLagSummary[];
+  skippedGroups: number;
+}
+
+/**
+ * Lag for EVERY consumer group in one sweep, plus how long each has been stuck.
+ * Cheaper than describeGroup-per-group: high watermarks are fetched once per
+ * distinct topic. This is the call the automation probe uses.
+ */
+export function kafkaConsumerLag(connectionId: string): Promise<KafkaConsumerLag> {
+  return kafkaAction<KafkaConsumerLag>('consumerLag', { connectionId });
+}
+
 /** Consumer groups that consume THIS topic (have committed offsets), with per-partition lag. */
 export function listKafkaTopicGroups(connectionId: string, topic: string): Promise<TopicConsumerGroup[]> {
   return kafkaAction<TopicConsumerGroup[]>('topicGroups', { connectionId, topic });

@@ -24,6 +24,8 @@ import type {
   AutomationRule,
   EventCategory,
   InfraStack,
+  InfraWatch,
+  RuleLimits,
   TriggerType,
 } from '@/lib/automation/types';
 import { accountKey, loadAccounts } from '@/lib/workspace/accounts';
@@ -35,6 +37,125 @@ import { Field, Num, Section, Toggle } from './parts';
 import ActionCard, { defaultAction } from './ActionCard';
 
 const DAYS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+
+const SEV_ICON: Record<string, string> = { critical: '🔴', warning: '🟠', info: '🔵' };
+
+/**
+ * Pick the watches a rule answers for, BY ID.
+ *
+ * Shows the name (what a human recognises) over the id (what the rule stores),
+ * because a rule written against ids is unreadable otherwise. The list narrows to
+ * the Stack/Connection already chosen above — with 150+ watches declared, an
+ * unfiltered list is not something you can pick from.
+ *
+ * Empty selection = every watch passing Stack/Connection. That matches how the
+ * two pickers above already behave, and means a watch added later is covered by
+ * the rule without anyone having to remember to come back here.
+ */
+function WatchScope({
+  watches,
+  value,
+  onChange,
+  stacks,
+  instances,
+}: {
+  watches: InfraWatch[];
+  value: string[];
+  onChange: (v: string[]) => void;
+  stacks: string[];
+  instances: string[];
+}) {
+  const [q, setQ] = useState('');
+  // Joined once: the arrays are fresh objects on every render, so memoizing on
+  // their contents rather than their identity is what keeps this stable.
+  const stackKey = stacks.join(',');
+  const instanceKey = instances.join(',');
+
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const stackSet = stackKey ? new Set(stackKey.split(',')) : null;
+    const instSet = instanceKey ? new Set(instanceKey.split(',')) : null;
+    return watches.filter((w) => {
+      if (stackSet && !stackSet.has(w.stack)) return false;
+      if (instSet && !instSet.has(w.connectionId)) return false;
+      if (!needle) return true;
+      const hay = `${w.name} ${w.id} ${w.connectionLabel ?? ''} ${w.metric} ${(w.tags ?? []).join(' ')}`;
+      return hay.toLowerCase().includes(needle);
+    });
+  }, [watches, stackKey, instanceKey, q]);
+
+  // A selected watch the filters now hide is still selected — surfacing the count
+  // stops a narrowed view from reading as "the rule only covers these".
+  const hiddenSelected = value.filter((id) => !visible.some((w) => w.id === id)).length;
+  const toggle = (id: string) =>
+    onChange(value.includes(id) ? value.filter((x) => x !== id) : [...value, id]);
+
+  return (
+    <div className="auto-watchscope">
+      <div className="auto-watchscope-bar">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={`Tìm trong ${visible.length} watch…`}
+        />
+        {/* Union, not replace: with a filter active, replacing would silently
+            drop the watches the filter is hiding — and a non-empty watchIds
+            means those watches stop being covered by the rule at all. */}
+        <button
+          type="button"
+          className="ghost sm"
+          title="Thêm mọi watch đang hiện vào lựa chọn (không bỏ watch đang bị lọc ẩn)"
+          onClick={() => onChange([...new Set([...value, ...visible.map((w) => w.id)])])}
+        >
+          Chọn hết
+        </button>
+        <button
+          type="button"
+          className="ghost sm"
+          disabled={!visible.some((w) => value.includes(w.id))}
+          title="Bỏ chọn các watch đang hiện"
+          onClick={() => onChange(value.filter((id) => !visible.some((w) => w.id === id)))}
+        >
+          Bỏ chọn
+        </button>
+      </div>
+
+      <div className="auto-watchscope-note">
+        {value.length === 0 ? (
+          <>
+            <b>Tất cả</b> watch thoả Stack/Kết nối ở trên — kể cả watch thêm về sau
+          </>
+        ) : (
+          <>
+            đã chọn <b>{value.length}</b> watch
+            {hiddenSelected ? ` (${hiddenSelected} đang bị lọc ẩn)` : ''}
+          </>
+        )}
+      </div>
+
+      {!visible.length ? (
+        <div className="auto-watchscope-empty">
+          {watches.length ? 'Không watch nào khớp bộ lọc.' : 'Chưa khai báo watch nào ở tab Theo dõi hạ tầng.'}
+        </div>
+      ) : (
+        <div className="auto-watchscope-list">
+          {visible.map((w) => (
+            <label key={w.id} className={`auto-watchscope-row${value.includes(w.id) ? ' on' : ''}`}>
+              <input type="checkbox" checked={value.includes(w.id)} onChange={() => toggle(w.id)} />
+              <span className="auto-watchscope-main">
+                <span className="auto-watchscope-name">
+                  {SEV_ICON[w.severity ?? 'warning']} {w.name}
+                  {w.enabled ? null : <em className="auto-watchscope-off">đang tắt</em>}
+                </span>
+                <code className="auto-watchscope-id">{w.id}</code>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Source options for the scope picker, per feature group. */
 function useSourceOptions(category: EventCategory): { id: string; label: string }[] {
@@ -320,9 +441,12 @@ function ConditionRow({
 export default function RuleEditor({
   rule,
   onChange,
+  watches = [],
 }: {
   rule: AutomationRule;
   onChange: (r: AutomationRule) => void;
+  /** Every declared watch — the pool an infra rule picks from, by id. */
+  watches?: InfraWatch[];
 }) {
   /**
    * Which action cards are open, by index. Absent = open.
@@ -403,8 +527,30 @@ export default function RuleEditor({
         />
       </div>
 
-      <Section title="Phạm vi">
-        <Field label={rule.category === 'infra' ? 'Stack' : 'Ứng dụng'}>
+      <Section
+        title="Phạm vi — NGUỒN nào"
+        blurb={
+          rule.category === 'infra' ? (
+            <>
+              Chọn <b>sự kiện từ đâu</b> thì quy tắc này lo. Ba ô lọc dần: Stack → Kết nối → Watch.
+              Đây là chỗ bạn dùng cho hầu hết mọi việc — để trống ô nào là “tất cả” ô đó.
+            </>
+          ) : (
+            <>
+              Chọn <b>sự kiện từ đâu</b> thì quy tắc này lo: ứng dụng → tài khoản → hội thoại.
+              Để trống ô nào là “tất cả” ô đó.
+            </>
+          )
+        }
+      >
+        <Field
+          label={rule.category === 'infra' ? 'Stack' : 'Ứng dụng'}
+          tip={
+            rule.category === 'infra'
+              ? 'Loại hạ tầng. Chọn ở đây sẽ thu hẹp luôn ô Kết nối và ô Watch bên dưới — cách nhanh nhất để tìm watch trong danh sách dài.'
+              : 'Ứng dụng nhắn tin. Chọn ở đây sẽ thu hẹp ô Tài khoản bên dưới.'
+          }
+        >
           <CheckList
             options={sources}
             value={rule.scope.sourceIds}
@@ -412,7 +558,14 @@ export default function RuleEditor({
             allLabel="Tất cả"
           />
         </Field>
-        <Field label={rule.category === 'infra' ? 'Kết nối' : 'Tài khoản'}>
+        <Field
+          label={rule.category === 'infra' ? 'Kết nối' : 'Tài khoản'}
+          tip={
+            rule.category === 'infra'
+              ? 'Cụm cụ thể (ES-02, Kafka-01…). Chọn ở đây sẽ thu hẹp ô Watch bên dưới. Để trống = mọi cụm của các Stack đã chọn.'
+              : 'Tài khoản cụ thể. Để trống = mọi tài khoản của các ứng dụng đã chọn.'
+          }
+        >
           <CheckList
             options={instances}
             value={rule.scope.instanceIds}
@@ -420,6 +573,21 @@ export default function RuleEditor({
             allLabel="Tất cả"
           />
         </Field>
+        {rule.category === 'infra' && (
+          <Field
+            label="Watch"
+            tip="Cách chính xác nhất để chỉ định quy tắc này lo watch nào. Quy tắc lưu theo ID watch, nên đổi tên watch sau này không làm đứt liên kết. Danh sách tự thu hẹp theo Stack/Kết nối đã chọn ở trên; ô tìm kiếm nhận cả tên, id, tag và tên chỉ số. Để trống = mọi watch thoả Stack/Kết nối, kể cả watch bạn thêm về sau."
+            hint="quy tắc nhắm theo ID watch — đổi tên watch không làm đứt liên kết. Để trống = mọi watch thoả Stack/Kết nối"
+          >
+            <WatchScope
+              watches={watches}
+              value={rule.scope.watchIds ?? []}
+              onChange={(v) => set({ scope: { ...rule.scope, watchIds: v } })}
+              stacks={rule.scope.sourceIds}
+              instances={rule.scope.instanceIds}
+            />
+          </Field>
+        )}
         {rule.category === 'social' && (
           <Field
             label="Hội thoại"
@@ -435,7 +603,25 @@ export default function RuleEditor({
       </Section>
 
       <Section
-        title={`Điều kiện (${rule.match.conditions.length})`}
+        title={`Điều kiện (${rule.match.conditions.length}) — lọc thêm theo NỘI DUNG`}
+        defaultOpen={rule.match.conditions.length > 0}
+        blurb={
+          rule.category === 'infra' ? (
+            <>
+              <b>Không bắt buộc</b> — Phạm vi ở trên đã đủ cho phần lớn trường hợp. Chỉ thêm ở đây khi
+              cần lọc theo <b>giá trị của sự kiện</b>, thứ mà Phạm vi không biết: ví dụ chỉ báo khi{' '}
+              <code>value</code> ≥ 95, hoặc chỉ khi <code>severity</code> là <code>critical</code>.
+              <br />
+              Đừng dùng để chỉ định watch — việc đó thuộc ô <b>Watch</b> ở Phạm vi (theo id, không đứt
+              khi đổi tên).
+            </>
+          ) : (
+            <>
+              <b>Không bắt buộc.</b> Phạm vi ở trên chọn nguồn; ở đây lọc theo <b>nội dung tin</b> —
+              ví dụ <code>text</code> chứa “lỗi”, hoặc <code>sender</code> là một người cụ thể.
+            </>
+          )
+        }
         extra={
           <select
             className="auto-mode"
@@ -485,7 +671,14 @@ export default function RuleEditor({
       </Section>
 
       <Section
-        title={`Hành động (${rule.actions.length})`}
+        title={`Hành động (${rule.actions.length}) — LÀM GÌ`}
+        blurb={
+          <>
+            Chạy khi sự kiện qua được Phạm vi + Điều kiện. Nhiều hành động chạy{' '}
+            <b>lần lượt từ trên xuống</b>. Nội dung dùng được <code>{'{{template}}'}</code> —
+            ví dụ <code>{'{{fields.value}}'}</code>, <code>{'{{instance}}'}</code>.
+          </>
+        }
         extra={
           rule.actions.length > 1 ? (
             <span className="auto-sec-tools">
@@ -522,7 +715,17 @@ export default function RuleEditor({
         </button>
       </Section>
 
-      <Section title="Khung giờ & giới hạn" defaultOpen={false}>
+      <Section
+        title="Khung giờ & giới hạn — BAO NHIÊU LẦN"
+        defaultOpen={false}
+        blurb={
+          <>
+            Chống bão cảnh báo. Watch chỉ lo việc đo — còn vi phạm thì nó phát sự kiện mỗi lần poll,
+            nên <b>tần suất thông báo do đây quyết định</b>. Muốn “mỗi giờ 1 lần”: đặt{' '}
+            <b>Nghỉ giữa 2 lần = 3600</b> rồi chọn <b>Đếm theo</b> cho đúng phạm vi.
+          </>
+        }
+      >
         <div className="auto-grid">
           <Field label="Chỉ chạy trong khung giờ">
             <Toggle
@@ -568,14 +771,41 @@ export default function RuleEditor({
               </Field>
             </>
           ) : null}
-          <Field label="Chống trùng (giây)" hint="bỏ qua tin trùng nội dung trong N giây">
+          <Field
+            label="Chống trùng (giây)"
+            tip="Bỏ qua sự kiện TRÙNG NỘI DUNG (cùng tiêu đề + nội dung) trong N giây. Với cảnh báo hạ tầng thì giá trị đo đổi liên tục (85% rồi 86%…) nên nội dung không bao giờ trùng — ô này hầu như không chặn được gì. Hãy dùng 'Nghỉ giữa 2 lần' + 'Đếm theo'."
+            hint="theo nội dung — ít tác dụng với hạ tầng"
+          >
             <Num value={rule.limits?.dedupeSec} onChange={(v) => set({ limits: { ...rule.limits, dedupeSec: v } })} />
           </Field>
-          <Field label="Nghỉ giữa 2 lần (giây)">
+          <Field
+            label="Nghỉ giữa 2 lần (giây)"
+            tip="Khoảng cách tối thiểu giữa 2 lần cảnh báo. 3600 = mỗi giờ 1 lần. Phạm vi đếm do ô 'Đếm theo' quyết định."
+            hint="3600 = mỗi giờ 1 lần"
+          >
             <Num value={rule.limits?.cooldownSec} onChange={(v) => set({ limits: { ...rule.limits, cooldownSec: v } })} />
           </Field>
-          <Field label="Tối đa mỗi giờ">
+          <Field
+            label="Tối đa mỗi giờ"
+            tip="Trần cứng theo giờ trượt — van an toàn cuối cùng khi có sự cố diện rộng. Cũng đếm theo phạm vi của ô 'Đếm theo'."
+          >
             <Num value={rule.limits?.maxPerHour} onChange={(v) => set({ limits: { ...rule.limits, maxPerHour: v } })} />
+          </Field>
+          <Field
+            label="Đếm theo"
+            tip="Phạm vi đếm của 2 ô trên. 'cả quy tắc' = một bộ đếm chung, watch A hoặc B match thì chỉ 1 cảnh báo — dùng khi quy tắc đại diện MỘT mối lo. 'từng watch' = mỗi watch một bộ đếm riêng, A và B báo độc lập — dùng khi quy tắc bao nhiều thứ, để 40 cụm sập cùng lúc vẫn báo đủ 40 chứ không phải 1. 'từng kết nối' = mọi watch trên cùng một cụm chia nhau một bộ đếm."
+            hint="cả quy tắc = A hoặc B → 1 lần · từng watch = A và B riêng"
+          >
+            <select
+              value={rule.limits?.countBy ?? 'rule'}
+              onChange={(e) =>
+                set({ limits: { ...rule.limits, countBy: e.target.value as RuleLimits['countBy'] } })
+              }
+            >
+              <option value="rule">cả quy tắc</option>
+              <option value="watch">từng watch</option>
+              <option value="instance">từng kết nối</option>
+            </select>
           </Field>
         </div>
       </Section>

@@ -211,8 +211,20 @@ kiểm chứng`) có ok/lỗi riêng; hỏng ở đâu biết ngay ở đó. Nú
 ## Theo dõi hạ tầng (watch)
 
 Một watch = `stack + connectionId + metric op threshold`, poll mỗi `everySec`
-(tối thiểu **15s**), phải giữ vi phạm đủ `forSec` mới bắn (debounce), nhắc lại theo `cooldownSec`
-(mặc định 600s), và bắn `infra.recovered` khi hết vi phạm (tắt được).
+(tối thiểu **15s**), phải giữ vi phạm đủ `forSec` mới bắn (debounce), và bắn
+`infra.recovered` khi hết vi phạm (tắt được).
+
+**Watch đo, rule quyết định.** Watch KHÔNG tiết chế cảnh báo — còn vi phạm thì nó
+phát event mỗi lần poll. Bao lâu mới thành một thông báo thật là việc của rule
+(`RuleLimits`), nên một rule nói được "mỗi giờ 1 lần cho từng watch" mà không cần
+mọi watch phải đồng ý. `forSec` nằm ở watch vì nó thuộc phần **đo** (vượt ngưỡng
+20 giây thì chưa thực sự là vi phạm).
+
+`severity` (`critical`/`warning`/`info`) và `tags` là **metadata nhận diện**: chúng
+đi theo event thành `fields.severity` / `fields.severityLabel` để cảnh báo tự giới
+thiệu mình, và dùng được trong điều kiện — nhưng **không định tuyến**. Rule chọn
+watch bằng `scope.watchIds` (theo **id**), nên đổi tên watch không bao giờ làm đứt
+liên kết.
 
 Ngữ nghĩa runner:
 
@@ -230,7 +242,7 @@ Metric mỗi stack khai báo ở `catalog.ts` (kèm `suggest` op + ngưỡng m�
 | 🧠 Redis | `up` `memUsedPct` `memUsedMb` `clients` `opsPerSec` `hitRatePct` `fragmentation` `nodes` |
 | 🍃 Mongo | `up` `connectionsUsedPct` `connections` `cacheUsedPct` `diskUsedPct` `memResidentMb` `replLagSec` `membersUnhealthy` |
 | 🔎 ES | `up` `statusLevel` (0/1/2) `unassignedShards` `relocatingShards` `pendingTasks` `heapPct` `cpuPct` `diskUsedPct` `load1m` `nodes` |
-| 🧵 Kafka | `up` `underReplicated` `offline` `brokers` `noController` `topics` `partitions` |
+| 🧵 Kafka | `up` `underReplicated` `offline` `brokers` `noController` `topics` `partitions` — và nhóm **consumer lag**: `maxConsumerLag` `totalConsumerLag` `stalledGroups` `maxStalledSec` `emptyGroups` `rebalancingGroups` `lagGroupsUnknown` `groups` |
 | 🐰 Rabbit | `up` `messagesReady` `messagesUnacked` `consumers` `memAlarm` `diskAlarm` `nodesDown` `memUsedPct` `fdUsedPct` `queues` `publishRate` |
 | 🐘 PG | `up` `latencyMs` |
 
@@ -242,6 +254,19 @@ lấy `sum`, alarm của Rabbit là `some()` (một node báo = publisher bị c
 Mỗi quy tắc có `dedupeSec` (bỏ qua trùng title+text), `cooldownSec` (khoảng cách tối thiểu giữa
 2 lần bắn), `maxPerHour` (trần cứng theo giờ trượt). Thứ tự quy tắc **có ý nghĩa** vì
 `stopOnMatch` — nên danh sách sắp xếp được bằng ↑↓.
+
+`countBy` quyết định 2 giới hạn sau đếm trên **phạm vi nào** — đây là lựa chọn
+chính sách, không phải kỹ thuật, nên nó được hỏi chứ không mặc định ngầm:
+
+| `countBy` | Một bộ đếm cho | Dùng khi |
+|---|---|---|
+| `rule` (mặc định) | cả quy tắc | rule đại diện **một** mối lo; watch A hoặc B → 1 cảnh báo |
+| `watch` | từng watch | rule bao nhiều thứ độc lập; 40 cụm sập cùng lúc phải báo đủ 40 |
+| `instance` | từng kết nối | mọi watch trên cùng cụm chia nhau 1 bộ đếm |
+
+Lưu ý `dedupeSec` khoá theo **nội dung** (`ruleId|title|text`). Với cảnh báo hạ tầng
+thì giá trị đo đổi liên tục nên nó gần như không chặn được gì — hãy dùng
+`cooldownSec` + `countBy`.
 
 ## Dữ liệu trên máy (đã gitignore)
 

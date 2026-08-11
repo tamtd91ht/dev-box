@@ -7,6 +7,8 @@
 
 import {
   DEFAULT_AUTOMATION_CONFIG,
+  DEFAULT_LOG_STORE,
+  DEFAULT_TRACE,
   type ActionType,
   type AutomationAction,
   type AutomationCondition,
@@ -17,7 +19,12 @@ import {
   type HttpMethod,
   type InfraStack,
   type InfraWatch,
+  type LogStoreConfig,
+  type LogTarget,
+  type RuleLimits,
+  type TraceConfig,
   type TriggerType,
+  type WatchSeverity,
 } from './types';
 
 const OPS: ConditionOp[] = [
@@ -43,6 +50,8 @@ const CATEGORIES: EventCategory[] = ['social', 'infra', 'system'];
 const TRIGGERS: TriggerType[] = ['message.received', 'infra.metric', 'infra.recovered', 'system.test'];
 const STACKS: InfraStack[] = ['mongo', 'redis', 'es', 'kafka', 'rabbit', 'pg'];
 const WATCH_OPS: InfraWatch['op'][] = ['gt', 'gte', 'lt', 'lte', 'eq', 'neq'];
+const SEVERITIES: WatchSeverity[] = ['critical', 'warning', 'info'];
+const COUNT_BY: RuleLimits['countBy'][] = ['rule', 'watch', 'instance'];
 
 /** Default trigger for a group, used when the stored one doesn't belong to it. */
 const DEFAULT_TRIGGER: Record<EventCategory, TriggerType> = {
@@ -212,6 +221,7 @@ function normRule(raw: unknown, index: number): AutomationRule | null {
       conversations: strArr(scope.conversations)
         .map((s) => s.replace(/\s+/g, ' ').trim())
         .filter(Boolean),
+      watchIds: strArr(scope.watchIds).filter(Boolean),
     },
     match: {
       mode: match.mode === 'any' ? 'any' : 'all',
@@ -233,12 +243,19 @@ function normRule(raw: unknown, index: number): AutomationRule | null {
     rule.window = { days, from: str(win.from), to: str(win.to) };
   }
 
-  const limits = {
+  const countBy = COUNT_BY.includes(lim.countBy as RuleLimits['countBy'])
+    ? (lim.countBy as RuleLimits['countBy'])
+    : undefined;
+  const limits: RuleLimits = {
     dedupeSec: posInt(lim.dedupeSec),
     cooldownSec: posInt(lim.cooldownSec),
     maxPerHour: posInt(lim.maxPerHour),
+    countBy,
   };
-  if (limits.dedupeSec || limits.cooldownSec || limits.maxPerHour) rule.limits = limits;
+  // countBy is kept even with no numeric limit yet: the natural order in the form
+  // is to pick the scope first and type the seconds after, and dropping it here
+  // silently reverted the select on save.
+  if (limits.dedupeSec || limits.cooldownSec || limits.maxPerHour || countBy) rule.limits = limits;
 
   return rule;
 }
@@ -262,8 +279,59 @@ function normWatch(raw: unknown, index: number): InfraWatch | null {
     threshold: num(w.threshold),
     everySec: Math.max(MIN_WATCH_INTERVAL_SEC, posInt(w.everySec) ?? 60),
     forSec: Math.max(0, Math.floor(num(w.forSec))),
-    cooldownSec: Math.max(0, Math.floor(num(w.cooldownSec, 600))),
+    severity: SEVERITIES.includes(w.severity as WatchSeverity)
+      ? (w.severity as WatchSeverity)
+      : 'warning',
+    tags: strArr(w.tags)
+      .map((t) => t.trim().toLowerCase())
+      .filter(Boolean)
+      .slice(0, 12),
     notifyRecovery: bool(w.notifyRecovery, true),
+  };
+}
+
+/** Collection / database names: Mongo rejects the exotic ones, so do we. */
+const mongoName = (v: unknown, fallback: string): string => {
+  const s = str(v).trim();
+  return /^[A-Za-z0-9_.-]{1,120}$/.test(s) ? s : fallback;
+};
+
+function normLogStore(raw: unknown): LogStoreConfig {
+  const d = DEFAULT_LOG_STORE;
+  if (!raw || typeof raw !== 'object') return { ...d };
+  const s = raw as Record<string, unknown>;
+  const target: LogTarget = s.target === 'mongo' ? 'mongo' : 'local';
+  return {
+    // Defaults FALSE: an omitted flag must not start writing records nobody asked for.
+    enabled: bool(s.enabled, false),
+    target,
+    file: str(s.file),
+    // Clamped: 0 days would delete every line as it is written, and an unbounded
+    // value defeats the point of having retention at all.
+    retentionDays: Math.min(365, Math.max(1, posInt(s.retentionDays) ?? 7)),
+    connectionId: str(s.connectionId),
+    connectionLabel: str(s.connectionLabel),
+    database: mongoName(s.database, 'devbox'),
+    collection: mongoName(s.collection, 'automation_log'),
+    // Only a real successful write sets this; a hand-edited value is honoured but
+    // the UI re-verifies before it lets the target change.
+    verifiedAt: posInt(s.verifiedAt),
+  };
+}
+
+function normTrace(raw: unknown): TraceConfig {
+  const d = DEFAULT_TRACE;
+  if (!raw || typeof raw !== 'object') return { ...d };
+  const t = raw as Record<string, unknown>;
+  return {
+    // Both default FALSE: tracing is debug volume, and a hand-edited file that
+    // forgot the flag must not start writing ~150 lines a minute.
+    console: bool(t.console, false),
+    file: bool(t.file, false),
+    fileName: str(t.fileName),
+    // Capped at a week: this is a "is it running right now" trace, not history.
+    retentionHours: Math.min(168, Math.max(1, posInt(t.retentionHours) ?? 24)),
+    verbosity: t.verbosity === 'all' ? 'all' : 'changes',
   };
 }
 
@@ -275,6 +343,34 @@ function dedupeIds<T extends { id: string }>(items: T[]): T[] {
     seen.add(it.id);
   }
   return items;
+}
+
+/**
+ * One-way migration: `watch.cooldownSec` → `rule.limits.cooldownSec`.
+ *
+ * Watches used to ration their own alerts (default 600s). That moved to the rules
+ * so a rule can decide the policy, but a config written before the move has
+ * watches carrying a cooldown and rules carrying none — and a breaching watch now
+ * emits every poll. Left alone, upgrading would silently turn a once-per-10-minute
+ * Redis alert into one every 30 seconds.
+ *
+ * Applied only to infra rules that have no rate limit of their own, so a rule the
+ * user already tuned is never overwritten. Uses the largest cooldown among the
+ * old watches (the quiet end) and counts per watch, which is what a per-watch
+ * cooldown meant.
+ */
+function migrateWatchCooldown(rawWatches: unknown[], rules: AutomationRule[]): void {
+  const cooldowns = rawWatches
+    .map((w) => (w && typeof w === 'object' ? posInt((w as Record<string, unknown>).cooldownSec) : undefined))
+    .filter((n): n is number => !!n);
+  if (!cooldowns.length) return;
+  const cooldownSec = Math.max(...cooldowns);
+  for (const r of rules) {
+    if (r.category !== 'infra') continue;
+    const lim = r.limits;
+    if (lim?.cooldownSec || lim?.maxPerHour) continue; // already tuned — leave it
+    r.limits = { ...lim, cooldownSec, countBy: lim?.countBy ?? 'watch' };
+  }
 }
 
 /** Merge anything into a valid AutomationConfig. Never throws. */
@@ -289,6 +385,7 @@ export function normalizeConfig(raw: unknown): AutomationConfig {
   const watches = dedupeIds(
     (Array.isArray(c.watches) ? c.watches : []).map(normWatch).filter((w): w is InfraWatch => !!w),
   );
+  migrateWatchCooldown(Array.isArray(c.watches) ? c.watches : [], rules);
 
   return {
     version: 1,
@@ -306,6 +403,8 @@ export function normalizeConfig(raw: unknown): AutomationConfig {
       CATEGORIES.includes(g as EventCategory),
     ),
     activityLimit: Math.min(2000, posInt(c.activityLimit) ?? d.activityLimit),
+    logStore: normLogStore(c.logStore),
+    trace: normTrace(c.trace),
     rules,
     watches,
   };

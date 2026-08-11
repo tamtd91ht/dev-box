@@ -29,7 +29,18 @@ export interface GroupDef {
   icon: string;
   blurb: string;
   triggers: TriggerDef[];
-  /** Action types that make sense for this group. */
+  /**
+   * Action types the rule editor offers for this group — nó là bộ lọc CỦA UI,
+   * không phải giới hạn của runtime: `runtime.ts` chạy được mọi action với mọi
+   * nguồn event. Bỏ một action khỏi đây là ẩn nó khỏi editor, và người dùng chỉ
+   * thấy "sao mất rồi" chứ không thấy lý do — nên chỉ cắt khi action THẬT SỰ
+   * cần field riêng của group.
+   *
+   * `reply` là ca duy nhất như vậy: nó trả lời vào đúng hội thoại vừa nhắn nên
+   * chỉ có nghĩa ở `social`. Các kênh gửi (telegram, wsSend, zaloApiSend) thì
+   * chỉ cần đích đến người dùng tự chọn, nên có ở CẢ BA group — cảnh báo hạ
+   * tầng nhắn qua Zalo API là việc bình thường.
+   */
   actions: ActionType[];
 }
 
@@ -89,7 +100,7 @@ export const GROUPS: GroupDef[] = [
     label: 'Infrastructure',
     icon: '🖥',
     blurb: 'Cảnh báo hạ tầng từ chính các kết nối đã khai báo trong DevBox.',
-    actions: ['notify', 'webhook', 'telegram', 'wsSend', 'log', 'kafka'],
+    actions: ['notify', 'webhook', 'telegram', 'wsSend', 'zaloApiSend', 'log', 'kafka'],
     triggers: [
       {
         type: 'infra.metric',
@@ -124,7 +135,7 @@ export const GROUPS: GroupDef[] = [
     label: 'System',
     icon: '🧪',
     blurb: 'Sự kiện do chính DevBox phát ra — hiện dùng cho bảng thử quy tắc.',
-    actions: ['notify', 'webhook', 'telegram', 'wsSend', 'log', 'kafka'],
+    actions: ['notify', 'webhook', 'telegram', 'wsSend', 'zaloApiSend', 'log', 'kafka'],
     triggers: [
       {
         type: 'system.test',
@@ -179,6 +190,25 @@ export const opDef = (op: ConditionOp): OpDef => OPERATORS.find((o) => o.op === 
 
 // ── Infrastructure metric catalog ──────────────────────────────────────────
 
+/**
+ * What polling this metric COSTS the system being watched.
+ *
+ * A monitor that loads the thing it monitors is worse than no monitor: it adds
+ * load exactly when the cluster is already struggling, and the operator cannot
+ * tell the alert from its cause. So cost is declared per metric and surfaced in
+ * the editor — the decision "is this worth polling every 30s" is the user's, but
+ * it has to be an informed one.
+ *
+ *   'cheap'  a single status/stats call the server answers from memory.
+ *            INFO, serverStatus, /_cluster/health, /api/overview. Safe at 30s.
+ *   'medium' one extra round-trip, or a fan-out across nodes. Fine at 60s+,
+ *            wasteful at 15s.
+ *   'heavy'  cost grows with the SIZE of the cluster (topics, groups, queues).
+ *            The same call on a 20-topic cluster and a 2000-topic cluster are
+ *            different operations. 120s+, and read the note.
+ */
+export type ProbeCost = 'cheap' | 'medium' | 'heavy';
+
 export interface MetricDef {
   key: string;
   label: string;
@@ -186,6 +216,12 @@ export interface MetricDef {
   /** Suggested comparator + threshold when the user picks this metric. */
   suggest?: { op: 'gt' | 'gte' | 'lt' | 'lte'; threshold: number };
   hint?: string;
+  /** Empty → 'cheap'. See ProbeCost. */
+  cost?: ProbeCost;
+  /** Why it costs that much, and what to do about it. Shown on hover. */
+  costNote?: string;
+  /** Poll interval below which this metric is a genuine risk (seconds). */
+  minEverySec?: number;
 }
 
 export interface StackDef {
@@ -194,6 +230,31 @@ export interface StackDef {
   icon: string;
   metrics: MetricDef[];
 }
+
+// ── Cost notes, written once and shared ────────────────────────────────────
+// Each says WHAT the probe runs, WHY that scales, and WHAT to do — an operator
+// deciding whether to enable a watch needs all three.
+
+const KAFKA_META_NOTE =
+  'Mỗi lần đo gọi describeCluster + listTopics + fetchTopicMetadata cho TẤT CẢ topic, và controller là bên trả lời. ' +
+  'Chi phí tăng theo SỐ TOPIC: cụm 30 topic thì không đáng kể, cụm 2000 topic thì mỗi vòng là một lượt quét metadata lớn. ' +
+  'Nên để ≥60s. Cụm nhiều topic thì dùng 120–300s, và chỉ giữ vài watch thật cần thiết trên mỗi cụm.';
+
+const KAFKA_LAG_NOTE =
+  'Nặng nhất trong tất cả: listGroups + describeGroups + fetchOffsets cho TỪNG group (song song tối đa 8), ' +
+  'cộng fetchTopicOffsets cho mỗi topic phân biệt. Chi phí tăng theo SỐ GROUP × SỐ TOPIC. ' +
+  'Nên để ≥120s; cụm nhiều group thì 300s. Lag không đổi trong 30 giây, nên đo dày hơn không cho thêm thông tin gì.';
+
+const ES_NODES_NOTE =
+  'Ngoài /_cluster/health còn gọi thêm /_cat/nodes (một round-trip nữa, master trả lời). Nên để ≥60s.';
+
+const MONGO_STATUS_NOTE =
+  'serverStatus + dbStats + replSetGetStatus mỗi lần đo. serverStatus rẻ, nhưng dbStats phải tổng hợp dung lượng ' +
+  'nên nặng dần theo số collection. Nên để ≥60s; cụm nhiều collection thì 300s cho các chỉ số đĩa.';
+
+const RABBIT_NODES_NOTE =
+  'Ngoài /api/overview còn gọi /api/nodes. Management plugin của RabbitMQ tính số liệu ngay lúc được hỏi, ' +
+  'nên hỏi quá dày sẽ ăn CPU của chính node. Nên để ≥60s.';
 
 /** `up` exists for every stack: 1 = probe succeeded, 0 = unreachable. */
 const UP: MetricDef = {
@@ -221,8 +282,13 @@ export const STACKS: StackDef[] = [
       { key: 'memUsedMb', label: 'RAM đã dùng', unit: 'MB' },
       { key: 'clients', label: 'Client đang kết nối', suggest: { op: 'gt', threshold: 5000 } },
       { key: 'opsPerSec', label: 'Ops/giây', suggest: { op: 'gt', threshold: 50000 } },
-      { key: 'hitRatePct', label: 'Tỉ lệ cache hit', unit: '%', suggest: { op: 'lt', threshold: 80 } },
-      { key: 'fragmentation', label: 'Tỉ lệ phân mảnh', suggest: { op: 'gt', threshold: 1.5 } },
+      {
+        key: 'hitRatePct',
+        label: 'Tỉ lệ cache hit',
+        unit: '%',
+        hint: '⚠ Chỉ có nghĩa với instance dùng làm CACHE. Redis làm queue/lock/session thì hit-rate thấp là bình thường — đặt ngưỡng ở đây sẽ báo sai liên tục.',
+      },
+      { key: 'fragmentation', label: 'Tỉ lệ phân mảnh', suggest: { op: 'gt', threshold: 1.6 } },
       { key: 'nodes', label: 'Số node đọc được' },
     ],
   },
@@ -234,8 +300,23 @@ export const STACKS: StackDef[] = [
       UP,
       { key: 'connectionsUsedPct', label: 'Connection pool đã dùng', unit: '%', suggest: { op: 'gt', threshold: 80 } },
       { key: 'connections', label: 'Connection hiện tại' },
-      { key: 'cacheUsedPct', label: 'WiredTiger cache', unit: '%', suggest: { op: 'gt', threshold: 90 } },
-      { key: 'diskUsedPct', label: 'Đĩa đã dùng', unit: '%', suggest: { op: 'gt', threshold: 85 } },
+      {
+        key: 'cacheUsedPct',
+        label: 'WiredTiger cache',
+        unit: '%',
+        hint: '⚠ WiredTiger được thiết kế để giữ cache ~80–95% — đây là hành vi BÌNH THƯỜNG, không phải sự cố. Đừng đặt ngưỡng ở đây.',
+      },
+      // dbStats aggregates storage size — the one Mongo call that grows with the
+      // number of collections.
+      {
+        key: 'diskUsedPct',
+        label: 'Đĩa đã dùng',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 85 },
+        cost: 'medium',
+        costNote: MONGO_STATUS_NOTE,
+        minEverySec: 60,
+      },
       { key: 'memResidentMb', label: 'RAM resident', unit: 'MB' },
       { key: 'replLagSec', label: 'Replication lag', unit: 's', suggest: { op: 'gt', threshold: 10 } },
       { key: 'membersUnhealthy', label: 'Member lỗi', suggest: { op: 'gt', threshold: 0 } },
@@ -251,10 +332,11 @@ export const STACKS: StackDef[] = [
       { key: 'unassignedShards', label: 'Shard chưa gán', suggest: { op: 'gt', threshold: 0 } },
       { key: 'relocatingShards', label: 'Shard đang di chuyển' },
       { key: 'pendingTasks', label: 'Pending tasks', suggest: { op: 'gt', threshold: 10 } },
-      { key: 'heapPct', label: 'Heap cao nhất', unit: '%', suggest: { op: 'gt', threshold: 85 } },
-      { key: 'cpuPct', label: 'CPU cao nhất', unit: '%', suggest: { op: 'gt', threshold: 90 } },
-      { key: 'diskUsedPct', label: 'Đĩa cao nhất', unit: '%', suggest: { op: 'gt', threshold: 85 } },
-      { key: 'load1m', label: 'Load 1m cao nhất' },
+      // These four come from the second call, /_cat/nodes.
+      { key: 'heapPct', label: 'Heap cao nhất', unit: '%', suggest: { op: 'gt', threshold: 85 }, cost: 'medium', costNote: ES_NODES_NOTE, minEverySec: 60 },
+      { key: 'cpuPct', label: 'CPU cao nhất', unit: '%', suggest: { op: 'gt', threshold: 90 }, cost: 'medium', costNote: ES_NODES_NOTE, minEverySec: 60 },
+      { key: 'diskUsedPct', label: 'Đĩa cao nhất', unit: '%', suggest: { op: 'gt', threshold: 85 }, cost: 'medium', costNote: ES_NODES_NOTE, minEverySec: 60 },
+      { key: 'load1m', label: 'Load 1m cao nhất', cost: 'medium', costNote: ES_NODES_NOTE, minEverySec: 60 },
       { key: 'nodes', label: 'Số node', suggest: { op: 'lt', threshold: 3 } },
     ],
   },
@@ -263,13 +345,111 @@ export const STACKS: StackDef[] = [
     label: 'Kafka',
     icon: '🧵',
     metrics: [
-      UP,
-      { key: 'underReplicated', label: 'Partition under-replicated', suggest: { op: 'gt', threshold: 0 } },
-      { key: 'offline', label: 'Partition offline', suggest: { op: 'gt', threshold: 0 } },
-      { key: 'brokers', label: 'Số broker', suggest: { op: 'lt', threshold: 3 } },
-      { key: 'noController', label: 'Mất controller', unit: '0/1', suggest: { op: 'gte', threshold: 1 } },
-      { key: 'topics', label: 'Số topic' },
-      { key: 'partitions', label: 'Số partition' },
+      // EVERY kafka metric pays for clusterHealth, which calls
+      // fetchTopicMetadata over ALL topics — cost scales with the topic count,
+      // and it is the controller that answers.
+      { ...UP, cost: 'heavy', costNote: KAFKA_META_NOTE, minEverySec: 60 },
+      {
+        key: 'underReplicated',
+        label: 'Partition under-replicated',
+        suggest: { op: 'gt', threshold: 0 },
+        cost: 'heavy',
+        costNote: KAFKA_META_NOTE,
+        minEverySec: 60,
+      },
+      {
+        key: 'offline',
+        label: 'Partition offline',
+        suggest: { op: 'gt', threshold: 0 },
+        cost: 'heavy',
+        costNote: KAFKA_META_NOTE,
+        minEverySec: 60,
+      },
+      { key: 'brokers', label: 'Số broker', suggest: { op: 'lt', threshold: 3 }, cost: 'heavy', costNote: KAFKA_META_NOTE, minEverySec: 60 },
+      {
+        key: 'noController',
+        label: 'Mất controller',
+        unit: '0/1',
+        suggest: { op: 'gte', threshold: 1 },
+        cost: 'heavy',
+        costNote: KAFKA_META_NOTE,
+        minEverySec: 60,
+      },
+      {
+        key: 'maxConsumerLag',
+        label: 'Consumer lag cao nhất',
+        unit: 'message',
+        suggest: { op: 'gt', threshold: 10000 },
+        hint: 'Group tụt hậu nhiều nhất. Cluster xanh mà chỉ số này cao = nghiệp vụ đã chậm',
+        cost: 'heavy',
+        costNote: KAFKA_LAG_NOTE,
+        minEverySec: 120,
+      },
+      {
+        key: 'stalledGroups',
+        label: 'Group đứng im',
+        suggest: { op: 'gt', threshold: 0 },
+        hint: 'Còn lag nhưng offset KHÔNG nhích qua ≥30s — consumer chết dù vẫn kết nối',
+        cost: 'heavy',
+        costNote: KAFKA_LAG_NOTE,
+        minEverySec: 120,
+      },
+      {
+        key: 'maxStalledSec',
+        label: 'Đứng im lâu nhất',
+        unit: 's',
+        suggest: { op: 'gt', threshold: 600 },
+        hint: 'Dùng thay stalledGroups khi muốn bỏ qua các lần treo ngắn',
+        cost: 'heavy',
+        costNote: KAFKA_LAG_NOTE,
+        minEverySec: 120,
+      },
+      {
+        key: 'emptyGroups',
+        label: 'Group không còn member',
+        suggest: { op: 'gt', threshold: 0 },
+        hint: 'Có commit offset nhưng 0 consumer đang chạy',
+        cost: 'heavy',
+        costNote: KAFKA_LAG_NOTE,
+        minEverySec: 120,
+      },
+      {
+        key: 'rebalancingGroups',
+        label: 'Group đang rebalance',
+        suggest: { op: 'gt', threshold: 0 },
+        hint: 'Kéo dài = consumer flapping (chết/sống liên tục)',
+        cost: 'heavy',
+        costNote: KAFKA_LAG_NOTE,
+        minEverySec: 120,
+      },
+      {
+        key: 'totalConsumerLag',
+        label: 'Tổng lag toàn cluster',
+        unit: 'message',
+        cost: 'heavy',
+        costNote: KAFKA_LAG_NOTE,
+        minEverySec: 120,
+      },
+      {
+        key: 'lagGroupsUnknown',
+        label: 'Group không đọc được lag',
+        suggest: { op: 'gt', threshold: 0 },
+        hint: 'Lag KHÔNG xác định (không phải 0) — thường do group đang rebalance',
+        cost: 'heavy',
+        costNote: KAFKA_LAG_NOTE,
+        minEverySec: 120,
+      },
+      {
+        key: 'undescribedGroups',
+        label: 'Group không đọc được trạng thái',
+        hint: 'describeGroups lỗi → số member/state không xác định; các chỉ số member bỏ qua group này',
+        cost: 'heavy',
+        costNote: KAFKA_LAG_NOTE,
+        minEverySec: 120,
+      },
+      { key: 'groups', label: 'Số consumer group', cost: 'heavy', costNote: KAFKA_LAG_NOTE, minEverySec: 120 },
+      { key: 'topics', label: 'Số topic', cost: 'heavy', costNote: KAFKA_META_NOTE, minEverySec: 60 },
+      { key: 'partitions', label: 'Số partition', cost: 'heavy', costNote: KAFKA_META_NOTE, minEverySec: 60 },
     ],
   },
   {
@@ -281,11 +461,12 @@ export const STACKS: StackDef[] = [
       { key: 'messagesReady', label: 'Message tồn (ready)', suggest: { op: 'gt', threshold: 10000 } },
       { key: 'messagesUnacked', label: 'Message chưa ack', suggest: { op: 'gt', threshold: 5000 } },
       { key: 'consumers', label: 'Số consumer', suggest: { op: 'lt', threshold: 1 } },
-      { key: 'memAlarm', label: 'Cảnh báo RAM', unit: '0/1', suggest: { op: 'gte', threshold: 1 } },
-      { key: 'diskAlarm', label: 'Cảnh báo đĩa', unit: '0/1', suggest: { op: 'gte', threshold: 1 } },
-      { key: 'nodesDown', label: 'Node chết', suggest: { op: 'gt', threshold: 0 } },
-      { key: 'memUsedPct', label: 'RAM node cao nhất', unit: '%', suggest: { op: 'gt', threshold: 80 } },
-      { key: 'fdUsedPct', label: 'File descriptor', unit: '%', suggest: { op: 'gt', threshold: 80 } },
+      // Everything below needs the second call, /api/nodes.
+      { key: 'memAlarm', label: 'Cảnh báo RAM', unit: '0/1', suggest: { op: 'gte', threshold: 1 }, cost: 'medium', costNote: RABBIT_NODES_NOTE, minEverySec: 60 },
+      { key: 'diskAlarm', label: 'Cảnh báo đĩa', unit: '0/1', suggest: { op: 'gte', threshold: 1 }, cost: 'medium', costNote: RABBIT_NODES_NOTE, minEverySec: 60 },
+      { key: 'nodesDown', label: 'Node chết', suggest: { op: 'gt', threshold: 0 }, cost: 'medium', costNote: RABBIT_NODES_NOTE, minEverySec: 60 },
+      { key: 'memUsedPct', label: 'RAM node cao nhất', unit: '%', suggest: { op: 'gt', threshold: 80 }, cost: 'medium', costNote: RABBIT_NODES_NOTE, minEverySec: 60 },
+      { key: 'fdUsedPct', label: 'File descriptor', unit: '%', suggest: { op: 'gt', threshold: 80 }, cost: 'medium', costNote: RABBIT_NODES_NOTE, minEverySec: 60 },
       { key: 'queues', label: 'Số queue' },
       { key: 'publishRate', label: 'Publish/giây' },
     ],
@@ -310,3 +491,45 @@ export const metricLabel = (stack: InfraStack, key: string): string => {
   if (!m) return key;
   return m.unit ? `${m.label} (${m.unit})` : m.label;
 };
+
+// ── "Will enabling this load the thing it monitors?" ────────────────────────
+//
+// Surfaced at the two moments the user decides: picking the metric, and flipping
+// the switch on. Not as a standing dashboard — a permanent warning is one nobody
+// reads.
+//
+// Note that watches do NOT share probe results: the runner polls each one
+// separately, so several watches on the same cluster multiply the calls. That is
+// why the note for an expensive metric says to keep only the few that matter.
+
+export const COST_LABEL: Record<ProbeCost, string> = { cheap: 'nhẹ', medium: 'vừa', heavy: 'nặng' };
+export const COST_ICON: Record<ProbeCost, string> = { cheap: '🟢', medium: '🟡', heavy: '🔴' };
+
+export const metricCost = (stack: InfraStack, key: string): ProbeCost =>
+  metricDef(stack, key)?.cost ?? 'cheap';
+
+/** Poll floor for a metric, when it has one. */
+export const metricMinEvery = (stack: InfraStack, key: string): number =>
+  metricDef(stack, key)?.minEverySec ?? 0;
+
+export interface WatchLoadIssue {
+  level: 'watch' | 'risk';
+  text: string;
+}
+
+/**
+ * Is this ONE watch polling faster than its metric warrants?
+ *
+ * 'risk' when it polls at least twice as fast as the declared floor — that is
+ * where a heavy probe starts being a measurable share of the cluster's work.
+ */
+export function watchLoadIssue(stack: InfraStack, metric: string, everySec: number): WatchLoadIssue | null {
+  const floor = metricMinEvery(stack, metric);
+  if (!floor || everySec >= floor) return null;
+  const cost = metricCost(stack, metric);
+  const label = COST_LABEL[cost].toLowerCase();
+  return {
+    level: everySec * 2 <= floor ? 'risk' : 'watch',
+    text: `Chỉ số ${label} nhưng đo mỗi ${everySec}s — nên ≥${floor}s.`,
+  };
+}

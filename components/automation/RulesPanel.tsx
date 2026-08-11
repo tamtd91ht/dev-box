@@ -134,8 +134,17 @@ export default function RulesPanel({
       </div>
 
       <div className="auto-detail panel">
+        {/* `key` on RuleEditor: it holds per-rule local state (which sections are
+            folded, the watch-search box). Without a remount, selecting a rule
+            with conditions after one without them leaves that section collapsed
+            — reading as "this rule has no conditions". */}
         {current ? (
-          <RuleEditor rule={current} onChange={(next) => setRules(rules.map((r) => (r.id === next.id ? next : r)))} />
+          <RuleEditor
+            key={current.id}
+            rule={current}
+            watches={config.watches}
+            onChange={(next) => setRules(rules.map((r) => (r.id === next.id ? next : r)))}
+          />
         ) : (
           <Empty icon="👈" text="Chọn một quy tắc để sửa, hoặc tạo quy tắc mới." />
         )}

@@ -493,6 +493,250 @@ export async function listGroups(conn: KafkaConnection): Promise<GroupSummary[]>
     .sort((a, b) => a.groupId.localeCompare(b.groupId));
 }
 
+// ── Cluster-wide consumer lag (the monitor / automation path) ────────────────
+//
+// `describeGroup` is the INTERACTIVE per-group view: it walks that one group's
+// topics and calls fetchTopicOffsets per topic, sequentially. Calling it for
+// every group on a 60s poll is what this function exists to avoid:
+//
+//   • fetchTopicOffsets is memoized PER TOPIC for the duration of one call, so a
+//     cluster where 30 groups read the same 5 topics costs 5 high-watermark
+//     round-trips instead of 150.
+//   • per-group fetchOffsets runs in parallel (bounded by LAG_GROUP_CONCURRENCY).
+//   • a group that throws (mid-rebalance is routine) is reported with
+//     `error` instead of failing the whole probe — a monitor must degrade, not
+//     go blind.
+//
+// STALL DETECTION lives here rather than in the caller because it needs the
+// previous committed offsets, and the renderer-side watcher is stateless across
+// reloads. `stalledSec` answers the question a lag number cannot: "is this group
+// still moving?". A group with 2M lag that is catching up is healthy; a group
+// with 40k lag whose offsets have not moved in 10 minutes is dead.
+
+/** Groups whose offsets are fetched concurrently. Keeps the admin API sane. */
+const LAG_GROUP_CONCURRENCY = 8;
+/** Groups examined by one lag sweep — a runaway cluster must not stall the poll. */
+const LAG_MAX_GROUPS = 200;
+/**
+ * How long offsets must sit unchanged before the group counts as stalled.
+ *
+ * Not "unchanged since the previous sweep": a batch consumer that commits every
+ * five minutes looks frozen on nearly every sweep, and would alert as a dead
+ * consumer on each one. Two minutes is longer than any reasonable commit
+ * interval for a streaming consumer and shorter than a batch cycle.
+ * Override with KAFKA_STALL_MIN_SEC.
+ */
+const STALL_MIN_MS =
+  Math.max(30, Number(process.env.KAFKA_STALL_MIN_SEC) || 120) * 1000;
+
+export interface GroupLagSummary {
+  groupId: string;
+  state: string;
+  members: number;
+  /**
+   * False when describeGroups failed for this sweep, so `members`/`state` are
+   * UNKNOWN rather than measured. Without this, a routine mid-rebalance failure
+   * makes every group look like it has 0 members — and "group không còn
+   * consumer" fires for the whole cluster.
+   */
+  described: boolean;
+  /** Sum of per-partition lag across every topic the group committed on. */
+  totalLag: number;
+  /** Topic carrying the most lag, for the alert text. */
+  worstTopic: string | null;
+  worstTopicLag: number;
+  /** Partitions with a committed offset (nulls excluded). */
+  partitions: number;
+  /**
+   * Seconds since ANY committed offset of this group last moved, or null when
+   * this is the first sighting (no baseline yet) or the group is progressing.
+   * Non-null + lag > 0 = the consumer is stuck, not merely behind.
+   */
+  stalledSec: number | null;
+  /** Set when this group alone failed; its lag is unknown, not zero. */
+  error?: string;
+}
+
+export interface KafkaConsumerLag {
+  at: number;
+  groups: GroupLagSummary[];
+  /** Groups the sweep skipped because of LAG_MAX_GROUPS. */
+  skippedGroups: number;
+}
+
+/** Per-connection stall baseline: `groupId` → {offset fingerprint, since when}. */
+interface StallEntry {
+  /**
+   * Fingerprint of every committed offset. NOT a sum: two partitions moving by
+   * the same amount in opposite directions (an operator resetting offsets) would
+   * leave a sum unchanged and be misreported as stalled. Positional digest keeps
+   * each partition's contribution distinct.
+   */
+  fingerprint: string;
+  /** When the fingerprint was last observed to CHANGE. */
+  movedAt: number;
+}
+const stallState = new Map<string, Map<string, StallEntry>>();
+
+function stallMapFor(connectionId: string): Map<string, StallEntry> {
+  let m = stallState.get(connectionId);
+  if (!m) {
+    m = new Map();
+    stallState.set(connectionId, m);
+  }
+  return m;
+}
+
+/** Run `worker` over `items` with at most `limit` in flight. */
+async function mapPool<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await worker(items[i]);
+    }
+  });
+  await Promise.all(runners);
+  return out;
+}
+
+/**
+ * Lag for EVERY consumer group in the cluster, plus how long each group has been
+ * stuck. One sweep = 1 listGroups + 1 describeGroups + 1 fetchOffsets per group
+ * + 1 fetchTopicOffsets per DISTINCT topic.
+ */
+export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerLag> {
+  const admin = await getAdmin(conn);
+  const at = Date.now();
+  const { groups: listed } = await admin.listGroups();
+
+  const take = listed.slice(0, LAG_MAX_GROUPS);
+  const skippedGroups = listed.length - take.length;
+
+  // Forget groups that no longer exist. This runs BEFORE the early return so an
+  // empty cluster still clears its baselines: a group deleted and later recreated
+  // must start with no stall history, or it is reported frozen the instant it
+  // reappears. It also bounds the map for a cluster with churning group ids.
+  //
+  // Keyed off `listed`, NOT `take`: on a cluster past LAG_MAX_GROUPS the groups
+  // beyond the cap still exist, and listGroups order is not guaranteed stable —
+  // evicting them would restart the stall clock of any group drifting in and out
+  // of the cap, so it could never accumulate stalledSec.
+  const stalls = stallMapFor(conn.id);
+  const alive = new Set(listed.map((g) => g.groupId));
+  for (const id of [...stalls.keys()]) if (!alive.has(id)) stalls.delete(id);
+
+  if (listed.length === 0) return { at, groups: [], skippedGroups };
+
+  let described: Awaited<ReturnType<Admin['describeGroups']>>['groups'] = [];
+  try {
+    described = (await admin.describeGroups(take.map((g) => g.groupId))).groups;
+  } catch {
+    // Routine when a group is rebalancing — state/member counts degrade to Unknown.
+  }
+
+  // High-watermark cache, shared across every group in THIS sweep.
+  const highs = new Map<string, Promise<Map<number, number>>>();
+  const topicHighs = (topic: string): Promise<Map<number, number>> => {
+    let p = highs.get(topic);
+    if (!p) {
+      p = admin.fetchTopicOffsets(topic).then((offsets) => {
+        const m = new Map<number, number>();
+        for (const o of offsets) m.set(o.partition, Number(o.high ?? o.offset ?? 0));
+        return m;
+      });
+      highs.set(topic, p);
+    }
+    return p;
+  };
+
+  const groups = await mapPool(take, LAG_GROUP_CONCURRENCY, async (g): Promise<GroupLagSummary> => {
+    const d = described.find((x) => x.groupId === g.groupId);
+    const base: GroupLagSummary = {
+      groupId: g.groupId,
+      state: d?.state ?? 'Unknown',
+      members: d?.members?.length ?? 0,
+      described: !!d,
+      totalLag: 0,
+      worstTopic: null,
+      worstTopicLag: 0,
+      partitions: 0,
+      stalledSec: null,
+    };
+
+    let committed: Awaited<ReturnType<Admin['fetchOffsets']>>;
+    try {
+      committed = await admin.fetchOffsets({ groupId: g.groupId });
+    } catch (e) {
+      return { ...base, error: (e as Error).message || 'fetchOffsets thất bại' };
+    }
+
+    const marks: string[] = [];
+    let partitions = 0;
+    let totalLag = 0;
+    let worstTopic: string | null = null;
+    let worstTopicLag = 0;
+
+    const dropped: string[] = [];
+    for (const t of committed) {
+      let high: Map<number, number>;
+      try {
+        high = await topicHighs(t.topic);
+      } catch {
+        // Topic deleted mid-sweep, or metadata unavailable. Its lag is UNKNOWN,
+        // not zero — silently skipping would report a confidently low total for
+        // every group reading that topic.
+        dropped.push(t.topic);
+        continue;
+      }
+      let topicLag = 0;
+      for (const p of t.partitions) {
+        const cur = Number(p.offset);
+        if (!Number.isFinite(cur) || cur < 0) continue; // never committed
+        partitions += 1;
+        marks.push(`${t.topic}:${p.partition}:${cur}`);
+        topicLag += Math.max(0, (high.get(p.partition) ?? 0) - cur);
+      }
+      totalLag += topicLag;
+      if (topicLag > worstTopicLag) {
+        worstTopicLag = topicLag;
+        worstTopic = t.topic;
+      }
+    }
+
+    // Stall: the offset fingerprint has not changed since a previous sweep.
+    // marks is built in fetchOffsets order, which kafkajs returns consistently
+    // per group; sorting keeps the digest stable even if that ever changes.
+    const fingerprint = marks.sort().join('|');
+    let stalledSec: number | null = null;
+    const prev = stalls.get(g.groupId);
+    if (!prev || prev.fingerprint !== fingerprint) {
+      stalls.set(g.groupId, { fingerprint, movedAt: at });
+    } else {
+      // Only call it stalled once it has held long enough — see STALL_MIN_MS.
+      const heldMs = at - prev.movedAt;
+      if (heldMs >= STALL_MIN_MS) stalledSec = Math.round(heldMs / 1000);
+    }
+
+    return {
+      ...base,
+      totalLag,
+      worstTopic,
+      worstTopicLag,
+      partitions,
+      stalledSec,
+      ...(dropped.length
+        ? { error: `không đọc được high-watermark của: ${dropped.slice(0, 5).join(', ')}` }
+        : {}),
+    };
+  });
+
+  groups.sort((a, b) => b.totalLag - a.totalLag);
+  return { at, groups, skippedGroups };
+}
+
 /** Per-group lag: committed offset vs log-end per topic/partition. */
 export async function describeGroup(conn: KafkaConnection, groupId: string): Promise<GroupDetail> {
   if (!groupId) throw new Error('groupId is required');
