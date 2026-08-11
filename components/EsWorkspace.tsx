@@ -150,7 +150,8 @@ export default function EsWorkspace() {
         <h3>Elastic tab đang tắt</h3>
         <p className="empty">
           Đặt <code>ES_TOOL_ENABLED=true</code> trong <code>.env.local</code> rồi khởi động lại dev server để bật.
-          Tab này gọi REST API cluster (mặc định cổng 9200, qua VPN) — read-only, chỉ dùng local.
+          Tab này gọi REST API cluster (mặc định cổng 9200, qua VPN) — chỉ dùng local.
+          Ba tab đầu chỉ đọc; tab Console ghi được (có xác nhận).
         </p>
       </div>
     );
@@ -201,7 +202,13 @@ export default function EsWorkspace() {
                 ))}
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span className="badge" title="Tab này chỉ đọc — không có thao tác ghi nào">👁 read-only</span>
+                {subView === 'console' ? (
+                  <span className="badge warn" title="Console chạy được cả PUT/DELETE — lệnh ghi phải xác nhận, lệnh xoá phải gõ lại tên index">
+                    ✎ ghi được
+                  </span>
+                ) : (
+                  <span className="badge" title="Tab này chỉ đọc — không có thao tác ghi nào">👁 read-only</span>
+                )}
                 {subView === 'overview' && <button className="chip-btn" onClick={() => void loadOverview()}>↻ Tải lại</button>}
               </div>
             </div>

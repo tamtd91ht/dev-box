@@ -1,14 +1,15 @@
 // Server-only Elasticsearch operations for the local ES-manager workspace.
 // Plain HTTP against the ES REST API via global fetch — no client library.
 //
-// SAFETY MODEL — read-only by construction and gated off in any deploy:
+// SAFETY MODEL — read-only everywhere EXCEPT the Dev-Tools console:
 //   1. Gated by ES_TOOL_ENABLED — the API routes 403 unless truthy.
-//   2. ONLY read endpoints are reachable: GET /, _cluster/health, _cat/indices,
-//      _mapping, _search, _count. There is no code path that issues a write —
-//      the tool cannot index, delete, or change settings. The Dev-Tools console
-//      (`consoleRequest`) lets the user type a raw REST call, and keeps that
-//      promise with its own method allowlist + endpoint deny/allow lists —
-//      see the "Console" section at the bottom of this file.
+//   2. The browse/search/overview paths reach ONLY read endpoints: GET /,
+//      _cluster/health, _cat/indices, _mapping, _search, _count. No code path
+//      there issues a write. The Dev-Tools console (`consoleRequest`) is the one
+//      exception: it runs whatever REST call the user types, including PUT and
+//      DELETE, and instead of blocking writes it CLASSIFIES them ('read' |
+//      'write' | 'destructive') and demands an explicit `confirmed` flag for the
+//      destructive ones — see the "Console" section at the bottom of this file.
 //   3. Every search is bounded: size ≤ 200/page, from+size ≤ 10 000 (the ES
 //      window), request timeout 15 s (AbortController) + ES-side "timeout".
 //   4. Query DSL / aggs from the client are parsed JSON passed as a request
@@ -20,6 +21,7 @@
 //      and re-encoded per segment, so a comma can never smuggle a path in.
 
 import type { EsConnection } from '@/lib/esConnections';
+import { classifyConsoleCommand, type EsConsoleRisk } from '@/lib/esConsole';
 
 export const ES_ENABLED = /^(1|true|yes|on)$/i.test(process.env.ES_TOOL_ENABLED ?? '');
 
@@ -441,35 +443,33 @@ export async function count(
 // ── Console (Dev Tools) ───────────────────────────────────────────────────────
 //
 // Cho gõ NGUYÊN một lệnh REST (`GET my_index/_search` + body) như Kibana Dev
-// Tools — nhưng vẫn giữ nguyên lời hứa read-only của cả tab. Ba lớp chặn:
+// Tools. Console là tab DUY NHẤT ghi được — ba tab còn lại (Tổng quan, Dữ liệu,
+// Tìm nhanh) vẫn đi qua `esFetch` và vẫn chỉ đọc.
 //
-//   1. method chỉ được GET / HEAD / POST.
-//   2. Danh sách ĐEN các endpoint đổi trạng thái (bulk, reindex, delete_by_query,
-//      close/open, forcemerge, security…) — chặn ở MỌI method.
-//   3. Với POST (method duy nhất có thể ghi), endpoint `_…` cuối cùng phải nằm
-//      trong danh sách TRẮNG các endpoint đọc. Không có segment `_…` nào thì
-//      POST bị từ chối luôn — `POST /my_index` chính là lệnh index document.
+// Lệnh được PHÂN LOẠI (`classifyConsoleCommand`) thành 'read' | 'write' |
+// 'destructive' rồi trả nhãn đó về client để UI biết có phải hỏi xác nhận hay
+// không. Server KHÔNG tự chặn ghi nữa — nó chỉ:
+//
+//   1. Cấm method lạ (chỉ GET/HEAD/POST/PUT/DELETE/PATCH).
+//   2. Cấm nhóm endpoint quản trị cụm mà tool này không có việc gì phải gọi
+//      (_security, _shutdown, _license…) — chặn ở MỌI method.
+//   3. Bắt buộc client gửi `confirmed: true` cho lệnh 'destructive'. Đây là
+//      chốt phía server, độc lập với modal ở UI: gọi API tay mà thiếu cờ này
+//      thì lệnh xoá vẫn bị từ chối.
 //
 // Khác `esFetch`: mọi HTTP response (kể cả 4xx/5xx) đều được TRẢ VỀ chứ không
 // throw — console phải hiện được body lỗi của ES, đó mới là thứ cần đọc.
 
-const CONSOLE_METHODS = new Set(['GET', 'HEAD', 'POST']);
+const CONSOLE_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH']);
 
-/** Endpoint đổi trạng thái cluster/dữ liệu — cấm ở mọi method. */
+/** Nhóm endpoint quản trị cụm — cấm ở mọi method, không phải việc của tool này. */
 const CONSOLE_BLOCKED = new Set([
-  '_bulk', '_delete_by_query', '_update_by_query', '_reindex', '_update', '_delete',
-  '_close', '_open', '_forcemerge', '_flush', '_refresh', '_shrink', '_split', '_clone',
-  '_freeze', '_unfreeze', '_cache', '_scripts', '_restore', '_rollover', '_upgrade',
-  '_ccr', '_ilm', '_slm', '_security', '_shutdown', '_license', '_watcher', '_enrich',
-  '_transform', '_ml', '_graph', '_execute', '_pit', '_async_search',
+  '_security', '_shutdown', '_license', '_ssl', '_watcher', '_ccr', '_snapshot',
+  '_restore', '_scripts', '_ml', '_graph', '_execute',
 ]);
 
-/** Endpoint đọc được phép gọi bằng POST (POST là method duy nhất có thể ghi). */
-const CONSOLE_POST_OK = new Set([
-  '_search', '_count', '_msearch', '_mget', '_explain', '_validate', '_field_caps',
-  '_analyze', '_termvectors', '_mtermvectors', '_rank_eval', '_search_shards',
-  '_resolve', '_knn_search',
-]);
+// Bảng phân loại rủi ro ('read' | 'write' | 'destructive') nằm ở lib/esConsole.ts
+// — dùng chung với UI để badge ở client và chốt `confirmed` ở server không lệch.
 
 const CONSOLE_JSON_CAP = 500_000;
 
@@ -479,11 +479,15 @@ export interface EsConsoleInput {
   path?: unknown;
   /** Body JSON (string hoặc object) — bỏ trống với GET thuần. */
   body?: unknown;
+  /** Bắt buộc `true` với lệnh 'destructive' — cờ này là chốt server-side. */
+  confirmed?: unknown;
 }
 
 export interface EsConsoleResult {
   method: string;
   path: string;
+  /** Mức nguy hiểm server đã xếp cho lệnh — client hiện badge theo đây. */
+  risk: EsConsoleRisk;
   status: number;
   ok: boolean;
   /** Response đã pretty-print (cắt bớt nếu quá dài). */
@@ -495,10 +499,10 @@ export interface EsConsoleResult {
 }
 
 /** Chuẩn hoá + kiểm duyệt lệnh console. Throw kèm lý do đọc được nếu bị chặn. */
-function vetConsoleCommand(input: EsConsoleInput): { method: string; path: string } {
+function vetConsoleCommand(input: EsConsoleInput): { method: string; path: string; risk: EsConsoleRisk } {
   const method = String(input.method ?? 'GET').trim().toUpperCase();
   if (!CONSOLE_METHODS.has(method)) {
-    throw new Error(`method ${method} bị chặn — console chỉ chạy GET / HEAD / POST (tab này read-only)`);
+    throw new Error(`method ${method} không hợp lệ — console chạy ${[...CONSOLE_METHODS].join(' / ')}`);
   }
 
   let raw = String(input.path ?? '').trim();
@@ -508,26 +512,20 @@ function vetConsoleCommand(input: EsConsoleInput): { method: string; path: strin
   if (/\s/.test(raw)) throw new Error('đường dẫn không được chứa khoảng trắng');
 
   const [pathname] = raw.split('?', 1);
-  const segments = pathname.split('/').filter(Boolean);
-  const underscores = segments.filter((s) => s.startsWith('_'));
+  const underscores = pathname.split('/').filter((s) => s.startsWith('_'));
 
   for (const s of underscores) {
     if (CONSOLE_BLOCKED.has(s)) {
-      throw new Error(`endpoint "${s}" bị chặn — nó đổi dữ liệu/trạng thái, tab này chỉ đọc`);
+      throw new Error(`endpoint "${s}" bị chặn — quản trị cụm (bảo mật/license/snapshot) không thuộc phạm vi tool này`);
     }
   }
 
-  if (method === 'POST') {
-    const endpoint = underscores.length ? underscores[underscores.length - 1] : null;
-    if (!endpoint) {
-      throw new Error(`POST ${pathname} bị chặn — POST vào index chính là lệnh ghi document. Dùng GET, hoặc POST tới _search/_count/_mget…`);
-    }
-    if (!CONSOLE_POST_OK.has(endpoint)) {
-      throw new Error(`POST "${endpoint}" không nằm trong danh sách endpoint đọc được phép (${[...CONSOLE_POST_OK].join(', ')})`);
-    }
+  const risk = classifyConsoleCommand(method, raw);
+  if (risk === 'destructive' && input.confirmed !== true) {
+    throw new Error(`${method} ${pathname} là lệnh xoá/đổi trạng thái — cần xác nhận trước khi chạy`);
   }
 
-  return { method, path: raw };
+  return { method, path: raw, risk };
 }
 
 /** Gọi REST thô, failover theo node, KHÔNG throw khi cluster trả 4xx/5xx. */
@@ -564,18 +562,21 @@ async function esRaw(
 }
 
 export async function consoleRequest(conn: EsConnection, input: EsConsoleInput): Promise<EsConsoleResult> {
-  const { method, path } = vetConsoleCommand(input);
+  const { method, path, risk } = vetConsoleCommand(input);
 
   let bodyText: string | undefined;
   const rawBody = input.body;
   if (typeof rawBody === 'string' ? rawBody.trim() : rawBody != null) {
     if (method === 'HEAD') throw new Error('HEAD không gửi được body');
-    // _msearch/_bulk-style NDJSON: giữ nguyên text, còn lại parse để chặn script.
-    const isNdjson = path.split('?', 1)[0].endsWith('/_msearch');
+    // NDJSON (_msearch, _bulk): mỗi dòng một JSON, KHÔNG được gộp/pretty lại.
+    const pathname = path.split('?', 1)[0];
+    const isNdjson = /\/_(msearch|bulk)$/.test(pathname);
     if (isNdjson && typeof rawBody === 'string') {
       bodyText = rawBody.endsWith('\n') ? rawBody : `${rawBody}\n`;
       for (const line of bodyText.split('\n')) {
-        if (line.trim()) forbidScripts(JSON.parse(line));
+        if (!line.trim()) continue;
+        try { JSON.parse(line); }
+        catch (e) { throw new Error(`dòng NDJSON không hợp lệ: ${(e as Error).message}`); }
       }
     } else {
       let parsed: unknown = rawBody;
@@ -583,7 +584,10 @@ export async function consoleRequest(conn: EsConnection, input: EsConsoleInput):
         try { parsed = JSON.parse(rawBody); }
         catch (e) { throw new Error(`body không phải JSON hợp lệ: ${(e as Error).message}`); }
       }
-      forbidScripts(parsed);
+      // Chỉ chặn scripting trong lệnh ĐỌC: một query `script` tự gõ có thể ngốn
+      // hết CPU cụm. Lệnh ghi thì `script` là thành phần hợp lệ của mapping
+      // (runtime field) / ingest pipeline — chặn ở đây là chặn oan.
+      if (risk === 'read') forbidScripts(parsed);
       bodyText = JSON.stringify(parsed);
     }
   }
@@ -600,6 +604,7 @@ export async function consoleRequest(conn: EsConnection, input: EsConsoleInput):
   return {
     method,
     path,
+    risk,
     status: res.status,
     ok: res.status >= 200 && res.status < 300,
     json: truncated ? pretty.slice(0, CONSOLE_JSON_CAP) : pretty,

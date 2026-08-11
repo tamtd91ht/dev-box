@@ -21,9 +21,61 @@ const DRAFT_KEY = 'es.console.draft';
 const HISTORY_MAX = 60;
 
 /** Method người dùng gõ được — server còn chặn tiếp, đây chỉ để tách lệnh. */
-export const CONSOLE_METHODS = ['GET', 'POST', 'HEAD', 'PUT', 'DELETE'] as const;
+export const CONSOLE_METHODS = ['GET', 'POST', 'HEAD', 'PUT', 'DELETE', 'PATCH'] as const;
 
 const METHOD_LINE = /^\s*(GET|POST|HEAD|PUT|DELETE|PATCH)\s+(\S+)\s*$/i;
+
+// ── Phân loại mức nguy hiểm ──────────────────────────────────────────────────
+//
+// Sống ở đây (module không phụ thuộc `server-only`) vì CẢ HAI phía cần nó: UI
+// hiện badge ngay khi gõ, server chấm lại để bắt cờ `confirmed`. Một bảng duy
+// nhất — sửa một chỗ là cả hai khớp nhau.
+
+/** Endpoint đọc được phép gọi bằng POST — POST tới đây KHÔNG tính là ghi. */
+const POST_READ = new Set([
+  '_search', '_count', '_msearch', '_mget', '_explain', '_validate', '_field_caps',
+  '_analyze', '_termvectors', '_mtermvectors', '_rank_eval', '_search_shards',
+  '_resolve', '_knn_search', '_async_search', '_pit',
+]);
+
+/** Endpoint xoá/ghi đè hàng loạt — luôn xếp 'destructive' dù method là gì. */
+const BULK_WRITE = new Set([
+  '_delete_by_query', '_update_by_query', '_reindex', '_bulk', '_close', '_open',
+  '_shrink', '_split', '_clone', '_freeze', '_unfreeze', '_forcemerge', '_rollover',
+  '_upgrade',
+]);
+
+/** Mức nguy hiểm của một lệnh console — UI dùng để quyết định hỏi xác nhận. */
+export type EsConsoleRisk = 'read' | 'write' | 'destructive';
+
+/**
+ * Xếp mức nguy hiểm của một lệnh.
+ *
+ * 'destructive' = mất dữ liệu hoặc đổi trạng thái index không lùi lại được: mọi
+ * DELETE, và nhóm _delete_by_query/_reindex/_bulk/_close… ở bất kỳ method.
+ * 'write'       = tạo/sửa (PUT/PATCH, POST ghi document, POST endpoint không đọc).
+ * 'read'        = GET/HEAD, và POST tới endpoint tìm kiếm.
+ */
+export function classifyConsoleCommand(method: string, path: string): EsConsoleRisk {
+  const [pathname] = path.split('?', 1);
+  const underscores = pathname.split('/').filter((s) => s.startsWith('_'));
+  if (underscores.some((s) => BULK_WRITE.has(s))) return 'destructive';
+  const m = method.toUpperCase();
+  if (m === 'DELETE') return 'destructive';
+  if (m === 'GET' || m === 'HEAD') return 'read';
+  if (m === 'POST') {
+    const last = underscores[underscores.length - 1];
+    return last && POST_READ.has(last) ? 'read' : 'write';
+  }
+  return 'write'; // PUT / PATCH
+}
+
+/** Thứ lệnh nhắm vào — tên index, hoặc endpoint nếu lệnh ở cấp cụm. */
+export function consoleTarget(path: string): string {
+  const [pathname] = path.split('?', 1);
+  const first = pathname.split('/').filter(Boolean)[0] ?? '';
+  return first.startsWith('_') ? pathname.replace(/^\//, '') : first;
+}
 
 export interface EsConsoleRequest {
   method: string;
@@ -191,6 +243,7 @@ export function historyToText(e: EsConsoleHistoryEntry): string {
 
 export const CONSOLE_DEFAULT_DRAFT = `# Console — gõ lệnh REST như Kibana Dev Tools.
 # Ctrl+Enter (hoặc ▶) chạy lệnh đang đặt con trỏ.
+# GHI ĐƯỢC: PUT/DELETE chạy thật. Lệnh ghi hỏi lại, lệnh xoá phải gõ lại tên index.
 
 GET _cat/indices?v&s=store.size:desc
 

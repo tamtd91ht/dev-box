@@ -106,8 +106,14 @@ export async function POST(req: NextRequest) {
         result = await count(conn, String(body.index ?? ''), { query: body.query, body: body.body });
         break;
       case 'console':
-        // Lệnh REST thô từ tab Console — read-only được giữ bằng allowlist trong esClient.
-        result = await consoleRequest(conn, { method: body.method, path: body.path, body: body.body });
+        // Lệnh REST thô từ tab Console — ghi được. Lệnh xoá/đổi trạng thái đòi
+        // `confirmed: true`; consoleRequest tự từ chối nếu thiếu (xem esClient).
+        result = await consoleRequest(conn, {
+          method: body.method,
+          path: body.path,
+          body: body.body,
+          confirmed: body.confirmed,
+        });
         break;
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });

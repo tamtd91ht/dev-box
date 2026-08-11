@@ -10,9 +10,17 @@
 //     aggs…), clause Query DSL và TÊN FIELD lấy từ mapping của index trong lệnh.
 //   · Lịch sử lệnh lưu ở localStorage — bấm để nạp lại vào editor.
 //   · Nội dung editor cũng được nhớ, mở lại tab là còn nguyên.
+//   · Bề rộng ba cột kéo được (lib/useConsoleSplit.ts) và NHỚ giữa các lần mở.
 //
-// READ-ONLY: server chỉ nhận GET/HEAD/POST và chặn mọi endpoint đổi trạng thái
-// (xem consoleRequest trong lib/esClient.ts) — lệnh ghi bị từ chối kèm lý do.
+// GHI ĐƯỢC — đây là tab duy nhất trong workspace Elastic không read-only. Lệnh
+// được `classifyConsoleCommand` (lib/esConsole.ts) xếp ba mức và UI xử theo:
+//
+//   read        → chạy thẳng.
+//   write       → hỏi lại một nhịp (ConfirmRunModal, bấm là chạy).
+//   destructive → phải gõ lại tên index/endpoint mới mở được nút chạy.
+//
+// Cả hai mức ghi đều gửi kèm `confirmed: true`; server đòi cờ đó cho lệnh
+// destructive nên modal ở đây không phải chốt duy nhất.
 
 import '@/lib/monacoSetup'; // Monaco local /monaco/vs — phải config trước lần init đầu
 import Editor, { type Monaco } from '@monaco-editor/react';
@@ -36,6 +44,8 @@ import {
 import {
   parseConsoleRequests,
   requestAtLine,
+  classifyConsoleCommand,
+  consoleTarget,
   loadEsConsoleHistory,
   pushEsConsoleHistory,
   removeEsConsoleHistory,
@@ -44,8 +54,12 @@ import {
   loadEsConsoleDraft,
   saveEsConsoleDraft,
   type EsConsoleHistoryEntry,
+  type EsConsoleRisk,
 } from '@/lib/esConsole';
+import { useConsoleSplit } from '@/lib/useConsoleSplit';
 import { defineEsThemes, useEsTheme, ES_MONO } from './esMonaco';
+import ConsoleGripBar from './ConsoleGrip';
+import ConfirmRunModal from './ConfirmRunModal';
 
 const LANG = 'es-console';
 
@@ -57,9 +71,12 @@ interface ConsoleCtx {
 const ctxByModel = new WeakMap<MonacoEditorNs.ITextModel, () => ConsoleCtx>();
 
 const METHODS: { name: string; detail: string }[] = [
-  { name: 'GET', detail: 'đọc — dùng được với mọi endpoint đọc' },
-  { name: 'POST', detail: 'chỉ cho _search / _count / _mget / _msearch…' },
+  { name: 'GET', detail: 'đọc' },
+  { name: 'POST', detail: '_search/_count… (đọc) · ghi document · _bulk' },
+  { name: 'PUT', detail: 'tạo/sửa — index, mapping, settings, template, _doc/id' },
+  { name: 'DELETE', detail: 'xoá — phải gõ lại tên để xác nhận' },
   { name: 'HEAD', detail: 'kiểm tra tồn tại (không có body)' },
+  { name: 'PATCH', detail: 'ít dùng với Elasticsearch' },
 ];
 
 /** Endpoint gõ ở gốc (không kèm index). */
@@ -78,19 +95,27 @@ const ROOT_ENDPOINTS: [string, string][] = [
   ['_mapping', 'mapping mọi index'],
   ['_search', 'search toàn cluster'],
   ['_resolve/index/*', 'giải alias / index pattern'],
+  ['_index_template/', 'index template (PUT để tạo/sửa)'],
+  ['_component_template/', 'component template (PUT để tạo/sửa)'],
+  ['_ingest/pipeline/', 'ingest pipeline (PUT để tạo/sửa)'],
+  ['_aliases', 'đổi alias theo lô (POST)'],
 ];
 
 /** Endpoint gõ sau tên index. */
 const INDEX_ENDPOINTS: [string, string][] = [
   ['_search', 'tìm document'],
   ['_count', 'đếm document khớp'],
-  ['_mapping', 'mapping của index'],
-  ['_settings', 'settings của index'],
+  ['_mapping', 'mapping của index — PUT để thêm field'],
+  ['_settings', 'settings của index — PUT để sửa'],
   ['_stats', 'thống kê index'],
   ['_field_caps?fields=*', 'kiểu dữ liệu của từng field'],
   ['_analyze', 'thử analyzer trên một chuỗi'],
   ['_alias', 'alias trỏ vào index'],
-  ['_doc/', 'lấy một document theo _id'],
+  ['_doc/', 'document theo _id — GET đọc, PUT ghi, DELETE xoá'],
+  ['_update/', 'sửa một phần document theo _id'],
+  ['_bulk', 'ghi/xoá theo lô (NDJSON, mỗi dòng một JSON)'],
+  ['_update_by_query', 'sửa hàng loạt theo query'],
+  ['_delete_by_query', 'xoá hàng loạt theo query'],
 ];
 
 /** Tên index trong đường dẫn (null nếu lệnh không nhắm vào index nào). */
@@ -249,8 +274,11 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<EsConsoleResult | null>(null);
   const [history, setHistory] = useState<EsConsoleHistoryEntry[]>([]);
-  const [histOpen, setHistOpen] = useState(true);
+  // Mặc định ĐÓNG: cột lịch sử trống chiếm chỗ của editor/kết quả, mở khi cần.
+  const [histOpen, setHistOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  /** Lệnh ghi đang chờ xác nhận — null là không có modal nào mở. */
+  const [pending, setPending] = useState<{ risk: Exclude<EsConsoleRisk, 'read'> } | null>(null);
 
   const [indices, setIndices] = useState<string[]>([]);
   /** mapping đã trải, cache theo index — nuôi gợi ý tên field trong body. */
@@ -282,6 +310,13 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
 
   const requests = useMemo(() => parseConsoleRequests(text), [text]);
   const current = useMemo(() => requestAtLine(requests, cursorLine), [requests, cursorLine]);
+  /** Mức nguy hiểm của lệnh đang đặt con trỏ — badge + quyết định có hỏi lại. */
+  const risk: EsConsoleRisk = useMemo(
+    () => (current ? classifyConsoleCommand(current.method, current.path) : 'read'),
+    [current],
+  );
+
+  const split = useConsoleSplit(histOpen);
 
   // Nạp mapping của index trong lệnh đang đứng — chỉ một lần mỗi index.
   useEffect(() => {
@@ -322,13 +357,17 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
 
   const runRef = useRef<() => void>(() => {});
 
-  const doRun = useCallback(async () => {
+  /** Gửi lệnh đi thật. `confirmed` chỉ true khi đã qua modal. */
+  const execute = useCallback(async (confirmed: boolean) => {
     const req = current;
     if (!req) { setError('Chưa có lệnh nào — gõ ví dụ: GET _cat/indices?v'); return; }
     setBusy(true); setError(null);
     try {
-      const r = await esConsole(connection.id, { method: req.method, path: req.path, body: req.body });
+      const r = await esConsole(connection.id, {
+        method: req.method, path: req.path, body: req.body, confirmed,
+      });
       setResult(r);
+      setPending(null);
       setHistory(pushEsConsoleHistory({
         method: r.method, path: r.path, body: req.body,
         connectionId: connection.id, connectionName: `${connection.project} / ${connection.name}`,
@@ -336,12 +375,20 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
       }));
     } catch (e) {
       setResult(null);
+      setPending(null);
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   }, [current, connection]);
-  runRef.current = () => void doRun();
+
+  /** ▶ / Ctrl+Enter — lệnh đọc chạy thẳng, lệnh ghi qua modal xác nhận. */
+  const requestRun = useCallback(() => {
+    if (!current) { setError('Chưa có lệnh nào — gõ ví dụ: GET _cat/indices?v'); return; }
+    if (risk === 'read') { void execute(false); return; }
+    setPending({ risk });
+  }, [current, risk, execute]);
+  runRef.current = requestRun;
 
   const asCurl = useCallback(() => {
     if (!current) return '';
@@ -376,16 +423,30 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
   const respLang = result && !result.truncated && /^\s*[{[]/.test(result.json) ? 'json' : 'plaintext';
 
   return (
-    <div className={`es-console${histOpen ? ' with-hist' : ''}`}>
+    <div
+      className={`es-console${histOpen ? ' with-hist' : ''}`}
+      ref={split.ref}
+      style={split.style}
+    >
       <div className="es-con-pane">
         <div className="es-con-bar">
-          <button className="sm" disabled={busy || !current} onClick={() => void doRun()}
+          <button className={`sm es-con-run ${risk}`} disabled={busy || !current} onClick={requestRun}
             title={current ? `Chạy: ${current.method} ${current.path}` : 'Đặt con trỏ vào một lệnh'}>
             {busy ? <span className="spinner" aria-hidden /> : '▶'} Chạy
           </button>
           <code className="es-con-cur" title="Lệnh đang đặt con trỏ">
-            {current ? `${current.method} ${current.path}` : '— chưa có lệnh —'}
+            {current
+              ? <><span className={`es-con-rk ${risk}`}>{current.method}</span> {current.path}</>
+              : '— chưa có lệnh —'}
           </code>
+          {current && risk !== 'read' && (
+            <span className={`es-con-risk ${risk}`}
+              title={risk === 'destructive'
+                ? 'Lệnh xoá / đổi trạng thái — phải gõ lại tên index để xác nhận'
+                : 'Lệnh ghi — sẽ hỏi lại một nhịp trước khi chạy'}>
+              {risk === 'destructive' ? '⚠ XOÁ' : '✎ GHI'}
+            </span>
+          )}
           <button className="chip-btn" disabled={!current} title="Copy lệnh dạng cURL"
             onClick={() => {
               void navigator.clipboard?.writeText(asCurl()).then(() => {
@@ -393,7 +454,7 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
               });
             }}>{copied ? '✓ Đã copy' : '⧉ cURL'}</button>
           <button className={`chip-btn${histOpen ? ' on' : ''}`} title="Lịch sử lệnh đã chạy"
-            onClick={() => setHistOpen((v) => !v)}>🕘 Lịch sử ({history.length})</button>
+            onClick={() => setHistOpen((v) => !v)}>🕘 {history.length}</button>
         </div>
 
         <div className="es-con-editor">
@@ -477,9 +538,13 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
               }}
             />
           ) : (
-            <p className="empty" style={{ margin: 'auto', padding: 16 }}>
-              Đặt con trỏ vào một lệnh rồi bấm ▶ (hoặc Ctrl+Enter).
-            </p>
+            <div className="es-con-blank">
+              <p className="empty">Đặt con trỏ vào một lệnh rồi bấm ▶ (hoặc Ctrl+Enter).</p>
+              <p className="empty small">
+                Tab này ghi được: <code>PUT</code> / <code>DELETE</code> chạy thật.
+                Lệnh ghi hỏi lại một nhịp, lệnh xoá phải gõ lại tên index.
+              </p>
+            </div>
           )}
         </div>
       </div>
@@ -509,6 +574,23 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
             ))}
           </ul>
         </aside>
+      )}
+
+      {split.mid && <ConsoleGripBar {...split.mid} step={4} />}
+      {split.hist && <ConsoleGripBar {...split.hist} step={16} />}
+
+      {pending && current && (
+        <ConfirmRunModal
+          risk={pending.risk}
+          method={current.method}
+          path={current.path}
+          body={current.body}
+          target={consoleTarget(current.path)}
+          clusterName={`${connection.project} / ${connection.name}`}
+          busy={busy}
+          onCancel={() => setPending(null)}
+          onConfirm={() => void execute(true)}
+        />
       )}
     </div>
   );

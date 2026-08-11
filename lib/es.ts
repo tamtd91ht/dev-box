@@ -161,9 +161,13 @@ export function countEs(connectionId: string, index: string, query: string, body
   return esAction<{ count: number; tookMs: number }>('count', { connectionId, index, query, body });
 }
 
+/** Mức nguy hiểm của lệnh console — xem classifyConsoleCommand ở lib/esClient. */
+export type EsConsoleRisk = 'read' | 'write' | 'destructive';
+
 export interface EsConsoleResult {
   method: string;
   path: string;
+  risk: EsConsoleRisk;
   status: number;
   ok: boolean;
   /** Response đã pretty-print (server cắt bớt nếu quá dài). */
@@ -174,12 +178,13 @@ export interface EsConsoleResult {
 }
 
 /**
- * Gọi một lệnh REST nguyên bản (tab Console). Server chỉ cho GET/HEAD/POST và
- * chặn mọi endpoint đổi trạng thái — nên lệnh ghi sẽ bị từ chối kèm lý do.
+ * Gọi một lệnh REST nguyên bản (tab Console) — ghi được, kể cả PUT/DELETE.
+ * Lệnh bị xếp 'destructive' đòi `confirmed: true`; thiếu cờ đó server từ chối,
+ * nên modal xác nhận ở UI không phải là chốt duy nhất.
  */
 export function esConsole(
   connectionId: string,
-  cmd: { method: string; path: string; body?: string },
+  cmd: { method: string; path: string; body?: string; confirmed?: boolean },
 ): Promise<EsConsoleResult> {
   return esAction<EsConsoleResult>('console', { connectionId, ...cmd });
 }
