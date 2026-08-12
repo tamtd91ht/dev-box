@@ -35,6 +35,8 @@ import {
   reactionByKey,
   reactionEmoji,
 } from '@/lib/zaloapi/reactions';
+import { useSplit } from '@/lib/useSplit';
+import Splitter from './Splitter';
 
 const POLL_MS = 2000;
 
@@ -233,6 +235,12 @@ export default function ZaloChatPanel({
   const [reactFor, setReactFor] = useState<string>('');
   const [reactAll, setReactAll] = useState(false);
   const [reactBusy, setReactBusy] = useState('');
+
+  // Kéo đổi bề rộng cột danh sách hội thoại. gap 0 vì hai cột dính nhau (cột
+  // trái có border-right làm đường phân chia) — useSplit tự nới vùng bấm lên
+  // MIN_HIT để vẫn trúng chuột. Tạm thời trong phiên, không nhớ qua lần mở sau
+  // (xem lib/useSplit.ts).
+  const rail = useSplit({ varName: '--zc-rail', min: 180, max: 560, gap: 0 });
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const activeThreadRef = useRef(activeThread);
@@ -499,7 +507,7 @@ export default function ZaloChatPanel({
   const removeTag = (t: string) => void saveTags(activeTags.filter((x) => x !== t));
 
   return (
-    <div className="zc-wrap" data-active={active ? '1' : '0'}>
+    <div className="zc-wrap" data-active={active ? '1' : '0'} ref={rail.ref} style={rail.style}>
       {/* Cột trái — danh sách hội thoại */}
       <aside className="zc-list">
         <div className="zc-list-head">
@@ -873,6 +881,10 @@ export default function ZaloChatPanel({
           </div>
         </div>
       )}
+
+      {/* Thanh kéo giữa danh sách hội thoại và khung chat. Con CUỐI của .zc-wrap
+          (nó position:absolute nên không đẻ thêm ô cho grid). */}
+      <Splitter {...rail.grip} />
     </div>
   );
 }
