@@ -25,6 +25,81 @@ const path = require('path');
 
 const APP_URL = process.env.DESKTOP_URL || 'http://localhost:3000';
 
+// ── Mở file từ Explorer ("Open with → VHS DevBox") ─────────────────────────
+//
+// scripts/install-shortcuts.ps1 đăng ký vào registry HKCU một lệnh dạng
+//
+//   electron.exe "<repo>" "%1"
+//
+// nên đường dẫn file người dùng bấm vào tới đây qua process.argv. Chuột phải
+// một file .xlsx trong Explorer → app bật lên (hoặc app đang chạy nhảy lên
+// trước) và mở đúng file đó ở tab Office / tab Tools.
+//
+// Đuôi file được nhận PHẢI khớp với những gì renderer mở nổi — xem
+// onOpenLocalFile trong app/page.tsx. Thêm đuôi ở đây mà renderer không hiểu
+// thì file mở ra chỉ để trống.
+//
+// Danh sách này RỘNG HƠN danh sách mà install-shortcuts.ps1 đăng ký vào menu
+// chuột phải, và như thế là đúng: menu "Open with" chỉ nên nhận những đuôi hay
+// gặp, còn ở đây thì cứ mở được là mở — vì file còn tới bằng đường khác (kéo
+// vào shortcut, dòng lệnh).
+const OPENABLE_EXTS = new Set([
+  '.xlsx', '.xlsm', '.csv', // tab Office → Bảng tính
+  '.docx', // tab Office → Văn bản
+  '.md', '.markdown', '.mdown', '.mkd', '.mdx', // tab Tools → Markdown
+  '.json', '.xml', '.svg', '.html', '.htm', // tab Tools → JSON/XML/HTML
+]);
+
+/**
+ * Nhặt đường dẫn file mở-được ra khỏi một mảng argv.
+ *
+ * Phải lọc kỹ vì argv còn lẫn: đường dẫn electron.exe, thư mục app ('.' hoặc
+ * repo root mà launcher truyền vào), và các cờ `--ws-config=…`/`--inspect`.
+ * Chỉ nhận đúng một file có thật, đuôi nằm trong danh sách trên.
+ */
+function fileFromArgv(argv) {
+  for (const raw of argv.slice(1)) {
+    if (typeof raw !== 'string' || raw.startsWith('-')) continue;
+    const ext = path.extname(raw).toLowerCase();
+    if (!OPENABLE_EXTS.has(ext)) continue;
+    try {
+      const abs = path.resolve(raw);
+      if (fs.statSync(abs).isFile()) return abs;
+    } catch {}
+  }
+  return null;
+}
+
+/**
+ * File Explorer yêu cầu mở nhưng renderer CHƯA sẵn sàng nhận.
+ *
+ * Khởi động nguội là ca chính: `next dev` biên dịch mất vài chục giây, trong
+ * lúc đó chưa có trang nào để gửi IPC tới. Giữ đường dẫn ở đây rồi bắn đi khi
+ * did-finish-load. Chỉ giữ MỘT — bấm mở nhiều file trong lúc app đang khởi
+ * động thì file cuối thắng, chấp nhận được vì lần mở nguội là hiếm.
+ */
+let pendingOpenFile = null;
+
+/**
+ * Gửi đường dẫn xuống renderer; renderer chưa nạp xong thì xếp hàng chờ.
+ *
+ * Nhánh xếp hàng chỉ an toàn khi có người sẽ đọc lại: did-finish-load của cửa
+ * sổ. Cửa sổ chưa tồn tại (app vừa mới ready) thì createWindow() sắp chạy và
+ * sẽ nối listener đó — vẫn tới đích. Cửa sổ đang nạp lại (F5) cũng vậy, vì
+ * listener sống theo webContents chứ không theo lượt nạp.
+ */
+function dispatchOpenFile(abs) {
+  if (!abs) return;
+  const win = BrowserWindow.getAllWindows()[0];
+  if (!win || win.isDestroyed() || win.webContents.isLoading()) {
+    pendingOpenFile = abs;
+    log('OpenFileQueued', abs);
+    return;
+  }
+  win.webContents.send('desktop:openLocalFile', abs);
+  log('OpenFile', abs);
+}
+
 // ── In-app console ────────────────────────────────────────────────────────
 // Every line the desktop shell prints (its own lifecycle log + the output of
 // the `next dev` server it spawns) is mirrored into this ring buffer and
@@ -879,6 +954,25 @@ function createWindow() {
   });
 
   wireWebviewHardening(win);
+
+  // File mà Explorer nhờ mở lúc app còn đang khởi động: bắn xuống ngay khi
+  // trang đã nạp. Dùng did-finish-load chứ không phải ready-to-show — renderer
+  // phải chạy rồi mới có listener nhận IPC.
+  //
+  // Đợi thêm một nhịp: sự kiện này bắn khi HTML nạp xong, mà listener nằm
+  // trong useEffect của React nên đăng ký sau đó một chút. Gửi sớm quá thì
+  // tin rơi vào khoảng trống và file im lặng không mở.
+  win.webContents.on('did-finish-load', () => {
+    if (!pendingOpenFile) return;
+    const abs = pendingOpenFile;
+    pendingOpenFile = null;
+    setTimeout(() => {
+      if (win.isDestroyed()) return;
+      win.webContents.send('desktop:openLocalFile', abs);
+      log('OpenFile', abs);
+    }, 400);
+  });
+
   void loadAppWithRetry(win);
   return win;
 }
@@ -1288,16 +1382,56 @@ ipcMain.handle('workspace:copyText', (_evt, text) => {
 // the `desktop:log` push stream for live lines).
 ipcMain.handle('desktop:getLogs', () => logBuffer);
 
-app.whenReady().then(async () => {
-  CONFIG = loadConfig();
-  // Cửa sổ chính (UI DevBox) chạy trên session mặc định — download từ đó
-  // (vd nút ⬇ tab Google) cũng phải đi qua policy tự-lưu, không dialog native.
-  wireDownloadPolicy(session.defaultSession, 'default');
-  await ensureDevServer(); // start next dev if nothing is serving :3000 yet
-  createWindow();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+// ── Một app duy nhất ───────────────────────────────────────────────────────
+//
+// BẮT BUỘC từ khi có "Open with": mỗi lần bấm mở file, Windows chạy lại lệnh
+// đã đăng ký, tức là một tiến trình Electron MỚI. Không có khoá này thì mỗi
+// file mở ra một app riêng, mỗi app lại ensureDevServer() tranh cổng 3000 —
+// cái sau thấy cổng bận, hai cửa sổ cùng trỏ vào một dev server, đóng cái này
+// thì stopDevServer() giết luôn server của cái kia.
+//
+// Instance thứ hai chết ngay lập tức, nhưng trước khi chết Electron chuyển
+// argv của nó sang instance đang giữ khoá qua 'second-instance' — nhờ đó cú
+// bấm "mở file" vẫn tới đích, chỉ là do app đang chạy thực hiện.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', (_evt, argv) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      // Người dùng vừa bấm mở file → họ mong thấy app ngay, kể cả khi nó đang
+      // thu nhỏ hoặc nằm dưới cửa sổ Explorer.
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    }
+    dispatchOpenFile(fileFromArgv(argv));
   });
+
+  app.whenReady().then(async () => {
+    CONFIG = loadConfig();
+    // Cửa sổ chính (UI DevBox) chạy trên session mặc định — download từ đó
+    // (vd nút ⬇ tab Google) cũng phải đi qua policy tự-lưu, không dialog native.
+    wireDownloadPolicy(session.defaultSession, 'default');
+    // Nhặt file NGAY từ argv gốc: khởi động nguội bằng cách bấm vào file thì
+    // đường dẫn nằm ở đây, và phải giữ trước khi ensureDevServer() ngốn mất
+    // vài chục giây. createWindow() sẽ bắn nó đi lúc trang nạp xong.
+    pendingOpenFile = fileFromArgv(process.argv);
+    if (pendingOpenFile) log('OpenFileQueued', pendingOpenFile);
+    await ensureDevServer(); // start next dev if nothing is serving :3000 yet
+    createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+}
+
+// macOS đưa file vào app qua sự kiện riêng chứ không qua argv. DevBox chạy
+// Windows là chính, nhưng nối vào đây thì mở file trên Mac cũng chạy sẵn.
+app.on('open-file', (evt, filePath) => {
+  evt.preventDefault();
+  const ext = path.extname(filePath).toLowerCase();
+  if (OPENABLE_EXTS.has(ext)) dispatchOpenFile(path.resolve(filePath));
 });
 
 // Make sure the dev server we started doesn't outlive the app.

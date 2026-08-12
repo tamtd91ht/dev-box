@@ -6,7 +6,7 @@
 // RabbitMQ · MongoDB · Elastic · PostgreSQL). Each workspace mounts lazily and
 // stays mounted (hidden) across tab switches so long-running state survives.
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import WebhookReceiver from '@/components/WebhookReceiver';
 import ApiExplorerWorkspace, { type IntegrationView } from '@/components/ApiExplorerWorkspace';
 import PackManager from '@/components/PackManager';
@@ -18,12 +18,12 @@ import RabbitWorkspace from '@/components/RabbitWorkspace';
 import MongoWorkspace from '@/components/MongoWorkspace';
 import EsWorkspace from '@/components/EsWorkspace';
 import PgWorkspace from '@/components/PgWorkspace';
-import OfficeWorkspace from '@/components/OfficeWorkspace';
+import OfficeWorkspace, { type OfficeApi } from '@/components/OfficeWorkspace';
 import GoogleWorkspace from '@/components/GoogleWorkspace';
 import MailWorkspace from '@/components/MailWorkspace';
 import LinksWorkspace from '@/components/LinksWorkspace';
 import AppsWorkspace from '@/components/AppsWorkspace';
-import ToolsWorkspace from '@/components/ToolsWorkspace';
+import ToolsWorkspace, { type ToolsApi } from '@/components/ToolsWorkspace';
 import ApiWorkspace from '@/components/ApiWorkspace';
 import BrowserTabWorkspace from '@/components/BrowserTabWorkspace';
 import BrowserWorkspace from '@/components/BrowserWorkspace';
@@ -274,6 +274,40 @@ export default function Home() {
       if (prev) setMode(prev);
     } else if (name === 'ultraView') ultraView.toggle(mode);
   }), [mode]);
+
+  // ── Chuột phải file trong Explorer → "Open with → VHS DevBox" ────────────
+  //
+  // Main process gửi đường dẫn tuyệt đối xuống (electron/main.cjs ·
+  // dispatchOpenFile). Ở đây chỉ làm hai việc: chọn tab theo đuôi file, rồi
+  // nhờ workspace tương ứng mở nó.
+  //
+  // Hai workspace đăng ký API của chúng qua onReady vào ref bên dưới. Ref chứ
+  // không phải state: nhận được API mà lại setState thì cả cây pane render lại
+  // ngay giữa lượt mount đầu, không được lợi gì.
+  const officeApi = useRef<OfficeApi | null>(null);
+  const toolsApi = useRef<ToolsApi | null>(null);
+  const onOfficeReady = useCallback((api: OfficeApi) => { officeApi.current = api; }, []);
+  const onToolsReady = useCallback((api: ToolsApi) => { toolsApi.current = api; }, []);
+
+  useEffect(() => window.workspace?.onOpenLocalFile?.((filePath) => {
+    const office = /\.(xlsx|xlsm|csv|docx)$/i.test(filePath);
+    const target = office ? 'office' : 'tools';
+    // Chuyển tab TRƯỚC khi mở: pane chỉ mount lần đầu được ghé thăm (xem
+    // `visited`), chưa vào tab Tools lần nào thì ToolsWorkspace còn chưa tồn
+    // tại nên chưa kịp đăng ký API.
+    setMode(target);
+    // Pane vừa mới được mount lần đầu thì API của nó chưa kịp đăng ký (effect
+    // onReady chạy sau lượt render này). Thử lại vài nhịp thay vì đoán đúng
+    // một mốc thời gian — lượt sau, khi workspace đã mount sẵn, ngay lần thử
+    // đầu đã ăn nên không ai phải chờ.
+    let tries = 0;
+    const tick = () => {
+      const api = office ? officeApi.current : toolsApi.current;
+      if (api) { api.openFile(filePath); return; }
+      if (++tries < 40) setTimeout(tick, 50); // bỏ cuộc sau ~2s
+    };
+    tick();
+  }), []);
 
   /** Chỗ đặt pane `key`: Ultra View thì theo cột, không thì theo tab đang chọn.
    *  Mọi <main> bên dưới đều đi qua đây nên hai chế độ dùng CHUNG một cây pane
@@ -649,7 +683,7 @@ export default function Home() {
         )}
         {visited.office && (
           <main className="workspace" style={pane('office')} aria-hidden={!shown('office')}>
-            <OfficeWorkspace />
+            <OfficeWorkspace onReady={onOfficeReady} />
           </main>
         )}
         {visited.google && (
@@ -677,7 +711,7 @@ export default function Home() {
         )}
         {visited.tools && (
           <main className="workspace" style={pane('tools')} aria-hidden={!shown('tools')}>
-            <ToolsWorkspace />
+            <ToolsWorkspace onReady={onToolsReady} />
           </main>
         )}
         {visited.api && (

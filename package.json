@@ -14,6 +14,7 @@
     "lint": "next lint",
     "desktop": "electron .",
     "desktop:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-shortcuts.ps1",
+    "desktop:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-shortcuts.ps1",
     "bot": "tsx bot/index.ts",
     "bot:status": "tsx bot/status-cli.ts",
     "bot:test": "tsx bot/smoke.test.ts"

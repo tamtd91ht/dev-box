@@ -39,6 +39,32 @@ interface OfficeTab {
   /** Đường dẫn THẬT hiện tại + số thay đổi, do editor báo lên. */
   path: string | null;
   dirtyCount: number;
+  /**
+   * File mà tab phải tự mở ngay khi mount ("Open with" từ Explorer).
+   *
+   * Chỉ dùng cho lượt mount đầu — editor đọc một lần rồi thôi (seededRef bên
+   * trong SheetWorkspace/WordWorkspace), sau đó `path` ở trên mới là nguồn sự
+   * thật. Đọc lại field này về sau sẽ ra đường dẫn cũ.
+   */
+  initialPath?: string;
+}
+
+interface OfficeWorkspaceProps {
+  /**
+   * Mở file từ bên ngoài. Cha (app/page.tsx) giữ một ref tới hàm này để gọi
+   * khi Explorer nhờ mở một .xlsx/.csv/.docx.
+   */
+  onReady?: (api: OfficeApi) => void;
+}
+
+export interface OfficeApi {
+  /** Mở một file trên đĩa trong tab mới. Đuôi file quyết định loại editor. */
+  openFile: (absPath: string) => void;
+}
+
+/** Đuôi file → loại editor. Khớp với OPENABLE_EXTS trong electron/main.cjs. */
+function kindForPath(p: string): Kind {
+  return /\.docx$/i.test(p) ? 'word' : 'sheet';
 }
 
 /** Tab mới lấy id tăng dần — không dùng path làm id vì mở 2 tab cùng file là hợp lệ. */
@@ -54,7 +80,7 @@ function paneStyle(on: boolean): CSSProperties {
   return on ? s : { ...s, visibility: 'hidden', pointerEvents: 'none' };
 }
 
-export default function OfficeWorkspace() {
+export default function OfficeWorkspace({ onReady }: OfficeWorkspaceProps = {}) {
   // Mở sẵn một tab bảng tính trống ngay từ render đầu — vào tab Office là thấy
   // màn hình chào của editor (có recents + Tạo file mới), không phải khung rỗng.
   const first = useRef<OfficeTab>({ id: nextId(), kind: 'sheet', path: null, dirtyCount: 0 });
@@ -114,6 +140,32 @@ export default function OfficeWorkspace() {
     setActiveId(t.id);
     setMenuOpen(false);
   }, []);
+
+  /**
+   * Mở một file có sẵn trên đĩa vào tab mới ("Open with" từ Explorer).
+   *
+   * Tab đầu tiên của phiên luôn là một bảng tính TRỐNG chưa ai đụng vào — mở
+   * file vào thẳng đó thay vì đẻ thêm tab, để bật app từ một file .xlsx không
+   * để lại một tab rỗng thừa bên cạnh. Chỉ tái dùng khi đúng loại và còn
+   * nguyên trắng (chưa có file, chưa sửa gì).
+   */
+  const openFile = useCallback((absPath: string) => {
+    const kind = kindForPath(absPath);
+    // Tab mang id MỚI kể cả khi thay thế tab trắng: initialPath chỉ được editor
+    // đọc lúc mount, giữ nguyên id thì React tái dùng instance cũ và file không
+    // bao giờ mở ra.
+    const t: OfficeTab = { id: nextId(), kind, path: null, dirtyCount: 0, initialPath: absPath };
+    setTabs((prev) => {
+      const blank = prev.length === 1 && prev[0].kind === kind
+        && prev[0].path === null && prev[0].dirtyCount === 0 && !prev[0].initialPath;
+      return blank ? [t] : [...prev, t];
+    });
+    setActiveId(t.id);
+  }, []);
+
+  // Đưa openFile lên cho cha. Chạy một lần (openFile ổn định) — cha chỉ cất
+  // vào ref chứ không setState, nên không có vòng render nào ở đây.
+  useEffect(() => { onReady?.({ openFile }); }, [onReady, openFile]);
 
   /**
    * Đóng một tab.
@@ -271,8 +323,8 @@ export default function OfficeWorkspace() {
             {/* `active`: phím tắt bắt trên window (Ctrl+S của Word) chỉ được
                 chạy ở tab đang xem — xem WordWorkspaceProps.active. */}
             {t.kind === 'sheet'
-              ? <SheetWorkspace onDocState={reporterFor(t.id)} active={t.id === activeId} />
-              : <WordWorkspace onDocState={reporterFor(t.id)} active={t.id === activeId} />}
+              ? <SheetWorkspace initialPath={t.initialPath} onDocState={reporterFor(t.id)} active={t.id === activeId} />
+              : <WordWorkspace initialPath={t.initialPath} onDocState={reporterFor(t.id)} active={t.id === activeId} />}
           </div>
         ))}
       </div>

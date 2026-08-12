@@ -99,6 +99,15 @@ contextBridge.exposeInMainWorld('workspace', {
   /** Chép một chuỗi vào clipboard (nút "chép mật khẩu" ở tab Remote — mật khẩu
    *  chỉ được mở niêm phong ngay lúc bấm, không hiện ra màn hình). */
   copyText: (text) => ipcRenderer.invoke('workspace:copyText', text),
+  /** Chuột phải file trong Explorer → "Open with → VHS DevBox": main process
+   *  chuyển đường dẫn xuống đây, renderer mở nó ở tab Office / tab Tools tuỳ
+   *  đuôi file. Bắn cả lúc khởi động nguội lẫn khi app đang chạy (qua
+   *  'second-instance'). Trả về hàm hủy đăng ký. */
+  onOpenLocalFile: (cb) => {
+    const handler = (_evt, filePath) => cb(filePath);
+    ipcRenderer.on('desktop:openLocalFile', handler);
+    return () => ipcRenderer.removeListener('desktop:openLocalFile', handler);
+  },
   /** Zalo API (thử nghiệm): đọc cookie HttpOnly (zpsid/zpw_sek/…) của một phiên
    *  zaloapi-*. Renderer không đọc được cookie HttpOnly qua document.cookie, nên
    *  main process đọc hộ qua session.cookies.get.

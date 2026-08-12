@@ -97,7 +97,17 @@ function fmtSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function ToolsWorkspace() {
+export interface ToolsApi {
+  /** Mở một file trên đĩa vào editor (chuột phải file → "Open with"). */
+  openFile: (absPath: string) => void;
+}
+
+interface ToolsWorkspaceProps {
+  /** Cha giữ ref tới API này để nhờ mở file .md/.json/.xml/.html từ Explorer. */
+  onReady?: (api: ToolsApi) => void;
+}
+
+export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--tools-rail', min: 150, max: 460, gap: 12 });
   const [kind, setKind] = useState<FormatKind>('json');
@@ -373,6 +383,18 @@ export default function ToolsWorkspace() {
       setDirty(false); setErr(null);
     } catch (e) { setErr((e as Error).message); }
   };
+
+  // "Open with" từ Explorer đi vào đúng openLocalFile ở trên — cùng đường với
+  // 📂 Mở file… nên được cả phần đoán tab theo nội dung lẫn nhớ đường dẫn để
+  // 💾 Lưu ghi đè lại chính nó.
+  //
+  // openLocalFile là closure mới mỗi lần render (nó đọc state), nên đưa thẳng
+  // lên cha thì cha ôm một bản cũ. Cất qua ref rồi expose một hàm ổn định.
+  const openLocalRef = useRef(openLocalFile);
+  openLocalRef.current = openLocalFile;
+  useEffect(() => {
+    onReady?.({ openFile: (p: string) => void openLocalRef.current(p) });
+  }, [onReady]);
 
   const onDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
