@@ -559,6 +559,9 @@ export interface HistoryMessage {
   fromId: string;
   fromName: string;
   text: string;
+  /** id THẬT của Zalo (gMsgID/cMsgID khi thả cảm xúc) — xem zMsgId ở threadStore. */
+  zMsgId?: string;
+  zCliMsgId?: string;
 }
 
 function historyText(m: Record<string, unknown>): string {
@@ -597,13 +600,19 @@ export async function getGroupHistory(ctx: ZaloContext, groupId: string, count =
     if (!text) continue;
     const fromId = String(m['uidFrom'] ?? m['fromId'] ?? '');
     const at = Number(m['ts'] ?? m['at'] ?? 0) || 0;
+    // id THẬT của Zalo, giữ riêng để thả cảm xúc được (xem zMsgId trong
+    // threadStore). `id` bên dưới có thể là chuỗi ta tự ghép khi payload thiếu.
+    const zMsgId = String(m['msgId'] ?? m['msgID'] ?? m['realMsgId'] ?? '');
+    const zCliMsgId = String(m['cliMsgId'] ?? m['clientMsgId'] ?? '');
     out.push({
-      id: String(m['msgId'] ?? m['msgID'] ?? `${at}-${fromId}`),
+      id: zMsgId || `${at}-${fromId}`,
       at,
       self: !!ctx.uid && fromId === ctx.uid,
       fromId,
       fromName: String(m['dName'] ?? m['fromName'] ?? ''),
       text,
+      ...(zMsgId ? { zMsgId } : {}),
+      ...(zCliMsgId ? { zCliMsgId } : {}),
     });
   }
   out.sort((a, b) => a.at - b.at);
@@ -756,10 +765,28 @@ export async function sendReaction(
 ): Promise<ReactionResult> {
   const dest = opts.threadId || ctx.uid;
   if (!dest) return { ok: false, detail: 'không có threadId để thả cảm xúc' };
-  // Cần ÍT NHẤT một id tin — không có thì Zalo không biết thả vào đâu.
-  const gMsgID = opts.msgId || opts.cliMsgId || '';
-  const cMsgID = opts.cliMsgId || opts.msgId || '';
-  if (!gMsgID) return { ok: false, detail: 'tin này không có msgId nên không thả được cảm xúc' };
+
+  // gMsgID / cMsgID phải là SỐ (zca-js dùng parseInt). Gửi chuỗi thì Zalo vẫn
+  // trả error_code 0 nhưng KHÔNG áp cảm xúc — im lặng bỏ qua, đúng triệu chứng
+  // "bấm được mà máy người nhận không thấy gì".
+  //
+  // Và phải là id THẬT của Zalo, không phải id ta tự sinh: kho tin nội bộ đặt
+  // 'out-<at>-<hash>' cho tin gửi lạc quan và '<at>-<hash>' cho tin đến thiếu
+  // msgId (xem threadStore). Mấy id đó Zalo không tra được → cũng im lặng.
+  // Thà BÁO LỖI rõ ở đây còn hơn để người dùng tưởng đã thả xong.
+  const numeric = (v: string | undefined): string => {
+    const s = (v ?? '').trim();
+    return /^\d+$/.test(s) ? s : '';
+  };
+  const gMsgID = numeric(opts.msgId) || numeric(opts.cliMsgId);
+  const cMsgID = numeric(opts.cliMsgId) || numeric(opts.msgId);
+  if (!gMsgID) {
+    return {
+      ok: false,
+      detail: 'tin này chưa có msgId thật từ Zalo nên không thả được cảm xúc '
+        + '(tin vừa gửi cần đợi Zalo dội về, tin cũ khôi phục từ kho có thể không còn id gốc)',
+    };
+  }
 
   // Host reaction riêng; bản build nào không lộ thì thử group/chat cho đỡ chết.
   const host = ctx.serviceMap.reaction?.[0]
@@ -770,9 +797,11 @@ export async function sendReaction(
   const payload: Record<string, unknown> = {
     react_list: [
       {
-        // CHUỖI JSON lồng — không phải object (xem ghi chú đầu khối).
+        // CHUỖI JSON lồng — không phải object (xem ghi chú đầu khối). gMsgID/
+        // cMsgID phải ra SỐ trong JSON (zca-js parseInt) — Number() ở đây, không
+        // phải chuỗi, nếu không Zalo im lặng bỏ qua.
         message: JSON.stringify({
-          rMsg: [{ gMsgID, cMsgID, msgType: 1 }],
+          rMsg: [{ gMsgID: Number(gMsgID), cMsgID: Number(cMsgID || gMsgID), msgType: 1 }],
           rIcon: opts.icon,
           rType: opts.rType,
           source: opts.source ?? 6,

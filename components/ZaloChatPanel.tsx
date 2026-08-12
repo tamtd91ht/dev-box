@@ -673,8 +673,12 @@ export default function ZaloChatPanel({
                           )}
 
                           {/* Nút mở bảng cảm xúc — chỉ hiện khi hover cả dòng
-                              (CSS), để không làm rối màn chat. */}
-                          {canSend && (
+                              (CSS), để không làm rối màn chat.
+                              Yêu cầu zMsgId dạng SỐ: Zalo cần id thật để tra tin,
+                              không có thì request bị nó bỏ qua im lặng (bấm được
+                              mà bên nhận không thấy). Tin vừa gửi chưa có id thật
+                              tới khi Zalo dội về — ẩn nút cho tới lúc đó. */}
+                          {canSend && !!m.zMsgId && /^\d+$/.test(m.zMsgId) && (
                             <button
                               className="zc-react-open"
                               title="Thả cảm xúc"
@@ -726,7 +730,7 @@ export default function ZaloChatPanel({
                                     key={rType}
                                     className={`zc-react-chip${mineHere ? ' is-mine' : ''}`}
                                     title={mineHere ? 'Bạn đã thả — bấm để bỏ' : `${v.n} người đã thả`}
-                                    disabled={!canSend || reactBusy === m.id}
+                                    disabled={!canSend || reactBusy === m.id || !(m.zMsgId && /^\d+$/.test(m.zMsgId))}
                                     onClick={() => {
                                       // Bấm chip của chính mình = bỏ. Chip của
                                       // người khác = thả cùng mặt đó.

@@ -234,6 +234,10 @@ function toRecord(threadId: string, group: boolean, m: StoredMessage): Record<st
     fromName: m.fromName,
     text: m.text,
     ...(m.imageUrl ? { imageUrl: m.imageUrl } : {}),
+    // id THẬT của Zalo — không lưu thì tin khôi phục từ kho không thả được cảm
+    // xúc (id nội bộ có thể là chuỗi ta tự sinh, Zalo tra không ra).
+    ...(m.zMsgId ? { zMsgId: m.zMsgId } : {}),
+    ...(m.zCliMsgId ? { zCliMsgId: m.zCliMsgId } : {}),
     // 'sending' là trạng thái TẠM của UI — lưu bền thì vô nghĩa, chỉ ghi khi đã chốt.
     ...(m.status && m.status !== 'sending' ? { status: m.status } : {}),
     ...(m.reactions && Object.keys(m.reactions).length ? { reactions: m.reactions } : {}),
@@ -393,6 +397,8 @@ function fromRecord(d: Record<string, unknown>): StoredMessage {
     fromName: typeof d.fromName === 'string' ? d.fromName : '',
     text: typeof d.text === 'string' ? d.text : '',
     ...(typeof d.imageUrl === 'string' && d.imageUrl ? { imageUrl: d.imageUrl } : {}),
+    ...(typeof d.zMsgId === 'string' && d.zMsgId ? { zMsgId: d.zMsgId } : {}),
+    ...(typeof d.zCliMsgId === 'string' && d.zCliMsgId ? { zCliMsgId: d.zCliMsgId } : {}),
     ...(status === 'sent' || status === 'failed' ? { status } : {}),
     ...(d.reactions && typeof d.reactions === 'object' && Object.keys(d.reactions).length
       ? { reactions: d.reactions as StoredMessage['reactions'] }

@@ -58,6 +58,7 @@ import {
   prependHistory,
   hydrateFromArchive,
   recordOwnReaction,
+  realMsgIds,
 } from '@/lib/zaloapi/server/threadStore';
 import {
   getArchiveConfigView,
@@ -314,21 +315,37 @@ export async function POST(req: NextRequest) {
 
         const icon = def?.icon ?? '';
         const rType = def?.rType ?? UNREACT_RTYPE;
+        // `msgId` client gửi lên là id NỘI BỘ của bong bóng (có thể là chuỗi ta
+        // tự sinh). Zalo cần id THẬT dạng số → tra từ kho tin, đừng dùng thẳng.
+        const real = realMsgIds(accountKey, threadId, msgId);
         // Hiện ngay (lạc quan) rồi mới gọi Zalo — cùng kỷ luật với gửi tin.
         // `prev` là mặt ta đang thả trước lượt này, để hoàn nguyên nếu Zalo từ chối.
         const prev = recordOwnReaction(accountKey, threadId, msgId, icon, rType);
         const result = await sendReaction(ctx, {
-          threadId, group, msgId,
-          cliMsgId: typeof body.cliMsgId === 'string' ? body.cliMsgId : undefined,
+          threadId, group,
+          msgId: real.zMsgId,
+          cliMsgId: real.zCliMsgId,
           icon, rType, source: REACTION_SOURCE,
         });
         // Zalo từ chối → đặt lại ĐÚNG mặt cũ (hoặc bỏ hẳn nếu trước đó chưa thả).
         if (!result.ok && prev !== undefined) {
           recordOwnReaction(accountKey, threadId, msgId, prev?.icon ?? '', prev?.rType ?? UNREACT_RTYPE);
         }
+        // Trace ĐẦY ĐỦ id đã gửi: khi Zalo "nhận mà không áp", đây là chỗ duy
+        // nhất thấy được ta đã gửi id gì và nó có phải id thật dạng số hay không.
+        trace('react', `thả cảm xúc ${icon || '(bỏ)'} rType=${rType}`, {
+          ok: result.ok,
+          detail: result.detail,
+          uiMsgId: msgId,
+          gMsgID: real.zMsgId,
+          cMsgID: real.zCliMsgId ?? '',
+          numeric: /^\d+$/.test(real.zMsgId),
+          group,
+          raw: result.raw,
+        });
         // eslint-disable-next-line no-console
         console.log(
-          `ZALOAPI_AUDIT operation=REACT account=${accountKey} thread=${threadId} msg=${msgId} `
+          `ZALOAPI_AUDIT operation=REACT account=${accountKey} thread=${threadId} msg=${real.zMsgId} `
           + `icon=${icon || '(bỏ)'} rType=${rType} ok=${result.ok} ts=${new Date().toISOString()}`,
         );
         return NextResponse.json({

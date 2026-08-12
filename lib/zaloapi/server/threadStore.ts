@@ -27,6 +27,18 @@ export interface StoredMessage {
   text: string;
   /** URL ảnh (nếu là tin ảnh) — UI hiện thumbnail thay vì chữ. */
   imageUrl?: string;
+  /**
+   * ID THẬT của Zalo, giữ RIÊNG khỏi `id`.
+   *
+   * `id` là khoá nội bộ để React key + khử trùng, và nó CÓ THỂ do ta tự sinh
+   * ('out-<at>-<hash>' cho tin gửi lạc quan, '<at>-<hash>' cho tin đến thiếu
+   * msgId). Những id đó Zalo không tra được. Thả cảm xúc lại BẮT BUỘC id thật
+   * dạng SỐ (gMsgID/cMsgID), nên phải cất riêng — trước đây dùng `id` làm msgId
+   * khiến Zalo nhận request rồi im lặng bỏ qua: bấm được mà bên nhận không thấy.
+   */
+  zMsgId?: string;
+  /** cliMsgId của Zalo (cMsgID khi thả cảm xúc). */
+  zCliMsgId?: string;
   /** 'sending' | 'sent' | 'failed' cho tin gửi lạc quan; để trống với tin đến. */
   status?: 'sending' | 'sent' | 'failed';
   /**
@@ -139,6 +151,10 @@ export function recordIncoming(accountKey: string, m: IncomingMessage): void {
       const staleId = pending.id;
       pending.status = 'sent';
       if (m.msgId) pending.id = m.msgId;
+      // Đây là lần DUY NHẤT ta biết id thật của tin MÌNH gửi (lúc bấm gửi chỉ
+      // có id tự sinh). Không cất lại thì tin của mình mãi không thả được cảm xúc.
+      if (m.zMsgId) pending.zMsgId = m.zMsgId;
+      if (m.zCliMsgId) pending.zCliMsgId = m.zCliMsgId;
       // Bản Zalo dội về mới là bản có id THẬT. Trong RAM ta vừa SỬA id của đúng
       // một object, nhưng kho lưu trữ khoá theo id nên phải bảo nó XOÁ bản
       // 'out-…' cũ, không thì nạp lại sẽ thấy một tin thành hai.
@@ -156,6 +172,9 @@ export function recordIncoming(accountKey: string, m: IncomingMessage): void {
     fromName: m.fromName,
     text: m.text,
     status: m.isSelf ? 'sent' : undefined,
+    // Cất id THẬT để thả cảm xúc được (xem zMsgId trong StoredMessage).
+    ...(m.zMsgId ? { zMsgId: m.zMsgId } : {}),
+    ...(m.zCliMsgId ? { zCliMsgId: m.zCliMsgId } : {}),
   };
   push(t, msg);
   if (!m.isSelf) t.unread += 1;
@@ -193,6 +212,19 @@ function applyReaction(target: StoredMessage, who: string, icon: string, rType: 
   if (rType === -1 || !icon) delete map[who];
   else map[who] = { icon, rType };
   target.reactions = Object.keys(map).length ? map : undefined;
+}
+
+/**
+ * Tra ID THẬT của Zalo cho một bong bóng (theo id nội bộ).
+ *
+ * Cần vì UI chỉ biết `id` nội bộ, mà id đó có thể do ta tự sinh
+ * ('out-<at>-<hash>' / '<at>-<hash>') — gửi nó lên Zalo thì Zalo tra không ra và
+ * BỎ QUA IM LẶNG (không báo lỗi). Rơi về chính `id` khi tin không có id thật:
+ * lúc đó sendReaction sẽ chặn lại và báo rõ, thay vì gửi đi rồi mất hút.
+ */
+export function realMsgIds(accountKey: string, threadId: string, id: string): { zMsgId: string; zCliMsgId?: string } {
+  const msg = accountThreads(accountKey).get(threadId)?.messages.find((x) => x.id === id);
+  return { zMsgId: msg?.zMsgId ?? id, zCliMsgId: msg?.zCliMsgId };
 }
 
 /**
@@ -250,14 +282,20 @@ export function prependHistory(
   accountKey: string,
   threadId: string,
   group: boolean,
-  msgs: Array<{ id: string; at: number; self: boolean; fromId: string; fromName: string; text: string; imageUrl?: string }>,
+  msgs: Array<{ id: string; at: number; self: boolean; fromId: string; fromName: string; text: string; imageUrl?: string; zMsgId?: string; zCliMsgId?: string }>,
 ): void {
   const t = getThread(accountKey, threadId, group);
   if (group) t.group = true;
   const have = new Set(t.messages.map((x) => x.id));
   const add = msgs
     .filter((m) => m.id && !have.has(m.id))
-    .map((m) => ({ id: m.id, at: m.at, self: m.self, fromId: m.fromId, fromName: m.fromName, text: m.text, imageUrl: m.imageUrl, status: m.self ? ('sent' as const) : undefined }));
+    .map((m) => ({
+      id: m.id, at: m.at, self: m.self, fromId: m.fromId, fromName: m.fromName, text: m.text,
+      imageUrl: m.imageUrl, status: m.self ? ('sent' as const) : undefined,
+      // Giữ id thật để tin lịch sử cũng thả được cảm xúc.
+      ...(m.zMsgId ? { zMsgId: m.zMsgId } : {}),
+      ...(m.zCliMsgId ? { zCliMsgId: m.zCliMsgId } : {}),
+    }));
   if (!add.length) return;
   t.messages = [...add, ...t.messages].sort((a, b) => a.at - b.at);
   if (t.messages.length > MAX_PER_THREAD) t.messages.splice(0, t.messages.length - MAX_PER_THREAD);
@@ -369,16 +407,20 @@ export async function hydrateFromArchive(accountKey: string): Promise<{ threads:
       // thời gian gần nhau) — cần vì kho có thể còn cặp 'out-…' + msgId của cùng
       // một tin, do bản trước bản vá archiveReplaceId để lại. Không có tầng 2
       // thì những tin gửi trước lúc vá vẫn hiện đôi mãi.
-      const kept = new Set<string>();
+      // Tin TỰ GỬI đã nhận vào lượt này — để so cặp trùng trong CÙNG lô kho.
+      const keptSelf: StoredMessage[] = [];
       const add = s.messages.filter((m) => {
         if (have.has(m.id)) return false;
         if (!m.self) return true;
-        // Gộp theo giây: bản lạc quan và bản Zalo dội về lệch nhau vài trăm ms.
-        const echoKey = `${m.text}|${Math.round(m.at / 1000)}`;
         // Tin cùng nội dung ĐÃ CÓ trong RAM → bỏ hẳn (RAM là bản mới hơn).
         if (t.messages.some((x) => x.self && x.text === m.text && Math.abs(x.at - m.at) < ECHO_WINDOW_MS)) return false;
-        if (kept.has(echoKey)) return false;
-        kept.add(echoKey);
+        // Cặp 'out-…' + msgId của CÙNG một tin lệch nhau vài trăm ms. So bằng
+        // KHOẢNG CÁCH thời gian, KHÔNG băm theo giây: hai mốc cách nhau 350ms
+        // vẫn có thể rơi vào hai giây khác nhau (vd .800 và 1.150) nên cách băm
+        // để lọt cặp trùng tuỳ theo tin rơi vào đâu trong giây — lỗi chập chờn
+        // đúng nghĩa, chạy lại là khác kết quả.
+        if (keptSelf.some((x) => x.text === m.text && Math.abs(x.at - m.at) < ECHO_WINDOW_MS)) return false;
+        keptSelf.push(m);
         return true;
       });
       if (!add.length) continue;

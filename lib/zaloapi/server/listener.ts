@@ -40,6 +40,14 @@ export interface IncomingMessage {
   isSelf: boolean;
   /** id tin (nếu payload có) — để khử trùng echo với tin gửi lạc quan. */
   msgId: string;
+  /**
+   * ID THẬT của Zalo, tách riêng khỏi `msgId` (vốn nhận cả cliMsgId làm bản dự
+   * phòng để khử trùng). Thả cảm xúc cần ĐÚNG hai id này ở dạng số:
+   *   realMsgId/msgId → gMsgID   ·   cliMsgId → cMsgID
+   * Gộp chung rồi đoán là nguyên nhân cảm xúc gửi đi mà Zalo im lặng bỏ qua.
+   */
+  zMsgId: string;
+  zCliMsgId: string;
   /** Tên hiển thị người gửi (nếu payload có). */
   fromName: string;
   /** Nội dung văn bản. */
@@ -229,6 +237,11 @@ export function extractMessages(groupHint: boolean, decoded: unknown, at: number
       toId,
       isSelf,
       msgId: pickStr(m, 'msgId', 'msgID', 'cliMsgId', 'clientMsgId', 'realMsgId'),
+      // Hai id THẬT, KHÔNG lẫn nhau: msgId/realMsgId là id server (gMsgID),
+      // cliMsgId là id client (cMsgID). Thiếu cái nào thì để rỗng, đừng mượn
+      // cái kia — mượn sai chỗ là Zalo tra không ra và bỏ qua im lặng.
+      zMsgId: pickStr(m, 'msgId', 'msgID', 'realMsgId', 'globalMsgId'),
+      zCliMsgId: pickStr(m, 'cliMsgId', 'clientMsgId'),
       fromName: pickStr(m, 'dName', 'fromName', 'senderName'),
       // Cảm xúc không có nội dung → dựng một dòng mô tả để Console đọc được.
       text: text || (react ? (react.icon ? `đã thả ${react.icon}` : 'đã bỏ cảm xúc') : ''),

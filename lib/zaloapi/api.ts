@@ -51,6 +51,12 @@ export interface ZaloStoredMessage {
   status?: 'sending' | 'sent' | 'failed';
   /** Cảm xúc đã thả lên tin: uid người thả → mặt. '(self)' là chính ta. */
   reactions?: Record<string, { icon: string; rType: number }>;
+  /**
+   * id THẬT của Zalo. CHỈ tin có id này (dạng số) mới thả được cảm xúc — tin vừa
+   * gửi chưa được Zalo dội về thì chưa có, nên UI ẩn nút thả để không mời người
+   * dùng bấm vào chỗ chắc chắn thất bại.
+   */
+  zMsgId?: string;
 }
 
 export interface ZaloApiFlags {
