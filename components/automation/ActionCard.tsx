@@ -18,6 +18,7 @@ import { useAutomation } from '@/lib/automation/useAutomation';
 import { requireGuest } from '@/lib/workspace/guests';
 import type { ActionType, AutomationAction, HttpMethod } from '@/lib/automation/types';
 import { Field, Num, Toggle } from './parts';
+import { TplInput, TplTextarea } from './TplField';
 
 export const ACTION_LABEL: Record<ActionType, string> = {
   notify: '🔔 Thông báo',
@@ -85,10 +86,10 @@ function KVRows({
             placeholder={keyPlaceholder}
             onChange={(e) => push(rows.map((r, j) => (i === j ? [e.target.value, r[1]] : r)))}
           />
-          <input
+          <TplInput
             value={v}
             placeholder={valuePlaceholder}
-            onChange={(e) => push(rows.map((r, j) => (i === j ? [r[0], e.target.value] : r)))}
+            onChange={(nv) => push(rows.map((r, j) => (i === j ? [r[0], nv] : r)))}
           />
           <button type="button" className="ghost sm" onClick={() => push(rows.filter((_, j) => j !== i))}>
             ✕
@@ -205,10 +206,10 @@ function TelegramFields({
         label="Chat ID"
         hint={inline || !env.chats.length ? 'id nhóm (số âm) hoặc @tenkenh' : 'để trống = chat đầu tiên trong .env.local'}
       >
-        <input
+        <TplInput
           value={action.chatId}
           placeholder={!inline && env.chats[0] ? env.chats[0].id : '-1001234567890'}
-          onChange={(e) => onChange({ ...action, chatId: e.target.value })}
+          onChange={(v) => onChange({ ...action, chatId: v })}
         />
       </Field>
 
@@ -231,10 +232,10 @@ function TelegramFields({
       ) : null}
 
       <Field label="Nội dung" wide hint="để trống = tiêu đề + nội dung sự kiện · dùng {{severityLabel}}, {{value}}, {{address}}, {{description}}… · {{metaJson}} = metadata đầy đủ">
-        <textarea
+        <TplTextarea
           value={action.text ?? ''}
           placeholder={'🚨 *{{title}}*\n{{text}}'}
-          onChange={(e) => onChange({ ...action, text: e.target.value })}
+          onChange={(v) => onChange({ ...action, text: v })}
         />
       </Field>
 
@@ -251,10 +252,9 @@ function TelegramFields({
       </Field>
 
       <Field label="Topic id" hint="chỉ dùng cho nhóm bật chủ đề — để trống nếu không">
-        <input
+        <TplInput
           value={action.threadId ?? ''}
-          placeholder=""
-          onChange={(e) => onChange({ ...action, threadId: e.target.value })}
+          onChange={(v) => onChange({ ...action, threadId: v })}
         />
       </Field>
 
@@ -311,10 +311,10 @@ function ApiFields({
         <Num value={action.timeoutSec} onChange={(v) => onChange({ ...action, timeoutSec: v })} placeholder="10" />
       </Field>
       <Field label="URL" wide hint="chạy phía server — không dính CORS, token không lộ ra network log">
-        <input
+        <TplInput
           value={action.url}
           placeholder="https://…"
-          onChange={(e) => onChange({ ...action, url: e.target.value })}
+          onChange={(v) => onChange({ ...action, url: v })}
         />
       </Field>
 
@@ -387,10 +387,10 @@ function ApiFields({
             </select>
           </Field>
           <Field label="Body" wide hint="để trống = toàn bộ sự kiện dạng JSON · {{metaJson}} = metadata chuẩn (AlertMeta) — chèn không cần ngoặc kép">
-            <textarea
+            <TplTextarea
               value={action.bodyTemplate ?? ''}
               placeholder={'{"alert":{{metaJson}}}\nhoặc: {"text":"{{title}} — {{text}}"}'}
-              onChange={(e) => onChange({ ...action, bodyTemplate: e.target.value })}
+              onChange={(v) => onChange({ ...action, bodyTemplate: v })}
             />
           </Field>
         </>
@@ -549,10 +549,10 @@ function WorkspaceSendFields({
       )}
 
       <Field label="Nội dung" wide hint="dùng {{title}}, {{text}}, {{value}}, {{metricLabel}}, {{description}}…">
-        <textarea
+        <TplTextarea
           value={action.text}
           placeholder={'🚨 {{title}}\n{{text}}'}
-          onChange={(e) => onChange({ ...action, text: e.target.value })}
+          onChange={(v) => onChange({ ...action, text: v })}
         />
       </Field>
 
@@ -741,7 +741,7 @@ function ZaloApiSendFields({
       {showAdvanced && (
         <div className="auto-wide" style={{ display: 'grid', gap: 6 }}>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <input style={{ flex: '2 1 160px' }} placeholder="threadId thật (hoặc {{fields.threadId}})" value={manualId} onChange={(e) => setManualId(e.target.value)} />
+            <TplInput style={{ flex: '2 1 160px' }} placeholder="threadId thật (hoặc {{fields.threadId}})" value={manualId} onChange={setManualId} />
             <input style={{ flex: '1 1 120px' }} placeholder="tên để dễ nhìn" value={manualName} onChange={(e) => setManualName(e.target.value)} />
             <label className="auto-hint" style={{ display: 'flex', alignItems: 'center', gap: 4, margin: 0 }}>
               <input type="checkbox" checked={manualGroup} onChange={(e) => setManualGroup(e.target.checked)} /> nhóm
@@ -756,10 +756,10 @@ function ZaloApiSendFields({
       )}
 
       <Field label="Nội dung" wide hint="hỗ trợ {{title}}, {{text}}, {{description}}… · nhóm có bot AI: thêm {{metaBlock}} để bot tự phân tích cảnh báo">
-        <textarea
+        <TplTextarea
           rows={3}
           value={action.text}
-          onChange={(e) => onChange({ ...action, text: e.target.value })}
+          onChange={(v) => onChange({ ...action, text: v })}
         />
       </Field>
 
@@ -909,10 +909,10 @@ export default function ActionCard({
             </select>
           </Field>
           <Field label="Tiêu đề" hint="để trống = tiêu đề sự kiện">
-            <input value={action.title ?? ''} onChange={(e) => onChange({ ...action, title: e.target.value })} />
+            <TplInput value={action.title ?? ''} onChange={(v) => onChange({ ...action, title: v })} />
           </Field>
           <Field label="Nội dung" wide hint="dùng {{sender}}, {{text}}, {{value}}, {{description}}…">
-            <input value={action.body ?? ''} onChange={(e) => onChange({ ...action, body: e.target.value })} />
+            <TplInput value={action.body ?? ''} onChange={(v) => onChange({ ...action, body: v })} />
           </Field>
           <Toggle
             checked={!!action.sound}
@@ -953,12 +953,12 @@ export default function ActionCard({
             <input value={action.topic} onChange={(e) => onChange({ ...action, topic: e.target.value })} />
           </Field>
           <Field label="Key" hint="để trống = instanceId">
-            <input value={action.key ?? ''} onChange={(e) => onChange({ ...action, key: e.target.value })} />
+            <TplInput value={action.key ?? ''} onChange={(v) => onChange({ ...action, key: v })} />
           </Field>
           <Field label="Value" wide hint="để trống = toàn bộ sự kiện dạng JSON · {{metaJson}} = metadata chuẩn (AlertMeta)">
-            <input
+            <TplInput
               value={action.valueTemplate ?? ''}
-              onChange={(e) => onChange({ ...action, valueTemplate: e.target.value })}
+              onChange={(v) => onChange({ ...action, valueTemplate: v })}
             />
           </Field>
         </div>
@@ -967,7 +967,7 @@ export default function ActionCard({
       {action.type === 'reply' ? (
         <div className="auto-grid">
           <Field label="Nội dung trả lời" wide hint="LUÔN cần bật 'cho phép gửi' + duyệt tay — không bao giờ tự gửi">
-            <input value={action.text} onChange={(e) => onChange({ ...action, text: e.target.value })} />
+            <TplInput value={action.text} onChange={(v) => onChange({ ...action, text: v })} />
           </Field>
         </div>
       ) : null}

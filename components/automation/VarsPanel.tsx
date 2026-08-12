@@ -75,7 +75,13 @@ export default function VarsPanel({ trigger, stacks }: { trigger: TriggerType; s
         <div className="auto-vars-grid">
           <div className="auto-vars-list">
             {vars.map((f) => (
-              <div key={f.name} className="auto-var-row" title={f.hint ?? ''}>
+              <div
+                key={f.name}
+                className="auto-var-row"
+                title={[f.label, f.hint, f.sample !== undefined ? `Ví dụ: ${f.sample}` : '']
+                  .filter(Boolean)
+                  .join('\n')}
+              >
                 <button
                   type="button"
                   className="auto-var-name"

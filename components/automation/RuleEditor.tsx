@@ -33,9 +33,11 @@ import type { TargetGroup } from '@/lib/workspace/targets';
 import { messagingPlugins } from '@/lib/workspace/plugins';
 import { loadZaloApiAccounts, zaloApiAccountKey } from '@/lib/zaloapi/accounts';
 import { zaloApiContacts } from '@/lib/zaloapi/api';
+import { TEMPLATE_CORE_VARS } from '@/lib/automation/meta';
 import { Field, Num, Section, Toggle } from './parts';
 import ActionCard, { defaultAction } from './ActionCard';
 import VarsPanel from './VarsPanel';
+import { TplVars } from './TplField';
 
 const DAYS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
 
@@ -544,6 +546,8 @@ export default function RuleEditor({
   const group = groupOf(rule.category);
   const trig = triggerDef(rule.trigger) ?? group.triggers[0];
   const fields = trig?.fields ?? [];
+  // Biến khả dụng cho gợi ý {{…}} trong các ô action — theo trigger đang chọn.
+  const tplVars = useMemo(() => [...fields, ...TEMPLATE_CORE_VARS], [fields]);
   const sources = useSourceOptions(rule.category);
   const instances = useInstanceOptions(rule.category, rule.scope.sourceIds);
   const set = (patch: Partial<AutomationRule>) => onChange({ ...rule, ...patch });
@@ -764,28 +768,30 @@ export default function RuleEditor({
           ) : undefined
         }
       >
-        <VarsPanel trigger={rule.trigger} stacks={rule.category === 'infra' ? rule.scope.sourceIds : undefined} />
-        {rule.actions.map((a, i) => (
-          <ActionCard
-            key={i}
-            action={a}
-            allowed={group.actions}
-            open={isOpen(i)}
-            onToggle={() => toggleAt(i)}
-            onChange={(next) => set({ actions: rule.actions.map((x, j) => (i === j ? next : x)) })}
-            onRemove={() => {
-              dropAt(i);
-              set({ actions: rule.actions.filter((_, j) => j !== i) });
-            }}
-          />
-        ))}
-        <button
-          type="button"
-          className="ghost sm"
-          onClick={() => set({ actions: [...rule.actions, defaultAction(group.actions[0])] })}
-        >
-          ＋ hành động
-        </button>
+        <TplVars vars={tplVars}>
+          <VarsPanel trigger={rule.trigger} stacks={rule.category === 'infra' ? rule.scope.sourceIds : undefined} />
+          {rule.actions.map((a, i) => (
+            <ActionCard
+              key={i}
+              action={a}
+              allowed={group.actions}
+              open={isOpen(i)}
+              onToggle={() => toggleAt(i)}
+              onChange={(next) => set({ actions: rule.actions.map((x, j) => (i === j ? next : x)) })}
+              onRemove={() => {
+                dropAt(i);
+                set({ actions: rule.actions.filter((_, j) => j !== i) });
+              }}
+            />
+          ))}
+          <button
+            type="button"
+            className="ghost sm"
+            onClick={() => set({ actions: [...rule.actions, defaultAction(group.actions[0])] })}
+          >
+            ＋ hành động
+          </button>
+        </TplVars>
       </Section>
 
       <Section
