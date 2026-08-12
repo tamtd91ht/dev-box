@@ -96,11 +96,28 @@ export default function LinkViewer({
         /* not attached yet */
       }
     };
-    const onStart = () => { setStatus('loading'); syncNav(); };
-    const onStop = () => {
+    // Chốt chặn cuối: dù không sự kiện nào bắn, overlay cũng phải tự tắt — thà
+    // để người dùng nhìn trang đang tải dở còn hơn kẹt spinner che hết nội dung.
+    let stuckTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearStuck = () => { if (stuckTimer) { clearTimeout(stuckTimer); stuckTimer = undefined; } };
+    const done = () => {
+      clearStuck();
       setStatus((s) => (s === 'failed' ? s : 'ready'));
       syncNav();
     };
+
+    const onStart = () => {
+      setStatus('loading');
+      syncNav();
+      clearStuck();
+      stuckTimer = setTimeout(done, 12_000);
+    };
+    const onStop = done;
+    // Trang tin nhiều quảng cáo (vnexpress…) giữ kết nối tracker/iframe ads mở
+    // rất lâu — có khi không bao giờ đóng — nên `did-stop-loading` không bắn và
+    // overlay spinner kẹt mãi dù nội dung đã đọc được. Bám `dom-ready` như
+    // WorkspaceView: document chính đã parse xong là bỏ overlay.
+    const onDomReady = done;
     const onFail = (e: Event) => {
       const ev = e as unknown as { errorCode: number; errorDescription: string; isMainFrame: boolean };
       if (!ev.isMainFrame || ev.errorCode === -3 /* ABORTED */) return;
@@ -108,14 +125,21 @@ export default function LinkViewer({
       setStatus('failed');
     };
 
+    // Lần tải ĐẦU: webview có thể đã bắn did-start-loading/dom-ready trước khi
+    // effect này gắn listener → không có gì tắt overlay. Hẹn giờ ngay từ mount.
+    stuckTimer = setTimeout(done, 12_000);
+
     el.addEventListener('did-start-loading', onStart);
     el.addEventListener('did-stop-loading', onStop);
+    el.addEventListener('dom-ready', onDomReady);
     el.addEventListener('did-navigate', syncNav);
     el.addEventListener('did-navigate-in-page', syncNav);
     el.addEventListener('did-fail-load', onFail as EventListener);
     return () => {
+      clearStuck();
       el.removeEventListener('did-start-loading', onStart);
       el.removeEventListener('did-stop-loading', onStop);
+      el.removeEventListener('dom-ready', onDomReady);
       el.removeEventListener('did-navigate', syncNav);
       el.removeEventListener('did-navigate-in-page', syncNav);
       el.removeEventListener('did-fail-load', onFail as EventListener);
