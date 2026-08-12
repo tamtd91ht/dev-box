@@ -32,6 +32,7 @@ export interface ProbeResult {
 }
 
 const MB = 1024 * 1024;
+const GB = 1024 * MB;
 const pct = (used: number, total: number): number | null =>
   total > 0 ? round((used / total) * 100) : null;
 const round = (n: number): number => Math.round(n * 100) / 100;
@@ -58,6 +59,8 @@ async function probeRedis(id: string): Promise<MetricMap> {
   const nodes = await redisStats(id);
   const m: MetricMap = { up: 1, nodes: nodes.length };
   put(m, 'memUsedMb', round(sumOf(nodes.map((n) => n.usedMemoryBytes)) / MB));
+  // Mẫu số của memUsedPct — để cảnh báo nói được "90% CỦA BAO NHIÊU".
+  put(m, 'memTotalMb', round(sumOf(nodes.map((n) => n.maxMemoryBytes || n.systemMemoryBytes)) / MB));
   // A node with maxmemory=0 is bounded by the box instead — use system memory.
   put(m, 'memUsedPct', maxOf(nodes.map((n) => pct(n.usedMemoryBytes, n.maxMemoryBytes || n.systemMemoryBytes))));
   put(m, 'clients', sumOf(nodes.map((n) => n.connectedClients)));
@@ -71,8 +74,13 @@ async function probeMongo(id: string): Promise<MetricMap> {
   const s = await mongoMonitor(id);
   const m: MetricMap = { up: 1 };
   put(m, 'connections', s.connectionsCurrent);
+  put(m, 'connectionsTotal', s.connectionsCurrent + s.connectionsAvailable);
   put(m, 'connectionsUsedPct', pct(s.connectionsCurrent, s.connectionsCurrent + s.connectionsAvailable));
+  put(m, 'cacheUsedMb', round(s.cacheUsedBytes / MB));
+  put(m, 'cacheTotalMb', round(s.cacheMaxBytes / MB));
   put(m, 'cacheUsedPct', pct(s.cacheUsedBytes, s.cacheMaxBytes));
+  put(m, 'diskUsedGb', s.fsUsedBytes !== null ? round(s.fsUsedBytes / GB) : null);
+  put(m, 'diskTotalGb', s.fsTotalBytes !== null ? round(s.fsTotalBytes / GB) : null);
   put(m, 'diskUsedPct', s.fsTotalBytes ? pct(s.fsUsedBytes ?? 0, s.fsTotalBytes) : null);
   put(m, 'memResidentMb', round(s.memResidentBytes / MB));
   put(m, 'replLagSec', maxOf(s.members.map((x) => x.lagSec)));
@@ -98,6 +106,15 @@ async function probeEs(id: string): Promise<MetricMap> {
     put(m, 'cpuPct', maxOf(nodes.map((n) => n.cpu)));
     put(m, 'diskUsedPct', maxOf(nodes.map((n) => n.diskUsedPercent)));
     put(m, 'load1m', maxOf(nodes.map((n) => n.load1m)));
+    // Số tuyệt đối của CHÍNH node đầy nhất — cùng node với diskUsedPct, để
+    // "92% · còn 40GB" không bao giờ là hai node khác nhau nói chuyện.
+    const worst = nodes
+      .filter((n) => n.diskUsedPercent !== null && n.diskTotalBytes !== null)
+      .sort((a, b) => (b.diskUsedPercent ?? 0) - (a.diskUsedPercent ?? 0))[0];
+    if (worst && worst.diskTotalBytes !== null) {
+      put(m, 'diskTotalGb', round(worst.diskTotalBytes / GB));
+      put(m, 'diskUsedGb', worst.diskAvailBytes !== null ? round((worst.diskTotalBytes - worst.diskAvailBytes) / GB) : null);
+    }
   } catch {
     /* cluster health still counts as up */
   }
@@ -179,6 +196,17 @@ async function probeRabbit(id: string): Promise<MetricMap> {
     put(m, 'diskAlarm', nodes.some((n) => n.diskFreeAlarm) ? 1 : 0);
     put(m, 'memUsedPct', maxOf(nodes.map((n) => pct(n.memUsed, n.memLimit))));
     put(m, 'fdUsedPct', maxOf(nodes.map((n) => pct(n.fdUsed, n.fdTotal))));
+    // Số tuyệt đối của node XẤU NHẤT theo từng chiều — cùng node với con số %.
+    const worstMem = [...nodes].sort((a, b) => (pct(b.memUsed, b.memLimit) ?? -1) - (pct(a.memUsed, a.memLimit) ?? -1))[0];
+    if (worstMem) {
+      put(m, 'memUsedMb', round(worstMem.memUsed / MB));
+      put(m, 'memLimitMb', round(worstMem.memLimit / MB));
+    }
+    const worstFd = [...nodes].sort((a, b) => (pct(b.fdUsed, b.fdTotal) ?? -1) - (pct(a.fdUsed, a.fdTotal) ?? -1))[0];
+    if (worstFd) {
+      put(m, 'fdUsed', worstFd.fdUsed);
+      put(m, 'fdTotal', worstFd.fdTotal);
+    }
   } catch {
     /* overview alone still counts as up */
   }
@@ -253,11 +281,47 @@ export function breaches(value: number, op: InfraWatch['op'], threshold: number)
 
 /**
  * Dữ kiện chỉ NGƯỜI GỌI mới có — watcher đưa address từ cache danh sách kết
- * nối (connections.ts peekAddress). Optional để đường Test/console cũ vẫn gọi
- * được; thiếu thì field thành '' chứ event không vỡ.
+ * nối (connections.ts peekAddress) và CẢ MetricMap của lần poll (để cảnh báo
+ * % nói được con số tuyệt đối cùng thời điểm). Optional để đường Test/console
+ * cũ vẫn gọi được; thiếu thì field thành '' chứ event không vỡ.
  */
 export interface InfraEventExtras {
   address?: string;
+  /** Toàn bộ chỉ số của CÙNG lần đo — nguồn của absUsed/absTotal (catalog.absolute). */
+  metrics?: MetricMap;
+}
+
+/** "3899 MB" → "3.8 GB" khi đáng đọc; số đếm thì thêm dấu phân tách nghìn. */
+function fmtAbs(n: number, unit: string): string {
+  if (unit === 'MB' && Math.abs(n) >= 1024) return `${(n / 1024).toFixed(1)} GB`;
+  const v = Number.isInteger(n) ? n.toLocaleString('vi-VN') : n.toFixed(1);
+  return unit ? `${v} ${unit}` : v;
+}
+
+/**
+ * Fields tuyệt đối đi kèm một cảnh báo — vì "90%" của 1GB nguy hiểm khác hẳn
+ * 90% của 20GB. Cặp used/total do catalog khai (MetricDef.absolute), giá trị
+ * lấy từ CÙNG lần đo. Thiếu dữ liệu → mọi field rỗng, absText rỗng: template
+ * `{{value}}...{{absText}}` tự gọn lại, không cần điều kiện.
+ *
+ * `absText` MANG SẴN dấu phân cách đầu chuỗi (" · ") — template engine không có
+ * if/else, nên "có thì nối, không thì thôi" phải nằm trong chính giá trị.
+ */
+function absoluteFields(watch: InfraWatch, extras?: InfraEventExtras): Record<string, string | number> {
+  const abs = metricDef(watch.stack, watch.metric)?.absolute;
+  const used = abs ? extras?.metrics?.[abs.used] : undefined;
+  const total = abs ? extras?.metrics?.[abs.total] : undefined;
+  if (!abs || typeof used !== 'number' || typeof total !== 'number' || total <= 0) {
+    return { absUsed: '', absTotal: '', absLeft: '', absUnit: '', absText: '' };
+  }
+  const left = Math.round((total - used) * 100) / 100;
+  return {
+    absUsed: used,
+    absTotal: total,
+    absLeft: left,
+    absUnit: abs.unit,
+    absText: ` · ${fmtAbs(used, abs.unit)} / ${fmtAbs(total, abs.unit)} · còn ${fmtAbs(left, abs.unit)}`,
+  };
 }
 
 function baseEvent(
@@ -298,6 +362,7 @@ function baseEvent(
       forSec: watch.forSec ?? 0,
       note: watch.note ?? '',
       description: buildDescription(watch),
+      ...absoluteFields(watch, extras),
     },
   };
 }
@@ -312,12 +377,14 @@ export function infraBreachEvent(
   extras?: InfraEventExtras,
 ): AutomationEvent {
   const label = metricLabel(watch.stack, watch.metric);
+  const base = baseEvent(watch, value, at, extras);
   return {
-    ...baseEvent(watch, value, at, extras),
+    ...base,
     id: `watch:${watch.id}:breach:${at}`,
     type: 'infra.metric',
     title: `${watch.name} — ${label} = ${value}`,
-    text: `${where(watch)}: ${label} = ${value} (ngưỡng ${OP_TEXT[watch.op]} ${watch.threshold})`,
+    // absText mang sẵn " · " đầu chuỗi khi có, rỗng khi không — text tự gọn.
+    text: `${where(watch)}: ${label} = ${value} (ngưỡng ${OP_TEXT[watch.op]} ${watch.threshold})${base.fields.absText}`,
   };
 }
 
@@ -336,7 +403,7 @@ export function infraRecoveredEvent(
     id: `watch:${watch.id}:ok:${at}`,
     type: 'infra.recovered',
     title: `${watch.name} — đã hồi phục`,
-    text: `${where(watch)}: ${label} = ${value}, bình thường trở lại sau ${downSec}s`,
+    text: `${where(watch)}: ${label} = ${value}${base.fields.absText}, bình thường trở lại sau ${downSec}s`,
     fields: { ...base.fields, downSec },
   };
 }

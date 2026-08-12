@@ -140,6 +140,20 @@ export interface AlertMetaRecovery {
 }
 
 /**
+ * Con số TUYỆT ĐỐI đi kèm con số %: 90% RAM của tổng bao nhiêu, còn lại bao
+ * nhiêu — 10% còn lại là 100MB thì nguy, là 2GB thì chưa chắc. Chỉ xuất hiện
+ * khi metric có cặp used/total trong catalog và probe đọc được cả hai.
+ */
+export interface AlertMetaAbsolute {
+  used: number;
+  total: number;
+  left: number;
+  unit: string;
+  /** Bản chữ người đọc: "3.8 GB / 4.0 GB · còn 197 MB". */
+  text: string;
+}
+
+/**
  * Metadata chuẩn của MỘT sự kiện automation. Phần chung luôn có; phần infra /
  * social chỉ xuất hiện đúng nhóm. Đây là hợp đồng với hệ thống ngoài — đổi
  * shape thì bump META_SCHEMA_VERSION.
@@ -167,6 +181,7 @@ export interface AlertMeta {
   metric?: AlertMetaMetric;
   threshold?: AlertMetaThreshold;
   current?: number;
+  absolute?: AlertMetaAbsolute;
   watch?: AlertMetaWatch;
   detection?: AlertMetaDetection;
   description?: string;
@@ -235,6 +250,18 @@ export function buildAlertMeta(event: AutomationEvent): AlertMeta {
         value: n(f.threshold),
       },
       current: n(f.value),
+      // absText mang sẵn " · " đầu chuỗi (cho template) — bản trong meta bỏ đi.
+      ...(typeof f.absTotal === 'number' && f.absTotal > 0
+        ? {
+            absolute: {
+              used: n(f.absUsed),
+              total: n(f.absTotal),
+              left: n(f.absLeft),
+              unit: s(f.absUnit),
+              text: s(f.absText).replace(/^ · /, ''),
+            },
+          }
+        : {}),
       watch: {
         id: s(f.watchId),
         name: s(f.watch),

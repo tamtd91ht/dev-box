@@ -10,7 +10,7 @@
 // này import sources/infra.ts — gộp lại sẽ thành vòng import meta ↔ infra.
 
 import type { AutomationEvent, InfraStack, InfraWatch, TriggerType } from './types';
-import { infraBreachEvent, infraRecoveredEvent } from './sources/infra';
+import { infraBreachEvent, infraRecoveredEvent, type MetricMap } from './sources/infra';
 
 interface SampleSpec {
   watch: InfraWatch;
@@ -18,6 +18,10 @@ interface SampleSpec {
   /** Giá trị lúc vi phạm / lúc hồi phục. */
   breach: number;
   ok: number;
+  /** MetricMap của lần đo mẫu — nguồn của fields tuyệt đối (absUsed/absTotal). */
+  metrics?: MetricMap;
+  /** MetricMap lúc hồi phục — số tuyệt đối phải khớp giá trị `ok`. */
+  okMetrics?: MetricMap;
 }
 
 /** Mỗi stack một watch "tiêu biểu" — metric hay được canh nhất của stack đó. */
@@ -42,6 +46,9 @@ const INFRA_SAMPLES: Record<InfraStack, SampleSpec> = {
     address: '10.0.0.5:6379',
     breach: 95.2,
     ok: 61.3,
+    // Cố ý là ca "90% mà nguy": 95.2% của 4GB — chỉ còn 197MB.
+    metrics: { memUsedPct: 95.2, memUsedMb: 3899, memTotalMb: 4096 },
+    okMetrics: { memUsedPct: 61.3, memUsedMb: 2511, memTotalMb: 4096 },
   },
   mongo: {
     watch: {
@@ -155,8 +162,11 @@ export function sampleEvent(trigger: TriggerType, stack: InfraStack = 'redis', a
   if (trigger === 'infra.metric' || trigger === 'infra.recovered') {
     const spec = INFRA_SAMPLES[stack] ?? INFRA_SAMPLES.redis;
     return trigger === 'infra.metric'
-      ? infraBreachEvent(spec.watch, spec.breach, at, { address: spec.address })
-      : infraRecoveredEvent(spec.watch, spec.ok, at, SAMPLE_DOWN_SEC, { address: spec.address });
+      ? infraBreachEvent(spec.watch, spec.breach, at, { address: spec.address, metrics: spec.metrics })
+      : infraRecoveredEvent(spec.watch, spec.ok, at, SAMPLE_DOWN_SEC, {
+          address: spec.address,
+          metrics: spec.okMetrics ?? spec.metrics,
+        });
   }
 
   if (trigger === 'message.received') {

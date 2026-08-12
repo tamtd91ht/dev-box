@@ -288,7 +288,11 @@ class InfraWatcher {
         st.firing = true;
         trace(cfg, { ...base, ts: now, kind: 'breach', value, note: `vượt ngưỡng ${Math.round(heldSec)}s` });
         void automation.submit(
-          infraBreachEvent(watch, value, now, { address: peekAddress(watch.stack, watch.connectionId) }),
+          infraBreachEvent(watch, value, now, {
+            address: peekAddress(watch.stack, watch.connectionId),
+            // Cả MetricMap của CHÍNH lần đo này — cho fields tuyệt đối (absUsed…).
+            metrics: res.metrics,
+          }),
         );
       } else {
         // Breaching but still inside forSec — worth seeing, because "why did it
@@ -311,6 +315,7 @@ class InfraWatcher {
         void automation.submit(
           infraRecoveredEvent(watch, value, now, downSec, {
             address: peekAddress(watch.stack, watch.connectionId),
+            metrics: res.metrics,
           }),
         );
       }

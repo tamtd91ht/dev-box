@@ -90,6 +90,17 @@ const INFRA_FIELDS: FieldDef[] = [
   { name: 'everySec', label: 'Chu kỳ đo (giây)', kind: 'number', sample: 30 },
   { name: 'forSec', label: 'Giữ ngưỡng (giây)', kind: 'number', hint: '0 = báo ngay khi chạm ngưỡng', sample: 120 },
   { name: 'note', label: 'Ghi chú watch', kind: 'text', hint: 'ngữ cảnh nghiệp vụ do người tạo watch viết', sample: 'Redis này cấp session cho tổng đài FusionPBX.' },
+  { name: 'absUsed', label: 'Tuyệt đối — đã dùng', kind: 'number', hint: 'chỉ có khi metric % khai cặp used/total trong catalog; rỗng khi không', sample: 3899 },
+  { name: 'absTotal', label: 'Tuyệt đối — tổng', kind: 'number', hint: 'mẫu số của con số % — 90% CỦA BAO NHIÊU', sample: 4096 },
+  { name: 'absLeft', label: 'Tuyệt đối — còn lại', kind: 'number', hint: 'tổng − đã dùng, cùng thời điểm đo', sample: 197 },
+  { name: 'absUnit', label: 'Đơn vị tuyệt đối', kind: 'text', hint: 'MB · GB · (rỗng = số đếm)', sample: 'MB' },
+  {
+    name: 'absText',
+    label: 'Tuyệt đối (chuỗi đọc được)',
+    kind: 'text',
+    hint: 'mang sẵn " · " đầu chuỗi, rỗng khi metric không có cặp used/total — đặt ngay sau {{value}} là tự gọn',
+    sample: ' · 3.8 GB / 4.0 GB · còn 197 MB',
+  },
   {
     name: 'description',
     label: 'Mô tả cơ chế phát hiện',
@@ -288,6 +299,15 @@ export interface MetricDef {
   probe?: string;
   /** Cách gộp nhiều node. Trống = số liệu vốn là một con số duy nhất. */
   agg?: MetricAgg;
+  /**
+   * Cặp chỉ số TUYỆT ĐỐI đi kèm khi metric (thường là %) này cảnh báo — vì 90%
+   * của 1GB nguy hiểm khác hẳn 90% của 20GB. `used`/`total` là key metric khác
+   * trong CÙNG lần đo (watcher đưa cả MetricMap vào event), nên hai con số luôn
+   * cùng thời điểm; các probe cũng lấy chúng từ CÙNG NODE với con số % (node
+   * xấu nhất) để không tự mâu thuẫn. Sinh ra fields absUsed/absTotal/absLeft/
+   * absText trên event.
+   */
+  absolute?: { used: string; total: string; unit: string };
 }
 
 export interface StackDef {
@@ -371,6 +391,7 @@ export const STACKS: StackDef[] = [
         alertCode: 'ram',
         probe: REDIS_PROBE,
         agg: 'max',
+        absolute: { used: 'memUsedMb', total: 'memTotalMb', unit: 'MB' },
         meaning:
           'tỉ lệ bộ nhớ Redis đang dùng so với giới hạn maxmemory; node không đặt maxmemory thì so với RAM hệ thống. RAM đầy khiến Redis từ chối ghi (OOM) hoặc bắt đầu evict key.',
       },
@@ -382,6 +403,15 @@ export const STACKS: StackDef[] = [
         probe: REDIS_PROBE,
         agg: 'sum',
         meaning: 'tổng bộ nhớ mọi node đang giữ, tính bằng MB — dùng khi muốn ngưỡng tuyệt đối thay vì phần trăm.',
+      },
+      {
+        key: 'memTotalMb',
+        label: 'RAM giới hạn',
+        unit: 'MB',
+        alertCode: 'ram',
+        probe: REDIS_PROBE,
+        agg: 'sum',
+        meaning: 'tổng giới hạn bộ nhớ (maxmemory; node không đặt thì lấy RAM hệ thống) của mọi node — mẫu số của memUsedPct.',
       },
       {
         key: 'clients',
@@ -443,6 +473,7 @@ export const STACKS: StackDef[] = [
         suggest: { op: 'gt', threshold: 80 },
         alertCode: 'conn',
         probe: MONGO_PROBE,
+        absolute: { used: 'connections', total: 'connectionsTotal', unit: '' },
         meaning: 'tỉ lệ connection đã dùng so với giới hạn của mongod; chạm 100% là client mới bị từ chối kết nối.',
       },
       {
@@ -453,13 +484,37 @@ export const STACKS: StackDef[] = [
         meaning: 'số connection đang mở tới mongod — dùng khi muốn ngưỡng tuyệt đối.',
       },
       {
+        key: 'connectionsTotal',
+        label: 'Connection tối đa',
+        alertCode: 'conn',
+        probe: MONGO_PROBE,
+        meaning: 'trần connection của mongod (đang mở + còn trống) — mẫu số của connectionsUsedPct.',
+      },
+      {
         key: 'cacheUsedPct',
         label: 'WiredTiger cache',
         unit: '%',
         hint: '⚠ WiredTiger được thiết kế để giữ cache ~80–95% — đây là hành vi BÌNH THƯỜNG, không phải sự cố. Đừng đặt ngưỡng ở đây.',
         alertCode: 'cache',
         probe: MONGO_PROBE,
+        absolute: { used: 'cacheUsedMb', total: 'cacheTotalMb', unit: 'MB' },
         meaning: 'mức dùng cache WiredTiger; 80–95% là vùng thiết kế bình thường, chỉ bất thường khi kèm dấu hiệu khác.',
+      },
+      {
+        key: 'cacheUsedMb',
+        label: 'WiredTiger cache đã dùng',
+        unit: 'MB',
+        alertCode: 'cache',
+        probe: MONGO_PROBE,
+        meaning: 'dung lượng cache WiredTiger đang giữ, tính bằng MB.',
+      },
+      {
+        key: 'cacheTotalMb',
+        label: 'WiredTiger cache tối đa',
+        unit: 'MB',
+        alertCode: 'cache',
+        probe: MONGO_PROBE,
+        meaning: 'giới hạn cache WiredTiger cấu hình cho mongod — mẫu số của cacheUsedPct.',
       },
       // dbStats aggregates storage size — the one Mongo call that grows with the
       // number of collections.
@@ -473,7 +528,30 @@ export const STACKS: StackDef[] = [
         minEverySec: 60,
         alertCode: 'disk',
         probe: MONGO_PROBE,
+        absolute: { used: 'diskUsedGb', total: 'diskTotalGb', unit: 'GB' },
         meaning: 'tỉ lệ đĩa đã dùng trên filesystem chứa dữ liệu; đĩa đầy là mongod dừng ghi.',
+      },
+      {
+        key: 'diskUsedGb',
+        label: 'Đĩa đã dùng',
+        unit: 'GB',
+        cost: 'medium',
+        costNote: MONGO_STATUS_NOTE,
+        minEverySec: 60,
+        alertCode: 'disk',
+        probe: MONGO_PROBE,
+        meaning: 'dung lượng đĩa đã dùng trên filesystem chứa dữ liệu, tính bằng GB.',
+      },
+      {
+        key: 'diskTotalGb',
+        label: 'Dung lượng đĩa',
+        unit: 'GB',
+        cost: 'medium',
+        costNote: MONGO_STATUS_NOTE,
+        minEverySec: 60,
+        alertCode: 'disk',
+        probe: MONGO_PROBE,
+        meaning: 'tổng dung lượng filesystem chứa dữ liệu — mẫu số của diskUsedPct.',
       },
       {
         key: 'memResidentMb',
@@ -580,7 +658,30 @@ export const STACKS: StackDef[] = [
         alertCode: 'disk',
         probe: ES_NODES_PROBE,
         agg: 'max',
+        absolute: { used: 'diskUsedGb', total: 'diskTotalGb', unit: 'GB' },
         meaning: 'tỉ lệ đĩa đã dùng của node đầy nhất; chạm ~85% ES ngừng phân bổ shard mới vào node đó, ~95% chuyển index sang chỉ-đọc.',
+      },
+      {
+        key: 'diskUsedGb',
+        label: 'Đĩa đã dùng (node đầy nhất)',
+        unit: 'GB',
+        cost: 'medium',
+        costNote: ES_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'disk',
+        probe: ES_NODES_PROBE,
+        meaning: 'dung lượng đĩa đã dùng của CHÍNH node đầy nhất (cùng node với diskUsedPct), tính bằng GB.',
+      },
+      {
+        key: 'diskTotalGb',
+        label: 'Dung lượng đĩa (node đầy nhất)',
+        unit: 'GB',
+        cost: 'medium',
+        costNote: ES_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'disk',
+        probe: ES_NODES_PROBE,
+        meaning: 'tổng dung lượng đĩa của node đầy nhất — mẫu số của diskUsedPct.',
       },
       {
         key: 'load1m',
@@ -879,7 +980,30 @@ export const STACKS: StackDef[] = [
         alertCode: 'ram',
         probe: RABBIT_NODES_PROBE,
         agg: 'max',
+        absolute: { used: 'memUsedMb', total: 'memLimitMb', unit: 'MB' },
         meaning: 'RAM đã dùng so với giới hạn (watermark) của node cao nhất; chạm 100% là node đó giương memAlarm.',
+      },
+      {
+        key: 'memUsedMb',
+        label: 'RAM đã dùng (node cao nhất)',
+        unit: 'MB',
+        cost: 'medium',
+        costNote: RABBIT_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'ram',
+        probe: RABBIT_NODES_PROBE,
+        meaning: 'RAM đang dùng của CHÍNH node căng nhất (cùng node với memUsedPct), tính bằng MB.',
+      },
+      {
+        key: 'memLimitMb',
+        label: 'RAM watermark (node cao nhất)',
+        unit: 'MB',
+        cost: 'medium',
+        costNote: RABBIT_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'ram',
+        probe: RABBIT_NODES_PROBE,
+        meaning: 'giới hạn RAM (memory watermark) của node căng nhất — mẫu số của memUsedPct; chạm là chặn publisher toàn cụm.',
       },
       {
         key: 'fdUsedPct',
@@ -892,7 +1016,28 @@ export const STACKS: StackDef[] = [
         alertCode: 'fd',
         probe: RABBIT_NODES_PROBE,
         agg: 'max',
+        absolute: { used: 'fdUsed', total: 'fdTotal', unit: '' },
         meaning: 'tỉ lệ file descriptor đã dùng của node cao nhất; hết fd là node không nhận thêm kết nối mới.',
+      },
+      {
+        key: 'fdUsed',
+        label: 'File descriptor đã dùng (node cao nhất)',
+        cost: 'medium',
+        costNote: RABBIT_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'fd',
+        probe: RABBIT_NODES_PROBE,
+        meaning: 'số file descriptor đang mở của node căng nhất (cùng node với fdUsedPct).',
+      },
+      {
+        key: 'fdTotal',
+        label: 'File descriptor tối đa (node cao nhất)',
+        cost: 'medium',
+        costNote: RABBIT_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'fd',
+        probe: RABBIT_NODES_PROBE,
+        meaning: 'trần file descriptor của node căng nhất — mẫu số của fdUsedPct.',
       },
       {
         key: 'queues',
