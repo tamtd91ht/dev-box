@@ -156,7 +156,8 @@ function normAction(raw: unknown): AutomationAction | null {
         threadId: str(a.threadId),
       };
     case 'log':
-      return { type, file: str(a.file) };
+      // `file` cũ bị bỏ có chủ đích: log phải về đúng nơi tab Log & báo cáo đọc.
+      return { type };
     case 'kafka':
       return {
         type,

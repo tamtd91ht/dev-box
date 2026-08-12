@@ -802,7 +802,7 @@ export function defaultAction(type: ActionType): AutomationAction {
     case 'zaloApiSend':
       return { type: 'zaloApiSend', accountKey: 'zaloapi::main', threadId: '', group: false, text: '' };
     case 'log':
-      return { type: 'log', file: '' };
+      return { type: 'log' };
     case 'kafka':
       return { type: 'kafka', connectionId: '', topic: '' };
     case 'reply':
@@ -827,9 +827,7 @@ function summarize(a: AutomationAction): string {
     case 'zaloApiSend':
       return `→ ${a.threadLabel || a.threadId || 'chính mình'}${a.text ? ` · ${a.text.split('\n')[0]}` : ''}`;
     case 'log':
-      // Nơi ghi thật do tab Log & báo cáo quyết định — tên file chỉ là override
-      // khi đang ghi file cục bộ, nên đừng hứa một cái tên khi target là Mongo.
-      return a.file || 'theo cấu hình tab Log & báo cáo';
+      return 'ghi theo cấu hình tab Log & báo cáo';
     case 'kafka':
       return `${a.topic || '(chưa có topic)'}`;
     case 'reply':
@@ -842,18 +840,11 @@ function summarize(a: AutomationAction): string {
 // ── Log ─────────────────────────────────────────────────────────────────────
 
 /**
- * Nơi ghi là lựa chọn Ở TAB LOG & BÁO CÁO (local file / Mongo) — action chỉ nói
- * "ghi đi". Form này đọc config thật để nói đúng chuyện: Mongo thì cho biết ghi
- * vào collection nào (không hỏi tên file — server bỏ qua nó), local mới hiện ô
- * tên file (override), tắt thì cảnh báo action sẽ bị skip.
+ * Action log KHÔNG có tham số: nơi ghi (Mongo / file cục bộ) là cấu hình chung
+ * ở tab Log & báo cáo — vì tab đó chỉ đọc từ đúng một chỗ, cho mỗi rule tự đặt
+ * tên file riêng là tạo dữ liệu mồ côi. Form này chỉ NÓI nơi log sẽ về.
  */
-function LogFields({
-  action,
-  onChange,
-}: {
-  action: Extract<AutomationAction, { type: 'log' }>;
-  onChange: (a: AutomationAction) => void;
-}) {
+function LogFields() {
   const { config } = useAutomation();
   const ls = config.logStore;
 
@@ -865,29 +856,22 @@ function LogFields({
     );
   }
 
-  if (ls.target === 'mongo') {
-    return (
-      <p className="auto-hint auto-wide">
-        Ghi vào MongoDB: <b>{ls.connectionLabel || ls.connectionId || '(chưa chọn kết nối)'}</b> ·{' '}
-        <code>
-          {ls.database}.{ls.collection}
-        </code>{' '}
-        — đổi nơi ghi ở tab 🗄 Log &amp; báo cáo.
-      </p>
-    );
-  }
-
   return (
-    <Field
-      label="Tên file"
-      hint="đang ghi FILE CỤC BỘ (chọn ở tab Log & báo cáo) — cùng thư mục DevBox, đuôi .jsonl; để trống = file cấu hình chung"
-    >
-      <input
-        value={action.file ?? ''}
-        placeholder={ls.file || '.automation-log.jsonl'}
-        onChange={(e) => onChange({ ...action, file: e.target.value })}
-      />
-    </Field>
+    <p className="auto-hint auto-wide">
+      {ls.target === 'mongo' ? (
+        <>
+          Ghi vào MongoDB: <b>{ls.connectionLabel || ls.connectionId || '(chưa chọn kết nối)'}</b> ·{' '}
+          <code>
+            {ls.database}.{ls.collection}
+          </code>
+        </>
+      ) : (
+        <>
+          Ghi vào file cục bộ <code>{ls.file || '.automation-log.jsonl'}</code> (giữ {ls.retentionDays} ngày)
+        </>
+      )}{' '}
+      — đổi nơi ghi ở tab 🗄 Log &amp; báo cáo; xem và chạy báo cáo cũng ở đó.
+    </p>
   );
 }
 
@@ -985,7 +969,7 @@ export default function ActionCard({
 
       {action.type === 'zaloApiSend' ? <ZaloApiSendFields action={action} onChange={onChange} /> : null}
 
-      {action.type === 'log' ? <LogFields action={action} onChange={onChange} /> : null}
+      {action.type === 'log' ? <LogFields /> : null}
 
       {action.type === 'kafka' ? (
         <div className="auto-grid">

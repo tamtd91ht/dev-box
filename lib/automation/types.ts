@@ -190,11 +190,17 @@ export interface TelegramAction {
   threadId?: string;
 }
 
-/** Append one JSON line per hit to a local file. Runs server-side. */
+/**
+ * Ghi một dòng log cho sự kiện khớp. Runs server-side.
+ *
+ * KHÔNG có tham số: nơi ghi (file cục bộ hay Mongo, tên file, collection) là
+ * cấu hình CHUNG ở LogStoreConfig — vì tab Log & báo cáo chỉ đọc từ đó. Bản cũ
+ * từng cho mỗi action đặt tên file riêng: rule hôm nay ghi A, mai ghi B, và
+ * mọi dòng ghi ngoài file cấu hình là log UI không bao giờ đọc — một lựa chọn
+ * chỉ tạo ra dữ liệu mồ côi thì không nên tồn tại.
+ */
 export interface LogAction {
   type: 'log';
-  /** Relative to the DevBox working dir. Empty → .automation-log.jsonl */
-  file?: string;
 }
 
 /** Produce to Kafka through the DevBox's existing connection registry. */

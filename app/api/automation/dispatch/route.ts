@@ -165,10 +165,9 @@ async function runLog(plan: ActionPlan, event: AutomationEvent): Promise<ActionO
       return { ...base, status: 'skipped', detail: 'lưu trữ log đang tắt (bật ở tab Automation)' };
     }
     const entry = buildLogEntry(event, { ruleId: plan.ruleId, ruleName: plan.ruleName, dryRun: plan.dryRun });
-    // `action.file` still overrides the configured local file, so rules written
-    // before this setting existed keep writing where they always did.
-    const target = action.file && cfg.target === 'local' ? { ...cfg, file: action.file } : cfg;
-    const r = await writeLogEntry(target, entry);
+    // Ghi ĐÚNG nơi đã cấu hình, không nhận override từ action: tab Log & báo
+    // cáo chỉ đọc từ đây, nên mọi dòng ghi chỗ khác là dữ liệu mồ côi.
+    const r = await writeLogEntry(cfg, entry);
     return { ...base, status: 'ok', detail: `${r.target}: ${r.where}` };
   } catch (e) {
     return { ...base, status: 'error', detail: (e as Error).message };
