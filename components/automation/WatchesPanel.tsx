@@ -4,7 +4,7 @@
 // stays out of range for long enough, emit an event". The watch itself never
 // notifies anybody — an `infra` rule decides what the alert is worth.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   COST_ICON,
   COST_LABEL,
@@ -299,13 +299,22 @@ function WatchEditor({
 export default function WatchesPanel({
   config,
   onChange,
+  focusWatchId,
+  onFocusHandled,
 }: {
   config: AutomationConfig;
   onChange: (next: AutomationConfig) => void;
+  /** Watch cần mở sẵn, do nút "Xem" bên tab Quy tắc yêu cầu. */
+  focusWatchId?: string | null;
+  /** Báo đã mở xong để cha xoá yêu cầu — bấm lại cùng watch vẫn phải nhảy được. */
+  onFocusHandled?: () => void;
 }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--auto-list', min: 200, max: 640, gap: 12 });
   const [selected, setSelected] = useState<string | null>(null);
+  /** Dòng đang chọn, để cuộn tới khi được mở từ tab Quy tắc. */
+  const selectedRow = useRef<HTMLDivElement | null>(null);
+  const [scrollTo, setScrollTo] = useState<string | null>(null);
   const { samples, running } = useWatcher();
   const watches = config.watches;
   const setWatches = (next: InfraWatch[]) => onChange({ ...config, watches: next });
@@ -364,6 +373,38 @@ export default function WatchesPanel({
     setFSev('');
     setFState('');
   };
+
+  /**
+   * Nút "Xem" bên tab Quy tắc vừa chỉ tới một watch: mở nó ra để sửa.
+   *
+   * XOÁ LỌC luôn, không chỉ setSelected. Bộ lọc ở đây sống theo phiên, nên
+   * watch được nhắm tới rất dễ đang bị một bộ lọc cũ ẩn đi — lúc đó bên phải
+   * hiện đúng watch còn danh sách bên trái không có dòng nào sáng, đọc ra như
+   * app chọn nhầm. Xoá lọc thì thấy nó nằm trong danh sách, cuộn tới được.
+   */
+  useEffect(() => {
+    if (!focusWatchId) return;
+    if (!watches.some((w) => w.id === focusWatchId)) return; // watch đã bị xoá
+    setSelected(focusWatchId);
+    clearFilters();
+    setScrollTo(focusWatchId);
+    onFocusHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusWatchId]);
+
+  /**
+   * Cuộn tới dòng vừa được chọn từ xa. Danh sách dài 150+ dòng nên chỉ tô sáng
+   * thôi là chưa đủ — dòng sáng thường nằm ngoài màn hình.
+   *
+   * Tách khỏi effect trên và chạy sau khi `visible` đã tính lại: lúc effect kia
+   * chạy, bộ lọc mới vừa được xoá nên dòng cần tới có thể CHƯA có trong DOM.
+   */
+  useEffect(() => {
+    if (!scrollTo) return;
+    const el = selectedRow.current;
+    if (el) el.scrollIntoView({ block: 'nearest' });
+    setScrollTo(null);
+  }, [scrollTo, visible]);
   // Only the stacks actually declared — offering all six when five are unused
   // is noise, and the count tells you where the watches are.
   const stackCounts = useMemo(() => {
@@ -459,6 +500,7 @@ export default function WatchesPanel({
               return (
                 <div
                   key={w.id}
+                  ref={w.id === selected ? selectedRow : undefined}
                   className={`auto-rule${selected === w.id ? ' on' : ''}${w.enabled ? '' : ' off'}`}
                   onClick={() => setSelected(w.id)}
                 >

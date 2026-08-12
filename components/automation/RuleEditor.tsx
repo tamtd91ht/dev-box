@@ -40,6 +40,11 @@ const DAYS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
 
 const SEV_ICON: Record<string, string> = { critical: '🔴', warning: '🟠', info: '🔵' };
 
+/** Dấu so sánh cho dòng tóm tắt "metric > ngưỡng". Khớp với WatchesPanel. */
+const OP_TEXT: Record<string, string> = {
+  gt: '>', gte: '≥', lt: '<', lte: '≤', eq: '=', neq: '≠',
+};
+
 /**
  * Pick the watches a rule answers for, BY ID.
  *
@@ -58,12 +63,15 @@ function WatchScope({
   onChange,
   stacks,
   instances,
+  onOpenWatch,
 }: {
   watches: InfraWatch[];
   value: string[];
   onChange: (v: string[]) => void;
   stacks: string[];
   instances: string[];
+  /** Mở watch này ở tab Theo dõi hạ tầng để sửa. Vắng = không hiện nút. */
+  onOpenWatch?: (id: string) => void;
 }) {
   const [q, setQ] = useState('');
   // Joined once: the arrays are fresh objects on every render, so memoizing on
@@ -147,8 +155,32 @@ function WatchScope({
                   {SEV_ICON[w.severity ?? 'warning']} {w.name}
                   {w.enabled ? null : <em className="auto-watchscope-off">đang tắt</em>}
                 </span>
+                <span className="auto-watchscope-sub">
+                  {w.connectionLabel || w.connectionId || '—'} · {w.metric} {OP_TEXT[w.op] ?? w.op}{' '}
+                  {w.threshold}
+                </span>
                 <code className="auto-watchscope-id">{w.id}</code>
               </span>
+              {/* Sang thẳng watch để sửa ngưỡng, thay vì tự đi tìm nó giữa 150+
+                  mục ở tab kia. Nút nằm TRONG <label> nên phải chặn cả click
+                  (label sẽ chuyển click vào checkbox → chọn/bỏ chọn nhầm) lẫn
+                  mousedown (nếu không, ô đang sửa mất focus trước khi kịp đi). */}
+              {onOpenWatch ? (
+                <button
+                  type="button"
+                  className="auto-watchscope-go"
+                  title={`Mở "${w.name}" ở tab Theo dõi hạ tầng để sửa (ngưỡng, chu kỳ, mức độ…)`}
+                  aria-label={`Mở watch ${w.name} để sửa`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onOpenWatch(w.id);
+                  }}
+                >
+                  Xem ↗
+                </button>
+              ) : null}
             </label>
           ))}
         </div>
@@ -476,11 +508,14 @@ export default function RuleEditor({
   rule,
   onChange,
   watches = [],
+  onOpenWatch,
 }: {
   rule: AutomationRule;
   onChange: (r: AutomationRule) => void;
   /** Every declared watch — the pool an infra rule picks from, by id. */
   watches?: InfraWatch[];
+  /** Nhảy sang tab Theo dõi hạ tầng, mở sẵn watch này. Vắng = ẩn nút "Xem". */
+  onOpenWatch?: (id: string) => void;
 }) {
   /**
    * Which action cards are open, by index. Absent = open.
@@ -619,6 +654,7 @@ export default function RuleEditor({
               onChange={(v) => set({ scope: { ...rule.scope, watchIds: v } })}
               stacks={rule.scope.sourceIds}
               instances={rule.scope.instanceIds}
+              onOpenWatch={onOpenWatch}
             />
           </Field>
         )}

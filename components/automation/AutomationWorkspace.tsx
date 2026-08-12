@@ -42,6 +42,19 @@ export default function AutomationWorkspace() {
   const [draft, setDraft] = useState<AutomationConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
+  /**
+   * Watch mà tab Quy tắc vừa nhờ mở (nút "Xem" ở ô Watch trong Phạm vi).
+   *
+   * Ở đây chứ không phải trong WatchesPanel vì việc này bắc cầu GIỮA hai tab —
+   * chỉ chỗ giữ `tab` mới chuyển tab được. Xoá ngay sau khi panel nhận, để bấm
+   * lại đúng watch đó lần nữa vẫn nhảy được (giá trị không đổi thì effect bên
+   * kia sẽ không chạy lại).
+   */
+  const [focusWatchId, setFocusWatchId] = useState<string | null>(null);
+  const openWatch = (id: string) => {
+    setFocusWatchId(id);
+    setTab('watches');
+  };
 
   const cfg = draft ?? snap.config;
   const dirty = draft !== null;
@@ -178,8 +191,15 @@ export default function AutomationWorkspace() {
         ))}
       </div>
 
-      {tab === 'rules' ? <RulesPanel config={cfg} onChange={edit} /> : null}
-      {tab === 'watches' ? <WatchesPanel config={cfg} onChange={edit} /> : null}
+      {tab === 'rules' ? <RulesPanel config={cfg} onChange={edit} onOpenWatch={openWatch} /> : null}
+      {tab === 'watches' ? (
+        <WatchesPanel
+          config={cfg}
+          onChange={edit}
+          focusWatchId={focusWatchId}
+          onFocusHandled={() => setFocusWatchId(null)}
+        />
+      ) : null}
       {tab === 'activity' ? <ActivityPanel activity={snap.activity} /> : null}
       {tab === 'logs' ? <LogPanel config={cfg} onChange={edit} /> : null}
       {tab === 'capture' ? <CapturePanel /> : null}

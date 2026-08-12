@@ -4498,6 +4498,28 @@ pre.kafka-drawer-body {
   margin-left: 6px; font-style: normal; font-size: 9.5px; color: var(--muted);
   border: 1px solid var(--glass-brd); border-radius: 4px; padding: 0 4px;
 }
+/* Ngưỡng hiện ngay trên dòng: câu hỏi "watch này đang để bao nhiêu" là lý do
+   chính người ta bấm sang tab kia — trả lời tại chỗ thì đỡ phải đi. */
+.auto-watchscope-sub {
+  font-size: 10px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Nút "Xem ↗": ẩn cho tới khi hover/focus dòng — 150 dòng mà mỗi dòng một nút
+   sáng thì danh sách thành một bức tường nút, không đọc được tên watch nữa.
+   `visibility` chứ không `display:none` để nút vẫn chiếm chỗ, tên watch không
+   bị đẩy ngang lúc rê chuột qua. */
+.auto-watchscope-go {
+  flex: none; visibility: hidden; cursor: pointer;
+  font-size: 10px; padding: 2px 7px; border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  color: var(--accent);
+}
+.auto-watchscope-row:hover .auto-watchscope-go,
+.auto-watchscope-row:focus-within .auto-watchscope-go { visibility: visible; }
+.auto-watchscope-go:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+/* Bàn phím: nút phải tự hiện khi tab tới, không thì focus rơi vào một nút vô hình. */
+.auto-watchscope-go:focus-visible { visibility: visible; outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ── Editors ──────────────────────────────────────────────── */
 .auto-editor { display: flex; flex-direction: column; gap: 14px; }

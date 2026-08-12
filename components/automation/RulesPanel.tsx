@@ -18,9 +18,12 @@ const actionSummary = (r: AutomationRule): string =>
 export default function RulesPanel({
   config,
   onChange,
+  onOpenWatch,
 }: {
   config: AutomationConfig;
   onChange: (next: AutomationConfig) => void;
+  /** Nút "Xem" ở ô Watch (Phạm vi) → mở watch đó ở tab Theo dõi hạ tầng. */
+  onOpenWatch?: (id: string) => void;
 }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--auto-list', min: 200, max: 640, gap: 12 });
@@ -144,6 +147,7 @@ export default function RulesPanel({
             rule={current}
             watches={config.watches}
             onChange={(next) => setRules(rules.map((r) => (r.id === next.id ? next : r)))}
+            onOpenWatch={onOpenWatch}
           />
         ) : (
           <Empty icon="👈" text="Chọn một quy tắc để sửa, hoặc tạo quy tắc mới." />
