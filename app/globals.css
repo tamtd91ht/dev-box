@@ -4649,6 +4649,37 @@ pre.kafka-drawer-body {
   font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: pre-wrap;
 }
 
+/* ── Biến khả dụng & JSON mẫu (VarsPanel) ─────────────────── */
+.auto-vars { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.auto-vars-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.auto-vars-head select { width: auto; }
+.auto-vars-grid {
+  display: grid; grid-template-columns: minmax(300px, 5fr) minmax(280px, 4fr);
+  gap: 10px; align-items: start;
+}
+@media (max-width: 980px) { .auto-vars-grid { grid-template-columns: 1fr; } }
+.auto-vars-list {
+  display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow: auto;
+  padding: 8px; border-radius: 10px; background: var(--glass-2); border: 1px solid var(--glass-brd);
+}
+.auto-var-row { display: flex; gap: 8px; align-items: baseline; font-size: 12px; min-width: 0; }
+.auto-var-name {
+  flex: 0 0 auto; min-width: 130px; text-align: left; cursor: pointer;
+  background: none; border: none; padding: 2px 4px; border-radius: 6px;
+  font-family: var(--mono); font-size: 11.5px; color: var(--accent);
+}
+.auto-var-name:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.auto-var-label { flex: 0 1 auto; color: var(--text); }
+.auto-var-sample {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-family: var(--mono); font-size: 11px;
+}
+.auto-vars-json { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.auto-vars-json .auto-probe { max-height: 320px; }
+
+/* Mô tả cơ chế phát hiện tự sinh, trong editor watch. */
+.auto-watch-desc { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+
 /* ── Activity ─────────────────────────────────────────────── */
 .auto-activity { display: flex; flex-direction: column; gap: 2px; }
 .auto-act {

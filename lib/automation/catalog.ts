@@ -14,6 +14,17 @@ export interface FieldDef {
   label: string;
   kind: 'text' | 'number';
   hint?: string;
+  /**
+   * Giá trị minh hoạ, để UI dựng được "event mẫu" và bảng biến {{…}} có ví dụ
+   * cụ thể thay vì chỉ tên trường. Registry này là NGUỒN DUY NHẤT — script
+   * check:automation đối chiếu nó với emission thật trong sources/.
+   */
+  sample?: string | number;
+  /**
+   * true = biến suy diễn (title, metaJson…) — KHÔNG nằm trong event.fields.
+   * Bảng biến vẫn liệt kê nó, nhưng script đối chiếu emission thì bỏ qua.
+   */
+  derived?: boolean;
 }
 
 export interface TriggerDef {
@@ -44,12 +55,48 @@ export interface GroupDef {
   actions: ActionType[];
 }
 
-/** Fields every event carries, offered in every group. */
+/** Fields every event carries, offered in every group. `derived`: they live on
+ * the event itself, not in `event.fields` — the consistency check skips them. */
 const CORE_FIELDS: FieldDef[] = [
-  { name: 'title', label: 'Tiêu đề', kind: 'text', hint: 'Người gửi, hoặc tên cảnh báo' },
-  { name: 'text', label: 'Nội dung', kind: 'text' },
-  { name: 'source', label: 'Nguồn', kind: 'text', hint: 'zalo · redis · mongo …' },
-  { name: 'instance', label: 'Tài khoản / kết nối', kind: 'text' },
+  { name: 'title', label: 'Tiêu đề', kind: 'text', hint: 'Người gửi, hoặc tên cảnh báo', sample: 'FusionPBX — RAM cạn kiệt', derived: true },
+  { name: 'text', label: 'Nội dung', kind: 'text', sample: 'FusionPBX: RAM đã dùng (%) = 95.2 (ngưỡng > 92)', derived: true },
+  { name: 'source', label: 'Nguồn', kind: 'text', hint: 'zalo · redis · mongo …', sample: 'redis', derived: true },
+  { name: 'instance', label: 'Tài khoản / kết nối', kind: 'text', sample: 'FusionPBX', derived: true },
+];
+
+/**
+ * Fields EVERY infra event carries — the exact keys `sources/infra.ts baseEvent()`
+ * emits, one entry per key (script check:automation giữ hai bên khớp nhau).
+ * Samples kể một câu chuyện nhất quán: Redis FusionPBX vượt ngưỡng RAM.
+ */
+const INFRA_FIELDS: FieldDef[] = [
+  ...CORE_FIELDS,
+  { name: 'stack', label: 'Stack', kind: 'text', hint: 'redis · mongo · es · kafka · rabbit · pg', sample: 'redis' },
+  { name: 'stackLabel', label: 'Tên stack', kind: 'text', sample: 'Redis' },
+  { name: 'metric', label: 'Chỉ số', kind: 'text', sample: 'memUsedPct' },
+  { name: 'metricLabel', label: 'Tên chỉ số', kind: 'text', sample: 'RAM đã dùng (%)' },
+  { name: 'value', label: 'Giá trị', kind: 'number', sample: 95.2 },
+  { name: 'threshold', label: 'Ngưỡng', kind: 'number', sample: 92 },
+  { name: 'op', label: 'Phép so sánh', kind: 'text', hint: 'gt · gte · lt · lte · eq · neq', sample: 'gt' },
+  { name: 'opText', label: 'Phép so sánh (ký hiệu)', kind: 'text', hint: '> · ≥ · < · ≤ · = · ≠', sample: '>' },
+  { name: 'unit', label: 'Đơn vị', kind: 'text', sample: '%' },
+  { name: 'watch', label: 'Tên watch', kind: 'text', sample: 'FusionPBX — RAM cạn kiệt (>92%)' },
+  { name: 'watchId', label: 'Id watch', kind: 'text', hint: 'định danh ổn định — đổi tên watch không đổi id', sample: 'w-redis-omicrm-fusionpbx-memusedpct-p1' },
+  { name: 'severity', label: 'Mức độ', kind: 'text', hint: 'critical · warning · info', sample: 'critical' },
+  { name: 'severityLabel', label: 'Mức độ (nhãn)', kind: 'text', sample: '🔴 NGHIÊM TRỌNG' },
+  { name: 'tags', label: 'Tags', kind: 'text', hint: 'nối bằng dấu phẩy', sample: 'redis,omicrm' },
+  { name: 'address', label: 'Địa chỉ', kind: 'text', hint: 'host:port của kết nối — rỗng khi chưa tải được danh sách kết nối', sample: '10.0.0.5:6379' },
+  { name: 'alertType', label: 'Mã cảnh báo', kind: 'text', hint: 'mã ổn định stack.mã.hướng — vd redis.ram.high, pg.down', sample: 'redis.ram.high' },
+  { name: 'everySec', label: 'Chu kỳ đo (giây)', kind: 'number', sample: 30 },
+  { name: 'forSec', label: 'Giữ ngưỡng (giây)', kind: 'number', hint: '0 = báo ngay khi chạm ngưỡng', sample: 120 },
+  { name: 'note', label: 'Ghi chú watch', kind: 'text', hint: 'ngữ cảnh nghiệp vụ do người tạo watch viết', sample: 'Redis này cấp session cho tổng đài FusionPBX.' },
+  {
+    name: 'description',
+    label: 'Mô tả cơ chế phát hiện',
+    kind: 'text',
+    hint: 'tự sinh từ catalog: chỉ số nghĩa là gì, đo bằng gì, chu kỳ, ngưỡng — đủ ngữ cảnh cho người trực hoặc bot AI phân tích',
+    sample: 'RAM đã dùng (%) — tỉ lệ bộ nhớ Redis đang dùng so với giới hạn maxmemory…',
+  },
 ];
 
 export const GROUPS: GroupDef[] = [
@@ -71,25 +118,30 @@ export const GROUPS: GroupDef[] = [
             label: 'Hội thoại',
             kind: 'text',
             hint: 'tên nhóm, hoặc tên người khi chat 1-1',
+            sample: 'OMITeam',
           },
           {
             name: 'sender',
             label: 'Người gửi',
             kind: 'text',
             hint: 'trong nhóm là người vừa nhắn; chat 1-1 thì trùng tên hội thoại',
+            sample: 'Nguyễn Văn A',
           },
           {
             name: 'chatType',
             label: 'Loại hội thoại',
             kind: 'text',
             hint: 'group = nhóm · user = chat 1-1',
+            sample: 'group',
           },
-          { name: 'capture', label: 'Cách bắt', kind: 'text', hint: 'notification · dom · ws (Zalo API)' },
+          { name: 'app', label: 'Ứng dụng', kind: 'text', hint: 'Zalo · Telegram · Zalo API…', sample: 'Zalo API' },
+          { name: 'capture', label: 'Cách bắt', kind: 'text', hint: 'notification · dom · ws (Zalo API)', sample: 'ws' },
           {
             name: 'threadId',
             label: 'threadId (Zalo API)',
             kind: 'text',
             hint: 'id hội thoại thật — chỉ nhánh Zalo API mới có; DOM để trống',
+            sample: 'g8134772156',
           },
         ],
       },
@@ -106,26 +158,15 @@ export const GROUPS: GroupDef[] = [
         type: 'infra.metric',
         label: 'Vượt ngưỡng',
         blurb: 'Một chỉ số theo dõi vượt ngưỡng và giữ đủ lâu.',
-        fields: [
-          ...CORE_FIELDS,
-          { name: 'stack', label: 'Stack', kind: 'text', hint: 'redis · mongo · es · kafka · rabbit · pg' },
-          { name: 'metric', label: 'Chỉ số', kind: 'text' },
-          { name: 'value', label: 'Giá trị', kind: 'number' },
-          { name: 'threshold', label: 'Ngưỡng', kind: 'number' },
-          { name: 'watch', label: 'Tên watch', kind: 'text' },
-        ],
+        fields: INFRA_FIELDS,
       },
       {
         type: 'infra.recovered',
         label: 'Đã hồi phục',
         blurb: 'Chỉ số quay lại bình thường sau khi đã cảnh báo.',
         fields: [
-          ...CORE_FIELDS,
-          { name: 'stack', label: 'Stack', kind: 'text' },
-          { name: 'metric', label: 'Chỉ số', kind: 'text' },
-          { name: 'value', label: 'Giá trị', kind: 'number' },
-          { name: 'threshold', label: 'Ngưỡng', kind: 'number' },
-          { name: 'downSec', label: 'Thời gian vi phạm (giây)', kind: 'number' },
+          ...INFRA_FIELDS,
+          { name: 'downSec', label: 'Thời gian vi phạm (giây)', kind: 'number', sample: 340 },
         ],
       },
     ],
@@ -209,6 +250,18 @@ export const opDef = (op: ConditionOp): OpDef => OPERATORS.find((o) => o.op === 
  */
 export type ProbeCost = 'cheap' | 'medium' | 'heavy';
 
+/** Gộp số liệu nhiều node thành MỘT con số thế nào — khớp maxOf/minOf/sumOf trong sources/infra.ts. */
+export type MetricAgg = 'max' | 'min' | 'sum' | 'count';
+
+// Nhãn cố ý nói "giá trị" chứ không nói "node": Redis gộp theo node nhưng
+// Kafka lag gộp theo consumer group — cùng một phép max, khác đơn vị gộp.
+export const AGG_LABEL: Record<MetricAgg, string> = {
+  max: 'lấy giá trị cao nhất trong cụm (xấu nhất thắng)',
+  min: 'lấy giá trị thấp nhất trong cụm (xấu nhất thắng)',
+  sum: 'cộng tổng toàn cụm',
+  count: 'đếm trên toàn cụm',
+};
+
 export interface MetricDef {
   key: string;
   label: string;
@@ -222,6 +275,19 @@ export interface MetricDef {
   costNote?: string;
   /** Poll interval below which this metric is a genuine risk (seconds). */
   minEverySec?: number;
+  /**
+   * Mã ngữ nghĩa cho alertType (`stack.mã.hướng`, vd `redis.ram.high`) — định
+   * danh ỔN ĐỊNH để hệ thống ngoài (bot AI, webhook) phân loại cảnh báo mà
+   * không parse tiếng Việt. Trống → dùng chính `key`. Metric `up` là ngoại lệ:
+   * alertType = `stack.down` (xem meta.ts).
+   */
+  alertCode?: string;
+  /** Chỉ số này NGHĨA là gì và vì sao đáng quan tâm (1–2 câu, cho description). */
+  meaning?: string;
+  /** Probe đọc nó bằng gì: 'lệnh INFO', '/_cat/nodes', 'SELECT 1'… */
+  probe?: string;
+  /** Cách gộp nhiều node. Trống = số liệu vốn là một con số duy nhất. */
+  agg?: MetricAgg;
 }
 
 export interface StackDef {
@@ -256,6 +322,20 @@ const RABBIT_NODES_NOTE =
   'Ngoài /api/overview còn gọi /api/nodes. Management plugin của RabbitMQ tính số liệu ngay lúc được hỏi, ' +
   'nên hỏi quá dày sẽ ăn CPU của chính node. Nên để ≥60s.';
 
+// ── Probe descriptions, written once and shared ─────────────────────────────
+// `probe` nói máy ĐO BẰNG GÌ — nó đi vào description của mọi cảnh báo, nên một
+// người trực (hoặc bot AI) đọc tin nhắn là biết con số đến từ đâu.
+
+const REDIS_PROBE = 'lệnh INFO trên từng node';
+const MONGO_PROBE = 'serverStatus + dbStats + replSetGetStatus';
+const ES_HEALTH_PROBE = '/_cluster/health';
+const ES_NODES_PROBE = '/_cluster/health + /_cat/nodes';
+const KAFKA_META_PROBE = 'describeCluster + metadata toàn bộ topic';
+const KAFKA_LAG_PROBE = 'listGroups + describeGroups + fetchOffsets cho từng consumer group';
+const RABBIT_OVERVIEW_PROBE = '/api/overview (management API)';
+const RABBIT_NODES_PROBE = '/api/overview + /api/nodes (management API)';
+const PG_PROBE = 'truy vấn ping (SELECT 1)';
+
 /** `up` exists for every stack: 1 = probe succeeded, 0 = unreachable. */
 const UP: MetricDef = {
   key: 'up',
@@ -263,12 +343,17 @@ const UP: MetricDef = {
   unit: '0/1',
   suggest: { op: 'lt', threshold: 1 },
   hint: 'Cảnh báo mất kết nối: up < 1',
+  // alertType của `up` được đặc cách thành `stack.down` trong meta.ts.
+  meaning:
+    'DevBox mở kết nối và hỏi trạng thái: 1 = máy chủ trả lời, 0 = không kết nối được (sập, nghẽn, sai thông tin đăng nhập, mất mạng/VPN). Mất kết nối là sự cố trực tiếp với mọi dịch vụ đang dùng hệ thống này.',
 };
 const LATENCY: MetricDef = {
   key: 'latencyMs',
   label: 'Độ trễ probe',
   unit: 'ms',
   suggest: { op: 'gt', threshold: 1000 },
+  alertCode: 'latency',
+  meaning: 'thời gian từ lúc DevBox hỏi đến lúc dịch vụ trả lời; tăng đột biến là mạng hoặc máy chủ đang nghẽn.',
 };
 
 export const STACKS: StackDef[] = [
@@ -277,19 +362,72 @@ export const STACKS: StackDef[] = [
     label: 'Redis',
     icon: '🧠',
     metrics: [
-      UP,
-      { key: 'memUsedPct', label: 'RAM đã dùng', unit: '%', suggest: { op: 'gt', threshold: 80 } },
-      { key: 'memUsedMb', label: 'RAM đã dùng', unit: 'MB' },
-      { key: 'clients', label: 'Client đang kết nối', suggest: { op: 'gt', threshold: 5000 } },
-      { key: 'opsPerSec', label: 'Ops/giây', suggest: { op: 'gt', threshold: 50000 } },
+      { ...UP, probe: REDIS_PROBE },
+      {
+        key: 'memUsedPct',
+        label: 'RAM đã dùng',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 80 },
+        alertCode: 'ram',
+        probe: REDIS_PROBE,
+        agg: 'max',
+        meaning:
+          'tỉ lệ bộ nhớ Redis đang dùng so với giới hạn maxmemory; node không đặt maxmemory thì so với RAM hệ thống. RAM đầy khiến Redis từ chối ghi (OOM) hoặc bắt đầu evict key.',
+      },
+      {
+        key: 'memUsedMb',
+        label: 'RAM đã dùng',
+        unit: 'MB',
+        alertCode: 'ram',
+        probe: REDIS_PROBE,
+        agg: 'sum',
+        meaning: 'tổng bộ nhớ mọi node đang giữ, tính bằng MB — dùng khi muốn ngưỡng tuyệt đối thay vì phần trăm.',
+      },
+      {
+        key: 'clients',
+        label: 'Client đang kết nối',
+        suggest: { op: 'gt', threshold: 5000 },
+        alertCode: 'conn',
+        probe: REDIS_PROBE,
+        agg: 'sum',
+        meaning: 'tổng số client đang mở kết nối; tăng vọt thường do rò kết nối hoặc connection pool cấu hình sai phía ứng dụng.',
+      },
+      {
+        key: 'opsPerSec',
+        label: 'Ops/giây',
+        suggest: { op: 'gt', threshold: 50000 },
+        alertCode: 'ops',
+        probe: REDIS_PROBE,
+        agg: 'sum',
+        meaning: 'tổng số lệnh Redis xử lý mỗi giây — thước đo tải; đột biến là có nơi gọi bất thường.',
+      },
       {
         key: 'hitRatePct',
         label: 'Tỉ lệ cache hit',
         unit: '%',
         hint: '⚠ Chỉ có nghĩa với instance dùng làm CACHE. Redis làm queue/lock/session thì hit-rate thấp là bình thường — đặt ngưỡng ở đây sẽ báo sai liên tục.',
+        alertCode: 'hitrate',
+        probe: REDIS_PROBE,
+        agg: 'min',
+        meaning: 'tỉ lệ lệnh đọc trúng cache; chỉ có nghĩa với instance làm CACHE — tụt sâu là cache đang bị evict hoặc pattern truy cập đổi.',
       },
-      { key: 'fragmentation', label: 'Tỉ lệ phân mảnh', suggest: { op: 'gt', threshold: 1.6 } },
-      { key: 'nodes', label: 'Số node đọc được' },
+      {
+        key: 'fragmentation',
+        label: 'Tỉ lệ phân mảnh',
+        suggest: { op: 'gt', threshold: 1.6 },
+        alertCode: 'frag',
+        probe: REDIS_PROBE,
+        agg: 'max',
+        meaning: 'tỉ lệ RAM hệ điều hành cấp cho Redis so với dữ liệu thật (RSS/used_memory); vượt ~1.5 thường sau khi xoá key hàng loạt — RAM bị giữ mà không chứa gì.',
+      },
+      {
+        key: 'nodes',
+        label: 'Số node đọc được',
+        alertCode: 'nodes',
+        probe: REDIS_PROBE,
+        agg: 'count',
+        meaning: 'số node trả lời probe; giảm so với bình thường nghĩa là có node trong cụm không trả lời.',
+      },
     ],
   },
   {
@@ -297,14 +435,31 @@ export const STACKS: StackDef[] = [
     label: 'MongoDB',
     icon: '🍃',
     metrics: [
-      UP,
-      { key: 'connectionsUsedPct', label: 'Connection pool đã dùng', unit: '%', suggest: { op: 'gt', threshold: 80 } },
-      { key: 'connections', label: 'Connection hiện tại' },
+      { ...UP, probe: MONGO_PROBE },
+      {
+        key: 'connectionsUsedPct',
+        label: 'Connection pool đã dùng',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 80 },
+        alertCode: 'conn',
+        probe: MONGO_PROBE,
+        meaning: 'tỉ lệ connection đã dùng so với giới hạn của mongod; chạm 100% là client mới bị từ chối kết nối.',
+      },
+      {
+        key: 'connections',
+        label: 'Connection hiện tại',
+        alertCode: 'conn',
+        probe: MONGO_PROBE,
+        meaning: 'số connection đang mở tới mongod — dùng khi muốn ngưỡng tuyệt đối.',
+      },
       {
         key: 'cacheUsedPct',
         label: 'WiredTiger cache',
         unit: '%',
         hint: '⚠ WiredTiger được thiết kế để giữ cache ~80–95% — đây là hành vi BÌNH THƯỜNG, không phải sự cố. Đừng đặt ngưỡng ở đây.',
+        alertCode: 'cache',
+        probe: MONGO_PROBE,
+        meaning: 'mức dùng cache WiredTiger; 80–95% là vùng thiết kế bình thường, chỉ bất thường khi kèm dấu hiệu khác.',
       },
       // dbStats aggregates storage size — the one Mongo call that grows with the
       // number of collections.
@@ -316,10 +471,37 @@ export const STACKS: StackDef[] = [
         cost: 'medium',
         costNote: MONGO_STATUS_NOTE,
         minEverySec: 60,
+        alertCode: 'disk',
+        probe: MONGO_PROBE,
+        meaning: 'tỉ lệ đĩa đã dùng trên filesystem chứa dữ liệu; đĩa đầy là mongod dừng ghi.',
       },
-      { key: 'memResidentMb', label: 'RAM resident', unit: 'MB' },
-      { key: 'replLagSec', label: 'Replication lag', unit: 's', suggest: { op: 'gt', threshold: 10 } },
-      { key: 'membersUnhealthy', label: 'Member lỗi', suggest: { op: 'gt', threshold: 0 } },
+      {
+        key: 'memResidentMb',
+        label: 'RAM resident',
+        unit: 'MB',
+        alertCode: 'ram',
+        probe: MONGO_PROBE,
+        meaning: 'RAM tiến trình mongod đang giữ (resident), tính bằng MB.',
+      },
+      {
+        key: 'replLagSec',
+        label: 'Replication lag',
+        unit: 's',
+        suggest: { op: 'gt', threshold: 10 },
+        alertCode: 'repllag',
+        probe: MONGO_PROBE,
+        agg: 'max',
+        meaning: 'độ trễ của secondary chậm nhất so với primary; lag cao nghĩa là đọc từ secondary bị dữ liệu cũ và failover sẽ mất dữ liệu mới nhất.',
+      },
+      {
+        key: 'membersUnhealthy',
+        label: 'Member lỗi',
+        suggest: { op: 'gt', threshold: 0 },
+        alertCode: 'members',
+        probe: MONGO_PROBE,
+        agg: 'count',
+        meaning: 'số member trong replica set tự báo không khỏe (state khác PRIMARY/SECONDARY/ARBITER khỏe mạnh).',
+      },
     ],
   },
   {
@@ -327,17 +509,99 @@ export const STACKS: StackDef[] = [
     label: 'Elasticsearch',
     icon: '🔎',
     metrics: [
-      UP,
-      { key: 'statusLevel', label: 'Trạng thái cluster', unit: '0=green 1=yellow 2=red', suggest: { op: 'gte', threshold: 1 } },
-      { key: 'unassignedShards', label: 'Shard chưa gán', suggest: { op: 'gt', threshold: 0 } },
-      { key: 'relocatingShards', label: 'Shard đang di chuyển' },
-      { key: 'pendingTasks', label: 'Pending tasks', suggest: { op: 'gt', threshold: 10 } },
+      { ...UP, probe: ES_HEALTH_PROBE },
+      {
+        key: 'statusLevel',
+        label: 'Trạng thái cluster',
+        unit: '0=green 1=yellow 2=red',
+        suggest: { op: 'gte', threshold: 1 },
+        alertCode: 'status',
+        probe: ES_HEALTH_PROBE,
+        meaning: 'trạng thái cluster ES tự báo: 0=green, 1=yellow (thiếu bản sao — mất thêm node là mất dữ liệu), 2=red (mất primary shard — CÓ dữ liệu không đọc được ngay bây giờ).',
+      },
+      {
+        key: 'unassignedShards',
+        label: 'Shard chưa gán',
+        suggest: { op: 'gt', threshold: 0 },
+        alertCode: 'shards',
+        probe: ES_HEALTH_PROBE,
+        meaning: 'số shard chưa được gán vào node nào — nguyên nhân trực tiếp của yellow/red; thường do node rời cụm hoặc đĩa đầy chặn phân bổ.',
+      },
+      {
+        key: 'relocatingShards',
+        label: 'Shard đang di chuyển',
+        alertCode: 'shards',
+        probe: ES_HEALTH_PROBE,
+        meaning: 'số shard đang chuyển giữa các node; nhiều và kéo dài nghĩa là cụm đang tái cân bằng nặng, ăn I/O và băng thông.',
+      },
+      {
+        key: 'pendingTasks',
+        label: 'Pending tasks',
+        suggest: { op: 'gt', threshold: 10 },
+        alertCode: 'tasks',
+        probe: ES_HEALTH_PROBE,
+        meaning: 'số task quản trị đang xếp hàng chờ master xử lý; tăng dần là master quá tải.',
+      },
       // These four come from the second call, /_cat/nodes.
-      { key: 'heapPct', label: 'Heap cao nhất', unit: '%', suggest: { op: 'gt', threshold: 85 }, cost: 'medium', costNote: ES_NODES_NOTE, minEverySec: 60 },
-      { key: 'cpuPct', label: 'CPU cao nhất', unit: '%', suggest: { op: 'gt', threshold: 90 }, cost: 'medium', costNote: ES_NODES_NOTE, minEverySec: 60 },
-      { key: 'diskUsedPct', label: 'Đĩa cao nhất', unit: '%', suggest: { op: 'gt', threshold: 85 }, cost: 'medium', costNote: ES_NODES_NOTE, minEverySec: 60 },
-      { key: 'load1m', label: 'Load 1m cao nhất', cost: 'medium', costNote: ES_NODES_NOTE, minEverySec: 60 },
-      { key: 'nodes', label: 'Số node', suggest: { op: 'lt', threshold: 3 } },
+      {
+        key: 'heapPct',
+        label: 'Heap cao nhất',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 85 },
+        cost: 'medium',
+        costNote: ES_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'heap',
+        probe: ES_NODES_PROBE,
+        agg: 'max',
+        meaning: 'mức dùng heap JVM của node cao nhất trong cụm; heap cao kéo dài gây GC liên tục, truy vấn chậm và node có thể rớt khỏi cụm.',
+      },
+      {
+        key: 'cpuPct',
+        label: 'CPU cao nhất',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 90 },
+        cost: 'medium',
+        costNote: ES_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'cpu',
+        probe: ES_NODES_PROBE,
+        agg: 'max',
+        meaning: 'mức dùng CPU của node bận nhất trong cụm.',
+      },
+      {
+        key: 'diskUsedPct',
+        label: 'Đĩa cao nhất',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 85 },
+        cost: 'medium',
+        costNote: ES_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'disk',
+        probe: ES_NODES_PROBE,
+        agg: 'max',
+        meaning: 'tỉ lệ đĩa đã dùng của node đầy nhất; chạm ~85% ES ngừng phân bổ shard mới vào node đó, ~95% chuyển index sang chỉ-đọc.',
+      },
+      {
+        key: 'load1m',
+        label: 'Load 1m cao nhất',
+        cost: 'medium',
+        costNote: ES_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'load',
+        probe: ES_NODES_PROBE,
+        agg: 'max',
+        meaning: 'load average 1 phút của node nặng nhất trong cụm.',
+      },
+      {
+        key: 'nodes',
+        label: 'Số node',
+        suggest: { op: 'lt', threshold: 3 },
+        alertCode: 'nodes',
+        probe: ES_HEALTH_PROBE,
+        agg: 'count',
+        meaning: 'số node đang có mặt trong cụm; giảm so với bình thường là có node vừa rời cụm.',
+      },
     ],
   },
   {
@@ -348,7 +612,7 @@ export const STACKS: StackDef[] = [
       // EVERY kafka metric pays for clusterHealth, which calls
       // fetchTopicMetadata over ALL topics — cost scales with the topic count,
       // and it is the controller that answers.
-      { ...UP, cost: 'heavy', costNote: KAFKA_META_NOTE, minEverySec: 60 },
+      { ...UP, cost: 'heavy', costNote: KAFKA_META_NOTE, minEverySec: 60, probe: KAFKA_META_PROBE },
       {
         key: 'underReplicated',
         label: 'Partition under-replicated',
@@ -356,6 +620,9 @@ export const STACKS: StackDef[] = [
         cost: 'heavy',
         costNote: KAFKA_META_NOTE,
         minEverySec: 60,
+        alertCode: 'replication',
+        probe: KAFKA_META_PROBE,
+        meaning: 'số partition thiếu bản sao trong ISR — dữ liệu vẫn đọc/ghi được nhưng mất thêm broker nữa là mất dữ liệu.',
       },
       {
         key: 'offline',
@@ -364,8 +631,22 @@ export const STACKS: StackDef[] = [
         cost: 'heavy',
         costNote: KAFKA_META_NOTE,
         minEverySec: 60,
+        alertCode: 'partition',
+        probe: KAFKA_META_PROBE,
+        meaning: 'số partition không có leader — producer/consumer vào các partition này đang lỗi NGAY BÂY GIỜ.',
       },
-      { key: 'brokers', label: 'Số broker', suggest: { op: 'lt', threshold: 3 }, cost: 'heavy', costNote: KAFKA_META_NOTE, minEverySec: 60 },
+      {
+        key: 'brokers',
+        label: 'Số broker',
+        suggest: { op: 'lt', threshold: 3 },
+        cost: 'heavy',
+        costNote: KAFKA_META_NOTE,
+        minEverySec: 60,
+        alertCode: 'brokers',
+        probe: KAFKA_META_PROBE,
+        agg: 'count',
+        meaning: 'số broker đang sống trong cụm; giảm là có broker vừa rớt.',
+      },
       {
         key: 'noController',
         label: 'Mất controller',
@@ -374,6 +655,9 @@ export const STACKS: StackDef[] = [
         cost: 'heavy',
         costNote: KAFKA_META_NOTE,
         minEverySec: 60,
+        alertCode: 'controller',
+        probe: KAFKA_META_PROBE,
+        meaning: '1 = cụm không có controller — không ai điều phối bầu leader, sự cố partition sẽ không tự hồi phục.',
       },
       {
         key: 'maxConsumerLag',
@@ -384,6 +668,10 @@ export const STACKS: StackDef[] = [
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
         minEverySec: 120,
+        alertCode: 'lag',
+        probe: KAFKA_LAG_PROBE,
+        agg: 'max',
+        meaning: 'chênh lệch giữa offset cuối của topic và offset đã commit, của group tụt hậu nhiều nhất; group không đọc được lag bị loại khỏi phép tính (không đoán là 0). Cluster có thể vẫn "xanh" mà lag cao — nghĩa là nghiệp vụ đang xử lý chậm hoặc consumer đã chết.',
       },
       {
         key: 'stalledGroups',
@@ -393,6 +681,10 @@ export const STACKS: StackDef[] = [
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
         minEverySec: 120,
+        alertCode: 'stalled',
+        probe: KAFKA_LAG_PROBE,
+        agg: 'count',
+        meaning: 'số group còn lag nhưng offset KHÔNG nhích qua ≥30s — consumer chết dù vẫn giữ kết nối; group đang bắt kịp thì không tính.',
       },
       {
         key: 'maxStalledSec',
@@ -403,6 +695,10 @@ export const STACKS: StackDef[] = [
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
         minEverySec: 120,
+        alertCode: 'stalled',
+        probe: KAFKA_LAG_PROBE,
+        agg: 'max',
+        meaning: 'thời gian group tệ nhất đã đứng im (còn lag, offset không nhích) — dùng thay stalledGroups khi muốn bỏ qua các lần treo ngắn.',
       },
       {
         key: 'emptyGroups',
@@ -412,6 +708,10 @@ export const STACKS: StackDef[] = [
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
         minEverySec: 120,
+        alertCode: 'consumers',
+        probe: KAFKA_LAG_PROBE,
+        agg: 'count',
+        meaning: 'số group có commit offset nhưng 0 consumer đang chạy — dịch vụ tiêu thụ đã tắt hẳn.',
       },
       {
         key: 'rebalancingGroups',
@@ -421,6 +721,10 @@ export const STACKS: StackDef[] = [
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
         minEverySec: 120,
+        alertCode: 'rebalance',
+        probe: KAFKA_LAG_PROBE,
+        agg: 'count',
+        meaning: 'số group đang rebalance; rebalance kéo dài là consumer flapping (chết/sống liên tục), nghiệp vụ chập chờn.',
       },
       {
         key: 'totalConsumerLag',
@@ -429,6 +733,10 @@ export const STACKS: StackDef[] = [
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
         minEverySec: 120,
+        alertCode: 'lag',
+        probe: KAFKA_LAG_PROBE,
+        agg: 'sum',
+        meaning: 'tổng lag cộng dồn của mọi group đọc được — thước đo "khối lượng chưa xử lý" toàn cụm.',
       },
       {
         key: 'lagGroupsUnknown',
@@ -438,6 +746,10 @@ export const STACKS: StackDef[] = [
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
         minEverySec: 120,
+        alertCode: 'lag',
+        probe: KAFKA_LAG_PROBE,
+        agg: 'count',
+        meaning: 'số group mà probe KHÔNG đọc được lag (thường đang rebalance) — lag của chúng là KHÔNG XÁC ĐỊNH, không phải 0.',
       },
       {
         key: 'undescribedGroups',
@@ -446,10 +758,44 @@ export const STACKS: StackDef[] = [
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
         minEverySec: 120,
+        alertCode: 'groups',
+        probe: KAFKA_LAG_PROBE,
+        agg: 'count',
+        meaning: 'số group mà describeGroups lỗi — số member/state không xác định, các chỉ số member bỏ qua chúng.',
       },
-      { key: 'groups', label: 'Số consumer group', cost: 'heavy', costNote: KAFKA_LAG_NOTE, minEverySec: 120 },
-      { key: 'topics', label: 'Số topic', cost: 'heavy', costNote: KAFKA_META_NOTE, minEverySec: 60 },
-      { key: 'partitions', label: 'Số partition', cost: 'heavy', costNote: KAFKA_META_NOTE, minEverySec: 60 },
+      {
+        key: 'groups',
+        label: 'Số consumer group',
+        cost: 'heavy',
+        costNote: KAFKA_LAG_NOTE,
+        minEverySec: 120,
+        alertCode: 'groups',
+        probe: KAFKA_LAG_PROBE,
+        agg: 'count',
+        meaning: 'tổng số consumer group cụm đang biết.',
+      },
+      {
+        key: 'topics',
+        label: 'Số topic',
+        cost: 'heavy',
+        costNote: KAFKA_META_NOTE,
+        minEverySec: 60,
+        alertCode: 'topics',
+        probe: KAFKA_META_PROBE,
+        agg: 'count',
+        meaning: 'tổng số topic trong cụm.',
+      },
+      {
+        key: 'partitions',
+        label: 'Số partition',
+        cost: 'heavy',
+        costNote: KAFKA_META_NOTE,
+        minEverySec: 60,
+        alertCode: 'partition',
+        probe: KAFKA_META_PROBE,
+        agg: 'count',
+        meaning: 'tổng số partition trong cụm.',
+      },
     ],
   },
   {
@@ -457,25 +803,123 @@ export const STACKS: StackDef[] = [
     label: 'RabbitMQ',
     icon: '🐰',
     metrics: [
-      UP,
-      { key: 'messagesReady', label: 'Message tồn (ready)', suggest: { op: 'gt', threshold: 10000 } },
-      { key: 'messagesUnacked', label: 'Message chưa ack', suggest: { op: 'gt', threshold: 5000 } },
-      { key: 'consumers', label: 'Số consumer', suggest: { op: 'lt', threshold: 1 } },
+      { ...UP, probe: RABBIT_OVERVIEW_PROBE },
+      {
+        key: 'messagesReady',
+        label: 'Message tồn (ready)',
+        suggest: { op: 'gt', threshold: 10000 },
+        alertCode: 'queue',
+        probe: RABBIT_OVERVIEW_PROBE,
+        agg: 'sum',
+        meaning: 'tổng message nằm chờ trong queue chưa có ai nhận; tăng đều nghĩa là consumer không theo kịp tốc độ publish.',
+      },
+      {
+        key: 'messagesUnacked',
+        label: 'Message chưa ack',
+        suggest: { op: 'gt', threshold: 5000 },
+        alertCode: 'queue',
+        probe: RABBIT_OVERVIEW_PROBE,
+        agg: 'sum',
+        meaning: 'message đã giao cho consumer nhưng chưa được ack; cao là consumer xử lý chậm hoặc đang treo giữa chừng.',
+      },
+      {
+        key: 'consumers',
+        label: 'Số consumer',
+        suggest: { op: 'lt', threshold: 1 },
+        alertCode: 'consumers',
+        probe: RABBIT_OVERVIEW_PROBE,
+        agg: 'count',
+        meaning: 'tổng consumer đang đăng ký trên broker; về 0 là không còn ai xử lý message.',
+      },
       // Everything below needs the second call, /api/nodes.
-      { key: 'memAlarm', label: 'Cảnh báo RAM', unit: '0/1', suggest: { op: 'gte', threshold: 1 }, cost: 'medium', costNote: RABBIT_NODES_NOTE, minEverySec: 60 },
-      { key: 'diskAlarm', label: 'Cảnh báo đĩa', unit: '0/1', suggest: { op: 'gte', threshold: 1 }, cost: 'medium', costNote: RABBIT_NODES_NOTE, minEverySec: 60 },
-      { key: 'nodesDown', label: 'Node chết', suggest: { op: 'gt', threshold: 0 }, cost: 'medium', costNote: RABBIT_NODES_NOTE, minEverySec: 60 },
-      { key: 'memUsedPct', label: 'RAM node cao nhất', unit: '%', suggest: { op: 'gt', threshold: 80 }, cost: 'medium', costNote: RABBIT_NODES_NOTE, minEverySec: 60 },
-      { key: 'fdUsedPct', label: 'File descriptor', unit: '%', suggest: { op: 'gt', threshold: 80 }, cost: 'medium', costNote: RABBIT_NODES_NOTE, minEverySec: 60 },
-      { key: 'queues', label: 'Số queue' },
-      { key: 'publishRate', label: 'Publish/giây' },
+      {
+        key: 'memAlarm',
+        label: 'Cảnh báo RAM',
+        unit: '0/1',
+        suggest: { op: 'gte', threshold: 1 },
+        cost: 'medium',
+        costNote: RABBIT_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'ram',
+        probe: RABBIT_NODES_PROBE,
+        meaning: '1 = có node chạm memory watermark — RabbitMQ CHẶN mọi publisher toàn cụm cho tới khi hạ xuống.',
+      },
+      {
+        key: 'diskAlarm',
+        label: 'Cảnh báo đĩa',
+        unit: '0/1',
+        suggest: { op: 'gte', threshold: 1 },
+        cost: 'medium',
+        costNote: RABBIT_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'disk',
+        probe: RABBIT_NODES_PROBE,
+        meaning: '1 = có node còn ít đĩa trống dưới ngưỡng an toàn — cũng chặn publisher toàn cụm như memAlarm.',
+      },
+      {
+        key: 'nodesDown',
+        label: 'Node chết',
+        suggest: { op: 'gt', threshold: 0 },
+        cost: 'medium',
+        costNote: RABBIT_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'nodes',
+        probe: RABBIT_NODES_PROBE,
+        agg: 'count',
+        meaning: 'số node trong cụm không chạy.',
+      },
+      {
+        key: 'memUsedPct',
+        label: 'RAM node cao nhất',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 80 },
+        cost: 'medium',
+        costNote: RABBIT_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'ram',
+        probe: RABBIT_NODES_PROBE,
+        agg: 'max',
+        meaning: 'RAM đã dùng so với giới hạn (watermark) của node cao nhất; chạm 100% là node đó giương memAlarm.',
+      },
+      {
+        key: 'fdUsedPct',
+        label: 'File descriptor',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 80 },
+        cost: 'medium',
+        costNote: RABBIT_NODES_NOTE,
+        minEverySec: 60,
+        alertCode: 'fd',
+        probe: RABBIT_NODES_PROBE,
+        agg: 'max',
+        meaning: 'tỉ lệ file descriptor đã dùng của node cao nhất; hết fd là node không nhận thêm kết nối mới.',
+      },
+      {
+        key: 'queues',
+        label: 'Số queue',
+        alertCode: 'queue',
+        probe: RABBIT_OVERVIEW_PROBE,
+        agg: 'count',
+        meaning: 'tổng số queue trên broker.',
+      },
+      {
+        key: 'publishRate',
+        label: 'Publish/giây',
+        alertCode: 'ops',
+        probe: RABBIT_OVERVIEW_PROBE,
+        agg: 'sum',
+        meaning: 'tốc độ message được publish vào broker mỗi giây.',
+      },
     ],
   },
   {
     id: 'pg',
     label: 'PostgreSQL',
     icon: '🐘',
-    metrics: [UP, LATENCY],
+    metrics: [
+      { ...UP, probe: PG_PROBE },
+      { ...LATENCY, probe: PG_PROBE },
+    ],
   },
 ];
 

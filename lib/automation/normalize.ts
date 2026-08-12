@@ -287,6 +287,8 @@ function normWatch(raw: unknown, index: number): InfraWatch | null {
       .filter(Boolean)
       .slice(0, 12),
     notifyRecovery: bool(w.notifyRecovery, true),
+    // Clamped: description tự sinh phải giữ được dưới độ dài một tin nhắn Zalo.
+    note: str(w.note).slice(0, 280),
   };
 }
 

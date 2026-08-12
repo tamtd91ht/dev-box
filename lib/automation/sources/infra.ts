@@ -19,7 +19,8 @@ import { pingPg } from '@/lib/pg';
 import { listRabbitNodes, rabbitOverview } from '@/lib/rabbit';
 import { redisStats } from '@/lib/redis';
 import type { AutomationEvent, InfraStack, InfraWatch, WatchSeverity } from '../types';
-import { metricLabel, stackDef } from '../catalog';
+import { metricDef, metricLabel, stackDef } from '../catalog';
+import { alertTypeOf, buildDescription, OP_TEXT } from '../meta';
 
 export type MetricMap = Record<string, number>;
 
@@ -230,15 +231,6 @@ const SEVERITY_LABEL: Record<WatchSeverity, string> = {
   info: '🔵 THÔNG TIN',
 };
 
-const OP_TEXT: Record<InfraWatch['op'], string> = {
-  gt: '>',
-  gte: '≥',
-  lt: '<',
-  lte: '≤',
-  eq: '=',
-  neq: '≠',
-};
-
 /** True when `value op threshold` holds. */
 export function breaches(value: number, op: InfraWatch['op'], threshold: number): boolean {
   switch (op) {
@@ -259,7 +251,21 @@ export function breaches(value: number, op: InfraWatch['op'], threshold: number)
   }
 }
 
-function baseEvent(watch: InfraWatch, value: number, at: number): Omit<AutomationEvent, 'id' | 'type' | 'title' | 'text'> {
+/**
+ * Dữ kiện chỉ NGƯỜI GỌI mới có — watcher đưa address từ cache danh sách kết
+ * nối (connections.ts peekAddress). Optional để đường Test/console cũ vẫn gọi
+ * được; thiếu thì field thành '' chứ event không vỡ.
+ */
+export interface InfraEventExtras {
+  address?: string;
+}
+
+function baseEvent(
+  watch: InfraWatch,
+  value: number,
+  at: number,
+  extras?: InfraEventExtras,
+): Omit<AutomationEvent, 'id' | 'type' | 'title' | 'text'> {
   return {
     ts: at,
     category: 'infra',
@@ -274,6 +280,8 @@ function baseEvent(watch: InfraWatch, value: number, at: number): Omit<Automatio
       value,
       threshold: watch.threshold,
       op: watch.op,
+      opText: OP_TEXT[watch.op] ?? watch.op,
+      unit: metricDef(watch.stack, watch.metric)?.unit ?? '',
       watch: watch.name,
       watchId: watch.id,
       // Alert identity, for templates ({{fields.severityLabel}}) and conditions.
@@ -281,6 +289,15 @@ function baseEvent(watch: InfraWatch, value: number, at: number): Omit<Automatio
       severity: watch.severity ?? 'warning',
       severityLabel: SEVERITY_LABEL[watch.severity ?? 'warning'],
       tags: (watch.tags ?? []).join(','),
+      // Metadata chuẩn hoá (AlertMeta v1, xem meta.ts): máy nào, mã cảnh báo
+      // ổn định, tham số đo, và mô tả cơ chế phát hiện tự sinh từ catalog —
+      // đủ để một webhook/bot AI hiểu cảnh báo mà không mở DevBox.
+      address: extras?.address ?? '',
+      alertType: alertTypeOf(watch.stack, watch.metric, watch.op),
+      everySec: watch.everySec,
+      forSec: watch.forSec ?? 0,
+      note: watch.note ?? '',
+      description: buildDescription(watch),
     },
   };
 }
@@ -288,10 +305,15 @@ function baseEvent(watch: InfraWatch, value: number, at: number): Omit<Automatio
 const where = (w: InfraWatch): string => `${w.connectionLabel || w.connectionId}`;
 
 /** A watch just breached (and held long enough). */
-export function infraBreachEvent(watch: InfraWatch, value: number, at: number): AutomationEvent {
+export function infraBreachEvent(
+  watch: InfraWatch,
+  value: number,
+  at: number,
+  extras?: InfraEventExtras,
+): AutomationEvent {
   const label = metricLabel(watch.stack, watch.metric);
   return {
-    ...baseEvent(watch, value, at),
+    ...baseEvent(watch, value, at, extras),
     id: `watch:${watch.id}:breach:${at}`,
     type: 'infra.metric',
     title: `${watch.name} — ${label} = ${value}`,
@@ -300,9 +322,15 @@ export function infraBreachEvent(watch: InfraWatch, value: number, at: number): 
 }
 
 /** …and the same watch coming back to normal. */
-export function infraRecoveredEvent(watch: InfraWatch, value: number, at: number, downSec: number): AutomationEvent {
+export function infraRecoveredEvent(
+  watch: InfraWatch,
+  value: number,
+  at: number,
+  downSec: number,
+  extras?: InfraEventExtras,
+): AutomationEvent {
   const label = metricLabel(watch.stack, watch.metric);
-  const base = baseEvent(watch, value, at);
+  const base = baseEvent(watch, value, at, extras);
   return {
     ...base,
     id: `watch:${watch.id}:ok:${at}`,

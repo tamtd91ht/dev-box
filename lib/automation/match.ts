@@ -5,6 +5,7 @@
 // exactly what happens at 2am.
 
 import type { AutomationCondition, AutomationEvent, RuleWindow } from './types';
+import { buildAlertMeta, META_BLOCK_CLOSE, META_BLOCK_OPEN } from './meta';
 
 /** Core fields every event has, regardless of which source produced it. */
 const CORE: Record<string, (e: AutomationEvent) => string | number> = {
@@ -179,6 +180,13 @@ export function templateVars(event: AutomationEvent, captures: Captures = []): R
     date: `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`,
     json: JSON.stringify(event),
   };
+  // Metadata chuẩn hoá (AlertMeta v1 — meta.ts): bản có cấu trúc của cùng sự
+  // kiện, cho webhook và cho bot AI đọc tin nhắn. Đặt TRƯỚC vòng fields để một
+  // field trùng tên không bao giờ che được chúng.
+  const meta = buildAlertMeta(event);
+  vars.metaJson = JSON.stringify(meta);
+  vars.metaJsonPretty = JSON.stringify(meta, null, 2);
+  vars.metaBlock = `${META_BLOCK_OPEN}\n${vars.metaJsonPretty}\n${META_BLOCK_CLOSE}`;
   // Source-specific fields (sender, conversation, metric, value, threshold…).
   for (const [k, v] of Object.entries(event.fields ?? {})) {
     if (!(k in vars)) vars[k] = String(v);

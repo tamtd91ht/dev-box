@@ -434,6 +434,12 @@ export interface InfraWatch {
   tags?: string[];
   /** Also emit infra.recovered when the metric returns to normal. */
   notifyRecovery?: boolean;
+  /**
+   * Ghi chú nghiệp vụ tự do ("Redis này cấp session cho tổng đài…"). Được NỐI
+   * vào description tự sinh của mọi cảnh báo — là phần ngữ cảnh mà catalog
+   * không thể biết, và là thứ giúp một con bot AI đánh giá đúng mức độ.
+   */
+  note?: string;
 }
 
 // ── Log storage ────────────────────────────────────────────────────────────

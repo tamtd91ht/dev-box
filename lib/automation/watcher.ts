@@ -22,6 +22,7 @@
 // SAME rule engine, activity feed and action set as social messages.
 
 import { automation } from './runtime';
+import { listConnections, peekAddress } from './connections';
 import { MIN_WATCH_INTERVAL_SEC } from './normalize';
 import { breaches, infraBreachEvent, infraRecoveredEvent, probeStack, type ProbeResult } from './sources/infra';
 import { trace } from './trace';
@@ -116,6 +117,12 @@ class InfraWatcher {
   private reconcile(): void {
     const cfg = automation.current;
     const live = this.activeWatches(cfg);
+
+    // Warm the connection cache per active stack so peekAddress() has an
+    // address to attach the moment a watch breaches. Fire-and-forget: the
+    // first poll may still race this and emit address:'' — acceptable, the
+    // alert itself never waits on a registry fetch.
+    for (const stack of new Set(live.map((w) => w.stack))) void listConnections(stack);
 
     // Forget watches that were deleted, disabled, or edited in a way that
     // invalidates their breach history.
@@ -241,7 +248,9 @@ class InfraWatcher {
         st.lastAlertAt = now;
         st.firing = true;
         trace(cfg, { ...base, ts: now, kind: 'breach', value, note: `vượt ngưỡng ${Math.round(heldSec)}s` });
-        void automation.submit(infraBreachEvent(watch, value, now));
+        void automation.submit(
+          infraBreachEvent(watch, value, now, { address: peekAddress(watch.stack, watch.connectionId) }),
+        );
       } else {
         // Breaching but still inside forSec — worth seeing, because "why did it
         // not alert" is answered right here.
@@ -260,7 +269,11 @@ class InfraWatcher {
       st.lastAlertAt = 0;
       trace(cfg, { ...base, ts: now, kind: 'recovered', value, note: `bình thường sau ${downSec}s` });
       if (watch.notifyRecovery !== false) {
-        void automation.submit(infraRecoveredEvent(watch, value, now, downSec));
+        void automation.submit(
+          infraRecoveredEvent(watch, value, now, downSec, {
+            address: peekAddress(watch.stack, watch.connectionId),
+          }),
+        );
       }
     } else {
       st.breachSince = null;

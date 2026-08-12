@@ -249,6 +249,57 @@ Metric mỗi stack khai báo ở `catalog.ts` (kèm `suggest` op + ngưỡng m�
 Cụm nhiều node gộp theo hướng "xấu nhất thắng": gauge lấy `max`, tỉ lệ hit lấy `min`, khối lượng
 lấy `sum`, alarm của Rabbit là `some()` (một node báo = publisher bị chặn toàn cluster).
 
+## Metadata chuẩn hoá (AlertMeta v1)
+
+Mỗi event mang đủ dữ kiện trong `fields` phẳng (cho `{{var}}` và điều kiện); `meta.ts`
+**dẫn xuất** từ đó một JSON có cấu trúc, phiên bản hoá — cho hệ thống NGOÀI parse
+(webhook, bot AI đọc tin nhắn trong nhóm Zalo) mà không phải hiểu tiếng Việt trong title/text.
+
+Event hạ tầng phát các field (đầy đủ khai ở `catalog.ts INFRA_FIELDS` — script
+`npm run check:automation` giữ catalog và emission khớp nhau):
+
+- `stack` `stackLabel` `metric` `metricLabel` `value` `threshold` `op` `opText` `unit`
+- `watch` `watchId` `severity` `severityLabel` `tags` `everySec` `forSec`
+- `address` — host:port của kết nối (lấy từ registry public, đã gột credential; rỗng
+  ở vòng poll đầu sau khi mở app nếu cache chưa kịp warm)
+- `alertType` — **mã ổn định** `stack.mã.hướng` (`redis.ram.high`, `kafka.lag.high`;
+  riêng `up` → `stack.down`). Breach và recovery mang CÙNG mã — bot ghép cặp bằng
+  `watchId` + `alertType`.
+- `note` — ghi chú nghiệp vụ của watch ("Redis này cấp session cho tổng đài…")
+- `description` — mô tả **cơ chế phát hiện, tự sinh từ catalog**: chỉ số nghĩa là gì
+  (`meaning`), máy đo bằng gì và bao lâu (`probe` + `everySec` + cách gộp node), ngưỡng
+  phát là gì (`opText threshold` + `forSec`), nối thêm `note`. Một cảnh báo phải TỰ
+  GIẢI THÍCH — người trực (hoặc bot AI) đọc tin nhắn là đủ ngữ cảnh, không cần mở DevBox.
+
+Ba biến template mới (mọi nhóm event đều có):
+
+| Biến | Là gì | Dùng khi |
+|---|---|---|
+| `{{metaJson}}` | AlertMeta v1 nén một dòng | body webhook, nhúng vào tin nhắn |
+| `{{metaJsonPretty}}` | Bản thụt dòng | log, nơi người đọc |
+| `{{metaBlock}}` | Bản thụt dòng bọc `[[META]]…[[/META]]` | nhóm Zalo có bot AI |
+
+**Quy ước cho bot**: bot quét tin nhắn, cắt phần giữa `[[META]]` và `[[/META]]`,
+`JSON.parse` — `schemaVersion` cho biết shape (đổi shape sẽ bump, xem `meta.ts`).
+Tin cho người đọc viết TRƯỚC marker; ví dụ một action `zaloApiSend.text`:
+
+```
+{{severityLabel}} {{stackLabel}} · {{instance}}
+{{metricLabel}} = {{value}}{{unit}} (ngưỡng {{opText}} {{threshold}})
+{{description}}
+
+{{metaBlock}}
+```
+
+**Độ dài**: `metaBlock` ≈ 1–1.5 KB. Telegram trần 4096 ký tự, Zalo thấp hơn (~2000) —
+nhóm không có bot thì dùng `{{description}}`/`{{address}}` rời, hoặc `{{metaJson}}` nén;
+`description` tự sinh giữ ≤ ~350 ký tự, `note` bị cắt ở 280.
+
+Nhóm social có meta gọn hơn (`conversation` `sender` `chatType` `app` `capture`
+`threadId`); `system.test` giữ nguyên `fields` tự nhập. Event mẫu từng case lấy từ
+`sample.ts sampleEvent()` — với infra nó gọi CHÍNH `infraBreachEvent()`, nên mẫu
+trên UI không lệch được emission thật.
+
 ## Giới hạn chống bão
 
 Mỗi quy tắc có `dedupeSec` (bỏ qua trùng title+text), `cooldownSec` (khoảng cách tối thiểu giữa

@@ -20,6 +20,7 @@ import { connLabel, listConnections, refreshConnections, type ConnOption } from 
 import { watcher } from '@/lib/automation/watcher';
 import { useWatcher } from '@/lib/automation/useAutomation';
 import type { AutomationConfig, InfraStack, InfraWatch, WatchSeverity } from '@/lib/automation/types';
+import { buildDescription } from '@/lib/automation/meta';
 import { Empty, Field, Num, Toggle } from './parts';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
@@ -237,11 +238,32 @@ function WatchEditor({
             placeholder="prod, omicrm"
           />
         </Field>
+        <Field
+          label="Ghi chú"
+          wide
+          tip="Ngữ cảnh nghiệp vụ mà catalog không thể biết — hệ thống này phục vụ cái gì, đầy/sập thì ảnh hưởng ai. Được NỐI vào mô tả tự sinh bên dưới, đi theo mọi cảnh báo của watch này ({{note}} / metaJson) — bot AI phân tích cảnh báo dựa nhiều vào dòng này."
+          hint="tối đa 280 ký tự — đi kèm mọi cảnh báo của watch này"
+        >
+          <input
+            value={watch.note ?? ''}
+            maxLength={280}
+            onChange={(e) => set({ note: e.target.value })}
+            placeholder="vd: Redis này cấp session cho tổng đài FusionPBX — đầy RAM là chặn gửi ngay"
+          />
+        </Field>
       </div>
 
       <div className="auto-watch-id">
         <span>ID</span>
         <code title="quy tắc nhắm vào watch bằng id này — đổi tên watch không ảnh hưởng">{watch.id}</code>
+      </div>
+
+      {/* The exact description every alert of this watch will carry
+          ({{description}} / metaJson) — shown live so what you read here is
+          what the Zalo group (and its AI bot) reads at 2am. */}
+      <div className="auto-watch-desc">
+        <span className="auto-hint">Mô tả cơ chế phát hiện (tự sinh — đi kèm mọi cảnh báo qua {'{{description}}'} và metaJson):</span>
+        <pre className="auto-probe">{buildDescription(watch)}</pre>
       </div>
 
       {/* Only for metrics that actually cost something. A cheap metric carrying a

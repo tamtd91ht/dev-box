@@ -7,13 +7,15 @@
 // event through the live pipeline, side effects and all.
 
 import { useMemo, useState } from 'react';
-import { GROUPS, groupOf, triggerDef } from '@/lib/automation/catalog';
+import { GROUPS, STACKS, groupOf, triggerDef } from '@/lib/automation/catalog';
+import { sampleEvent } from '@/lib/automation/sample';
 import { automation } from '@/lib/automation/useAutomation';
 import type {
   ActionPlan,
   AutomationEvent,
   EvaluationResult,
   EventCategory,
+  InfraStack,
   TriggerType,
 } from '@/lib/automation/types';
 import { Field } from './parts';
@@ -36,6 +38,18 @@ export default function TestPanel() {
   const [extra, setExtra] = useState<Record<string, string>>({});
   const [result, setResult] = useState<EvaluationResult | null>(null);
   const [live, setLive] = useState(false);
+  const [sampleStack, setSampleStack] = useState<InfraStack>('redis');
+
+  // Điền form bằng event mẫu của case đang chọn (sample.ts — dựng từ CHÍNH
+  // builder thật, nên có đủ address/alertType/description như lúc chạy thật).
+  const loadSample = () => {
+    const ev = sampleEvent(trigger, sampleStack);
+    setSourceId(ev.sourceId);
+    setInstanceId(ev.instanceId);
+    setTitle(ev.title);
+    setText(ev.text);
+    setExtra(Object.fromEntries(Object.entries(ev.fields ?? {}).map(([k, v]) => [k, String(v)])));
+  };
 
   const group = groupOf(category);
   const fields = useMemo(
@@ -116,6 +130,7 @@ export default function TestPanel() {
             <input
               type={f.kind === 'number' ? 'number' : 'text'}
               value={extra[f.name] ?? ''}
+              placeholder={f.sample !== undefined ? String(f.sample) : undefined}
               onChange={(e) => setExtra((x) => ({ ...x, [f.name]: e.target.value }))}
             />
           </Field>
@@ -123,6 +138,18 @@ export default function TestPanel() {
       </div>
 
       <div className="auto-switches">
+        {category === 'infra' ? (
+          <select value={sampleStack} onChange={(e) => setSampleStack(e.target.value as InfraStack)}>
+            {STACKS.map((st) => (
+              <option key={st.id} value={st.id}>
+                {st.icon} {st.label}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        <button type="button" className="ghost" onClick={loadSample}>
+          Nạp mẫu
+        </button>
         <button type="button" onClick={runDry}>
           Thử (không chạy)
         </button>

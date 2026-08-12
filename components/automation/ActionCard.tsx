@@ -230,7 +230,7 @@ function TelegramFields({
         </Field>
       ) : null}
 
-      <Field label="Nội dung" wide hint="để trống = tiêu đề + nội dung sự kiện · dùng {{sender}}, {{text}}, {{value}}…">
+      <Field label="Nội dung" wide hint="để trống = tiêu đề + nội dung sự kiện · dùng {{severityLabel}}, {{value}}, {{address}}, {{description}}… · {{metaJson}} = metadata đầy đủ">
         <textarea
           value={action.text ?? ''}
           placeholder={'🚨 *{{title}}*\n{{text}}'}
@@ -386,10 +386,10 @@ function ApiFields({
               <option value="form">Form (x-www-form-urlencoded)</option>
             </select>
           </Field>
-          <Field label="Body" wide hint="để trống = toàn bộ sự kiện dạng JSON">
+          <Field label="Body" wide hint="để trống = toàn bộ sự kiện dạng JSON · {{metaJson}} = metadata chuẩn (AlertMeta) — chèn không cần ngoặc kép">
             <textarea
               value={action.bodyTemplate ?? ''}
-              placeholder={'{"text":"{{title}} — {{text}}"}'}
+              placeholder={'{"alert":{{metaJson}}}\nhoặc: {"text":"{{title}} — {{text}}"}'}
               onChange={(e) => onChange({ ...action, bodyTemplate: e.target.value })}
             />
           </Field>
@@ -548,7 +548,7 @@ function WorkspaceSendFields({
         </Field>
       )}
 
-      <Field label="Nội dung" wide hint="dùng {{title}}, {{text}}, {{value}}, {{metric}}…">
+      <Field label="Nội dung" wide hint="dùng {{title}}, {{text}}, {{value}}, {{metricLabel}}, {{description}}…">
         <textarea
           value={action.text}
           placeholder={'🚨 {{title}}\n{{text}}'}
@@ -755,7 +755,7 @@ function ZaloApiSendFields({
         </div>
       )}
 
-      <Field label="Nội dung" wide hint="hỗ trợ {{title}}, {{text}}, {{fields.sender}}…">
+      <Field label="Nội dung" wide hint="hỗ trợ {{title}}, {{text}}, {{description}}… · nhóm có bot AI: thêm {{metaBlock}} để bot tự phân tích cảnh báo">
         <textarea
           rows={3}
           value={action.text}
@@ -911,7 +911,7 @@ export default function ActionCard({
           <Field label="Tiêu đề" hint="để trống = tiêu đề sự kiện">
             <input value={action.title ?? ''} onChange={(e) => onChange({ ...action, title: e.target.value })} />
           </Field>
-          <Field label="Nội dung" wide hint="dùng {{sender}}, {{text}}, {{value}}…">
+          <Field label="Nội dung" wide hint="dùng {{sender}}, {{text}}, {{value}}, {{description}}…">
             <input value={action.body ?? ''} onChange={(e) => onChange({ ...action, body: e.target.value })} />
           </Field>
           <Toggle
@@ -955,7 +955,7 @@ export default function ActionCard({
           <Field label="Key" hint="để trống = instanceId">
             <input value={action.key ?? ''} onChange={(e) => onChange({ ...action, key: e.target.value })} />
           </Field>
-          <Field label="Value" wide hint="để trống = toàn bộ sự kiện dạng JSON">
+          <Field label="Value" wide hint="để trống = toàn bộ sự kiện dạng JSON · {{metaJson}} = metadata chuẩn (AlertMeta)">
             <input
               value={action.valueTemplate ?? ''}
               onChange={(e) => onChange({ ...action, valueTemplate: e.target.value })}

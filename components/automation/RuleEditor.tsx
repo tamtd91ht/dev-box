@@ -35,6 +35,7 @@ import { loadZaloApiAccounts, zaloApiAccountKey } from '@/lib/zaloapi/accounts';
 import { zaloApiContacts } from '@/lib/zaloapi/api';
 import { Field, Num, Section, Toggle } from './parts';
 import ActionCard, { defaultAction } from './ActionCard';
+import VarsPanel from './VarsPanel';
 
 const DAYS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
 
@@ -746,7 +747,8 @@ export default function RuleEditor({
           <>
             Chạy khi sự kiện qua được Phạm vi + Điều kiện. Nhiều hành động chạy{' '}
             <b>lần lượt từ trên xuống</b>. Nội dung dùng được <code>{'{{template}}'}</code> —
-            ví dụ <code>{'{{fields.value}}'}</code>, <code>{'{{instance}}'}</code>.
+            danh sách biến + JSON metadata mẫu ở ngay dưới; <code>{'{{metaJson}}'}</code> là
+            cả metadata cho webhook/bot.
           </>
         }
         extra={
@@ -762,6 +764,7 @@ export default function RuleEditor({
           ) : undefined
         }
       >
+        <VarsPanel trigger={rule.trigger} stacks={rule.category === 'infra' ? rule.scope.sourceIds : undefined} />
         {rule.actions.map((a, i) => (
           <ActionCard
             key={i}
