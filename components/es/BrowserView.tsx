@@ -1,18 +1,20 @@
 'use client';
 
-// Data browser — chọn index rồi truy vấn bằng MỘT ô body _search kiểu Kibana
-// Dev Tools: query / aggs / sort / _source / size gõ chung một chỗ, gợi ý đầy
-// đủ theo ngữ cảnh (tên field lấy từ mapping). Self-contained state; the shell
-// remounts it per connection (key={activeId}).
+// Data browser — NHIỀU TAB, mỗi tab một index và một phiên truy vấn riêng.
+//
+// Trước đây cả tab Dữ liệu chỉ có MỘT phiên: đổi index là mất sạch body query,
+// kết quả và trang đang xem của index cũ. Giờ mỗi index mở ra một tab riêng
+// (`+` để thêm), state của từng tab sống độc lập và giữ nguyên khi chuyển qua
+// lại — so sánh hai index cạnh nhau không phải gõ lại query.
+//
+// Bố cục mỗi tab: chưa chọn index thì cây indices chiếm cột trái; chọn xong cây
+// TỰ ẨN cho rộng chỗ đọc kết quả — đổi index bằng combobox trên đầu (gõ để lọc,
+// Enter chọn), hoặc ☰ để mở lại cây.
 //
 // Everything here is read-only: _search / _count / _mapping, all bounded
 // server-side (size ≤200, from+size ≤10k, 15s timeout, scripting rejected).
-//
-// Bố cục: chưa chọn index thì cây indices chiếm cột trái; chọn xong cây TỰ ẨN
-// cho rộng chỗ đọc kết quả — đổi index bằng combobox trên đầu (gõ để lọc,
-// Enter chọn), hoặc ☰ để mở lại cây.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   listEsIndices,
   esMapping,
@@ -42,13 +44,138 @@ type IdxTab = 'docs' | 'mapping' | 'info';
 const healthColor = (h: string) =>
   h === 'green' ? 'var(--ok)' : h === 'red' ? 'var(--err)' : 'var(--warn, #d5a021)';
 
+/** Một tab dữ liệu — chỉ giữ danh tính, còn state truy vấn nằm trong <BrowserSession>. */
+interface Tab {
+  id: string;
+  /** Index của tab; '' là tab mới chưa chọn index. */
+  index: string;
+}
+
+let tabSeq = 0;
+const newTab = (index = ''): Tab => ({ id: `t${++tabSeq}`, index });
+
 export default function BrowserView({ connectionId, initialIndex }: BrowserViewProps) {
-  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
-  const tree = useSplit({ varName: '--es-tree', min: 160, max: 520, gap: 12 });
+  const [tabs, setTabs] = useState<Tab[]>(() => [newTab(initialIndex ?? '')]);
+  const [activeId, setActiveId] = useState<string>(() => tabs[0].id);
+
+  // Danh sách indices nạp MỘT LẦN cho cả cluster rồi chia cho mọi tab dùng —
+  // mỗi tab tự gọi _cat/indices thì mở 5 tab là 5 lần gọi y hệt nhau.
   const [indices, setIndices] = useState<EsIndexInfo[]>([]);
   const [idxLoading, setIdxLoading] = useState(false);
+  const [idxError, setIdxError] = useState<string | null>(null);
+
+  const loadIndices = useCallback(async () => {
+    setIdxLoading(true); setIdxError(null);
+    try { setIndices(await listEsIndices(connectionId)); }
+    catch (e) { setIdxError((e as Error).message); }
+    finally { setIdxLoading(false); }
+  }, [connectionId]);
+
+  useEffect(() => { void loadIndices(); }, [loadIndices]);
+
+  const setTabIndex = useCallback((id: string, index: string) => {
+    setTabs((list) => list.map((t) => (t.id === id ? { ...t, index } : t)));
+  }, []);
+
+  const addTab = useCallback((index = '') => {
+    const t = newTab(index);
+    setTabs((list) => [...list, t]);
+    setActiveId(t.id);
+  }, []);
+
+  const closeTab = useCallback((id: string) => {
+    // Đóng tab cuối cùng = làm mới nó (luôn còn một tab để làm việc). Đóng tab
+    // đang xem thì nhảy sang tab kế bên phải, hết thì lấy tab cuối.
+    const gone = tabs.findIndex((t) => t.id === id);
+    if (gone < 0) return;
+    if (tabs.length === 1) {
+      const fresh = newTab();
+      setTabs([fresh]);
+      setActiveId(fresh.id);
+      return;
+    }
+    const next = tabs.filter((t) => t.id !== id);
+    setTabs(next);
+    if (activeId === id) setActiveId((next[gone] ?? next[next.length - 1]).id);
+  }, [tabs, activeId]);
+
+  // Jump from Overview: mở index đó ở tab đang đứng nếu tab còn trống, còn không
+  // thì thêm tab mới — không đè lên phiên đang có kết quả.
+  const jumpedRef = useRef('');
+  useEffect(() => {
+    if (!initialIndex || jumpedRef.current === initialIndex) return;
+    jumpedRef.current = initialIndex;
+    const cur = tabs.find((t) => t.id === activeId);
+    if (cur && !cur.index) setTabIndex(cur.id, initialIndex);
+    else addTab(initialIndex);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialIndex]);
+
+  return (
+    <div className="es-dtabs-wrap">
+      <div className="es-dtabs" role="tablist">
+        {tabs.map((t) => (
+          <span key={t.id} className={`es-dtab${t.id === activeId ? ' on' : ''}`}>
+            <button
+              className="es-dtab-main"
+              role="tab"
+              aria-selected={t.id === activeId}
+              title={t.index || 'Tab mới — chọn một index'}
+              onClick={() => setActiveId(t.id)}
+            >
+              {t.index || 'tab mới'}
+            </button>
+            <button
+              className="es-dtab-x"
+              title={tabs.length === 1 ? 'Xoá nội dung tab' : 'Đóng tab'}
+              onClick={() => closeTab(t.id)}
+            >✕</button>
+          </span>
+        ))}
+        <button className="chip-btn es-dtab-add" title="Mở thêm một tab index khác"
+          onClick={() => addTab()}>+</button>
+      </div>
+
+      {idxError && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{idxError}</pre>}
+
+      {/* Mọi tab đều được mount, chỉ tab không active thì ẩn — nhờ vậy body
+          query / kết quả / trang đang xem của tab cũ còn nguyên khi quay lại. */}
+      {tabs.map((t) => (
+        <div key={t.id} className="es-dtab-pane" hidden={t.id !== activeId}>
+          <BrowserSession
+            connectionId={connectionId}
+            index={t.index}
+            onPickIndex={(ix) => setTabIndex(t.id, ix)}
+            indices={indices}
+            idxLoading={idxLoading}
+            onReloadIndices={loadIndices}
+            onOpenInNewTab={addTab}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+interface BrowserSessionProps {
+  connectionId: string;
+  /** Index của tab này ('' = chưa chọn). Đổi giá trị này là reset phiên. */
+  index: string;
+  onPickIndex: (name: string) => void;
+  indices: EsIndexInfo[];
+  idxLoading: boolean;
+  onReloadIndices: () => void;
+  onOpenInNewTab: (index: string) => void;
+}
+
+/** Một phiên truy vấn: index + body + kết quả + mapping của riêng một tab. */
+function BrowserSession({
+  connectionId, index: selected, onPickIndex,
+  indices, idxLoading, onReloadIndices, onOpenInNewTab,
+}: BrowserSessionProps) {
+  // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
+  const tree = useSplit({ varName: '--es-tree', min: 160, max: 520, gap: 12 });
   const [treeFilter, setTreeFilter] = useState('');
-  const [selected, setSelected] = useState<string>('');
   /** Cây indices tự ẩn khi đã chọn index — mở lại bằng nút ☰. */
   const [showTree, setShowTree] = useState(true);
 
@@ -63,15 +190,6 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
   const [fields, setFields] = useState<EsField[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const loadIndices = useCallback(async () => {
-    setIdxLoading(true); setError(null);
-    try { setIndices(await listEsIndices(connectionId)); }
-    catch (e) { setError((e as Error).message); }
-    finally { setIdxLoading(false); }
-  }, [connectionId]);
-
-  useEffect(() => { void loadIndices(); }, [loadIndices]);
 
   /** `over.from` chỉ dùng cho phân trang Prev/Next — nó đè lên from trong body. */
   const runSearch = useCallback(async (over?: { from?: number }) => {
@@ -106,12 +224,12 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
   }, [connectionId, selected]);
 
   const selectIndex = useCallback((name: string) => {
-    setSelected(name);
+    onPickIndex(name);
     setShowTree(false); // nhường chỗ cho kết quả — mở lại bằng ☰
     setIdxTab('docs');
     setBody('');
     setResult(null); setCountInfo(null); setMapping(null); setFields([]); setError(null);
-  }, []);
+  }, [onPickIndex]);
 
   // Mapping nạp ngầm ngay khi chọn index (không chặn UI, lỗi thì im lặng) — cần
   // sớm vì nó là nguồn gợi ý tên field cho ô body, không chỉ cho tab Mapping.
@@ -123,15 +241,6 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
       .catch(() => { /* tab Mapping vẫn có nút tải lại */ });
     return () => { alive = false; };
   }, [connectionId, selected]);
-
-  // Jump from Overview: select the requested index once.
-  const jumpedRef = useRef('');
-  useEffect(() => {
-    if (initialIndex && jumpedRef.current !== initialIndex) {
-      jumpedRef.current = initialIndex;
-      selectIndex(initialIndex);
-    }
-  }, [initialIndex, selectIndex]);
 
   // Auto-run match_all on selection.
   const lastAuto = useRef('');
@@ -145,7 +254,10 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
   }, [selected, connectionId]);
 
   const selectedInfo = indices.find((i) => i.name === selected) ?? null;
-  const filteredIndices = indices.filter((i) => !treeFilter || i.name.includes(treeFilter));
+  const filteredIndices = useMemo(
+    () => indices.filter((i) => !treeFilter || i.name.includes(treeFilter)),
+    [indices, treeFilter],
+  );
   const treeVisible = showTree || !selected;
 
   return (
@@ -155,7 +267,7 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
         <div className="es-tree">
           <div className="status-line" style={{ justifyContent: 'space-between' }}>
             <strong>Indices</strong>
-            <button className="chip-btn" onClick={loadIndices} disabled={idxLoading}>↻</button>
+            <button className="chip-btn" onClick={onReloadIndices} disabled={idxLoading}>↻</button>
           </div>
           <input
             className="input"
@@ -170,8 +282,13 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
               <li key={ix.name}>
                 <button
                   className={`es-idx-item${selected === ix.name ? ' active' : ''}`}
-                  onClick={() => selectIndex(ix.name)}
-                  title={`${fmtCount(ix.docsCount)} docs · ${fmtBytes(ix.sizeBytes)}`}
+                  // Ctrl/⌘+click hoặc chuột giữa: mở index ở TAB MỚI, như trình duyệt.
+                  onClick={(e) => {
+                    if (e.ctrlKey || e.metaKey) onOpenInNewTab(ix.name);
+                    else selectIndex(ix.name);
+                  }}
+                  onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onOpenInNewTab(ix.name); } }}
+                  title={`${fmtCount(ix.docsCount)} docs · ${fmtBytes(ix.sizeBytes)}\n\nCtrl+click (hoặc chuột giữa) để mở ở tab mới`}
                 >
                   <span style={{ color: healthColor(ix.health) }}>●</span>{' '}
                   {ix.name}
@@ -196,6 +313,8 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
                   onClick={() => setShowTree((v) => !v)}
                 >☰</button>
                 <IndexPicker indices={indices} value={selected} onPick={selectIndex} />
+                <button className="chip-btn" title="Mở index này ở một tab mới để so sánh"
+                  onClick={() => onOpenInNewTab(selected)}>⧉ tab mới</button>
               </div>
               <div className="es-subnav">
                 <button className={idxTab === 'docs' ? 'on' : ''} onClick={() => setIdxTab('docs')}>Documents</button>

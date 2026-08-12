@@ -46,7 +46,7 @@ import {
   requestAtLine,
   classifyConsoleCommand,
   consoleTarget,
-  loadEsConsoleHistory,
+  loadEsConsoleHistoryFor,
   pushEsConsoleHistory,
   removeEsConsoleHistory,
   clearEsConsoleHistory,
@@ -163,7 +163,11 @@ function ensureConsoleSetup(monaco: Monaco) {
   };
 
   monaco.languages.registerCompletionItemProvider(LANG, {
-    triggerCharacters: ['"', ':', ',', '{', '[', ' ', '.', '/'],
+    // CHỈ mở gợi ý khi người dùng thật sự đang gõ một token: mở nháy, dấu `.`
+    // (đi tới sub-field) hay `/` (đường dẫn). Trước đây có cả `{ [ , :` và dấu
+    // cách nên vừa bấm `{` là bảng gợi ý bật lên với mục đầu được chọn sẵn —
+    // Enter một cái là dính nguyên `{"query": {}}` không hề yêu cầu.
+    triggerCharacters: ['"', '.', '/'],
     provideCompletionItems(model: MonacoEditorNs.ITextModel, position: MonacoPosition) {
       const getCtx = ctxByModel.get(model);
       if (!getCtx) return { suggestions: [] };
@@ -286,16 +290,18 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
   const fetching = useRef<Set<string>>(new Set());
   const [fieldsVersion, setFieldsVersion] = useState(0);
 
+  // Draft + lịch sử đều theo cluster. ConsoleView được shell remount theo
+  // key={activeId} nên effect này chạy lại mỗi lần đổi cụm là đúng ý.
   useEffect(() => {
-    setText(loadEsConsoleDraft());
-    setHistory(loadEsConsoleHistory());
-  }, []);
+    setText(loadEsConsoleDraft(connection.id));
+    setHistory(loadEsConsoleHistoryFor(connection.id));
+  }, [connection.id]);
 
   useEffect(() => {
     if (!text) return;
-    const t = setTimeout(() => saveEsConsoleDraft(text), 400);
+    const t = setTimeout(() => saveEsConsoleDraft(connection.id, text), 400);
     return () => clearTimeout(t);
-  }, [text]);
+  }, [text, connection.id]);
 
   // Danh sách index của cluster đang chọn → gợi ý đường dẫn.
   useEffect(() => {
@@ -485,7 +491,10 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
               padding: { top: 8, bottom: 8 },
               quickSuggestions: { other: true, strings: true, comments: false },
               suggestOnTriggerCharacters: true,
-              acceptSuggestionOnEnter: 'on',
+              // Enter là XUỐNG DÒNG, không phải "chốt gợi ý" — Tab mới nhận.
+              // Để 'on' thì gõ `{` rồi Enter là dính nguyên clause đầu danh sách
+              // (`{"query": {}}`) dù người dùng chỉ muốn xuống dòng.
+              acceptSuggestionOnEnter: 'off',
               tabCompletion: 'on',
               automaticLayout: true,
               fixedOverflowWidgets: true,
@@ -552,12 +561,15 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
       {histOpen && (
         <aside className="es-con-hist">
           <div className="status-line" style={{ justifyContent: 'space-between' }}>
-            <strong>Lệnh gần đây</strong>
+            <strong title={`Chỉ lệnh đã chạy ở ${connection.project} / ${connection.name}`}>Lệnh gần đây</strong>
             {history.length > 0 && (
-              <button className="chip-btn" title="Xoá toàn bộ lịch sử"
-                onClick={() => setHistory(clearEsConsoleHistory())}>Xoá hết</button>
+              <button className="chip-btn" title={`Xoá lịch sử của ${connection.name} (cụm khác giữ nguyên)`}
+                onClick={() => setHistory(clearEsConsoleHistory(connection.id))}>Xoá hết</button>
             )}
           </div>
+          <p className="es-hint" style={{ margin: 0 }}>
+            Của cụm <strong>{connection.name}</strong>
+          </p>
           {history.length === 0 && <p className="empty">Chạy một lệnh là nó xuất hiện ở đây.</p>}
           <ul className="es-con-histlist">
             {history.map((e) => (
@@ -569,7 +581,7 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
                   {e.body && <span className="es-con-hb">body</span>}
                 </button>
                 <button className="chip-btn" title="Bỏ khỏi lịch sử"
-                  onClick={() => setHistory(removeEsConsoleHistory(e.id))}>✕</button>
+                  onClick={() => setHistory(removeEsConsoleHistory(e.id, connection.id))}>✕</button>
               </li>
             ))}
           </ul>

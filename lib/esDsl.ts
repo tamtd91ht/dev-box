@@ -422,6 +422,15 @@ export interface EsQueryContext {
   prevChar: string;
   /** Con trỏ đứng ngay sau một chuỗi CHƯA có dấu `:` — tức key đang gõ dở, không phải phần tử đã xong. */
   danglingKey: boolean;
+  /**
+   * Vùng thay thế là một KEY đã có `:` + giá trị đứng sau nó.
+   *
+   * Khi bật, gợi ý chỉ được chèn ĐÚNG phần key (`"field"`), không kèm giá trị
+   * mẫu: sửa tên field trong `{"term": {"sipNumber": "value"}}` mà vẫn chèn cả
+   * `: "$0"` thì thành `{"term": {"sipNumber.keyword": "": "value"}}` — người
+   * dùng phải tự xoá đuôi `"value"` thừa.
+   */
+  keyOnly: boolean;
   /** Vùng text sẽ bị completion thay thế (gồm cả cặp nháy nếu đang gõ trong chuỗi). */
   replaceStart: number;
   replaceEnd: number;
@@ -570,7 +579,13 @@ export function esQueryContext(text: string, offset: number): EsQueryContext {
   const valueKey = !t ? null : t.arr ? t.owner : t.afterColon ? t.key : null;
   const path = stack.map((f) => f.owner).filter((o): o is string => !!o);
 
-  return { path, inArray, expecting, valueKey, prevChar, danglingKey, replaceStart, replaceEnd };
+  // Sau vùng thay thế đã có `:` → đang SỬA TÊN một key sẵn có, giá trị của nó
+  // vẫn nằm đó. Gợi ý phải chèn key trần, đừng mang theo giá trị mẫu nữa.
+  let n = replaceEnd;
+  while (n < text.length && /\s/.test(text[n])) n += 1;
+  const keyOnly = expecting === 'key' && text[n] === ':';
+
+  return { path, inArray, expecting, valueKey, prevChar, danglingKey, keyOnly, replaceStart, replaceEnd };
 }
 
 // ── Sinh gợi ý ───────────────────────────────────────────────────────────────
@@ -637,10 +652,33 @@ function valueItems(values: string[], quoted: boolean): EsSuggestion[] {
 }
 
 /**
+ * Bỏ phần giá trị của một snippet dạng `"key": <giá trị>`, giữ lại `"key"`.
+ *
+ * Dùng cho ctx.keyOnly — chỗ đó key đã có `:` + giá trị sẵn trong text, chèn
+ * thêm giá trị nữa là sinh JSON rác. Snippet nào không mở đầu bằng một key có
+ * nháy thì để nguyên (vd. clause đã bọc `{ … }`, giá trị enum).
+ */
+function toKeyOnly(items: EsSuggestion[]): EsSuggestion[] {
+  return items.map((it) => {
+    const m = /^("(?:[^"\\]|\\.)*")\s*:\s*[\s\S]+$/.exec(it.insert);
+    return m ? { ...it, insert: m[1] } : it;
+  });
+}
+
+/** Áp keyOnly cho kết quả cuối — mọi lối ra của bộ gợi ý đều đi qua đây. */
+function finish(ctx: EsQueryContext, items: EsSuggestion[]): EsSuggestion[] {
+  return ctx.keyOnly ? toKeyOnly(items) : items;
+}
+
+/**
  * Gợi ý hợp lệ tại vị trí con trỏ. `fields` là field thật lấy từ mapping của
  * index (rỗng cũng không sao — khi đó chỉ gợi ý cú pháp).
  */
 export function esSuggestions(ctx: EsQueryContext, fields: EsField[]): EsSuggestion[] {
+  return finish(ctx, esSuggestionsRaw(ctx, fields));
+}
+
+function esSuggestionsRaw(ctx: EsQueryContext, fields: EsField[]): EsSuggestion[] {
   const { path, expecting, inArray, valueKey } = ctx;
   const last = path.length ? path[path.length - 1] : null;
   const parent = path.length > 1 ? path[path.length - 2] : null;
@@ -761,6 +799,10 @@ const AGG_OPTIONS_DEFAULT: OptionSpec[] = [
  * clause của Query DSL.
  */
 export function esBodySuggestions(ctx: EsQueryContext, fields: EsField[]): EsSuggestion[] {
+  return finish(ctx, esBodySuggestionsRaw(ctx, fields));
+}
+
+function esBodySuggestionsRaw(ctx: EsQueryContext, fields: EsField[]): EsSuggestion[] {
   const { path, expecting, inArray, valueKey } = ctx;
   const last = path.length ? path[path.length - 1] : null;
   const parent = path.length > 1 ? path[path.length - 2] : null;
@@ -769,7 +811,7 @@ export function esBodySuggestions(ctx: EsQueryContext, fields: EsField[]): EsSug
   // Bỏ qua khi "sort" chỉ là TÊN FIELD trong một clause (vd. {"term": {"sort": …}}).
   const si = path.lastIndexOf('sort');
   if (si !== -1 && (si === 0 || !FIELD_KEYED.has(path[si - 1]))) {
-    return esSortSuggestions({ ...ctx, path: path.slice(si + 1) }, fields);
+    return esSortSuggestionsRaw({ ...ctx, path: path.slice(si + 1) }, fields);
   }
 
   if (expecting === 'key') {
@@ -802,7 +844,7 @@ export function esBodySuggestions(ctx: EsQueryContext, fields: EsField[]): EsSug
     if (last && AGG_TYPE_NAMES.has(last) && path.length >= 2) {
       return optionItems(AGG_OPTIONS[last] ?? AGG_OPTIONS_DEFAULT);
     }
-    return esSuggestions(ctx, fields);
+    return esSuggestionsRaw(ctx, fields);
   }
 
   // ── expecting === 'value' ──────────────────────────────────────────────────
@@ -810,7 +852,7 @@ export function esBodySuggestions(ctx: EsQueryContext, fields: EsField[]): EsSug
   if (valueKey === 'size' || valueKey === 'from' || valueKey === 'min_score') return [];
   if (valueKey === '_source' && inArray) return fieldItems(fields, (f) => `"${f.path}"`);
   if (valueKey === 'calendar_interval') return valueItems(['1m', '1h', '1d', '1w', '1M', '1q', '1y'], true);
-  return esSuggestions(ctx, fields);
+  return esSuggestionsRaw(ctx, fields);
 }
 
 // ── Gợi ý cho phần sort ──────────────────────────────────────────────────────
@@ -837,6 +879,10 @@ const SORT_ENUMS: Record<string, string[]> = {
  * body _search: `[{"field": "desc"}]`, `{"field": "desc"}` hay `["_score"]`.
  */
 export function esSortSuggestions(ctx: EsQueryContext, fields: EsField[]): EsSuggestion[] {
+  return finish(ctx, esSortSuggestionsRaw(ctx, fields));
+}
+
+function esSortSuggestionsRaw(ctx: EsQueryContext, fields: EsField[]): EsSuggestion[] {
   const { path, expecting, inArray, valueKey } = ctx;
 
   if (expecting === 'key') {

@@ -2323,6 +2323,36 @@ pre.kafka-drawer-body {
 .es-table th:first-child, .es-table td:first-child { text-align: left; }
 .es-table tbody tr:hover { background: var(--glass-bg); }
 
+/* ── Data browser: nhiều tab index ─────────────────────────────────────── */
+/*
+ * Mỗi tab một phiên truy vấn. Tab không active bị `hidden` (giữ nguyên state),
+ * nên chuỗi flex phải xuyên qua wrapper → pane → .es-browser, cứ thiếu một mắt
+ * min-height:0 là vùng kết quả phình ra đẩy tràn trang thay vì cuộn trong khung.
+ */
+.es-dtabs-wrap { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.es-dtab-pane { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.es-dtab-pane[hidden] { display: none; }
+
+.es-dtabs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.es-dtab {
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--glass-brd); border-radius: 7px;
+  background: var(--glass-bg); max-width: 260px; overflow: hidden;
+}
+.es-dtab.on { border-color: color-mix(in srgb, var(--accent) 60%, var(--glass-brd)); }
+.es-dtab-main {
+  background: none; border: none; cursor: pointer; color: var(--muted);
+  font-family: var(--mono); font-size: 11.5px; padding: 4px 4px 4px 8px;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.es-dtab.on .es-dtab-main { color: var(--text); font-weight: 600; }
+.es-dtab-x {
+  background: none; border: none; cursor: pointer; color: var(--muted);
+  font-size: 10px; padding: 4px 6px 4px 2px; line-height: 1;
+}
+.es-dtab-x:hover { color: var(--err); }
+.es-dtab-add { padding: 3px 9px; }
+
 /* ── Data browser: tree + main ─────────────────────────────────────────── */
 .es-browser {
   display: grid; grid-template-columns: var(--es-tree, minmax(220px, 280px)) minmax(0, 1fr);

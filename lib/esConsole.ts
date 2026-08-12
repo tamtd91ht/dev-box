@@ -203,6 +203,17 @@ export function loadEsConsoleHistory(): EsConsoleHistoryEntry[] {
   }
 }
 
+/**
+ * Lịch sử CỦA RIÊNG một cluster.
+ *
+ * Lưu vẫn là một danh sách chung (đổi cluster qua lại không mất lịch sử), nhưng
+ * cột "Lệnh gần đây" chỉ được hiện phần thuộc cluster đang chọn — trước đây hiện
+ * tất cả nên rất dễ bấm lại một lệnh của cụm khác rồi chạy nhầm cluster.
+ */
+export function loadEsConsoleHistoryFor(connectionId: string): EsConsoleHistoryEntry[] {
+  return loadEsConsoleHistory().filter((e) => e.connectionId === connectionId);
+}
+
 function save(list: EsConsoleHistoryEntry[]): EsConsoleHistoryEntry[] {
   const capped = list.slice(0, HISTORY_MAX);
   writeLocal(HISTORY_KEY, JSON.stringify(capped));
@@ -218,19 +229,27 @@ export function pushEsConsoleHistory(
   entry: Omit<EsConsoleHistoryEntry, 'id' | 'at'>,
 ): EsConsoleHistoryEntry[] {
   const list = loadEsConsoleHistory();
+  // Trùng chỉ tính TRONG CÙNG cluster — cùng một lệnh chạy ở hai cụm là hai mục
+  // riêng, vì mỗi cột lịch sử chỉ hiện phần của cluster mình.
   const same = (e: EsConsoleHistoryEntry) =>
-    e.method === entry.method && e.path === entry.path && e.body === entry.body;
+    e.connectionId === entry.connectionId
+    && e.method === entry.method && e.path === entry.path && e.body === entry.body;
   const kept = list.filter((e) => !same(e));
   const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-  return save([{ ...entry, id, at: Date.now() }, ...kept]);
+  return save([{ ...entry, id, at: Date.now() }, ...kept])
+    .filter((e) => e.connectionId === entry.connectionId);
 }
 
-export function removeEsConsoleHistory(id: string): EsConsoleHistoryEntry[] {
-  return save(loadEsConsoleHistory().filter((e) => e.id !== id));
+export function removeEsConsoleHistory(id: string, connectionId: string): EsConsoleHistoryEntry[] {
+  return save(loadEsConsoleHistory().filter((e) => e.id !== id))
+    .filter((e) => e.connectionId === connectionId);
 }
 
-export function clearEsConsoleHistory(): EsConsoleHistoryEntry[] {
-  removeLocal(HISTORY_KEY);
+/** Xoá lịch sử của RIÊNG một cluster — lệnh của cụm khác giữ nguyên. */
+export function clearEsConsoleHistory(connectionId: string): EsConsoleHistoryEntry[] {
+  const rest = loadEsConsoleHistory().filter((e) => e.connectionId !== connectionId);
+  if (rest.length === 0) removeLocal(HISTORY_KEY);
+  else save(rest);
   return [];
 }
 
@@ -262,10 +281,20 @@ POST my_index/_search
 }
 `;
 
-export function loadEsConsoleDraft(): string {
-  return readLocal(DRAFT_KEY) ?? CONSOLE_DEFAULT_DRAFT;
+/**
+ * Nội dung editor nhớ theo TỪNG cluster — mỗi cụm một scratchpad, đổi cluster
+ * không bị mang nguyên lệnh của cụm cũ sang. `es.console.draft` (không hậu tố)
+ * là bản chung của phiên bản cũ: còn dùng làm giá trị khởi tạo cho cluster nào
+ * chưa có draft riêng, để lần đầu mở sau khi cập nhật không mất bài đang gõ.
+ */
+function draftKey(connectionId: string): string {
+  return `${DRAFT_KEY}.${connectionId}`;
 }
 
-export function saveEsConsoleDraft(text: string): void {
-  writeLocal(DRAFT_KEY, text);
+export function loadEsConsoleDraft(connectionId: string): string {
+  return readLocal(draftKey(connectionId)) ?? readLocal(DRAFT_KEY) ?? CONSOLE_DEFAULT_DRAFT;
+}
+
+export function saveEsConsoleDraft(connectionId: string, text: string): void {
+  writeLocal(draftKey(connectionId), text);
 }

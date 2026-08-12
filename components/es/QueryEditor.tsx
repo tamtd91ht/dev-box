@@ -74,7 +74,9 @@ function ensureEsSetup(monaco: Monaco) {
   };
 
   monaco.languages.registerCompletionItemProvider('json', {
-    triggerCharacters: ['"', ':', ',', '{', '[', ' ', '.'],
+    // Chỉ mở khi đang gõ token thật (mở nháy, `.` đi tới sub-field). Có `{ [ , :`
+    // và dấu cách thì vừa bấm `{` đã bật bảng gợi ý — dễ chèn nhầm cả clause.
+    triggerCharacters: ['"', '.'],
     provideCompletionItems(model: MonacoEditorNs.ITextModel, position: MonacoPosition) {
       const meta = metaByModel.get(model);
       if (!meta) return { suggestions: [] }; // model .json khác (tab Code) — không đụng vào
@@ -235,7 +237,8 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
             // Key JSON nằm trong chuỗi — không bật strings thì gõ `"te` không gợi ý.
             quickSuggestions: { other: true, strings: true, comments: false },
             suggestOnTriggerCharacters: true,
-            acceptSuggestionOnEnter: 'on',
+            // Enter xuống dòng; Tab mới nhận gợi ý (xem ConsoleView.tsx).
+            acceptSuggestionOnEnter: 'off',
             tabCompletion: 'on',
             formatOnPaste: true,
             automaticLayout: true,
@@ -248,7 +251,7 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
         <p className="es-qed-err">⚠ {formatErr ?? problem}</p>
       )}
       <p className="es-hint es-qed-hint">
-        Ctrl+Space gợi ý · Tab nhảy chỗ điền · Ctrl+Enter chạy · Shift+Alt+F format
+        Ctrl+Space gợi ý · Tab nhận gợi ý / nhảy chỗ điền · Ctrl+Enter chạy · Shift+Alt+F format
       </p>
     </div>
   );
