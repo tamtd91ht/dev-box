@@ -5492,13 +5492,20 @@ iframe.tools-view-box { background: #fff; }
 .api-tabs { display: flex; gap: 4px; align-items: center; border-bottom: 1px solid var(--glass-brd); }
 .api-tab { border: none; background: transparent; cursor: pointer; color: var(--muted); padding: 5px 12px; font-size: 12px; border-radius: 6px 6px 0 0; }
 .api-tab.on { color: var(--text); font-weight: 600; box-shadow: 0 -2px 0 var(--accent) inset; }
-.api-editor { min-height: 120px; }
+/* Editor ăn hết chiều cao còn thừa: soạn body JSON dài mà không phải cuộn
+   trong một ô 160px giữa màn hình trống. Khi đã có response thì nhường bớt —
+   xem .api-main:has(.api-res) bên dưới. */
+.api-editor { flex: 1; min-height: 120px; display: flex; flex-direction: column; overflow: auto; }
 .api-kv { display: flex; flex-direction: column; gap: 4px; padding: 6px 2px; }
 .api-kv-row { display: flex; gap: 6px; align-items: center; }
 .api-kv-row .input { flex: 1; }
-.api-body { display: flex; flex-direction: column; gap: 6px; padding: 6px 2px; }
+.api-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; padding: 6px 2px; }
 .api-bodytype { display: flex; gap: 14px; align-items: center; font-size: 12px; }
-.api-bodytext { min-height: 160px; font-family: var(--mono, monospace); font-size: 12px; resize: vertical; }
+/* resize:vertical = kéo tay ở góc dưới-phải khi muốn khác mặc định. */
+.api-bodytext { flex: 1; min-height: 160px; font-family: var(--mono, monospace); font-size: 12px; resize: vertical; }
+/* Có response rồi thì hai bên chia nhau, editor không nuốt hết. */
+.api-main:has(.api-res) .api-editor { flex: 1 1 40%; }
+.api-main:has(.api-res) .api-res { flex: 1 1 60%; }
 .api-res { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--glass-brd); border-radius: 10px; overflow: hidden; }
 .api-res-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--glass-brd); background: var(--bg-1, var(--bg)); }
 .api-res-body { flex: 1; min-height: 0; margin: 0; padding: 10px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 12px/1.5 var(--mono, ui-monospace, monospace); }
