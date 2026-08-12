@@ -249,7 +249,49 @@ export function extractMessages(groupHint: boolean, decoded: unknown, at: number
       raw: m,
     });
   }
-  return out;
+  return dropBroadcastDuplicates(out);
+}
+
+/**
+ * Gộp THÔNG BÁO HỆ THỐNG bị Zalo phát tán ra nhiều hội thoại trong CÙNG một khung.
+ *
+ * Ca thật: bạn bấm đồng ý kết bạn → Zalo gửi MỘT khung chứa BA object tin cùng
+ * nội dung "… đã đồng ý kết bạn", mỗi cái trỏ một hội thoại (người đó, một nhóm
+ * có người đó, và OA "Zalo"). Ta coi mỗi phần tử là một tin riêng nên dòng đó
+ * hiện ở cả ba — trong khi nó chỉ liên quan tới người kia.
+ *
+ * Luật: trong một khung, cùng NGƯỜI GỬI + cùng NỘI DUNG thì chỉ giữ MỘT bản, và
+ * ưu tiên bản 1-1 (hội thoại của chính người đó) vì thông báo là về người đó, không
+ * phải về nhóm. Không có bản 1-1 nào thì giữ bản đầu.
+ *
+ * CỐ Ý HẸP — chỉ gộp khi cả ba điều kiện đúng:
+ *   · nhiều tin trong CÙNG một khung (tin chat thật hầu như đến từng khung riêng),
+ *   · TRÙNG cả người gửi lẫn nội dung,
+ *   · và chúng nằm ở NHIỀU hội thoại khác nhau.
+ * Nhờ vậy người ta nhắn cùng một câu vào nhóm và vào riêng cho mình ở hai lần gửi
+ * khác nhau thì KHÔNG bị gộp — đó là hai tin thật.
+ */
+function dropBroadcastDuplicates(msgs: IncomingMessage[]): IncomingMessage[] {
+  if (msgs.length < 2) return msgs;
+
+  const groups = new Map<string, IncomingMessage[]>();
+  for (const m of msgs) {
+    // Cảm xúc có nhánh xử lý riêng (gắn vào tin đích) — đừng gộp chúng ở đây.
+    const key = m.reaction ? `r:${m.reaction.targetMsgId}:${m.threadId}` : `t:${m.fromId}|${m.text}`;
+    const arr = groups.get(key);
+    if (arr) arr.push(m); else groups.set(key, [m]);
+  }
+
+  const keep = new Set<IncomingMessage>();
+  for (const [key, arr] of groups) {
+    if (arr.length < 2 || key.startsWith('r:')) { for (const m of arr) keep.add(m); continue; }
+    // Cùng một hội thoại thì KHÔNG phải phát tán — có thể là tin thật gửi liền
+    // nhau, giữ hết (khử trùng theo msgId đã làm ở threadStore).
+    if (new Set(arr.map((m) => m.threadId)).size < 2) { for (const m of arr) keep.add(m); continue; }
+    keep.add(arr.find((m) => !m.group) ?? arr[0]);
+  }
+  // Giữ nguyên thứ tự ban đầu của khung.
+  return msgs.filter((m) => keep.has(m));
 }
 
 /**
@@ -546,6 +588,19 @@ export class ZaloListener {
             this.onMessage(msg);
           }
           const last = msgs[msgs.length - 1];
+          // MỘT khung rút ra nhiều tin đi NHIỀU hội thoại là dấu hiệu khung
+          // THÔNG BÁO HỆ THỐNG (vd "… đã đồng ý kết bạn") bị hiểu thành tin chat:
+          // Zalo gửi kèm danh sách hội thoại liên quan, ta lại coi mỗi phần tử là
+          // một tin riêng → cùng một dòng hiện ở cả người VÀ nhóm. Ghi rõ để soi,
+          // vì trace chỉ log tin CUỐI nên trước đây ca này ẩn hoàn toàn.
+          const threads = [...new Set(msgs.map((x) => x.threadId))];
+          if (threads.length > 1) {
+            trace('msg', `⚠ MỘT khung → ${msgs.length} tin ở ${threads.length} hội thoại (cmd=${cmd})`, {
+              threads,
+              texts: msgs.map((x) => x.text.slice(0, 30)),
+              sameText: new Set(msgs.map((x) => x.text)).size === 1,
+            });
+          }
           trace('msg', `RÚT ${msgs.length} tin cmd=${cmd}`, { group: last.group, threadId: last.threadId, from: last.fromName || last.fromId, self: last.isSelf, text: last.text.slice(0, 40) });
         } else if (this.stats.decoded <= 20) {
           // Giải mã được nhưng KHÔNG có chữ → có thể là seen/typing, hoặc schema
