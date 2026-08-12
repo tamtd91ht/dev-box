@@ -224,7 +224,14 @@ function applyReaction(target: StoredMessage, who: string, icon: string, rType: 
  */
 export function realMsgIds(accountKey: string, threadId: string, id: string): { zMsgId: string; zCliMsgId?: string } {
   const msg = accountThreads(accountKey).get(threadId)?.messages.find((x) => x.id === id);
-  return { zMsgId: msg?.zMsgId ?? id, zCliMsgId: msg?.zCliMsgId };
+  // Rơi về chính `id` khi thiếu zMsgId — và đây KHÔNG phải nước cuối vô vọng:
+  // recordIncoming đặt `id = m.msgId` khi Zalo có gửi msgId, mà msgId của Zalo là
+  // chuỗi SỐ. Nên với tin đến bình thường (kể cả tin đã lưu từ trước khi có field
+  // zMsgId — vd 51 tin khôi phục từ kho), `id` chính là id thật cần dùng.
+  // Chỉ id ta TỰ SINH ('out-…' / '<at>-<hash>') mới không phải số, và sendReaction
+  // chặn đúng mấy ca đó.
+  const fallback = /^\d+$/.test(id) ? id : '';
+  return { zMsgId: msg?.zMsgId || fallback || id, zCliMsgId: msg?.zCliMsgId };
 }
 
 /**
