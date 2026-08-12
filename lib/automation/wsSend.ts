@@ -170,32 +170,39 @@ async function runSend(
         ? { ok: res.ok, awaitingKey: res.awaitingKey, error: res.error, steps: res.steps, controls: res.controls, editables: res.editables }
         : null;
 
-      // Phase 'finish': only when the type phase typed the text and is waiting
-      // for a TRUSTED Enter that a synthetic event cannot provide.
-      if (!dryRun && res?.awaitingKey) {
-        // Re-assert composer focus so the trusted Enter lands in it as the
-        // active element — the round trip out to type + back can lose focus.
-        try {
-          trace.focusActiveEl = await guest.exec(buildFocusScript(plugin.send), true);
-        } catch (e) {
-          trace.focusActiveEl = `err: ${(e as Error).message}`;
-        }
-        // Trusted Enter — the ONE step that actually submits. Its result was
-        // previously recorded and then ignored, so a failed key press still ran
-        // the verify phase and reported whatever the composer happened to look
-        // like. If the key never landed, say so instead of guessing.
-        const press = await guest.pressKey('Return');
-        trace.pressKey = press;
-        if (!press?.ok) {
-          const why = press?.error ?? 'không rõ lỗi';
-          void logTrace(trace);
-          failed.push(`${t.name}: không bơm được Enter thật (${why}) — đã gõ nhưng chưa gửi`);
-          results.push({ target: t.name, result: res, error: `không bơm được Enter thật: ${why}` });
-          // Vẫn giữ nhịp giữa hai người nhận: hội thoại này đang MỞ và có chữ
-          // trong ô soạn, nhảy ngay sang đích kế tiếp là ép Zalo chuyển hội
-          // thoại giữa chừng.
-          if (group.targets.length > 1) await sleep(BETWEEN_MS);
-          continue;
+      // Phase 'finish' runs in BOTH send modes, because neither in-page signal
+      // is proof on its own — only reading the thread back is:
+      //
+      //   awaitingKey  → app gửi bằng Enter: bơm Enter TRUSTED rồi kiểm chứng
+      //   needsVerify  → app gửi bằng nút (enterToSend:false): script đã bấm,
+      //                  chỉ còn kiểm chứng, KHÔNG nhấn Enter (Enter ở app kiểu
+      //                  này chỉ xuống dòng — nhấn vào là thêm dòng trống)
+      if (!dryRun && (res?.awaitingKey || res?.needsVerify)) {
+        if (res.awaitingKey) {
+          // Re-assert composer focus so the trusted Enter lands in it as the
+          // active element — the round trip out to type + back can lose focus.
+          try {
+            trace.focusActiveEl = await guest.exec(buildFocusScript(plugin.send), true);
+          } catch (e) {
+            trace.focusActiveEl = `err: ${(e as Error).message}`;
+          }
+          // Trusted Enter — the ONE step that actually submits. Its result was
+          // previously recorded and then ignored, so a failed key press still ran
+          // the verify phase and reported whatever the composer happened to look
+          // like. If the key never landed, say so instead of guessing.
+          const press = await guest.pressKey('Return');
+          trace.pressKey = press;
+          if (!press?.ok) {
+            const why = press?.error ?? 'không rõ lỗi';
+            void logTrace(trace);
+            failed.push(`${t.name}: không bơm được Enter thật (${why}) — đã gõ nhưng chưa gửi`);
+            results.push({ target: t.name, result: res, error: `không bơm được Enter thật: ${why}` });
+            // Vẫn giữ nhịp giữa hai người nhận: hội thoại này đang MỞ và có chữ
+            // trong ô soạn, nhảy ngay sang đích kế tiếp là ép Zalo chuyển hội
+            // thoại giữa chừng.
+            if (group.targets.length > 1) await sleep(BETWEEN_MS);
+            continue;
+          }
         }
         await sleep(1200);
         const finish = buildSendScript(plugin.directory ?? {}, plugin.send, {

@@ -19,6 +19,11 @@
 //   renderer       → guest.pressKey('\r')   ← a TRUSTED Enter
 //   phase 'finish' → verify the thread, then park on another conversation
 //
+// `enterToSend: false` is for an app that only sends by button: Enter would
+// just add a newline there, so phase 'type' clicks the button itself and the
+// renderer skips the key press. Verification in phase 'finish' is unchanged —
+// a synthetic click is not proof either, only the thread is.
+//
 // A dry run does the whole 'type' phase and clears the box instead of stopping
 // to be sent — the way to see the path works before enabling sending.
 
@@ -33,7 +38,17 @@ export interface SendSpec {
   sendButtonSelectors?: string[];
   /** Message bubbles, newest last — used to verify the send. */
   messageSelectors?: string[];
-  /** Press Enter to send (true) vs rely on a button only (false). Default true. */
+  /**
+   * App gửi bằng Enter (true, mặc định) hay chỉ bằng nút gửi (false)?
+   *
+   * true  → pha 'type' gõ xong thì DỪNG (`awaitingKey`), renderer bơm Enter
+   *         TRUSTED qua sendInputEvent — đường duy nhất qua được isTrusted.
+   * false → Enter chỉ xuống dòng, nên script bấm `sendButtonSelectors`
+   *         (`needsVerify`) và KHÔNG nhấn Enter — nhấn vào chỉ thêm dòng trống.
+   *
+   * Cả hai chế độ đều phải qua pha 'finish' để kiểm chứng: không tín hiệu
+   * trong trang nào tự nó là bằng chứng đã gửi.
+   */
   enterToSend?: boolean;
   /** After sending, click away to another conversation. Default TRUE. */
   parkAfterSend?: boolean;
@@ -79,6 +94,12 @@ export interface SendResult {
   steps: SendStep[];
   /** 'type' phase typed the text and is waiting for a trusted key press. */
   awaitingKey: boolean;
+  /**
+   * 'type' phase already clicked the send button (enterToSend:false) and needs
+   * the 'finish' phase to verify — WITHOUT a key press. Distinct from
+   * `awaitingKey`, which additionally asks the renderer for a trusted Enter.
+   */
+  needsVerify: boolean;
   /** The message actually went out (verified, or box emptied). */
   sent: boolean;
   /** Last message in the thread after sending — the proof it went out. */
@@ -216,6 +237,7 @@ export function buildSendScript(
   const buttonSel = json(send.sendButtonSelectors ?? []);
   const msgSel = json(send.messageSelectors ?? []);
   const park = send.parkAfterSend === false ? 'false' : 'true';
+  const enterToSend = send.enterToSend === false ? 'false' : 'true';
   const parkNames = json(send.parkNames ?? []);
   const name = json(opts.name);
   const text = json(opts.text);
@@ -223,7 +245,7 @@ export function buildSendScript(
   const phase = opts.phase === 'finish' ? 'finish' : 'type';
 
   const head = `(async function(){
-  var R = { ok:false, error:'', target:${name}, dryRun:${dry}, steps:[], awaitingKey:false, sent:false, lastMessage:'', editables:[], controls:[], composerHtml:'' };
+  var R = { ok:false, error:'', target:${name}, dryRun:${dry}, steps:[], awaitingKey:false, needsVerify:false, sent:false, lastMessage:'', editables:[], controls:[], composerHtml:'' };
   var PHASE=${json(phase)};
   // Every step is logged to the guest console AS IT HAPPENS. main.cjs forwards
   // guest console to the terminal, so the whole send is copyable text there —
@@ -235,6 +257,7 @@ export function buildSendScript(
   };
   try {
     var COMPOSER=${composerSel}, BUTTON=${buttonSel}, MSG=${msgSel}, PARK=${park};
+    var ENTER_TO_SEND=${enterToSend};
     var PARK_NAMES=${parkNames};
     var WANT=${name}, TEXT=${text}, DRY=${dry};
 ${prelude(listSel, rowSel, rowName)}`;
@@ -429,6 +452,27 @@ ${prelude(listSel, rowSel, rowName)}`;
     // thật duy nhất là bong bóng tin nhắn trong thread — và đó là việc của pha
     // 'finish'. Nên ở đây luôn dừng lại chờ Enter TRUSTED, đường đã được chứng
     // minh là gửi được (main process sendInputEvent, xem guests.ts pressKey).
+    if(!ENTER_TO_SEND){
+      // App KHÔNG gửi bằng Enter (enterToSend:false) — Enter chỉ xuống dòng.
+      // Đường duy nhất là nút gửi, nên phải bấm ở đây; không có nút thì bó tay,
+      // và phải nói thẳng thay vì chờ một Enter không bao giờ submit.
+      var btnOnly = firstOf(BUTTON);
+      if(!btnOnly){
+        R.error = 'enterToSend:false nhưng không tìm thấy nút gửi — soát lại sendButtonSelectors';
+        step('bấm nút gửi', false, R.error);
+        return R;
+      }
+      realClick(btnOnly);
+      await sleep(500);
+      // Vẫn KHÔNG tin vào click tổng hợp: để pha 'finish' đọc bong bóng phán
+      // quyết. awaitingKey=false nên renderer bỏ qua bước Enter — nhưng
+      // wsSend.ts cần chạy pha finish để kiểm chứng, xem needsVerify.
+      R.needsVerify = true;
+      R.ok = true;
+      step('bấm nút gửi', true, pathOf(btnOnly)+' — chờ kiểm chứng');
+      return R;
+    }
+
     if(BUTTON.length){
       var btnProbe = firstOf(BUTTON);
       step('nút gửi', !!btnProbe, btnProbe ? 'thấy '+pathOf(btnProbe)+' — vẫn gửi bằng Enter thật' : 'không thấy, gửi bằng Enter thật');
@@ -471,7 +515,9 @@ ${prelude(listSel, rowSel, rowName)}`;
         : 'ô soạn đã trống (không đọc được bong bóng nào — soát lại messageSelectors)');
     } else {
       R.sent = false; R.ok = false;
-      R.error = 'đã nhấn Enter thật nhưng ô soạn vẫn còn nội dung — soát lại composerSelectors/enterToSend';
+      R.error = ENTER_TO_SEND
+        ? 'đã nhấn Enter thật nhưng ô soạn vẫn còn nội dung — app này có thể không gửi bằng Enter, thử đặt enterToSend:false'
+        : 'đã bấm nút gửi nhưng ô soạn vẫn còn nội dung — soát lại sendButtonSelectors';
       step('kiểm chứng', false, after);
     }
 

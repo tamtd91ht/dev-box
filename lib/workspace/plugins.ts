@@ -289,6 +289,10 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
       ],
       sendButtonSelectors: ['[data-id="btn_Chat_SendMessage"]', '.btn-send', '[title="Gửi tin nhắn"]'],
       messageSelectors: ['.chat-body .msg-item', '[data-id="div_Chat_MessageItem"]', '.message-item'],
+      // Zalo gửi bằng Enter → pha 'type' dừng lại, renderer bơm Enter TRUSTED
+      // (sendInputEvent từ main process). Đặt false nếu app chỉ gửi bằng nút:
+      // khi đó script bấm nút thay vì chờ Enter. KHÔNG bấm nút ở chế độ true —
+      // click tổng hợp không qua được event.isTrusted, xem lib/workspace/send.ts.
       enterToSend: true,
       // BẬT — log chứng minh cần thiết: gửi xong mà để hội thoại ĐANG MỞ thì
       // Zalo coi như người dùng đang đọc và NGỪNG bắn thông báo cho tin mới của
