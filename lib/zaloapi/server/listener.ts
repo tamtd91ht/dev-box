@@ -44,6 +44,20 @@ export interface IncomingMessage {
   fromName: string;
   /** Nội dung văn bản. */
   text: string;
+  /**
+   * CẢM XÚC (reaction) thay vì tin thường. Có giá trị thì `text` KHÔNG phải nội
+   * dung tin mà là mô tả ngắn để ghi log — tầng trên phải xử theo nhánh riêng
+   * (gắn cảm xúc vào tin đích `targetMsgId`), đừng dựng bong bóng chat mới.
+   */
+  reaction?: {
+    /** msgId của tin BỊ thả cảm xúc. */
+    targetMsgId: string;
+    /** rIcon Zalo gửi về, vd '/-heart'. Rỗng nghĩa là BỎ cảm xúc. */
+    icon: string;
+    rType: number;
+    /** true = chính ta vừa thả (đồng bộ từ thiết bị khác). */
+    isSelf: boolean;
+  };
   /** Payload thô đã giải mã — để chẩn đoán / mở rộng sau. */
   raw: unknown;
 }
@@ -78,12 +92,81 @@ function pickStr(m: Record<string, unknown>, ...keys: string[]): string {
  */
 function pickText(m: Record<string, unknown>): string {
   const c = m['content'];
-  if (typeof c === 'string' && c) return c;
+  if (typeof c === 'string' && c) {
+    // `content` có thể là JSON ĐÃ ĐÓNG GÓI của một sự kiện (cảm xúc, thu hồi,
+    // sự kiện nhóm…). Trả nguyên chuỗi đó ra làm "nội dung tin" thì màn chat
+    // hiện một bong bóng chứa JSON thô — rác, và Automation còn khớp rule theo
+    // nó. Đã gặp đúng ca này: một khung cảm xúc thiếu `rMsg` (không biết tin
+    // đích) rơi xuống đây và hiện thành tin `{"rIcon":"/-heart",...}`.
+    //
+    // Nên: chuỗi trông như JSON object thì thử bóc lấy chữ THẬT bên trong
+    // (title/text/description — dạng tin có kèm), không có thì coi như KHÔNG CÓ
+    // CHỮ để tầng trên bỏ qua. Tin chat bình thường không bao giờ bắt đầu bằng
+    // '{' nên không mất tin thật.
+    const s = c.trim();
+    if (s.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(s) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const inner = parsed as Record<string, unknown>;
+          const t = pickStr(inner, 'title', 'text', 'description');
+          if (t) return t;
+          // Không có chữ nào bên trong → đây là payload sự kiện, không phải tin.
+          return '';
+        }
+      } catch {
+        // KHÔNG parse được → người ta thật sự gõ một chuỗi bắt đầu bằng '{'
+        // (vd dán một đoạn JSON hỏng, hay chat về code). Đó là tin thật, giữ.
+      }
+    }
+    return c;
+  }
   if (c && typeof c === 'object') {
     const t = pickStr(c as Record<string, unknown>, 'title', 'text', 'description');
     if (t) return t;
   }
   return pickStr(m, 'message', 'msg', 'body');
+}
+
+/**
+ * Nhận diện một khung CẢM XÚC (reaction) và rút ra tin đích + mặt đã thả.
+ *
+ * Zalo gói cảm xúc y như một "tin" nhưng nội dung là JSON LỒNG trong `content`:
+ *   content: '{"rMsg":[{"gMsgID":"123","cMsgID":"456"}],"rIcon":"/-heart","rType":5}'
+ * Có bản build để `content` là object luôn (không phải chuỗi), nên thử cả hai.
+ * Đặc trưng nhận dạng là có `rIcon`/`rType` + mảng `rMsg` — không dựa vào số cmd
+ * vì cmd của Zalo đổi theo bản build (đã bị bỏ sót một lần vì tin đi qua cmd 621).
+ *
+ * `rType: -1` (hoặc rIcon rỗng) = người ta BỎ cảm xúc đã thả.
+ */
+function pickReaction(m: Record<string, unknown>): { targetMsgId: string; icon: string; rType: number } | null {
+  let c: unknown = m['content'];
+  if (typeof c === 'string') {
+    const s = c.trim();
+    // Chỉ thử parse khi trông như JSON — tin thường cũng là string, đừng parse bừa.
+    if (!s.startsWith('{')) return null;
+    try { c = JSON.parse(s); } catch { return null; }
+  }
+  if (!c || typeof c !== 'object') return null;
+  const obj = c as Record<string, unknown>;
+  const hasIcon = 'rIcon' in obj;
+  const hasType = 'rType' in obj;
+  if (!hasIcon && !hasType) return null;
+
+  const rMsg = obj['rMsg'];
+  const first = Array.isArray(rMsg) && rMsg.length && rMsg[0] && typeof rMsg[0] === 'object'
+    ? (rMsg[0] as Record<string, unknown>)
+    : null;
+  // Tin đích: ưu tiên id server (gMsgID), rơi về id client.
+  const targetMsgId = first ? pickStr(first, 'gMsgID', 'gMsgId', 'cMsgID', 'cMsgId') : '';
+  if (!targetMsgId) return null; // không biết thả vào tin nào → vô dụng, bỏ
+
+  const rTypeRaw = Number(obj['rType']);
+  return {
+    targetMsgId,
+    icon: typeof obj['rIcon'] === 'string' ? obj['rIcon'] : '',
+    rType: Number.isFinite(rTypeRaw) ? rTypeRaw : -1,
+  };
 }
 
 /**
@@ -96,8 +179,10 @@ function pickText(m: Record<string, unknown>): string {
  *
  * `selfUid` để nhận ra tin do CHÍNH mình gửi (Zalo phản hồi tin của ta về các
  * phiên khác): khi đó threadId phải là người NHẬN (idTo), không phải người gửi.
+ *
+ * Export vì đây là hàm THUẦN (không phụ thuộc socket) nên test được trực tiếp.
  */
-function extractMessages(groupHint: boolean, decoded: unknown, at: number, selfUid: string): IncomingMessage[] {
+export function extractMessages(groupHint: boolean, decoded: unknown, at: number, selfUid: string): IncomingMessage[] {
   const root = decoded as Record<string, unknown> | null;
   if (!root) return [];
   // Payload có nhiều dạng bọc tuỳ cmd: { msgs:[…] }, { data:[…] },
@@ -116,8 +201,11 @@ function extractMessages(groupHint: boolean, decoded: unknown, at: number, selfU
   for (const item of list) {
     if (!item || typeof item !== 'object') continue;
     const m = item as Record<string, unknown>;
+    const react = pickReaction(m);
     const text = pickText(m);
-    if (!text) continue; // không có chữ → bỏ (ảnh trần/typing/seen…)
+    // Không có chữ VÀ cũng không phải cảm xúc → bỏ (ảnh trần/typing/seen…).
+    // Trước đây chỉ xét chữ, nên mọi khung cảm xúc bị rơi ở đúng dòng này.
+    if (!text && !react) continue;
 
     const groupId = pickStr(m, 'groupId', 'gid');
     const group = groupHint || !!groupId;
@@ -142,7 +230,9 @@ function extractMessages(groupHint: boolean, decoded: unknown, at: number, selfU
       isSelf,
       msgId: pickStr(m, 'msgId', 'msgID', 'cliMsgId', 'clientMsgId', 'realMsgId'),
       fromName: pickStr(m, 'dName', 'fromName', 'senderName'),
-      text,
+      // Cảm xúc không có nội dung → dựng một dòng mô tả để Console đọc được.
+      text: text || (react ? (react.icon ? `đã thả ${react.icon}` : 'đã bỏ cảm xúc') : ''),
+      ...(react ? { reaction: { ...react, isSelf } } : {}),
       raw: m,
     });
   }

@@ -7,6 +7,8 @@
 //     'status'  { accountKey? }                      → SessionInfo | SessionInfo[]
 //     'send'    { accountKey, threadId?, text, group? } → SendResult
 //     'logout'  { accountKey }                       → { dropped }
+//     'react'   { accountKey, threadId, msgId, key | remove:true, group? }
+//                                                   → { ok, detail, messages }
 //     'archiveConfig'    { accountKey? }             → ArchiveConfigView
 //     'archiveConfigSet' { mode, connectionId?, database? } → ArchiveConfigView
 //     'archiveHydrate'   { accountKey }              → { threads, messages }
@@ -32,7 +34,8 @@
 // Mọi lượt gửi ghi một dòng ZALOAPI_AUDIT ra stdout, cùng quy ước SHEET_AUDIT.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { login, sendMessage, uploadImage, sendPhoto, getGroupHistory, scanContacts } from '@/lib/zaloapi/server/client';
+import { login, sendMessage, uploadImage, sendPhoto, getGroupHistory, scanContacts, sendReaction } from '@/lib/zaloapi/server/client';
+import { reactionByKey, REACTION_SOURCE, UNREACT_RTYPE } from '@/lib/zaloapi/reactions';
 import { ZALOAPI_ENABLED, ZALOAPI_ALLOW_SEND } from '@/lib/zaloapi/server/flags';
 import {
   putSession,
@@ -54,6 +57,7 @@ import {
   dropThreads,
   prependHistory,
   hydrateFromArchive,
+  recordOwnReaction,
 } from '@/lib/zaloapi/server/threadStore';
 import {
   getArchiveConfigView,
@@ -284,6 +288,53 @@ export async function POST(req: NextRequest) {
           } catch { /* kho lỗi → trả rỗng như trước */ }
         }
         return NextResponse.json({ ok: true, result: msgs });
+      }
+
+      // THẢ / BỎ cảm xúc lên một tin. rType -1 = bỏ (xem lib/zaloapi/reactions).
+      case 'react': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        const threadId = need(body.threadId, 'threadId');
+        const msgId = need(body.msgId, 'msgId');
+        const group = !!body.group;
+        // Thả cảm xúc cũng là GHI lên tài khoản người khác → cùng cổng với gửi tin.
+        if (!ZALOAPI_ALLOW_SEND) {
+          return NextResponse.json(
+            { ok: false, error: 'Gửi đang tắt. Đặt ZALOAPI_ALLOW_SEND=true trong .env.local (chỉ dùng tài khoản thử).' },
+            { status: 403 },
+          );
+        }
+        const remove = body.remove === true;
+        const def = remove ? null : reactionByKey(String(body.key ?? ''));
+        if (!remove && !def) {
+          return NextResponse.json({ ok: false, error: `cảm xúc không hợp lệ: ${String(body.key ?? '')}` }, { status: 400 });
+        }
+        let ctx;
+        try { ctx = await getFreshContext(accountKey); }
+        catch (err) { return NextResponse.json({ ok: false, error: `${(err as Error).message}` }, { status: 409 }); }
+
+        const icon = def?.icon ?? '';
+        const rType = def?.rType ?? UNREACT_RTYPE;
+        // Hiện ngay (lạc quan) rồi mới gọi Zalo — cùng kỷ luật với gửi tin.
+        // `prev` là mặt ta đang thả trước lượt này, để hoàn nguyên nếu Zalo từ chối.
+        const prev = recordOwnReaction(accountKey, threadId, msgId, icon, rType);
+        const result = await sendReaction(ctx, {
+          threadId, group, msgId,
+          cliMsgId: typeof body.cliMsgId === 'string' ? body.cliMsgId : undefined,
+          icon, rType, source: REACTION_SOURCE,
+        });
+        // Zalo từ chối → đặt lại ĐÚNG mặt cũ (hoặc bỏ hẳn nếu trước đó chưa thả).
+        if (!result.ok && prev !== undefined) {
+          recordOwnReaction(accountKey, threadId, msgId, prev?.icon ?? '', prev?.rType ?? UNREACT_RTYPE);
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `ZALOAPI_AUDIT operation=REACT account=${accountKey} thread=${threadId} msg=${msgId} `
+          + `icon=${icon || '(bỏ)'} rType=${rType} ok=${result.ok} ts=${new Date().toISOString()}`,
+        );
+        return NextResponse.json({
+          ok: result.ok,
+          result: { ...result, messages: messagesFor(accountKey, threadId) },
+        });
       }
 
       // ── Kho lưu trữ tin (tuỳ chọn: off / local / mongo) ──────────────────

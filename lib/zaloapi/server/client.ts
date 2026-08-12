@@ -714,3 +714,100 @@ export async function scanContacts(ctx: ZaloContext): Promise<{ contacts: Contac
   }
   return { contacts, groups: groups.length, friends: friends.length, note: notes.join(' · ') };
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+//  THẢ CẢM XÚC (reaction) — port từ zca-js apis/addReaction.ts.
+//
+//  Endpoint dùng host serviceMap.reaction (KHÔNG phải chat/group như gửi tin):
+//    cá nhân → reaction[0]/api/message/reaction, params.toid
+//    nhóm    → reaction[0]/api/group/reaction,   params.grid + imei
+//
+//  Payload có một chỗ dễ sai: `react_list[0].message` là một CHUỖI JSON lồng
+//  bên trong params (không phải object). Bên trong nó cần CẢ HAI id của tin:
+//    gMsgID = msgId phía SERVER  ·  cMsgID = msgId phía CLIENT
+//  Zalo dùng cặp này để định vị đúng tin. Ta thường chỉ có một trong hai (tin
+//  đến có msgId server; tin mình gửi lạc quan có cliMsgId) nên khi thiếu thì
+//  điền cùng một giá trị cho cả hai — đúng cách zca-js làm khi caller chỉ đưa
+//  một id, và Zalo chấp nhận.
+//
+//  rType = -1 nghĩa là BỎ cảm xúc (xem lib/zaloapi/reactions.ts).
+// ════════════════════════════════════════════════════════════════════════════
+
+export interface ReactionResult {
+  ok: boolean;
+  detail: string;
+  raw?: unknown;
+}
+
+export async function sendReaction(
+  ctx: ZaloContext,
+  opts: {
+    threadId: string;
+    group: boolean;
+    /** msgId phía server (gMsgID). Để rỗng nếu chỉ có id client. */
+    msgId: string;
+    /** msgId phía client (cMsgID). Để rỗng nếu chỉ có id server. */
+    cliMsgId?: string;
+    /** rIcon — chuỗi emoticon Zalo, vd '/-heart'. */
+    icon: string;
+    rType: number;
+    source?: number;
+  },
+): Promise<ReactionResult> {
+  const dest = opts.threadId || ctx.uid;
+  if (!dest) return { ok: false, detail: 'không có threadId để thả cảm xúc' };
+  // Cần ÍT NHẤT một id tin — không có thì Zalo không biết thả vào đâu.
+  const gMsgID = opts.msgId || opts.cliMsgId || '';
+  const cMsgID = opts.cliMsgId || opts.msgId || '';
+  if (!gMsgID) return { ok: false, detail: 'tin này không có msgId nên không thả được cảm xúc' };
+
+  // Host reaction riêng; bản build nào không lộ thì thử group/chat cho đỡ chết.
+  const host = ctx.serviceMap.reaction?.[0]
+    ?? (opts.group ? ctx.serviceMap.group?.[0] : ctx.serviceMap.chat?.[0]);
+  if (!host) return { ok: false, detail: 'serviceMap thiếu host reaction' };
+  const path = opts.group ? '/api/group/reaction' : '/api/message/reaction';
+
+  const payload: Record<string, unknown> = {
+    react_list: [
+      {
+        // CHUỖI JSON lồng — không phải object (xem ghi chú đầu khối).
+        message: JSON.stringify({
+          rMsg: [{ gMsgID, cMsgID, msgType: 1 }],
+          rIcon: opts.icon,
+          rType: opts.rType,
+          source: opts.source ?? 6,
+        }),
+        clientId: Date.now(),
+      },
+    ],
+    ...(opts.group ? { grid: dest, imei: ctx.imei } : { toid: dest }),
+  };
+
+  const encrypted = encodeAES(ctx.secretKey, JSON.stringify(payload));
+  if (!encrypted) return { ok: false, detail: 'mã hoá params cảm xúc thất bại' };
+  const url = makeURL(`${host}${path}`, { nretry: 0 });
+
+  let raw: ZaloEnvelope;
+  try {
+    raw = await fetchZalo(
+      url,
+      {
+        method: 'POST',
+        headers: { ...headers(ctx), 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ params: encrypted }).toString(),
+      },
+      'thả cảm xúc',
+    );
+  } catch (e) {
+    return { ok: false, detail: (e as Error).message };
+  }
+  if (raw.error_code && raw.error_code !== 0) {
+    return { ok: false, detail: `Zalo trả lỗi ${raw.error_code}: ${raw.error_message ?? ''}`, raw };
+  }
+  const decoded = raw.data ? decryptRespSecret(ctx.secretKey, raw.data) : null;
+  return {
+    ok: true,
+    detail: opts.rType === -1 ? 'đã bỏ cảm xúc' : `đã thả ${opts.icon}`,
+    raw: decoded,
+  };
+}

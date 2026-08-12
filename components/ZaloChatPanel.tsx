@@ -24,10 +24,17 @@ import {
   zaloApiSendImage,
   zaloApiLoadOlder,
   zaloApiContacts,
+  zaloApiReact,
   type ZaloThreadSummary,
   type ZaloStoredMessage,
   type ZaloContact,
 } from '@/lib/zaloapi/api';
+import {
+  REACTIONS,
+  QUICK_REACTION_KEYS,
+  reactionByKey,
+  reactionEmoji,
+} from '@/lib/zaloapi/reactions';
 
 const POLL_MS = 2000;
 
@@ -220,6 +227,12 @@ export default function ZaloChatPanel({
   // Menu chuột phải để gán tag ngay ở danh sách hội thoại.
   const [menu, setMenu] = useState<{ threadId: string; name: string; group: boolean; x: number; y: number } | null>(null);
   const [menuTag, setMenuTag] = useState('');
+
+  // CẢM XÚC: id tin đang mở bảng chọn, và có đang mở bảng ĐẦY ĐỦ (54 mặt) hay
+  // chỉ hàng nhanh 6 mặt. Lưu theo id tin để bảng đóng khi cuộn sang tin khác.
+  const [reactFor, setReactFor] = useState<string>('');
+  const [reactAll, setReactAll] = useState(false);
+  const [reactBusy, setReactBusy] = useState('');
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const activeThreadRef = useRef(activeThread);
@@ -421,6 +434,35 @@ export default function ZaloChatPanel({
       setLoadingOlder(false);
     }
   }, [accountKey, activeThread, group, loadingOlder]);
+
+  /**
+   * Thả / đổi / bỏ cảm xúc. Bấm lại ĐÚNG mặt đang thả = bỏ (giống Zalo thật).
+   * Server trả về danh sách tin đã cập nhật nên không cần tự sửa state tại chỗ.
+   */
+  const react = useCallback(async (m: ZaloStoredMessage, key: string) => {
+    if (!activeThread || reactBusy) return;
+    const mine = m.reactions?.['(self)'];
+    const def = reactionByKey(key);
+    const remove = !!mine && !!def && mine.rType === def.rType;
+    setReactBusy(m.id);
+    setErr('');
+    try {
+      const res = await zaloApiReact(accountKey, {
+        threadId: activeThread,
+        msgId: m.id,
+        group,
+        ...(remove ? { remove: true } : { key }),
+      });
+      setMessages(res.messages);
+      if (!res.ok) setErr(res.detail || 'Thả cảm xúc thất bại.');
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setReactBusy('');
+      setReactFor('');
+      setReactAll(false);
+    }
+  }, [accountKey, activeThread, group, reactBusy]);
 
   if (!connected) {
     return (
@@ -629,6 +671,77 @@ export default function ZaloChatPanel({
                           ) : (
                             <span className="zc-msg-bubble">{m.text}</span>
                           )}
+
+                          {/* Nút mở bảng cảm xúc — chỉ hiện khi hover cả dòng
+                              (CSS), để không làm rối màn chat. */}
+                          {canSend && (
+                            <button
+                              className="zc-react-open"
+                              title="Thả cảm xúc"
+                              onClick={() => {
+                                setReactFor((v) => (v === m.id ? '' : m.id));
+                                setReactAll(false);
+                              }}
+                            >☺</button>
+                          )}
+
+                          {reactFor === m.id && (
+                            <div className="zc-react-pop" role="menu">
+                              {(reactAll ? REACTIONS : REACTIONS.filter((r) => QUICK_REACTION_KEYS.includes(r.key)))
+                                .map((r) => {
+                                  const on = m.reactions?.['(self)']?.rType === r.rType;
+                                  return (
+                                    <button
+                                      key={r.key}
+                                      className={`zc-react-pick${on ? ' is-on' : ''}`}
+                                      title={on ? `${r.label} — bấm để bỏ` : r.label}
+                                      disabled={reactBusy === m.id}
+                                      onClick={() => void react(m, r.key)}
+                                    >{r.emoji}</button>
+                                  );
+                                })}
+                              {!reactAll && (
+                                <button
+                                  className="zc-react-more"
+                                  title="Xem tất cả cảm xúc"
+                                  onClick={() => setReactAll(true)}
+                                >⋯</button>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Cảm xúc ĐÃ THẢ, gom theo mặt + số người. */}
+                          {m.reactions && Object.keys(m.reactions).length > 0 && (
+                            <div className="zc-react-chips">
+                              {Object.entries(
+                                Object.values(m.reactions).reduce<Record<string, { emoji: string; n: number }>>((acc, v) => {
+                                  const k = String(v.rType);
+                                  acc[k] = { emoji: reactionEmoji(v.rType, v.icon), n: (acc[k]?.n ?? 0) + 1 };
+                                  return acc;
+                                }, {}),
+                              ).map(([rType, v]) => {
+                                const mineHere = m.reactions?.['(self)']?.rType === Number(rType);
+                                return (
+                                  <button
+                                    key={rType}
+                                    className={`zc-react-chip${mineHere ? ' is-mine' : ''}`}
+                                    title={mineHere ? 'Bạn đã thả — bấm để bỏ' : `${v.n} người đã thả`}
+                                    disabled={!canSend || reactBusy === m.id}
+                                    onClick={() => {
+                                      // Bấm chip của chính mình = bỏ. Chip của
+                                      // người khác = thả cùng mặt đó.
+                                      const def = REACTIONS.find((x) => x.rType === Number(rType));
+                                      if (def) void react(m, def.key);
+                                    }}
+                                  >
+                                    <span>{v.emoji}</span>
+                                    {v.n > 1 && <b>{v.n}</b>}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+
                           {endGroup && (
                             <span className="zc-msg-meta">
                               {timeLabel(m.at)}

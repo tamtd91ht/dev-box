@@ -13,7 +13,7 @@
 // mọi lời gọi là fire-and-forget và tự nuốt lỗi bên trong.
 
 import type { IncomingMessage } from './listener';
-import { archiveMessage, archiveMessages, archiveReplaceId, archiveStatus, archiveThreadMeta, loadAccountThreads } from './messageArchive';
+import { archiveMessage, archiveMessages, archiveReaction, archiveReplaceId, archiveStatus, archiveThreadMeta, loadAccountThreads } from './messageArchive';
 
 /** Một tin đã lưu để dựng bong bóng chat. */
 export interface StoredMessage {
@@ -29,6 +29,13 @@ export interface StoredMessage {
   imageUrl?: string;
   /** 'sending' | 'sent' | 'failed' cho tin gửi lạc quan; để trống với tin đến. */
   status?: 'sending' | 'sent' | 'failed';
+  /**
+   * CẢM XÚC đã thả lên tin này, gom theo người thả: uid → { icon, rType }.
+   * Gom theo uid (không phải mảng) vì Zalo cho MỘT người đúng MỘT mặt trên một
+   * tin — thả mặt mới là thay mặt cũ, và bỏ thả thì xoá hẳn khoá đó. Nhờ vậy
+   * không cần khử trùng khi cùng một người đổi ý nhiều lần.
+   */
+  reactions?: Record<string, { icon: string; rType: number }>;
 }
 
 /** Tóm tắt một hội thoại cho danh sách bên trái. */
@@ -106,6 +113,11 @@ function hash(s: string): string {
  */
 export function recordIncoming(accountKey: string, m: IncomingMessage): void {
   if (!m.threadId || m.threadId === '0' || !m.text) return;
+  // CẢM XÚC đi nhánh riêng: nó SỬA một tin đã có, không tạo bong bóng mới.
+  if (m.reaction) {
+    recordReaction(accountKey, m);
+    return;
+  }
   const t = getThread(accountKey, m.threadId, m.group);
   if (m.group) t.group = true;
   // Tên hiển thị: chỉ đặt theo tin 1-1 của NGƯỜI KHÁC (fromName là tên họ).
@@ -148,6 +160,64 @@ export function recordIncoming(accountKey: string, m: IncomingMessage): void {
   push(t, msg);
   if (!m.isSelf) t.unread += 1;
   persist(accountKey, t, msg);
+}
+
+/**
+ * Ghi một CẢM XÚC nhận từ listener lên tin đích.
+ *
+ * Không tìm thấy tin đích thì BỎ QUA (không tạo bong bóng giả): tin đó có thể đã
+ * bị đẩy khỏi trần MAX_PER_THREAD, hoặc thuộc quãng lịch sử ta chưa kéo về. Thà
+ * mất một biểu tượng còn hơn dựng ra một tin không tồn tại.
+ */
+function recordReaction(accountKey: string, m: IncomingMessage): void {
+  const r = m.reaction;
+  if (!r) return;
+  const t = accountThreads(accountKey).get(m.threadId);
+  const target = t?.messages.find((x) => x.id === r.targetMsgId);
+  if (!t || !target) return;
+  // Khoá người thả. Cảm xúc của CHÍNH TA luôn dùng khoá cố định '(self)' — Zalo
+  // gửi uidFrom '0' cho tin của mình đồng bộ từ thiết bị khác, nên nếu lấy
+  // nguyên uidFrom thì mặt ta thả ở máy này ('(self)', ghi lạc quan) và mặt dội
+  // về từ Zalo ('0') thành HAI khoá khác nhau → hiện đôi.
+  const who = r.isSelf ? '(self)' : (m.fromId || '?');
+  applyReaction(target, who, r.icon, r.rType);
+  void archiveReaction(accountKey, t.threadId, target.id, target.reactions ?? {}).catch(() => {});
+}
+
+/**
+ * Gắn/bỏ một cảm xúc lên một tin (dùng chung cho tin đến và lượt ta tự thả).
+ * rType -1 hoặc icon rỗng = BỎ.
+ */
+function applyReaction(target: StoredMessage, who: string, icon: string, rType: number): void {
+  const map = target.reactions ? { ...target.reactions } : {};
+  if (rType === -1 || !icon) delete map[who];
+  else map[who] = { icon, rType };
+  target.reactions = Object.keys(map).length ? map : undefined;
+}
+
+/**
+ * Ta vừa thả cảm xúc (lạc quan, gọi trước khi Zalo xác nhận) — hiện ngay lên
+ * màn chat.
+ *
+ * Trả về mặt TRƯỚC ĐÓ của chính ta trên tin này (null nếu chưa thả gì), để
+ * người gọi HOÀN NGUYÊN chính xác khi Zalo từ chối. Không trả cái này thì rollback
+ * phải đoán, và đoán sai sẽ để lại một mặt giả trên màn chat.
+ * `undefined` = không tìm thấy tin đích (không có gì để hoàn nguyên).
+ */
+export function recordOwnReaction(
+  accountKey: string,
+  threadId: string,
+  msgId: string,
+  icon: string,
+  rType: number,
+): { icon: string; rType: number } | null | undefined {
+  const t = accountThreads(accountKey).get(threadId);
+  const target = t?.messages.find((x) => x.id === msgId);
+  if (!t || !target) return undefined;
+  const prev = target.reactions?.['(self)'] ?? null;
+  applyReaction(target, '(self)', icon, rType);
+  void archiveReaction(accountKey, threadId, msgId, target.reactions ?? {}).catch(() => {});
+  return prev;
 }
 
 /**

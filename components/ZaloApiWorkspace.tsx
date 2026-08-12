@@ -53,6 +53,7 @@ import { automation, useAutomation } from '@/lib/automation/useAutomation';
 import { useChime } from './BrowserWorkspace';
 import ZaloChatPanel from './ZaloChatPanel';
 import ArchiveSettings from './zaloapi/ArchiveSettings';
+import { reactionEmoji } from '@/lib/zaloapi/reactions';
 
 const ZALO_URL = 'https://chat.zalo.me/';
 const POLL_MS = 2000;
@@ -331,6 +332,20 @@ function ZaloApiAccountView({
         if (!r.messages?.length) return;
         for (const m of r.messages) {
           const who = m.fromName || m.fromId || 'ẩn danh';
+          // CẢM XÚC: ghi Console thành dòng riêng rồi DỪNG — không đẩy vào
+          // Automation. Rule social bám nội dung chữ, mà cảm xúc không có chữ
+          // nào; đẩy vào chỉ làm rule khớp nhầm bằng mô tả do ta tự dựng.
+          if (m.reaction) {
+            const face = reactionEmoji(m.reaction.rType, m.reaction.icon);
+            const actor = m.reaction.isSelf ? 'Bạn' : who;
+            log(
+              'recv',
+              `${actor} ${m.reaction.icon ? `thả ${face}` : 'bỏ cảm xúc'}`
+              + `${m.group ? ' (nhóm)' : ''}${m.threadId ? ` [${m.threadId}]` : ''}`
+              + ` trên tin ${m.reaction.targetMsgId}`,
+            );
+            continue;
+          }
           log('recv', `${who}${m.group ? ' (nhóm)' : ''}${m.threadId ? ` [${m.threadId}]` : ''}: ${m.text}`);
           if (!captureRef.current) {
             log('info', '↳ capture TẮT → không đưa vào Automation (bật Capture ở tab Automation)');

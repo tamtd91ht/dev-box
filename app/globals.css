@@ -6792,6 +6792,59 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* bong bóng giữa nhóm (không phải cuối) bo tròn đều hơn cho liền mạch */
 .zc-row:not(.is-tail) .zc-msg-bubble { border-radius: 16px; }
 .zc-msg-meta { font-size: 10.5px; color: var(--faint); margin: 3px 4px 0; }
+
+/* ── cảm xúc (reaction) trên tin ─────────────────────────────────────────── */
+/* zc-row-main là mốc định vị của nút mở + bảng chọn (cả hai absolute). */
+.zc-row-main { position: relative; }
+
+/* Nút ☺ chỉ hiện khi hover dòng tin — giữ màn chat sạch. Vẫn hiện khi bảng
+   chọn đang mở, không thì nút biến mất lúc chuột rời sang bảng. */
+.zc-react-open {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  opacity: 0; pointer-events: none; transition: opacity 0.12s;
+  width: 24px; height: 24px; padding: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1; cursor: pointer;
+  background: var(--glass); border: 1px solid var(--glass-brd); color: var(--muted);
+}
+/* Tin của người khác: nút nằm bên PHẢI bong bóng; tin của mình: bên TRÁI. */
+.zc-row:not(.zc-row--me) .zc-react-open { right: -30px; }
+.zc-row--me .zc-react-open { left: -30px; }
+.zc-row:hover .zc-react-open { opacity: 1; pointer-events: auto; }
+.zc-react-open:hover { color: var(--text); border-color: var(--glass-brd-hover); }
+
+.zc-react-pop {
+  position: absolute; bottom: calc(100% + 6px); z-index: 20;
+  display: flex; flex-wrap: wrap; gap: 2px; padding: 4px;
+  max-width: 264px; border-radius: 999px;
+  background: var(--bg-2, var(--glass)); border: 1px solid var(--glass-brd);
+  box-shadow: 0 6px 22px rgb(0 0 0 / 28%);
+}
+/* Mở bảng ĐẦY ĐỦ thì bỏ bo tròn kiểu viên thuốc cho dễ đọc dạng lưới. */
+.zc-react-pop:has(> :nth-child(12)) { border-radius: 14px; }
+.zc-row:not(.zc-row--me) .zc-react-pop { left: 0; }
+.zc-row--me .zc-react-pop { right: 0; }
+.zc-react-pick, .zc-react-more {
+  width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; font-size: 17px; line-height: 1; cursor: pointer;
+  transition: transform 0.1s, background 0.12s;
+}
+.zc-react-pick:hover:not(:disabled), .zc-react-more:hover { background: var(--glass-2); transform: scale(1.18); }
+.zc-react-pick:disabled { opacity: 0.5; cursor: default; }
+.zc-react-pick.is-on { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+.zc-react-more { font-size: 15px; color: var(--muted); }
+
+/* Chip cảm xúc đã thả — treo hơi lệch vào đáy bong bóng như Zalo/Messenger. */
+.zc-react-chips { display: flex; gap: 3px; margin: -6px 4px 0; }
+.zc-react-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 6px; border-radius: 999px; cursor: pointer; font-size: 11.5px; line-height: 1.7;
+  background: var(--bg-2, var(--glass)); border: 1px solid var(--glass-brd); color: var(--text);
+}
+.zc-react-chip:hover:not(:disabled) { border-color: var(--glass-brd-hover); }
+.zc-react-chip:disabled { cursor: default; }
+.zc-react-chip.is-mine { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.zc-react-chip > b { font-size: 10.5px; font-weight: 600; color: var(--muted); }
 .zc-err { flex: 0 0 auto; padding: 6px 14px; font-size: 12px; color: var(--err); background: var(--err-bg, transparent); }
 .zc-composer {
   flex: 0 0 auto; display: flex; gap: 8px; align-items: flex-end; padding: 10px 12px;

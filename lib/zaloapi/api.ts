@@ -49,6 +49,8 @@ export interface ZaloStoredMessage {
   /** URL ảnh nếu là tin ảnh — UI hiện thumbnail. */
   imageUrl?: string;
   status?: 'sending' | 'sent' | 'failed';
+  /** Cảm xúc đã thả lên tin: uid người thả → mặt. '(self)' là chính ta. */
+  reactions?: Record<string, { icon: string; rType: number }>;
 }
 
 export interface ZaloApiFlags {
@@ -121,6 +123,17 @@ export interface ZaloIncoming {
   fromId: string;
   fromName: string;
   text: string;
+  /**
+   * Có giá trị nghĩa là sự kiện CẢM XÚC, không phải tin nhắn: ai đó thả/bỏ mặt
+   * trên tin `targetMsgId`. `text` khi đó chỉ là mô tả ngắn để ghi log.
+   */
+  reaction?: {
+    targetMsgId: string;
+    /** rIcon Zalo trả về; rỗng = BỎ cảm xúc. */
+    icon: string;
+    rType: number;
+    isSelf: boolean;
+  };
 }
 
 export interface ZaloListenerState {
@@ -182,6 +195,17 @@ export function zaloApiScan(accountKey: string): Promise<{
 /** Lịch sử tin của một hội thoại (cũ → mới). Gọi cũng đánh dấu đã đọc. */
 export function zaloApiHistory(accountKey: string, threadId: string): Promise<ZaloStoredMessage[]> {
   return call<ZaloStoredMessage[]>('history', { accountKey, threadId });
+}
+
+/**
+ * THẢ cảm xúc lên một tin (`key` từ lib/zaloapi/reactions), hoặc BỎ cảm xúc mình
+ * đã thả (`remove: true`). Trả về danh sách tin đã cập nhật để UI vẽ lại ngay.
+ */
+export function zaloApiReact(
+  accountKey: string,
+  p: { threadId: string; msgId: string; group: boolean; key?: string; remove?: boolean },
+): Promise<{ ok: boolean; detail: string; messages: ZaloStoredMessage[] }> {
+  return call<{ ok: boolean; detail: string; messages: ZaloStoredMessage[] }>('react', { accountKey, ...p });
 }
 
 /** Đánh dấu đã đọc một hội thoại. */

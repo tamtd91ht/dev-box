@@ -236,6 +236,7 @@ function toRecord(threadId: string, group: boolean, m: StoredMessage): Record<st
     ...(m.imageUrl ? { imageUrl: m.imageUrl } : {}),
     // 'sending' là trạng thái TẠM của UI — lưu bền thì vô nghĩa, chỉ ghi khi đã chốt.
     ...(m.status && m.status !== 'sending' ? { status: m.status } : {}),
+    ...(m.reactions && Object.keys(m.reactions).length ? { reactions: m.reactions } : {}),
   };
 }
 
@@ -244,6 +245,7 @@ function toRecord(threadId: string, group: boolean, m: StoredMessage): Record<st
 // Một file cho mỗi tài khoản. Mỗi dòng là một bản ghi JSON:
 //   {"t":"m","threadId":…,"id":…,"at":…,…}   một tin
 //   {"t":"s","threadId":…,"id":…,"status":…} đổi trạng thái tin đã ghi
+//   {"t":"r","threadId":…,"id":…,"reactions":{…}} bộ cảm xúc của tin (ghi đè)
 //   {"t":"x","threadId":…,"id":…}            XOÁ tin đã ghi (bia mộ)
 //   {"t":"h","threadId":…,"name":…,"group":…,"lastAt":…} metadata hội thoại
 // Đọc = phát lại cả file theo thứ tự, bản ghi sau thắng bản ghi trước.
@@ -307,6 +309,18 @@ async function readLocal(accountKey: string): Promise<LocalState> {
     if (!byId) { byId = new Map(); state.threads.set(threadId, byId); }
     if (rec.t === 'x') {
       byId.delete(id);
+      continue;
+    }
+    if (rec.t === 'r') {
+      const prev = byId.get(id);
+      // Cảm xúc tới TRƯỚC tin (không nên xảy ra, nhưng file có thể bị cắt giữa)
+      // → bỏ, vì không có tin nào để gắn vào.
+      if (prev) {
+        const map = rec.reactions && typeof rec.reactions === 'object'
+          ? (rec.reactions as StoredMessage['reactions'])
+          : undefined;
+        byId.set(id, { ...prev, reactions: map && Object.keys(map).length ? map : undefined });
+      }
       continue;
     }
     if (rec.t === 's') {
@@ -380,6 +394,9 @@ function fromRecord(d: Record<string, unknown>): StoredMessage {
     text: typeof d.text === 'string' ? d.text : '',
     ...(typeof d.imageUrl === 'string' && d.imageUrl ? { imageUrl: d.imageUrl } : {}),
     ...(status === 'sent' || status === 'failed' ? { status } : {}),
+    ...(d.reactions && typeof d.reactions === 'object' && Object.keys(d.reactions).length
+      ? { reactions: d.reactions as StoredMessage['reactions'] }
+      : {}),
   };
 }
 
@@ -490,6 +507,31 @@ export async function archiveReplaceId(
     );
     if (oldId && oldId !== msg.id) await c.deleteOne({ accountKey, threadId, id: oldId });
   } catch { /* im lặng — kho không chặn luồng tin */ }
+}
+
+/**
+ * Ghi lại BỘ CẢM XÚC của một tin (ghi đè cả map — nó nhỏ và luôn được tính lại
+ * từ RAM, nên ghi đè đơn giản và đúng hơn là cộng/trừ từng mặt).
+ */
+export async function archiveReaction(
+  accountKey: string,
+  threadId: string,
+  id: string,
+  reactions: Record<string, { icon: string; rType: number }>,
+): Promise<void> {
+  if (!accountKey || !threadId || !id) return;
+  try {
+    const mode = await activeMode();
+    if (mode === 'off') return;
+    if (mode === 'local') {
+      await localAppend(accountKey, [JSON.stringify({ t: 'r', threadId, id, reactions })]);
+      return;
+    }
+    await (await mongoColl()).updateOne(
+      { accountKey, threadId, id },
+      Object.keys(reactions).length ? { $set: { reactions } } : { $unset: { reactions: '' } },
+    );
+  } catch { /* im lặng */ }
 }
 
 /** Cập nhật trạng thái một tin đã lưu (sau khi route biết gửi ok/failed). */
