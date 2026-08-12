@@ -31,6 +31,9 @@ import {
   addPreset,
   updatePreset,
   removePreset,
+  clampWindowMinutes,
+  DEFAULT_WINDOW_MINUTES,
+  MAX_WINDOW_MINUTES,
   type KafkaPreset,
 } from '@/lib/kafkaPresets';
 
@@ -176,8 +179,8 @@ export default function KafkaWorkspace() {
   const [presetOpen, setPresetOpen] = useState(false);
   /** Preset being edited/added in the manage view (null = not editing). */
   const [presetEdit, setPresetEdit] = useState<KafkaPreset | 'new' | null>(null);
-  /** Preset currently being run — drives the keyword → time-window wizard. */
-  const [runPresetState, setRunPresetState] = useState<{ preset: KafkaPreset; step: 'keyword' | 'window'; keyword: string } | null>(null);
+  /** Preset currently being run — drives the single-screen run modal. */
+  const [runPresetState, setRunPresetState] = useState<{ preset: KafkaPreset } | null>(null);
 
   // Presets live in localStorage — hydrate on mount (client-only).
   useEffect(() => {
@@ -915,17 +918,19 @@ export default function KafkaWorkspace() {
                 <div className="kafka-preset-list">
                   {presets.map((p) => {
                     const conn = connections.find((c) => c.id === p.connectionId);
+                    const mins = clampWindowMinutes(p.windowMinutes ?? DEFAULT_WINDOW_MINUTES);
                     return (
                       <div key={p.id} className="kafka-preset-row">
                         <button
                           className="kafka-preset-run"
-                          title="Chạy tìm nhanh"
-                          onClick={() => setRunPresetState({ preset: p, step: 'keyword', keyword: '' })}
+                          title={p.description ? `${p.description} · ${mins} phút gần nhất` : `Chạy tìm nhanh · ${mins} phút gần nhất`}
+                          onClick={() => setRunPresetState({ preset: p })}
                         >
                           <span className="kafka-preset-name">{p.name}</span>
                           <span className="kafka-preset-sub">
                             {conn ? conn.name : <em style={{ color: 'var(--err)' }}>cluster đã xoá</em>} · {p.topic}
                           </span>
+                          {p.description && <span className="kafka-preset-desc">{p.description}</span>}
                         </button>
                         <button className="chip-btn" title="Sửa" onClick={() => setPresetEdit(p)}>✎</button>
                         <button
@@ -969,15 +974,13 @@ export default function KafkaWorkspace() {
         />
       )}
 
-      {/* Run wizard: keyword first, then time window. */}
+      {/* Run modal: window pre-seeded from the preset, keyword typed at run time. */}
       {runPresetState && (
         <PresetRunWizard
-          state={runPresetState}
+          preset={runPresetState.preset}
           onCancel={() => setRunPresetState(null)}
-          onKeyword={(kw) => setRunPresetState((s) => (s ? { ...s, keyword: kw, step: 'window' } : s))}
-          onBack={() => setRunPresetState((s) => (s ? { ...s, step: 'keyword' } : s))}
-          onRun={(from, to) => {
-            const { preset, keyword: kw } = runPresetState;
+          onRun={(kw, from, to) => {
+            const { preset } = runPresetState;
             setRunPresetState(null);
             setPresetOpen(false);
             executePreset(preset, kw, from, to);
@@ -1446,6 +1449,8 @@ function PresetForm({
   const [name, setName] = useState(initial?.name ?? '');
   const [connectionId, setConnectionId] = useState(initial?.connectionId ?? connections[0]?.id ?? '');
   const [topic, setTopic] = useState(initial?.topic ?? '');
+  const [description, setDescription] = useState(initial?.description ?? '');
+  const [windowMin, setWindowMin] = useState(String(initial?.windowMinutes ?? DEFAULT_WINDOW_MINUTES));
 
   // Suggestions come from the picked cluster's cached topic list — fetch it on demand
   // so choosing any cluster (not just the active one) gives a usable datalist.
@@ -1495,12 +1500,44 @@ function PresetForm({
             </datalist>
           )}
         </label>
+        <label className="kafka-field">
+          <span>Mô tả (tuỳ chọn)</span>
+          <textarea
+            className="input"
+            rows={2}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Tìm bản tin theo mã giao dịch…"
+          />
+        </label>
+        <label className="kafka-field">
+          <span>Khoảng thời gian mặc định (phút gần nhất)</span>
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={MAX_WINDOW_MINUTES}
+            step={1}
+            value={windowMin}
+            onChange={(e) => setWindowMin(e.target.value)}
+            placeholder={String(DEFAULT_WINDOW_MINUTES)}
+          />
+          <span className="kafka-topic-meta">
+            Khi chạy sẽ mặc định tìm trong {clampWindowMinutes(Number(windowMin))} phút gần nhất — có thể đổi lúc chạy.
+          </span>
+        </label>
         <div className="status-line" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
           <button className="ghost sm" onClick={onCancel}>Huỷ</button>
           <button
             className="sm"
             disabled={!valid}
-            onClick={() => onSave({ name: name.trim(), connectionId, topic: topic.trim() })}
+            onClick={() => onSave({
+              name: name.trim(),
+              connectionId,
+              topic: topic.trim(),
+              description: description.trim() || undefined,
+              windowMinutes: clampWindowMinutes(Number(windowMin)),
+            })}
           >
             {initial ? 'Lưu' : 'Tạo'}
           </button>
@@ -1510,84 +1547,101 @@ function PresetForm({
   );
 }
 
-// ── Preset run wizard: keyword step → time-window step ─────────────────────────
+// ── Preset run modal: window pre-seeded from the preset, keyword + Tìm ────────
 
 function PresetRunWizard({
-  state,
+  preset,
   onCancel,
-  onKeyword,
-  onBack,
   onRun,
 }: {
-  state: { preset: KafkaPreset; step: 'keyword' | 'window'; keyword: string };
+  preset: KafkaPreset;
   onCancel: () => void;
-  onKeyword: (kw: string) => void;
-  onBack: () => void;
-  onRun: (fromLocal: string, toLocal: string) => void;
+  onRun: (kw: string, fromLocal: string, toLocal: string) => void;
 }) {
-  const { preset, step, keyword } = state;
-  const [kw, setKw] = useState(keyword);
-  // Default the window to the last 15 minutes (same default as the main filter).
-  const now = Date.now();
-  const [from, setFrom] = useState(() => toLocalInput(now - 15 * 60 * 1000));
-  const [to, setTo] = useState(() => toLocalInput(now));
+  const presetMins = clampWindowMinutes(preset.windowMinutes ?? DEFAULT_WINDOW_MINUTES);
+  const [kw, setKw] = useState('');
+  // Window defaults to the preset's "last N minutes"; chips/DateTimeFields override it.
+  const [from, setFrom] = useState(() => toLocalInput(Date.now() - presetMins * 60_000));
+  const [to, setTo] = useState(() => toLocalInput(Date.now()));
+  /** Minutes of the active quick chip — null once the user edits Từ/Đến by hand. */
+  const [chipMins, setChipMins] = useState<number | null>(presetMins);
+
+  const applyChip = (mins: number) => {
+    const now = Date.now();
+    setFrom(toLocalInput(now - mins * 60_000));
+    setTo(toLocalInput(now));
+    setChipMins(mins);
+  };
 
   const windowValid = (() => {
     const f = new Date(from).getTime();
     const t = new Date(to).getTime();
     return Number.isFinite(f) && Number.isFinite(t) && t > f;
   })();
+  const canRun = windowValid && kw.trim().length > 0;
+
+  // "Mặc định" first; the fixed chips skip a duplicate of the preset's own value.
+  const chips: { label: string; mins: number }[] = [
+    { label: `Mặc định (${presetMins} phút)`, mins: presetMins },
+    ...[
+      { label: '15 phút', mins: 15 },
+      { label: '30 phút', mins: 30 },
+      { label: '1 giờ', mins: 60 },
+      { label: '24 giờ', mins: 1440 },
+    ].filter((c) => c.mins !== presetMins),
+  ];
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
         <h3>{preset.name}</h3>
         <p className="kafka-topic-meta" style={{ marginTop: -4, marginBottom: 10 }}>
-          {step === 'keyword' ? 'Bước 1/2 · Nhập keyword' : 'Bước 2/2 · Chọn khoảng thời gian'}
+          {preset.description || `${preset.topic} · ${presetMins} phút gần nhất`}
         </p>
 
-        {step === 'keyword' ? (
-          <>
-            <label className="kafka-field">
-              <span>Keyword tìm kiếm</span>
-              <input
-                className="input"
-                type="search"
-                name="kafka-quicksearch-keyword"
-                value={kw}
-                onChange={(e) => setKw(e.target.value)}
-                placeholder="Dán keyword…"
-                autoFocus
-                autoComplete="off"
-                data-lpignore="true"
-                data-form-type="other"
-                onKeyDown={(e) => e.key === 'Enter' && kw.trim() && onKeyword(kw.trim())}
-              />
-            </label>
-            <div className="status-line" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-              <button className="ghost sm" onClick={onCancel}>Huỷ</button>
-              <button className="sm" disabled={!kw.trim()} onClick={() => onKeyword(kw.trim())}>Tiếp →</button>
-            </div>
-          </>
-        ) : (
-          <>
-            <label className="kafka-field">
-              <span>Từ</span>
-              <DateTimeField className="input" value={from} onChange={setFrom} />
-            </label>
-            <label className="kafka-field">
-              <span>Đến</span>
-              <DateTimeField className="input" value={to} onChange={setTo} />
-            </label>
-            <div className="status-line" style={{ justifyContent: 'space-between', gap: 8, marginTop: 12 }}>
-              <button className="ghost sm" onClick={onBack}>← Quay lại</button>
-              <div className="status-line" style={{ gap: 8 }}>
-                <button className="ghost sm" onClick={onCancel}>Huỷ</button>
-                <button className="sm" disabled={!windowValid} onClick={() => onRun(from, to)}>Tìm</button>
-              </div>
-            </div>
-          </>
-        )}
+        <label className="kafka-field">
+          <span>Khoảng thời gian</span>
+          <span className="kafka-window-chips">
+            {chips.map((c) => (
+              <button
+                key={c.label}
+                type="button"
+                className="chip-btn"
+                aria-pressed={chipMins === c.mins}
+                onClick={() => applyChip(c.mins)}
+              >{c.label}</button>
+            ))}
+          </span>
+        </label>
+        <label className="kafka-field">
+          <span>Từ</span>
+          <DateTimeField className="input" value={from} onChange={(v) => { setFrom(v); setChipMins(null); }} />
+        </label>
+        <label className="kafka-field">
+          <span>Đến</span>
+          <DateTimeField className="input" value={to} onChange={(v) => { setTo(v); setChipMins(null); }} />
+        </label>
+
+        <label className="kafka-field">
+          <span>Keyword tìm kiếm</span>
+          <input
+            className="input"
+            type="search"
+            name="kafka-quicksearch-keyword"
+            value={kw}
+            onChange={(e) => setKw(e.target.value)}
+            placeholder="Dán keyword…"
+            autoFocus
+            autoComplete="off"
+            data-lpignore="true"
+            data-form-type="other"
+            onKeyDown={(e) => e.key === 'Enter' && canRun && onRun(kw.trim(), from, to)}
+          />
+        </label>
+        <div className="status-line" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+          <button className="ghost sm" onClick={onCancel}>Huỷ</button>
+          <button className="sm" disabled={!canRun} onClick={() => onRun(kw.trim(), from, to)}>Tìm</button>
+        </div>
       </div>
     </div>
   );

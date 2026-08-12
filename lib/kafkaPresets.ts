@@ -1,7 +1,9 @@
 // Quick-search presets for the Kafka workspace. A preset bookmarks a
-// (connection, topic) pair under a friendly name so a recurring investigation —
-// "Bản tin FSEventComplete on kafka-01" — is one click away. Running a preset
-// then asks only for the keyword + time window at the moment of use.
+// (connection, topic) pair under a friendly name — plus an optional description
+// and a default "last N minutes" window — so a recurring investigation like
+// "Bản tin FSEventComplete on kafka-01" is one click away. Running a preset
+// then asks only for the keyword; the time window is pre-seeded from the
+// preset's windowMinutes and can be overridden at the moment of use.
 //
 // Presets are a personal, local-dev bookmark, so they live in localStorage
 // (unlike connections, which the Next server owns). Browser-only module.
@@ -19,6 +21,18 @@ export interface KafkaPreset {
   connectionId: string;
   /** Topic to search. */
   topic: string;
+  /** Mô tả ngắn — preset này tìm gì (absent on entries saved before this field existed). */
+  description?: string;
+  /** Default run window: "N phút gần nhất" (absent → DEFAULT_WINDOW_MINUTES). */
+  windowMinutes?: number;
+}
+
+export const DEFAULT_WINDOW_MINUTES = 15;
+export const MAX_WINDOW_MINUTES = 10080; // 7 days
+
+export function clampWindowMinutes(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_WINDOW_MINUTES;
+  return Math.min(MAX_WINDOW_MINUTES, Math.max(1, Math.round(n)));
 }
 
 function isPreset(v: unknown): v is KafkaPreset {
@@ -28,7 +42,9 @@ function isPreset(v: unknown): v is KafkaPreset {
     typeof p.id === 'string' &&
     typeof p.name === 'string' &&
     typeof p.connectionId === 'string' &&
-    typeof p.topic === 'string'
+    typeof p.topic === 'string' &&
+    (p.description === undefined || typeof p.description === 'string') &&
+    (p.windowMinutes === undefined || (typeof p.windowMinutes === 'number' && Number.isFinite(p.windowMinutes)))
   );
 }
 
