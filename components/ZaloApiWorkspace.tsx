@@ -52,6 +52,7 @@ import { registerGuest } from '@/lib/workspace/guests';
 import { automation, useAutomation } from '@/lib/automation/useAutomation';
 import { useChime } from './BrowserWorkspace';
 import ZaloChatPanel from './ZaloChatPanel';
+import ArchiveSettings from './zaloapi/ArchiveSettings';
 
 const ZALO_URL = 'https://chat.zalo.me/';
 const POLL_MS = 2000;
@@ -109,6 +110,9 @@ function ZaloApiAccountView({
   // Chế độ hiển thị: 'chat' = màn chat dựng trên API; 'web' = webview Zalo thật
   // (quét QR / chat tay). Kết nối xong thì tự sang 'chat'.
   const [viewMode, setViewMode] = useState<'chat' | 'web'>('web');
+
+  // Cấu hình kho lưu trữ tin (off / local / mongo) — xem zaloapi/ArchiveSettings.
+  const [archiveOpen, setArchiveOpen] = useState(false);
 
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [consolePos, setConsolePos] = useState<'bottom' | 'right'>('bottom');
@@ -428,6 +432,11 @@ function ZaloApiAccountView({
         )}
 
         <button
+          className="za-btn"
+          onClick={() => setArchiveOpen(true)}
+          title="Kho lưu trữ tin nhắn — không lưu / lưu trên máy / lưu MongoDB"
+        >🗄 Kho tin</button>
+        <button
           className={`za-btn${consoleOpen ? ' is-on' : ''}`}
           onClick={() => setConsoleOpen((v) => !v)}
           title="Nhật ký tin nhận / gửi / kết nối"
@@ -497,6 +506,10 @@ function ZaloApiAccountView({
           </div>
         )}
       </div>
+
+      {archiveOpen && (
+        <ArchiveSettings accountKey={accountKey} onClose={() => setArchiveOpen(false)} />
+      )}
     </div>
   );
 }

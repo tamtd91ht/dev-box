@@ -6627,6 +6627,28 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .za-mode:hover { color: var(--text); }
 .za-mode.is-on { background: var(--accent-solid); color: #fff; }
 
+/* ── kho lưu trữ tin: 3 thẻ chế độ (không lưu / trên máy / MongoDB) ──────── */
+.za-arch { display: flex; flex-direction: column; gap: 6px; max-height: 92vh; overflow-y: auto; }
+.za-arch-modes { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 2px; }
+.za-arch-mode {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; cursor: pointer;
+  border: 1px solid var(--glass-brd); border-radius: 10px; background: var(--glass-2);
+  transition: border-color 0.12s, background 0.12s;
+}
+.za-arch-mode:hover { border-color: var(--glass-brd-hover); }
+.za-arch-mode.is-on {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.za-arch-mode > input { margin-top: 3px; accent-color: var(--accent-solid); }
+.za-arch-ico { font-size: 18px; line-height: 1.2; }
+.za-arch-body { display: flex; flex-direction: column; gap: 3px; }
+.za-arch-body > .small { color: var(--muted); line-height: 1.5; }
+.za-arch-mongo {
+  display: flex; flex-direction: column; gap: 10px; padding: 10px 12px;
+  border: 1px dashed var(--glass-brd); border-radius: 10px;
+}
+
 /* ── màn chat (lớp phủ trên stage) ───────────────────────────────────────── */
 .za-chatlayer { position: absolute; inset: 0; background: var(--bg-1); }
 .zc-wrap { display: flex; height: 100%; min-height: 0; }

@@ -7,6 +7,16 @@
 //     'status'  { accountKey? }                      → SessionInfo | SessionInfo[]
 //     'send'    { accountKey, threadId?, text, group? } → SendResult
 //     'logout'  { accountKey }                       → { dropped }
+//     'archiveConfig'    { accountKey? }             → ArchiveConfigView
+//     'archiveConfigSet' { mode, connectionId?, database? } → ArchiveConfigView
+//     'archiveHydrate'   { accountKey }              → { threads, messages }
+//     'archivePurge'     { accountKey | all }        → { messages, threads }
+//
+// KHO LƯU TRỮ TIN (lib/zaloapi/server/messageArchive) — TUỲ CHỌN, 3 chế độ:
+// 'off' không lưu (mặc định), 'local' file JSONL trong configs/, 'mongo' một cụm
+// chọn từ registry Mongo. Lý do có nó: listener socket chỉ thấy tin TỪ LÚC KẾT
+// NỐI, và Zalo không cho lấy lại lịch sử 1-1 — không lưu thì restart là trắng
+// màn chat. 'login' tự nạp lại từ kho, 'history' rơi về kho khi RAM trống.
 //
 // VÌ SAO Ở SERVER chứ không trong webview: hàm gửi của Zalo Web nằm trong bundle
 // đã đóng gói, không phơi ra `window` — thử dò trong trang là ngõ cụt (xem
@@ -43,7 +53,14 @@ import {
   applyNames,
   dropThreads,
   prependHistory,
+  hydrateFromArchive,
 } from '@/lib/zaloapi/server/threadStore';
+import {
+  getArchiveConfigView,
+  setArchiveConfig,
+  purgeArchive,
+  loadThreadMessages,
+} from '@/lib/zaloapi/server/messageArchive';
 import { trace } from '@/lib/zaloapi/server/trace';
 
 export const runtime = 'nodejs';
@@ -100,9 +117,16 @@ export async function POST(req: NextRequest) {
         // Kết nối lại (creds mới) → bỏ listener cũ đang bám ctx cũ; lần 'listen'
         // kế tiếp dựng lại với ctx tươi.
         stopListener(accountKey);
+        // Nạp lại lịch sử từ kho lưu trữ (nếu đã cấu hình): RAM vừa trống, mà
+        // Zalo không cho lấy lại tin 1-1 — đây là đường duy nhất để màn chat có
+        // tin của các phiên trước. Chế độ 'off' thì hàm này là no-op.
+        const restored = await hydrateFromArchive(accountKey);
+        if (restored.messages) {
+          trace('archive', `khôi phục ${restored.messages} tin / ${restored.threads} hội thoại từ kho`, restored);
+        }
         // eslint-disable-next-line no-console
         console.log(`ZALOAPI_AUDIT operation=LOGIN account=${accountKey} uid=${ctx.uid} ts=${new Date().toISOString()}`);
-        return NextResponse.json({ ok: true, result: sessionInfo(accountKey) });
+        return NextResponse.json({ ok: true, result: { ...sessionInfo(accountKey), restored } });
       }
 
       case 'status': {
@@ -249,7 +273,58 @@ export async function POST(req: NextRequest) {
         const accountKey = need(body.accountKey, 'accountKey');
         const threadId = need(body.threadId, 'threadId');
         markThreadRead(accountKey, threadId);
-        return NextResponse.json({ ok: true, result: messagesFor(accountKey, threadId) });
+        let msgs = messagesFor(accountKey, threadId);
+        // RAM trống cho hội thoại này (mở lại một hội thoại cũ sau khi restart,
+        // hoặc hội thoại chỉ có trong danh bạ) → thử kho lưu trữ. Không nạp
+        // ngược vào RAM: chỉ cần trả cho lần render này, và tin mới vẫn chảy vào
+        // RAM như thường.
+        if (!msgs.length) {
+          try {
+            msgs = await loadThreadMessages(accountKey, threadId);
+          } catch { /* kho lỗi → trả rỗng như trước */ }
+        }
+        return NextResponse.json({ ok: true, result: msgs });
+      }
+
+      // ── Kho lưu trữ tin (tuỳ chọn: off / local / mongo) ──────────────────
+      case 'archiveConfig': {
+        const accountKey = typeof body.accountKey === 'string' ? body.accountKey.trim() : undefined;
+        return NextResponse.json({ ok: true, result: await getArchiveConfigView(accountKey) });
+      }
+
+      case 'archiveConfigSet': {
+        const accountKey = typeof body.accountKey === 'string' ? body.accountKey.trim() : undefined;
+        await setArchiveConfig({
+          mode: body.mode,
+          connectionId: body.connectionId,
+          database: body.database,
+        });
+        // Vừa BẬT kho (local/mongo) mà tài khoản đang đăng nhập → nạp lại ngay,
+        // không phải bấm Kết nối lại mới thấy lịch sử.
+        if (accountKey && body.mode !== 'off' && getSession(accountKey)) {
+          await hydrateFromArchive(accountKey);
+        }
+        trace('archive', `đổi chế độ kho lưu trữ → ${String(body.mode)}`);
+        return NextResponse.json({ ok: true, result: await getArchiveConfigView(accountKey) });
+      }
+
+      // Nạp lại lịch sử từ kho vào RAM theo yêu cầu (nút trong màn chat).
+      case 'archiveHydrate': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        const restored = await hydrateFromArchive(accountKey);
+        return NextResponse.json({ ok: true, result: restored });
+      }
+
+      // DỌN kho — xoá tin đã lưu. Mặc định chỉ tài khoản đang xem; all=true xoá cả kho.
+      case 'archivePurge': {
+        const accountKey = body.all === true ? undefined : need(body.accountKey, 'accountKey');
+        const removed = await purgeArchive(accountKey);
+        // eslint-disable-next-line no-console
+        console.log(
+          `ZALOAPI_AUDIT operation=ARCHIVE_PURGE account=${accountKey ?? '(all)'} `
+          + `messages=${removed.messages} threads=${removed.threads} ts=${new Date().toISOString()}`,
+        );
+        return NextResponse.json({ ok: true, result: removed });
       }
 
       // Gửi ẢNH: nhận bytes base64 từ renderer → upload → gửi tin ảnh.

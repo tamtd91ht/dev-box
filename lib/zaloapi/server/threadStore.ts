@@ -5,10 +5,15 @@
 // trước đó của từng hội thoại và gom cả hai chiều (mình gửi + người gửi) vào
 // đúng một luồng. Kho này giữ tin theo threadId để dựng màn chat như app thường.
 //
-// Cùng kỷ luật với session store: KHÔNG ghi đĩa (credential/tin cá nhân toàn
-// quyền), sống qua hot-reload bằng globalThis, tự giới hạn để không phình RAM.
+// Kho này vẫn là NGUỒN ĐỌC DUY NHẤT của màn chat và vẫn chỉ ở RAM (sống qua
+// hot-reload bằng globalThis, tự giới hạn để không phình RAM). Nhưng RAM mất
+// theo tiến trình, mà Zalo không cho lấy lại lịch sử 1-1 — nên mỗi tin ghi vào
+// đây cũng được ĐẨY SANG kho lưu trữ tuỳ chọn (messageArchive: off/local/mongo)
+// để lần render sau dựng lại được. Kho lưu trữ KHÔNG BAO GIỜ chặn luồng tin:
+// mọi lời gọi là fire-and-forget và tự nuốt lỗi bên trong.
 
 import type { IncomingMessage } from './listener';
+import { archiveMessage, archiveMessages, archiveReplaceId, archiveStatus, archiveThreadMeta, loadAccountThreads } from './messageArchive';
 
 /** Một tin đã lưu để dựng bong bóng chat. */
 export interface StoredMessage {
@@ -77,6 +82,16 @@ function push(t: Thread, msg: StoredMessage): void {
   if (msg.at > t.lastAt) t.lastAt = msg.at;
 }
 
+/**
+ * Đẩy một tin sang kho lưu trữ + cập nhật metadata hội thoại. Fire-and-forget:
+ * KHÔNG await (luồng listener phải trả về ngay) và lỗi đã được nuốt bên trong
+ * messageArchive, nên chỉ cần chặn unhandled rejection.
+ */
+function persist(accountKey: string, t: Thread, msg: StoredMessage): void {
+  void archiveMessage(accountKey, t.threadId, t.group, msg).catch(() => {});
+  void archiveThreadMeta(accountKey, t.threadId, { name: t.name, group: t.group, lastAt: t.lastAt }).catch(() => {});
+}
+
 /** Băm ngắn ổn định cho id khi payload không có msgId. */
 function hash(s: string): string {
   let h = 2166136261;
@@ -109,13 +124,19 @@ export function recordIncoming(accountKey: string, m: IncomingMessage): void {
       (x) => x.self && x.text === m.text && (x.status === 'sending' || x.status === 'sent') && m.at - x.at < ECHO_WINDOW_MS,
     );
     if (pending) {
+      const staleId = pending.id;
       pending.status = 'sent';
       if (m.msgId) pending.id = m.msgId;
+      // Bản Zalo dội về mới là bản có id THẬT. Trong RAM ta vừa SỬA id của đúng
+      // một object, nhưng kho lưu trữ khoá theo id nên phải bảo nó XOÁ bản
+      // 'out-…' cũ, không thì nạp lại sẽ thấy một tin thành hai.
+      void archiveReplaceId(accountKey, t.threadId, staleId, pending, t.group).catch(() => {});
+      void archiveThreadMeta(accountKey, t.threadId, { name: t.name, group: t.group, lastAt: t.lastAt }).catch(() => {});
       return;
     }
   }
 
-  push(t, {
+  const msg: StoredMessage = {
     id,
     at: m.at,
     self: m.isSelf,
@@ -123,8 +144,10 @@ export function recordIncoming(accountKey: string, m: IncomingMessage): void {
     fromName: m.fromName,
     text: m.text,
     status: m.isSelf ? 'sent' : undefined,
-  });
+  };
+  push(t, msg);
   if (!m.isSelf) t.unread += 1;
+  persist(accountKey, t, msg);
 }
 
 /**
@@ -139,7 +162,11 @@ export function recordOutgoing(
   if (p.group) t.group = true;
   const id = `out-${p.at}-${hash(p.text + '|' + (p.imageUrl ?? ''))}`;
   if (!t.messages.some((x) => x.id === id)) {
-    push(t, { id, at: p.at, self: true, fromId: '', fromName: '', text: p.text, imageUrl: p.imageUrl, status: p.status ?? 'sending' });
+    const msg: StoredMessage = { id, at: p.at, self: true, fromId: '', fromName: '', text: p.text, imageUrl: p.imageUrl, status: p.status ?? 'sending' };
+    push(t, msg);
+    // Ghi luôn cả tin đang 'sending': nếu app tắt giữa lúc gửi, tin vẫn còn dấu
+    // vết. archiveMessage bỏ trạng thái tạm, setMessageStatus vá lại sau.
+    persist(accountKey, t, msg);
   }
   return id;
 }
@@ -166,13 +193,34 @@ export function prependHistory(
   if (t.messages.length > MAX_PER_THREAD) t.messages.splice(0, t.messages.length - MAX_PER_THREAD);
   const newest = t.messages[t.messages.length - 1];
   if (newest && newest.at > t.lastAt) t.lastAt = newest.at;
+  // Lịch sử vừa kéo về đáng giữ nhất: đây là nguồn DUY NHẤT lấy lại được tin cũ
+  // (chỉ nhóm có API), nên ghi cả lô sang kho.
+  void archiveMessages(accountKey, threadId, t.group, add).catch(() => {});
+  void archiveThreadMeta(accountKey, threadId, { name: t.name, group: t.group, lastAt: t.lastAt }).catch(() => {});
 }
 
-/** Đổi trạng thái một tin gửi (sau khi route trả ok/lỗi). */
+/**
+ * Đổi trạng thái một tin gửi (sau khi route trả ok/lỗi).
+ *
+ * `id` là id LÚC GỬI ('out-…'). Nếu Zalo đã dội tin về trước khi route kịp gọi
+ * hàm này, recordIncoming đã đổi id của bong bóng đó sang msgId thật — nên tìm
+ * theo id cũ sẽ không thấy gì, và kho phải được vá theo id HIỆN TẠI, không phải
+ * id đã chết (vá id đã chết là tạo ra một dòng rác không ai đọc).
+ */
 export function setMessageStatus(accountKey: string, threadId: string, id: string, status: StoredMessage['status']): void {
   const t = accountThreads(accountKey).get(threadId);
-  const msg = t?.messages.find((x) => x.id === id);
-  if (msg) msg.status = status;
+  let msg = t?.messages.find((x) => x.id === id);
+  if (msg) {
+    msg.status = status;
+  } else if (t && id.startsWith('out-')) {
+    // Đã bị gộp: lấy lại bằng dấu vết còn nằm trong chính id ('out-<at>-<hash>').
+    const at = Number(id.split('-')[1]);
+    if (Number.isFinite(at)) {
+      msg = [...t.messages].reverse().find((x) => x.self && Math.abs(x.at - at) < ECHO_WINDOW_MS);
+      if (msg && msg.status === 'sending') msg.status = status;
+    }
+  }
+  void archiveStatus(accountKey, threadId, msg?.id ?? id, status).catch(() => {});
 }
 
 /** Danh sách hội thoại (mới nhất trước) cho cột trái. */
@@ -214,7 +262,63 @@ export function applyNames(accountKey: string, names: Record<string, string>): v
   }
 }
 
-/** Xoá toàn bộ tin của một tài khoản (đăng xuất). */
+/**
+ * Xoá toàn bộ tin của một tài khoản KHỎI RAM (đăng xuất).
+ *
+ * KHÔNG đụng tới kho lưu trữ: đăng xuất rồi đăng nhập lại là chuyện thường
+ * (cookie bị Zalo xoay), mất sạch lịch sử mỗi lần như vậy thì kho lưu trữ vô
+ * nghĩa. Muốn xoá hẳn thì dùng nút dọn kho trong cấu hình (purgeArchive).
+ */
 export function dropThreads(accountKey: string): void {
   byAccount.delete(accountKey);
+}
+
+/**
+ * KHÔI PHỤC hội thoại từ kho lưu trữ vào RAM — gọi sau khi đăng nhập/kết nối để
+ * màn chat có ngay lịch sử của các phiên trước (RAM vừa trống trơn).
+ *
+ * Tin trong RAM (nếu có) THẮNG tin trong kho ở cùng id: RAM là bản mới hơn, có
+ * thể đang mang trạng thái 'sending' của lượt gửi vừa rồi. Không đụng `unread`
+ * — tin cũ khôi phục lại coi như đã đọc.
+ *
+ * Chế độ 'off' → kho trả rỗng, hàm này thành no-op. Lỗi kho được nuốt: không
+ * đọc lại được lịch sử thì vẫn phải đăng nhập được.
+ */
+export async function hydrateFromArchive(accountKey: string): Promise<{ threads: number; messages: number }> {
+  let threads = 0;
+  let messages = 0;
+  try {
+    const stored = await loadAccountThreads(accountKey);
+    for (const s of stored) {
+      if (!s.threadId || s.threadId === '0') continue;
+      const t = getThread(accountKey, s.threadId, s.group);
+      if (s.group) t.group = true;
+      if (s.name && t.name === t.threadId) t.name = s.name;
+      const have = new Set(t.messages.map((x) => x.id));
+      // Khử trùng HAI TẦNG. Tầng 1 theo id. Tầng 2 theo (tự gửi, nội dung, mốc
+      // thời gian gần nhau) — cần vì kho có thể còn cặp 'out-…' + msgId của cùng
+      // một tin, do bản trước bản vá archiveReplaceId để lại. Không có tầng 2
+      // thì những tin gửi trước lúc vá vẫn hiện đôi mãi.
+      const kept = new Set<string>();
+      const add = s.messages.filter((m) => {
+        if (have.has(m.id)) return false;
+        if (!m.self) return true;
+        // Gộp theo giây: bản lạc quan và bản Zalo dội về lệch nhau vài trăm ms.
+        const echoKey = `${m.text}|${Math.round(m.at / 1000)}`;
+        // Tin cùng nội dung ĐÃ CÓ trong RAM → bỏ hẳn (RAM là bản mới hơn).
+        if (t.messages.some((x) => x.self && x.text === m.text && Math.abs(x.at - m.at) < ECHO_WINDOW_MS)) return false;
+        if (kept.has(echoKey)) return false;
+        kept.add(echoKey);
+        return true;
+      });
+      if (!add.length) continue;
+      t.messages = [...add, ...t.messages].sort((a, b) => a.at - b.at);
+      if (t.messages.length > MAX_PER_THREAD) t.messages.splice(0, t.messages.length - MAX_PER_THREAD);
+      const newest = t.messages[t.messages.length - 1];
+      if (newest && newest.at > t.lastAt) t.lastAt = newest.at;
+      threads += 1;
+      messages += add.length;
+    }
+  } catch { /* kho không với tới được → chạy tiếp với RAM trống */ }
+  return { threads, messages };
 }

@@ -41,6 +41,23 @@ const MANIFEST_FILE = path.join(REPO_DIR, 'manifest.json');
 /** Danh sách TÊN file có trong vault — plaintext, cạnh vault. Xem baselineVault(). */
 const INDEX_FILE = path.join(REPO_DIR, 'vault', 'devbox-configs.index.json');
 
+/**
+ * THƯ MỤC CON trong configs/ cũng được sync (mặc định chỉ gói configs/*.json
+ * phẳng). Khai ở đây thay vì quét đệ quy cả configs/: thư mục đó còn có file
+ * .bak-*, log, cache… mà gói hết lên là phình vault và lộ thêm thứ không cần.
+ *
+ *   zaloapi-messages/  tin nhắn Zalo API ở chế độ lưu LOCAL (JSONL, một file
+ *                      mỗi tài khoản — xem lib/zaloapi/server/messageArchive).
+ *                      Sync để đổi máy vẫn thấy lịch sử chat; vault mã hoá bằng
+ *                      age nên tin nhắn không nằm trần trên GitHub.
+ *
+ * Vẫn tôn trọng `exclude` của manifest.json: khai tên thư mục ("zaloapi-messages")
+ * vào đó là chặn cả hai chiều, dùng khi muốn giữ tin nhắn riêng từng máy.
+ */
+const SYNC_SUBDIRS: Array<{ dir: string; exts: string[] }> = [
+  { dir: 'zaloapi-messages', exts: ['.jsonl'] },
+];
+
 /** Thư mục tạm riêng cho mỗi lần chạy — tránh hai lần sync đè nhau. */
 function tmpDir(tag: string): string {
   return path.join(os.tmpdir(), `devbox-sync-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -445,6 +462,21 @@ export async function push(opts: { remote?: boolean; force?: boolean } = {}): Pr
       await fs.writeFile(path.join(stage, name), text, 'utf8');
       names.push(name);
     }
+    // Thư mục con được khai trong SYNC_SUBDIRS (xem hằng đó): tên trong vault
+    // mang cả đường dẫn con ("zaloapi-messages/x.jsonl") nên index/lưới an toàn
+    // vẫn so được như file phẳng.
+    for (const sub of SYNC_SUBDIRS) {
+      if (exclude.has(sub.dir) || exclude.has(`${sub.dir}/`)) { skipped.push(`${sub.dir}/`); continue; }
+      let entries: string[];
+      try { entries = await fs.readdir(path.join(src, sub.dir)); } catch { continue; }
+      const picked = entries.filter((n) => sub.exts.some((e) => n.endsWith(e)));
+      if (!picked.length) continue;
+      await fs.mkdir(path.join(stage, sub.dir), { recursive: true });
+      for (const n of picked) {
+        await fs.copyFile(path.join(src, sub.dir, n), path.join(stage, sub.dir, n));
+        names.push(`${sub.dir}/${n}`);
+      }
+    }
     names.sort();
     log.push(`đóng gói ${names.length} file` + (skipped.length ? ` (bỏ qua ${skipped.join(', ')})` : ''));
 
@@ -624,6 +656,27 @@ export async function pull(passphrase: string, opts: { force?: boolean } = {}): 
       }
       await fs.writeFile(target, text, 'utf8');
       files++;
+    }
+
+    // Thư mục con (xem SYNC_SUBDIRS). Không tokenize (nội dung là dữ liệu, không
+    // phải đường dẫn) và KHÔNG .bak mỗi file — kho tin có thể nhiều file, giữ
+    // bản cũ từng lượt pull sẽ rác dần; file đã ghi rồi thì bản trong vault mới
+    // là bản chuẩn.
+    for (const sub of SYNC_SUBDIRS) {
+      if (exclude.has(sub.dir) || exclude.has(`${sub.dir}/`)) { skipped.push(`${sub.dir}/`); continue; }
+      let entries: string[];
+      try { entries = await fs.readdir(path.join(out, sub.dir)); } catch { continue; }
+      const picked = entries.filter((n) => sub.exts.some((e) => n.endsWith(e)));
+      if (!picked.length) continue;
+      await fs.mkdir(path.join(dst, sub.dir), { recursive: true });
+      for (const n of picked) {
+        const rel = `${sub.dir}/${n}`;
+        const target = path.join(dst, sub.dir, n);
+        const had = await exists(target);
+        await fs.copyFile(path.join(out, sub.dir, n), target);
+        if (had) changed.push(rel); else created.push(rel);
+        files++;
+      }
     }
 
     log.push(
