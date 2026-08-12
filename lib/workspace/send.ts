@@ -25,7 +25,11 @@
 export interface SendSpec {
   /** The message box. */
   composerSelectors?: string[];
-  /** A send button, tried as a fallback before the trusted Enter. */
+  /**
+   * A send button. CHỈ dùng để dò/log (xem pha 'type') — không bấm để gửi:
+   * click tổng hợp không qua được `event.isTrusted`, và bấm rồi tưởng đã gửi
+   * chính là lỗi "gõ vào khung chat nhưng treo". Gửi luôn bằng Enter trusted.
+   */
   sendButtonSelectors?: string[];
   /** Message bubbles, newest last — used to verify the send. */
   messageSelectors?: string[];
@@ -410,14 +414,24 @@ ${prelude(listSel, rowSel, rowName)}`;
       return R;
     }
 
-    // A declared send button, clicked in-page as a first attempt. If it works,
-    // great; if not, the composer is left focused and text in place for the
-    // renderer's TRUSTED Enter (the reliable path for a React composer).
-    var btn = firstOf(BUTTON);
-    if(btn){
-      realClick(btn);
-      await sleep(400);
-      if(!clip(readBox(box2), 10)){ R.sent = true; step('bấm nút gửi', true, pathOf(btn)); R.ok = true; return R; }
+    // KHÔNG bấm nút gửi bằng realClick ở đây.
+    //
+    // realClick là click TỔNG HỢP (dispatchEvent + el.click()), đúng bằng lý do
+    // Enter tổng hợp không gửi được: composer React của Zalo kiểm
+    // event.isTrusted. Bản trước bấm nút rồi kết luận "ô soạn rỗng = đã gửi",
+    // và đó chính là lỗi "gõ được vào khung chat nhưng treo, không gửi đi":
+    // cú click làm composer reset về rỗng MÀ TIN CHƯA ĐI, readBox() trả rỗng,
+    // script return sớm với sent=true và awaitingKey=false — nên wsSend.ts bỏ
+    // qua hẳn khối nhấn Enter thật (nó chỉ chạy khi awaitingKey). Không ai nhấn
+    // Enter, chữ nằm lại trong ô soạn, mà rule vẫn báo gửi thành công.
+    //
+    // Ô soạn rỗng là điều kiện CẦN chứ không ĐỦ để kết luận đã gửi. Bằng chứng
+    // thật duy nhất là bong bóng tin nhắn trong thread — và đó là việc của pha
+    // 'finish'. Nên ở đây luôn dừng lại chờ Enter TRUSTED, đường đã được chứng
+    // minh là gửi được (main process sendInputEvent, xem guests.ts pressKey).
+    if(BUTTON.length){
+      var btnProbe = firstOf(BUTTON);
+      step('nút gửi', !!btnProbe, btnProbe ? 'thấy '+pathOf(btnProbe)+' — vẫn gửi bằng Enter thật' : 'không thấy, gửi bằng Enter thật');
     }
 
     // Leave it focused so the trusted Enter lands in the composer.
@@ -443,11 +457,21 @@ ${prelude(listSel, rowSel, rowName)}`;
     if(last && (last.indexOf(wanted.slice(0,40)) >= 0 || wanted.indexOf(last.slice(0,40)) >= 0)){
       R.sent = true; R.ok = true; step('kiểm chứng', true, last);
     } else if(!after){
-      // Box emptied after the Enter → it submitted.
-      R.sent = true; R.ok = true; step('kiểm chứng', true, 'ô soạn tin đã trống sau khi nhấn Enter');
+      // Ô soạn trống sau Enter → nhiều khả năng đã gửi, nhưng đây là bằng chứng
+      // YẾU: composer cũng trống nếu app tự reset. Chỉ tin được vì tới đây Enter
+      // TRUSTED đã thực sự được bơm vào (main process sendInputEvent).
+      //
+      // Bằng chứng mạnh là khớp bong bóng ở nhánh trên — nó không khớp lúc này
+      // hoặc vì tin chưa render kịp, hoặc vì messageSelectors trong plugins.ts
+      // còn là phỏng đoán chưa đo DOM thật. Nói rõ ra trong log để người đọc
+      // biết cần ghim lại selector, thay vì im lặng báo thành công.
+      R.sent = true; R.ok = true;
+      step('kiểm chứng', true, last
+        ? 'ô soạn đã trống (không khớp bong bóng cuối: ' + last + ' — soát lại messageSelectors)'
+        : 'ô soạn đã trống (không đọc được bong bóng nào — soát lại messageSelectors)');
     } else {
       R.sent = false; R.ok = false;
-      R.error = 'nhấn Enter nhưng ô soạn vẫn còn nội dung — nút gửi có thể cần click thật';
+      R.error = 'đã nhấn Enter thật nhưng ô soạn vẫn còn nội dung — soát lại composerSelectors/enterToSend';
       step('kiểm chứng', false, after);
     }
 

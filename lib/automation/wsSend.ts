@@ -180,7 +180,23 @@ async function runSend(
         } catch (e) {
           trace.focusActiveEl = `err: ${(e as Error).message}`;
         }
-        trace.pressKey = await guest.pressKey('Return'); // trusted Enter
+        // Trusted Enter — the ONE step that actually submits. Its result was
+        // previously recorded and then ignored, so a failed key press still ran
+        // the verify phase and reported whatever the composer happened to look
+        // like. If the key never landed, say so instead of guessing.
+        const press = await guest.pressKey('Return');
+        trace.pressKey = press;
+        if (!press?.ok) {
+          const why = press?.error ?? 'không rõ lỗi';
+          void logTrace(trace);
+          failed.push(`${t.name}: không bơm được Enter thật (${why}) — đã gõ nhưng chưa gửi`);
+          results.push({ target: t.name, result: res, error: `không bơm được Enter thật: ${why}` });
+          // Vẫn giữ nhịp giữa hai người nhận: hội thoại này đang MỞ và có chữ
+          // trong ô soạn, nhảy ngay sang đích kế tiếp là ép Zalo chuyển hội
+          // thoại giữa chừng.
+          if (group.targets.length > 1) await sleep(BETWEEN_MS);
+          continue;
+        }
         await sleep(1200);
         const finish = buildSendScript(plugin.directory ?? {}, plugin.send, {
           name: t.name,
