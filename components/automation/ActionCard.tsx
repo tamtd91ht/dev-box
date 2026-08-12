@@ -755,7 +755,7 @@ function ZaloApiSendFields({
         </div>
       )}
 
-      <Field label="Nội dung" wide hint="hỗ trợ {{title}}, {{text}}, {{description}}… · nhóm có bot AI: thêm {{metaBlock}} để bot tự phân tích cảnh báo">
+      <Field label="Nội dung" wide hint="hỗ trợ {{title}}, {{text}}, {{description}}… · nhóm có bot AI: thêm {{metaJson}} để bot tự phân tích cảnh báo">
         <TplTextarea
           rows={3}
           value={action.text}

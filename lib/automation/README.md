@@ -271,28 +271,28 @@ Event hạ tầng phát các field (đầy đủ khai ở `catalog.ts INFRA_FIEL
   phát là gì (`opText threshold` + `forSec`), nối thêm `note`. Một cảnh báo phải TỰ
   GIẢI THÍCH — người trực (hoặc bot AI) đọc tin nhắn là đủ ngữ cảnh, không cần mở DevBox.
 
-Ba biến template mới (mọi nhóm event đều có):
+Hai biến template mới (mọi nhóm event đều có):
 
 | Biến | Là gì | Dùng khi |
 |---|---|---|
-| `{{metaJson}}` | AlertMeta v1 nén một dòng | body webhook, nhúng vào tin nhắn |
+| `{{metaJson}}` | AlertMeta v1 nén một dòng | body webhook, nhúng vào tin nhắn cho bot |
 | `{{metaJsonPretty}}` | Bản thụt dòng | log, nơi người đọc |
-| `{{metaBlock}}` | Bản thụt dòng bọc `[[META]]…[[/META]]` | nhóm Zalo có bot AI |
 
-**Quy ước cho bot**: bot quét tin nhắn, cắt phần giữa `[[META]]` và `[[/META]]`,
-`JSON.parse` — `schemaVersion` cho biết shape (đổi shape sẽ bump, xem `meta.ts`).
-Tin cho người đọc viết TRƯỚC marker; ví dụ một action `zaloApiSend.text`:
+**Quy ước cho bot**: KHÔNG có marker bọc — bot quét tin nhắn, tìm đoạn JSON bắt
+đầu bằng `{"schemaVersion":` rồi `JSON.parse`; `schemaVersion` cho biết shape
+(đổi shape sẽ bump, xem `meta.ts`). Tin cho người đọc viết TRƯỚC khối JSON; ví dụ
+một action `zaloApiSend.text`:
 
 ```
 {{severityLabel}} {{stackLabel}} · {{instance}}
-{{metricLabel}} = {{value}}{{unit}} (ngưỡng {{opText}} {{threshold}})
-{{description}}
+{{metricLabel}}: {{value}}{{absText}} (ngưỡng {{opText}} {{threshold}})
+Máy: {{address}}
 
-{{metaBlock}}
+{{metaJson}}
 ```
 
-**Độ dài**: `metaBlock` ≈ 1–1.5 KB. Telegram trần 4096 ký tự, Zalo thấp hơn (~2000) —
-nhóm không có bot thì dùng `{{description}}`/`{{address}}` rời, hoặc `{{metaJson}}` nén;
+**Độ dài**: `metaJson` ≈ 1–1.4 KB. Telegram trần 4096 ký tự, Zalo thấp hơn (~2000) —
+nhóm không có bot thì dùng `{{description}}`/`{{address}}` rời, đừng nhúng JSON;
 `description` tự sinh giữ ≤ ~350 ký tự, `note` bị cắt ở 280.
 
 Nhóm social có meta gọn hơn (`conversation` `sender` `chatType` `app` `capture`

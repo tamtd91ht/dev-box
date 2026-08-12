@@ -97,7 +97,7 @@ export default function VarsPanel({ trigger, stacks }: { trigger: TriggerType; s
           <div className="auto-vars-json">
             <div className="auto-vars-head">
               <span className="auto-hint">
-                Metadata mẫu — đây chính là <code>{'{{metaJson}}'}</code> (bọc marker: <code>{'{{metaBlock}}'}</code>)
+                Metadata mẫu — đây chính là <code>{'{{metaJson}}'}</code> (bot nhận diện bằng <code>{'{"schemaVersion":'}</code>)
               </span>
               <button type="button" className="ghost sm" onClick={() => copy(metaPretty, '__json')}>
                 {copied === '__json' ? '✓ đã copy' : 'copy JSON'}

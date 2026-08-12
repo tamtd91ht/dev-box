@@ -7,17 +7,18 @@
 //
 // Nguyên tắc: thuần tuý như match.ts — chỉ import catalog + types, không I/O,
 // không state. Meta KHÔNG lưu trên event; nó được dựng lại lúc render template
-// ({{metaJson}} / {{metaJsonPretty}} / {{metaBlock}}, xem match.ts).
+// ({{metaJson}} / {{metaJsonPretty}}, xem match.ts).
 
 import type { AutomationEvent, EventCategory, InfraStack, InfraWatch, TriggerType } from './types';
 import { AGG_LABEL, metricDef, metricLabel, type FieldDef } from './catalog';
 
-/** Bump khi đổi shape — bot phía ngoài dựa vào số này để parse đúng. */
+/**
+ * Bump khi đổi shape — bot phía ngoài dựa vào số này để parse đúng.
+ *
+ * Quy ước cho bot: KHÔNG có marker bọc. Bot tách metadata bằng cách tìm trong
+ * tin nhắn dòng/đoạn JSON bắt đầu bằng `{"schemaVersion":` rồi JSON.parse.
+ */
 export const META_SCHEMA_VERSION = 1;
-
-/** Marker bọc khối metadata trong tin nhắn, để bot tách bằng string-scan. */
-export const META_BLOCK_OPEN = '[[META]]';
-export const META_BLOCK_CLOSE = '[[/META]]';
 
 /** Ký hiệu người đọc của phép so sánh — dùng chung cho description, text và meta. */
 export const OP_TEXT: Record<InfraWatch['op'], string> = {
@@ -330,11 +331,4 @@ export const TEMPLATE_CORE_VARS: FieldDef[] = [
     derived: true,
   },
   { name: 'metaJsonPretty', label: 'Metadata chuẩn (JSON thụt dòng)', kind: 'text', derived: true },
-  {
-    name: 'metaBlock',
-    label: 'Khối metadata cho bot',
-    kind: 'text',
-    hint: `JSON thụt dòng bọc trong ${META_BLOCK_OPEN}…${META_BLOCK_CLOSE} — bot AI trong nhóm tách khối này để phân tích cảnh báo`,
-    derived: true,
-  },
 ];
