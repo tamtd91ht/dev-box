@@ -21,7 +21,14 @@ import { produceKafkaMessage } from '@/lib/kafka';
 import { sendToTargetGroup } from './wsSend';
 import { sendViaZaloApi } from './zaloApiSend';
 import { hasMark, stripMark } from './mark';
-import { createEngineState, evaluate, isDuplicateEvent, type EngineState } from './engine';
+import {
+  createEngineState,
+  evaluate,
+  isDuplicateEvent,
+  mergeEngineState,
+  snapshotEngineState,
+  type EngineState,
+} from './engine';
 import { normalizeConfig } from './normalize';
 import {
   DEFAULT_AUTOMATION_CONFIG,
@@ -102,6 +109,10 @@ class AutomationRuntime {
     if (this.loaded) return Promise.resolve(this.config);
     if (this.loading) return this.loading;
     this.loading = this.fetchConfig()
+      // Hydrate lịch sử bắn TRƯỚC khi loaded=true: sự kiện đầu tiên sau khi mở
+      // app phải nhìn thấy cooldown đang chạy từ phiên trước, nếu không "nghỉ
+      // 5 phút" thành "nghỉ đến lần F5 gần nhất".
+      .then((cfg) => this.hydrateLimits().then(() => cfg))
       .then((cfg) => {
         this.config = cfg;
         this.loaded = true;
@@ -110,6 +121,47 @@ class AutomationRuntime {
         return cfg;
       });
     return this.loading;
+  }
+
+  // ── lịch sử bắn dùng chung (xem /api/automation/limits) ────────────────────
+  //
+  // EngineState trong RAM chết theo cửa sổ; bản trên server thì không. Hai chiều:
+  // hydrate lúc load (kéo lịch sử của mọi phiên/cửa sổ trước về), push sau mỗi
+  // lần có rule bắn thật (đẩy mốc mới lên + merge lại phần server biết mà mình
+  // chưa biết). Cả hai đều fail-soft — mất route thì hành xử như bản cũ.
+
+  private limitsPushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private async hydrateLimits(): Promise<void> {
+    try {
+      const r = await fetch('/api/automation/limits');
+      mergeEngineState(this.state, await r.json());
+    } catch {
+      /* route lỗi/chưa có file — chạy với state trống như trước */
+    }
+  }
+
+  /** Gom nhiều lần bắn sát nhau thành một PUT — bão cảnh báo không thành bão HTTP. */
+  private schedulePushLimits(): void {
+    if (this.limitsPushTimer) return;
+    this.limitsPushTimer = setTimeout(() => {
+      this.limitsPushTimer = null;
+      void this.pushLimits();
+    }, 800);
+  }
+
+  private async pushLimits(): Promise<void> {
+    try {
+      const r = await fetch('/api/automation/limits', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(snapshotEngineState(this.state)),
+      });
+      // Server trả bản merge — nhận lại để biết cả mốc các cửa sổ khác vừa đẩy.
+      mergeEngineState(this.state, await r.json());
+    } catch {
+      /* lần bắn sau sẽ thử lại — mốc vẫn còn trong RAM */
+    }
   }
 
   /** Fetch + normalize the on-disk config; falls back to the current copy on
@@ -239,6 +291,9 @@ class AutomationRuntime {
       }
 
       const result = evaluate(this.config, event, this.state);
+      // Có rule bắn thật (không bị chặn bởi giới hạn) → mốc cooldown vừa đổi,
+      // đẩy lên server để cửa sổ khác / phiên sau tôn trọng nó.
+      if (result.decisions.some((d) => d.matched && !d.skipped)) this.schedulePushLimits();
       if (event.category === 'social') void this.logIncoming(event, false, result.decisions);
       // Nhật ký engine cho event Zalo API — in ra console (terminal) mỗi quyết
       // định của từng rule, để chẩn đoán "vì sao không match" ngoài tab Zalo API.

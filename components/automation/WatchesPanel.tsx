@@ -337,7 +337,7 @@ export default function WatchesPanel({
   /** Dòng đang chọn, để cuộn tới khi được mở từ tab Quy tắc. */
   const selectedRow = useRef<HTMLDivElement | null>(null);
   const [scrollTo, setScrollTo] = useState<string | null>(null);
-  const { samples, running } = useWatcher();
+  const { samples, running, leader } = useWatcher();
   const watches = config.watches;
   const setWatches = (next: InfraWatch[]) => onChange({ ...config, watches: next });
   const current = watches.find((w) => w.id === selected) ?? null;
@@ -450,8 +450,15 @@ export default function WatchesPanel({
     <div className="auto-split" ref={railSplit.ref} style={railSplit.style}>
       <div className="auto-list panel">
         <div className="auto-list-head">
-          <span className={`auto-runstate${running ? ' on' : ''}`}>
-            {running ? '● đang chạy' : '○ đang dừng'}
+          <span
+            className={`auto-runstate${running && leader ? ' on' : ''}`}
+            title={
+              running && !leader
+                ? 'Một cửa sổ khác đang giữ vai trò chạy watch — cửa sổ này không poll, không phát cảnh báo (tránh bắn trùng), và tự tiếp quản trong vài giây khi cửa sổ kia đóng.'
+                : undefined
+            }
+          >
+            {running ? (leader ? '● đang chạy' : '◐ chờ — cửa sổ khác đang chạy') : '○ đang dừng'}
             {!config.watchEnabled ? ' — bật "theo dõi hạ tầng" ở trên' : ''}
           </span>
           <button type="button" className="sm" onClick={add}>

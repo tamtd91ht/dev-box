@@ -22,6 +22,7 @@
 // SAME rule engine, activity feed and action set as social messages.
 
 import { automation } from './runtime';
+import { newId } from './engine';
 import { listConnections, peekAddress } from './connections';
 import { MIN_WATCH_INTERVAL_SEC } from './normalize';
 import { breaches, infraBreachEvent, infraRecoveredEvent, probeStack, type ProbeResult } from './sources/infra';
@@ -44,6 +45,14 @@ export interface WatchSample {
 
 export interface WatcherSnapshot {
   running: boolean;
+  /**
+   * false = cửa sổ khác đang giữ lease runner (xem /api/automation/runner) —
+   * watcher này ở chế độ CHỜ: không poll, không phát cảnh báo, và tự tiếp quản
+   * trong vài giây khi leader tắt. Mỗi cửa sổ một watcher nhưng cả app chỉ một
+   * runner thật — hai runner song song là hai bộ cooldown riêng, tin cảnh báo
+   * sẽ xen kẽ nhau dưới mọi giới hạn đã cấu hình.
+   */
+  leader: boolean;
   samples: Record<string, WatchSample>;
   rev: number;
 }
@@ -69,11 +78,14 @@ class InfraWatcher {
   private states = new Map<string, WatchState>();
   private samples: Record<string, WatchSample> = {};
   private listeners = new Set<() => void>();
-  private snap: WatcherSnapshot = { running: false, samples: {}, rev: 0 };
+  private snap: WatcherSnapshot = { running: false, leader: false, samples: {}, rev: 0 };
   private rev = 0;
   private unsubConfig: (() => void) | null = null;
   private started = false;
   private lastBeat = 0;
+  /** Danh tính của watcher NÀY trong cuộc đua lease — mỗi cửa sổ một id. */
+  private holderId = newId('run');
+  private leader = false;
 
   getSnapshot = (): WatcherSnapshot => this.snap;
 
@@ -84,8 +96,30 @@ class InfraWatcher {
 
   private emit(): void {
     this.rev += 1;
-    this.snap = { running: this.timer !== null, samples: this.samples, rev: this.rev };
+    this.snap = { running: this.timer !== null, leader: this.leader, samples: this.samples, rev: this.rev };
     for (const l of this.listeners) l();
+  }
+
+  /**
+   * Xin/giữ lease runner. Lỗi mạng/route thì GIỮ NGUYÊN vai trò hiện tại: đang
+   * là leader mà demote vì một request rớt là tắt giám sát oan; đang standby mà
+   * tự phong leader là tái diễn đúng cái lỗi hai-runner mà lease sinh ra để chặn.
+   */
+  private async renewLease(): Promise<void> {
+    try {
+      const r = await fetch('/api/automation/runner', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ holderId: this.holderId }),
+      });
+      const lead = !!((await r.json()) as { leader?: boolean }).leader;
+      if (lead !== this.leader) {
+        this.leader = lead;
+        this.emit();
+      }
+    } catch {
+      /* giữ vai trò cũ — xem docstring */
+    }
   }
 
   /**
@@ -165,6 +199,11 @@ class InfraWatcher {
   }
 
   private async tick(): Promise<void> {
+    // Lease trước, poll sau: chỉ MỘT cửa sổ được đo và phát cảnh báo. Cửa sổ
+    // standby vẫn tick 2s để tiếp quản trong ~TTL khi leader đóng.
+    await this.renewLease();
+    if (!this.leader) return;
+
     const now = Date.now();
     const watches = this.activeWatches(automation.current);
     this.heartbeat(now, watches.length);

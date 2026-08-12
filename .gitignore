@@ -82,6 +82,7 @@ bot/.status.json
 .automation-log.jsonl
 .automation-trace.jsonl
 .automation-infra.jsonl
+.automation-limits.json
 
 # Electron desktop shell — build output + per-workspace browser profiles
 # (cookies/localStorage/IndexedDB/cache live here; machine-specific, never commit)

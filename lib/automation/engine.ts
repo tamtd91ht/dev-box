@@ -48,6 +48,61 @@ export function createEngineState(): EngineState {
 const SEEN_TTL_MS = 10 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 
+// ── Persistence của lịch sử bắn ─────────────────────────────────────────────
+//
+// EngineState sống trong RAM của MỘT cửa sổ renderer — F5, mở lại app, hay một
+// cửa sổ thứ hai là cooldown/dedupe về 0 và cảnh báo "5 phút một lần" bắn lại
+// ngay poll kế tiếp. Snapshot dưới đây là dạng JSON hoá để runtime đẩy lên
+// /api/automation/limits (server giữ một bản cho MỌI cửa sổ) và merge về.
+// Merge theo luật "mốc mới nhất thắng" nên hai bên đẩy chéo nhau không bao giờ
+// làm ngắn một cooldown đang chạy.
+
+/** Serializable form of EngineState, for the /api/automation/limits store. */
+export interface EngineStateSnapshot {
+  lastFire: Record<string, number>;
+  fires: Record<string, number[]>;
+  content: Record<string, number>;
+  seen: Record<string, number>;
+}
+
+export function snapshotEngineState(state: EngineState): EngineStateSnapshot {
+  return {
+    lastFire: Object.fromEntries(state.lastFire),
+    fires: Object.fromEntries([...state.fires].map(([k, v]) => [k, [...v]])),
+    content: Object.fromEntries(state.content),
+    seen: Object.fromEntries(state.seen),
+  };
+}
+
+/** Merge một snapshot VÀO state đang sống — mốc mới hơn thắng, danh sách fires gộp + cắt giờ trượt. */
+export function mergeEngineState(
+  state: EngineState,
+  snap: Partial<EngineStateSnapshot> | null | undefined,
+  now = Date.now(),
+): void {
+  if (!snap || typeof snap !== 'object') return;
+  for (const [k, ts] of Object.entries(snap.lastFire ?? {})) {
+    if (typeof ts === 'number' && ts > (state.lastFire.get(k) ?? 0)) state.lastFire.set(k, ts);
+  }
+  for (const [k, list] of Object.entries(snap.fires ?? {})) {
+    if (!Array.isArray(list)) continue;
+    const merged = new Set([
+      ...(state.fires.get(k) ?? []),
+      ...list.filter((t): t is number => typeof t === 'number'),
+    ]);
+    const kept = [...merged].filter((t) => now - t < HOUR_MS).sort((a, b) => a - b);
+    if (kept.length) state.fires.set(k, kept);
+  }
+  for (const [k, ts] of Object.entries(snap.content ?? {})) {
+    if (typeof ts === 'number' && ts > (state.content.get(k) ?? 0)) state.content.set(k, ts);
+  }
+  for (const [k, ts] of Object.entries(snap.seen ?? {})) {
+    if (typeof ts === 'number' && now - ts <= SEEN_TTL_MS && ts > (state.seen.get(k) ?? 0)) {
+      state.seen.set(k, ts);
+    }
+  }
+}
+
 /** Keep the state maps from growing without bound over a long session. */
 function prune(state: EngineState, now: number): void {
   for (const [k, ts] of state.seen) if (now - ts > SEEN_TTL_MS) state.seen.delete(k);

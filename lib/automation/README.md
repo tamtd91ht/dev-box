@@ -306,6 +306,23 @@ Mỗi quy tắc có `dedupeSec` (bỏ qua trùng title+text), `cooldownSec` (kho
 2 lần bắn), `maxPerHour` (trần cứng theo giờ trượt). Thứ tự quy tắc **có ý nghĩa** vì
 `stopOnMatch` — nên danh sách sắp xếp được bằng ↑↓.
 
+**Hai bảo đảm để các giới hạn này đúng THẬT** (không chỉ đúng trong một cửa sổ):
+
+1. **Một runner duy nhất** — watcher chạy phía renderer và mỗi cửa sổ mount một
+   watcher riêng; Electron + browser dev mở cùng lúc từng là HAI runner với hai
+   bộ cooldown độc lập, tin cảnh báo xen kẽ nhau dưới mọi giới hạn (triệu chứng:
+   đặt 5 phút mà ~1 phút đã thấy bắn lại). Giờ mỗi tick watcher renew lease qua
+   `/api/automation/runner`; chỉ ai giữ lease mới poll + phát sự kiện, các cửa
+   sổ khác đứng chờ (WatchesPanel hiện "◐ chờ") và tự tiếp quản trong ~8s khi
+   leader đóng.
+2. **Lịch sử bắn sống lâu hơn cửa sổ** — cooldown/dedupe/rate từng nằm trong RAM
+   renderer: F5, mở lại app hay HMR khi dev là về 0 và cảnh báo bắn lại ngay poll
+   kế tiếp. Giờ mỗi lần rule bắn thật, runtime đẩy snapshot (`lastFire`/`fires`/
+   `content`/`seen`) lên `/api/automation/limits` (file `.automation-limits.json`,
+   gitignore); lúc khởi động nó hydrate lại trước sự kiện đầu tiên. Merge theo
+   luật "mốc mới nhất thắng" nên nhiều cửa sổ đẩy chéo không làm ngắn cooldown.
+   Cả hai đường đều fail-soft: route lỗi thì hành xử như bản cũ.
+
 `countBy` quyết định 2 giới hạn sau đếm trên **phạm vi nào** — đây là lựa chọn
 chính sách, không phải kỹ thuật, nên nó được hỏi chứ không mặc định ngầm:
 
