@@ -8,6 +8,7 @@
 //     'collections' { connectionId, db }                 → { ok, result: CollectionInfo[] }
 //     'stats'       { connectionId, db, coll }           → { ok, result: CollStatsResult }
 //     'indexes'     { connectionId, db, coll }           → { ok, result: IndexInfo[] }
+//     'fields'      { connectionId, db, coll }           → { ok, result: FieldInfo[] }   (sampled paths, for autocomplete)
 //     'find'        { connectionId, db, coll, filter?, projection?, sort?, limit?, skip? } → { ok, result: FindResult }
 //     'count'       { connectionId, db, coll, filter? }  → { ok, result: CountResult }
 //     'aggregate'   { connectionId, db, coll, pipeline } → { ok, result: AggregateResult }
@@ -33,6 +34,7 @@ import {
   listCollections,
   collectionStats,
   listIndexes,
+  sampleFields,
   find,
   count,
   aggregate,
@@ -106,6 +108,9 @@ export async function POST(req: NextRequest) {
         break;
       case 'indexes':
         result = await listIndexes(conn, db, coll);
+        break;
+      case 'fields':
+        result = await sampleFields(conn, db, coll);
         break;
       case 'find':
         result = await find(conn, db, coll, {

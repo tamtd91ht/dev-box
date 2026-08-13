@@ -2120,6 +2120,64 @@ pre.kafka-drawer-body {
 }
 .mongo-doc-body { margin: 0; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; }
 
+/* ── Structured JSON tree (result documents) ───────────────────────────── */
+.mongo-json { font-family: var(--mono); font-size: 12px; line-height: 1.65; }
+.mongo-json-row { display: flex; align-items: flex-start; gap: 4px; flex-wrap: wrap; min-width: 0; }
+.mongo-json-row:hover { background: var(--glass-bg); border-radius: 4px; }
+.mongo-json-caret {
+  flex: none; background: none; border: none; cursor: pointer; padding: 0; width: 12px;
+  color: var(--muted); font-size: 10px; line-height: inherit;
+}
+.mongo-json-caret:hover { color: var(--accent); }
+.mongo-json-key { color: var(--accent); }
+.mongo-json-colon { color: var(--muted); margin-right: 2px; }
+.mongo-json-brace, .mongo-json-comma { color: var(--muted); }
+.mongo-json-fold {
+  color: var(--muted); font-size: 11px; font-style: italic; margin: 0 4px;
+  padding: 0 5px; border-radius: 999px; background: var(--glass-bg);
+}
+.mongo-json-string { color: var(--ok, #7ec699); word-break: break-all; }
+.mongo-json-number { color: #d19a66; }
+.mongo-json-bool { color: #c678dd; }
+.mongo-json-null { color: var(--muted); font-style: italic; }
+
+/* Search hits inside the tree — the active one is the scroll target. */
+.mongo-hit { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; border-radius: 2px; }
+.mongo-hit.active { background: #f0a020; color: #101010; }
+
+/* ── Find bar over the result pane ─────────────────────────────────────── */
+.mongo-find {
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--glass-brd); border-radius: 9px; padding: 6px 8px; background: var(--glass-bg);
+}
+.mongo-find .input { flex: 1; min-width: 0; }
+.mongo-find-count { flex: none; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 62px; text-align: right; }
+
+/* ── Query box: format tools + field autocomplete ──────────────────────── */
+.mongo-field-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mongo-field-tools { display: flex; gap: 4px; flex: none; }
+.mongo-json-input { resize: vertical; line-height: 1.6; tab-size: 2; }
+.mongo-json-err { font-size: 11.5px; color: var(--err); word-break: break-word; }
+
+.mongo-field { position: relative; }
+.mongo-suggest {
+  position: absolute; z-index: 30; top: 100%; left: 0; margin-top: 2px;
+  min-width: 260px; max-width: 100%; max-height: 240px; overflow: auto;
+  background: var(--panel, var(--bg)); border: 1px solid var(--glass-brd);
+  border-radius: 9px; padding: 4px; box-shadow: 0 8px 22px rgba(0, 0, 0, .35);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.mongo-suggest-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+  color: var(--text); font-family: var(--mono); font-size: 12px;
+  padding: 5px 8px; border-radius: 6px;
+}
+.mongo-suggest-item.active, .mongo-suggest-item:hover { background: var(--glass-bg); color: var(--accent); }
+.mongo-suggest-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mongo-suggest-type { flex: none; font-size: 10.5px; color: var(--muted); }
+.mongo-suggest-hint { font-size: 10.5px; color: var(--muted); padding: 3px 8px 1px; border-top: 1px solid var(--glass-brd); margin-top: 2px; }
+
 /* ── Danger block (update modal) ───────────────────────────────────────── */
 .mongo-danger {
   border: 1px solid color-mix(in srgb, var(--err) 55%, var(--glass-brd));

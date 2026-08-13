@@ -440,6 +440,74 @@ export async function listIndexes(conn: MongoConnection, dbName: string, collNam
   }));
 }
 
+// ── Field discovery (autocomplete for the query bar) ─────────────────────────
+
+export interface FieldInfo {
+  /** Dotted path — array elements collapse into their parent (`items.sku`). */
+  path: string;
+  /** BSON-ish type name of the first value seen (`string`, `objectId`, `array`…). */
+  type: string;
+  /** How many of the sampled documents carry this path. */
+  seen: number;
+}
+
+/** How many documents to sample, and how deep/wide to walk them. */
+const FIELD_SAMPLE_DOCS = 60;
+const FIELD_MAX_DEPTH = 4;
+const FIELD_MAX_PATHS = 400;
+
+function bsonTypeOf(v: unknown): string {
+  if (v === null || v === undefined) return 'null';
+  if (Array.isArray(v)) return 'array';
+  if (v instanceof Date) return 'date';
+  if (typeof v === 'object') {
+    const name = (v as { _bsontype?: string })._bsontype;
+    if (name === 'ObjectId' || name === 'ObjectID') return 'objectId';
+    if (name) return name.charAt(0).toLowerCase() + name.slice(1);
+    return 'object';
+  }
+  return typeof v;
+}
+
+/**
+ * Walk sampled documents and collect their field paths. Arrays are flattened
+ * into the parent path (Mongo queries `items.sku` regardless of index), so the
+ * suggestions match what you would actually type into a filter.
+ */
+function collectPaths(doc: Document, out: Map<string, FieldInfo>, prefix = '', depth = 0): void {
+  if (depth > FIELD_MAX_DEPTH || out.size >= FIELD_MAX_PATHS) return;
+  for (const [key, value] of Object.entries(doc)) {
+    if (out.size >= FIELD_MAX_PATHS) return;
+    const path = prefix ? `${prefix}.${key}` : key;
+    const prev = out.get(path);
+    if (prev) prev.seen += 1;
+    else out.set(path, { path, type: bsonTypeOf(value), seen: 1 });
+
+    if (Array.isArray(value)) {
+      // Descend into the first object element only — enough to expose the shape.
+      const el = value.find((x) => x && typeof x === 'object' && !Array.isArray(x) && !(x as { _bsontype?: string })._bsontype);
+      if (el) collectPaths(el as Document, out, path, depth + 1);
+    } else if (value && typeof value === 'object' && bsonTypeOf(value) === 'object') {
+      collectPaths(value as Document, out, path, depth + 1);
+    }
+  }
+}
+
+/** Sample a collection and return its field paths, most common first. */
+export async function sampleFields(conn: MongoConnection, dbName: string, collName: string): Promise<FieldInfo[]> {
+  const db = requireName(dbName, 'database');
+  const coll = requireName(collName, 'collection');
+  const client = getClient(conn);
+  const rows = await client
+    .db(db)
+    .collection(coll)
+    .find({}, { limit: FIELD_SAMPLE_DOCS, maxTimeMS: MAX_TIME_FIND_MS })
+    .toArray();
+  const out = new Map<string, FieldInfo>();
+  for (const row of rows) collectPaths(row, out);
+  return [...out.values()].sort((a, b) => b.seen - a.seen || a.path.localeCompare(b.path));
+}
+
 export interface FindInput {
   filter?: unknown;
   projection?: unknown;

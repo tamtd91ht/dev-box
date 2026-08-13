@@ -89,6 +89,12 @@ export interface IndexInfo {
   partial: boolean;
 }
 
+export interface FieldInfo {
+  path: string;
+  type: string;
+  seen: number;
+}
+
 export interface WireDoc {
   json: string;
   truncated: boolean;
@@ -206,6 +212,11 @@ export function listMongoIndexes(connectionId: string, db: string, coll: string)
   return mongoAction<IndexInfo[]>('indexes', { connectionId, db, coll });
 }
 
+/** Sampled field paths of a collection — powers the query-bar autocomplete. */
+export function sampleMongoFields(connectionId: string, db: string, coll: string): Promise<FieldInfo[]> {
+  return mongoAction<FieldInfo[]>('fields', { connectionId, db, coll });
+}
+
 export interface FindParams {
   filter: string;
   projection: string;
@@ -257,5 +268,100 @@ export function prettyDoc(json: string): string {
     return JSON.stringify(JSON.parse(json), null, 2);
   } catch {
     return json; // truncated docs are not valid JSON — show raw
+  }
+}
+
+// ── Query-bar JSON formatting ────────────────────────────────────────────────
+// The query boxes accept what people actually paste: shell-style objects with
+// unquoted keys, single quotes and trailing commas. `relaxedJsonParse` accepts
+// those without ever calling eval — it rewrites the text into strict JSON, then
+// hands it to JSON.parse (which stays the only thing that interprets it).
+
+/** Rewrite lenient JSON5-ish text into strict JSON. Strings are copied verbatim. */
+function strictify(src: string): string {
+  let out = '';
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+
+    // Strings: copy through, converting '…' to "…" with proper escaping.
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let body = '';
+      i++;
+      for (; i < src.length && src[i] !== quote; i++) {
+        if (src[i] === '\\') { body += src[i] + (src[i + 1] ?? ''); i++; continue; }
+        body += src[i];
+      }
+      if (quote === '"') {
+        out += `"${body}"`;
+      } else {
+        // Re-quoting '…' as "…": bare `"` must gain an escape, and `\'` must
+        // lose one (\' is not a legal JSON escape).
+        out += `"${body.replace(/\\'/g, "'").replace(/(^|[^\\])"/g, '$1\\"')}"`;
+      }
+      continue;
+    }
+
+    // Line / block comments — drop them.
+    if (ch === '/' && src[i + 1] === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
+    if (ch === '/' && src[i + 1] === '*') { i += 2; while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++; i++; continue; }
+
+    // Bare identifier: a key (→ quote it) or a literal like true/null (→ keep).
+    if (/[A-Za-z_$]/.test(ch)) {
+      let word = '';
+      while (i < src.length && /[A-Za-z0-9_$]/.test(src[i])) { word += src[i]; i++; }
+      const rest = src.slice(i);
+      const isKey = /^\s*:/.test(rest);
+      out += isKey ? `"${word}"` : word;
+      i--;
+      continue;
+    }
+
+    // Trailing comma before a closer.
+    if (ch === ',' && /^\s*[}\]]/.test(src.slice(i + 1))) continue;
+
+    out += ch;
+  }
+  return out;
+}
+
+/** Parse lenient JSON text. Throws the underlying SyntaxError when unfixable. */
+export function relaxedJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (first) {
+    try {
+      return JSON.parse(strictify(text));
+    } catch {
+      throw first; // report the original, more meaningful position
+    }
+  }
+}
+
+export interface FormatResult {
+  text: string;
+  error: string | null;
+}
+
+/**
+ * Pretty-print a query box. Empty text stays empty; invalid text is returned
+ * unchanged with the parser message so the field never eats what you typed.
+ */
+export function formatJsonInput(text: string, indent = 2): FormatResult {
+  if (!text.trim()) return { text, error: null };
+  try {
+    return { text: JSON.stringify(relaxedJsonParse(text), null, indent), error: null };
+  } catch (e) {
+    return { text, error: (e as Error).message };
+  }
+}
+
+/** Collapse a query box onto one line (the inverse of Format). */
+export function minifyJsonInput(text: string): FormatResult {
+  if (!text.trim()) return { text, error: null };
+  try {
+    return { text: JSON.stringify(relaxedJsonParse(text)), error: null };
+  } catch (e) {
+    return { text, error: (e as Error).message };
   }
 }

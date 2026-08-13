@@ -18,17 +18,24 @@ import {
   findMongo,
   countMongo,
   aggregateMongo,
+  sampleMongoFields,
   prettyDoc,
+  formatJsonInput,
+  minifyJsonInput,
   fmtBytes,
   fmtCount,
   type DatabaseInfo,
   type CollectionInfo,
   type CollStatsResult,
   type IndexInfo,
+  type FieldInfo,
   type FindResult,
   type AggregateResult,
 } from '@/lib/mongo';
 import UpdateModal from './UpdateModal';
+import JsonView, { countHits } from './JsonView';
+import FieldSuggest from './FieldSuggest';
+import ResultFindBar from './ResultFindBar';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
 
@@ -65,6 +72,21 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
   const [skip, setSkip] = useState(0);
   const [pipeline, setPipeline] = useState('');
+
+  // ── Query editing aids (format + field autocomplete) ────────────────────────
+  const [fields, setFields] = useState<FieldInfo[]>([]);
+  const [jsonError, setJsonError] = useState<string | null>(null);
+  const filterRef = useRef<HTMLTextAreaElement>(null);
+  const pipelineRef = useRef<HTMLTextAreaElement>(null);
+  const [caret, setCaret] = useState(0);
+  /** Which box the caret sits in — only that one gets suggestions. */
+  const [focusBox, setFocusBox] = useState<'filter' | 'pipeline' | null>(null);
+
+  // ── Result view: JSON tree vs raw text, plus the Ctrl+F bar ────────────────
+  const [treeView, setTreeView] = useState(true);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findIndex, setFindIndex] = useState(0);
 
   // ── Results ────────────────────────────────────────────────────────────────
   const [collTab, setCollTab] = useState<CollTab>('docs');
@@ -155,6 +177,44 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
     catch (e) { setError((e as Error).message); }
   }, [connectionId, selected]);
 
+  /** Sample the collection's field paths for the query-bar autocomplete. */
+  const loadFields = useCallback(async () => {
+    if (!selected) return;
+    try { setFields(await sampleMongoFields(connectionId, selected.db, selected.coll)); }
+    catch { setFields([]); } // suggestions are a nicety — never block the query bar
+  }, [connectionId, selected]);
+
+  /** Pretty-print (or collapse) whichever query box is in play. */
+  const formatQuery = useCallback((collapse = false) => {
+    const run = collapse ? minifyJsonInput : formatJsonInput;
+    if (queryMode === 'aggregate') {
+      const r = run(pipeline);
+      setPipeline(r.text);
+      setJsonError(r.error && `Pipeline không parse được: ${r.error}`);
+      return;
+    }
+    const f = run(filter);
+    setFilter(f.text);
+    // Projection and sort are one-liners; only tidy them when they are valid.
+    const p = run(projection); if (!p.error) setProjection(p.text);
+    const s = run(sort); if (!s.error) setSort(s.text);
+    setJsonError(f.error && `Filter không parse được: ${f.error}`);
+  }, [queryMode, pipeline, filter, projection, sort]);
+
+  /** Insert an autocomplete pick into the focused box, then restore the caret. */
+  const applyPick = useCallback((box: 'filter' | 'pipeline', r: { from: number; to: number; text: string }) => {
+    const ref = box === 'filter' ? filterRef : pipelineRef;
+    const current = box === 'filter' ? filter : pipeline;
+    const next = current.slice(0, r.from) + r.text + current.slice(r.to);
+    (box === 'filter' ? setFilter : setPipeline)(next);
+    const at = r.from + r.text.length;
+    setCaret(at);
+    requestAnimationFrame(() => {
+      ref.current?.focus();
+      ref.current?.setSelectionRange(at, at);
+    });
+  }, [filter, pipeline]);
+
   /** Select a collection → reset the query panel and auto-run the first page. */
   const selectColl = useCallback((db: string, coll: string) => {
     setSelected({ db, coll });
@@ -162,7 +222,8 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
     setFilter(''); setProjection(''); setSort(''); setLimit(DEFAULT_LIMIT); setSkip(0);
     setPipeline(''); setQueryMode('find');
     setResult(null); setAggResult(null); setCountInfo(null); setStats(null); setIndexes([]);
-    setError(null);
+    setError(null); setJsonError(null); setFields([]);
+    setFindOpen(false); setFindQuery(''); setFindIndex(0);
   }, []);
 
   // Auto-run after selection state settles (first page, stats, indexes).
@@ -175,10 +236,42 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
     void runFind({ skip: 0 });
     void loadStats();
     void loadIndexes();
+    void loadFields();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, connectionId]);
 
   const docs = queryMode === 'aggregate' ? aggResult?.docs ?? null : result?.docs ?? null;
+
+  // ── Ctrl+F over the result pane ────────────────────────────────────────────
+  // Only hijacked when there are documents to search; otherwise the browser's
+  // own find keeps working as usual.
+  useEffect(() => {
+    if (!docs || docs.length === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setTreeView(true); // highlighting only exists in the tree renderer
+        setFindOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [docs]);
+
+  // Hit counts per document — also gives each card its offset in the global
+  // ordering so "3/17" and the scroll target agree.
+  // Highlighting lives in the tree renderer, so Raw mode has no hits to count.
+  const needle = findOpen && treeView ? findQuery.trim().toLowerCase() : '';
+  const hitOffsets: number[] = [];
+  let totalHits = 0;
+  if (needle && docs) {
+    for (const d of docs) {
+      hitOffsets.push(totalHits);
+      totalHits += countHits(d.json, needle);
+    }
+  }
+  // A shrinking result set must not strand the cursor past the end.
+  const activeHit = totalHits === 0 ? -1 : Math.min(findIndex, totalHits - 1);
   const filteredDbs = dbs.filter((d) => !treeFilter || d.name.includes(treeFilter));
   const filteredColls = collections.filter((c) => !treeFilter || c.name.includes(treeFilter));
   const writeArmed = allowWrite && !readOnly;
@@ -264,16 +357,39 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
 
                   {queryMode === 'find' ? (
                     <>
-                      <label className="mongo-field"><span>Filter (JSON/EJSON — hỗ trợ {'{"$oid"}, {"$date"}'})</span>
+                      <label className="mongo-field">
+                        <span className="mongo-field-head">
+                          <span>Filter (JSON/EJSON — hỗ trợ {'{"$oid"}, {"$date"}'})</span>
+                          <span className="mongo-field-tools">
+                            <button className="chip-btn" title="Format JSON (Ctrl+Shift+F)" onClick={(e) => { e.preventDefault(); formatQuery(); }}>⤸ Format</button>
+                            <button className="chip-btn" title="Gộp về một dòng" onClick={(e) => { e.preventDefault(); formatQuery(true); }}>⤹ Minify</button>
+                          </span>
+                        </span>
                         <textarea
-                          className="input mono"
-                          rows={2}
+                          ref={filterRef}
+                          className="input mono mongo-json-input"
+                          rows={4}
                           value={filter}
-                          onChange={(e) => setFilter(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { setSkip(0); void runFind({ skip: 0 }); } }}
+                          onChange={(e) => { setFilter(e.target.value); setCaret(e.target.selectionStart); setJsonError(null); }}
+                          onFocus={(e) => { setFocusBox('filter'); setCaret(e.target.selectionStart); }}
+                          onBlur={() => setFocusBox((b) => (b === 'filter' ? null : b))}
+                          onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { setSkip(0); void runFind({ skip: 0 }); }
+                            else if (e.key === 'F' && e.shiftKey && (e.ctrlKey || e.metaKey)) { e.preventDefault(); formatQuery(); }
+                          }}
                           placeholder='{"tenantId": "t_123", "status": "ACTIVE"}'
                         />
+                        {focusBox === 'filter' && (
+                          <FieldSuggest
+                            fields={fields}
+                            value={filter}
+                            caret={caret}
+                            onPick={(r) => applyPick('filter', r)}
+                          />
+                        )}
                       </label>
+                      {jsonError && <span className="mongo-json-err">{jsonError}</span>}
                       <div className="mongo-form-row">
                         <label className="mongo-field" style={{ flex: 1 }}><span>Projection</span>
                           <input className="input mono" value={projection} onChange={(e) => setProjection(e.target.value)} placeholder='{"name": 1, "phone": 1}' />
@@ -306,16 +422,39 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
                     </>
                   ) : (
                     <>
-                      <label className="mongo-field"><span>Pipeline (JSON array — $out/$merge bị chặn, tự thêm $limit 500)</span>
+                      <label className="mongo-field">
+                        <span className="mongo-field-head">
+                          <span>Pipeline (JSON array — $out/$merge bị chặn, tự thêm $limit 500)</span>
+                          <span className="mongo-field-tools">
+                            <button className="chip-btn" title="Format JSON (Ctrl+Shift+F)" onClick={(e) => { e.preventDefault(); formatQuery(); }}>⤸ Format</button>
+                            <button className="chip-btn" title="Gộp về một dòng" onClick={(e) => { e.preventDefault(); formatQuery(true); }}>⤹ Minify</button>
+                          </span>
+                        </span>
                         <textarea
-                          className="input mono"
-                          rows={5}
+                          ref={pipelineRef}
+                          className="input mono mongo-json-input"
+                          rows={8}
                           value={pipeline}
-                          onChange={(e) => setPipeline(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) void runAggregate(); }}
+                          onChange={(e) => { setPipeline(e.target.value); setCaret(e.target.selectionStart); setJsonError(null); }}
+                          onFocus={(e) => { setFocusBox('pipeline'); setCaret(e.target.selectionStart); }}
+                          onBlur={() => setFocusBox((b) => (b === 'pipeline' ? null : b))}
+                          onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) void runAggregate();
+                            else if (e.key === 'F' && e.shiftKey && (e.ctrlKey || e.metaKey)) { e.preventDefault(); formatQuery(); }
+                          }}
                           placeholder='[{"$match": {"tenantId": "t_123"}}, {"$group": {"_id": "$status", "n": {"$sum": 1}}}]'
                         />
+                        {focusBox === 'pipeline' && (
+                          <FieldSuggest
+                            fields={fields}
+                            value={pipeline}
+                            caret={caret}
+                            onPick={(r) => applyPick('pipeline', r)}
+                          />
+                        )}
                       </label>
+                      {jsonError && <span className="mongo-json-err">{jsonError}</span>}
                       <div className="status-line" style={{ gap: 8 }}>
                         <button className="sm" disabled={busy || !pipeline.trim()} onClick={() => void runAggregate()}>
                           {busy ? <span className="spinner" aria-hidden /> : '▶'} Aggregate
@@ -334,25 +473,58 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
                           ? `${docs.length} kết quả${aggResult?.capped ? ' (đã chạm trần 500)' : ''} · ${aggResult?.tookMs}ms`
                           : `${docs.length} docs · skip ${result?.skip ?? 0} · ${result?.tookMs}ms`}
                       </span>
-                      {queryMode === 'find' && result && (
-                        <div style={{ display: 'flex', gap: 6 }}>
-                          <button
-                            className="chip-btn"
-                            disabled={busy || (result.skip ?? 0) === 0}
-                            onClick={() => void runFind({ skip: Math.max(0, (result.skip ?? 0) - limit) })}
-                          >← Prev</button>
-                          <button
-                            className="chip-btn"
-                            disabled={busy || !result.hasMore}
-                            onClick={() => void runFind({ skip: (result.skip ?? 0) + limit })}
-                          >Next →</button>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <div className="mongo-subnav">
+                          <button className={treeView ? 'on' : ''} onClick={() => setTreeView(true)}>Tree</button>
+                          <button className={!treeView ? 'on' : ''} onClick={() => setTreeView(false)}>Raw</button>
                         </div>
-                      )}
+                        <button
+                          className="chip-btn"
+                          title="Tìm trong kết quả (Ctrl+F)"
+                          onClick={() => { setTreeView(true); setFindOpen(true); }}
+                        >🔍</button>
+                        {queryMode === 'find' && result && (
+                          <>
+                            <button
+                              className="chip-btn"
+                              disabled={busy || (result.skip ?? 0) === 0}
+                              onClick={() => void runFind({ skip: Math.max(0, (result.skip ?? 0) - limit) })}
+                            >← Prev</button>
+                            <button
+                              className="chip-btn"
+                              disabled={busy || !result.hasMore}
+                              onClick={() => void runFind({ skip: (result.skip ?? 0) + limit })}
+                            >Next →</button>
+                          </>
+                        )}
+                      </div>
                     </div>
+                    {findOpen && (
+                      <ResultFindBar
+                        query={findQuery}
+                        onQuery={setFindQuery}
+                        total={totalHits}
+                        index={activeHit < 0 ? 0 : activeHit}
+                        onIndex={setFindIndex}
+                        onClose={() => { setFindOpen(false); setFindQuery(''); setFindIndex(0); }}
+                      />
+                    )}
                     <div className="mongo-results">
                       {docs.length === 0 && <p className="empty">Không có document nào khớp.</p>}
                       {docs.map((d, i) => (
-                        <DocCard key={`${result?.skip ?? 0}-${i}`} json={d.json} truncated={d.truncated} index={(queryMode === 'find' ? (result?.skip ?? 0) : 0) + i} />
+                        <DocCard
+                          key={`${result?.skip ?? 0}-${i}`}
+                          json={d.json}
+                          truncated={d.truncated}
+                          index={(queryMode === 'find' ? (result?.skip ?? 0) : 0) + i}
+                          tree={treeView}
+                          highlight={needle}
+                          activeHit={activeHit}
+                          hitOffset={hitOffsets[i] ?? 0}
+                          /* A search must open every card — a hit hidden behind a
+                             collapsed header would never be found. */
+                          forceOpen={!!needle && (hitOffsets[i + 1] ?? totalHits) > (hitOffsets[i] ?? 0)}
+                        />
                       ))}
                     </div>
                   </>
@@ -419,17 +591,30 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
   );
 }
 
-/** One document rendered as collapsible pretty JSON with a copy button. */
-function DocCard({ json, truncated, index }: { json: string; truncated: boolean; index: number }) {
+interface DocCardProps {
+  json: string;
+  truncated: boolean;
+  index: number;
+  /** Structured tree (default) vs the plain pretty-printed text. */
+  tree: boolean;
+  highlight: string;
+  activeHit: number;
+  hitOffset: number;
+  forceOpen: boolean;
+}
+
+/** One document: collapsible, rendered either as a JSON tree or as raw text. */
+function DocCard({ json, truncated, index, tree, highlight, activeHit, hitOffset, forceOpen }: DocCardProps) {
   const [open, setOpen] = useState(false);
   const pretty = prettyDoc(json);
   const firstLine = summarize(json);
+  const shown = open || forceOpen;
   return (
     <div className="mongo-doc">
       <div className="mongo-doc-head" onClick={() => setOpen((v) => !v)}>
-        <span className="mongo-tree-caret">{open ? '▾' : '▸'}</span>
+        <span className="mongo-tree-caret">{shown ? '▾' : '▸'}</span>
         <span className="mongo-doc-idx">#{index + 1}</span>
-        {!open && <code className="mongo-doc-preview">{firstLine}</code>}
+        {!shown && <code className="mongo-doc-preview">{firstLine}</code>}
         {truncated && <span className="badge" style={{ color: 'var(--err)' }}>truncated</span>}
         <button
           className="chip-btn"
@@ -437,7 +622,15 @@ function DocCard({ json, truncated, index }: { json: string; truncated: boolean;
           onClick={(e) => { e.stopPropagation(); void navigator.clipboard?.writeText(pretty); }}
         >⧉</button>
       </div>
-      {open && <pre className="code mongo-doc-body">{pretty}</pre>}
+      {shown && (
+        tree ? (
+          <div className="mongo-doc-body">
+            <JsonView json={json} highlight={highlight} activeHit={activeHit} hitOffset={hitOffset} />
+          </div>
+        ) : (
+          <pre className="code mongo-doc-body">{pretty}</pre>
+        )
+      )}
     </div>
   );
 }
