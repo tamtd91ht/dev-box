@@ -17,6 +17,10 @@ export interface MailAccountPub {
   googleAccountId?: string;
   imap: MailEndpointPublic;
   smtp: MailEndpointPublic;
+  /** Chữ ký cuối thư (HTML) — riêng từng tài khoản. */
+  signature?: string;
+  /** Có chèn chữ ký khi trả lời / chuyển tiếp không (mặc định có). */
+  signatureOnReply?: boolean;
 }
 
 /** Tên hiển thị trên tab/badge: title tự đặt, hoặc CẢ địa chỉ email — không cắt
@@ -43,6 +47,75 @@ export interface MailListItem {
   seen: boolean;
   answered: boolean;
   hasAttachments: boolean;
+  /** Header gom chuỗi hội thoại (từ envelope IMAP). */
+  messageId?: string | null;
+  inReplyTo?: string | null;
+}
+
+/** Một chuỗi hội thoại đã gom: nhiều mail cùng chủ đề nối tiếp nhau. */
+export interface MailThread {
+  /** Khoá gom (message-id gốc hoặc tiêu đề đã chuẩn hoá). */
+  key: string;
+  /** Mail trong chuỗi, MỚI NHẤT trước — phần tử [0] là cái hiện ở dòng chính. */
+  items: MailListItem[];
+  /** Có mail nào chưa đọc không (dòng chuỗi in đậm như một mail chưa đọc). */
+  unseen: boolean;
+}
+
+/** Bỏ mọi tiền tố Re:/Fwd:/RE:/TRẢ LỜI: … để hai mail cùng chủ đề gom về một
+ *  khoá. Lặp vì thực tế hay gặp "Re: Fwd: Re: …". */
+export function normalizeSubject(subject: string): string {
+  let s = (subject || '').trim();
+  for (;;) {
+    const next = s.replace(/^\s*(re|fwd?|trả lời|chuyển tiếp)\s*(\[\d+\])?\s*:\s*/i, '');
+    if (next === s) break;
+    s = next;
+  }
+  return s.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Gom danh sách mail thành các chuỗi hội thoại.
+ *
+ * Ưu tiên header thật (`inReplyTo` → `messageId`) vì đó là cách RFC định nghĩa
+ * một thread; chỉ khi không lần được mới rơi về so tiêu đề đã chuẩn hoá. Chỉ
+ * dựa vào tiêu đề thì hai mail "Báo cáo tuần" của hai tháng khác nhau sẽ bị
+ * gộp oan, nên tiêu đề là phương án CUỐI chứ không phải đầu.
+ *
+ * Giữ nguyên thứ tự trước-sau của danh sách gốc (mới nhất trên đầu): chuỗi
+ * xuất hiện ở đúng vị trí mail mới nhất của nó.
+ */
+export function groupThreads(items: MailListItem[]): MailThread[] {
+  // message-id → khoá chuỗi. Mail trả lời kế thừa khoá của mail nó trả lời.
+  const keyOfMsg = new Map<string, string>();
+  const bySubject = new Map<string, string>();
+  const threads = new Map<string, MailThread>();
+  const order: string[] = [];
+
+  // Duyệt từ CŨ tới MỚI để mail cha luôn được đăng ký khoá trước mail con.
+  for (const m of [...items].reverse()) {
+    const subjKey = normalizeSubject(m.subject);
+    const parentKey = m.inReplyTo ? keyOfMsg.get(m.inReplyTo) : undefined;
+    const key = parentKey
+      ?? (subjKey ? bySubject.get(subjKey) : undefined)
+      ?? m.messageId
+      ?? `uid:${m.uid}`;
+
+    if (m.messageId) keyOfMsg.set(m.messageId, key);
+    if (subjKey && !bySubject.has(subjKey)) bySubject.set(subjKey, key);
+
+    const t = threads.get(key);
+    if (t) {
+      t.items.unshift(m);           // danh sách trong chuỗi: mới nhất trước
+      t.unseen = t.unseen || !m.seen;
+    } else {
+      threads.set(key, { key, items: [m], unseen: !m.seen });
+      order.push(key);
+    }
+  }
+
+  // order đang theo chiều cũ→mới; đảo lại để chuỗi mới nhất lên đầu.
+  return order.reverse().map((k) => threads.get(k)!).filter(Boolean);
 }
 
 export interface MailListPage {
@@ -53,6 +126,16 @@ export interface MailListPage {
 
 export interface MailAddress { name: string; address: string }
 
+export interface MailAttachmentInfo {
+  idx: number;
+  filename: string;
+  contentType: string;
+  size: number;
+  /** true = đính kèm này LÀ MỘT MAIL (message/rfc822) — thư chuyển tiếp đính
+   *  kèm bản gốc. UI mở nó bằng khung đọc mail thay vì nút tải file. */
+  nested?: boolean;
+}
+
 export interface MailDetail {
   uid: number;
   subject: string;
@@ -62,9 +145,10 @@ export interface MailDetail {
   date: string | null;
   html: string | null;
   text: string | null;
-  attachments: { idx: number; filename: string; contentType: string; size: number }[];
+  attachments: MailAttachmentInfo[];
   messageId: string | null;
   references: string[];
+  inReplyTo?: string | null;
 }
 
 export interface AccountAddInput {
@@ -89,6 +173,13 @@ export interface SendAttachment {
   contentType?: string;
 }
 
+/** Đính kèm giữ lại khi CHUYỂN TIẾP: chỉ gửi toạ độ, server tự đọc từ IMAP. */
+export interface ForwardAttachmentRef {
+  path: string;
+  uid: number;
+  idx: number;
+}
+
 export interface SendInput {
   accountId: string;
   to: string;
@@ -96,9 +187,12 @@ export interface SendInput {
   bcc?: string;
   subject: string;
   text: string;
+  /** Bản HTML — có thì gửi multipart/alternative (text + html). */
+  html?: string;
   inReplyTo?: string;
   references?: string[];
   attachments?: SendAttachment[];
+  forwardAttachments?: ForwardAttachmentRef[];
 }
 
 /** Phân loại lỗi IMAP server gửi kèm (mirror của ImapFailure ở mailServer). */
@@ -147,6 +241,13 @@ export const mList = (accountId: string, path: string, beforeSeq?: number) =>
   mailAction<MailListPage>('list', { accountId, path, beforeSeq });
 export const mMessage = (accountId: string, path: string, uid: number) =>
   mailAction<MailDetail>('message', { accountId, path, uid });
+/** Mở MAIL LỒNG bên trong một mail (thư chuyển tiếp đính kèm bản gốc).
+ *  `trail` = vị trí đính kèm qua từng lớp lồng, vd [2] hoặc [2,0]. */
+export const mNestedMessage = (accountId: string, path: string, uid: number, trail: number[]) =>
+  mailAction<MailDetail>('nestedMessage', { accountId, path, uid, trail });
+/** Đặt chữ ký (HTML) cho một tài khoản. Chuỗi rỗng = bỏ chữ ký. */
+export const mSignatureSet = (id: string, signature: string, onReply?: boolean) =>
+  mailAction<MailAccountPub[]>('signatureSet', { id, signature, onReply });
 export const mSend = (input: SendInput) => mailAction<{ messageId: string }>('send', { ...input });
 /** Xóa mail theo UID (move Trash; đang ở Trash → xóa vĩnh viễn) — không đọc nội dung. */
 export const mDelete = (accountId: string, path: string, uid: number) =>
@@ -160,8 +261,13 @@ export const mContacts = () => mailAction<MailContact[]>('contacts');
 export const mContactAdd = (address: string) => mailAction<MailContact[]>('contactAdd', { address });
 export const mContactRemove = (email: string) => mailAction<MailContact[]>('contactRemove', { email });
 
-export const attachmentUrl = (accountId: string, path: string, uid: number, idx: number) =>
-  `/api/mail?attachment&accountId=${encodeURIComponent(accountId)}&path=${encodeURIComponent(path)}&uid=${uid}&idx=${idx}`;
+/** URL tải một đính kèm. `trail` khác rỗng = đính kèm nằm TRONG mail lồng
+ *  (thư chuyển tiếp) — server bóc từng lớp theo đường đi này rồi mới lấy file. */
+export const attachmentUrl = (
+  accountId: string, path: string, uid: number, idx: number, trail: number[] = [],
+) =>
+  `/api/mail?attachment&accountId=${encodeURIComponent(accountId)}&path=${encodeURIComponent(path)}&uid=${uid}&idx=${idx}`
+  + (trail.length ? `&trail=${trail.join('.')}` : '');
 
 /** Icon theo specialUse / tên folder. */
 export function folderIcon(f: MailFolder): string {

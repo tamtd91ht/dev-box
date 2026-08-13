@@ -20,6 +20,11 @@
 //     'folders'       { accountId }                   → { ok, result: MailFolder[] }
 //     'list'          { accountId, path, beforeSeq? } → { ok, result: MailListPage }
 //     'message'       { accountId, path, uid }        → { ok, result: MailDetail } (đánh dấu \Seen)
+//     'nestedMessage' { accountId, path, uid, trail } → { ok, result: MailDetail }
+//                     (mail LỒNG trong mail — thư chuyển tiếp đính kèm bản gốc;
+//                      trail = [idx] mỗi lớp lồng, vd [2] hoặc [2,0])
+//     'signatureSet'  { id, signature, onReply? }     → { ok, result: MailAccountPublic[] }
+//                     (chữ ký HTML riêng từng tài khoản; server lọc script trước khi lưu)
 //     'markAllSeen'   { accountId, path }              → { ok, result: { marked } }
 //                     (đánh dấu TOÀN BỘ mail trong folder là đã đọc)
 //     'delete'        { accountId, path, uid }        → { ok, result: { mode: 'trash'|'purged' } }
@@ -34,15 +39,40 @@
 //       để tải ngay trong app thay vì văng ra trình duyệt ngoài.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { listAccounts, getAccount, addAccount, removeAccount, renameAccount, toPublic } from '@/lib/mailAccounts';
+import { listAccounts, getAccount, addAccount, removeAccount, renameAccount, setSignature, toPublic } from '@/lib/mailAccounts';
 import {
   verifyImap, listFolders, listMessages, getMessage, getAttachment, sendMail, deleteMessage,
-  markAllSeen, ImapVerifyError,
+  markAllSeen, getNestedMessage, getNestedAttachment, ImapVerifyError,
 } from '@/lib/mailServer';
 import { listContacts, recordAddresses, removeContact, domainOf } from '@/lib/mailContacts';
 import { findAccountByEmail, hasMailScope, authUrl as googleAuthUrl } from '@/lib/googleAuth';
 
 export const runtime = 'nodejs';
+
+/**
+ * Làm sạch HTML chữ ký trước khi lưu.
+ *
+ * Chữ ký đi vào MAIL GỬI RA — tức là chạy trong mail client của NGƯỜI KHÁC. Dù
+ * nội dung do chính chủ máy gõ (không phải input từ ngoài), vẫn phải lọc: người
+ * dùng hay dán chữ ký từ webmail/Word cũ, kéo theo `<script>`, `onerror=`,
+ * `javascript:` — thứ khiến mail bị đánh dấu spam hoặc bị gateway chặn thẳng.
+ *
+ * Chỉ giữ HTML trình bày: chữ, link, ảnh, bảng. Đây là allow-list ở mức thô
+ * (bỏ thẻ nguy hiểm + mọi thuộc tính thực thi), không phải parser DOM đầy đủ —
+ * đủ cho một ô chữ ký cục bộ, và không kéo thêm dependency.
+ */
+function sanitizeSignature(html: string): string {
+  return html
+    // Thẻ chạy code hoặc kéo nội dung ngoài — bỏ cả phần bên trong.
+    .replace(/<\s*(script|style|iframe|object|embed|link|meta|form)\b[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+    // Thẻ tự đóng của nhóm trên (vd <link ...>, <meta ...>).
+    .replace(/<\s*(script|style|iframe|object|embed|link|meta|form)\b[^>]*>/gi, '')
+    // Handler on* (onclick, onerror, onload…) ở mọi kiểu nháy.
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    // javascript:/vbscript: trong href/src.
+    .replace(/(href|src)\s*=\s*(?:"\s*(?:javascript|vbscript):[^"]*"|'\s*(?:javascript|vbscript):[^']*'|(?:javascript|vbscript):[^\s>]+)/gi, '$1="#"')
+    .slice(0, 20000); // chữ ký dài hơn mức này là dán nhầm cả trang
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
@@ -161,6 +191,21 @@ export async function POST(req: NextRequest) {
         result = detail;
         break;
       }
+      case 'nestedMessage': {
+        // Mail chuyển tiếp đính kèm nguyên bản gốc (message/rfc822) — bóc ra
+        // đọc ngay trong app thay vì tải file .eml về máy.
+        const trail: number[] = Array.isArray(body.trail) ? body.trail.map(Number) : [];
+        if (trail.some((n: number) => !Number.isInteger(n) || n < 0)) {
+          throw new Error('Vị trí mail lồng không hợp lệ.');
+        }
+        result = await getNestedMessage(
+          await needAccount(),
+          String(body.path ?? 'INBOX'),
+          Number(body.uid),
+          trail,
+        );
+        break;
+      }
       case 'markAllSeen':
         result = await markAllSeen(await needAccount(), String(body.path ?? 'INBOX'));
         break;
@@ -181,6 +226,7 @@ export async function POST(req: NextRequest) {
           bcc: String(body.bcc ?? '').trim() || undefined,
           subject: String(body.subject ?? ''),
           text: String(body.text ?? ''),
+          html: typeof body.html === 'string' && body.html.trim() ? body.html : undefined,
           inReplyTo: typeof body.inReplyTo === 'string' ? body.inReplyTo : undefined,
           references: Array.isArray(body.references) ? body.references.map(String) : undefined,
           attachments: Array.isArray(body.attachments)
@@ -190,9 +236,29 @@ export async function POST(req: NextRequest) {
                 contentType: typeof a.contentType === 'string' ? a.contentType : undefined,
               }))
             : undefined,
+          // Chuyển tiếp: chỉ gửi TOẠ ĐỘ của đính kèm gốc, server tự đọc lại từ
+          // IMAP — client không phải tải về rồi upload ngược lên.
+          forwardAttachments: Array.isArray(body.forwardAttachments)
+            ? body.forwardAttachments.map((a: Record<string, unknown>) => ({
+                path: String(a.path ?? 'INBOX'),
+                uid: Number(a.uid),
+                idx: Number(a.idx),
+              }))
+            : undefined,
         });
         // Thu MỌI địa chỉ đã gửi tới (To + Cc) — người mình chủ động liên hệ.
         void recordAddresses([...to.split(','), ...String(body.cc ?? '').split(',')].filter(Boolean)).catch(() => {});
+        break;
+      }
+      case 'signatureSet': {
+        // Chữ ký là HTML người dùng tự soạn — làm sạch TRƯỚC KHI LƯU (bỏ script,
+        // handler on*, javascript: …). Xem sanitizeSignature.
+        const raw = String(body.signature ?? '');
+        result = (await setSignature(
+          String(body.id ?? ''),
+          sanitizeSignature(raw),
+          typeof body.onReply === 'boolean' ? body.onReply : undefined,
+        )).map(toPublic);
         break;
       }
       case 'contacts':
@@ -296,12 +362,26 @@ export async function GET(req: NextRequest) {
   }
   try {
     const account = await getAccount(sp.get('accountId') ?? '');
-    const att = await getAttachment(
-      account,
-      sp.get('path') ?? 'INBOX',
-      Number(sp.get('uid')),
-      Number(sp.get('idx')),
-    );
+    // `trail` = đường đi vào mail lồng (vd "2" hay "2.0"). Có thì đính kèm nằm
+    // TRONG mail chuyển tiếp, phải bóc từng lớp mới lấy được.
+    const trailRaw = (sp.get('trail') ?? '').trim();
+    const trail = trailRaw
+      ? trailRaw.split('.').map(Number).filter((n) => Number.isInteger(n) && n >= 0)
+      : [];
+    const att = trail.length
+      ? await getNestedAttachment(
+          account,
+          sp.get('path') ?? 'INBOX',
+          Number(sp.get('uid')),
+          trail,
+          Number(sp.get('idx')),
+        )
+      : await getAttachment(
+          account,
+          sp.get('path') ?? 'INBOX',
+          Number(sp.get('uid')),
+          Number(sp.get('idx')),
+        );
     return new NextResponse(new Uint8Array(att.content), {
       headers: {
         'content-type': att.contentType || 'application/octet-stream',

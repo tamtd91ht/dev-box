@@ -47,6 +47,10 @@ export interface MailListItem {
   seen: boolean;
   answered: boolean;
   hasAttachments: boolean;
+  /** Header để gom chuỗi hội thoại — lấy sẵn từ envelope IMAP, không tốn thêm
+   *  vòng fetch nào. */
+  messageId?: string | null;
+  inReplyTo?: string | null;
 }
 
 export interface MailListPage {
@@ -59,6 +63,22 @@ export interface MailListPage {
 
 export interface MailAddress { name: string; address: string }
 
+export interface MailAttachmentInfo {
+  idx: number;
+  filename: string;
+  contentType: string;
+  size: number;
+  /**
+   * Đây có phải MỘT MAIL LỒNG BÊN TRONG không (message/rfc822)?
+   *
+   * Mail chuyển tiếp kiểu "attach nguyên bản gốc" (Zimbra/Outlook hay dùng) tới
+   * dưới dạng này. Trước đây UI coi nó như file thường nên chỉ tải được cái
+   * .eml về máy mà không mở ra đọc được — cờ này để UI biết mà mở bằng khung
+   * đọc mail thay vì nút tải file.
+   */
+  nested?: boolean;
+}
+
 export interface MailDetail {
   uid: number;
   subject: string;
@@ -69,10 +89,12 @@ export interface MailDetail {
   /** HTML body (đã có sẵn từ mail) hoặc null nếu chỉ có text. */
   html: string | null;
   text: string | null;
-  attachments: { idx: number; filename: string; contentType: string; size: number }[];
+  attachments: MailAttachmentInfo[];
   /** Header phục vụ reply đúng thread. */
   messageId: string | null;
   references: string[];
+  /** Thư này trả lời thư nào — cùng `references` để gom thread. */
+  inReplyTo?: string | null;
 }
 
 export interface SendAttachment {
@@ -82,16 +104,28 @@ export interface SendAttachment {
   contentType?: string;
 }
 
+/** Đính kèm LẤY LẠI TỪ MAIL GỐC khi chuyển tiếp — client không phải tải file về
+ *  rồi upload lên lại, chỉ cần chỉ đúng (folder, uid, idx) là server tự đọc. */
+export interface ForwardAttachmentRef {
+  path: string;
+  uid: number;
+  idx: number;
+}
+
 export interface SendInput {
   to: string;
   cc?: string;
   bcc?: string;
   subject: string;
   text: string;
+  /** Bản HTML của nội dung. Có thì gửi multipart/alternative (text + html). */
+  html?: string;
   /** Reply: message-id của mail gốc + chuỗi references của nó. */
   inReplyTo?: string;
   references?: string[];
   attachments?: SendAttachment[];
+  /** Chuyển tiếp: giữ nguyên file đính kèm của mail gốc. */
+  forwardAttachments?: ForwardAttachmentRef[];
 }
 
 // ── IMAP helpers ────────────────────────────────────────────────────────────
@@ -435,6 +469,10 @@ export async function listMessages(account: MailAccount, path: string, beforeSeq
           seen: msg.flags?.has('\\Seen') ?? false,
           answered: msg.flags?.has('\\Answered') ?? false,
           hasAttachments,
+          // Hai header này ĐÃ có sẵn trong envelope IMAP (không tốn thêm vòng
+          // fetch nào) — client dùng để gom mail cùng một chuỗi hội thoại.
+          messageId: env?.messageId ?? null,
+          inReplyTo: env?.inReplyTo ?? null,
         });
       }
       items.sort((a, b) => b.seq - a.seq); // mới nhất lên đầu
@@ -466,6 +504,61 @@ function addrList(v: ParsedMail['to']): MailAddress[] {
   return arr.flatMap((a) => a.value.map((x) => ({ name: x.name ?? '', address: x.address ?? '' })));
 }
 
+/** message/rfc822 = một mail trọn vẹn nằm bên trong mail này (thư chuyển tiếp
+ *  kiểu "đính kèm bản gốc"). Nhận cả biến thể message/global của RFC 6532. */
+function isNestedMail(contentType: string, filename: string): boolean {
+  const ct = (contentType || '').toLowerCase();
+  if (ct === 'message/rfc822' || ct === 'message/global') return true;
+  // Vài server gửi .eml với content-type chung chung (application/octet-stream)
+  // — cứu vãn bằng đuôi file, vì mở nhầm còn hơn không mở được.
+  return /\.eml$/i.test(filename || '');
+}
+
+/** Chuyển kết quả simpleParser thành MailDetail. Dùng chung cho mail ở IMAP và
+ *  cho mail LỒNG bên trong nó — nhờ vậy khung đọc hai bên giống hệt nhau. */
+function toDetail(parsed: ParsedMail, uid: number): MailDetail {
+  const refs = Array.isArray(parsed.references)
+    ? parsed.references
+    : parsed.references ? [parsed.references] : [];
+
+  return {
+    uid,
+    subject: parsed.subject ?? '(không tiêu đề)',
+    from: addrList(parsed.from)[0] ?? null,
+    to: addrList(parsed.to),
+    cc: addrList(parsed.cc),
+    date: parsed.date?.toISOString() ?? null,
+    html: typeof parsed.html === 'string' ? parsed.html : null,
+    text: parsed.text ?? null,
+    attachments: parsed.attachments.map((a, idx) => ({
+      idx,
+      filename: a.filename ?? `attachment-${idx}`,
+      contentType: a.contentType,
+      size: a.size,
+      nested: isNestedMail(a.contentType, a.filename ?? '') || undefined,
+    })),
+    messageId: parsed.messageId ?? null,
+    references: refs,
+    inReplyTo: parsed.inReplyTo ?? null,
+  };
+}
+
+/** Tải raw source của một mail (dùng lại cho parse, tải đính kèm, forward). */
+async function rawMessage(account: MailAccount, path: string, uid: number): Promise<Buffer> {
+  return withImap(account, async (client) => {
+    const lock = await client.getMailboxLock(path);
+    try {
+      const dl = await client.download(String(uid), undefined, { uid: true });
+      if (!dl?.content) throw new Error('Không tải được nội dung mail.');
+      const chunks: Buffer[] = [];
+      for await (const c of dl.content) chunks.push(c as Buffer);
+      return Buffer.concat(chunks);
+    } finally {
+      lock.release();
+    }
+  });
+}
+
 /** Tải + parse 1 mail; đồng thời đánh dấu đã đọc (\Seen) — hành vi mail client. */
 export async function getMessage(account: MailAccount, path: string, uid: number): Promise<MailDetail> {
   return withImap(account, async (client) => {
@@ -479,32 +572,65 @@ export async function getMessage(account: MailAccount, path: string, uid: number
 
       await client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true }).catch(() => {});
 
-      const refs = Array.isArray(parsed.references)
-        ? parsed.references
-        : parsed.references ? [parsed.references] : [];
-
-      return {
-        uid,
-        subject: parsed.subject ?? '(không tiêu đề)',
-        from: addrList(parsed.from)[0] ?? null,
-        to: addrList(parsed.to),
-        cc: addrList(parsed.cc),
-        date: parsed.date?.toISOString() ?? null,
-        html: typeof parsed.html === 'string' ? parsed.html : null,
-        text: parsed.text ?? null,
-        attachments: parsed.attachments.map((a, idx) => ({
-          idx,
-          filename: a.filename ?? `attachment-${idx}`,
-          contentType: a.contentType,
-          size: a.size,
-        })),
-        messageId: parsed.messageId ?? null,
-        references: refs,
-      };
+      return toDetail(parsed, uid);
     } finally {
       lock.release();
     }
   });
+}
+
+/**
+ * Đọc MAIL LỒNG trong một mail (attachment message/rfc822) — chính là "thư
+ * chuyển tiếp" mà trước đây chỉ tải được file .eml về chứ không xem được.
+ *
+ * `trail` là đường đi qua nhiều lớp lồng: [2] = attachment thứ 2 của mail gốc;
+ * [2,0] = attachment thứ 0 của mail lồng đó. Chuyển tiếp nhiều lần thì mail
+ * lồng trong mail lồng là chuyện bình thường, nên phải đi được nhiều tầng.
+ */
+export async function getNestedMessage(
+  account: MailAccount,
+  path: string,
+  uid: number,
+  trail: number[],
+): Promise<MailDetail> {
+  if (trail.length === 0) throw new Error('Thiếu vị trí mail lồng.');
+  if (trail.length > 8) throw new Error('Mail lồng quá sâu.');
+
+  let parsed = await simpleParser(await rawMessage(account, path, uid));
+  for (const idx of trail) {
+    const att = parsed.attachments[idx];
+    if (!att) throw new Error('Không tìm thấy mail lồng bên trong.');
+    if (!isNestedMail(att.contentType, att.filename ?? '')) {
+      throw new Error('Đính kèm này không phải một mail.');
+    }
+    parsed = await simpleParser(att.content);
+  }
+  // uid của mail lồng không tồn tại trên server — trả về uid mail chứa nó để
+  // client vẫn dựng được URL tải đính kèm (đi kèm trail).
+  return toDetail(parsed, uid);
+}
+
+/** Đính kèm nằm TRONG một mail lồng: đi theo `trail` rồi lấy attachment `idx`. */
+export async function getNestedAttachment(
+  account: MailAccount,
+  path: string,
+  uid: number,
+  trail: number[],
+  idx: number,
+) {
+  let parsed = await simpleParser(await rawMessage(account, path, uid));
+  for (const step of trail) {
+    const att = parsed.attachments[step];
+    if (!att) throw new Error('Không tìm thấy mail lồng bên trong.');
+    parsed = await simpleParser(att.content);
+  }
+  const att = parsed.attachments[idx];
+  if (!att) throw new Error('Không tìm thấy file đính kèm.');
+  return {
+    filename: att.filename ?? `attachment-${idx}`,
+    contentType: att.contentType,
+    content: att.content,
+  };
 }
 
 /** Tìm folder Trash của hộp thư: ưu tiên special-use \Trash, fallback theo tên. */
@@ -580,9 +706,36 @@ export async function sendMail(account: MailAccount, input: SendInput): Promise<
       : { user: cred.user, pass: cred.pass },
   });
 
+  // Chuyển tiếp: kéo lại file đính kèm của mail gốc từ IMAP. Làm ở SERVER để
+  // client khỏi phải tải hết về máy rồi upload ngược lên — mail có file 20MB
+  // thì cách kia là đi hai vòng mạng vô ích.
+  const forwarded = await Promise.all(
+    (input.forwardAttachments ?? []).map(async (ref) => {
+      const att = await getAttachment(account, ref.path, ref.uid, ref.idx);
+      return {
+        filename: att.filename,
+        content: att.content as Buffer,
+        contentType: att.contentType || undefined,
+      };
+    }),
+  );
+
+  const attachments = [
+    ...(input.attachments ?? []).map((a) => ({
+      filename: a.filename,
+      content: Buffer.from(a.contentBase64, 'base64'),
+      contentType: a.contentType || undefined,
+    })),
+    ...forwarded,
+  ];
+
   // Compose ra raw MIME một lần: gửi qua SMTP và append y nguyên vào Sent —
   // hai bản đảm bảo giống nhau, và với `raw` nodemailer KHÔNG tự parse nên
   // envelope phải lấy từ bản compose.
+  //
+  // Có `html` thì nodemailer tự dựng multipart/alternative (text + html): client
+  // nào đọc được HTML thì hiện bản đẹp, client text-only rơi về bản text —
+  // đúng chuẩn mail, không phải chọn một trong hai.
   const composed = new MailComposer({
     from: { name: account.label, address: account.email },
     to: input.to,
@@ -590,13 +743,10 @@ export async function sendMail(account: MailAccount, input: SendInput): Promise<
     bcc: input.bcc || undefined,
     subject: input.subject,
     text: input.text,
+    html: input.html || undefined,
     inReplyTo: input.inReplyTo || undefined,
     references: input.references?.length ? input.references.join(' ') : undefined,
-    attachments: input.attachments?.map((a) => ({
-      filename: a.filename,
-      content: Buffer.from(a.contentBase64, 'base64'),
-      contentType: a.contentType || undefined,
-    })),
+    attachments: attachments.length ? attachments : undefined,
   }).compile();
   const envelope = composed.getEnvelope();
   const raw = await composed.build();

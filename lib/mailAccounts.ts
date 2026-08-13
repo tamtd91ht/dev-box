@@ -52,6 +52,18 @@ export interface MailAccount {
    * khai khi lịch nằm ở địa chỉ khác.
    */
   calDavUrl?: string;
+  /**
+   * Chữ ký cuối thư, lưu dưới dạng HTML — TỪNG TÀI KHOẢN một, vì mail công ty
+   * và mail cá nhân hiếm khi ký giống nhau.
+   *
+   * Tự chèn khi soạn mới / trả lời / chuyển tiếp. Bản text gửi kèm được suy ra
+   * từ HTML này lúc gửi (xem htmlToText ở MailWorkspace) nên không phải khai
+   * hai lần.
+   */
+  signature?: string;
+  /** Có chèn chữ ký khi TRẢ LỜI và CHUYỂN TIẾP không. Soạn mới thì luôn chèn.
+   *  Mặc định true; tắt cho ai thấy thừa khi reply qua lại nhiều lần. */
+  signatureOnReply?: boolean;
 }
 
 /** Shape trả về cho client — KHÔNG BAO GIỜ kèm password. */
@@ -116,6 +128,22 @@ export async function setCalDavUrl(id: string, url: string): Promise<MailAccount
   const a = accounts.find((x) => x.id === id);
   if (!a) throw new Error('Không tìm thấy tài khoản mail.');
   a.calDavUrl = url.trim().replace(/\/+$/, '') || undefined;
+  await writeAll(accounts);
+  return accounts;
+}
+
+/** Đặt chữ ký (HTML) cho một tài khoản. Chuỗi rỗng = bỏ chữ ký. */
+export async function setSignature(
+  id: string,
+  signature: string,
+  onReply?: boolean,
+): Promise<MailAccount[]> {
+  const accounts = await readAll();
+  const a = accounts.find((x) => x.id === id);
+  if (!a) throw new Error('Không tìm thấy tài khoản mail.');
+  const html = signature.trim();
+  a.signature = html || undefined;
+  if (onReply !== undefined) a.signatureOnReply = onReply;
   await writeAll(accounts);
   return accounts;
 }

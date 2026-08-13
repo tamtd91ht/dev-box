@@ -15,11 +15,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   mAccounts, mAccountAdd, mAccountAddOAuth, mGoogleAuthUrl, mAccountRemove, mAccountRename,
-  mFolders, mList, mMessage, mSend, mDelete, mMarkAllSeen, mContacts, mContactAdd,
-  attachmentUrl, folderIcon, fmtAddr, fmtSize, accTitle,
+  mFolders, mList, mMessage, mNestedMessage, mSend, mDelete, mMarkAllSeen, mContacts, mContactAdd,
+  mSignatureSet,
+  attachmentUrl, folderIcon, fmtAddr, fmtSize, accTitle, groupThreads,
   type MailAccountPub, type MailFolder, type MailListItem, type MailDetail, type AccountAddInput,
-  type MailContact, type ImapFailureInfo, type MailActionError,
+  type MailContact, type ImapFailureInfo, type MailActionError, type ForwardAttachmentRef,
+  type MailThread,
 } from '@/lib/mail';
+import MailBody, { textToHtml } from './mail/MailBody';
+import RichTextEditor, { htmlToText } from './mail/RichTextEditor';
 import MailErrorPanel from './MailErrorPanel';
 import MailCalendar from './MailCalendar';
 import GoogleAuthWindow from './GoogleAuthWindow';
@@ -329,9 +333,19 @@ export interface ComposeDraft {
   to: string;
   cc: string;
   subject: string;
+  /** Nội dung dạng HTML (ô soạn là editor định dạng). */
   body: string;
   inReplyTo?: string;
   references?: string[];
+  /** Chuyển tiếp: giữ nguyên file đính kèm của mail gốc (chỉ gửi toạ độ,
+   *  server tự đọc lại từ IMAP — không tải về rồi upload ngược lên). */
+  forwardAttachments?: ForwardAttachmentRef[];
+  /** Nhãn hiển thị của các đính kèm chuyển tiếp (server không trả lại tên khi
+   *  mới chỉ có toạ độ, nên mang theo để composer hiện cho người dùng thấy). */
+  forwardLabels?: { filename: string; size: number }[];
+  /** Đây là reply/forward — quyết định có chèn chữ ký hay không theo
+   *  `signatureOnReply` của tài khoản. */
+  isResponse?: boolean;
 }
 
 interface PendingAttachment { filename: string; contentBase64: string; contentType: string; size: number }
@@ -411,22 +425,46 @@ function Composer({ account, draft, onClose, onSent }: {
   const [cc, setCc] = useState(draft.cc);
   const [showCc, setShowCc] = useState(!!draft.cc);
   const [subject, setSubject] = useState(draft.subject);
-  const [body, setBody] = useState(draft.body);
   const [atts, setAtts] = useState<PendingAttachment[]>([]);
+  /** Đính kèm mang theo từ mail gốc khi chuyển tiếp — bỏ được từng cái. */
+  const [fwdAtts, setFwdAtts] = useState(
+    (draft.forwardAttachments ?? []).map((ref, i) => ({
+      ref,
+      filename: draft.forwardLabels?.[i]?.filename ?? `đính kèm ${i + 1}`,
+      size: draft.forwardLabels?.[i]?.size ?? 0,
+    })),
+  );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [contacts, setContacts] = useState<MailContact[]>([]);
   useEffect(() => { mContacts().then(setContacts).catch(() => {}); }, []);
 
   const isReply = !!draft.inReplyTo;
+  const isForward = (draft.forwardAttachments?.length ?? 0) > 0 || /^fwd?:/i.test(draft.subject);
 
-  // Reply: caret đặt ở ĐẦU body (trên phần quote) — gõ được ngay.
-  useEffect(() => {
-    const el = bodyRef.current;
-    if (el) { el.focus(); el.setSelectionRange(0, 0); }
-  }, []);
+  /**
+   * Nội dung ban đầu = draft + CHỮ KÝ của tài khoản.
+   *
+   * Chèn một lần lúc mở composer (useState initializer) chứ không phải trong
+   * effect: chèn ở effect thì người dùng thấy chữ ký "nhảy vào" sau một nhịp,
+   * và nếu họ gõ kịp thì bị chèn đè lên.
+   *
+   * Trả lời/chuyển tiếp thì theo cờ `signatureOnReply` — nhiều người không
+   * muốn ký lại ở mỗi lượt reply qua lại.
+   */
+  const [body, setBody] = useState(() => {
+    const sig = account.signature?.trim();
+    if (!sig) return draft.body;
+    if (draft.isResponse && account.signatureOnReply === false) return draft.body;
+    const block = `<div class="mail-sig">${sig}</div>`;
+    // Chữ ký đứng TRƯỚC phần trích dẫn (chuẩn "top-posting"): người đọc thấy
+    // nội dung mới + chữ ký, lịch sử nằm dưới cùng.
+    const at = draft.body.indexOf('<p>Vào ');
+    const cut = at >= 0 ? at : draft.body.indexOf('<div style="color:#5f6368;border-top');
+    if (cut > 0) return `${draft.body.slice(0, cut)}${block}${draft.body.slice(cut)}`;
+    return `${draft.body}${block}`;
+  });
 
   const addFiles = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -450,9 +488,15 @@ function Composer({ account, draft, onClose, onSent }: {
     setBusy(true); setErr(null);
     try {
       await mSend({
-        accountId: account.id, to: to.trim(), cc: cc.trim() || undefined, subject, text: body,
+        accountId: account.id, to: to.trim(), cc: cc.trim() || undefined, subject,
+        // Gửi CẢ HAI bản: `html` cho client đọc được định dạng, `text` suy ra
+        // từ nó cho client text-only. nodemailer tự dựng multipart/alternative
+        // — đúng chuẩn mail, không phải chọn một trong hai.
+        text: htmlToText(body),
+        html: body,
         inReplyTo: draft.inReplyTo, references: draft.references,
         attachments: atts.map(({ filename, contentBase64, contentType }) => ({ filename, contentBase64, contentType })),
+        forwardAttachments: fwdAtts.length ? fwdAtts.map((a) => a.ref) : undefined,
       });
       onSent();
     } catch (e) {
@@ -462,7 +506,8 @@ function Composer({ account, draft, onClose, onSent }: {
     }
   };
 
-  const attTotal = atts.reduce((s, a) => s + a.size, 0);
+  const attTotal = atts.reduce((s, a) => s + a.size, 0)
+    + fwdAtts.reduce((s, a) => s + a.size, 0);
 
   return (
     <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && !busy && onClose()}>
@@ -471,8 +516,8 @@ function Composer({ account, draft, onClose, onSent }: {
         onDrop={(e) => { e.preventDefault(); void addFiles(e.dataTransfer.files); }}>
         {/* Header gradient — phân biệt reply / soạn mới */}
         <div className="mc-head">
-          <span className="mc-head-ico" aria-hidden>{isReply ? '↩' : '✉'}</span>
-          <span className="mc-head-title">{isReply ? 'Trả lời' : 'Thư mới'}</span>
+          <span className="mc-head-ico" aria-hidden>{isReply ? '↩' : isForward ? '↳' : '✉'}</span>
+          <span className="mc-head-title">{isReply ? 'Trả lời' : isForward ? 'Chuyển tiếp' : 'Thư mới'}</span>
           <span className="mc-head-from">từ {account.email}</span>
           <button className="mc-x" onClick={onClose} disabled={busy} title="Đóng">✕</button>
         </div>
@@ -498,11 +543,27 @@ function Composer({ account, draft, onClose, onSent }: {
           </label>
         </div>
 
-        <textarea ref={bodyRef} className="mc-body" value={body}
-          onChange={(e) => setBody(e.target.value)} placeholder="Viết nội dung… (kéo-thả file vào đây để đính kèm)" />
+        <div className="mc-body-wrap">
+          <RichTextEditor
+            value={body}
+            onChange={setBody}
+            onSubmit={() => { if (to.trim() && !busy) void send(); }}
+            placeholder="Viết nội dung… (kéo-thả file vào đây để đính kèm · Ctrl+Enter gửi)"
+            minHeight={240}
+          />
+        </div>
 
-        {atts.length > 0 && (
+        {(atts.length > 0 || fwdAtts.length > 0) && (
           <div className="mc-atts">
+            {/* Đính kèm mang theo từ mail gốc (chuyển tiếp) — chưa nằm trên máy
+                này, server sẽ lấy lúc gửi. Đánh dấu ↳ cho khác file tự chọn. */}
+            {fwdAtts.map((a, i) => (
+              <span key={`f${i}`} className="mc-att" title="Đính kèm của thư gốc — giữ nguyên khi chuyển tiếp">
+                ↳ <span className="mc-att-name">{a.filename}</span>
+                {a.size > 0 && <span className="mc-att-size">{fmtSize(a.size)}</span>}
+                <button className="mc-att-x" onClick={() => setFwdAtts(fwdAtts.filter((_, j) => j !== i))} title="Bỏ">✕</button>
+              </span>
+            ))}
             {atts.map((a, i) => (
               <span key={i} className="mc-att" title={`${a.contentType} · ${fmtSize(a.size)}`}>
                 📎 <span className="mc-att-name">{a.filename}</span>
@@ -534,34 +595,33 @@ function Composer({ account, draft, onClose, onSent }: {
 
 // ── Message detail ──────────────────────────────────────────────────────────
 
-/** srcDoc cho iframe đọc mail: sandbox chặn script; CSP mặc định chặn ảnh/
- *  nội dung remote (tránh tracking pixel) — bấm "Hiện ảnh" để nới. */
-function buildSrcDoc(html: string, allowRemote: boolean): string {
-  const csp = allowRemote
-    ? "default-src 'none'; img-src * data: cid:; style-src 'unsafe-inline' *; font-src *;"
-    : "default-src 'none'; img-src data: cid:; style-src 'unsafe-inline';";
-  return `<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="${csp}">
-<base target="_blank">
-<style>body{font:14px/1.5 system-ui,Segoe UI,sans-serif;margin:12px;word-break:break-word}</style>
-</head><body>${html}</body></html>`;
-}
-
-function DetailView({ accountId, path, detail, onBack, onReply, onDelete, deleting }: {
+function DetailView({
+  accountId, path, detail, onBack, onReply, onForward, onDelete, deleting,
+  trail = [], onOpenNested, onBackNested, nestedBusy = false,
+}: {
   accountId: string;
   path: string;
   detail: MailDetail;
   onBack: () => void;
   onReply: (all: boolean) => void;
+  onForward: () => void;
   onDelete: () => void;
   deleting: boolean;
+  /** Đường đi tới mail LỒNG đang xem ([] = mail gốc trên server). */
+  trail?: number[];
+  /** Mở một đính kèm message/rfc822 thành mail để đọc. */
+  onOpenNested?: (idx: number) => void;
+  /** Quay lại một lớp lồng. */
+  onBackNested?: () => void;
+  /** Đang bóc một mail lồng. */
+  nestedBusy?: boolean;
 }) {
   const [allowRemote, setAllowRemote] = useState(false);
   const [saved, setSaved] = useState(false);
   const [linkMsg, setLinkMsg] = useState<string | null>(null);
   const [linkBusy, setLinkBusy] = useState(false);
-  const frameRef = useRef<HTMLIFrameElement | null>(null);
   const hasRemote = !!detail.html && /src\s*=\s*["']?https?:/i.test(detail.html);
+  const nestedView = trail.length > 0;
 
   /** Link trong body mail: probe qua server — URL là FILE thì tải NGAY TRONG
    *  APP (stream qua /api/mail?fetch), là trang web thì mở trình duyệt như cũ.
@@ -592,24 +652,6 @@ function DetailView({ accountId, path, detail, onBack, onReply, onDelete, deleti
     }
   }, []);
 
-  /** Gắn listener bắt click <a> trong iframe mỗi lần nó load lại (đổi
-   *  allowRemote → srcDoc mới). Truy cập được contentDocument nhờ sandbox có
-   *  allow-same-origin — vẫn AN TOÀN vì KHÔNG có allow-scripts và CSP chặn
-   *  script: HTML của mail không thể chạy code, chỉ mình ta sờ được DOM. */
-  const wireFrameLinks = useCallback(() => {
-    const doc = frameRef.current?.contentDocument;
-    if (!doc) return;
-    doc.addEventListener('click', (e) => {
-      const a = (e.target as Element | null)?.closest?.('a[href]');
-      if (!a) return;
-      const href = a.getAttribute('href') ?? '';
-      if (!/^https?:/i.test(href)) return; // mailto:, cid:, … → hành vi mặc định
-      e.preventDefault();
-      e.stopPropagation();
-      void handleBodyLink(href);
-    }, true);
-  }, [handleBodyLink]);
-
   const saveSender = async () => {
     if (!detail.from?.address) return;
     const label = detail.from.name ? `${detail.from.name} <${detail.from.address}>` : detail.from.address;
@@ -619,9 +661,19 @@ function DetailView({ accountId, path, detail, onBack, onReply, onDelete, deleti
   return (
     <div className="mail-detail">
       <div className="mail-detail-bar">
-        <button className="ghost sm" onClick={onBack} title="Quay lại danh sách">←</button>
-        <button className="ghost sm" onClick={() => onReply(false)} title="Trả lời người gửi">↩ Trả lời</button>
-        <button className="ghost sm" onClick={() => onReply(true)} title="Trả lời tất cả (To + Cc)">↩ Tất cả</button>
+        <button
+          className="ghost sm"
+          onClick={() => (nestedView ? onBackNested?.() : onBack())}
+          title={nestedView ? 'Quay lại thư chứa thư này' : 'Quay lại danh sách'}
+        >←</button>
+        {nestedView && <span className="badge" title="Đây là thư được đính kèm bên trong một thư khác">✉ thư lồng</span>}
+        {!nestedView && (
+          <>
+            <button className="ghost sm" onClick={() => onReply(false)} title="Trả lời người gửi">↩ Trả lời</button>
+            <button className="ghost sm" onClick={() => onReply(true)} title="Trả lời tất cả (To + Cc)">↩ Tất cả</button>
+            <button className="ghost sm" onClick={onForward} title="Chuyển tiếp thư này (giữ nguyên nội dung + file đính kèm)">↳ Chuyển tiếp</button>
+          </>
+        )}
         {detail.from?.address && (
           <button className="ghost sm" onClick={() => void saveSender()}
             title="Lưu địa chỉ người gửi vào gợi ý (dùng khi khác domain — không tự lưu)">
@@ -641,10 +693,14 @@ function DetailView({ accountId, path, detail, onBack, onReply, onDelete, deleti
           </span>
         )}
         <span style={{ flex: 1 }} />
-        <button className="ghost sm mail-del-btn" onClick={onDelete} disabled={deleting}
-          title="Xóa mail này (chuyển vào Thùng rác; đang ở Thùng rác thì xóa vĩnh viễn)">
-          {deleting ? <span className="spinner" aria-hidden /> : '🗑'} Xóa
-        </button>
+        {/* Thư lồng nằm bên trong thư khác — không có UID riêng trên server nên
+            không xoá riêng được. Muốn xoá thì xoá thư chứa nó. */}
+        {!nestedView && (
+          <button className="ghost sm mail-del-btn" onClick={onDelete} disabled={deleting}
+            title="Xóa mail này (chuyển vào Thùng rác; đang ở Thùng rác thì xóa vĩnh viễn)">
+            {deleting ? <span className="spinner" aria-hidden /> : '🗑'} Xóa
+          </button>
+        )}
       </div>
       <div className="mail-detail-head">
         <h3 className="mail-detail-subject">{detail.subject}</h3>
@@ -658,30 +714,37 @@ function DetailView({ accountId, path, detail, onBack, onReply, onDelete, deleti
         {detail.attachments.length > 0 && (
           <div className="mail-atts">
             {detail.attachments.map((a) => (
-              <a key={a.idx} className="chip-btn" href={attachmentUrl(accountId, path, detail.uid, a.idx)}
-                title={`${a.contentType} · ${fmtSize(a.size)}`}>
-                📎 {a.filename} <span style={{ color: 'var(--muted)' }}>({fmtSize(a.size)})</span>
-              </a>
+              a.nested ? (
+                // Đính kèm LÀ MỘT MAIL (thư chuyển tiếp giữ nguyên bản gốc):
+                // mở ra đọc ngay trong app thay vì tải .eml về máy rồi bó tay.
+                <button
+                  key={a.idx}
+                  className="chip-btn mail-att-nested"
+                  disabled={nestedBusy}
+                  onClick={() => onOpenNested?.(a.idx)}
+                  title={`Thư đính kèm — bấm để mở đọc\n${a.contentType} · ${fmtSize(a.size)}`}
+                >
+                  {nestedBusy ? <span className="spinner" aria-hidden /> : '✉'} {a.filename}{' '}
+                  <span style={{ color: 'var(--muted)' }}>({fmtSize(a.size)}) · mở</span>
+                </button>
+              ) : (
+                <a key={a.idx} className="chip-btn" href={attachmentUrl(accountId, path, detail.uid, a.idx, trail)}
+                  title={`${a.contentType} · ${fmtSize(a.size)}`}>
+                  📎 {a.filename} <span style={{ color: 'var(--muted)' }}>({fmtSize(a.size)})</span>
+                </a>
+              )
             ))}
           </div>
         )}
       </div>
       <div className="mail-detail-body">
-        {detail.html ? (
-          <iframe
-            ref={frameRef}
-            className="mail-frame"
-            /* allow-same-origin: để host bắt click link (tải file trong app).
-               An toàn vì KHÔNG allow-scripts + CSP default-src 'none' — mail
-               không thể chạy script hay đọc gì từ app. */
-            sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
-            srcDoc={buildSrcDoc(detail.html, allowRemote)}
-            onLoad={wireFrameLinks}
-            title={detail.subject}
-          />
-        ) : (
-          <pre className="mail-plain">{detail.text ?? '(mail trống)'}</pre>
-        )}
+        <MailBody
+          html={detail.html}
+          text={detail.text}
+          subject={detail.subject}
+          allowRemote={allowRemote}
+          onLink={(u) => void handleBodyLink(u)}
+        />
       </div>
     </div>
   );
@@ -689,13 +752,35 @@ function DetailView({ accountId, path, detail, onBack, onReply, onDelete, deleti
 
 // ── One account's mailbox (rail + list + detail) ────────────────────────────
 
-/** Dựng draft trả lời từ mail gốc: quote text, header thread, to/cc. */
+const esc = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/** Nội dung mail gốc dưới dạng HTML để trích dẫn. Ưu tiên bản HTML thật (giữ
+ *  được định dạng/bảng/ảnh như mọi mail client); chỉ có text thì dựng lại. */
+function quotableHtml(detail: MailDetail): string {
+  if (detail.html) return detail.html;
+  if (detail.text) return textToHtml(detail.text);
+  return '<p>(mail trống)</p>';
+}
+
+/**
+ * Khối trích dẫn chuẩn: một dòng "Vào <ngày>, <người> đã viết:" rồi
+ * <blockquote> ôm nội dung gốc — đúng cách Gmail/Outlook/Thunderbird dựng, nên
+ * mail client bên kia gấp/tô xám được phần lịch sử.
+ */
+function quoteBlock(detail: MailDetail): string {
+  const when = detail.date ? new Date(detail.date).toLocaleString('vi-VN') : '';
+  const who = esc(fmtAddr(detail.from));
+  return `<p>Vào ${esc(when)}, ${who} đã viết:</p>`
+    + `<blockquote style="margin:0 0 0 8px;padding-left:12px;border-left:2px solid #dadce0;color:#5f6368">`
+    + `${quotableHtml(detail)}</blockquote>`;
+}
+
+/** Dựng draft trả lời từ mail gốc: quote HTML, header thread, to/cc. */
 function replyDraft(detail: MailDetail, all: boolean, selfEmail: string): ComposeDraft {
   const subject = /^re:/i.test(detail.subject) ? detail.subject : `Re: ${detail.subject}`;
-  const quoteSrc = detail.text ?? '(nội dung HTML — xem mail gốc)';
-  const quoted = quoteSrc.split('\n').map((l) => `> ${l}`).join('\n');
-  const when = detail.date ? new Date(detail.date).toLocaleString('vi-VN') : '';
-  const body = `\n\nVào ${when}, ${fmtAddr(detail.from)} viết:\n${quoted}`;
+  // Hai dòng trống ở đầu: chỗ để gõ, con trỏ đặt sẵn ở đó.
+  const body = `<p><br></p><p><br></p>${quoteBlock(detail)}`;
 
   const notSelf = (a: { address: string }) => a.address.toLowerCase() !== selfEmail.toLowerCase();
   const to = detail.from ? [detail.from.address] : [];
@@ -711,6 +796,42 @@ function replyDraft(detail: MailDetail, all: boolean, selfEmail: string): Compos
     to: to.join(', '), cc: cc.join(', '), subject, body,
     inReplyTo: detail.messageId ?? undefined,
     references,
+    isResponse: true,
+  };
+}
+
+/**
+ * Dựng draft CHUYỂN TIẾP: header "Forwarded message" chuẩn + nguyên nội dung
+ * gốc + giữ nguyên file đính kèm.
+ *
+ * Đính kèm chỉ mang theo TOẠ ĐỘ (path/uid/idx) chứ không tải nội dung về —
+ * server đọc lại từ IMAP lúc gửi. Chuyển tiếp mail có file 20MB mà bắt trình
+ * duyệt tải về rồi upload ngược lên là đi hai vòng mạng vô ích.
+ *
+ * Đính kèm là MAIL LỒNG cũng đi theo được: với server nó vẫn chỉ là một
+ * attachment ở vị trí idx.
+ */
+function forwardDraft(detail: MailDetail, path: string): ComposeDraft {
+  const subject = /^fwd?:/i.test(detail.subject) ? detail.subject : `Fwd: ${detail.subject}`;
+  const when = detail.date ? new Date(detail.date).toLocaleString('vi-VN') : '';
+  const row = (k: string, v: string) => (v ? `<div><b>${k}:</b> ${esc(v)}</div>` : '');
+
+  const header =
+    `<div style="color:#5f6368;border-top:1px solid #dadce0;padding-top:8px;margin-top:8px">`
+    + `<p style="margin:0 0 6px">---------- Thư đã chuyển tiếp ----------</p>`
+    + row('Từ', fmtAddr(detail.from))
+    + row('Ngày', when)
+    + row('Tiêu đề', detail.subject)
+    + row('Tới', detail.to.map(fmtAddr).join(', '))
+    + (detail.cc.length ? row('Cc', detail.cc.map(fmtAddr).join(', ')) : '')
+    + `</div>`;
+
+  return {
+    to: '', cc: '', subject,
+    body: `<p><br></p><p><br></p>${header}${quotableHtml(detail)}`,
+    forwardAttachments: detail.attachments.map((a) => ({ path, uid: detail.uid, idx: a.idx })),
+    forwardLabels: detail.attachments.map((a) => ({ filename: a.filename, size: a.size })),
+    isResponse: true,
   };
 }
 
@@ -726,6 +847,22 @@ function MailboxView({ account, onCompose }: {
   const [total, setTotal] = useState(0);
   const [oldestSeq, setOldestSeq] = useState<number | null>(null);
   const [detail, setDetail] = useState<MailDetail | null>(null);
+  /**
+   * Ngăn xếp mail LỒNG đang mở (thư chuyển tiếp đính kèm bản gốc).
+   *
+   * Mỗi phần tử là một lớp đi sâu thêm: `trail` là đường đi từ mail gốc tới nó
+   * (dùng cho URL tải đính kèm), `detail` là nội dung đã bóc. Rỗng = đang xem
+   * mail gốc. Dùng ngăn xếp chứ không phải một biến vì mail chuyển tiếp nhiều
+   * lần thì có mail lồng trong mail lồng, và nút ← phải lùi từng lớp.
+   */
+  const [nested, setNested] = useState<{ trail: number[]; detail: MailDetail }[]>([]);
+  const [nestedBusy, setNestedBusy] = useState(false);
+
+  /** Gom mail cùng chuỗi hội thoại thành một dòng (như Gmail). Tắt được vì
+   *  folder kiểu Sent/Archive nhiều khi muốn xem phẳng theo thời gian. */
+  const [threaded, setThreaded] = useState(true);
+  /** Chuỗi đang bung ra xem hết (theo khoá chuỗi). */
+  const [openThreads, setOpenThreads] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState<number | null>(null);
   const [deleting, setDeleting] = useState<number | null>(null);
@@ -758,8 +895,31 @@ function MailboxView({ account, onCompose }: {
     void loadList(p);
   };
 
+  /**
+   * Mở một đính kèm message/rfc822 thành mail để đọc — chính là "thư chuyển
+   * tiếp" mà trước đây chỉ tải được file .eml về máy.
+   *
+   * `base` là đường đi tới mail ĐANG xem; đi tiếp vào attachment `idx` của nó.
+   * Server bóc từng lớp và trả về MailDetail y như mail thường, nên khung đọc
+   * dùng lại nguyên vẹn.
+   */
+  const openNested = async (base: number[], idx: number) => {
+    if (!detail) return;
+    const trail = [...base, idx];
+    setNestedBusy(true); setErr(null);
+    try {
+      const nd = await mNestedMessage(account.id, path, detail.uid, trail);
+      setNested((s) => [...s, { trail, detail: nd }]);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setNestedBusy(false);
+    }
+  };
+
   const openMessage = async (m: MailListItem) => {
     setOpening(m.uid); setErr(null);
+    setNested([]); // mail khác → bỏ ngăn xếp mail lồng của mail cũ
     try {
       setDetail(await mMessage(account.id, path, m.uid));
       // Đã đọc server-side (\Seen) — cập nhật luôn UI khỏi chờ reload:
@@ -794,6 +954,33 @@ function MailboxView({ account, onCompose }: {
   const curFolder = folders.find((f) => f.path === path);
   // Đang đứng trong Thùng rác → xóa là VĨNH VIỄN (server sẽ expunge).
   const inTrash = curFolder?.specialUse === '\\Trash' || /^trash$/i.test(curFolder?.name ?? '');
+
+  const threads = useMemo(() => groupThreads(items), [items]);
+
+  /**
+   * Danh sách dòng thực sự vẽ ra: mỗi chuỗi cho một dòng "đầu" (thư mới nhất),
+   * cộng thêm các thư còn lại NẾU chuỗi đang bung. Tắt gom chuỗi thì mỗi thư
+   * một dòng như cũ.
+   *
+   * Tính ở đây (thay vì lồng hai vòng map trong JSX) để phần render giữ nguyên
+   * một vòng lặp phẳng — thêm/bớt nút trên dòng khỏi phải sửa hai chỗ.
+   */
+  const rows = useMemo(() => {
+    const out: { thread: MailThread; item: MailListItem; depth: number }[] = [];
+    if (!threaded) {
+      for (const m of items) {
+        out.push({ thread: { key: `uid:${m.uid}`, items: [m], unseen: !m.seen }, item: m, depth: 0 });
+      }
+      return out;
+    }
+    for (const t of threads) {
+      out.push({ thread: t, item: t.items[0], depth: 0 });
+      if (openThreads.has(t.key)) {
+        for (const m of t.items.slice(1)) out.push({ thread: t, item: m, depth: 1 });
+      }
+    }
+    return out;
+  }, [threaded, threads, items, openThreads]);
 
   /** Xóa 1 mail theo UID — không mở/không đọc nội dung (an toàn với mail lừa
    *  đảo). Optimistic: rút khỏi danh sách ngay, trừ badge chưa đọc nếu cần. */
@@ -846,15 +1033,28 @@ function MailboxView({ account, onCompose }: {
       <div className="g-main">
         {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
         {detail ? (
-          <DetailView
-            accountId={account.id}
-            path={path}
-            detail={detail}
-            onBack={() => setDetail(null)}
-            onReply={(all) => onCompose(replyDraft(detail, all, account.email))}
-            onDelete={() => void removeMail({ uid: detail.uid, seen: true, subject: detail.subject })}
-            deleting={deleting === detail.uid}
-          />
+          // Đang mở mail lồng thì hiện nó; ngăn xếp rỗng thì hiện mail gốc.
+          (() => {
+            const top = nested[nested.length - 1];
+            const shown = top?.detail ?? detail;
+            const trail = top?.trail ?? [];
+            return (
+              <DetailView
+                accountId={account.id}
+                path={path}
+                detail={shown}
+                trail={trail}
+                onBack={() => { setDetail(null); setNested([]); }}
+                onBackNested={() => setNested((s) => s.slice(0, -1))}
+                onOpenNested={(idx) => void openNested(trail, idx)}
+                onReply={(all) => onCompose(replyDraft(detail, all, account.email))}
+                onForward={() => onCompose(forwardDraft(detail, path))}
+                onDelete={() => void removeMail({ uid: detail.uid, seen: true, subject: detail.subject })}
+                deleting={deleting === detail.uid}
+                nestedBusy={nestedBusy}
+              />
+            );
+          })()
         ) : (
           <>
             <div className="g-crumbs">
@@ -869,16 +1069,31 @@ function MailboxView({ account, onCompose }: {
                   {markingAll ? <span className="spinner" aria-hidden /> : '✓ Đánh dấu tất cả đã đọc'}
                 </button>
               )}
+              <button
+                className="ghost sm"
+                aria-pressed={threaded}
+                onClick={() => setThreaded((v) => !v)}
+                title={threaded
+                  ? 'Đang gom thư cùng chuỗi hội thoại — bấm để xem phẳng theo thời gian'
+                  : 'Đang xem phẳng — bấm để gom thư cùng chuỗi hội thoại'}
+              >
+                {threaded ? '🧵 Chuỗi' : '☰ Phẳng'}
+              </button>
               <button className="ghost sm" disabled={loading}
                 onClick={() => { void loadList(path); loadFolders(); }}
                 title="Tải lại danh sách mail + số chưa đọc">↻</button>
             </div>
             <div className="g-list">
-              {items.map((m) => (
+              {rows.map(({ thread, item, depth }) => {
+                const m = item;
+                const count = thread.items.length;
+                const isHead = depth === 0;
+                const expanded = openThreads.has(thread.key);
+                return (
                 /* div role=button (không phải <button>) vì bên trong còn nút 🗑
                    — button lồng button là HTML sai và click sẽ loạn. */
                 <div key={m.uid} role="button" tabIndex={0}
-                  className={`g-row mail-row${m.seen ? '' : ' unread'}`}
+                  className={`g-row mail-row${m.seen ? '' : ' unread'}${depth > 0 ? ' mail-row-child' : ''}`}
                   onClick={() => void openMessage(m)}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void openMessage(m); } }}
                   title={m.subject}>
@@ -892,6 +1107,25 @@ function MailboxView({ account, onCompose }: {
                       {m.hasAttachments && <span aria-hidden> 📎</span>}
                     </span>
                   </span>
+                  {/* Chuỗi nhiều thư: bấm số để mở/gập các thư còn lại. Nút
+                      riêng chứ không phải bấm cả dòng — bấm dòng vẫn phải mở
+                      thư mới nhất như thói quen. */}
+                  {isHead && count > 1 && (
+                    <button
+                      className={`mail-thread-count${expanded ? ' on' : ''}`}
+                      title={expanded ? 'Gập chuỗi hội thoại' : `Chuỗi ${count} thư — bấm để xem hết`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenThreads((s) => {
+                          const n = new Set(s);
+                          if (n.has(thread.key)) n.delete(thread.key); else n.add(thread.key);
+                          return n;
+                        });
+                      }}
+                    >
+                      {expanded ? '▾' : '▸'} {count}
+                    </button>
+                  )}
                   <span className="mail-date">{opening === m.uid ? <span className="spinner" aria-hidden /> : fmtRel(m.date ?? undefined)}</span>
                   {/* Xóa KHÔNG cần mở — cho mail nghi lừa đảo/độc hại. */}
                   <button className="mail-row-del" disabled={deleting === m.uid}
@@ -900,7 +1134,8 @@ function MailboxView({ account, onCompose }: {
                     {deleting === m.uid ? <span className="spinner" aria-hidden /> : '🗑'}
                   </button>
                 </div>
-              ))}
+                );
+              })}
               {!loading && items.length === 0 && !err && (
                 <div className="empty" style={{ padding: '24px 8px' }}><p className="small">Thư mục trống.</p></div>
               )}
@@ -974,6 +1209,75 @@ function RenameAccountModal({ account, onDone, onCancel }: {
   );
 }
 
+/**
+ * Cấu hình CHỮ KÝ của một tài khoản.
+ *
+ * Chữ ký lưu dạng HTML để giữ được định dạng thật (tên đậm, chức danh, link
+ * công ty) — soạn bằng chính editor dùng cho composer nên cái nhìn thấy lúc
+ * soạn đúng bằng cái người nhận thấy.
+ */
+function SignatureModal({ account, onDone, onCancel }: {
+  account: MailAccountPub;
+  onDone: (list: MailAccountPub[]) => void;
+  onCancel: () => void;
+}) {
+  const [html, setHtml] = useState(account.signature ?? '');
+  // Mặc định BẬT khi chưa khai — người dùng mới sẽ thấy chữ ký ở cả reply,
+  // giống hành vi quen thuộc của webmail.
+  const [onReply, setOnReply] = useState(account.signatureOnReply !== false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    setBusy(true); setErr(null);
+    try { onDone(await mSignatureSet(account.id, html, onReply)); }
+    catch (e) { setErr((e as Error).message); setBusy(false); }
+  };
+
+  return (
+    <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && !busy && onCancel()}>
+      <div className="mail-compose panel" style={{ width: 'min(640px, 94vw)' }}>
+        <div className="mail-compose-head">
+          <b>✍ Chữ ký</b>
+          <span className="small" style={{ color: 'var(--muted)' }}>{account.email}</span>
+          <span style={{ flex: 1 }} />
+          <button className="ghost sm" onClick={onCancel} disabled={busy}>✕</button>
+        </div>
+        <p className="small" style={{ color: 'var(--faint)', margin: '0 0 8px' }}>
+          Tự chèn vào cuối thư khi soạn mới. Riêng từng tài khoản — hòm thư công ty
+          và cá nhân ký khác nhau được.
+        </p>
+        <RichTextEditor
+          value={html}
+          onChange={setHtml}
+          compact
+          minHeight={150}
+          placeholder="VD: Trần Văn A — Phòng Kỹ thuật · 09xx xxx xxx"
+        />
+        <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 7, margin: '10px 0 0', color: 'var(--muted)' }}>
+          <input type="checkbox" checked={onReply} onChange={(e) => setOnReply(e.target.checked)} />
+          Chèn cả khi trả lời / chuyển tiếp
+        </label>
+        {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button onClick={() => void submit()} disabled={busy}>
+            {busy ? <span className="spinner" aria-hidden /> : '💾'} Lưu
+          </button>
+          {account.signature && (
+            <button className="ghost" disabled={busy}
+              title="Xoá chữ ký của tài khoản này"
+              onClick={() => { setHtml(''); }}>
+              Xoá chữ ký
+            </button>
+          )}
+          <span style={{ flex: 1 }} />
+          <button className="ghost" onClick={onCancel} disabled={busy}>Hủy</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Top-level workspace ─────────────────────────────────────────────────────
 
 export default function MailWorkspace() {
@@ -981,6 +1285,7 @@ export default function MailWorkspace() {
   const [activeId, setActiveId] = useState('');
   const [adding, setAdding] = useState(false);
   const [renaming, setRenaming] = useState<MailAccountPub | null>(null); // modal ✎ đổi tên
+  const [signing, setSigning] = useState<MailAccountPub | null>(null); // modal ✍ chữ ký
   const [compose, setCompose] = useState<ComposeDraft | null>(null);
   const [sentFlash, setSentFlash] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1158,6 +1463,8 @@ export default function MailWorkspace() {
               {a.id === active.id && (
                 <>
                   <button className="g-acc-x" onClick={() => setRenaming(a)} title="Đổi tên hiển thị">✎</button>
+                  <button className="g-acc-x" onClick={() => setSigning(a)}
+                    title={a.signature ? 'Sửa chữ ký cuối thư' : 'Đặt chữ ký cuối thư'}>✍</button>
                   <button className="g-acc-x" onClick={() => void removeAccount(a)} title={`Gỡ ${a.email}`}>✕</button>
                 </>
               )}
@@ -1195,6 +1502,14 @@ export default function MailWorkspace() {
           account={renaming}
           onDone={(list) => { setAccounts(list); setRenaming(null); }}
           onCancel={() => setRenaming(null)}
+        />
+      )}
+
+      {signing && (
+        <SignatureModal
+          account={signing}
+          onDone={(list) => { setAccounts(list); setSigning(null); }}
+          onCancel={() => setSigning(null)}
         />
       )}
 
