@@ -463,7 +463,11 @@ function Composer({ account, draft, onClose, onSent }: {
     const at = draft.body.indexOf('<p>Vào ');
     const cut = at >= 0 ? at : draft.body.indexOf('<div style="color:#5f6368;border-top');
     if (cut > 0) return `${draft.body.slice(0, cut)}${block}${draft.body.slice(cut)}`;
-    return `${draft.body}${block}`;
+    // Soạn mới: draft.body rỗng nên chữ ký sẽ dính ngay dòng đầu, không có chỗ
+    // gõ — phải chừa sẵn vài dòng trống ở TRÊN nó (reply/forward đã có sẵn từ
+    // replyDraft/forwardDraft nên chỉ ca này cần).
+    const lead = draft.body.trim() ? draft.body : '<p><br></p><p><br></p>';
+    return `${lead}${block}`;
   });
 
   const addFiles = async (files: FileList | null) => {
@@ -550,6 +554,9 @@ function Composer({ account, draft, onClose, onSent }: {
             onSubmit={() => { if (to.trim() && !busy) void send(); }}
             placeholder="Viết nội dung… (kéo-thả file vào đây để đính kèm · Ctrl+Enter gửi)"
             minHeight={240}
+            // Soạn mới: con trỏ vào ngay chỗ trống phía trên chữ ký. Trả lời thì
+            // ô "Tới" đã điền sẵn nên cũng nên nhảy thẳng vào chỗ gõ.
+            autoFocusTop={isReply || isForward || !!to.trim()}
           />
         </div>
 

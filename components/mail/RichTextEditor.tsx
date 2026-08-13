@@ -28,6 +28,10 @@ export interface RichTextEditorProps {
   onSubmit?: () => void;
   /** Bớt nút cho ô nhỏ (ô chữ ký không cần trích dẫn). */
   compact?: boolean;
+  /** Đặt con trỏ vào ĐẦU ô ngay khi mở — composer cần, vì chỗ gõ nằm phía trên
+   *  chữ ký và phần trích dẫn. Không có thì con trỏ rơi xuống cuối, người dùng
+   *  phải tự lăn lên. */
+  autoFocusTop?: boolean;
 }
 
 interface ToolButton {
@@ -52,6 +56,7 @@ const TOOLS: ToolButton[] = [
 
 export default function RichTextEditor({
   value, onChange, placeholder, minHeight = 220, onSubmit, compact = false,
+  autoFocusTop = false,
 }: RichTextEditorProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   // CỐ Ý khởi tạo rỗng, KHÔNG phải `value`: đây là "nội dung đang nằm trong
@@ -70,6 +75,29 @@ export default function RichTextEditor({
       lastHtml.current = value;
     }
   }, [value]);
+
+  // Con trỏ vào ĐẦU ô ngay khi mở (chạy MỘT lần, sau khi effect trên đã ghi
+  // nội dung vào DOM). Chỗ gõ của composer nằm phía trên chữ ký + phần trích
+  // dẫn, nên rơi xuống cuối là sai chỗ.
+  useEffect(() => {
+    if (!autoFocusTop) return;
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    try {
+      const sel = window.getSelection();
+      const range = document.createRange();
+      // Đặt vào node con ĐẦU TIÊN nếu có (thường là <p><br></p> ta chừa sẵn),
+      // không thì vào chính el — collapse(true) = dính mép trái.
+      range.selectNodeContents(el.firstChild ?? el);
+      range.collapse(true);
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    } catch { /* selection API kén chọn — có focus là đủ dùng */ }
+    // Chỉ chạy lúc mount: value đổi về sau là do người dùng gõ, kéo con trỏ về
+    // đầu lúc đó là phá.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const emit = useCallback(() => {
     const el = ref.current;
