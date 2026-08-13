@@ -30,6 +30,7 @@ import {
 import { flattenEsMapping, type EsField } from '@/lib/esDsl';
 import QueryEditor from './QueryEditor';
 import AggsResult from './AggsResult';
+import JsonViewer from './JsonViewer';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
 
@@ -144,6 +145,7 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
         <div key={t.id} className="es-dtab-pane" hidden={t.id !== activeId}>
           <BrowserSession
             connectionId={connectionId}
+            tabId={t.id}
             index={t.index}
             onPickIndex={(ix) => setTabIndex(t.id, ix)}
             indices={indices}
@@ -159,6 +161,8 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
 
 interface BrowserSessionProps {
   connectionId: string;
+  /** Id tab — vào khoá model Monaco để hai tab không dùng chung nội dung. */
+  tabId: string;
   /** Index của tab này ('' = chưa chọn). Đổi giá trị này là reset phiên. */
   index: string;
   onPickIndex: (name: string) => void;
@@ -170,9 +174,16 @@ interface BrowserSessionProps {
 
 /** Một phiên truy vấn: index + body + kết quả + mapping của riêng một tab. */
 function BrowserSession({
-  connectionId, index: selected, onPickIndex,
+  connectionId, tabId, index: selected, onPickIndex,
   indices, idxLoading, onReloadIndices, onOpenInNewTab,
 }: BrowserSessionProps) {
+  /** Tiền tố khoá model Monaco cho mọi khung JSON của phiên này. Gồm cả index
+   *  vì đổi index là nội dung khác hẳn, đừng dùng lại model cũ.
+   *
+   *  Lọc ký tự lạ: chuỗi này đi vào uri của model, mà tên index Elasticsearch
+   *  cho phép nhiều ký tự (kể cả `:` `?` `#`) sẽ làm hỏng uri. Chỉ cần DUY NHẤT
+   *  chứ không cần đọc được, nên thay hết bằng '_'. */
+  const paneKey = `${connectionId}/${tabId}/${(selected || '_').replace(/[^\w.-]/g, '_')}`;
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const tree = useSplit({ varName: '--es-tree', min: 160, max: 520, gap: 12 });
   const [treeFilter, setTreeFilter] = useState('');
@@ -373,7 +384,15 @@ function BrowserSession({
                         <p className="empty">{result.size === 0 ? 'size = 0 — chỉ lấy aggregations, không lấy document.' : 'Không có document nào khớp.'}</p>
                       )}
                       {result.docs.map((d, i) => (
-                        <DocCard key={`${result.from}-${i}`} json={d.json} truncated={d.truncated} index={result.from + i} />
+                        <DocCard
+                          key={`${result.from}-${i}`}
+                          json={d.json}
+                          truncated={d.truncated}
+                          index={result.from + i}
+                          // Khoá model Monaco: phải riêng theo TAB nữa (paneKey),
+                          // không thì hai tab mở cùng một index sẽ dùng chung model.
+                          docKey={`${paneKey}/${result.from + i}`}
+                        />
                       ))}
                     </div>
                   </>
@@ -385,8 +404,13 @@ function BrowserSession({
               mapping
                 ? (
                   <>
-                    {mapping.truncated && <span className="badge" style={{ color: 'var(--err)' }}>truncated</span>}
-                    <pre className="code es-doc-body" style={{ maxHeight: '64vh' }}>{mapping.json}</pre>
+                    <div className="status-line" style={{ gap: 8 }}>
+                      {mapping.truncated && <span className="badge" style={{ color: 'var(--err)' }}>truncated</span>}
+                      <span className="es-hint">Ctrl+F để tìm field trong mapping</span>
+                      <button className="chip-btn" style={{ marginLeft: 'auto' }} title="Copy mapping"
+                        onClick={() => void navigator.clipboard?.writeText(mapping.json)}>⧉</button>
+                    </div>
+                    <JsonViewer value={mapping.json} path={`es-mapping:/${paneKey}.json`} maxHeight={620} />
                   </>
                 )
                 : <p className="empty">{busy ? 'Đang tải mapping…' : 'Chưa tải được mapping.'}</p>
@@ -415,7 +439,12 @@ function BrowserSession({
 
 /**
  * Combobox đổi index khi cây indices đang ẩn: hiện tên index đang chọn, focus
- * vào là gõ để lọc, Enter chọn kết quả đầu, Esc trả về tên cũ.
+ * vào là gõ để lọc, ↑/↓ chạy trong danh sách, Enter chọn dòng đang sáng, Esc
+ * trả về tên cũ.
+ *
+ * Trước đây Enter luôn lấy list[0] và KHÔNG có dòng nào sáng lên, nên muốn lấy
+ * mục thứ hai trở đi là bắt buộc phải với chuột. Giờ có con trỏ `cur` hiển thị
+ * rõ mình đang đứng ở đâu — bàn phím làm được trọn vẹn.
  */
 function IndexPicker({ indices, value, onPick }: {
   indices: EsIndexInfo[];
@@ -424,34 +453,69 @@ function IndexPicker({ indices, value, onPick }: {
 }) {
   const [text, setText] = useState(value);
   const [open, setOpen] = useState(false);
+  const [cur, setCur] = useState(0);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => { setText(value); }, [value]);
 
   // Chưa gõ gì (text còn là tên đang chọn) thì hiện cả danh sách.
   const needle = text.trim() === value ? '' : text.trim();
-  const list = indices.filter((i) => !needle || i.name.includes(needle)).slice(0, 50);
+  const list = useMemo(
+    () => indices.filter((i) => !needle || i.name.includes(needle)).slice(0, 50),
+    [indices, needle],
+  );
+
+  // Lọc lại là danh sách đổi → con trỏ cũ có thể trỏ ra ngoài. Về đầu danh sách.
+  useEffect(() => { setCur(0); }, [needle]);
+
+  // Giữ dòng đang sáng nằm trong tầm nhìn khi chạy ↑/↓ qua danh sách dài.
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector<HTMLElement>('.on')?.scrollIntoView({ block: 'nearest' });
+  }, [cur, open]);
+
+  const choose = (name: string, el: HTMLInputElement) => {
+    onPick(name);
+    setOpen(false);
+    el.blur();
+  };
 
   return (
     <div className="es-ixpick">
       <input
         className="input mono"
         value={text}
-        onFocus={(e) => { setOpen(true); e.target.select(); }}
+        onFocus={(e) => { setOpen(true); setCur(0); e.target.select(); }}
         onBlur={() => { setOpen(false); setText(value); }}
         onChange={(e) => { setText(e.target.value); setOpen(true); }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && list.length) { onPick(list[0].name); (e.target as HTMLInputElement).blur(); }
-          if (e.key === 'Escape') { (e.target as HTMLInputElement).blur(); }
+          const el = e.target as HTMLInputElement;
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setOpen(true);
+            setCur((c) => (list.length ? (c + 1) % list.length : 0));
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setOpen(true);
+            setCur((c) => (list.length ? (c - 1 + list.length) % list.length : 0));
+          } else if (e.key === 'Enter') {
+            const pick = list[cur] ?? list[0];
+            if (pick) { e.preventDefault(); choose(pick.name, el); }
+          } else if (e.key === 'Escape') {
+            el.blur();
+          }
         }}
         placeholder="gõ để tìm index…"
-        title="Đổi index — gõ để lọc, Enter chọn kết quả đầu tiên"
+        title="Đổi index — gõ để lọc, ↑/↓ chọn, Enter mở"
       />
       {open && list.length > 0 && (
-        <div className="es-ixpick-menu">
-          {list.map((ix) => (
+        <div className="es-ixpick-menu" ref={menuRef}>
+          {list.map((ix, i) => (
             <button
               key={ix.name}
+              className={i === cur ? 'on' : undefined}
               // preventDefault để input không blur trước khi click kịp chạy
               onMouseDown={(e) => { e.preventDefault(); }}
+              onMouseEnter={() => setCur(i)}
               onClick={() => { onPick(ix.name); setOpen(false); }}
             >
               <span style={{ color: healthColor(ix.health) }}>●</span>
@@ -465,8 +529,16 @@ function IndexPicker({ indices, value, onPick }: {
   );
 }
 
-/** One document rendered as collapsible pretty JSON with a copy button. */
-function DocCard({ json, truncated, index }: { json: string; truncated: boolean; index: number }) {
+/** One document rendered as collapsible pretty JSON with a copy button.
+ *
+ *  Phần mở ra dùng <JsonViewer> (Monaco read-only) chứ không phải <pre>: có tô
+ *  màu JSON và Ctrl+F tìm trong CẢ document, kể cả phần đang cuộn khuất. Editor
+ *  chỉ được dựng khi thẻ đã mở, nên một trang 200 document không tạo 200 editor. */
+function DocCard({ json, truncated, index, docKey }: {
+  json: string; truncated: boolean; index: number;
+  /** Khoá duy nhất cho model Monaco của thẻ này. */
+  docKey: string;
+}) {
   const [open, setOpen] = useState(false);
   const pretty = prettyDoc(json);
   const oneLine = json.replace(/\s+/g, ' ');
@@ -483,7 +555,13 @@ function DocCard({ json, truncated, index }: { json: string; truncated: boolean;
           onClick={(e) => { e.stopPropagation(); void navigator.clipboard?.writeText(pretty); }}
         >⧉</button>
       </div>
-      {open && <pre className="code es-doc-body">{pretty}</pre>}
+      {open && (
+        <JsonViewer
+          value={pretty}
+          path={`es-doc:/${docKey}.json`}
+          maxHeight={460}
+        />
+      )}
     </div>
   );
 }

@@ -237,8 +237,12 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
             // Key JSON nằm trong chuỗi — không bật strings thì gõ `"te` không gợi ý.
             quickSuggestions: { other: true, strings: true, comments: false },
             suggestOnTriggerCharacters: true,
-            // Enter xuống dòng; Tab mới nhận gợi ý (xem ConsoleView.tsx).
-            acceptSuggestionOnEnter: 'off',
+            // 'smart' = Enter CHỈ nhận gợi ý khi người dùng đã gõ gì đó để lọc
+            // (đang sửa dở một từ). Vừa bấm `{` rồi Enter thì chưa gõ chữ nào
+            // nên vẫn là XUỐNG DÒNG, không dính nguyên clause đầu danh sách —
+            // đúng cái bẫy mà 'off' sinh ra để tránh, nhưng không bắt phải rời
+            // tay sang Tab/chuột cho ca thường gặp.
+            acceptSuggestionOnEnter: 'smart',
             tabCompletion: 'on',
             formatOnPaste: true,
             automaticLayout: true,
@@ -251,7 +255,7 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
         <p className="es-qed-err">⚠ {formatErr ?? problem}</p>
       )}
       <p className="es-hint es-qed-hint">
-        Ctrl+Space gợi ý · Tab nhận gợi ý / nhảy chỗ điền · Ctrl+Enter chạy · Shift+Alt+F format
+        Ctrl+Space gợi ý · Enter/Tab nhận gợi ý · Tab nhảy chỗ điền · Ctrl+Enter chạy · Shift+Alt+F format
       </p>
     </div>
   );

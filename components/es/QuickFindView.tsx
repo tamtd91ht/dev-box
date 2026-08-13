@@ -38,6 +38,7 @@ import {
   type EsQuickFieldType,
 } from '@/lib/esQuickFinds';
 import ExportModal from './ExportModal';
+import JsonViewer from './JsonViewer';
 import TargetPicker from '../TargetPicker';
 
 export interface QuickFindViewProps {
@@ -595,7 +596,9 @@ function DocModal({ doc, onClose }: { doc: WireDoc; onClose: () => void }) {
           >{copied ? '✓ Đã copy' : '⧉ Copy'}</button>
           <button className="ghost sm" onClick={onClose}>✕</button>
         </div>
-        <pre className="code es-doc-body" style={{ maxHeight: '70vh' }}>{pretty}</pre>
+        {/* Monaco read-only: tô màu JSON + Ctrl+F tìm trong CẢ document (kể cả
+            phần đang cuộn khuất), thay cho <pre> đơn sắc trước đây. */}
+        <JsonViewer value={pretty} path="es-qf-doc:/modal.json" maxHeight={620} />
       </div>
     </div>
   );

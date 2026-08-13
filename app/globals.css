@@ -2392,6 +2392,10 @@ pre.kafka-drawer-body {
   white-space: nowrap;
 }
 .es-ixpick-menu button:hover { background: var(--glass-bg); }
+/* Dòng đang đứng khi chạy ↑/↓ — phải nổi hơn hover để bàn phím nhìn thấy rõ
+   mình đang ở đâu (Enter sẽ mở đúng dòng này). */
+.es-ixpick-menu button.on { background: var(--accent-solid); color: #fff; }
+.es-ixpick-menu button.on span { color: inherit !important; }
 .es-db-list { list-style: none; margin: 0; padding: 0; }
 .es-db-item {
   display: flex; align-items: center; gap: 4px; width: 100%; text-align: left;
@@ -2563,6 +2567,15 @@ pre.kafka-drawer-body {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .es-doc-body { margin: 0; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; }
+
+/* Khung xem JSON chỉ-đọc (components/es/JsonViewer.tsx) — dùng cho document,
+   mapping. Chiều cao do component tính theo số dòng nên KHÔNG đặt ở đây. */
+.es-jsonview {
+  border-top: 1px solid var(--glass-brd);
+  overflow: hidden;   /* bo góc thẻ cha không bị Monaco vẽ đè ra ngoài */
+}
+/* Trong modal (Tìm nhanh) khung đứng một mình, cho nó viền trọn vẹn. */
+.modal .es-jsonview { border: 1px solid var(--glass-brd); border-radius: 8px; }
 
 /* ── Danger block (update modal) ───────────────────────────────────────── */
 .es-danger {
