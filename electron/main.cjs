@@ -21,6 +21,7 @@ const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboar
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
+const os = require('os');
 const path = require('path');
 
 const APP_URL = process.env.DESKTOP_URL || 'http://localhost:3000';
@@ -814,6 +815,79 @@ function probe(url) {
   });
 }
 
+/**
+ * Chỗ ghi PID của `next dev` do CHÍNH DevBox khởi động.
+ *
+ * Cần vì server có thể sống lâu hơn app (khi thoát mà còn phiên terminal). Lần
+ * mở sau, ensureDevServer() thấy :3000 đã có người trả lời nên không spawn nữa
+ * — nếu không nhớ PID ở đâu đó thì tiến trình ấy thành mồ côi VĨNH VIỄN: mọi
+ * lần thoát sau đều `devServer == null` và không ai dọn nó.
+ *
+ * Ghi ra file thay vì giữ trong bộ nhớ vì cái cần sống sót ở đây chính là việc
+ * app đã tắt. File nằm cùng chỗ dữ liệu máy-này (data/), gitignored.
+ */
+// Hàm chứ không phải hằng: app.getPath() chỉ dùng được sau khi app ready, mà
+// module này chạy trước đó.
+const devServerPidFile = () => path.join(app.getPath('userData'), 'devserver.pid');
+
+function rememberDevServerPid(pid) {
+  try {
+    const f = devServerPidFile();
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, String(pid), 'utf8');
+  } catch (err) {
+    log('DevServerPidWriteError', err && err.message);
+  }
+}
+
+/**
+ * PID đã ghi lần trước, nếu tiến trình đó CÒN SỐNG **và đúng là server của ta**.
+ *
+ * `process.kill(pid, 0)` chỉ trả lời "có tiến trình nào mang PID này không" —
+ * sau một lần khởi động lại máy, PID được cấp lại cho tiến trình khác là
+ * chuyện thường. Nhận nhầm rồi taskkill /T thì ta giết oan tiến trình của
+ * người khác. Nên PID chỉ được nhận nuôi khi file pid còn MỚI HƠN lần boot gần
+ * nhất: cùng một phiên chạy của máy thì PID chưa thể bị tái sử dụng cho thứ
+ * khác sau khi ta ghi nó.
+ */
+function adoptedDevServerPid() {
+  let pid;
+  let writtenAt;
+  try {
+    const f = devServerPidFile();
+    pid = Number(fs.readFileSync(f, 'utf8').trim());
+    writtenAt = fs.statSync(f).mtimeMs;
+  } catch {
+    return 0;
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return 0;
+
+  // Máy đã khởi động lại kể từ lúc ghi file → PID trong đó vô nghĩa.
+  const bootedAt = Date.now() - os.uptime() * 1000;
+  if (writtenAt < bootedAt) {
+    log('DevServerPidStale', 'file pid có từ trước lần khởi động máy gần nhất — bỏ qua');
+    forgetDevServerPid();
+    return 0;
+  }
+
+  try {
+    process.kill(pid, 0); // tín hiệu 0 = chỉ hỏi "còn sống không"
+    return pid;
+  } catch {
+    forgetDevServerPid();
+    return 0;
+  }
+}
+
+function forgetDevServerPid() {
+  try {
+    fs.unlinkSync(devServerPidFile());
+  } catch { /* chưa có file — kệ */ }
+}
+
+/** PID của server mà lần chạy TRƯỚC để lại và lần này dùng lại. */
+let adoptedPid = 0;
+
 async function ensureDevServer() {
   // Pointed at an external server (prod/staging URL) → never auto-start.
   if (process.env.DESKTOP_URL) {
@@ -821,7 +895,15 @@ async function ensureDevServer() {
     return;
   }
   if (await probe(APP_URL)) {
-    log('DevServerFound', `${APP_URL} đã chạy sẵn — dùng lại, không tự khởi động`);
+    // Có thể là server của lần chạy trước mà ta cố ý để lại (còn phiên
+    // terminal). Nhận lại quyền dọn dẹp nó, nếu không nó mồ côi mãi mãi.
+    adoptedPid = adoptedDevServerPid();
+    log(
+      'DevServerFound',
+      adoptedPid
+        ? `${APP_URL} là server DevBox để lại lần trước (pid ${adoptedPid}) — dùng lại, vẫn giữ quyền dọn`
+        : `${APP_URL} đã chạy sẵn — dùng lại, không tự khởi động`,
+    );
     return;
   }
   const appPath = app.getAppPath();
@@ -837,7 +919,13 @@ async function ensureDevServer() {
     cwd: appPath,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'], // captured → in-app Console drawer
-    detached: process.platform !== 'win32',  // own process group on POSIX
+    // detached ở CẢ HAI nền tảng — không chỉ để có process group riêng trên
+    // POSIX, mà còn để server SỐNG SÓT khi app thoát trong lúc còn phiên
+    // terminal (xem stopDevServer). Trên Windows, con không detached nằm cùng
+    // job object với Electron nên bị giết theo cha; detached thì thoát ra.
+    // windowsHide: đừng để nháy lên một cửa sổ console đen khi khởi động.
+    detached: true,
+    windowsHide: true,
   });
   // Split the streams into lines and mirror them into the in-app console.
   const forwardStream = (stream) => {
@@ -859,33 +947,126 @@ async function ensureDevServer() {
   };
   forwardStream(devServer.stdout);
   forwardStream(devServer.stderr);
+  rememberDevServerPid(devServer.pid);
   devServer.on('exit', (code) => {
     log('DevServerExited', String(code));
+    forgetDevServerPid();
     devServer = null;
   });
   devServer.on('error', (err) => log('DevServerError', err && err.message));
 }
 
-/** Kill the dev server (and its worker children) on shutdown. */
-function stopDevServer() {
-  if (!devServer || devServer.killed) return;
-  const pid = devServer.pid;
+// ── Terminal còn sống thì ĐỪNG tắt Next server ────────────────────────────
+//
+// Phiên terminal là con của tiến trình `next dev`, không phải của cửa sổ. Vậy
+// nên "đóng app mà phiên vẫn còn" chỉ thành sự thật nếu lúc thoát ta KHÔNG
+// giết server. Đóng app khi không còn phiên nào thì vẫn dọn sạch như trước —
+// không để lại tiến trình rác.
+//
+// `before-quit` chạy ĐỒNG BỘ nên không hỏi HTTP tại chỗ được. Thay vào đó giữ
+// một con số cập nhật sẵn: poll /api/term nhẹ nhàng trong lúc app chạy, lúc
+// thoát chỉ việc đọc biến. Poll thất bại (server đã chết / chưa lên) thì coi
+// như 0 — không có gì để giữ.
+let liveTerminals = 0;
+let termPollTimer = null;
+
+/** Hỏi server xem còn bao nhiêu phiên terminal đang sống. */
+function pollTerminals() {
+  let url;
+  try {
+    url = new URL('/api/term', APP_URL);
+  } catch {
+    return;
+  }
+  const req = http.request(
+    { hostname: url.hostname, port: url.port, path: url.pathname, method: 'POST',
+      headers: { 'content-type': 'application/json' } },
+    (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          const list = Array.isArray(data.sessions) ? data.sessions : [];
+          liveTerminals = list.filter((s) => s && !s.exited).length;
+        } catch {
+          liveTerminals = 0;
+        }
+      });
+    },
+  );
+  req.on('error', () => { liveTerminals = 0; });
+  req.setTimeout(1500, () => { req.destroy(); });
+  req.end(JSON.stringify({ action: 'list' }));
+}
+
+function startTerminalPoll() {
+  if (termPollTimer) return;
+  termPollTimer = setInterval(pollTerminals, 5000);
+  pollTerminals();
+}
+
+/** Giết cả cây tiến trình của `next dev` (nó còn spawn compile worker). */
+function killDevServerTree(pid, child) {
   log('DevServerStopping', String(pid));
   try {
     if (process.platform === 'win32') {
-      // Kill the whole tree — next dev spawns compile workers.
       spawn('taskkill', ['/pid', String(pid), '/T', '/F']);
     } else {
       try {
         process.kill(-pid, 'SIGTERM'); // negative pid = the process group
       } catch {
-        devServer.kill('SIGTERM');
+        if (child) child.kill('SIGTERM');
+        else process.kill(pid, 'SIGTERM');
       }
     }
   } catch (err) {
     log('DevServerStopError', err && err.message);
   }
+  forgetDevServerPid();
+}
+
+/**
+ * Dọn dev server lúc thoát app — TRỪ KHI còn phiên terminal đang chạy.
+ *
+ * Giữ server sống chính là cách "đóng app mà phiên vẫn còn" hoạt động: shell là
+ * con của `next dev`, không phải của cửa sổ. Server spawn `detached: true` nên
+ * ở process group riêng, hệ điều hành không giết nó theo Electron. Mở app lại,
+ * ensureDevServer() probe thấy :3000 có người trả lời nên không dựng cái thứ
+ * hai, và tab Terminal hỏi 'list' là thấy lại đúng các phiên cũ.
+ *
+ * Hai đường vào: server do LẦN NÀY spawn (`devServer`), hoặc server do lần
+ * trước để lại mà lần này nhận nuôi (`adoptedPid`). Cả hai đều phải dọn được,
+ * nếu không tiến trình mồ côi sẽ tồn tại mãi.
+ */
+function stopDevServer() {
+  const pid = devServer && !devServer.killed ? devServer.pid : adoptedPid;
+  if (!pid) return;
+
+  if (liveTerminals > 0) {
+    log(
+      'DevServerKept',
+      `còn ${liveTerminals} phiên terminal đang chạy → giữ next dev (pid ${pid}) sống để không mất phiên`,
+    );
+    // Cắt mọi thứ đang neo server vào tiến trình Electron: hai ống stdio đang
+    // được đọc (forwardStream) cũng giữ ref, không chỉ mình child handle.
+    if (devServer) {
+      try {
+        devServer.stdout?.destroy();
+        devServer.stderr?.destroy();
+        devServer.unref();
+      } catch { /* đang thoát — kệ */ }
+    }
+    // PID vẫn nằm trong file → lần mở sau nhận nuôi lại và vẫn dọn được.
+    devServer = null;
+    adoptedPid = 0;
+    return;
+  }
+
+  killDevServerTree(pid, devServer);
   devServer = null;
+  adoptedPid = 0;
 }
 
 async function loadAppWithRetry(win) {
@@ -1382,6 +1563,70 @@ ipcMain.handle('workspace:copyText', (_evt, text) => {
 // the `desktop:log` push stream for live lines).
 ipcMain.handle('desktop:getLogs', () => logBuffer);
 
+// ── Terminal: cửa sổ rời ───────────────────────────────────────────────────
+//
+// Tab Terminal có hai chế độ mở: chạy ngay trong app, hoặc mở ra CỬA SỔ RIÊNG.
+// Chỗ này lo chế độ thứ hai.
+//
+// Cửa sổ rời chỉ là một BrowserWindow nạp /terminal/<id> — tức là một MÀN HÌNH
+// gắn vào phiên đã có trên Next server, không phải là nơi chứa phiên. Nhờ vậy:
+//
+//   • đóng cửa sổ  → chỉ ngắt SSE, shell vẫn chạy
+//   • cửa sổ crash → y hệt, phiên còn nguyên
+//   • app văng     → phiên vẫn sống miễn là Next server còn (xem stopDevServer)
+//
+// Mở lại cửa sổ cho cùng một id thì FOCUS cửa sổ đang có chứ không tạo cái
+// thứ hai — hai màn hình cùng nhìn một shell là rối và gõ phím sẽ lẫn nhau.
+const termWindows = new Map(); // id phiên → BrowserWindow
+
+ipcMain.handle('workspace:openTerminalWindow', (_evt, payload) => {
+  const id = payload && typeof payload.id === 'string' ? payload.id : '';
+  // id là uuid do server sinh — chặn mọi thứ khác để không nạp URL tuỳ ý.
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return { ok: false, error: 'id phiên không hợp lệ' };
+
+  const existing = termWindows.get(id);
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore();
+    existing.focus();
+    return { ok: true, focused: true };
+  }
+
+  const title = payload && typeof payload.title === 'string' ? payload.title : 'Terminal';
+  try {
+    const win = new BrowserWindow({
+      width: 980,
+      height: 620,
+      title: `${title} — VHS Terminal`,
+      backgroundColor: '#1E1F22',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        additionalArguments: ['--ws-config=' + JSON.stringify(CONFIG)],
+        devTools: true,
+      },
+    });
+    // Cửa sổ terminal không cần menu — F11/F12 vẫn dùng được qua phím tắt.
+    win.setMenuBarVisibility(false);
+    // Link bấm trong terminal (URL trong output) → mở bằng trình duyệt ngoài,
+    // đừng biến cửa sổ terminal thành trình duyệt.
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+      return { action: 'deny' };
+    });
+    win.on('closed', () => termWindows.delete(id));
+
+    termWindows.set(id, win);
+    void win.loadURL(`${APP_URL}/terminal/${id}`);
+    log('TerminalWindow', `${id} — ${title}`);
+    return { ok: true };
+  } catch (err) {
+    log('TerminalWindowError', err && err.message);
+    return { ok: false, error: (err && err.message) || 'không mở được cửa sổ' };
+  }
+});
+
 // ── Một app duy nhất ───────────────────────────────────────────────────────
 //
 // BẮT BUỘC từ khi có "Open with": mỗi lần bấm mở file, Windows chạy lại lệnh
@@ -1420,6 +1665,9 @@ if (!app.requestSingleInstanceLock()) {
     if (pendingOpenFile) log('OpenFileQueued', pendingOpenFile);
     await ensureDevServer(); // start next dev if nothing is serving :3000 yet
     createWindow();
+    // Theo dõi số phiên terminal đang sống — stopDevServer() đọc con số này để
+    // quyết định có được phép tắt server lúc thoát app hay không.
+    startTerminalPoll();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });

@@ -185,6 +185,12 @@ export interface WorkspaceBridge {
     Promise<{ ok: boolean; manual?: boolean; error?: string }>;
   /** Chép chuỗi vào clipboard (nút chép mật khẩu ở tab Remote). */
   copyText?(text: string): Promise<{ ok: boolean; error?: string }>;
+  /** Tab Terminal — mở phiên `id` ở một CỬA SỔ RIÊNG (BrowserWindow nạp
+   *  /terminal/<id>). Cửa sổ chỉ là màn hình gắn vào phiên đang chạy trên Next
+   *  server: đóng nó không giết shell. Gọi lại cùng id thì focus cửa sổ đang có
+   *  (`focused: true`). Optional: preload cũ chưa expose. */
+  openTerminalWindow?(payload: { id: string; title?: string }):
+    Promise<{ ok: boolean; focused?: boolean; error?: string }>;
   /** Zalo API (thử nghiệm): đọc cookie HttpOnly của một phiên `zaloapi-*` —
    *  zpsid/zpw_sek/… mà renderer không thấy qua document.cookie. Optional:
    *  preload cũ chưa expose. */

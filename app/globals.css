@@ -7053,3 +7053,264 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .zc-older-note { font-size: 11px; color: var(--faint); text-align: center; max-width: 80%; line-height: 1.4; }
 .zc-msg-img { display: block; max-width: 240px; border-radius: 12px; overflow: hidden; border: 1px solid var(--glass-brd); }
 .zc-msg-img img { display: block; width: 100%; height: auto; }
+
+/* ══ Tab Terminal ═══════════════════════════════════════════════════════════
+   Khung app dùng token chung (glass/accent) để hoà vào phần còn lại của DevBox,
+   nhưng MẶT TERMINAL thì luôn tối ở cả hai theme: nền sáng cho một cái shell là
+   chói mắt và lệch hẳn với mọi terminal khác trên máy. Đây là chủ ý, không phải
+   quên khai biến theme. */
+.tw { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+
+/* ── Thanh điều khiển ─────────────────────────────────────────────────────── */
+.tw-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; border-radius: 12px;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+}
+.tw-title { font-size: 12.5px; font-weight: 700; color: var(--text); white-space: nowrap; letter-spacing: 0.02em; }
+.tw-gap { flex: 1; }
+
+/* Chọn shell — segmented control */
+.tw-seg { display: inline-flex; border: 1px solid var(--glass-brd); border-radius: 10px; overflow: hidden; }
+.tw-seg-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 11px; font-size: 12px; cursor: pointer;
+  background: transparent; border: 0; border-right: 1px solid var(--glass-brd);
+  color: var(--muted); white-space: nowrap;
+}
+.tw-seg-btn:last-child { border-right: 0; }
+.tw-seg-btn:hover { background: var(--glass-2); color: var(--text); }
+.tw-seg-btn.on { background: var(--accent-solid); color: #fff; font-weight: 600; }
+.tw-seg-ico { font-family: var(--mono); font-size: 11px; opacity: 0.9; }
+
+/* Nút mở — nút chính đặc, nút phụ ("cửa sổ riêng") viền */
+.tw-new {
+  padding: 6px 13px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  border-radius: 10px; border: 1px solid transparent;
+  background: var(--accent-solid); color: #fff; white-space: nowrap;
+}
+.tw-new:hover:not(:disabled) { filter: brightness(1.12); }
+.tw-new:disabled { opacity: 0.55; cursor: default; }
+.tw-new.alt { background: var(--glass-2); color: var(--text); border-color: var(--glass-brd); }
+.tw-new.alt:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); filter: none; }
+.tw-err {
+  color: var(--err); background: var(--err-bg); border-radius: 8px; padding: 4px 9px;
+  font-size: 11.5px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── Tab phiên ──────────────────────────────────────────────────────────────
+   Nằm TRONG .tw-bar, giữa tiêu đề và nút ＋. Cho phép co lại + cuộn ngang khi
+   mở nhiều phiên, để nút ＋ không bao giờ bị đẩy khuất. */
+.tw-tabs {
+  display: flex; align-items: center; gap: 6px;
+  flex: 1 1 auto; min-width: 0; overflow-x: auto; padding: 2px;
+  scrollbar-width: thin;
+}
+.tw-tabs::-webkit-scrollbar { height: 6px; }
+.tw-tabs::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 999px; }
+.tw-tab {
+  display: inline-flex; align-items: center; border-radius: 9px;
+  flex: 0 0 auto;   /* đừng để tab bị bóp méo khi thanh chật — cuộn ngang thay vì co */
+  background: var(--glass); border: 1px solid var(--glass-brd); overflow: hidden;
+}
+.tw-tab.on { background: var(--accent-solid); border-color: var(--accent-solid); }
+.tw-tab-main {
+  padding: 5px 10px; font-size: 12px; cursor: pointer;
+  background: transparent; border: 0; color: var(--muted); max-width: 240px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tw-tab.on .tw-tab-main { color: #fff; font-weight: 600; }
+.tw-tab.dead .tw-tab-main { color: var(--err); }
+.tw-tab-edit {
+  padding: 4px 8px; font-size: 12px; width: 150px;
+  background: var(--bg-1); border: 1px solid var(--accent); border-radius: 6px; color: var(--text);
+  margin: 2px;
+}
+.tw-tab-pop, .tw-tab-x {
+  width: 24px; height: 26px; cursor: pointer; font-size: 11px;
+  background: transparent; border: 0; color: var(--faint);
+}
+.tw-tab.on .tw-tab-pop, .tw-tab.on .tw-tab-x { color: rgba(255, 255, 255, 0.75); }
+.tw-tab-pop:hover { background: var(--glass-2); color: var(--accent); }
+.tw-tab-x:hover { background: var(--err-bg); color: var(--err); }
+
+/* ── Phiên đang ở cửa sổ rời ──────────────────────────────────────────────── */
+.tw-detached {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 7px 10px; border-radius: 10px;
+  background: var(--warn-bg); border: 1px solid var(--glass-brd);
+}
+.tw-detached-label { font-size: 11.5px; font-weight: 600; color: var(--warn); white-space: nowrap; }
+.tw-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 4px 3px 10px; border-radius: 999px;
+  background: var(--glass-2); border: 1px solid var(--glass-brd);
+}
+.tw-chip.dead { border-color: var(--err); }
+.tw-chip-name { font-size: 11.5px; color: var(--text); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tw-chip-btn {
+  padding: 2px 9px; font-size: 11px; cursor: pointer; border-radius: 999px;
+  background: transparent; border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.tw-chip-btn:hover { border-color: var(--accent); color: var(--accent); }
+.tw-chip-x {
+  width: 20px; height: 20px; border-radius: 50%; cursor: pointer; font-size: 10px;
+  background: transparent; border: 0; color: var(--faint);
+}
+.tw-chip-x:hover { background: var(--err-bg); color: var(--err); }
+
+/* ── Khung terminal ───────────────────────────────────────────────────────── */
+.tw-body {
+  flex: 1; min-height: 0; position: relative;
+  border-radius: 12px; overflow: hidden;
+  background: #1E1F22; border: 1px solid var(--glass-brd);
+  padding: 6px;
+}
+.tw-xterm { width: 100%; height: 100%; }
+/* xterm tự vẽ nền của nó; ép trong suốt để bo góc + padding của .tw-body ăn. */
+.tw-xterm .xterm .xterm-viewport { background-color: transparent !important; }
+
+.tw-warn, .tw-deadbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 6px; padding: 6px 10px; border-radius: 8px; font-size: 11.5px;
+}
+.tw-warn { background: var(--warn-bg); color: var(--warn); }
+.tw-deadbar { background: var(--err-bg); color: var(--err); }
+.tw-deadbar button {
+  padding: 3px 10px; font-size: 11px; cursor: pointer; border-radius: 6px;
+  background: transparent; border: 1px solid currentColor; color: inherit;
+}
+.tw-deadbar button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+
+/* Màn hình trống — nơi giải thích hai chế độ, đọc một lần là hiểu. */
+.tw-empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+  gap: 8px; padding: 24px; color: #9AA0A6;
+}
+.tw-empty-ico { font-size: 34px; opacity: 0.45; }
+.tw-empty h3 { margin: 0; font-size: 15px; font-weight: 600; color: #C9CDD3; }
+.tw-empty p { margin: 0; font-size: 12.5px; max-width: 520px; line-height: 1.65; }
+.tw-empty b { color: #C9CDD3; }
+.tw-empty-note { font-size: 11.5px !important; color: #7B818A; }
+/* Nút mở ngay trong màn hình trống — đỡ phải rê chuột ngược lên thanh. */
+.tw-empty .tw-new { margin-top: 6px; }
+.tw-empty code {
+  font-family: var(--mono); font-size: 11px; color: #FFC66D;
+  background: rgba(255, 255, 255, 0.06); padding: 1px 5px; border-radius: 4px;
+}
+
+/* ══ Cửa sổ terminal rời (app/terminal/[id]) ════════════════════════════════ */
+.tw-win { position: fixed; inset: 0; display: flex; flex-direction: column; background: #1E1F22; }
+.tw-win-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; background: #2B2D30; border-bottom: 1px solid #393B40;
+}
+.tw-win-name { font-size: 12.5px; font-weight: 600; color: #DFE1E5; white-space: nowrap; }
+.tw-win-cwd {
+  font-family: var(--mono); font-size: 11px; color: #7B818A;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46vw;
+}
+.tw-win-tag {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 2px 7px; border-radius: 999px; background: #3C3F41; color: #E5BF00;
+}
+.tw-win-tag.dead { color: #F0524F; }
+.tw-win-btn {
+  padding: 4px 11px; font-size: 11.5px; cursor: pointer; border-radius: 7px;
+  background: #3C3F41; border: 1px solid #4B5052; color: #C9CDD3; white-space: nowrap;
+}
+.tw-win-btn:hover { background: #4B5052; color: #fff; }
+.tw-win-btn.danger:hover { background: #7E3333; border-color: #A33; color: #fff; }
+.tw-win-body { flex: 1; min-height: 0; padding: 6px 8px; }
+.tw-win-foot {
+  padding: 5px 12px; font-size: 11px; color: #6B7178;
+  background: #2B2D30; border-top: 1px solid #393B40;
+}
+.tw-win-foot b { color: #9AA0A6; }
+.tw-win-msg { align-items: center; justify-content: center; gap: 12px; color: #9AA0A6; font-size: 13px; }
+.tw-win-msg button {
+  padding: 6px 14px; font-size: 12px; cursor: pointer; border-radius: 8px;
+  background: #3C3F41; border: 1px solid #4B5052; color: #C9CDD3;
+}
+
+/* ── Popup "Terminal mới" ──────────────────────────────────────────────────
+   Hỏi shell + thư mục ngay lúc bấm ＋. Nổi trên workspace, nền mờ chặn thao
+   tác phía sau để lựa chọn là một hành động dứt khoát. */
+.tw-modal-back {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px);
+}
+.tw-modal {
+  position: fixed; z-index: 61;
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(560px, calc(100vw - 32px));
+  display: flex; flex-direction: column;
+  border-radius: 14px; overflow: hidden; outline: none;
+  background: var(--bg-1); border: 1px solid var(--glass-brd-hover);
+  box-shadow: var(--shadow);
+}
+.tw-modal-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border-bottom: 1px solid var(--glass-brd);
+}
+.tw-modal-title { font-size: 13.5px; font-weight: 700; color: var(--text); flex: 1; }
+.tw-modal-x {
+  width: 26px; height: 26px; border-radius: 7px; cursor: pointer; font-size: 12px;
+  background: transparent; border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.tw-modal-x:hover { border-color: var(--err); color: var(--err); }
+.tw-modal-body { padding: 14px; display: flex; flex-direction: column; gap: 16px; }
+
+.tw-field { display: flex; flex-direction: column; gap: 7px; }
+.tw-label {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.tw-label-opt {
+  text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 10.5px;
+  padding: 1px 7px; border-radius: 999px;
+  background: var(--glass); color: var(--faint);
+}
+
+/* Đường dẫn đang chọn + nút mở FolderPicker */
+.tw-path-row { display: flex; align-items: center; gap: 8px; }
+.tw-path {
+  flex: 1; min-width: 0; padding: 7px 10px; border-radius: 9px;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  background: var(--glass); border: 1px dashed var(--glass-brd); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Đã chọn tay → viền liền, chữ rõ: nhìn là biết KHÔNG còn ở mặc định. */
+.tw-path.set { border-style: solid; border-color: var(--accent); color: var(--text); }
+.tw-mini {
+  padding: 6px 11px; font-size: 11.5px; cursor: pointer; white-space: nowrap;
+  border-radius: 8px; background: var(--glass-2);
+  border: 1px solid var(--glass-brd); color: var(--text);
+}
+.tw-mini:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Nhảy nhanh: thư mục app · System · lần trước */
+.tw-quick { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tw-quick-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 11px; font-size: 11.5px; cursor: pointer; border-radius: 999px;
+  background: transparent; border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.tw-quick-btn:hover { border-color: var(--glass-brd-hover); color: var(--text); }
+.tw-quick-btn.on {
+  background: var(--accent-solid); border-color: var(--accent-solid);
+  color: #fff; font-weight: 600;
+}
+.tw-hint { margin: 0; font-size: 11px; color: var(--faint); line-height: 1.5; }
+
+.tw-modal-foot {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 12px 14px; border-top: 1px solid var(--glass-brd); background: var(--glass);
+}
+.tw-keyhint { font-size: 10.5px; color: var(--faint); }
+.tw-keyhint kbd {
+  font-family: var(--mono); font-size: 10px; padding: 1px 5px; border-radius: 4px;
+  background: var(--glass-2); border: 1px solid var(--glass-brd); color: var(--muted);
+}

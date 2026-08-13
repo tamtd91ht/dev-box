@@ -1,7 +1,8 @@
-// Server-only terminal session manager for Code Studio.
+// Server-only terminal session manager — dùng chung cho Code Studio VÀ tab
+// Terminal độc lập.
 //
-// A session is ONE live shell (PowerShell / cmd / Git Bash) chạy trong thư mục
-// project. Ưu tiên node-pty (ConPTY thật — TUI như Claude Code, vim, gradle
+// A session is ONE live shell (PowerShell / cmd / Git Bash) chạy trong một thư
+// mục bất kỳ. Ưu tiên node-pty (ConPTY thật — TUI như Claude Code, vim, gradle
 // progress render chuẩn); nếu native module không load được trong runtime hiện
 // tại (vd. server được desktop shell spawn bằng ELECTRON_RUN_AS_NODE → ABI
 // khác) thì fallback sang child_process pipes: lệnh thường vẫn chạy, TUI thì
@@ -10,10 +11,17 @@
 // Registry sống trong globalThis để survive Next dev hot-reload. Output giữ
 // trong ring buffer ~200KB/phiên: client (SSE) kết nối lại là replay được đúng
 // màn hình đang có.
+//
+// VÌ SAO PHIÊN SỐNG SÓT KHI APP CRASH — shell là con của TIẾN TRÌNH NEXT
+// SERVER, không phải của cửa sổ Electron. Cửa sổ (kể cả cửa sổ rời) chỉ là màn
+// hình gắn vào phiên qua SSE: đóng nó, crash nó, hay F5 đều không đụng tới
+// shell. Mở lại là replay ring buffer ra đúng nội dung đang có. Điều kiện duy
+// nhất là Next server còn sống — xem stopDevServer() trong electron/main.cjs,
+// nó KHÔNG tắt server khi vẫn còn phiên terminal.
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { randomUUID } from 'crypto';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 
 export type ShellKind = 'powershell' | 'cmd' | 'bash';
 
@@ -28,12 +36,18 @@ interface PtyLike {
 
 export interface TermSession {
   id: string;
+  /** Code Studio dùng id project; tab Terminal độc lập dùng OWNER_STANDALONE. */
   projectId: string;
   cwd: string;
   shell: ShellKind;
+  /** Nhãn người dùng thấy trên tab. Đặt lúc tạo, đổi được bằng renameSession. */
+  label: string;
   /** true = node-pty (ConPTY thật); false = pipes fallback. */
   pty: boolean;
   createdAt: number;
+  /** Phiên đang được xem ở cửa sổ RỜI (popout) chứ không phải trong tab chính.
+   *  Chỉ là cờ hiển thị — phiên sống độc lập với mọi cửa sổ. */
+  detached: boolean;
   buffer: string[];
   bufferBytes: number;
   subscribers: Set<(chunk: string) => void>;
@@ -43,6 +57,9 @@ export interface TermSession {
   resize(cols: number, rows: number): void;
   kill(): void;
 }
+
+/** projectId của phiên mở từ tab Terminal (không thuộc project Git nào). */
+export const OWNER_STANDALONE = '@standalone';
 
 const BUFFER_LIMIT = 200 * 1024;
 const MAX_SESSIONS = 12;
@@ -96,10 +113,18 @@ function pushChunk(s: TermSession, chunk: string) {
   for (const cb of s.subscribers) cb(chunk);
 }
 
+/** Nhãn mặc định khi người dùng không đặt tên: "PS · dev-box". */
+function defaultLabel(shell: ShellKind, cwd: string): string {
+  const kind = shell === 'powershell' ? 'PS' : shell === 'cmd' ? 'cmd' : 'bash';
+  const leaf = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+  return leaf ? `${kind} · ${leaf}` : kind;
+}
+
 export function createSession(opts: {
   projectId: string;
   cwd: string;
   shell?: ShellKind;
+  label?: string;
   cols?: number;
   rows?: number;
 }): TermSession {
@@ -107,6 +132,12 @@ export function createSession(opts: {
   for (const [id, s] of REG) if (s.exited) REG.delete(id);
   if (REG.size >= MAX_SESSIONS) {
     throw new Error(`Quá ${MAX_SESSIONS} terminal đang mở — đóng bớt trước.`);
+  }
+
+  // cwd phải là thư mục CÓ THẬT: spawn với cwd không tồn tại thì node-pty ném
+  // lỗi ENOENT khó hiểu ("File not found"), người dùng tưởng thiếu shell.
+  if (!existsSync(opts.cwd) || !statSync(opts.cwd).isDirectory()) {
+    throw new Error(`Thư mục không tồn tại: ${opts.cwd}`);
   }
 
   const shell: ShellKind = opts.shell ?? 'powershell';
@@ -120,6 +151,8 @@ export function createSession(opts: {
     projectId: opts.projectId,
     cwd: opts.cwd,
     shell,
+    label: (opts.label ?? '').trim() || defaultLabel(shell, opts.cwd),
+    detached: false,
     createdAt: Date.now(),
     buffer: [] as string[],
     bufferBytes: 0,
@@ -209,26 +242,56 @@ export function getSession(id: string): TermSession | undefined {
   return REG.get(id);
 }
 
-export function listSessions(projectId?: string): Array<{
+export interface TermSessionInfo {
   id: string;
   projectId: string;
   cwd: string;
   shell: ShellKind;
+  label: string;
   pty: boolean;
+  detached: boolean;
   exited: boolean;
   createdAt: number;
-}> {
+}
+
+export function listSessions(projectId?: string): TermSessionInfo[] {
   return [...REG.values()]
     .filter((s) => !projectId || s.projectId === projectId)
-    .map(({ id, projectId: pid, cwd, shell, pty, exited, createdAt }) => ({
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map(({ id, projectId: pid, cwd, shell, label, pty, detached, exited, createdAt }) => ({
       id,
       projectId: pid,
       cwd,
       shell,
+      label,
       pty,
+      detached,
       exited,
       createdAt,
     }));
+}
+
+/** Số phiên CÒN SỐNG — electron/main.cjs hỏi con số này trước khi tắt Next
+ *  server lúc đóng app: còn phiên thì để server chạy tiếp, mở app lại là thấy
+ *  nguyên màn hình cũ. */
+export function liveCount(): number {
+  let n = 0;
+  for (const s of REG.values()) if (!s.exited) n++;
+  return n;
+}
+
+export function renameSession(id: string, label: string): void {
+  const s = REG.get(id);
+  if (!s) return;
+  const next = label.trim();
+  if (next) s.label = next.slice(0, 60);
+}
+
+/** Đánh dấu phiên đang xem ở cửa sổ rời (hoặc đã kéo về tab chính). Cờ hiển
+ *  thị thuần tuý — không đụng gì tới tiến trình shell. */
+export function setDetached(id: string, detached: boolean): void {
+  const s = REG.get(id);
+  if (s) s.detached = detached;
 }
 
 export function killSession(id: string): void {

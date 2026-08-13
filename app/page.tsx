@@ -12,6 +12,7 @@ import ApiExplorerWorkspace, { type IntegrationView } from '@/components/ApiExpl
 import PackManager from '@/components/PackManager';
 import GitWorkspace from '@/components/GitWorkspace';
 import CodeStudio from '@/components/CodeStudio';
+import TerminalWorkspace from '@/components/TerminalWorkspace';
 import RedisWorkspace from '@/components/RedisWorkspace';
 import KafkaWorkspace from '@/components/KafkaWorkspace';
 import RabbitWorkspace from '@/components/RabbitWorkspace';
@@ -161,6 +162,7 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'work', icon: '📋', label: 'Công việc', badge: 'todo' },
   { key: 'git', icon: '⎇', label: 'Git', badge: 'local' },
   { key: 'code', icon: '⌨', label: 'Code', badge: 'ide' },
+  { key: 'terminal', icon: '❯', label: 'Terminal', badge: 'shell' },
   { key: 'redis', icon: '◆', label: 'Redis', badge: 'local' },
   { key: 'kafka', icon: '≋', label: 'Kafka', badge: 'local' },
   { key: 'rabbit', icon: '🐇', label: 'RabbitMQ', badge: 'local' },
@@ -649,6 +651,11 @@ export default function Home() {
         {visited.code && (
           <main className="workspace" style={pane('code')} aria-hidden={!shown('code')}>
             <CodeStudio />
+          </main>
+        )}
+        {visited.terminal && (
+          <main className="workspace" style={pane('terminal')} aria-hidden={!shown('terminal')}>
+            <TerminalWorkspace visible={shown('terminal')} />
           </main>
         )}
         {visited.redis && (

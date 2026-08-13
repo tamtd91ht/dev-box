@@ -108,6 +108,12 @@ contextBridge.exposeInMainWorld('workspace', {
     ipcRenderer.on('desktop:openLocalFile', handler);
     return () => ipcRenderer.removeListener('desktop:openLocalFile', handler);
   },
+  /** Tab Terminal — chế độ "cửa sổ mới": mở một BrowserWindow riêng nạp
+   *  /terminal/<id>. Cửa sổ chỉ là màn hình gắn vào phiên đang chạy trên Next
+   *  server, nên đóng nó (hay nó crash) KHÔNG giết shell. Mở lại cùng id thì
+   *  focus cửa sổ đang có.
+   *  → { ok: true, focused? } | { ok: false, error } */
+  openTerminalWindow: (payload) => ipcRenderer.invoke('workspace:openTerminalWindow', payload),
   /** Zalo API (thử nghiệm): đọc cookie HttpOnly (zpsid/zpw_sek/…) của một phiên
    *  zaloapi-*. Renderer không đọc được cookie HttpOnly qua document.cookie, nên
    *  main process đọc hộ qua session.cookies.get.
