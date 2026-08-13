@@ -1231,9 +1231,21 @@ function SignatureModal({ account, onDone, onCancel }: {
   const [fetched, setFetched] = useState<ZimbraSignature[] | null>(null);
   const [pulling, setPulling] = useState(false);
 
-  const submit = async () => {
+  /** `value` truyền tay khi người gọi vừa đổi nội dung trong cùng một handler —
+   *  setHtml() là bất đồng bộ nên đọc `html` ngay sau đó vẫn ra giá trị cũ. */
+  const submit = async (opts: { force?: boolean; value?: string } = {}) => {
+    const next = opts.value ?? html;
+    // Lưu ô trống ĐÈ LÊN chữ ký đang có = xoá mất, mà lại im lặng. Hỏi lại một
+    // nhịp; nút "Xoá chữ ký" thì đi thẳng (force) vì đó là ý định rõ ràng.
+    if (!opts.force && htmlToText(next).trim() === '' && account.signature) {
+      const ok = window.confirm(
+        'Ô chữ ký đang trống — lưu sẽ XOÁ chữ ký hiện có của hòm thư này.\n\n'
+        + 'Muốn lấy lại bản trên webmail thì bấm "⇩ Lấy từ webmail" trước.',
+      );
+      if (!ok) return;
+    }
     setBusy(true); setErr(null);
-    try { onDone(await mSignatureSet(account.id, html, onReply)); }
+    try { onDone(await mSignatureSet(account.id, next, onReply)); }
     catch (e) { setErr((e as Error).message); setBusy(false); }
   };
 
@@ -1315,10 +1327,23 @@ function SignatureModal({ account, onDone, onCancel }: {
           <button onClick={() => void submit()} disabled={busy}>
             {busy ? <span className="spinner" aria-hidden /> : '💾'} Lưu
           </button>
+          {/* Chưa có chữ ký mà ô cũng trống → nhắc luôn đường lấy về, khỏi mò. */}
+          {!account.signature && htmlToText(html).trim() === '' && account.auth !== 'oauth' && (
+            <span className="small" style={{ color: 'var(--faint)', alignSelf: 'center' }}>
+              chưa có chữ ký — bấm “⇩ Lấy từ webmail” ở trên
+            </span>
+          )}
           {account.signature && (
             <button className="ghost" disabled={busy}
-              title="Xoá chữ ký của tài khoản này"
-              onClick={() => { setHtml(''); }}>
+              title="Xoá hẳn chữ ký của hòm thư này"
+              onClick={() => {
+                if (!window.confirm(`Xoá chữ ký của ${account.email}?`)) return;
+                // Xoá là LƯU luôn state rỗng, không chỉ dọn ô soạn — trước đây
+                // chỉ setHtml('') nên phải bấm thêm Lưu mới thật sự xoá, dễ
+                // tưởng đã xong rồi đóng modal.
+                setHtml('');
+                void submit({ force: true, value: '' });
+              }}>
               Xoá chữ ký
             </button>
           )}
