@@ -951,6 +951,9 @@ function MailboxView({ account, onCompose }: {
       setItems((cur) => cur.map((x) => ({ ...x, seen: true })));
       setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: 0 } : f)));
       pingMailWatch();
+      // Lấy lại số chưa đọc THẬT: markAllSeen chạy trên toàn folder, kể cả các
+      // trang chưa tải, nên đừng để badge/nút dựa vào phỏng đoán ở client.
+      loadFolders();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -959,6 +962,11 @@ function MailboxView({ account, onCompose }: {
   };
 
   const curFolder = folders.find((f) => f.path === path);
+  /** Còn thư chưa đọc? Tin danh sách đang xem TRƯỚC — nó là thứ vừa lấy từ
+   *  server; chỉ khi cả trang đều đã đọc mới hỏi tới curFolder.unseen (có thể
+   *  còn thư chưa đọc ở các trang chưa tải). Chưa tải xong thì coi như còn, để
+   *  nút không nhấp nháy giữa mờ và sáng. */
+  const hasUnread = items.length === 0 ? true : items.some((m) => !m.seen) || (curFolder?.unseen ?? 0) > 0;
   // Đang đứng trong Thùng rác → xóa là VĨNH VIỄN (server sẽ expunge).
   const inTrash = curFolder?.specialUse === '\\Trash' || /^trash$/i.test(curFolder?.name ?? '');
 
@@ -1069,13 +1077,17 @@ function MailboxView({ account, onCompose }: {
               <span className="small" style={{ color: 'var(--muted)' }}>{total ? `· ${total} mail` : ''}</span>
               {loading && <span className="spinner" aria-hidden />}
               <span style={{ flex: 1 }} />
-              {(curFolder?.unseen ?? 0) > 0 && (
-                <button className="ghost sm" disabled={markingAll}
-                  onClick={() => void markAllRead()}
-                  title="Đánh dấu tất cả mail trong thư mục này là đã đọc">
-                  {markingAll ? <span className="spinner" aria-hidden /> : '✓ Đánh dấu tất cả đã đọc'}
-                </button>
-              )}
+              {/* Luôn hiện — chỉ mờ khi CHẮC CHẮN không còn thư chưa đọc. Ẩn
+                  theo curFolder.unseen là sai: số đó chỉ lấy từ server lúc mở
+                  tab / bấm ↻, còn giữa chừng bị trừ dần optimistic mỗi lần mở
+                  một mail, nên nút biến mất dù folder vẫn còn thư chưa đọc. */}
+              <button className="ghost sm" disabled={markingAll || !hasUnread}
+                onClick={() => void markAllRead()}
+                title={hasUnread
+                  ? 'Đánh dấu tất cả mail trong thư mục này là đã đọc'
+                  : 'Thư mục này không còn mail chưa đọc'}>
+                {markingAll ? <span className="spinner" aria-hidden /> : '✓ Đánh dấu tất cả đã đọc'}
+              </button>
               <button
                 className="ghost sm"
                 aria-pressed={threaded}
