@@ -540,7 +540,17 @@ export default function WatchesPanel({
                     <span className="auto-rule-name">
                       <span title={`mức độ: ${w.severity ?? 'warning'}`}>{severityShort(w.severity)}</span>{' '}
                       {w.name}
-                      {s?.firing ? <em className="auto-firing">đang cảnh báo</em> : null}
+                      {/* Bị một watch NẶNG HƠN cùng nhóm che → không phát tin.
+                          Hiện rõ ngay đây vì "sao cái này không kêu" là câu
+                          hỏi đầu tiên khi thấy nó vượt ngưỡng mà im. */}
+                      {s?.suppressedBy ? (
+                        <em
+                          className="auto-suppressed"
+                          title={`Đang vượt ngưỡng nhưng KHÔNG phát cảnh báo: watch "${s.suppressedBy}" nặng hơn trên cùng máy + cùng chỉ số đang kêu rồi. Tránh hai tin cho một sự việc — tắt ở ô "Chống trùng cảnh báo" nếu muốn cả hai cùng kêu.`}
+                        >
+                          🔇 bị {s.suppressedBy} che
+                        </em>
+                      ) : s?.firing ? <em className="auto-firing">đang cảnh báo</em> : null}
                       {orphans.has(w.id) ? (
                         <em
                           className="auto-orphan"

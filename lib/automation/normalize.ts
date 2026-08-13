@@ -401,6 +401,9 @@ export function normalizeConfig(raw: unknown): AutomationConfig {
     // remove the only thing standing between two linked accounts and a
     // ping-pong loop.
     loopGuard: bool(c.loopGuard, d.loopGuard),
+    // Cũng mặc định TRUE: file cấu hình cũ (chưa có khoá này) mà rơi về false
+    // là lặng lẽ trả lại đúng cái lỗi trùng cảnh báo mà nó sinh ra để chặn.
+    dedupeLadder: bool(c.dedupeLadder, d.dedupeLadder ?? true),
     // Unknown/missing → no group gets OS pop-ups. Opting IN must be explicit.
     osNotify: strArr(c.osNotify).filter((g): g is EventCategory =>
       CATEGORIES.includes(g as EventCategory),

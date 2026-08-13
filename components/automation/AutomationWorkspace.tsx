@@ -134,6 +134,13 @@ export default function AutomationWorkspace() {
             label="Chặn vòng lặp"
             hint="bỏ qua tin do chính automation vừa gửi — tắt là có thể tự bắn vòng tròn"
           />
+          <Toggle
+            checked={cfg.dedupeLadder !== false}
+            onChange={(v) => flip({ dedupeLadder: v })}
+            label="Chống trùng cảnh báo"
+            hint="nhiều ngưỡng trên cùng máy + cùng chỉ số → chỉ mức nặng nhất kêu (vd disk >90% che >80%)"
+            disabled={!cfg.watchEnabled}
+          />
         </div>
 
         {/* Thông báo hệ điều hành: TẮT hết theo mặc định. Mỗi lần bắn là một cửa

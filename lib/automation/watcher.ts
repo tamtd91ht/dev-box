@@ -32,6 +32,21 @@ import type { AutomationConfig, InfraWatch } from './types';
 const TICK_MS = 2000;
 /** How often the trace says "still running" when nothing else happens. */
 const HEARTBEAT_MS = 5 * 60 * 1000;
+/**
+ * Trạng thái vượt-ngưỡng cũ hơn mức này thì không dùng để che watch khác nữa.
+ *
+ * Watch trong cùng nhóm có thể có `everySec` khác nhau, nên số liệu "hơi cũ"
+ * là bình thường và vẫn phải tin. Nhưng một watch đã ngừng đo hẳn (bị tắt, lỗi
+ * mạng kéo dài) mà vẫn giữ quyền che thì cả nhóm im lặng theo nó — hỏng nặng
+ * hơn nhiều so với việc báo trùng một nhịp. 15 phút đủ rộng cho watch chậm
+ * nhất mà vẫn đủ chặt để không im quá lâu.
+ */
+const STALE_MS = 15 * 60 * 1000;
+
+/** Ký hiệu toán tử cho câu trace "bị X (ngưỡng > 90) che". */
+const OP_SIGN: Record<InfraWatch['op'], string> = {
+  gt: '>', gte: '≥', lt: '<', lte: '≤', eq: '=', neq: '≠',
+};
 
 /** What the UI shows next to each watch. */
 export interface WatchSample {
@@ -41,6 +56,9 @@ export interface WatchSample {
   breaching: boolean;
   firing: boolean;
   error?: string;
+  /** Tên watch NẶNG HƠN cùng nhóm đang che watch này (nếu có) — UI hiện 🔇 kèm
+   *  lý do, để "sao cái này không kêu" nhìn phát là biết. */
+  suppressedBy?: string;
 }
 
 export interface WatcherSnapshot {
@@ -64,11 +82,80 @@ interface WatchState {
   firing: boolean;
   lastAlertAt: number;
   inFlight: boolean;
+  /**
+   * Watch này có đang vượt ngưỡng ĐỦ LÂU (qua forSec) tính tới lần đo gần nhất
+   * không — tức là "đủ tư cách phát cảnh báo".
+   *
+   * Cần lưu lại vì các watch trong cùng một nhóm bậc ngưỡng có thể có everySec
+   * khác nhau, nên không phải lúc nào chúng cũng đo trong cùng một tick. Muốn
+   * biết "có ai nặng hơn đang kêu không" thì phải nhìn trạng thái GẦN NHẤT của
+   * chúng, chứ không chỉ nhìn những cái vừa đo xong.
+   */
+  eligible: boolean;
+  /** Lần cuối cập nhật `eligible` — số liệu quá cũ thì không tin nữa. */
+  eligibleAt: number;
+  /** Đang bị một watch nặng hơn cùng nhóm che (để UI hiện lý do). */
+  suppressedBy: string | null;
 }
 
 /** Anything here changing means the old breach history is meaningless. */
 const signature = (w: InfraWatch): string =>
   [w.stack, w.connectionId, w.metric, w.op, w.threshold].join('|');
+
+// ── Chống trùng theo BẬC NGƯỠNG (threshold laddering) ──────────────────────
+//
+// VẤN ĐỀ: đặt hai watch trên cùng một thứ để phân mức nặng nhẹ là chuyện bình
+// thường — "disk mongo1 > 90%" (critical) và "disk mongo1 > 80%" (high). Nhưng
+// khi disk = 95% thì CẢ HAI cùng vượt ngưỡng, và mỗi watch tự phát một sự kiện
+// → hai cảnh báo cho đúng một sự việc. Rule không cứu được: lúc nó nhìn thấy
+// sự kiện thì hai cái đã là hai event riêng biệt, và `countBy` chỉ đếm thưa đi
+// chứ không biết cái nào đáng giữ.
+//
+// GIẢI PHÁP: watcher là chỗ DUY NHẤT nhìn thấy đồng thời mọi watch cùng giá trị
+// vừa đo được, nên việc chọn "cái nào đại diện" phải nằm ở đây.
+//
+//   1. Gom watch thành nhóm theo (connection + metric + CHIỀU so sánh).
+//      Cùng máy, cùng chỉ số, cùng chiều = đang đo cùng một thứ ở các mức khác
+//      nhau. Khác metric (disk vs CPU) hay khác máy → nhóm khác, không đụng nhau.
+//   2. Trong một nhóm, xếp hạng theo mức NGHIÊM NGẶT của ngưỡng, không phải
+//      theo severity người dùng gõ: với chiều tăng (gt/gte) thì ngưỡng CAO hơn
+//      là chặt hơn; chiều giảm (lt/lte) thì ngưỡng THẤP hơn là chặt hơn.
+//      Dựa vào con số nên không phụ thuộc việc khai severity có nhất quán không.
+//   3. Mỗi vòng poll, trong các watch đang thực sự vượt ngưỡng của cùng nhóm,
+//      CHỈ cái chặt nhất được phát. Các cái nhẹ hơn bị chặn (ghi trace 🔇).
+//
+// HẠ CẤP: disk tụt 95% → 85% thì A (>90) hết vượt, B (>80) vẫn vượt và giờ là
+// cái chặt nhất còn khớp → B được phát. Đúng thực tế: vẫn còn vấn đề, nhẹ bớt.
+//
+// `eq`/`neq` KHÔNG xếp bậc được (không có "chặt hơn" giữa hai giá trị bằng
+// nhau), nên mỗi watch loại đó đứng riêng một nhóm và không bao giờ bị chặn.
+
+/** Watch cùng nhóm = đang đo cùng một thứ, chỉ khác mức. */
+function ladderKey(w: InfraWatch): string | null {
+  const dir = w.op === 'gt' || w.op === 'gte' ? 'up' : w.op === 'lt' || w.op === 'lte' ? 'down' : null;
+  if (!dir) return null; // eq/neq: không có bậc để so
+  return `${w.stack}|${w.connectionId}|${w.metric}|${dir}`;
+}
+
+/**
+ * Ngưỡng này có CHẶT HƠN ngưỡng kia không (trong cùng một nhóm)?
+ *
+ * Chiều tăng: 90 chặt hơn 80. Chiều giảm: 10 chặt hơn 20. Bằng nhau thì không
+ * cái nào chặt hơn — lúc đó dùng severity rồi tới id để chốt một cái duy nhất,
+ * cốt sao KẾT QUẢ ỔN ĐỊNH giữa các vòng poll (không nhấp nháy đổi bên).
+ */
+const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
+
+function stricter(a: InfraWatch, b: InfraWatch): boolean {
+  const up = a.op === 'gt' || a.op === 'gte';
+  if (a.threshold !== b.threshold) {
+    return up ? a.threshold > b.threshold : a.threshold < b.threshold;
+  }
+  const sa = SEVERITY_RANK[a.severity ?? 'warning'] ?? 2;
+  const sb = SEVERITY_RANK[b.severity ?? 'warning'] ?? 2;
+  if (sa !== sb) return sa > sb;
+  return a.id < b.id; // hoà tuyệt đối — chốt theo id cho ổn định
+}
 
 const sec = (n: number | undefined, fallback: number): number =>
   typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : fallback;
@@ -174,6 +261,9 @@ class InfraWatcher {
           firing: false,
           lastAlertAt: 0,
           inFlight: false,
+          eligible: false,
+          eligibleAt: 0,
+          suppressedBy: null,
         });
       } else if (st.sig !== signature(w)) {
         st.sig = signature(w);
@@ -181,6 +271,9 @@ class InfraWatcher {
         st.firing = false;
         st.lastAlertAt = 0;
         st.nextDue = 0;
+        st.eligible = false;
+        st.eligibleAt = 0;
+        st.suppressedBy = null;
       }
     }
 
@@ -268,6 +361,10 @@ class InfraWatcher {
     // alarm. `up` is always present, so "mất kết nối" still fires.
     if (!has) {
       const note = res.error ?? `không đọc được chỉ số ${watch.metric}`;
+      // Không đọc được thì cũng KHÔNG còn tư cách che watch khác: giữ nguyên
+      // `eligible` cũ là để một watch đã chết tiếp tục bịt miệng cả nhóm.
+      st.eligible = false;
+      st.eligibleAt = res.at;
       trace(cfg, { ...base, ts: res.at, kind: 'error', note });
       this.sample(watch.id, { at: res.at, breaching: false, firing: st.firing, error: note });
       return;
@@ -284,17 +381,38 @@ class InfraWatcher {
       // call (RuleLimits.cooldownSec / maxPerHour / countBy), so a rule can say
       // "once an hour per watch" without every watch having to agree.
       if (heldSec >= sec(watch.forSec, 0)) {
-        st.lastAlertAt = now;
-        st.firing = true;
-        trace(cfg, { ...base, ts: now, kind: 'breach', value, note: `vượt ngưỡng ${Math.round(heldSec)}s` });
-        void automation.submit(
-          infraBreachEvent(watch, value, now, {
-            address: peekAddress(watch.stack, watch.connectionId),
-            // Cả MetricMap của CHÍNH lần đo này — cho fields tuyệt đối (absUsed…).
-            metrics: res.metrics,
-          }),
-        );
+        // Đủ điều kiện phát — ghi lại TRƯỚC khi hỏi bậc ngưỡng, vì chính trạng
+        // thái này là thứ các watch cùng nhóm nhìn vào để biết ai đang kêu.
+        st.eligible = true;
+        st.eligibleAt = now;
+
+        const covering = this.strongerFiring(watch, now);
+        if (covering) {
+          // Có watch NẶNG HƠN cùng nhóm đang kêu → cái này im, khỏi trùng.
+          // Vẫn coi là `firing` để khi nó hết vượt ngưỡng thì logic hồi phục
+          // bên dưới chạy đúng (dọn state), chỉ là không phát sự kiện nào.
+          st.firing = true;
+          st.suppressedBy = covering.name;
+          trace(cfg, {
+            ...base, ts: now, kind: 'suppressed', value,
+            note: `bị "${covering.name}" (ngưỡng ${OP_SIGN[covering.op]} ${covering.threshold}) che — không phát để khỏi trùng`,
+          });
+        } else {
+          st.suppressedBy = null;
+          st.lastAlertAt = now;
+          st.firing = true;
+          trace(cfg, { ...base, ts: now, kind: 'breach', value, note: `vượt ngưỡng ${Math.round(heldSec)}s` });
+          void automation.submit(
+            infraBreachEvent(watch, value, now, {
+              address: peekAddress(watch.stack, watch.connectionId),
+              // Cả MetricMap của CHÍNH lần đo này — cho fields tuyệt đối (absUsed…).
+              metrics: res.metrics,
+            }),
+          );
+        }
       } else {
+        st.eligible = false;
+        st.eligibleAt = now;
         // Breaching but still inside forSec — worth seeing, because "why did it
         // not alert" is answered right here.
         trace(cfg, {
@@ -307,24 +425,71 @@ class InfraWatcher {
       }
     } else if (st.firing) {
       const downSec = Math.round((now - (st.breachSince ?? now)) / 1000);
+      // Watch này có TỪNG phát cảnh báo thật không? Cái bị che suốt thời gian
+      // vượt ngưỡng thì chưa hề gửi tin nào — báo "đã hồi phục" cho một cảnh
+      // báo chưa từng tồn tại là gây hoang mang, nên chỉ dọn state rồi thôi.
+      const everAlerted = st.lastAlertAt > 0;
       st.firing = false;
       st.breachSince = null;
       st.lastAlertAt = 0;
-      trace(cfg, { ...base, ts: now, kind: 'recovered', value, note: `bình thường sau ${downSec}s` });
-      if (watch.notifyRecovery !== false) {
-        void automation.submit(
-          infraRecoveredEvent(watch, value, now, downSec, {
-            address: peekAddress(watch.stack, watch.connectionId),
-            metrics: res.metrics,
-          }),
-        );
+      st.eligible = false;
+      st.eligibleAt = now;
+      st.suppressedBy = null;
+      if (!everAlerted) {
+        trace(cfg, { ...base, ts: now, kind: 'ok', value, note: 'hết vượt ngưỡng (chưa từng phát vì bị che)' });
+      } else {
+        trace(cfg, { ...base, ts: now, kind: 'recovered', value, note: `bình thường sau ${downSec}s` });
+        if (watch.notifyRecovery !== false) {
+          void automation.submit(
+            infraRecoveredEvent(watch, value, now, downSec, {
+              address: peekAddress(watch.stack, watch.connectionId),
+              metrics: res.metrics,
+            }),
+          );
+        }
       }
     } else {
       st.breachSince = null;
+      st.eligible = false;
+      st.eligibleAt = now;
+      st.suppressedBy = null;
       trace(cfg, { ...base, ts: now, kind: 'ok', value });
     }
 
-    this.sample(watch.id, { at: now, value, breaching, firing: st.firing, error: res.error });
+    this.sample(watch.id, {
+      at: now, value, breaching, firing: st.firing, error: res.error,
+      suppressedBy: st.suppressedBy ?? undefined,
+    });
+  }
+
+  /**
+   * Trong cùng nhóm bậc ngưỡng, có watch nào NẶNG HƠN đang vượt ngưỡng không?
+   *
+   * Trả về watch đó (để ghi trace/hiện UI), hoặc null nếu watch đang xét chính
+   * là cái chặt nhất còn khớp — khi đó nó được phát.
+   *
+   * Chỉ tin trạng thái còn MỚI: một watch poll 5 phút/lần mà ta đang xét lúc
+   * phút thứ 4 thì số liệu của nó vẫn dùng được, nhưng nếu nó ngừng đo hẳn
+   * (bị tắt, lỗi mạng kéo dài) thì sau STALE_MS coi như không còn che ai —
+   * thà báo trùng một nhịp còn hơn im lặng vì một watch đã chết.
+   */
+  private strongerFiring(watch: InfraWatch, now: number): InfraWatch | null {
+    const key = ladderKey(watch);
+    if (!key) return null; // eq/neq — không xếp bậc, không bao giờ bị che
+
+    const cfg = automation.current;
+    if (cfg.dedupeLadder === false) return null; // người dùng tắt tính năng
+
+    for (const other of this.activeWatches(cfg)) {
+      if (other.id === watch.id) continue;
+      if (ladderKey(other) !== key) continue;
+      if (!stricter(other, watch)) continue;
+      const os = this.states.get(other.id);
+      if (!os?.eligible) continue;
+      if (now - os.eligibleAt > STALE_MS) continue;
+      return other;
+    }
+    return null;
   }
 
   private sample(id: string, s: WatchSample): void {

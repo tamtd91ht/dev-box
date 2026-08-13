@@ -336,6 +336,58 @@ Lưu ý `dedupeSec` khoá theo **nội dung** (`ruleId|title|text`). Với cản
 thì giá trị đo đổi liên tục nên nó gần như không chặn được gì — hãy dùng
 `cooldownSec` + `countBy`.
 
+## Chống trùng theo bậc ngưỡng (`dedupeLadder`)
+
+Đặt nhiều ngưỡng trên **cùng một thứ** để phân mức nặng nhẹ là chuyện thường:
+
+```
+watch A   disk mongo1 > 90%   (critical)
+watch B   disk mongo1 > 80%   (warning)
+```
+
+Khi `disk = 95%` thì **cả hai** cùng vượt ngưỡng, mỗi watch phát một sự kiện →
+hai cảnh báo cho đúng một sự việc.
+
+`countBy` **không** giải được ca này: lúc rule nhìn thấy thì A và B đã là hai
+event riêng biệt, và `countBy` chỉ đếm thưa đi chứ không biết cái nào đáng giữ.
+Chọn `countBy: 'instance'` thì đúng là còn một tin, nhưng là *tin nào tới trước*
+— có thể là cái nhẹ hơn.
+
+Nên việc chọn "cái nào đại diện" nằm ở **watcher**, chỗ duy nhất nhìn thấy đồng
+thời mọi watch cùng giá trị vừa đo:
+
+1. Gom watch theo **(kết nối + chỉ số + chiều so sánh)**. Cùng máy, cùng chỉ số,
+   cùng chiều = đang đo cùng một thứ ở các mức khác nhau. Khác metric (disk vs
+   CPU) hay khác máy → nhóm khác, không đụng nhau.
+2. Xếp hạng theo **độ chặt của NGƯỠNG**, không theo `severity` người dùng gõ:
+   chiều tăng (`gt`/`gte`) thì ngưỡng cao hơn là chặt hơn; chiều giảm
+   (`lt`/`lte`) thì ngưỡng thấp hơn là chặt hơn. Dựa vào con số nên không phụ
+   thuộc việc khai severity có nhất quán hay không. (Ngưỡng bằng nhau mới xét
+   tới severity, rồi tới `id` để kết quả ổn định giữa các vòng poll.)
+3. Mỗi vòng, trong các watch **đang thực sự vượt ngưỡng** của cùng nhóm, chỉ cái
+   chặt nhất được phát; các mức nhẹ hơn im (trace ghi `🔇 suppressed` kèm tên
+   cái đang che, và WatchesPanel hiện "bị … che").
+
+**Tự hạ cấp:** disk tụt 95% → 85% thì A hết khớp, B thành cái chặt nhất còn khớp
+→ B được phát. Vẫn còn vấn đề, chỉ là nhẹ bớt.
+
+Ba chi tiết dễ sai đã xử lý:
+
+* Watch bị che **suốt** thời gian vượt ngưỡng thì lúc hết vượt sẽ **không** phát
+  `infra.recovered` — báo "đã hồi phục" cho một cảnh báo chưa từng gửi là gây
+  hoang mang. (Kiểm tra bằng `lastAlertAt > 0`.)
+* Watch **không đọc được chỉ số** mất luôn quyền che: giữ nguyên trạng thái cũ
+  là để một watch đã chết bịt miệng cả nhóm.
+* Watch trong cùng nhóm có thể khác `everySec` nên không phải lúc nào cũng đo
+  cùng lúc → dùng trạng thái gần nhất, nhưng cũ quá `STALE_MS` (15 phút) thì bỏ
+  qua. Thà báo trùng một nhịp còn hơn im vì một watch đã ngừng đo.
+
+`eq`/`neq` không xếp bậc được (không có "chặt hơn" giữa hai giá trị bằng nhau)
+nên mỗi watch loại đó đứng riêng và không bao giờ bị che.
+
+Mặc định **BẬT**. Tắt ở công tắc "Chống trùng cảnh báo" khi thật sự cần từng mức
+có tiếng nói riêng (vd mỗi mức đẩy vào một hệ thống khác nhau).
+
 ## Dữ liệu trên máy (đã gitignore)
 
 | File | Nội dung |

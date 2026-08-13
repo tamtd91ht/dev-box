@@ -4348,9 +4348,15 @@ pre.kafka-drawer-body {
 .auto-rule-sub .bad { color: var(--bad, #f85149); }
 .auto-rule-ops { display: flex; align-items: center; gap: 3px; flex: none; }
 .auto-rule-ops button { padding: 2px 7px; font-size: 11px; }
-.auto-dry, .auto-stop, .auto-firing {
+.auto-dry, .auto-stop, .auto-firing, .auto-suppressed {
   margin-left: 7px; font-style: normal; font-size: 9.5px; font-weight: 700;
   text-transform: uppercase; letter-spacing: .04em; border-radius: 4px; padding: 1px 5px;
+}
+/* Đang vượt ngưỡng nhưng bị mức nặng hơn che — KHÔNG phải lỗi, nên tông trầm
+   (muted) chứ không đỏ như "đang cảnh báo": nó là trạng thái mong muốn. */
+.auto-suppressed {
+  color: var(--muted); border: 1px dashed var(--glass-brd);
+  text-transform: none; letter-spacing: 0;
 }
 .auto-dry { color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); }
 .auto-stop { color: var(--muted); border: 1px solid var(--glass-brd); }

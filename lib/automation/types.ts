@@ -555,6 +555,23 @@ export interface AutomationConfig {
   /** INFRA: run the watch pollers. Off = no background probing. */
   watchEnabled: boolean;
   /**
+   * INFRA: chống TRÙNG cảnh báo giữa các watch xếp bậc ngưỡng trên cùng một thứ.
+   *
+   * Đặt "disk > 90% (critical)" và "disk > 80% (warning)" cho cùng một máy là
+   * cách khai mức nặng nhẹ rất thường gặp. Khi disk = 95% thì CẢ HAI cùng vượt
+   * ngưỡng và mỗi watch phát một sự kiện → hai cảnh báo cho một sự việc. Bật cờ
+   * này thì trong mỗi nhóm (cùng máy + cùng chỉ số + cùng chiều so sánh) chỉ
+   * watch có ngưỡng CHẶT NHẤT còn khớp được phát; các mức nhẹ hơn im.
+   *
+   * Disk tụt về 85% → mức 90% hết khớp, mức 80% thành cái chặt nhất → nó phát.
+   * Cảnh báo tự "hạ cấp" thay vì im lặng.
+   *
+   * Mặc định BẬT: gần như không ai muốn hai tin cho cùng một sự việc. Tắt khi
+   * thực sự cần từng mức một tiếng nói riêng (vd mỗi mức đẩy vào một hệ thống
+   * khác nhau). Xem lib/automation/watcher.ts · ladderKey/stricter.
+   */
+  dedupeLadder?: boolean;
+  /**
    * Drop an incoming message that automation itself sent.
    *
    * Without it: a rule sends into a group where ANOTHER linked account is also
@@ -593,6 +610,7 @@ export const DEFAULT_AUTOMATION_CONFIG: AutomationConfig = {
   storeMessageText: true,
   allowSend: false, // sending is off until deliberately enabled
   watchEnabled: false, // opt-in: no background polling until asked for
+  dedupeLadder: true, // hai ngưỡng trên cùng một thứ → chỉ mức nặng nhất kêu
   loopGuard: true, // ON by default — a feedback loop is worse than a missed event
   osNotify: [], // no OS pop-ups until asked for, per group
   activityLimit: 200,

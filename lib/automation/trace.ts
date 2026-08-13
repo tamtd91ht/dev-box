@@ -26,8 +26,9 @@ import type { TraceConfig } from './types';
 export interface TraceLine {
   /** Epoch ms — formatted for display at render time, not here. */
   ts: number;
-  /** ok = read fine · breach · recovered · error = could not read. */
-  kind: 'ok' | 'breach' | 'recovered' | 'error' | 'heartbeat';
+  /** ok = read fine · breach · recovered · error = could not read ·
+   *  suppressed = có vượt ngưỡng nhưng bị một watch NẶNG HƠN cùng nhóm che. */
+  kind: 'ok' | 'breach' | 'recovered' | 'error' | 'heartbeat' | 'suppressed';
   watchId: string;
   watch: string;
   stack: string;
@@ -72,6 +73,7 @@ const ICON: Record<TraceLine['kind'], string> = {
   recovered: '✅',
   error: '✗',
   heartbeat: '♥',
+  suppressed: '🔇',
 };
 
 /** One human-readable line — shared by the console sink and the file viewer. */
