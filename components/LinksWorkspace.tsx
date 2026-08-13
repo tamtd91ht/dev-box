@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { lList, lAdd, lUpdate, lRemove, partitionFor, type SavedLink, type SavedLinkMeta } from '@/lib/links';
 import { onOpenUrl } from '@/lib/openTarget';
+import { normalizeUrl } from '@/lib/bookmarks';
 import { fmtRel } from '@/lib/google';
 import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
@@ -136,9 +137,10 @@ export default function LinksWorkspace() {
   const open = () => {
     const raw = url.trim();
     if (!raw) return;
-    // Thêm https:// nếu gõ thiếu scheme — nếu không webview hiểu là đường dẫn
-    // tương đối → 404 (vd gõ "sso.example.com").
-    const u = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
+    // Thêm scheme nếu gõ thiếu — nếu không webview hiểu là đường dẫn tương đối
+    // → 404 (vd gõ "sso.example.com"). Dùng chung normalizeUrl với tab Browser
+    // nên localhost/mạng riêng ra http, còn từ khóa thì tìm Google.
+    const u = normalizeUrl(raw);
     openInApp(addMeta.name?.trim() || nameFor(u), u, addMeta.profile, {
       ...addMeta,
       tags: splitTags(addMeta.tagsText),

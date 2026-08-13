@@ -12,6 +12,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { configPath } from './configDir';
+import { defaultScheme } from './bookmarks';
 
 export interface SavedLink {
   id: string;
@@ -47,6 +48,22 @@ export interface SavedLinkMeta {
 }
 
 /** Chuẩn hóa tags: trim, bỏ rỗng, dedupe không phân biệt hoa thường. */
+/** Thêm scheme khi thiếu — giữ nguyên nếu đã có, hoặc nếu trông không ra host
+ *  (để addLink vẫn từ chối được rác thay vì biến nó thành URL). */
+function addScheme(raw: string): string {
+  if (!raw || /^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return raw;
+  const bare = raw.replace(/^\/+/, '');
+  const hostPart = bare.split(/[/?#]/)[0];
+  const looksLikeHost =
+    !/\s/.test(bare) && (
+      /^localhost(:\d+)?$/i.test(hostPart) ||
+      /^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(hostPart) ||
+      /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?$/i.test(hostPart) ||
+      /^[a-z0-9-]+:\d+$/i.test(hostPart)
+    );
+  return looksLikeHost ? `${defaultScheme(hostPart)}://${bare}` : raw;
+}
+
 export function normTags(tags: unknown): string[] {
   if (!Array.isArray(tags)) return [];
   const seen = new Set<string>();
@@ -98,7 +115,9 @@ export async function listLinks(): Promise<SavedLink[]> {
 }
 
 export async function addLink(input: { url: string } & SavedLinkMeta): Promise<SavedLink[]> {
-  const url = input.url.trim();
+  // Thiếu scheme thì tự thêm theo defaultScheme (localhost/mạng riêng → http),
+  // để nút 💾 nhận đúng những gì nút Mở đã mở được.
+  const url = addScheme(input.url.trim());
   if (!/^https?:\/\//i.test(url)) throw new Error('Link không hợp lệ — cần bắt đầu bằng http(s)://');
   const links = await readAll();
   if (links.some((l) => l.url === url)) throw new Error('Link này đã được lưu rồi.');

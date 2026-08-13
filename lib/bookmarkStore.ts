@@ -7,6 +7,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { configPath } from './configDir';
+import { defaultScheme } from './bookmarks';
 
 export interface Bookmark {
   id: string;
@@ -34,12 +35,15 @@ async function writeAll(bookmarks: Bookmark[]): Promise<void> {
   await fs.writeFile(REG_PATH, JSON.stringify({ bookmarks }, null, 2), 'utf8');
 }
 
-/** Thêm https:// nếu người dùng gõ thiếu scheme (nguyên nhân 404 hay gặp). */
+/** Thêm scheme nếu người dùng gõ thiếu (nguyên nhân 404 hay gặp). Dùng chung
+ *  defaultScheme với ô địa chỉ để mở và lưu không lệch nhau: gõ localhost:3000
+ *  mà mở bằng http rồi lưu thành https thì lần sau bấm lại là hỏng. */
 export function normalizeUrl(raw: string): string {
   const s = raw.trim();
   if (!s) return s;
   if (/^https?:\/\//i.test(s)) return s;
-  return 'https://' + s.replace(/^\/+/, '');
+  const bare = s.replace(/^\/+/, '');
+  return `${defaultScheme(bare.split(/[/?#]/)[0])}://${bare}`;
 }
 
 export async function listBookmarks(): Promise<Bookmark[]> { return readAll(); }
