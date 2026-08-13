@@ -54,7 +54,11 @@ export default function RichTextEditor({
   value, onChange, placeholder, minHeight = 220, onSubmit, compact = false,
 }: RichTextEditorProps) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const lastHtml = useRef(value);
+  // CỐ Ý khởi tạo rỗng, KHÔNG phải `value`: đây là "nội dung đang nằm trong
+  // DOM", mà lúc mới mount thì div còn trống. Khởi tạo bằng `value` thì lượt
+  // effect đầu thấy `value === lastHtml` nên BỎ QUA việc ghi vào DOM — ô soạn
+  // hiện ra trống trơn, và chữ ký / phần trích dẫn reply bị mất luôn khi gửi.
+  const lastHtml = useRef('');
 
   // Nạp giá trị từ ngoài (mở draft reply/forward, chèn chữ ký) — chỉ khi thực
   // sự khác, nếu không mỗi lần gõ sẽ ghi đè và con trỏ nhảy về đầu.
