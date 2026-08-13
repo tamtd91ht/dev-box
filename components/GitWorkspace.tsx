@@ -149,8 +149,6 @@ export default function GitWorkspace() {
   repoRef.current = repo;
   const projectRef = useRef(activeProjectId);
   projectRef.current = activeProjectId;
-  // Throttle guard for the shared repo-overview fetch (dropdown badges + panel).
-  const overviewFetchedAt = useRef(0);
 
   const flash = useCallback((msg: string) => {
     setNotice(msg);
@@ -222,7 +220,6 @@ export default function GitWorkspace() {
       /* ignore */
     }
     setOverview({}); // overview is per-project — clear on switch
-    overviewFetchedAt.current = 0;
     loadRepos(activeProjectId);
   }, [activeProjectId, loadRepos]);
 
@@ -244,16 +241,6 @@ export default function GitWorkspace() {
       setOverviewLoading(false);
     }
   }, []);
-
-  // Refresh the overview when the dropdown is about to open — but throttle so
-  // rapid clicks don't spam git. Cheap `git status` per repo, run concurrently.
-  const maybeLoadOverview = useCallback(() => {
-    const now = Date.now();
-    if (overviewLoading) return;
-    if (now - overviewFetchedAt.current < 4000) return; // fresh enough
-    overviewFetchedAt.current = now;
-    loadOverview();
-  }, [loadOverview, overviewLoading]);
 
   // Overview as an array in the same order as the detected repo list, so the
   // all-repos panel renders stably regardless of when each status resolved.
@@ -426,7 +413,6 @@ export default function GitWorkspace() {
       if (res.abortedRebase) parts.push('đã hủy rebase dở dang');
       return { status: res.status, output: parts.join(', ') };
     });
-    overviewFetchedAt.current = 0; // this repo's overview badge is now stale
     setSelected(null);
   }
 
@@ -436,7 +422,6 @@ export default function GitWorkspace() {
     setCloneOpen(false);
     await loadRepos(projectRef.current);
     setRepo(res.path);
-    overviewFetchedAt.current = 0; // overview is stale — a repo appeared
     flash(`Đã clone ${res.name}`);
   }
 
@@ -448,7 +433,6 @@ export default function GitWorkspace() {
     setCreateOpen(false);
     await loadRepos(projectRef.current);
     setRepo(res.clone.path);
-    overviewFetchedAt.current = 0; // overview is stale — a repo appeared
     flash(`Đã tạo & clone ${res.project.pathWithNamespace}`);
   }
 
@@ -497,7 +481,6 @@ export default function GitWorkspace() {
         setStatus(res.status);
         setBranchInfo(res.branches);
       }
-      overviewFetchedAt.current = 0; // ahead/behind moved
       setSelected(null);
       // Fetch hỏng nghĩa là đã merge bản local (có thể cũ) — phải nói rõ, vì đó
       // đúng là tình huống mà fetch sinh ra để tránh.
@@ -712,13 +695,15 @@ export default function GitWorkspace() {
       <div className="panel">
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <label className="small" style={{ color: 'var(--muted)' }}>Repo</label>
+          {/* CỐ Ý không tự kiểm tra khi mở dropdown: mỗi lần mở là chạy `git
+              status` cho TẤT CẢ repo, mở ra mở vào vài lần là spam. Badge (↓)
+              chỉ hiện sau khi bấm "Kiểm tra tất cả" ở panel phía trên — kiểm
+              tra là việc chủ động, không phải tác dụng phụ của việc mở menu. */}
           <select
             value={repo}
             onChange={(e) => setRepo(e.target.value)}
-            onMouseDown={maybeLoadOverview}
-            onFocus={maybeLoadOverview}
             disabled={busy}
-            title={overviewLoading ? 'Đang kiểm tra trạng thái repo…' : 'Mở để xem repo nào cần pull (↓)'}
+            title={overviewLoading ? 'Đang kiểm tra trạng thái repo…' : 'Chọn repo — bấm “Kiểm tra tất cả” ở trên để xem repo nào cần pull (↓)'}
             style={{ padding: '6px 10px', minWidth: 260, fontFamily: 'var(--mono)', fontSize: 12 }}
           >
             {repos.map((r) => (
