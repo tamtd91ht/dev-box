@@ -16,11 +16,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   mAccounts, mAccountAdd, mAccountAddOAuth, mGoogleAuthUrl, mAccountRemove, mAccountRename,
   mFolders, mList, mMessage, mNestedMessage, mSend, mDelete, mMarkAllSeen, mContacts, mContactAdd,
-  mSignatureSet,
+  mSignatureSet, mSignatureFetch,
   attachmentUrl, folderIcon, fmtAddr, fmtSize, accTitle, groupThreads,
   type MailAccountPub, type MailFolder, type MailListItem, type MailDetail, type AccountAddInput,
   type MailContact, type ImapFailureInfo, type MailActionError, type ForwardAttachmentRef,
-  type MailThread,
+  type MailThread, type ZimbraSignature,
 } from '@/lib/mail';
 import MailBody, { textToHtml } from './mail/MailBody';
 import RichTextEditor, { htmlToText } from './mail/RichTextEditor';
@@ -1227,11 +1227,34 @@ function SignatureModal({ account, onDone, onCancel }: {
   const [onReply, setOnReply] = useState(account.signatureOnReply !== false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /** Chữ ký kéo về từ webmail — nhiều cái thì cho chọn. */
+  const [fetched, setFetched] = useState<ZimbraSignature[] | null>(null);
+  const [pulling, setPulling] = useState(false);
 
   const submit = async () => {
     setBusy(true); setErr(null);
     try { onDone(await mSignatureSet(account.id, html, onReply)); }
     catch (e) { setErr((e as Error).message); setBusy(false); }
+  };
+
+  /**
+   * Kéo chữ ký đã cấu hình sẵn trên webmail về.
+   *
+   * Chỉ có MỘT chữ ký thì áp thẳng vào ô soạn (khỏi bắt bấm thêm một nhịp);
+   * nhiều hơn thì hiện danh sách để chọn, vì Zimbra cho phép nhiều chữ ký và
+   * ta không đoán được cái nào là cái bạn muốn dùng ở DevBox.
+   */
+  const pull = async () => {
+    setPulling(true); setErr(null); setFetched(null);
+    try {
+      const { signatures } = await mSignatureFetch(account.id);
+      if (signatures.length === 1) setHtml(signatures[0].html);
+      else setFetched(signatures);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setPulling(false);
+    }
   };
 
   return (
@@ -1243,10 +1266,39 @@ function SignatureModal({ account, onDone, onCancel }: {
           <span style={{ flex: 1 }} />
           <button className="ghost sm" onClick={onCancel} disabled={busy}>✕</button>
         </div>
-        <p className="small" style={{ color: 'var(--faint)', margin: '0 0 8px' }}>
-          Tự chèn vào cuối thư khi soạn mới. Riêng từng tài khoản — hòm thư công ty
-          và cá nhân ký khác nhau được.
-        </p>
+        <div className="status-line" style={{ gap: 8, margin: '0 0 8px' }}>
+          <p className="small" style={{ color: 'var(--faint)', margin: 0, flex: 1 }}>
+            Tự chèn vào cuối thư khi soạn mới. Riêng từng tài khoản — hòm thư công ty
+            và cá nhân ký khác nhau được.
+          </p>
+          {/* Chữ ký không đi qua IMAP/SMTP (nó là thiết lập tài khoản), nên phải
+              hỏi webmail bằng API riêng của Zimbra. Hòm thư OAuth thì không có. */}
+          {account.auth !== 'oauth' && (
+            <button className="ghost sm" disabled={pulling || busy} onClick={() => void pull()}
+              title="Lấy chữ ký bạn đã cấu hình trên webmail (Zimbra) về đây">
+              {pulling ? <span className="spinner" aria-hidden /> : '⇩'} Lấy từ webmail
+            </button>
+          )}
+        </div>
+
+        {/* Webmail có nhiều chữ ký → chọn một. */}
+        {fetched && fetched.length > 0 && (
+          <div className="sig-pick">
+            <span className="small" style={{ color: 'var(--muted)' }}>
+              Webmail có {fetched.length} chữ ký — chọn một:
+            </span>
+            {fetched.map((s, i) => (
+              <button key={i} className="sig-pick-item"
+                onClick={() => { setHtml(s.html); setFetched(null); }}
+                title="Dùng chữ ký này">
+                <b>{s.name}</b>
+                {s.plainOnly && <span className="badge">text thuần</span>}
+                <span className="sig-pick-prev">{htmlToText(s.html).slice(0, 90)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         <RichTextEditor
           value={html}
           onChange={setHtml}

@@ -44,6 +44,7 @@ import {
   verifyImap, listFolders, listMessages, getMessage, getAttachment, sendMail, deleteMessage,
   markAllSeen, getNestedMessage, getNestedAttachment, ImapVerifyError,
 } from '@/lib/mailServer';
+import { fetchZimbraSignatures } from '@/lib/zimbraSignature';
 import { listContacts, recordAddresses, removeContact, domainOf } from '@/lib/mailContacts';
 import { findAccountByEmail, hasMailScope, authUrl as googleAuthUrl } from '@/lib/googleAuth';
 
@@ -250,6 +251,12 @@ export async function POST(req: NextRequest) {
         void recordAddresses([...to.split(','), ...String(body.cc ?? '').split(',')].filter(Boolean)).catch(() => {});
         break;
       }
+      case 'signatureFetch':
+        // Kéo chữ ký ĐÃ CẤU HÌNH SẴN trên webmail Zimbra về (SOAP —
+        // IMAP/SMTP không mang thông tin này). Chỉ TRẢ VỀ danh sách; người
+        // dùng chọn cái nào rồi mới lưu qua 'signatureSet'.
+        result = { signatures: await fetchZimbraSignatures(await needAccount()) };
+        break;
       case 'signatureSet': {
         // Chữ ký là HTML người dùng tự soạn — làm sạch TRƯỚC KHI LƯU (bỏ script,
         // handler on*, javascript: …). Xem sanitizeSignature.

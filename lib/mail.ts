@@ -248,6 +248,13 @@ export const mNestedMessage = (accountId: string, path: string, uid: number, tra
 /** Đặt chữ ký (HTML) cho một tài khoản. Chuỗi rỗng = bỏ chữ ký. */
 export const mSignatureSet = (id: string, signature: string, onReply?: boolean) =>
   mailAction<MailAccountPub[]>('signatureSet', { id, signature, onReply });
+
+/** Chữ ký đã cấu hình sẵn trên webmail Zimbra. */
+export interface ZimbraSignature { name: string; html: string; plainOnly: boolean }
+
+/** Kéo chữ ký từ webmail về (Zimbra SOAP) — IMAP/SMTP không mang thông tin này. */
+export const mSignatureFetch = (accountId: string) =>
+  mailAction<{ signatures: ZimbraSignature[] }>('signatureFetch', { accountId });
 export const mSend = (input: SendInput) => mailAction<{ messageId: string }>('send', { ...input });
 /** Xóa mail theo UID (move Trash; đang ở Trash → xóa vĩnh viễn) — không đọc nội dung. */
 export const mDelete = (accountId: string, path: string, uid: number) =>

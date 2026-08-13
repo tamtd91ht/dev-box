@@ -7402,3 +7402,21 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   content: ''; position: absolute; left: 13px; top: 0; bottom: 0;
   border-left: 2px solid var(--glass-brd);
 }
+
+/* ── Chọn chữ ký kéo về từ webmail ────────────────────────────────────────── */
+.sig-pick {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 10px; margin-bottom: 8px; border-radius: 10px;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+}
+.sig-pick-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  background: var(--glass-2); border: 1px solid var(--glass-brd); color: var(--text);
+  font-size: 12.5px;
+}
+.sig-pick-item:hover { border-color: var(--accent); }
+.sig-pick-prev {
+  flex: 1; min-width: 0; color: var(--muted); font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
