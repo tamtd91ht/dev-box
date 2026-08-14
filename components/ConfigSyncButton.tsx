@@ -19,6 +19,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface GitInfo { ahead: number; behind: number; dirty: boolean; lastCommit?: string }
 interface SyncStatus {
+  /** CONFIG_SYNC_ENABLED — tắt thì component không vẽ gì cả. */
+  enabled: boolean;
   ready: boolean;
   reason?: string;
   /** App tự xử lý được cái đang thiếu → hiện nút "Thiết lập". */
@@ -239,6 +241,12 @@ export default function ConfigSyncButton() {
     if (st.git?.dirty) return { text: '•', title: 'Có thay đổi chưa đẩy', cls: 'dirty' };
     return null;
   })();
+
+  // Vault config là repo PRIVATE của chủ sở hữu — người khác clone dev-box về
+  // thì không sync được, nên đừng bày ra một cái nút mời họ bấm rồi báo lỗi.
+  // Chưa nạp xong (st == null) cũng không vẽ: thà nút hiện muộn một nhịp còn
+  // hơn nhấp nháy rồi biến mất trên máy người không bật.
+  if (!st?.enabled) return null;
 
   return (
     <div className="cfgsync">

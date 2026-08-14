@@ -29,6 +29,28 @@ import os from 'os';
 import path from 'path';
 import { configDir } from './configDir';
 
+/**
+ * Sync CHỈ dành cho chủ repo config — mặc định TẮT.
+ *
+ * VÌ SAO CẦN CỜ NÀY: dev-box là repo public, ai clone về cũng chạy được. Nhưng
+ * vault config (`dev-box-config`) là repo PRIVATE của riêng chủ sở hữu. Người
+ * khác về mặt kỹ thuật đã không sync được — không có quyền clone repo đó, cũng
+ * không có passphrase. Vấn đề là TRẢI NGHIỆM: nút Sync vẫn hiện với badge "!"
+ * mời gọi, bấm "Thiết lập tự động" thì app đi cài `age` rồi cố clone một repo
+ * họ không có quyền, và kết thúc bằng một lỗi git khó hiểu. Tệ hơn nữa, đó là
+ * một cái nút trông như "app này có tính năng đồng bộ cho bạn" trong khi
+ * không phải.
+ *
+ * Nên theo đúng quy ước của mọi tool khác trong repo này: OFF mặc định, chủ
+ * sở hữu bật bằng một dòng trong `.env.local` (đã gitignored, không bao giờ
+ * đi theo git sang máy người khác).
+ *
+ * Đây KHÔNG phải một lớp bảo mật — bảo mật thật nằm ở chỗ repo config private
+ * và vault mã hoá bằng age. Cờ này chỉ để tính năng không xuất hiện với người
+ * không dùng được nó.
+ */
+export const SYNC_ENABLED = /^(1|true|yes|on)$/i.test(process.env.CONFIG_SYNC_ENABLED ?? '');
+
 export const REPO_DIR = process.env.DEVBOX_CONFIG_REPO
   ? path.resolve(process.env.DEVBOX_CONFIG_REPO)
   : path.join(os.homedir(), '.dev-box-config');
@@ -161,6 +183,8 @@ function fromTokens(text: string, m: Machine): string {
 
 // ── Trạng thái ─────────────────────────────────────────────────────────────
 export interface SyncStatus {
+  /** CONFIG_SYNC_ENABLED có bật không. false → UI ẩn hẳn nút. */
+  enabled: boolean;
   /** Repo đã clone và có machine.json chưa. */
   ready: boolean;
   /** Vì sao chưa ready — hiện cho người dùng biết phải làm gì. */
@@ -187,7 +211,18 @@ export interface SyncStatus {
 }
 
 export async function getStatus(): Promise<SyncStatus> {
-  const st: SyncStatus = { ready: false, repoDir: REPO_DIR, canPush: false, canPull: false, localFiles: 0 };
+  const st: SyncStatus = {
+    enabled: SYNC_ENABLED, ready: false, repoDir: REPO_DIR,
+    canPush: false, canPull: false, localFiles: 0,
+  };
+
+  // Chưa bật → trả về ngay, KHÔNG dò tìm gì trên máy. Người không dùng tính
+  // năng này thì app cũng đừng đi tìm age.exe hay ~/.dev-box-config của họ.
+  if (!SYNC_ENABLED) {
+    st.reason = 'Đồng bộ config chỉ dành cho chủ repo config. Bật bằng CONFIG_SYNC_ENABLED=true.';
+    st.fixable = null;
+    return st;
+  }
 
   try {
     st.localFiles = (await fs.readdir(configDir())).filter((f) => f.endsWith('.json')).length;

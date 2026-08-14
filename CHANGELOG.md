@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Nút "Sync" (đồng bộ config) giờ TẮT mặc định — chỉ chủ repo config mới thấy.** dev-box là repo
+  public, ai clone về cũng chạy được, nhưng vault config (`dev-box-config`) là repo **private** của
+  riêng chủ sở hữu. Người khác vốn đã không sync được — không có quyền clone repo đó, cũng không có
+  passphrase — nhưng nút vẫn hiện với badge `!` mời gọi, bấm "Thiết lập tự động" thì app đi cài
+  `age` rồi cố clone một repo họ không có quyền và kết thúc bằng một lỗi git khó hiểu.
+  Giờ Sync theo đúng quy ước của mọi tool khác trong repo: **OFF mặc định**, bật bằng
+  `CONFIG_SYNC_ENABLED=true` trong `.env.local` (đã gitignored nên không đi theo git sang máy
+  người khác). Tắt thì nút **không được vẽ ra**, và `/api/config-sync` trả **403** cho
+  `setup`/`push`/`pull` — ẩn nút ở client không phải một ranh giới, chỗ chặn thật nằm ở route.
+  Riêng `status` vẫn trả lời để UI biết có nên vẽ nút hay không.
+  Đây **không phải** một lớp bảo mật — bảo mật thật vẫn là repo config private + vault mã hoá bằng
+  age. Cờ này chỉ để tính năng không xuất hiện với người không dùng được nó.
+
 ### Added
 
 - **Nút ⬇ Cập nhật ở footer — app tự kéo bản mới của chính nó từ Git về.** Trước đây muốn có bản

@@ -13,7 +13,7 @@
 // dùng để mở private key thì file tạm bị ghi đè zero rồi xoá (xem lib/configSync).
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { getStatus, setup, push, pull } from '@/lib/configSync';
+import { getStatus, setup, push, pull, SYNC_ENABLED } from '@/lib/configSync';
 
 export const runtime = 'nodejs';
 
@@ -27,8 +27,24 @@ export async function POST(req: NextRequest) {
 
   const { action } = body;
   try {
+    // 'status' luôn trả lời được — UI cần biết `enabled` để quyết định có vẽ
+    // nút hay không, và câu trả lời đó không tiết lộ gì.
     if (action === 'status') {
       return NextResponse.json({ ok: true, result: await getStatus() });
+    }
+    // Mọi hành động THẬT đều dừng ở đây khi chưa bật. Ẩn nút ở client không
+    // phải một ranh giới — chỗ này mới là.
+    if (!SYNC_ENABLED) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            'Đồng bộ config chỉ dành cho chủ repo config (vault là repo private). '
+            + 'Chủ sở hữu bật bằng CONFIG_SYNC_ENABLED=true trong .env.local.',
+          code: 'DISABLED',
+        },
+        { status: 403 },
+      );
     }
     if (action === 'setup') {
       return NextResponse.json({ ok: true, result: await setup() });
