@@ -43,8 +43,11 @@ export default function BrowserTabWorkspace() {
   // để biết tab nào đang xem, khỏi phải gỡ/gắn lại mỗi lần đổi tab.
   const tabsRef = useRef<Tab[]>([]);
   const activeRef = useRef<string | null>(null);
+  // openTab được useCallback([]) nên đọc state qua ref, không qua closure.
+  const newTabOpenRef = useRef(false);
   tabsRef.current = tabs;
   activeRef.current = activeId;
+  newTabOpenRef.current = newTabOpen;
 
   // Esc thoát tràn viền (chỉ host document; phím trong guest không bubble ra).
   useEffect(() => {
@@ -88,8 +91,12 @@ export default function BrowserTabWorkspace() {
       : [...cur, { id, name: opts.name || hostOf(url), url, profile: prof, partition, creds: opts.creds }]));
     // Tab mới ở chế độ background: giữ nguyên tab đang xem. Nhưng nếu chưa có
     // tab nào nổi, hoặc tab đó đã mở sẵn, thì đưa lên cho khỏi bấm mò.
-    if (!opts.background) setActiveId(id);
-    else setActiveId((a) => (a === null || existed ? id : a));
+    //
+    // `newTabOpenRef`: đang ở trang new-tab thì activeId = null một cách CÓ CHỦ
+    // Ý, không phải "chưa có gì để xem" — kéo tab nền lên lúc này là hất người
+    // dùng khỏi ô địa chỉ họ đang gõ dở.
+    if (!opts.background) { setActiveId(id); setNewTabOpen(false); }
+    else setActiveId((a) => ((a === null && !newTabOpenRef.current) || existed ? id : a));
   }, []);
 
   // Link bấm trong tin nhắn Zalo/Telegram đã chọn "Mở trong Browser của app".
@@ -156,8 +163,28 @@ export default function BrowserTabWorkspace() {
   };
 
   const hasTabs = tabs.length > 0;
-  // Panel nhập URL hiện khi: chưa có tab nào, HOẶC người dùng bấm ＋ (new tab).
-  const showAddress = !hasTabs || newTabOpen;
+
+  /**
+   * Bấm ＋ = mở TRANG new-tab thật sự: ô địa chỉ trống VÀ khung dưới trống.
+   *
+   * Trước đây chỉ mở panel nhập URL còn `activeId` giữ nguyên, nên nửa trên là
+   * "tab mới" mà nửa dưới vẫn là trang cũ — nhìn như ＋ không ăn. Bỏ chọn tab
+   * (activeId = null) để khung dưới về trang new-tab, đúng như trình duyệt thật.
+   *
+   * Tab cũ KHÔNG bị đóng, chỉ thôi được chọn: bấm lại vào tab trên thanh là
+   * quay về đúng chỗ đang đọc, và webview không bị huỷ nên không tải lại trang.
+   */
+  const openNewTabPage = () => {
+    setNewTabOpen(true);
+    setAddr('');
+    setActiveId(null);
+  };
+
+  /** Hủy trang new-tab → quay lại tab đang xem trước đó (nếu còn). */
+  const cancelNewTab = () => {
+    setNewTabOpen(false);
+    setActiveId((a) => a ?? tabs[tabs.length - 1]?.id ?? null);
+  };
 
   /** Chuột phải trên một dấu trang → mở menu ngữ cảnh tại con trỏ (toạ độ quy
    *  về gốc .bt-root vì menu position:absolute trong đó). */
@@ -200,13 +227,13 @@ export default function BrowserTabWorkspace() {
     <div className="bt-addr">
       <input className="input bt-addr-input" placeholder="Gõ địa chỉ web hoặc từ khóa tìm Google rồi Enter…"
         value={addr} autoFocus onChange={(e) => setAddr(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape' && hasTabs) setNewTabOpen(false); }} />
+        onKeyDown={(e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape' && hasTabs) cancelNewTab(); }} />
       <input className="input" style={{ width: 130 }} list="bt-profiles" placeholder="Profile"
         value={profile} onChange={(e) => setProfile(e.target.value)}
         title="Cùng profile = chung phiên đăng nhập. Hai tài khoản SSO khác nhau → hai profile." />
       <datalist id="bt-profiles">{profiles.map((p) => <option key={p} value={p} />)}</datalist>
       <button onClick={go} disabled={!addr.trim()}>▶ Mở</button>
-      {hasTabs && <button className="ghost sm" onClick={() => setNewTabOpen(false)}>Hủy</button>}
+      {hasTabs && <button className="ghost sm" onClick={cancelNewTab}>Hủy</button>}
     </div>
   );
 
@@ -225,7 +252,7 @@ export default function BrowserTabWorkspace() {
               <button className="lv-tab-x" onClick={() => closeTab(t.id)} title="Đóng tab">✕</button>
             </span>
           ))}
-          <button className="bt-newtab" onClick={() => { setNewTabOpen(true); setAddr(''); }} title="Tab mới (mở ô nhập địa chỉ)">＋</button>
+          <button className="bt-newtab" onClick={openNewTabPage} title="Tab mới (khung dưới trống, gõ địa chỉ để mở)">＋</button>
           <span style={{ flex: 1 }} />
           {/* Menu ⋯ gom các nút phụ như trình duyệt thật */}
           <div className="bt-menu-wrap">
@@ -264,9 +291,13 @@ export default function BrowserTabWorkspace() {
         </div>
       )}
 
-      {/* ── Vùng nội dung ── */}
-      {hasTabs ? (
-        <div className="lv-wrap bt-viewer">
+      {/* ── Vùng nội dung ──
+          Các tab LUÔN được mount khi còn tồn tại, kể cả lúc đang ở trang
+          new-tab (activeId = null): unmount <webview> là huỷ phiên đang chạy,
+          quay lại tab phải tải lại trang từ đầu và mất cả chỗ đang đọc. Trang
+          new-tab chỉ nằm ĐÈ lên, tab nền vẫn nguyên vẹn phía sau. */}
+      {hasTabs && (
+        <div className="lv-wrap bt-viewer" hidden={activeId === null}>
           <div className="lv-body">
             {tabs.map((t) => (
               <BrowserTab key={t.id} tab={t} hidden={t.id !== activeId} onClose={() => closeTab(t.id)}
@@ -278,18 +309,31 @@ export default function BrowserTabWorkspace() {
             ))}
           </div>
         </div>
-      ) : (
-        /* CHƯA có tab: trang "new tab" — ô nhập địa chỉ + dấu trang chọn nhanh. */
-        <div className="bt-home">
-          <div className="bt-home-title">🌐 Mở một trang web</div>
-          {addressForm}
-          {marksList}
-          <p className="small" style={{ color: 'var(--muted)' }}>
-            Nhiều tab mở song song; mỗi profile giữ phiên đăng nhập riêng.{' '}
-            <button className="ghost sm" onClick={() => setPwOpen(true)}
-              title="Xem/sửa mật khẩu đã lưu — tự điền khi mở lại trang">🔑 Mật khẩu đã lưu</button>
-          </p>
-        </div>
+      )}
+
+      {/* Trang "new tab" — hiện khi chưa chọn tab nào (chưa có tab, hoặc vừa ＋).
+          Bấm ＋ thì ô địa chỉ + dấu trang đã nằm ở panel phía trên rồi, nên ở
+          đây chỉ để TRỐNG kèm một dòng nhắc: vẽ lại lần hai là hai ô giống hệt
+          nhau trên cùng màn hình, không biết gõ vào ô nào. */}
+      {activeId === null && (
+        newTabOpen ? (
+          <div className="bt-home">
+            <p className="small" style={{ color: 'var(--muted)' }}>
+              Tab mới — gõ địa chỉ ở ô phía trên rồi Enter.
+            </p>
+          </div>
+        ) : (
+          <div className="bt-home">
+            <div className="bt-home-title">🌐 Mở một trang web</div>
+            {addressForm}
+            {marksList}
+            <p className="small" style={{ color: 'var(--muted)' }}>
+              Nhiều tab mở song song; mỗi profile giữ phiên đăng nhập riêng.{' '}
+              <button className="ghost sm" onClick={() => setPwOpen(true)}
+                title="Xem/sửa mật khẩu đã lưu — tự điền khi mở lại trang">🔑 Mật khẩu đã lưu</button>
+            </p>
+          </div>
+        )
       )}
 
       {/* Trình quản lý mật khẩu đã lưu */}

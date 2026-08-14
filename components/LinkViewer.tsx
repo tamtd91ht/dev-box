@@ -187,6 +187,35 @@ export default function LinkViewer({
     window.open(cur, '_blank');
   }, [url]);
 
+  /**
+   * Prop `url` đổi → bảo guest đi tới địa chỉ mới.
+   *
+   * `<webview src>` CHỈ được đọc lúc attach lần đầu; đổi thuộc tính sau đó
+   * không làm gì cả. Nên khi người gọi (tab Browser) đưa sang URL khác trên
+   * CÙNG một viewer, khung dưới vẫn nằm im ở trang cũ — nhìn như "sửa địa chỉ
+   * xong Enter không ăn". Effect này là chỗ duy nhất khớp lại hai bên.
+   *
+   * Chỉ gọi khi guest đang thực sự ở địa chỉ khác: loadURL vô điều kiện sẽ tải
+   * lại trang mỗi lần component re-render vì lý do không liên quan, và tệ hơn
+   * là đá người dùng khỏi trang họ vừa tự bấm sang bên trong tab.
+   */
+  const urlRef = useRef(url);
+  useEffect(() => {
+    const prev = urlRef.current;
+    urlRef.current = url;
+    // Lần chạy đầu (prev === url) là lúc mount: `src` đã lo tải rồi, gọi thêm
+    // loadURL chỉ tải hai lần. Chỉ hành động khi prop THỰC SỰ đổi giá trị.
+    if (!url || sameUrl(prev, url)) return;
+    const el = ref.current;
+    if (!el) return;
+    // Guest đã ở đúng đó rồi (người dùng vừa tự bấm sang) thì đừng tải lại.
+    try { if (sameUrl(el.getURL() || '', url)) return; } catch { /* chưa attach */ }
+    setDraft(null);
+    setStatus('loading');
+    setFailInfo('');
+    try { void el.loadURL(url); } catch { /* guest chưa sẵn sàng */ }
+  }, [url]);
+
   /** Enter trong ô địa chỉ — như trình duyệt: là URL thì đi tới, không phải thì
    *  tìm Google (dùng chung normalizeUrl với ô địa chỉ của tab Browser). */
   const navigate = useCallback((raw: string) => {
@@ -686,4 +715,25 @@ export default function LinkViewer({
       </div>
     </div>
   );
+}
+
+/**
+ * Hai địa chỉ có trỏ tới cùng một chỗ không?
+ *
+ * So chuỗi thô là không đủ: sau khi tải xong, guest trả về URL đã chuẩn hoá
+ * ("example.com" → "https://example.com/"), nên so thẳng sẽ luôn thấy "khác" và
+ * tải lại trang vô hạn. Bỏ dấu / cuối và phần #fragment (đổi fragment không
+ * phải điều hướng) rồi mới so.
+ */
+function sameUrl(a: string, b: string): boolean {
+  const norm = (s: string) => {
+    try {
+      const u = new URL(s);
+      u.hash = '';
+      return u.toString().replace(/\/$/, '');
+    } catch {
+      return s.replace(/\/$/, '');
+    }
+  };
+  return norm(a) === norm(b);
 }

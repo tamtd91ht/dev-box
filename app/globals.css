@@ -5925,6 +5925,10 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .bt-home-marks { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 720px; }
 /* Vùng viewer chiếm hết phần còn lại; lv-body giãn tối đa cho webview. */
 .bt-viewer { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* Trang new-tab (chưa chọn tab nào): giấu CẢ cụm viewer đi nhưng KHÔNG unmount,
+   để webview của các tab còn sống — quay lại tab là thấy nguyên trang đang đọc.
+   Cần khai báo tường minh vì `display:flex` ở trên đè mất [hidden] mặc định. */
+.bt-viewer[hidden] { display: none; }
 .bt-viewer .lv-tabbar { flex: none; }
 .bt-viewer .lv-body { flex: 1; min-height: 0; position: relative; }
 .bt-mark { display: inline-flex; align-items: center; border-radius: 8px; background: var(--glass-2); border: 1px solid var(--glass-brd); }
