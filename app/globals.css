@@ -751,6 +751,55 @@ label {
 }
 .log-meta { color: var(--muted); margin-top: 3px; }
 
+/* Commit là nút bấm được (mở nội dung thay đổi) — gỡ hết dáng nút mặc định để
+   trông y hệt dòng danh sách cũ, chỉ thêm con trỏ tay và trạng thái đang chọn. */
+.log-pick {
+  width: 100%; text-align: left; background: none; border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--glass-brd) 60%, transparent);
+  cursor: pointer; font: inherit; color: inherit;
+}
+.log-pick:hover:not(:disabled) { background: var(--glass-2); transform: none; }
+.log-pick.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* ── Nội dung thay đổi của một commit ────────────────────────── */
+/* Cột trái hẹp hơn tab Thay đổi: danh sách commit chỉ cần đủ đọc subject, chỗ
+   còn lại nhường cho diff. Biến riêng để kéo bên này không đụng bên kia. */
+.layout-log { grid-template-columns: var(--split-log, 340px) minmax(0, 1fr); }
+
+.commit-files {
+  display: flex; flex-direction: column; gap: 2px;
+  margin-top: 8px; max-height: 30vh; overflow: auto; padding-right: 4px;
+}
+.commit-files::-webkit-scrollbar { width: 8px; }
+.commit-files::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 8px; }
+.commit-file {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 5px 8px; border-radius: 7px; border: none; background: none;
+  cursor: pointer; font: inherit; color: inherit; text-align: left;
+}
+.commit-file:hover:not(:disabled) { background: var(--glass-2); transform: none; }
+.commit-file.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.cf-badge {
+  font-family: var(--mono); font-size: 10px; font-weight: 700; flex: none;
+  width: 17px; height: 17px; line-height: 17px; text-align: center; border-radius: 4px;
+  background: var(--glass-2); color: var(--muted);
+}
+.cf-badge.st-A { color: var(--ok, #3fb950); }
+.cf-badge.st-D { color: var(--err, #f85149); }
+.cf-badge.st-M { color: var(--accent); }
+.cf-badge.st-R, .cf-badge.st-C { color: var(--warn, #d29922); }
+.cf-path {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+}
+/* direction:rtl cắt đầu chuỗi thay vì đuôi — đường dẫn dài thì tên file (phần
+   đáng đọc) còn nguyên, phần thư mục mới bị "…". Ký tự vẫn xếp trái-sang-phải. */
+.cf-old { color: var(--muted); }
+.cf-churn { flex: none; color: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+
 /* ── Inputs ──────────────────────────────────────────────────── */
 input, textarea, select {
   width: 100%; color: var(--text);

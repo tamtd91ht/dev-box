@@ -66,6 +66,25 @@ export interface CommitLog {
   refs: string;
 }
 
+/** One file touched by a commit — payload of the `commit-detail` action. */
+export interface CommitFile {
+  path: string;
+  /** Tên cũ, chỉ có khi git nhận ra đây là đổi tên/chép. */
+  oldPath?: string;
+  /** A=thêm, M=sửa, D=xoá, R=đổi tên, C=chép, T=đổi kiểu. */
+  status: string;
+  /** null = file nhị phân (git không đếm dòng được), khác hẳn với 0 dòng đổi. */
+  added: number | null;
+  removed: number | null;
+}
+
+/** Commit kèm thân message và danh sách file — KHÔNG kèm patch (xem commit-diff). */
+export interface CommitDetail extends CommitLog {
+  body: string;
+  files: CommitFile[];
+  merge: boolean;
+}
+
 export type RepoState =
   | 'clean'
   | 'dirty'

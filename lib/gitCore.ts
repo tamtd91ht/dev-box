@@ -603,6 +603,163 @@ export async function log(repo: string, limit = 30): Promise<CommitLog[]> {
   return commits;
 }
 
+/** One file touched by a commit, with its churn — the history view's file list. */
+export interface CommitFile {
+  /** Path AFTER the commit (the new name, for a rename). */
+  path: string;
+  /** Path BEFORE, only when git detected a rename/copy. */
+  oldPath?: string;
+  /** A=thêm, M=sửa, D=xoá, R=đổi tên, C=chép, T=đổi kiểu. */
+  status: string;
+  /** Số dòng thêm/bớt. `null` cho file nhị phân — git in "-" chứ không phải số. */
+  added: number | null;
+  removed: number | null;
+}
+
+/** A commit's message body plus the files it touched. */
+export interface CommitDetail extends CommitLog {
+  /** Full message minus the subject line, trimmed. Empty for one-line commits. */
+  body: string;
+  files: CommitFile[];
+  /** Commit này có nhiều cha (merge) không — diff của nó cần chọn phía so sánh. */
+  merge: boolean;
+}
+
+/**
+ * Chỉ nhận SHA thật (hex 4–40 ký tự).
+ *
+ * git() dùng execFile nên không có shell để inject, nhưng một chuỗi mở đầu bằng
+ * `-` vẫn bị chính git đọc thành flag (`--output=…` ghi đè file chẳng hạn). Chặn
+ * ở cửa vào rẻ hơn nhiều so với rà từng chỗ nối tham số, và người dùng không bao
+ * giờ gõ tay giá trị này — nó luôn đến từ danh sách log ta vừa in ra.
+ */
+function assertHash(hash: string): string {
+  const h = hash.trim();
+  if (!/^[0-9a-fA-F]{4,40}$/.test(h)) throw new Error('commit hash không hợp lệ');
+  return h;
+}
+
+/**
+ * Metadata + danh sách file của MỘT commit.
+ *
+ * Ba lần gọi git chứ không một, vì mỗi thứ chỉ một nguồn nói đúng được:
+ *
+ *   · `--numstat`     → số dòng thêm/bớt, nhưng KHÔNG phân biệt nổi thêm/xoá/sửa
+ *                       ("0 1 f" có thể là xoá file, cũng có thể là sửa bớt 1 dòng)
+ *   · `--name-status` → đúng chữ cái A/M/D/R, nhưng không có số dòng
+ *
+ * Gộp hai cờ vào một lệnh KHÔNG được: git chỉ nghe cờ cuối cùng và lặng lẽ bỏ
+ * cờ kia, nên ta mất một nửa dữ liệu mà không có lỗi nào báo. Ghép theo THỨ TỰ
+ * (cả hai liệt kê cùng một tập file, cùng thứ tự) thay vì theo tên — tên file
+ * là thứ duy nhất có thể trùng lặp hoặc kỳ dị, thứ tự thì không.
+ *
+ * `-z` cho chuỗi phân tách bằng NUL: tên file có dấu cách hay tiếng Việt không
+ * bị git bọc trong dấu nháy, khỏi phải viết bộ gỡ quote.
+ *
+ * Với commit MERGE, git mặc định không in file nào (diff so với nhiều cha là mơ
+ * hồ). `-m --first-parent` bảo nó so với cha thứ nhất — tức "merge này mang gì
+ * vào nhánh đích", đúng câu người xem lịch sử muốn hỏi.
+ */
+export async function commitDetail(repo: string, hash: string): Promise<CommitDetail> {
+  const h = assertHash(hash);
+  const FMT = ['%H', '%an', '%aI', '%ar', '%s', '%D', '%P', '%b'].join('%x1f');
+  const SHOW = ['show', '--no-color', '--first-parent', '-m', '-z'];
+
+  const [meta, numstat, nameStatus] = await Promise.all([
+    git(repo, ['show', '--no-color', '--no-patch', `--format=${FMT}`, h]),
+    git(repo, [...SHOW, '--numstat', '--format=', h]),
+    git(repo, [...SHOW, '--name-status', '--format=', h]),
+  ]);
+
+  const [hash2, author, date, relDate, subject, refs, parents, body] = meta.split('\x1f');
+  return {
+    hash: hash2 || h,
+    shortHash: (hash2 || h).slice(0, 7),
+    author: author ?? '',
+    date: date ?? '',
+    relDate: relDate ?? '',
+    subject: subject ?? '',
+    refs: (refs ?? '').trim(),
+    // %b là phần thân, đã không gồm subject. Lệnh này không kèm patch nên phần
+    // đuôi chỉ có thể là thân commit — cắt \0 thừa của -z là đủ.
+    body: (body ?? '').replace(/\0/g, '').trim(),
+    merge: (parents ?? '').trim().split(/\s+/).filter(Boolean).length > 1,
+    files: mergeFileLists(parseNumstatZ(numstat), parseNameStatusZ(nameStatus)),
+  };
+}
+
+/** Một bản ghi `-z --numstat`: "thêm\tbớt\t" rồi 1 path (hoặc 2 khi đổi tên). */
+function parseNumstatZ(out: string): { added: number | null; removed: number | null; path: string }[] {
+  const parts = out.split('\0');
+  const rows: { added: number | null; removed: number | null; path: string }[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const m = parts[i].match(/^(\d+|-)\t(\d+|-)\t(.*)$/);
+    if (!m) continue;
+    const [, a, r, inline] = m;
+    // Đổi tên: path để trống ở trường này, tên cũ và tên mới nằm ở 2 trường sau.
+    const path = inline || parts[i + 2] || parts[i + 1] || '';
+    if (!inline) i += 2;
+    rows.push({ added: a === '-' ? null : Number(a), removed: r === '-' ? null : Number(r), path });
+  }
+  return rows;
+}
+
+/** Một bản ghi `-z --name-status`: "A" rồi 1 path; "R100" rồi tên cũ + tên mới. */
+function parseNameStatusZ(out: string): { status: string; path: string; oldPath?: string }[] {
+  const parts = out.split('\0').filter((s) => s !== '');
+  const rows: { status: string; path: string; oldPath?: string }[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const code = parts[i];
+    if (!/^[A-Z]\d*$/.test(code)) continue;
+    const letter = code[0];
+    if (letter === 'R' || letter === 'C') {
+      rows.push({ status: letter, oldPath: parts[i + 1] ?? '', path: parts[i + 2] ?? '' });
+      i += 2;
+    } else {
+      rows.push({ status: letter, path: parts[i + 1] ?? '' });
+      i += 1;
+    }
+  }
+  return rows;
+}
+
+/**
+ * Ghép churn (numstat) vào trạng thái (name-status) theo thứ tự.
+ *
+ * name-status là bản CHÍNH: nó quyết định có bao nhiêu file và mỗi file là gì.
+ * Thiếu numstat tương ứng (không nên xảy ra, nhưng git đổi format thì ta không
+ * gãy) → churn để null, UI hiện "—" thay vì bịa số 0.
+ */
+function mergeFileLists(
+  churn: { added: number | null; removed: number | null; path: string }[],
+  status: { status: string; path: string; oldPath?: string }[],
+): CommitFile[] {
+  return status.map((s, i) => {
+    const c = churn[i]?.path === s.path ? churn[i] : churn.find((x) => x.path === s.path) ?? churn[i];
+    return {
+      path: s.path,
+      ...(s.oldPath ? { oldPath: s.oldPath } : {}),
+      status: s.status,
+      added: c?.added ?? null,
+      removed: c?.removed ?? null,
+    };
+  });
+}
+
+/**
+ * Diff của MỘT file trong MỘT commit (so với cha thứ nhất).
+ *
+ * Tách khỏi commitDetail() có chủ đích: một commit đụng 200 file thì gửi kèm
+ * toàn bộ patch là vài MB cho một lần bấm, trong khi người xem hầu như chỉ mở
+ * vài file. Danh sách file tải trước, patch tải khi bấm — giống hệt cách tab
+ * "Thay đổi" đang làm với working tree.
+ */
+export async function commitFileDiff(repo: string, hash: string, file: string): Promise<string> {
+  const h = assertHash(hash);
+  // `--` ngăn git hiểu tên file thành ref khi trùng tên nhánh.
+  return git(repo, ['show', '--no-color', '--first-parent', '-m', '--format=', h, '--', file]);
+}
+
 // ── Diff ────────────────────────────────────────────────────────────────────
 
 /** Unified diff for one file. `staged` → diff of the index vs HEAD; else the

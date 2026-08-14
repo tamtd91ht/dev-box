@@ -18,6 +18,8 @@ import {
   pullAll,
   branches,
   log,
+  commitDetail,
+  commitFileDiff,
   diffFile,
   fileVersions,
   stage,
@@ -206,6 +208,21 @@ export async function POST(req: NextRequest) {
         if (!file) return NextResponse.json({ error: 'file required' }, { status: 400 });
         const patch = await diffFile(repo, file, !!body.staged);
         return NextResponse.json({ diff: patch });
+      }
+
+      case 'commit-detail': {
+        // Thân commit + danh sách file. Patch KHÔNG kèm ở đây — xem commit-diff.
+        const hash = String(body.hash ?? '');
+        if (!hash) return NextResponse.json({ error: 'hash required' }, { status: 400 });
+        return NextResponse.json(await commitDetail(repo, hash));
+      }
+
+      case 'commit-diff': {
+        const hash = String(body.hash ?? '');
+        const file = String(body.file ?? '');
+        if (!hash) return NextResponse.json({ error: 'hash required' }, { status: 400 });
+        if (!file) return NextResponse.json({ error: 'file required' }, { status: 400 });
+        return NextResponse.json({ diff: await commitFileDiff(repo, hash, file) });
       }
 
       case 'file-versions': {

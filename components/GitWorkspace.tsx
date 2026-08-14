@@ -16,6 +16,8 @@ import {
   type ChangedFile,
   type FileVersions,
   type CommitLog,
+  type CommitDetail,
+  type CommitFile,
   type RepoOverview,
   type RepoState,
   type PullResult,
@@ -57,6 +59,43 @@ interface SelectedFile {
   staged: boolean;
 }
 
+/** "+12 −3" cho một file; "nhị phân" khi git không đếm dòng được. */
+function churnLabel(f: CommitFile): string {
+  if (f.added === null || f.removed === null) return 'nhị phân';
+  const parts: string[] = [];
+  if (f.added) parts.push(`+${f.added}`);
+  if (f.removed) parts.push(`−${f.removed}`);
+  return parts.join(' ') || '±0';
+}
+
+/** Tổng churn của cả commit, bỏ qua file nhị phân (không có số để cộng). */
+function churnSummary(files: CommitFile[]): string {
+  let added = 0;
+  let removed = 0;
+  let binary = 0;
+  for (const f of files) {
+    if (f.added === null || f.removed === null) binary++;
+    else {
+      added += f.added;
+      removed += f.removed;
+    }
+  }
+  const bits: string[] = [];
+  if (added) bits.push(`+${added}`);
+  if (removed) bits.push(`−${removed}`);
+  if (binary) bits.push(`${binary} nhị phân`);
+  return bits.join(' · ');
+}
+
+/** ISO → "14/08/2026 08:51" (giờ địa phương), cho dòng meta của commit. */
+function fmtCommitDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('vi-VN', {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
 /**
  * Label for a repo <option>, prefixed with a status glyph once the overview is
  * loaded. `↓` = needs pull (behind/diverged), `↑` = needs push, `✎` = uncommitted,
@@ -90,6 +129,10 @@ function repoOptionLabel(name: string, ov?: RepoOverview): string {
 export default function GitWorkspace() {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const listSplit = useSplit({ varName: '--split-rail', min: 180, max: 560, gap: 18 });
+  // Tab Lịch sử có tỉ lệ khác hẳn tab Thay đổi (danh sách commit hẹp, chỗ đọc
+  // diff rộng) nên dùng BIẾN RIÊNG — dùng chung '--split-rail' thì kéo bên này
+  // lại đổi luôn bên kia, và biến CSS di truyền xuống con nên rất khó lần ra.
+  const historySplit = useSplit({ varName: '--split-log', min: 220, max: 620, gap: 18 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   // ── Projects (named root folders) ───────────────────────────────────────────
   const [projects, setProjects] = useState<GitProject[]>([]);
@@ -140,6 +183,15 @@ export default function GitWorkspace() {
   const [view, setView] = useState<'changes' | 'history'>('changes');
   const [commits, setCommits] = useState<CommitLog[]>([]);
   const [logLoading, setLogLoading] = useState(false);
+  // ── Xem nội dung thay đổi của một commit trong tab Lịch sử ──────────────────
+  // `openCommit` = commit đang mở (null = chỉ xem danh sách). Danh sách file tải
+  // trước; patch của từng file tải khi bấm, vì một commit có thể đụng hàng trăm
+  // file mà người xem chỉ mở vài cái.
+  const [openCommit, setOpenCommit] = useState<CommitDetail | null>(null);
+  const [commitLoading, setCommitLoading] = useState(false);
+  const [commitFile, setCommitFile] = useState<string>('');
+  const [commitDiff, setCommitDiff] = useState<string>('');
+  const [commitDiffLoading, setCommitDiffLoading] = useState(false);
   // Per-repo overview (state/ahead/behind) shared by the repo dropdown and the
   // all-repos panel. Keyed by repo path. Populated lazily on dropdown open / check.
   const [overview, setOverview] = useState<Record<string, RepoOverview>>({});
@@ -326,6 +378,61 @@ export default function GitWorkspace() {
     loadLog(repo);
     // Reload when the branch changes too — history is per-branch.
   }, [view, repo, status?.branch, loadLog]);
+
+  /** Mở một commit: tải thân message + danh sách file, chọn sẵn file đầu tiên. */
+  const openCommitDetail = useCallback(async (hash: string) => {
+    const path = repoRef.current;
+    if (!path) return;
+    setCommitLoading(true);
+    setOpenCommit(null);
+    setCommitFile('');
+    setCommitDiff('');
+    try {
+      const d = await gitAction<CommitDetail>('commit-detail', { repo: path, hash });
+      if (repoRef.current !== path) return;
+      setOpenCommit(d);
+      // Mở sẵn file đầu tiên: gần như lần nào người xem cũng muốn thấy diff ngay,
+      // bắt bấm thêm một nhát nữa chỉ để thấy thứ hiển nhiên là thừa.
+      if (d.files.length) setCommitFile(d.files[0].path);
+    } catch (e) {
+      if (repoRef.current !== path) return;
+      setError((e as Error).message);
+    } finally {
+      setCommitLoading(false);
+    }
+  }, []);
+
+  /** Patch của MỘT file trong commit đang mở — tải khi chọn file. */
+  useEffect(() => {
+    if (!repo || !openCommit || !commitFile) {
+      setCommitDiff('');
+      return;
+    }
+    let cancelled = false;
+    const hash = openCommit.hash;
+    setCommitDiffLoading(true);
+    gitAction<{ diff: string }>('commit-diff', { repo, hash, file: commitFile })
+      .then((r) => {
+        if (!cancelled) setCommitDiff(r.diff);
+      })
+      .catch((e) => {
+        if (!cancelled) setCommitDiff(`# không lấy được diff: ${(e as Error).message}`);
+      })
+      .finally(() => {
+        if (!cancelled) setCommitDiffLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repo, openCommit, commitFile]);
+
+  // Đổi repo/branch thì commit đang mở không còn thuộc ngữ cảnh nào — đóng lại,
+  // nếu không panel bên phải vẫn vẽ diff của repo cũ.
+  useEffect(() => {
+    setOpenCommit(null);
+    setCommitFile('');
+    setCommitDiff('');
+  }, [repo, status?.branch]);
 
   // ── Grouped file lists ──────────────────────────────────────────────────────
   const staged = useMemo(() => status?.files.filter((f) => f.group === 'staged') ?? [], [status]);
@@ -934,43 +1041,152 @@ export default function GitWorkspace() {
       </div>
 
       {view === 'history' ? (
-        /* ── History view ───────────────────────────────────────────────── */
-        <div className="panel" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          <div className="status-line">
-            <h3 style={{ margin: 0, flex: 1 }}>Commit gần đây</h3>
-            <span className="small" style={{ color: 'var(--muted)' }}>
-              {status && !status.detached ? `⎇ ${status.branch}` : ''} · {commits.length}
-            </span>
+        /* ── History: danh sách commit | nội dung thay đổi ───────────────── */
+        <div className="layout layout-log" ref={historySplit.ref} style={historySplit.style}>
+          <div className="panel">
+            <div className="status-line">
+              <h3 style={{ margin: 0, flex: 1 }}>Commit gần đây</h3>
+              <span className="small" style={{ color: 'var(--muted)' }}>
+                {status && !status.detached ? `⎇ ${status.branch}` : ''} · {commits.length}
+              </span>
+            </div>
+
+            {logLoading && commits.length === 0 ? (
+              <div className="empty" style={{ padding: '24px 8px' }}>
+                <div className="empty-ico">⌛</div>
+                <p className="small">Đang tải history…</p>
+              </div>
+            ) : commits.length === 0 ? (
+              <div className="empty" style={{ padding: '24px 8px' }}>
+                <div className="empty-ico">⌛</div>
+                <p className="small">Chưa có commit nào.</p>
+              </div>
+            ) : (
+              <div className="log-list" style={{ marginTop: 10, overflow: 'auto', flex: 1, minHeight: 0 }}>
+                {commits.map((c) => (
+                  <button
+                    key={c.hash}
+                    type="button"
+                    className={`log-row log-pick${openCommit?.hash === c.hash ? ' active' : ''}`}
+                    onClick={() => openCommitDetail(c.hash)}
+                    title={`${c.hash}\n${c.author} · ${c.date}\n\nBấm để xem nội dung thay đổi`}
+                  >
+                    <code className="log-hash">{c.shortHash}</code>
+                    <div className="log-main">
+                      <div className="log-subject">
+                        {c.subject}
+                        {c.refs && <span className="log-refs">{c.refs}</span>}
+                      </div>
+                      <div className="log-meta small">
+                        {c.author} · {c.relDate}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
-          {logLoading && commits.length === 0 ? (
-            <div className="empty" style={{ padding: '24px 8px' }}>
-              <div className="empty-ico">⌛</div>
-              <p className="small">Đang tải history…</p>
-            </div>
-          ) : commits.length === 0 ? (
-            <div className="empty" style={{ padding: '24px 8px' }}>
-              <div className="empty-ico">⌛</div>
-              <p className="small">Chưa có commit nào.</p>
-            </div>
-          ) : (
-            <div className="log-list" style={{ marginTop: 10, overflow: 'auto', flex: 1, minHeight: 0 }}>
-              {commits.map((c) => (
-                <div key={c.hash} className="log-row" title={`${c.hash}\n${c.author} · ${c.date}`}>
-                  <code className="log-hash">{c.shortHash}</code>
-                  <div className="log-main">
-                    <div className="log-subject">
-                      {c.subject}
-                      {c.refs && <span className="log-refs">{c.refs}</span>}
-                    </div>
-                    <div className="log-meta small">
-                      {c.author} · {c.relDate}
-                    </div>
-                  </div>
+          {/* Phải: file của commit + patch của file đang chọn */}
+          <div className="panel">
+            {commitLoading ? (
+              <div className="empty" style={{ padding: '24px 8px' }}>
+                <div className="empty-ico">⌛</div>
+                <p className="small">Đang tải nội dung commit…</p>
+              </div>
+            ) : !openCommit ? (
+              <div className="empty">
+                <div className="empty-ico">≡</div>
+                <p>Chọn một commit bên trái để xem nội dung thay đổi.</p>
+              </div>
+            ) : (
+              <>
+                <div className="status-line">
+                  <h3 style={{ margin: 0, flex: 1, minWidth: 0 }}>{openCommit.subject}</h3>
+                  {openCommit.merge && (
+                    <span className="badge info" title="Commit merge — so với cha thứ nhất">
+                      merge
+                    </span>
+                  )}
+                  <code className="log-hash" title={openCommit.hash}>
+                    {openCommit.shortHash}
+                  </code>
                 </div>
-              ))}
-            </div>
-          )}
+                <div className="small" style={{ color: 'var(--muted)', marginTop: 2 }}>
+                  {openCommit.author} · {openCommit.relDate} · {fmtCommitDate(openCommit.date)}
+                </div>
+
+                {openCommit.body && (
+                  <pre
+                    className="code"
+                    style={{ marginTop: 10, maxHeight: '22vh', overflow: 'auto', whiteSpace: 'pre-wrap' }}
+                  >
+                    {openCommit.body}
+                  </pre>
+                )}
+
+                <div className="status-line" style={{ marginTop: 12 }}>
+                  <h3 style={{ margin: 0, flex: 1, fontSize: 13 }}>
+                    {openCommit.files.length} file thay đổi
+                  </h3>
+                  <span className="small" style={{ color: 'var(--muted)' }}>
+                    {churnSummary(openCommit.files)}
+                  </span>
+                </div>
+
+                {openCommit.files.length === 0 ? (
+                  <div className="empty" style={{ padding: '18px 8px' }}>
+                    <div className="empty-ico">≡</div>
+                    <p className="small">
+                      Commit này không đổi file nào (commit rỗng, hoặc merge không mang thay đổi vào
+                      nhánh này).
+                    </p>
+                  </div>
+                ) : (
+                  <div className="commit-files">
+                    {openCommit.files.map((f) => (
+                      <button
+                        key={f.path}
+                        type="button"
+                        className={`commit-file${commitFile === f.path ? ' active' : ''}`}
+                        onClick={() => setCommitFile(f.path)}
+                        title={f.oldPath ? `${f.oldPath}  →  ${f.path}` : f.path}
+                      >
+                        <span className={`cf-badge st-${f.status}`}>{f.status}</span>
+                        <span className="cf-path">
+                          {f.oldPath && <span className="cf-old">{f.oldPath} → </span>}
+                          {f.path}
+                        </span>
+                        <span className="cf-churn small">{churnLabel(f)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {commitFile && (
+                  <>
+                    <div className="status-line" style={{ marginTop: 12 }}>
+                      <h3 style={{ margin: 0, flex: 1, minWidth: 0, fontSize: 13 }}>{commitFile}</h3>
+                      {commitDiffLoading && <span className="small" style={{ color: 'var(--muted)' }}>đang tải…</span>}
+                    </div>
+                    {commitDiff ? (
+                      <pre className="code" style={{ marginTop: 8, maxHeight: '48vh', overflow: 'auto' }}>
+                        {commitDiff.split('\n').map((line, i) => (
+                          <div key={i} style={diffLineStyle(line)}>{line || ' '}</div>
+                        ))}
+                      </pre>
+                    ) : !commitDiffLoading ? (
+                      <div className="empty" style={{ padding: '18px 8px' }}>
+                        <div className="empty-ico">≡</div>
+                        <p className="small">Không có diff hiển thị (file nhị phân hoặc chỉ đổi chế độ).</p>
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </>
+            )}
+          </div>
+          <Splitter {...historySplit.grip} />
         </div>
       ) : (
       /* ── Changes + diff ─────────────────────────────────────────────────── */
