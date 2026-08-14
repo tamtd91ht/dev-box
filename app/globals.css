@@ -1240,6 +1240,20 @@ audio { width: 100%; margin-top: 12px; }
 .cfgsync-msg.err { color: var(--err); background: var(--err-bg); }
 .cfgsync-msg.info { color: var(--muted); background: var(--glass); }
 
+/* Nút Cập nhật (components/UpdateButton.tsx) dùng chung bộ .cfgsync-* ở trên —
+   hai nút đứng cạnh nhau ở footer nên phải trông y hệt. Chỉ riêng danh sách
+   commit sắp nhận / file đang vướng là cần thêm class này. Có max-height vì
+   một lần cập nhật có thể mang về hàng chục commit, không được đẩy panel dài
+   quá màn hình. */
+.upd-list {
+  margin: 0; padding: 6px 9px; list-style: none;
+  max-height: 132px; overflow-y: auto;
+  border-radius: 8px; background: var(--glass);
+  font-size: 10.5px; line-height: 1.6;
+}
+.upd-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upd-list li.muted { color: var(--muted); }
+
 /* ── Coming-soon toast ───────────────────────────────────────── */
 .toast {
   position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%);

@@ -134,3 +134,12 @@ contextBridge.exposeInMainWorld('desktopConsole', {
     return () => ipcRenderer.removeListener('desktop:log', handler);
   },
 });
+
+// Tự cập nhật: sau khi nút "Cập nhật" kéo code mới về, phần vỏ desktop
+// (electron/**) không hot-reload được như code Next — phải mở lại app. Đứng
+// riêng khỏi `workspace` vì đây là vòng đời của chính app, không phải chuyện
+// của workspace/webview.
+contextBridge.exposeInMainWorld('desktopUpdate', {
+  /** Giết next dev rồi mở lại app. Không bao giờ trả về nếu thành công. */
+  relaunch: () => ipcRenderer.invoke('desktop:relaunch'),
+});

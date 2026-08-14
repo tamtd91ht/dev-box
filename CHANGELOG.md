@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Nút ⬇ Cập nhật ở footer — app tự kéo bản mới của chính nó từ Git về.** Trước đây muốn có bản
+  mới phải mở terminal, `cd` vào thư mục app, `git pull`, rồi tự đoán xem có phải chạy
+  `npm install` hay khởi động lại app không.
+  Nút nằm cạnh **Sync**, thấy ở mọi tab, và **có ích ngay cả khi không bấm**: badge trên nút là số
+  commit đang chờ, ngầm kiểm tra bằng `git fetch` 30 phút một lần (fetch không đụng working tree
+  nên chạy nền vô hại). Bấm vào thì panel **liệt kê đúng những commit sắp nhận** — biết mình sắp
+  lấy về cái gì thay vì cập nhật mù.
+  Phần đáng giá nhất là **sau khi pull**: app tự đọc danh sách file đã đổi rồi biết cần làm gì
+  tiếp và làm hộ — chỉ đổi giao diện thì **Tải lại** (`next dev` đã tự biên dịch), đụng
+  `electron/**` thì **Khởi động lại app**, đụng `package.json` thì **Cài thư viện & khởi động
+  lại**.
+  **An toàn:** chỉ `merge --ff-only`, không bao giờ `reset --hard`. Repo đang có thay đổi chưa
+  commit thì **dừng lại và liệt kê đúng file nào đang vướng**, kèm nút *Cất tạm rồi cập nhật*
+  (`git stash -u`) để người dùng tự quyết — không có đường nào trong tính năng này làm mất việc
+  chưa commit. Nhánh local đã đi lệch khỏi remote thì báo rõ và bảo xử lý tay ở tab Git, thay vì
+  đẻ ra một commit merge lộn xộn trong thư mục app.
+  Cập nhật theo **nhánh đang đứng** và upstream của nó. Không tự động cập nhật bao giờ — luôn cần
+  một cú bấm có chủ ý.
+
 - **Tab 🤖 Automation — thêm hai loại hành động: 🌐 gọi API và ✈️ gửi Telegram.** Trước đây muốn
   đẩy một cảnh báo ra ngoài chỉ có `webhook` trần (URL + POST/PUT/GET + body), header phải sửa tay
   trong `.automation.json` vì editor không có ô nhập.

@@ -1563,6 +1563,38 @@ ipcMain.handle('workspace:copyText', (_evt, text) => {
 // the `desktop:log` push stream for live lines).
 ipcMain.handle('desktop:getLogs', () => logBuffer);
 
+/**
+ * Khởi động lại app sau khi nút "Cập nhật" kéo code mới về.
+ *
+ * PHẢI BUỘC GIẾT `next dev` — đây là chỗ dễ sai nhất của cả tính năng.
+ * stopDevServer() bình thường GIỮ server sống khi còn phiên terminal (để đóng
+ * app mà phiên không mất). Nhưng ở đây mục đích ngược lại: ta khởi động lại
+ * CHÍNH VÌ code đã đổi. Server cũ còn sống thì lần mở sau ensureDevServer()
+ * probe thấy :3000 có người trả lời và dùng lại nó — app "mới" chạy y nguyên
+ * code cũ, người dùng bấm cập nhật xong không thấy gì đổi.
+ *
+ * Đánh đổi: các phiên terminal đang mở sẽ mất. Đúng, và renderer đã cảnh báo
+ * trước khi gọi tới đây.
+ */
+ipcMain.handle('desktop:relaunch', () => {
+  log('RelaunchRequested', 'cập nhật xong → khởi động lại app');
+  try {
+    const pid = devServer && !devServer.killed ? devServer.pid : adoptedPid;
+    if (pid) killDevServerTree(pid, devServer);
+    devServer = null;
+    adoptedPid = 0;
+
+    // relaunch() xếp lịch mở tiến trình mới SAU khi tiến trình này thoát hẳn.
+    // Giữ nguyên argv để mọi cờ (--ws-config…) và đường dẫn app không đổi.
+    app.relaunch();
+    app.quit();
+    return { ok: true };
+  } catch (err) {
+    log('RelaunchError', err && err.message);
+    return { ok: false, error: (err && err.message) || 'không khởi động lại được' };
+  }
+});
+
 // ── Terminal: cửa sổ rời ───────────────────────────────────────────────────
 //
 // Tab Terminal có hai chế độ mở: chạy ngay trong app, hoặc mở ra CỬA SỔ RIÊNG.

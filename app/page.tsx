@@ -47,6 +47,7 @@ import { notices } from '@/lib/noticeStore';
 import ThemeToggle from '@/components/ThemeToggle';
 import DesktopConsole from '@/components/DesktopConsole';
 import ConfigSyncButton from '@/components/ConfigSyncButton';
+import UpdateButton from '@/components/UpdateButton';
 import { resolveAuth, authReady as isAuthReady } from '@/lib/request';
 import {
   fetchFullConfig,
@@ -828,6 +829,9 @@ export default function Home() {
           {/* Đồng bộ configs/ với repo dev-box-config: đẩy lên một cú bấm,
               kéo về thì hỏi passphrase. Badge trên nút cho biết khi nào cần. */}
           <ConfigSyncButton />
+          {/* Kéo bản mới của CHÍNH app này từ Git về. Badge = số commit đang
+              chờ, nên liếc là biết có bản mới mà không phải bấm vào. */}
+          <UpdateButton />
           {/* Desktop only: log của shell + next dev, ẩn mặc định. */}
           <DesktopConsole />
         </span>
