@@ -13,29 +13,40 @@ export interface ParsedRequest {
   bodyType: 'none' | 'raw' | 'form';
 }
 
-/** Tách một dòng lệnh shell thành các token, hiểu '…' "…" và \ nối dòng. */
+/**
+ * Tách một dòng lệnh shell thành các token, hiểu '…' "…" và \ nối dòng.
+ *
+ * Vòng lặp trong CHỈ dừng ở khoảng trắng khi đang Ở NGOÀI dấu nháy — body JSON
+ * gần như luôn có dấu cách và thường có cả xuống dòng, cắt giữa chừng là mất
+ * sạch phần sau. Trạng thái `quote` giữ việc đó cho đúng.
+ */
 function tokenize(input: string): string[] {
   // Bỏ nối dòng bằng backslash + xuống dòng (curl copy nhiều dòng).
   const s = input.replace(/\\\r?\n/g, ' ').trim();
   const tokens: string[] = [];
   let i = 0;
   while (i < s.length) {
-    const c = s[i];
-    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+    if (/\s/.test(s[i])) { i++; continue; }
     let tok = '';
-    while (i < s.length && !/\s/.test(s[i])) {
+    let quote: "'" | '"' | null = null;
+    while (i < s.length) {
       const ch = s[i];
-      if (ch === "'") {
+      if (quote === null && /\s/.test(ch)) break;
+
+      if (quote === null && (ch === "'" || ch === '"')) {
+        quote = ch as "'" | '"';
         i++;
-        while (i < s.length && s[i] !== "'") tok += s[i++];
-        i++; // bỏ ' đóng
-      } else if (ch === '"') {
+      } else if (quote === "'" && ch === "'") {
+        quote = null;
         i++;
-        while (i < s.length && s[i] !== '"') {
-          if (s[i] === '\\' && i + 1 < s.length) { tok += s[i + 1]; i += 2; }
-          else tok += s[i++];
-        }
-        i++; // bỏ " đóng
+      } else if (quote === '"' && ch === '"') {
+        quote = null;
+        i++;
+      } else if (quote === '"' && ch === '\\' && i + 1 < s.length) {
+        // Trong nháy kép, backslash thoát ký tự kế tiếp.
+        tok += s[i + 1]; i += 2;
+      } else if (quote === null && ch === '\\' && i + 1 < s.length) {
+        tok += s[i + 1]; i += 2;
       } else {
         tok += ch; i++;
       }
@@ -117,6 +128,68 @@ export function parseCurl(raw: string): ParsedRequest {
   }
 
   return out;
+}
+
+/**
+ * Chuỗi này có phải một lệnh curl không?
+ *
+ * Dùng khi người dùng DÁN vào ô URL: dán curl thì tự tách thành request, dán
+ * URL thường thì cứ để nguyên. Nhận diện phải CHẶT — đoán nhầm một URL thành
+ * curl sẽ xoá sạch header/body người ta vừa gõ, khó chịu hơn nhiều so với việc
+ * bắt bấm thêm một nút. Nên chỉ chấp nhận khi chuỗi MỞ ĐẦU bằng đúng chữ
+ * `curl` + khoảng trắng (cho phép xuống dòng, và tiền tố `$ `/`# ` hay dính
+ * theo khi copy từ terminal hoặc tài liệu).
+ */
+export function looksLikeCurl(raw: string): boolean {
+  return /^\s*(?:[$#]\s+)?curl\s/i.test(raw);
+}
+
+/** Bọc nháy đơn kiểu shell: bên trong nháy đơn mọi thứ đều là nghĩa đen, riêng
+ *  chính dấu nháy đơn phải thoát ra ngoài rồi nối lại ('\'' là mẹo chuẩn). */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+export interface CurlBuildInput {
+  method: string;
+  url: string;
+  headers: { key: string; value: string; on?: boolean }[];
+  body: string;
+  bodyType: 'none' | 'raw' | 'form';
+}
+
+/**
+ * Request đang điền → một lệnh `curl` dán vào terminal là chạy được.
+ *
+ * Xuống dòng bằng ` \` + newline` cho dễ đọc khi gửi cho người khác — đó là
+ * mục đích chính của nút này (đưa cho đối tác), nên ưu tiên đọc được hơn ngắn.
+ *
+ * `-X` chỉ ghi khi KHÁC GET, vì curl mặc định GET; và khi có body thì method
+ * vẫn phải ghi rõ (có `-d` là curl tự chuyển POST, nhưng PUT/PATCH thì không).
+ * Header tắt (`on === false`) bị bỏ qua — đúng như lúc bấm Send.
+ */
+export function buildCurl(req: CurlBuildInput, opts: { multiline?: boolean } = {}): string {
+  const nl = opts.multiline === false ? ' ' : ' \\\n  ';
+  const parts: string[] = ['curl'];
+
+  const method = (req.method || 'GET').toUpperCase();
+  const hasBody = req.bodyType !== 'none' && !!req.body;
+  if (method !== 'GET') parts.push(`-X ${method}`);
+
+  parts.push(shellQuote(req.url));
+
+  for (const h of req.headers) {
+    if (!h.key.trim() || h.on === false) continue;
+    parts.push(`-H ${shellQuote(`${h.key.trim()}: ${h.value}`)}`);
+  }
+
+  if (hasBody) {
+    // --data-raw chứ không phải -d: -d nuốt ký tự xuống dòng và diễn giải @file,
+    // nên JSON nhiều dòng hay body bắt đầu bằng @ sẽ sai âm thầm.
+    parts.push(`--data-raw ${shellQuote(req.body)}`);
+  }
+
+  return parts.join(nl);
 }
 
 function toB64(s: string): string {

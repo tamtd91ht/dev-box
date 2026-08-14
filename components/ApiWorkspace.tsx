@@ -13,7 +13,7 @@ import {
   apiGet, apiSaveRequest, apiRemoveRequest, apiSaveEnv, apiRemoveEnv, apiSetActiveEnv, apiSend,
   type ApiData, type ApiRequest, type ApiHeader, type ApiEnvironment, type HttpResult,
 } from '@/lib/api';
-import { parseCurl, resolveVars } from '@/lib/curlParse';
+import { parseCurl, resolveVars, looksLikeCurl, buildCurl } from '@/lib/curlParse';
 import { formatText } from '@/lib/format';
 import { fmtRel } from '@/lib/google';
 import { useSplit } from '@/lib/useSplit';
@@ -85,21 +85,74 @@ export default function ApiWorkspace() {
   };
 
   // ── Import curl ──────────────────────────────────────────────────────────────
-  const doImport = () => {
+
+  /** curl → draft. Dùng chung cho modal "Dán curl" lẫn dán thẳng vào ô URL. */
+  const applyCurl = useCallback((raw: string): boolean => {
     try {
-      const p = parseCurl(curlText);
-      if (!p.url) { setErr('Không tìm thấy URL trong lệnh curl.'); return; }
+      const p = parseCurl(raw);
+      if (!p.url) { setErr('Không tìm thấy URL trong lệnh curl.'); return false; }
       setDraft({
         name: '', method: p.method, url: p.url,
         headers: p.headers.length ? p.headers.map((h) => ({ ...h, on: true })) : [{ key: '', value: '' }],
         body: p.body, bodyType: p.bodyType,
       });
       setTab(p.bodyType === 'none' ? 'headers' : 'body');
-      setImportOpen(false); setCurlText(''); setErr(null); setRes(null);
+      setErr(null); setRes(null);
+      return true;
     } catch (e) {
       setErr('Không phân tích được curl: ' + (e as Error).message);
+      return false;
     }
+  }, []);
+
+  const doImport = () => {
+    if (applyCurl(curlText)) { setImportOpen(false); setCurlText(''); }
   };
+
+  /**
+   * Dán vào ô URL: là curl thì tách luôn thành request (kiểu Postman), còn lại
+   * để trình duyệt dán bình thường.
+   *
+   * Đọc từ clipboard của SỰ KIỆN chứ không phải navigator.clipboard — không cần
+   * quyền, và lấy đúng thứ vừa dán chứ không phải thứ đang có trong clipboard.
+   */
+  const onUrlPaste = useCallback((e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData('text');
+    if (!looksLikeCurl(text)) return; // URL thường — dán như thường
+    e.preventDefault();
+    // Không cần báo "đã nhận diện": method/URL/headers/body điền đầy trước mắt
+    // là bằng chứng rõ hơn mọi dòng thông báo.
+    applyCurl(text);
+  }, [applyCurl]);
+
+  // ── Copy as curl ─────────────────────────────────────────────────────────────
+  const [curlCopied, setCurlCopied] = useState(false);
+
+  /**
+   * Chép request đang điền thành lệnh curl.
+   *
+   * Biến {{var}} được THAY bằng giá trị environment đang chọn — lệnh này để đưa
+   * cho người khác chạy, mà máy họ không có environment của mình. Đổi lại là
+   * token thật nằm trong clipboard: có cảnh báo ở tooltip.
+   */
+  const copyCurl = useCallback(async () => {
+    const cmd = buildCurl({
+      method: draft.method,
+      url: resolveVars(draft.url, envMap),
+      headers: draft.headers.map((h) => ({
+        key: resolveVars(h.key, envMap), value: resolveVars(h.value, envMap), on: h.on,
+      })),
+      body: resolveVars(draft.body, envMap),
+      bodyType: draft.bodyType,
+    });
+    try {
+      await navigator.clipboard.writeText(cmd);
+      setCurlCopied(true);
+      setTimeout(() => setCurlCopied(false), 1500);
+    } catch {
+      setErr('Không chép được vào clipboard.');
+    }
+  }, [draft, envMap]);
 
   // ── Collection ───────────────────────────────────────────────────────────────
   const openRequest = (r: ApiRequest) => {
@@ -231,11 +284,17 @@ export default function ApiWorkspace() {
               onChange={(e) => setDraft({ ...draft, method: e.target.value })}>
               {METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            <input className="input" style={{ flex: 1 }} placeholder="https://… (dùng {{var}} từ environment)"
+            <input className="input" style={{ flex: 1 }}
+              placeholder="https://… (dùng {{var}}) — hoặc dán thẳng lệnh curl vào đây"
               value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })}
+              onPaste={onUrlPaste}
               onKeyDown={(e) => e.key === 'Enter' && void send()} />
             <button onClick={() => void send()} disabled={sending}>{sending ? '…' : '▶ Send'}</button>
             <button className="ghost sm" onClick={() => void saveRequest()} title="Lưu vào collection">💾</button>
+            <button className="ghost sm" onClick={() => void copyCurl()} disabled={!draft.url.trim()}
+              title="Chép request này thành lệnh curl (biến {{var}} được thay bằng giá trị thật — cẩn thận token)">
+              {curlCopied ? '✓ Đã chép' : '⧉ Copy curl'}
+            </button>
             <button className="ghost sm" onClick={() => setImportOpen(true)} title="Dán một lệnh curl để import">Dán curl</button>
           </div>
 
