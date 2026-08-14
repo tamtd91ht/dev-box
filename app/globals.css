@@ -5651,6 +5651,63 @@ iframe.tools-view-box { background: #fff; }
 .epoch-copy { flex: none; padding: 2px 8px; min-width: 30px; }
 .epoch-facts { display: flex; flex-wrap: wrap; gap: 6px; }
 
+/* ── Tìm & thay chuỗi (ReplacePanel) ──────────────────────────────────── */
+/* Chiếm trọn thân panel; chỉ HAI Ô VĂN BẢN được co giãn, phần điều khiển
+   giữ nguyên chiều cao — gõ chuỗi dài không đẩy nút xuống khuất tầm mắt. */
+.rp-wrap { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
+.rp-top {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; flex: none;
+  padding: 8px 12px; border: 1px solid var(--glass-brd); border-radius: 10px; background: var(--glass-2);
+}
+.rp-modes { display: flex; gap: 6px; }
+.rp-modes .chip-btn { font-family: var(--mono); }
+.rp-sep { width: 1px; align-self: stretch; background: var(--glass-brd); }
+.rp-flag { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; }
+.rp-flag input { width: auto; margin: 0; cursor: pointer; }
+.rp-flag:hover { color: var(--text); }
+
+.rp-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; flex: none; }
+.rp-field { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rp-label { flex: 0 0 68px; font-size: 12px; color: var(--muted); text-align: right; }
+.rp-field > .input { flex: 1; min-width: 0; }
+/* Regex hỏng: viền cảnh báo ngay tại ô gõ sai, khỏi phải dò xuống dòng dưới. */
+.rp-bad { border-color: color-mix(in srgb, var(--err, #f85149) 60%, transparent); }
+
+.rp-status {
+  display: flex; align-items: center; gap: 10px; flex: none; flex-wrap: wrap;
+  min-height: 22px; font-size: 12px;
+}
+.rp-count { color: var(--ok, #3fb950); font-weight: 600; }
+.rp-count.rp-zero { color: var(--muted); font-weight: 400; }
+.rp-err { color: var(--err, #f85149); font-family: var(--mono); font-size: 11.5px; }
+.rp-warn { color: var(--warn, #d29922); font-size: 11.5px; }
+.rp-muted { color: var(--muted); }
+.rp-samples { display: flex; flex-wrap: wrap; gap: 6px; }
+.rp-samples .ghost { font-size: 11px; padding: 2px 8px; }
+
+/* Hai ô co giãn được: mặc định 50/50, kéo thanh giữa thì cột trái nhận bề rộng
+   cố định còn cột phải ăn hết phần dư. `position:relative` để thanh kéo
+   (absolute) bám đúng khe hở giữa hai cột. */
+.rp-cols {
+  display: grid; grid-template-columns: var(--rp-split, minmax(0, 1fr)) minmax(0, 1fr);
+  gap: 12px; flex: 1; min-height: 0; position: relative;
+}
+@media (max-width: 900px) {
+  .rp-cols { grid-template-columns: 1fr; }
+  .rp-fields { grid-template-columns: 1fr; }
+}
+.rp-card {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  border: 1px solid var(--glass-brd); border-radius: 10px; overflow: hidden;
+}
+/* Ô nhập chiếm hết phần còn lại của thẻ; bỏ viền riêng vì thẻ đã có viền. */
+.rp-area {
+  flex: 1; min-height: 160px; resize: none; border: none; border-radius: 0;
+  font-size: 12.5px; line-height: 1.6; padding: 10px 12px;
+}
+.rp-area:focus { outline: none; box-shadow: none; }
+.rp-out { background: var(--glass-2); }
+
 /* ── Cây JSON / XML (ô xem bên phải của tab Tools) ─────────────────────── */
 .tv { font-family: var(--mono); font-size: 12.5px; line-height: 1.65; padding: 6px 4px; }
 .tv-row { display: flex; align-items: baseline; gap: 5px; padding: 1px 4px; border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
