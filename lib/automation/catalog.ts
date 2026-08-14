@@ -102,6 +102,27 @@ const INFRA_FIELDS: FieldDef[] = [
     sample: ' · 3.8 GB / 4.0 GB · còn 197 MB',
   },
   {
+    name: 'ladderAbove',
+    label: 'Bậc nặng hơn đang yên',
+    kind: 'text',
+    hint: 'các watch cùng chỉ số có ngưỡng chặt hơn mà lúc này KHÔNG vượt — rỗng khi đây đã là bậc cao nhất',
+    sample: 'MG-01 — đĩa nguy cấp (>97%)',
+  },
+  {
+    name: 'ladderCount',
+    label: 'Số bậc nặng hơn đang yên',
+    kind: 'number',
+    hint: '0 = cảnh báo này là bậc cao nhất của nhóm',
+    sample: 1,
+  },
+  {
+    name: 'ladderText',
+    label: 'Bậc nặng hơn (chuỗi đọc được)',
+    kind: 'text',
+    hint: 'mang sẵn xuống dòng đầu chuỗi, rỗng khi đây là bậc cao nhất — giải thích "vì sao báo ở mức này chứ không phải mức nặng hơn"',
+    sample: '\nBậc nặng hơn đang bình thường: MG-01 — đĩa nguy cấp (> 97)',
+  },
+  {
     name: 'description',
     label: 'Mô tả cơ chế phát hiện',
     kind: 'text',

@@ -407,6 +407,8 @@ class InfraWatcher {
               address: peekAddress(watch.stack, watch.connectionId),
               // Cả MetricMap của CHÍNH lần đo này — cho fields tuyệt đối (absUsed…).
               metrics: res.metrics,
+              // "Vì sao là bậc này" — rỗng khi watch vốn đã là bậc cao nhất.
+              ladderAbove: this.quieterAbove(watch),
             }),
           );
         }
@@ -490,6 +492,38 @@ class InfraWatcher {
       return other;
     }
     return null;
+  }
+
+  /**
+   * Các bậc NẶNG HƠN cùng nhóm mà lúc này KHÔNG vượt ngưỡng.
+   *
+   * Đi kèm cảnh báo để trả lời câu hỏi "sao lại là mức này": khi bậc trên vừa
+   * được nâng lên khỏi giá trị hiện tại, nó thôi vượt và bậc dưới lộ ra phát
+   * thay — nhìn từ tin nhắn thì rất giống "sửa ngưỡng mà cảnh báo không đổi".
+   *
+   * Ngược hướng với strongerFiring(): ở đó là "có ai nặng hơn ĐANG kêu không"
+   * (để im), ở đây là "ai nặng hơn đang YÊN" (để giải thích). Chỉ gọi khi watch
+   * thực sự sắp phát, nên không tốn gì cho vòng poll bình thường.
+   */
+  private quieterAbove(watch: InfraWatch): { name: string; op: InfraWatch['op']; threshold: number }[] {
+    const key = ladderKey(watch);
+    if (!key) return [];
+    const cfg = automation.current;
+    if (cfg.dedupeLadder === false) return []; // không xếp bậc thì không có gì để giải thích
+
+    const out: { name: string; op: InfraWatch['op']; threshold: number }[] = [];
+    for (const other of this.activeWatches(cfg)) {
+      if (other.id === watch.id) continue;
+      if (ladderKey(other) !== key) continue;
+      if (!stricter(other, watch)) continue;
+      // Chỉ kể cái đã ĐO và đang bình thường. Watch chưa từng đo xong (mới bật,
+      // đang lỗi mạng) thì ta không biết nó thế nào — nói bừa "đang bình thường"
+      // còn tệ hơn im, vì nó ngụ ý một điều chưa hề được kiểm chứng.
+      const s = this.samples[other.id];
+      if (!s || s.error || typeof s.value !== 'number' || s.breaching) continue;
+      out.push({ name: other.name, op: other.op, threshold: other.threshold });
+    }
+    return out;
   }
 
   private sample(id: string, s: WatchSample): void {

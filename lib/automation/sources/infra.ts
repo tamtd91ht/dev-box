@@ -289,6 +289,14 @@ export interface InfraEventExtras {
   address?: string;
   /** Toàn bộ chỉ số của CÙNG lần đo — nguồn của absUsed/absTotal (catalog.absolute). */
   metrics?: MetricMap;
+  /**
+   * Các bậc NẶNG HƠN cùng nhóm đang bình thường vào lúc watch này phát.
+   *
+   * Chỉ watcher biết được điều này (nó là chỗ duy nhất thấy cả nhóm cùng lúc),
+   * nên nó phải truyền vào chứ không tự suy ra được ở đây. Rỗng/không có =
+   * watch này vốn đã là bậc cao nhất → cảnh báo không nhắc gì tới bậc, y như cũ.
+   */
+  ladderAbove?: { name: string; op: InfraWatch['op']; threshold: number }[];
 }
 
 /** "3899 MB" → "3.8 GB" khi đáng đọc; số đếm thì thêm dấu phân tách nghìn. */
@@ -321,6 +329,35 @@ function absoluteFields(watch: InfraWatch, extras?: InfraEventExtras): Record<st
     absLeft: left,
     absUnit: abs.unit,
     absText: ` · ${fmtAbs(used, abs.unit)} / ${fmtAbs(total, abs.unit)} · còn ${fmtAbs(left, abs.unit)}`,
+  };
+}
+
+/**
+ * Vì sao cảnh báo này là bậc THẤP, khi nhóm còn có bậc cao hơn.
+ *
+ * Bối cảnh: nâng ngưỡng bậc trên (vd đĩa 93% → 97%) làm nó hết vượt, và bậc
+ * dưới (>85%) vốn đang bị che liền lộ ra và phát. Nhìn từ Zalo thì y hệt "sửa
+ * ngưỡng xong cảnh báo vẫn để mức cũ" — người nhận không có cách nào biết đây
+ * là một watch KHÁC. Câu này nói thẳng điều đó ra.
+ *
+ * Cùng giao kèo với absText: MANG SẴN dấu phân cách, rỗng khi không có gì để
+ * nói, nên `{{ladderText}}` nhét vào template ở đâu cũng tự gọn.
+ */
+function ladderFields(extras?: InfraEventExtras): Record<string, string | number> {
+  const above = extras?.ladderAbove ?? [];
+  if (!above.length) return { ladderAbove: '', ladderCount: 0, ladderText: '' };
+  // Hầu hết tên watch đã tự mang ngưỡng ("… (>97%)"), nên chỉ nối thêm phần
+  // "(> 97)" khi tên KHÔNG nhắc tới con số đó — nếu không thành "…(>97%) (> 97)".
+  const list = above
+    .map((a) => {
+      const named = new RegExp(`(?<![\\d.])${String(a.threshold).replace('.', '\\.')}(?![\\d.])`).test(a.name);
+      return named ? a.name : `${a.name} (${OP_TEXT[a.op] ?? a.op} ${a.threshold})`;
+    })
+    .join(', ');
+  return {
+    ladderAbove: list,
+    ladderCount: above.length,
+    ladderText: `\nBậc nặng hơn đang bình thường: ${list}`,
   };
 }
 
@@ -363,6 +400,7 @@ function baseEvent(
       note: watch.note ?? '',
       description: buildDescription(watch),
       ...absoluteFields(watch, extras),
+      ...ladderFields(extras),
     },
   };
 }
@@ -384,7 +422,7 @@ export function infraBreachEvent(
     type: 'infra.metric',
     title: `${watch.name} — ${label} = ${value}`,
     // absText mang sẵn " · " đầu chuỗi khi có, rỗng khi không — text tự gọn.
-    text: `${where(watch)}: ${label} = ${value} (ngưỡng ${OP_TEXT[watch.op]} ${watch.threshold})${base.fields.absText}`,
+    text: `${where(watch)}: ${label} = ${value} (ngưỡng ${OP_TEXT[watch.op]} ${watch.threshold})${base.fields.absText}${base.fields.ladderText}`,
   };
 }
 
