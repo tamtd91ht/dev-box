@@ -1389,7 +1389,6 @@ audio { width: 100%; margin-top: 12px; }
 .kafka-layout {
   display: grid; grid-template-columns: var(--kafka-rail, 320px) minmax(0, 1fr); gap: 18px;
   flex: 1; min-height: 0; align-items: stretch;
-  position: relative; /* anchor for the floating quick-search dock */
 }
 .kafka-layout > .panel { height: 100%; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
 .kafka-layout > .panel::-webkit-scrollbar { width: 8px; }
@@ -1639,26 +1638,25 @@ pre.kafka-drawer-body {
 /* ── Quick-search preset dock (anchored to the Kafka workspace, bottom-left) ──
    Absolute (not fixed) so it sits inside the Kafka panel area — it won't drift
    over the sidebar/other tabs when the page scrolls or the layout changes. */
-.kafka-preset-dock {
-  position: absolute; left: 14px; bottom: 14px; z-index: 45;
-  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
-}
-.kafka-preset-fab {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 10px 16px; border-radius: 24px; font-weight: 700; font-size: 13px;
-  color: #fff; border: none; cursor: pointer;
-  background: linear-gradient(135deg, var(--accent-solid), color-mix(in srgb, var(--accent-solid) 60%, #000));
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--accent-solid) 45%, transparent);
-}
-.kafka-preset-fab:hover { filter: brightness(1.08); transform: translateY(-1px); }
-.kafka-preset-fab-ico { font-size: 15px; }
-.kafka-preset-fab-count {
-  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
-  display: inline-flex; align-items: center; justify-content: center;
-  font-size: 11px; background: rgba(255,255,255,.28);
-}
+/* Nhóm nút bên phải thanh trạng thái (ngang hàng Topics / Consumer groups). */
+.kafka-topbar-actions { display: flex; align-items: center; gap: 6px; }
+
+/* Neo cho dropdown "Tìm nhanh". Panel bung ra TỪ nút chứ không còn nổi ở góc
+   dưới trái — nút ở đây nằm trong luồng mắt, cạnh Topics/Consumer groups.
+   position:relative để panel absolute bám vào đúng nút này. */
+.kafka-preset-anchor { position: relative; display: inline-flex; }
+
 .kafka-preset-panel {
-  width: 340px; max-width: 86vw; max-height: 60vh; overflow: auto;
+  /* Neo mép PHẢI trùng mép phải của nút: nút nằm sát bên phải khung, mở sang
+     trái thì panel luôn nằm trong màn hình, không bao giờ tràn ra ngoài. */
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+  width: 340px; max-width: 86vw;
+  /* Tổ tiên `.kafka-layout > .panel` có overflow:auto, nên dropdown KHÔNG phủ
+     ra ngoài được — nó bị kẹp trong vùng cuộn đó. Vì vậy trần chiều cao phải
+     vừa trong khung Kafka (chứ không phải 60vh của cả màn hình), nếu không
+     danh sách preset dài sẽ bị cắt cụt ở đáy. min() để trên màn hình thấp vẫn
+     co lại được. */
+  max-height: min(52vh, 420px); overflow: auto;
   display: flex; flex-direction: column;
   border: 1px solid var(--glass-brd); border-radius: 14px; padding: 12px;
   background: color-mix(in srgb, var(--bg-1) 94%, transparent);
@@ -1692,7 +1690,6 @@ pre.kafka-drawer-body {
   .kafka-layout { grid-template-columns: 1fr; }
   .kafka-drawer { width: 92vw; }
   .kafka-filter .react-datepicker-wrapper:has(.kafka-dt) { width: 150px; }
-  .kafka-preset-dock { left: 10px; bottom: 10px; }
 }
 
 /* ── RabbitMQ workspace (local dev) ─────────────────────────────────────────

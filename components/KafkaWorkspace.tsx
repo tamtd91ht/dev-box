@@ -175,17 +175,41 @@ export default function KafkaWorkspace() {
 
   // ── Quick-search presets ────────────────────────────────────────────────────
   const [presets, setPresets] = useState<KafkaPreset[]>([]);
-  /** Whether the floating preset dock is expanded. */
+  /** Dropdown "Tìm nhanh" (neo dưới nút ở thanh trạng thái) đang mở hay không. */
   const [presetOpen, setPresetOpen] = useState(false);
   /** Preset being edited/added in the manage view (null = not editing). */
   const [presetEdit, setPresetEdit] = useState<KafkaPreset | 'new' | null>(null);
   /** Preset currently being run — drives the single-screen run modal. */
   const [runPresetState, setRunPresetState] = useState<{ preset: KafkaPreset } | null>(null);
+  /** Vùng nút + panel — dùng để biết cú bấm có rơi ra ngoài dropdown không. */
+  const presetAnchorRef = useRef<HTMLSpanElement>(null);
 
   // Presets live in localStorage — hydrate on mount (client-only).
   useEffect(() => {
     setPresets(loadPresets());
   }, []);
+
+  // Dropdown thì phải đóng khi bấm ra ngoài — dock nổi trước đây không cần.
+  // KHÔNG đóng khi form thêm/sửa hoặc modal chạy đang mở: chúng là modal riêng
+  // nằm ngoài anchor, đóng dropdown lúc đó làm mất ngữ cảnh phía sau.
+  useEffect(() => {
+    if (!presetOpen || presetEdit || runPresetState) return;
+    const onDown = (e: MouseEvent) => {
+      if (presetAnchorRef.current && !presetAnchorRef.current.contains(e.target as Node)) {
+        setPresetOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [presetOpen, presetEdit, runPresetState]);
+
+  // Esc đóng dropdown — cùng lý do, và người dùng đã quen phím này ở mọi popup.
+  useEffect(() => {
+    if (!presetOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPresetOpen(false); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [presetOpen]);
 
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flash = useCallback((msg: string) => {
@@ -625,10 +649,72 @@ export default function KafkaWorkspace() {
                 <button className={subView === 'topics' ? 'on' : ''} onClick={() => setSubView('topics')}>Topics</button>
                 <button className={subView === 'groups' ? 'on' : ''} onClick={() => setSubView('groups')}>Consumer groups</button>
               </div>
-              <button
-                className="chip-btn"
-                onClick={() => (subView === 'topics' ? void loadTopics(tabConnId) : void loadGroups())}
-              >↻ Tải lại</button>
+              <span className="kafka-topbar-actions">
+                {/* Tìm nhanh: nút ngang hàng Topics/Consumer groups, panel bung
+                    xuống ngay dưới nó. Trước đây là FAB nổi góc dưới trái —
+                    nằm ngoài luồng mắt nên dễ tưởng tính năng không tồn tại.
+                    Chỉ hiện khi đã có cluster, vì preset nào cũng phải trỏ vào
+                    một cluster + topic cụ thể. */}
+                {connections.length > 0 && (
+                  <span className="kafka-preset-anchor" ref={presetAnchorRef}>
+                    <button
+                      className={'chip-btn' + (presetOpen ? ' on' : '')}
+                      title="Tìm nhanh theo chức năng đã lưu (cluster + topic + khung thời gian)"
+                      aria-expanded={presetOpen}
+                      onClick={() => setPresetOpen((v) => !v)}
+                    >
+                      ⚡ Tìm nhanh{presets.length > 0 ? ` (${presets.length})` : ''}
+                    </button>
+                    {presetOpen && (
+                      <div className="kafka-preset-panel">
+                        <div className="kafka-preset-head">
+                          <strong>Tìm nhanh</strong>
+                          <span style={{ flex: 1 }} />
+                          <button className="chip-btn" title="Thêm chức năng" onClick={() => setPresetEdit('new')}>+ Thêm</button>
+                          <button className="chip-btn" title="Đóng" onClick={() => setPresetOpen(false)}>✕</button>
+                        </div>
+                        {presets.length === 0 ? (
+                          <p className="empty" style={{ margin: '8px 0' }}>
+                            Chưa có chức năng nào. Bấm “+ Thêm” để tạo (đặt tên · chọn cluster · chọn topic).
+                          </p>
+                        ) : (
+                          <div className="kafka-preset-list">
+                            {presets.map((p) => {
+                              const conn = connections.find((c) => c.id === p.connectionId);
+                              const mins = clampWindowMinutes(p.windowMinutes ?? DEFAULT_WINDOW_MINUTES);
+                              return (
+                                <div key={p.id} className="kafka-preset-row">
+                                  <button
+                                    className="kafka-preset-run"
+                                    title={p.description ? `${p.description} · ${mins} phút gần nhất` : `Chạy tìm nhanh · ${mins} phút gần nhất`}
+                                    onClick={() => setRunPresetState({ preset: p })}
+                                  >
+                                    <span className="kafka-preset-name">{p.name}</span>
+                                    <span className="kafka-preset-sub">
+                                      {conn ? conn.name : <em style={{ color: 'var(--err)' }}>cluster đã xoá</em>} · {p.topic}
+                                    </span>
+                                    {p.description && <span className="kafka-preset-desc">{p.description}</span>}
+                                  </button>
+                                  <button className="chip-btn" title="Sửa" onClick={() => setPresetEdit(p)}>✎</button>
+                                  <button
+                                    className="chip-btn"
+                                    title="Xoá"
+                                    onClick={() => { setPresets(removePreset(p.id)); flash('Đã xoá chức năng'); }}
+                                  >🗑</button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </span>
+                )}
+                <button
+                  className="chip-btn"
+                  onClick={() => (subView === 'topics' ? void loadTopics(tabConnId) : void loadGroups())}
+                >↻ Tải lại</button>
+              </span>
             </div>
 
             {/* Cluster health (brokers / URP / offline + node_exporter host
@@ -898,64 +984,6 @@ export default function KafkaWorkspace() {
       )}
 
       {selectedMsg && <MessageDrawer msg={selectedMsg} onClose={() => setSelectedMsg(null)} />}
-
-      {/* ── Quick-search preset dock (bottom-left floating) ─────────────── */}
-      {connections.length > 0 && (
-        <div className="kafka-preset-dock">
-          {presetOpen && (
-            <div className="kafka-preset-panel">
-              <div className="kafka-preset-head">
-                <strong>Tìm nhanh</strong>
-                <span style={{ flex: 1 }} />
-                <button className="chip-btn" title="Thêm chức năng" onClick={() => setPresetEdit('new')}>+ Thêm</button>
-                <button className="chip-btn" title="Đóng" onClick={() => setPresetOpen(false)}>✕</button>
-              </div>
-              {presets.length === 0 ? (
-                <p className="empty" style={{ margin: '8px 0' }}>
-                  Chưa có chức năng nào. Bấm “+ Thêm” để tạo (đặt tên · chọn cluster · chọn topic).
-                </p>
-              ) : (
-                <div className="kafka-preset-list">
-                  {presets.map((p) => {
-                    const conn = connections.find((c) => c.id === p.connectionId);
-                    const mins = clampWindowMinutes(p.windowMinutes ?? DEFAULT_WINDOW_MINUTES);
-                    return (
-                      <div key={p.id} className="kafka-preset-row">
-                        <button
-                          className="kafka-preset-run"
-                          title={p.description ? `${p.description} · ${mins} phút gần nhất` : `Chạy tìm nhanh · ${mins} phút gần nhất`}
-                          onClick={() => setRunPresetState({ preset: p })}
-                        >
-                          <span className="kafka-preset-name">{p.name}</span>
-                          <span className="kafka-preset-sub">
-                            {conn ? conn.name : <em style={{ color: 'var(--err)' }}>cluster đã xoá</em>} · {p.topic}
-                          </span>
-                          {p.description && <span className="kafka-preset-desc">{p.description}</span>}
-                        </button>
-                        <button className="chip-btn" title="Sửa" onClick={() => setPresetEdit(p)}>✎</button>
-                        <button
-                          className="chip-btn"
-                          title="Xoá"
-                          onClick={() => { setPresets(removePreset(p.id)); flash('Đã xoá chức năng'); }}
-                        >🗑</button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-          <button
-            className="kafka-preset-fab"
-            title="Tìm kiếm nhanh (preset)"
-            onClick={() => setPresetOpen((v) => !v)}
-          >
-            <span className="kafka-preset-fab-ico">⚡</span>
-            <span className="kafka-preset-fab-label">Tìm nhanh</span>
-            {presets.length > 0 && <span className="kafka-preset-fab-count">{presets.length}</span>}
-          </button>
-        </div>
-      )}
 
       {/* Add / edit a preset. */}
       {presetEdit && (

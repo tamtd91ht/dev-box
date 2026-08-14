@@ -27,7 +27,11 @@ export interface KafkaPreset {
   windowMinutes?: number;
 }
 
-export const DEFAULT_WINDOW_MINUTES = 15;
+/** Khung thời gian mặc định khi chạy preset: 30 phút gần nhất tính tới hiện tại.
+ *  Preset cũ đã lưu windowMinutes riêng thì vẫn giữ giá trị của nó — hằng số này
+ *  chỉ áp cho preset chưa khai (windowMinutes vắng mặt) và cho ô mặc định của
+ *  form tạo mới. */
+export const DEFAULT_WINDOW_MINUTES = 30;
 export const MAX_WINDOW_MINUTES = 10080; // 7 days
 
 export function clampWindowMinutes(n: number): number {

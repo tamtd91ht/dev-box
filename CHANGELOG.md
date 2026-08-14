@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Tab Kafka — "⚡ Tìm nhanh" đổi mặc định thành 30 phút và chuyển lên thanh trên.**
+  Khung thời gian mặc định khi chạy một chức năng đã lưu là **30 phút gần nhất** (trước là 15).
+  Preset cũ đã tự khai `windowMinutes` thì **giữ nguyên** giá trị của nó — hằng số mới chỉ áp cho
+  preset chưa khai và cho ô mặc định lúc tạo mới.
+  Nút **chuyển lên thanh trên**, ngang hàng *Topics · Consumer groups* (cạnh "↻ Tải lại"), và panel
+  bung xuống ngay dưới nút. **FAB nổi ở góc dưới trái đã bỏ** — nó nằm ngoài luồng mắt và chỉ hiện
+  sau khi đã có cluster, nên rất dễ tưởng là tính năng không tồn tại. Là dropdown nên có thêm đóng
+  khi bấm ra ngoài và phím `Esc` (dock nổi trước đây không cần).
+  Trần chiều cao panel hạ xuống `min(52vh, 420px)` vì tổ tiên `.kafka-layout > .panel` có
+  `overflow: auto` — dropdown không phủ ra ngoài được, để 60vh thì danh sách preset dài bị cắt cụt.
+
 - **Nút "Sync" (đồng bộ config) giờ TẮT mặc định — chỉ chủ repo config mới thấy.** dev-box là repo
   public, ai clone về cũng chạy được, nhưng vault config (`dev-box-config`) là repo **private** của
   riêng chủ sở hữu. Người khác vốn đã không sync được — không có quyền clone repo đó, cũng không có
