@@ -264,7 +264,9 @@ export async function getStatus(fetch = false): Promise<UpdateStatus> {
  *
  *   package.json / package-lock.json → 'install'  (cần npm install)
  *   electron/**                      → 'restart'  (main process không hot-reload)
- *   còn lại                          → 'reload'   (next dev tự biên dịch, F5 là đủ)
+ *   còn lại, server DEV              → 'reload'   (next dev tự biên dịch, F5 là đủ)
+ *   còn lại, server PRODUCTION       → 'restart'  (đang phục vụ bản build cũ —
+ *                                       khởi động lại để shell `next build` lại)
  */
 function decideFollowUp(files: string[]): { followUp: FollowUp; reason: string } {
   const norm = files.map((f) => f.replace(/\\/g, '/'));
@@ -282,6 +284,16 @@ function decideFollowUp(files: string[]): { followUp: FollowUp; reason: string }
     return {
       followUp: 'restart',
       reason: 'Phần vỏ desktop đã đổi — cần khởi động lại app để nhận.',
+    };
+  }
+
+  // `next start` (mặc định của desktop shell từ khi tối ưu RAM) phục vụ code
+  // ĐÃ build — F5 vẫn là trang cũ. Khởi động lại thì shell thấy HEAD lệch
+  // build-info và tự build lại trước khi start.
+  if (process.env.NODE_ENV === 'production') {
+    return {
+      followUp: 'restart',
+      reason: 'App đang chạy bản build — cần khởi động lại (tự build lại) để nhận giao diện mới.',
     };
   }
 

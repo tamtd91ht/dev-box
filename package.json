@@ -13,6 +13,7 @@
     "start": "next start",
     "lint": "next lint",
     "desktop": "electron .",
+    "desktop:dev": "set DESKTOP_DEV=1&& electron .",
     "desktop:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-shortcuts.ps1",
     "desktop:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-shortcuts.ps1",
     "bot": "tsx bot/index.ts",

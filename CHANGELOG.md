@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Desktop shell mặc định chạy server production (`next build` + `next start`) thay vì `next dev`
+  — RAM giảm ~2.5-3GB.** Đo thực tế: riêng tiến trình `next dev` chiếm ~3GB (cache biên dịch
+  webpack/HMR của mọi route, phình dần theo thời gian dùng), trong khi server production chỉ vài
+  trăm MB — giao diện không đổi một pixel, trang còn mở nhanh hơn vì không phải biên dịch lần đầu.
+  Cách hoạt động: lúc khởi động, shell so commit HEAD của repo với HEAD ghi lại ở lần build thành
+  công trước (`data/browser/build-info.json`); lệch (vừa bấm ⬇ Cập nhật, hoặc tự `git pull`) thì
+  tự `next build` lại — có splash "đang khởi động" trong lúc chờ, log build đổ vào Console trong
+  app. Build hỏng thì **fallback về `next dev`** để app vẫn dùng được (và log rõ lý do).
+  Ai đang sửa code và cần hot reload: `npm run desktop:dev` (đặt `DESKTOP_DEV=1`), hoặc cứ
+  `npm run dev` trước rồi mở app như trước giờ — thấy :3000 có người trả lời là shell dùng lại,
+  không build gì cả. Kéo theo: ở chế độ production, nút ⬇ Cập nhật đổi followUp `reload` thành
+  `restart` (F5 không đủ — server đang phục vụ bản build cũ, phải khởi động lại để shell build lại).
+  Kèm một fix build chặn đường: `next build` trên Windows chết `EPERM scandir 'C:\Users\<user>\
+  Application Data'` vì @vercel/nft tính tĩnh được `os.homedir()` trong lib/configSync.ts rồi glob
+  đệ quy cả thư mục home để gom "asset" (trên Linux/Docker home đọc được nên chưa bao giờ lộ).
+  next.config.js giờ loại home khỏi trace ở cả hai pha: `outputFileTracingExcludes` (pha
+  collect-build-traces) + đẩy pattern vào `TraceEntryPointsPlugin.traceIgnores` qua webpack hook
+  (pha compile — Next không có config chính thức cho pha này). Đã xác minh trên bản copy sạch:
+  build pass, `next start` phục vụ đúng trang + API.
+
 - **Tab Kafka — "⚡ Tìm nhanh" đổi mặc định thành 30 phút và chuyển lên thanh trên.**
   Khung thời gian mặc định khi chạy một chức năng đã lưu là **30 phút gần nhất** (trước là 15).
   Preset cũ đã tự khai `windowMinutes` thì **giữ nguyên** giá trị của nó — hằng số mới chỉ áp cho

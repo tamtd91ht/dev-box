@@ -793,11 +793,18 @@ function wireWebviewHardening(win) {
   });
 }
 
-// ── Dev server lifecycle ──────────────────────────────────────────────────
+// ── Next server lifecycle ─────────────────────────────────────────────────
 // So the user only needs ONE command (`npm run desktop`): if nothing is
-// serving the DevBox UI yet, start `next dev` ourselves and shut it down when
-// the app closes. If a dev server is already up (they ran `npm run dev`
+// serving the DevBox UI yet, start the Next server ourselves and shut it down
+// when the app closes. If a server is already up (they ran `npm run dev`
 // separately) we reuse it and start nothing.
+//
+// MẶC ĐỊNH CHẠY PRODUCTION (`next build` một lần + `next start`): dev server
+// giữ toàn bộ cache biên dịch webpack/HMR trong RAM (~3GB đo thực tế trên máy
+// này) trong khi server production chỉ tốn vài trăm MB — giao diện không khác
+// gì, còn mở trang nhanh hơn vì không phải biên dịch lần đầu. Ai sửa code và
+// cần hot reload thì đặt DESKTOP_DEV=1 (npm run desktop:dev) hoặc tự chạy
+// `npm run dev` trước rồi mở app (probe :3000 sẽ dùng lại server đó).
 let devServer = null;
 
 /** Resolve true if something answers an HTTP GET on url within 1s. */
@@ -888,7 +895,138 @@ function forgetDevServerPid() {
 /** PID của server mà lần chạy TRƯỚC để lại và lần này dùng lại. */
 let adoptedPid = 0;
 
-async function ensureDevServer() {
+/** Đổ một stream (stdout/stderr của tiến trình con) vào Console trong app, theo dòng. */
+function forwardStream(stream, source) {
+  if (!stream) return;
+  let acc = '';
+  stream.setEncoding('utf8');
+  stream.on('data', (chunk) => {
+    acc += chunk;
+    let nl;
+    while ((nl = acc.indexOf('\n')) !== -1) {
+      const line = acc.slice(0, nl).replace(/\r$/, '');
+      acc = acc.slice(nl + 1);
+      if (line.trim()) pushLog(source, line);
+    }
+  });
+  stream.on('end', () => {
+    if (acc.trim()) pushLog(source, acc.trimEnd());
+    acc = '';
+  });
+}
+
+// ── Production build ───────────────────────────────────────────────────────
+//
+// `next start` chỉ phục vụ được code ĐÃ build, nên trước khi start phải trả
+// lời được "build trong .next có phải code hiện tại không?". Cách trả lời:
+// ghi lại commit HEAD tại thời điểm build thành công (build-info.json cạnh
+// devserver.pid), lần khởi động sau so với HEAD đang có. Lệch — nút "Cập
+// nhật" vừa pull, hoặc người dùng tự pull — là build lại. Nhờ vậy luồng cập
+// nhật không phải biết gì về build: cứ pull + khởi động lại là đủ.
+
+const buildInfoFile = () => path.join(app.getPath('userData'), 'build-info.json');
+
+/** Commit HEAD hiện tại của repo app — đọc thẳng .git, không spawn git. '' nếu không đọc được. */
+function gitHead(appPath) {
+  try {
+    const gitDir = path.join(appPath, '.git');
+    const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+    const m = /^ref: (.+)$/.exec(head);
+    if (!m) return head; // detached HEAD — chính nó đã là hash
+    const refFile = path.join(gitDir, ...m[1].split('/'));
+    if (fs.existsSync(refFile)) return fs.readFileSync(refFile, 'utf8').trim();
+    // Ref đã bị pack (git gc) → tra trong packed-refs.
+    const packed = fs.readFileSync(path.join(gitDir, 'packed-refs'), 'utf8');
+    for (const raw of packed.split('\n')) {
+      const line = raw.trim();
+      if (line.endsWith(' ' + m[1])) return line.split(/\s+/)[0];
+    }
+  } catch {
+    /* không phải repo / thiếu quyền — coi như không biết */
+  }
+  return '';
+}
+
+function savedBuildHead() {
+  try {
+    return String(JSON.parse(fs.readFileSync(buildInfoFile(), 'utf8')).head || '');
+  } catch {
+    return '';
+  }
+}
+
+function rememberBuildHead(head) {
+  try {
+    fs.mkdirSync(path.dirname(buildInfoFile()), { recursive: true });
+    fs.writeFileSync(buildInfoFile(), JSON.stringify({ head, at: Date.now() }), 'utf8');
+  } catch (err) {
+    log('BuildInfoWriteError', err && err.message);
+  }
+}
+
+/**
+ * Chạy một script Node bằng Node đóng gói trong Electron (không phụ thuộc
+ * node/npm trên PATH), output đổ vào Console trong app. Trả về exit code
+ * (khác 0 khi lỗi hoặc quá timeoutMs).
+ */
+function runNode(appPath, args, timeoutMs, source) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, {
+      cwd: appPath,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    forwardStream(child.stdout, source);
+    forwardStream(child.stderr, source);
+    const timer = setTimeout(() => {
+      log('BuildTimeout', `${args[args.length - 1]} quá ${Math.round(timeoutMs / 60000)} phút — dừng`);
+      try {
+        // next build còn spawn worker con — giết cả cây, như killDevServerTree.
+        if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F']);
+        else child.kill('SIGKILL');
+      } catch {
+        /* đã chết rồi */
+      }
+    }, timeoutMs);
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      resolve(code == null ? 1 : code);
+    });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      log('BuildSpawnError', err && err.message);
+      resolve(1);
+    });
+  });
+}
+
+/** Đảm bảo .next chứa build production của ĐÚNG code hiện tại. true = dùng được. */
+async function ensureProdBuild(appPath, nextBin) {
+  const head = gitHead(appPath);
+  // BUILD_ID chỉ tồn tại sau `next build` — .next của `next dev` không có nó.
+  const hasBuild = fs.existsSync(path.join(appPath, '.next', 'BUILD_ID'));
+  if (hasBuild && head && savedBuildHead() === head) return true;
+  if (hasBuild && !head) return true; // không đọc được git → đành tin build sẵn có
+
+  log(
+    'BuildStarting',
+    `next build (${hasBuild ? 'code đã đổi so với lần build trước' : 'chưa có build production'}) — có thể mất vài phút`,
+  );
+  // Hook `prebuild` của npm không chạy khi spawn thẳng next bin → tự gọi
+  // copy-monaco (idempotent, chỉ copy khi thiếu/đổi version).
+  await runNode(appPath, [path.join(appPath, 'scripts', 'copy-monaco.cjs')], 2 * 60_000, 'build');
+  const code = await runNode(appPath, [nextBin, 'build'], 15 * 60_000, 'build');
+  if (code === 0) {
+    rememberBuildHead(head);
+    log('BuildDone', 'build production sẵn sàng');
+    return true;
+  }
+  log('BuildFailed', `next build thoát mã ${code}`);
+  return false;
+}
+
+async function ensureServer() {
   // Pointed at an external server (prod/staging URL) → never auto-start.
   if (process.env.DESKTOP_URL) {
     log('DevServerSkip', `DESKTOP_URL set → dùng server ngoài (${APP_URL})`);
@@ -914,8 +1052,30 @@ async function ensureDevServer() {
     log('DevServerMissing', `không thấy ${nextBin} — chạy \`npm install\` trước`);
     return;
   }
-  log('DevServerStarting', 'next dev — lần đầu biên dịch có thể mất ~10-30s');
-  devServer = spawn(process.execPath, [nextBin, 'dev'], {
+
+  // DESKTOP_DEV=1 → giữ hot reload cho người đang sửa code. Mặc định production.
+  const wantDev = /^(1|true)$/i.test(process.env.DESKTOP_DEV || '');
+  if (!wantDev) {
+    if (await ensureProdBuild(appPath, nextBin)) {
+      spawnNextServer(appPath, nextBin, 'start');
+      return;
+    }
+    // Build hỏng (code đang dở, lỗi type…) thì thà chạy dev còn hơn không có
+    // app — và log rõ để biết vì sao RAM cao trở lại.
+    log('BuildFallback', 'build thất bại → tạm chạy next dev để app vẫn dùng được');
+  }
+  spawnNextServer(appPath, nextBin, 'dev');
+}
+
+/** Spawn `next dev` hoặc `next start` với cùng một bộ luật vòng đời/pid/log. */
+function spawnNextServer(appPath, nextBin, mode) {
+  log(
+    'ServerStarting',
+    mode === 'dev'
+      ? 'next dev — lần đầu biên dịch có thể mất ~10-30s'
+      : 'next start — production, nhẹ RAM hơn hẳn dev',
+  );
+  devServer = spawn(process.execPath, [nextBin, mode], {
     cwd: appPath,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'], // captured → in-app Console drawer
@@ -927,26 +1087,8 @@ async function ensureDevServer() {
     detached: true,
     windowsHide: true,
   });
-  // Split the streams into lines and mirror them into the in-app console.
-  const forwardStream = (stream) => {
-    let acc = '';
-    stream.setEncoding('utf8');
-    stream.on('data', (chunk) => {
-      acc += chunk;
-      let nl;
-      while ((nl = acc.indexOf('\n')) !== -1) {
-        const line = acc.slice(0, nl).replace(/\r$/, '');
-        acc = acc.slice(nl + 1);
-        if (line.trim()) pushLog('next', line);
-      }
-    });
-    stream.on('end', () => {
-      if (acc.trim()) pushLog('next', acc.trimEnd());
-      acc = '';
-    });
-  };
-  forwardStream(devServer.stdout);
-  forwardStream(devServer.stderr);
+  forwardStream(devServer.stdout, 'next');
+  forwardStream(devServer.stderr, 'next');
   rememberDevServerPid(devServer.pid);
   devServer.on('exit', (code) => {
     log('DevServerExited', String(code));
@@ -1069,8 +1211,21 @@ function stopDevServer() {
   adoptedPid = 0;
 }
 
+// Splash tĩnh hiện trong lúc server (và có thể cả `next build`) khởi động —
+// không có nó thì cửa sổ đen thui vài phút và người dùng tưởng app treo.
+const SPLASH_HTML = `<body style="margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#0b0e14;color:#9aa4b2;font:14px system-ui">
+  <div style="width:28px;height:28px;border:3px solid #2a3242;border-top-color:#7aa2f7;border-radius:50%;animation:s 1s linear infinite"></div>
+  <div>VHS DevBox đang khởi động…</div>
+  <div style="font-size:12px;color:#5c6773">Lần đầu hoặc ngay sau khi cập nhật có thể mất vài phút (đang build).</div>
+  <style>@keyframes s{to{transform:rotate(360deg)}}</style>
+</body>`;
+
 async function loadAppWithRetry(win) {
-  for (let i = 0; i < 120; i++) {
+  // loadURL thất bại thì Chromium GIỮ trang đang hiện, nên splash sống qua
+  // các lượt thử cho tới khi server trả lời.
+  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(SPLASH_HTML)).catch(() => {});
+  // 600 lượt × 1s: đủ trùm qua một lượt `next build` dài, không chỉ dev compile.
+  for (let i = 0; i < 600; i++) {
     try {
       await win.loadURL(APP_URL);
       log('AppLoaded', APP_URL);
@@ -1145,6 +1300,9 @@ function createWindow() {
   // tin rơi vào khoảng trống và file im lặng không mở.
   win.webContents.on('did-finish-load', () => {
     if (!pendingOpenFile) return;
+    // Splash (data:) cũng bắn did-finish-load — nó không có listener nhận IPC,
+    // gửi vào đó là file lặng lẽ biến mất. Chỉ gửi khi đã nạp UI thật.
+    if (!win.webContents.getURL().startsWith(APP_URL)) return;
     const abs = pendingOpenFile;
     pendingOpenFile = null;
     setTimeout(() => {
@@ -1566,12 +1724,16 @@ ipcMain.handle('desktop:getLogs', () => logBuffer);
 /**
  * Khởi động lại app sau khi nút "Cập nhật" kéo code mới về.
  *
- * PHẢI BUỘC GIẾT `next dev` — đây là chỗ dễ sai nhất của cả tính năng.
+ * PHẢI BUỘC GIẾT server Next — đây là chỗ dễ sai nhất của cả tính năng.
  * stopDevServer() bình thường GIỮ server sống khi còn phiên terminal (để đóng
  * app mà phiên không mất). Nhưng ở đây mục đích ngược lại: ta khởi động lại
- * CHÍNH VÌ code đã đổi. Server cũ còn sống thì lần mở sau ensureDevServer()
+ * CHÍNH VÌ code đã đổi. Server cũ còn sống thì lần mở sau ensureServer()
  * probe thấy :3000 có người trả lời và dùng lại nó — app "mới" chạy y nguyên
  * code cũ, người dùng bấm cập nhật xong không thấy gì đổi.
+ *
+ * Ở chế độ production, lần mở sau ensureServer() còn thấy HEAD đã lệch khỏi
+ * build-info.json nên tự `next build` lại trước khi `next start` — nút Cập
+ * nhật vì thế không phải biết gì về build.
  *
  * Đánh đổi: các phiên terminal đang mở sẽ mất. Đúng, và renderer đã cảnh báo
  * trước khi gọi tới đây.
@@ -1695,8 +1857,11 @@ if (!app.requestSingleInstanceLock()) {
     // vài chục giây. createWindow() sẽ bắn nó đi lúc trang nạp xong.
     pendingOpenFile = fileFromArgv(process.argv);
     if (pendingOpenFile) log('OpenFileQueued', pendingOpenFile);
-    await ensureDevServer(); // start next dev if nothing is serving :3000 yet
+    // Cửa sổ mở TRƯỚC khi lo server: ensureServer() giờ có thể phải `next
+    // build` vài phút, mà người dùng vừa bấm icon thì phải thấy ngay một cái
+    // gì đó (splash của loadAppWithRetry) chứ không phải một app "không lên".
     createWindow();
+    await ensureServer(); // build (nếu cần) + start server khi :3000 chưa có ai
     // Theo dõi số phiên terminal đang sống — stopDevServer() đọc con số này để
     // quyết định có được phép tắt server lúc thoát app hay không.
     startTerminalPoll();
