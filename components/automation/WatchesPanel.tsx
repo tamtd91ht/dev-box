@@ -18,9 +18,11 @@ import { blankWatch } from '@/lib/automation/engine';
 import { MIN_WATCH_INTERVAL_SEC } from '@/lib/automation/normalize';
 import { connLabel, listConnections, refreshConnections, type ConnOption } from '@/lib/automation/connections';
 import { watcher } from '@/lib/automation/watcher';
+import { KAFKA_LAG_METRICS } from '@/lib/automation/sources/infra';
 import { useWatcher } from '@/lib/automation/useAutomation';
 import type { AutomationConfig, InfraStack, InfraWatch, WatchSeverity } from '@/lib/automation/types';
 import { buildDescription } from '@/lib/automation/meta';
+import { listKafkaGroups, type GroupSummary } from '@/lib/kafka';
 import { Empty, Field, Num, Toggle } from './parts';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
@@ -69,6 +71,28 @@ function WatchEditor({
   const [tagText, setTagText] = useState((watch.tags ?? []).join(', '));
   const stack = stackDef(watch.stack);
   const set = (p: Partial<InfraWatch>) => onChange({ ...watch, ...p });
+
+  // ── Lọc theo consumer group (chỉ Kafka + chỉ số theo group) ────────────────
+  // Gợi ý group lấy từ chính cụm đã chọn (listKafkaGroups → /api/kafka). Người
+  // dùng chọn từ dropdown, không gõ tay từng chữ.
+  const groupScoped = watch.stack === 'kafka' && KAFKA_LAG_METRICS.has(watch.metric);
+  const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [groupsState, setGroupsState] = useState<{ loading: boolean; err?: string }>({ loading: false });
+  const selectedGroups = watch.groupFilter ?? [];
+
+  useEffect(() => {
+    if (!groupScoped || !watch.connectionId) {
+      setGroups([]);
+      setGroupsState({ loading: false });
+      return;
+    }
+    let alive = true;
+    setGroupsState({ loading: true });
+    listKafkaGroups(watch.connectionId)
+      .then((g) => { if (alive) { setGroups(g); setGroupsState({ loading: false }); } })
+      .catch((e) => { if (alive) { setGroups([]); setGroupsState({ loading: false, err: (e as Error).message }); } });
+    return () => { alive = false; };
+  }, [groupScoped, watch.connectionId]);
 
   const cost = metricCost(watch.stack, watch.metric);
   const def = metricDef(watch.stack, watch.metric);
@@ -193,6 +217,70 @@ function WatchEditor({
         <Field label="Ngưỡng" hint={metricDef(watch.stack, watch.metric)?.hint}>
           <Num value={watch.threshold} onChange={(v) => set({ threshold: v })} min={-1e9} />
         </Field>
+        {groupScoped ? (
+          <Field
+            label="Consumer group"
+            wide
+            tip="Để TRỐNG = xét MỌI consumer trên cụm (bất kỳ cái nào vượt ngưỡng là báo). Chọn một hoặc nhiều = chỉ xét đúng các consumer này — CHỈ CẦN 1 trong số đó vượt ngưỡng là báo. Chọn từ gợi ý của cụm, không gõ tay."
+            hint={
+              groupsState.loading
+                ? 'đang tải danh sách group từ cụm…'
+                : groupsState.err
+                  ? `không tải được group: ${groupsState.err}`
+                  : selectedGroups.length
+                    ? `chỉ xét ${selectedGroups.length} group đã chọn`
+                    : 'trống = mọi consumer trên cụm'
+            }
+          >
+            <div className="auto-groupsel">
+              {selectedGroups.length > 0 ? (
+                <div className="auto-gchips">
+                  {selectedGroups.map((g) => (
+                    <span key={g} className="auto-gchip" title={g}>
+                      <span className="auto-gchip-txt">{g}</span>
+                      <button
+                        type="button"
+                        title="Bỏ group này"
+                        onClick={() => set({ groupFilter: selectedGroups.filter((x) => x !== g) })}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                  <button type="button" className="ghost sm" onClick={() => set({ groupFilter: [] })}>
+                    Xoá hết (về mọi consumer)
+                  </button>
+                </div>
+              ) : null}
+              <select
+                value=""
+                disabled={groupsState.loading || !watch.connectionId}
+                onChange={(e) => {
+                  const g = e.target.value;
+                  if (!g) return;
+                  if (!selectedGroups.includes(g)) set({ groupFilter: [...selectedGroups, g] });
+                }}
+              >
+                <option value="">
+                  {!watch.connectionId
+                    ? '— chọn kết nối trước —'
+                    : groupsState.loading
+                      ? 'đang tải…'
+                      : '+ thêm consumer group…'}
+                </option>
+                {groups
+                  .filter((g) => !selectedGroups.includes(g.groupId))
+                  .map((g) => (
+                    <option key={g.groupId} value={g.groupId}>
+                      {g.groupId}
+                      {g.state ? ` · ${g.state}` : ''}
+                      {typeof g.members === 'number' ? ` · ${g.members}m` : ''}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          </Field>
+        ) : null}
         <Field
           label="Chu kỳ (giây)"
           tip="Bao lâu đo một lần. Mỗi watch đo ĐỘC LẬP — 12 watch trên cùng một cụm là 12 lượt gọi riêng mỗi vòng, không chia sẻ kết quả. Chỉ số càng nặng thì càng phải giãn."

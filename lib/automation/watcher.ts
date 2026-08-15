@@ -341,7 +341,7 @@ class InfraWatcher {
   private async poll(watch: InfraWatch, st: WatchState): Promise<void> {
     const cfg = automation.current.trace;
     const t0 = Date.now();
-    const res = await probeStack(watch.stack, watch.connectionId, watch.metric);
+    const res = await probeStack(watch.stack, watch.connectionId, watch.metric, { groupFilter: watch.groupFilter });
     const tookMs = Date.now() - t0;
     const value = res.metrics[watch.metric];
     const has = typeof value === 'number' && Number.isFinite(value);
@@ -531,9 +531,10 @@ class InfraWatcher {
     this.emit();
   }
 
-  /** One-off probe for the editor's "Thử ngay" button — touches no state. */
-  probe(watch: Pick<InfraWatch, 'stack' | 'connectionId'>): Promise<ProbeResult> {
-    return probeStack(watch.stack, watch.connectionId);
+  /** One-off probe for the editor's "Thử ngay" button — touches no state.
+   *  Áp cả groupFilter để "Thử ngay" hiện đúng giá trị đã giới hạn theo group. */
+  probe(watch: Pick<InfraWatch, 'stack' | 'connectionId' | 'groupFilter'>): Promise<ProbeResult> {
+    return probeStack(watch.stack, watch.connectionId, undefined, { groupFilter: watch.groupFilter });
   }
 }
 

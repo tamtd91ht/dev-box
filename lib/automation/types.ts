@@ -428,6 +428,15 @@ export interface InfraWatch {
   connectionLabel?: string;
   /** Metric key from the stack's probe adapter (see catalog.ts). */
   metric: string;
+  /**
+   * CHỈ Kafka + chỉ số theo consumer group (maxConsumerLag, stalledGroups…):
+   * giới hạn phép đo vào ĐÚNG các consumer group này (theo groupId), chọn từ
+   * dropdown gợi ý trong editor. Rỗng/không có = mọi group trên cụm (hành vi
+   * cũ). Nhờ đó `maxConsumerLag > X` với danh sách rỗng = "bất kỳ consumer nào
+   * lag > X", và với danh sách đã chọn = "chỉ 1 trong các consumer này lag > X
+   * là báo" — cùng một chỉ số, khác nhau ở tập group được xét.
+   */
+  groupFilter?: string[];
   op: 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq';
   threshold: number;
   /** Poll interval (seconds). Minimum enforced by the runner. */

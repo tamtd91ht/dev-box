@@ -226,6 +226,21 @@ thiệu mình, và dùng được trong điều kiện — nhưng **không đị
 watch bằng `scope.watchIds` (theo **id**), nên đổi tên watch không bao giờ làm đứt
 liên kết.
 
+**Lọc consumer group (chỉ Kafka, chỉ số theo group).** Với các chỉ số lag theo
+group (`maxConsumerLag`, `stalledGroups`, `maxStalledSec`, `totalConsumerLag`,
+`emptyGroups`, `rebalancingGroups`, `groups`, `lagGroupsUnknown`), watch có field
+`groupFilter?: string[]` — chọn từ **dropdown gợi ý** trong editor (danh sách group
+lấy thẳng từ cụm qua `listKafkaGroups`, không gõ tay). Phép đo được giới hạn vào
+đúng các group đó TRƯỚC khi tính, nên cùng một chỉ số cho hai kiểu watch:
+
+- `maxConsumerLag > X` với `groupFilter` **rỗng** = *bất kỳ consumer nào* lag > X.
+- `maxConsumerLag > X` với `groupFilter` = *[nhóm đã chọn]* = *chỉ cần 1 trong các
+  consumer này* lag > X là báo (max trên tập con). Group đã chọn mà không tồn tại
+  trên cụm chỉ đơn giản không đóng góp gì (không làm hỏng phép đo).
+
+Danh sách group đi vào mô tả tự sinh của cảnh báo ("Chỉ xét N consumer group: …"),
+nên tin nhắn tự giải thích vì sao chỉ mấy consumer đó.
+
 Ngữ nghĩa runner:
 
 - **Một** interval 2s cho tất cả watch, mỗi watch tự có `nextDue` → không đẻ N timer trôi lệch nhau.

@@ -4732,6 +4732,22 @@ pre.kafka-drawer-body {
 }
 .auto-sec > button { align-self: flex-start; }
 
+/* Lọc consumer group của watch Kafka: hàng chip đã chọn + dropdown thêm. */
+.auto-groupsel { display: flex; flex-direction: column; gap: 6px; }
+.auto-gchips { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.auto-gchip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 260px;
+  padding: 3px 6px 3px 10px; border-radius: 20px; font-size: 11.5px; font-weight: 600;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text);
+}
+.auto-gchip-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.auto-gchip button {
+  border: none; background: transparent; color: var(--muted); cursor: pointer;
+  font-size: 12px; line-height: 1; padding: 0 2px;
+}
+.auto-gchip button:hover { color: var(--err); }
+
 .auto-checks { display: flex; flex-wrap: wrap; gap: 5px; }
 .auto-chip {
   padding: 4px 10px; border-radius: 20px; font-size: 11.5px; font-weight: 600;

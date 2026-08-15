@@ -127,7 +127,7 @@ async function probeEs(id: string): Promise<MetricMap> {
  * actually reads one of these. A cluster-health watch polling every 30s must not
  * drag a full lag sweep behind it.
  */
-const KAFKA_LAG_METRICS = new Set([
+export const KAFKA_LAG_METRICS = new Set([
   'maxConsumerLag',
   'totalConsumerLag',
   'stalledGroups',
@@ -139,7 +139,13 @@ const KAFKA_LAG_METRICS = new Set([
   'groups',
 ]);
 
-async function probeKafka(id: string, metric?: string): Promise<MetricMap> {
+/** Options riêng của từng lần probe — hiện chỉ Kafka dùng (lọc consumer group). */
+export interface ProbeOpts {
+  /** Chỉ xét các consumer group này (theo groupId). Rỗng/không có = mọi group. */
+  groupFilter?: string[];
+}
+
+async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promise<MetricMap> {
   const h = await kafkaClusterHealth(id);
   const m: MetricMap = { up: 1 };
   put(m, 'brokers', h.brokers.length);
@@ -152,12 +158,20 @@ async function probeKafka(id: string, metric?: string): Promise<MetricMap> {
   if (metric === undefined || KAFKA_LAG_METRICS.has(metric)) {
     try {
       const lag = await kafkaConsumerLag(id);
+      // Watch #2: giới hạn vào đúng các group đã chọn (theo groupId). Rỗng =
+      // mọi group (watch #1). Lọc TRƯỚC mọi phép tính bên dưới, nên cùng chỉ số
+      // maxConsumerLag nhưng chỉ nhìn tập group này — "1 trong danh sách vượt
+      // ngưỡng là báo".
+      const filter = opts?.groupFilter;
+      const scoped = filter && filter.length
+        ? lag.groups.filter((g) => filter.includes(g.groupId))
+        : lag.groups;
       // A group whose own fetchOffsets failed has UNKNOWN lag. Counting it as 0
       // would quietly report "no lag" for the one group that may be broken, so
       // it is excluded from the maxima and surfaced as its own metric instead.
-      const ok = lag.groups.filter((g) => !g.error);
-      put(m, 'groups', lag.groups.length);
-      put(m, 'lagGroupsUnknown', lag.groups.length - ok.length);
+      const ok = scoped.filter((g) => !g.error);
+      put(m, 'groups', scoped.length);
+      put(m, 'lagGroupsUnknown', scoped.length - ok.length);
       put(m, 'maxConsumerLag', maxOf(ok.map((g) => g.totalLag)) ?? 0);
       put(m, 'totalConsumerLag', sumOf(ok.map((g) => g.totalLag)));
       // Stuck = behind AND not moving. Lag alone is not a fault; a group that is
@@ -218,7 +232,7 @@ async function probePg(id: string): Promise<MetricMap> {
   return { up: 1, latencyMs: round(r.latencyMs) };
 }
 
-const PROBES: Record<InfraStack, (connectionId: string, metric?: string) => Promise<MetricMap>> = {
+const PROBES: Record<InfraStack, (connectionId: string, metric?: string, opts?: ProbeOpts) => Promise<MetricMap>> = {
   redis: probeRedis,
   mongo: probeMongo,
   es: probeEs,
@@ -239,12 +253,13 @@ export async function probeStack(
   stack: InfraStack,
   connectionId: string,
   metric?: string,
+  opts?: ProbeOpts,
 ): Promise<ProbeResult> {
   const at = Date.now();
   const run = PROBES[stack];
   if (!run) return { at, metrics: {}, error: `stack không hỗ trợ: ${stack}` };
   try {
-    return { at, metrics: await run(connectionId, metric) };
+    return { at, metrics: await run(connectionId, metric, opts) };
   } catch (e) {
     return { at, metrics: { up: 0 }, error: (e as Error).message || 'probe thất bại' };
   }

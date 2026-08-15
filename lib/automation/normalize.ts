@@ -276,6 +276,13 @@ function normWatch(raw: unknown, index: number): InfraWatch | null {
     connectionId: str(w.connectionId),
     connectionLabel: str(w.connectionLabel),
     metric: fieldName(w.metric, 'up'),
+    // Danh sách consumer group giới hạn phép đo (chỉ Kafka lag). Giữ nguyên
+    // groupId, bỏ trùng/rỗng, cắt trần cho an toàn. Rỗng → bỏ hẳn field.
+    ...(() => {
+      const gf = strArr(w.groupFilter).map((g) => g.trim()).filter(Boolean);
+      const uniq = [...new Set(gf)].slice(0, 200);
+      return uniq.length ? { groupFilter: uniq } : {};
+    })(),
     op: WATCH_OPS.includes(w.op as InfraWatch['op']) ? (w.op as InfraWatch['op']) : 'gt',
     threshold: num(w.threshold),
     everySec: Math.max(MIN_WATCH_INTERVAL_SEC, posInt(w.everySec) ?? 60),

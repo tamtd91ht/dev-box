@@ -63,6 +63,8 @@ export interface DescriptionInput {
   threshold: number;
   everySec: number;
   forSec?: number;
+  /** Kafka: danh sách consumer group được giới hạn (nếu có) — vào mô tả cảnh báo. */
+  groupFilter?: string[];
   /** Ghi chú nghiệp vụ của watch — phần ngữ cảnh catalog không thể biết. */
   note?: string;
 }
@@ -82,10 +84,17 @@ export function buildDescription(w: DescriptionInput): string {
   const agg = md?.agg ? `, ${AGG_LABEL[md.agg]}` : '';
   const hold = (w.forSec ?? 0) > 0 ? ` liên tục ≥ ${w.forSec}s` : ' (báo ngay khi chạm ngưỡng)';
   const note = (w.note ?? '').trim();
+  // Kafka có giới hạn group: nói rõ chỉ xét các consumer nào, để cảnh báo tự
+  // giải thích "vì sao chỉ mấy consumer này". Nhiều thì cắt bớt cho gọn tin.
+  const gf = (w.groupFilter ?? []).filter(Boolean);
+  const scope = gf.length
+    ? ` Chỉ xét ${gf.length} consumer group: ${gf.slice(0, 8).join(', ')}${gf.length > 8 ? `… (+${gf.length - 8})` : ''}.`
+    : '';
   return (
     `${label} — ${meaning} ` +
     `DevBox đo bằng ${probe} mỗi ${w.everySec}s${agg}. ` +
     `Cảnh báo phát khi giá trị ${OP_TEXT[w.op] ?? w.op} ${w.threshold}${hold}.` +
+    scope +
     (note ? ` Ghi chú: ${note}` : '')
   );
 }
