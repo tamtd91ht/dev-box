@@ -12,6 +12,7 @@ import {
   peekKafkaMessages,
   searchKafkaMessages,
   produceKafkaMessage,
+  kafkaConsumerLag,
   fmtInt,
   fmtTs,
   type PublicKafkaConnection,
@@ -22,6 +23,7 @@ import {
   type MessagePage,
   type PreviewMessage,
   type TopicConsumerGroup,
+  type KafkaConsumerLag,
   listKafkaTopicGroups,
 } from '@/lib/kafka';
 import DateTimeField from '@/components/DateTimeField';
@@ -46,7 +48,7 @@ const LAST_CONN_KEY = 'kafka.lastConn';
 /** Default number of messages a "peek" pulls. */
 const DEFAULT_PEEK = 20;
 
-type SubView = 'topics' | 'groups';
+type SubView = 'topics' | 'groups' | 'lag';
 /** Inner tabs of a selected topic (Kafka-HQ style: messages front-and-center). */
 type TopicTab = 'messages' | 'partitions' | 'groups';
 
@@ -116,6 +118,15 @@ function canSearchTab(t: TabState): boolean {
   return Number.isFinite(from) && Number.isFinite(to) && to > from && t.keyword.trim().length > 0;
 }
 
+/** Số giây group bị "đứng" (offset không nhích) → chuỗi dễ đọc. null = đang chạy. */
+function fmtStall(sec: number | null): string {
+  if (sec == null) return '—';
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m} phút`;
+  return `${Math.floor(m / 60)}g ${m % 60}p`;
+}
+
 /** Format an epoch-ms into a `datetime-local` input value (local time, minute precision). */
 function toLocalInput(ms: number): string {
   const d = new Date(ms);
@@ -162,6 +173,17 @@ export default function KafkaWorkspace() {
   const [produceOpen, setProduceOpen] = useState(false);
   /** Message currently open in the detail drawer (null = drawer closed). */
   const [selectedMsg, setSelectedMsg] = useState<PreviewMessage | null>(null);
+
+  // ── Lag check ───────────────────────────────────────────────────────────────
+  // Kết quả quét lag của MỌI consumer group trên cluster đang chọn. Chỉ chạy khi
+  // người dùng bấm "Kiểm tra lag" (không auto khi mở tab) — quét cả cluster là
+  // thao tác nặng, để người dùng chủ động. Ô keyword lọc TRÊN kết quả đã trả về
+  // (thuần client-side), không gọi lại server.
+  const [lagData, setLagData] = useState<KafkaConsumerLag | null>(null);
+  const [lagLoading, setLagLoading] = useState(false);
+  const [lagFilter, setLagFilter] = useState('');
+  /** Mặc định chỉ hiện group đang lag; bật lên để soi cả group lag = 0. */
+  const [lagShowAll, setLagShowAll] = useState(false);
 
   // ── Groups ────────────────────────────────────────────────────────────────
   const [groups, setGroups] = useState<GroupSummary[]>([]);
@@ -290,6 +312,9 @@ export default function KafkaWorkspace() {
     setSelectedGroup(null);
     setGroupDetail(null);
     setGroups([]);
+    // Kết quả lag thuộc về cluster cũ — xoá để không đọc nhầm số của cluster khác.
+    setLagData(null);
+    setLagFilter('');
     setTabs((prev) => {
       const cur = prev.find((t) => t.id === activeTabId);
       if (!cur || cur.connectionId === activeId) return prev;
@@ -423,6 +448,33 @@ export default function KafkaWorkspace() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab?.id, activeTab?.view, activeTab?.topic]);
+
+  // ── Lag check ───────────────────────────────────────────────────────────────
+  /** Quét lag toàn cluster — CHỈ chạy khi người dùng bấm nút (submit). */
+  const runLagCheck = useCallback(async () => {
+    if (!activeId || lagLoading) return;
+    setLagLoading(true);
+    setError(null);
+    try {
+      setLagData(await kafkaConsumerLag(activeId));
+    } catch (e) {
+      setLagData(null);
+      setError((e as Error).message);
+    } finally {
+      setLagLoading(false);
+    }
+  }, [activeId, lagLoading]);
+
+  /** Kết quả hiển thị: lọc keyword trên tập ĐÃ TRẢ VỀ rồi xếp lag cao → thấp. */
+  const lagRows = useMemo(() => {
+    if (!lagData) return [];
+    const q = lagFilter.trim().toLowerCase();
+    return lagData.groups
+      // Group lỗi (lag UNKNOWN) vẫn hiện để không bị hiểu nhầm là "không lag".
+      .filter((g) => lagShowAll || g.totalLag > 0 || g.error)
+      .filter((g) => !q || g.groupId.toLowerCase().includes(q) || (g.worstTopic ?? '').toLowerCase().includes(q))
+      .sort((a, b) => b.totalLag - a.totalLag);
+  }, [lagData, lagFilter, lagShowAll]);
 
   // ── Groups ──────────────────────────────────────────────────────────────────
   const loadGroups = useCallback(async () => {
@@ -648,6 +700,7 @@ export default function KafkaWorkspace() {
               <div className="kafka-subnav">
                 <button className={subView === 'topics' ? 'on' : ''} onClick={() => setSubView('topics')}>Topics</button>
                 <button className={subView === 'groups' ? 'on' : ''} onClick={() => setSubView('groups')}>Consumer groups</button>
+                <button className={subView === 'lag' ? 'on' : ''} onClick={() => setSubView('lag')}>Lag</button>
               </div>
               <span className="kafka-topbar-actions">
                 {/* Tìm nhanh: nút ngang hàng Topics/Consumer groups, panel bung
@@ -712,7 +765,11 @@ export default function KafkaWorkspace() {
                 )}
                 <button
                   className="chip-btn"
-                  onClick={() => (subView === 'topics' ? void loadTopics(tabConnId) : void loadGroups())}
+                  onClick={() => {
+                    if (subView === 'topics') void loadTopics(tabConnId);
+                    else if (subView === 'groups') void loadGroups();
+                    else void runLagCheck(); // vẫn là hành động chủ động của người dùng
+                  }}
                 >↻ Tải lại</button>
               </span>
             </div>
@@ -967,6 +1024,108 @@ export default function KafkaWorkspace() {
                       ))}
                     </>
                   ) : null}
+              </div>
+            )}
+
+            {subView === 'lag' && (
+              /* ── Lag check: quét MỌI group, xếp lag cao → thấp, lọc keyword client-side ── */
+              <div className="kafka-pane">
+                <div className="kafka-toolbar">
+                  <button
+                    className="sm"
+                    disabled={lagLoading}
+                    onClick={() => void runLagCheck()}
+                    title="Quét lag của mọi consumer group trên cluster này"
+                  >
+                    {lagLoading ? 'Đang kiểm tra…' : lagData ? '↻ Kiểm tra lại' : '⏱ Kiểm tra lag'}
+                  </button>
+                  {lagData && !lagLoading && (
+                    <>
+                      {/* Lọc trên tập kết quả ĐÃ trả về — không gọi lại server. */}
+                      <input
+                        className="input"
+                        type="search"
+                        name="kafka-lag-filter"
+                        placeholder="Lọc kết quả theo group / topic…"
+                        value={lagFilter}
+                        onChange={(e) => setLagFilter(e.target.value)}
+                        autoComplete="off"
+                        data-lpignore="true"
+                        data-form-type="other"
+                      />
+                      <label className="kafka-check" title="Hiện cả group không lag (lag = 0)">
+                        <input type="checkbox" checked={lagShowAll} onChange={(e) => setLagShowAll(e.target.checked)} /> tất cả
+                      </label>
+                    </>
+                  )}
+                </div>
+
+                {lagLoading && <p style={{ marginTop: 10 }}><span className="spinner" /> Đang quét lag toàn cluster…</p>}
+
+                {!lagLoading && !lagData && (
+                  <p className="empty" style={{ marginTop: 10 }}>
+                    Bấm “⏱ Kiểm tra lag” để quét lag của tất cả consumer group trên cluster này.
+                    Kết quả xếp theo lag từ cao đến thấp, sau đó có thể lọc theo keyword.
+                  </p>
+                )}
+
+                {!lagLoading && lagData && (
+                  <>
+                    <div className="kafka-meta">
+                      Kiểm tra lúc {fmtTs(lagData.at)} · {lagData.groups.filter((g) => g.totalLag > 0).length}/{lagData.groups.length} group đang lag
+                      {lagFilter.trim() && ` · khớp keyword: ${lagRows.length}`}
+                      {lagData.skippedGroups > 0 && (
+                        <span className="badge" style={{ color: 'var(--warn)', marginLeft: 6 }}>
+                          bỏ qua {lagData.skippedGroups} group
+                        </span>
+                      )}
+                    </div>
+                    <div className="kafka-scroll" style={{ flex: 1 }}>
+                      {lagRows.length === 0 ? (
+                        <p className="empty">
+                          {lagFilter.trim()
+                            ? 'Không có group nào khớp keyword trong kết quả.'
+                            : 'Không có consumer group nào đang lag. 🎉'}
+                        </p>
+                      ) : (
+                        <table className="kafka-table">
+                          <thead>
+                            <tr><th>Group</th><th>State</th><th>Members</th><th>Total lag</th><th>Topic lag nhất</th><th>Đứng</th></tr>
+                          </thead>
+                          <tbody>
+                            {lagRows.map((g) => (
+                              <tr
+                                key={g.groupId}
+                                style={{ cursor: 'pointer' }}
+                                title="Bấm để xem chi tiết lag từng partition"
+                                onClick={() => { setSubView('groups'); void selectGroup(g.groupId); }}
+                              >
+                                <td className="code">{g.groupId}</td>
+                                <td>
+                                  {g.described
+                                    ? <span className={`kafka-state s-${g.state.toLowerCase()}`}>{g.state}</span>
+                                    : '—'}
+                                </td>
+                                <td>{g.described ? g.members : '—'}</td>
+                                <td style={{ color: g.error ? 'var(--warn)' : g.totalLag > 0 ? 'var(--err)' : 'var(--ok)' }}>
+                                  {g.error ? 'UNKNOWN' : fmtInt(g.totalLag)}
+                                </td>
+                                <td>
+                                  {g.worstTopic
+                                    ? <>{g.worstTopic} <span className="kafka-topic-meta">({fmtInt(g.worstTopicLag)})</span></>
+                                    : '—'}
+                                </td>
+                                <td style={{ color: (g.stalledSec ?? 0) > 0 ? 'var(--warn)' : undefined }}>
+                                  {fmtStall(g.stalledSec)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </>
