@@ -175,9 +175,11 @@ export interface AlertMetaConsumer {
   topicLag?: number;
   /** Ca đứng im: số giây offset không nhích. */
   stalledSec?: number;
-  /** Ca rebalance / lag unknown: trạng thái group. */
+  /** AKHQ vàng/xanh: true = còn consumer đang tiêu thụ (Stable + member). */
+  active?: boolean;
+  /** Ca rebalance / lag unknown / không active: trạng thái group. */
   state?: string;
-  /** Ca mất consumer: số member (thường 0). */
+  /** Số member đang chạy (0 = không consumer). */
   members?: number;
 }
 
@@ -259,6 +261,7 @@ function parseConsumers(raw: string | number | undefined): AlertMetaConsumer[] {
         lag: Number(c.lag) || 0,
         ...(c.topic ? { topic: String(c.topic), topicLag: Number(c.topicLag) || 0 } : {}),
         ...(c.stalledSec !== undefined ? { stalledSec: Number(c.stalledSec) || 0 } : {}),
+        ...(typeof c.active === 'boolean' ? { active: c.active } : {}),
         ...(c.state !== undefined ? { state: String(c.state) } : {}),
         ...(c.members !== undefined ? { members: Number(c.members) || 0 } : {}),
       }));

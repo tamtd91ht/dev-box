@@ -164,6 +164,7 @@ export const KAFKA_LAG_METRICS = new Set([
   'maxConsumerLag',
   'totalConsumerLag',
   'stalledGroups',
+  'deadLagGroups',
   'emptyGroups',
   'rebalancingGroups',
   'lagGroupsUnknown',
@@ -171,6 +172,16 @@ export const KAFKA_LAG_METRICS = new Set([
   'maxStalledSec',
   'groups',
 ]);
+
+/**
+ * Group đang "active" theo kiểu AKHQ: có consumer sống đang gán/tiêu thụ.
+ * 🟢 = Stable + có member → lag đang được xử lý (dù to). 🟡 = ngược lại
+ * (Empty/0 member) → lag không ai tiêu thụ, kẹt thật dù nhỏ. Đây là thứ phân
+ * biệt "lag vàng/xanh", KHÔNG phải độ lớn của lag.
+ */
+export function groupActive(state: string, members: number): boolean {
+  return members > 0 && /stable/i.test(state);
+}
 
 /** Options riêng của từng lần probe — hiện chỉ Kafka dùng (lọc consumer group). */
 export interface ProbeOpts {
@@ -236,6 +247,10 @@ async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promis
       // member counts are UNKNOWN, and treating unknown as zero would fire
       // "no consumer" for every group on the cluster at once.
       put(m, 'emptyGroups', ok.filter((g) => g.described && g.members === 0 && g.partitions > 0).length);
+      // "Lag không có consumer" (AKHQ vàng): có lag mà KHÔNG group nào đang tiêu
+      // thụ (0 member). Sạch hơn stalledGroups — control-record của consumer còn
+      // sống (Stable + member) không lọt vào đây.
+      put(m, 'deadLagGroups', ok.filter((g) => g.described && g.members === 0 && g.totalLag > 0).length);
       put(m, 'rebalancingGroups', ok.filter((g) => g.described && /rebalanc|preparing/i.test(g.state)).length);
       put(m, 'undescribedGroups', ok.filter((g) => !g.described).length);
     } catch {
@@ -388,6 +403,8 @@ export interface BreachingConsumer {
   topic?: string;
   topicLag?: number;
   stalledSec?: number;
+  /** AKHQ vàng/xanh: true = còn consumer đang tiêu thụ (Stable + member). */
+  active?: boolean;
   state?: string;
   members?: number;
 }
@@ -395,14 +412,23 @@ export interface BreachingConsumer {
 /** Trần số phần tử đưa vào cảnh báo — metaJson phải gọn dưới một tin Zalo. */
 const MAX_ITEMS_IN_ALERT = 20;
 
+/** Nhãn hoạt động AKHQ: 🟢 đang tiêu thụ · 🟡 không consumer · ⚪ không rõ. */
+function activityTag(c: BreachingConsumer): string {
+  if (c.active === undefined) return '';
+  if (c.active) return ' · 🟢 đang tiêu thụ';
+  const who = c.state ? `${c.state}` : 'Empty';
+  return ` · 🟡 KHÔNG consumer (${who}${c.members !== undefined ? `, ${c.members} member` : ''})`;
+}
+
 /** Chuỗi người đọc cho MỘT group, tự chọn dạng theo dữ kiện có mặt. */
 function renderConsumer(c: BreachingConsumer): string {
   const lag = c.lag ? ` · lag ${c.lag.toLocaleString('vi-VN')}` : '';
   const topic = c.topic ? ` (${c.topic})` : '';
-  if (c.stalledSec !== undefined) return `${c.group}=đứng im ${humanizeSec(c.stalledSec)}${lag}${topic}`;
-  if (c.members !== undefined) return `${c.group} (${c.members} member${c.state ? `, ${c.state.toLowerCase()}` : ''})`;
-  if (c.state !== undefined) return `${c.group} (${c.state})`;
-  return `${c.group}=${c.lag.toLocaleString('vi-VN')}${topic}`;
+  const act = activityTag(c);
+  if (c.stalledSec !== undefined) return `${c.group}=đứng im ${humanizeSec(c.stalledSec)}${lag}${topic}${act}`;
+  if (c.members !== undefined && c.active === undefined) return `${c.group} (${c.members} member${c.state ? `, ${c.state.toLowerCase()}` : ''})`;
+  if (c.state !== undefined && c.active === undefined) return `${c.group} (${c.state})`;
+  return `${c.group}=${c.lag.toLocaleString('vi-VN')}${topic}${act}`;
 }
 
 /**
@@ -552,6 +578,8 @@ function consumersLead(metric: string): string {
     case 'stalledGroups':
     case 'maxStalledSec':
       return 'Group đứng im';
+    case 'deadLagGroups':
+      return 'Group có lag nhưng không consumer';
     case 'emptyGroups':
       return 'Group mất consumer';
     case 'rebalancingGroups':

@@ -112,8 +112,9 @@ const INFRA_SAMPLES: Record<InfraStack, SampleSpec> = {
     breach: 84210,
     ok: 1200,
     breachingConsumers: [
-      { group: 'billing-worker', lag: 84210, topic: 'invoice-created', topicLag: 61050 },
-      { group: 'sms-sender', lag: 12800, topic: 'sms-outbound', topicLag: 12800 },
+      // 🟢 còn consumer nhưng lag lớn (đang xử lý chậm) và 🟡 không consumer.
+      { group: 'billing-worker', lag: 84210, topic: 'invoice-created', topicLag: 61050, active: true, members: 3 },
+      { group: 'sms-sender', lag: 12800, topic: 'sms-outbound', topicLag: 12800, active: false, members: 0, state: 'Empty' },
     ],
   },
   rabbit: {

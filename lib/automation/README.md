@@ -257,7 +257,7 @@ Metric mỗi stack khai báo ở `catalog.ts` (kèm `suggest` op + ngưỡng m�
 | 🧠 Redis | `up` `memUsedPct` `memUsedMb` `clients` `opsPerSec` `hitRatePct` `fragmentation` `nodes` |
 | 🍃 Mongo | `up` `connectionsUsedPct` `connections` `cacheUsedPct` `diskUsedPct` `memResidentMb` `replLagSec` `membersUnhealthy` |
 | 🔎 ES | `up` `statusLevel` (0/1/2) `unassignedShards` `relocatingShards` `pendingTasks` `heapPct` `cpuPct` `diskUsedPct` `load1m` `nodes` |
-| 🧵 Kafka | `up` `underReplicated` `offline` `brokers` `noController` `topics` `partitions` — và nhóm **consumer lag**: `maxConsumerLag` `totalConsumerLag` `stalledGroups` `maxStalledSec` `emptyGroups` `rebalancingGroups` `lagGroupsUnknown` `groups` |
+| 🧵 Kafka | `up` `underReplicated` `offline` `brokers` `noController` `topics` `partitions` — và nhóm **consumer lag**: `maxConsumerLag` `totalConsumerLag` `stalledGroups` `maxStalledSec` `deadLagGroups` `emptyGroups` `rebalancingGroups` `lagGroupsUnknown` `groups` |
 | 🐰 Rabbit | `up` `messagesReady` `messagesUnacked` `consumers` `memAlarm` `diskAlarm` `nodesDown` `memUsedPct` `fdUsedPct` `queues` `publishRate` |
 | 🐘 PG | `up` `latencyMs` |
 
@@ -289,11 +289,14 @@ Event hạ tầng phát các field (đầy đủ khai ở `catalog.ts INFRA_FIEL
   đích danh group LIÊN QUAN tới cảnh báo, KHÔNG phải chỉ cái nặng nhất (5 group cùng thoả
   thì liệt kê cả 5). Tập group tuỳ chỉ số:
   `maxConsumerLag` → group có lag `op` ngưỡng · `totalConsumerLag` → mọi group còn lag ·
-  `stalledGroups`/`maxStalledSec` → group đứng im (kèm số giây) · `emptyGroups` → group mất
-  consumer · `rebalancingGroups` → group đang rebalance · `lagGroupsUnknown`/`undescribedGroups`
-  → group không đọc được. `consumers` là bản người đọc (tự đổi dạng theo ca: `group=lag (topic)`,
-  `group=đứng im 5 phút · lag N`, `group (0 member)`…), `consumersJson` là bản máy đọc
-  `[{group,lag,topic?,topicLag?,stalledSec?,state?,members?}]` → `AlertMeta.consumers`. Với
+  `stalledGroups`/`maxStalledSec` → group đứng im (kèm số giây) · `deadLagGroups` → group có lag
+  nhưng KHÔNG consumer · `emptyGroups` → group mất consumer · `rebalancingGroups` → group đang
+  rebalance · `lagGroupsUnknown`/`undescribedGroups` → group không đọc được. Mỗi group kèm **nhãn
+  hoạt động AKHQ** 🟢 đang tiêu thụ (Stable + member) / 🟡 KHÔNG consumer (0 member) — phân biệt
+  "lag vàng/xanh" bằng CÓ consumer hay không, KHÔNG bằng độ lớn lag: lag=1 mà 🟢 thường chỉ là
+  control-record của transaction (bỏ qua được), lag=1 mà 🟡 mới là kẹt thật. `consumers` là bản
+  người đọc (tự đổi dạng theo ca, kèm nhãn 🟢/🟡), `consumersJson` là bản máy đọc
+  `[{group,lag,topic?,topicLag?,stalledSec?,active?,state?,members?}]` → `AlertMeta.consumers`. Với
   watch có `groupFilter`, danh sách tự giới hạn trong các consumer đã chọn. Rỗng ở stack/chỉ
   số khác. Trần 20 group; `consumerCount` là tổng thật.
 - `topics` `topicCount` — **Kafka `underReplicated`/`offline`** (cảnh báo THEO TOPIC): tên các

@@ -25,7 +25,7 @@ import { automation } from './runtime';
 import { newId } from './engine';
 import { listConnections, peekAddress } from './connections';
 import { MIN_WATCH_INTERVAL_SEC } from './normalize';
-import { breaches, infraBreachEvent, infraRecoveredEvent, probeStack, type BreachingConsumer, type KafkaGroupDetail, type ProbeResult } from './sources/infra';
+import { breaches, groupActive, infraBreachEvent, infraRecoveredEvent, probeStack, type BreachingConsumer, type KafkaGroupDetail, type ProbeResult } from './sources/infra';
 import { trace } from './trace';
 import type { AutomationConfig, InfraWatch } from './types';
 
@@ -166,6 +166,7 @@ const KAFKA_GROUP_ALERT_METRICS = new Set([
   'totalConsumerLag',
   'stalledGroups',
   'maxStalledSec',
+  'deadLagGroups',
   'emptyGroups',
   'rebalancingGroups',
   'lagGroupsUnknown',
@@ -187,9 +188,13 @@ const isRebalancing = (state: string): boolean => /rebalanc|preparing/i.test(sta
  *   totalConsumerLag      → mọi group còn lag (đóng góp vào tổng)
  *   stalledGroups         → group đang đứng im
  *   maxStalledSec         → group đứng im đủ {op} ngưỡng giây
+ *   deadLagGroups         → group có lag nhưng KHÔNG consumer (AKHQ vàng)
  *   emptyGroups           → group mất consumer (0 member mà có commit)
  *   rebalancingGroups     → group đang rebalance
  *   lag/undescribed       → group không đọc được lag / describe
+ *
+ * Mỗi group kèm nhãn hoạt động (active/state/members) để cảnh báo phân biệt
+ * 🟢 còn tiêu thụ / 🟡 không consumer — trả lời "consumer nào không tiêu thụ".
  */
 function offendingConsumers(watch: InfraWatch, res: ProbeResult): BreachingConsumer[] | undefined {
   if (watch.stack !== 'kafka' || !KAFKA_GROUP_ALERT_METRICS.has(watch.metric)) return undefined;
@@ -197,7 +202,13 @@ function offendingConsumers(watch: InfraWatch, res: ProbeResult): BreachingConsu
   if (!groups?.length) return undefined;
 
   const withTopic = (g: KafkaGroupDetail) => (g.worstTopic ? { topic: g.worstTopic, topicLag: g.worstTopicLag } : {});
-  const lagItem = (g: KafkaGroupDetail): BreachingConsumer => ({ group: g.groupId, lag: g.lag, ...withTopic(g) });
+  // Nhãn AKHQ vàng/xanh: active=true (🟢) hoặc kèm state khi không active (🟡).
+  const act = (g: KafkaGroupDetail) => {
+    const active = groupActive(g.state, g.members);
+    return { active, members: g.members, ...(active ? {} : { state: g.state }) };
+  };
+  const lagItem = (g: KafkaGroupDetail): BreachingConsumer => ({ group: g.groupId, lag: g.lag, ...withTopic(g), ...act(g) });
+  const stalledItem = (g: KafkaGroupDetail): BreachingConsumer => ({ group: g.groupId, lag: g.lag, stalledSec: g.stalledSec ?? 0, ...withTopic(g), ...act(g) });
 
   switch (watch.metric) {
     case 'maxConsumerLag':
@@ -211,20 +222,25 @@ function offendingConsumers(watch: InfraWatch, res: ProbeResult): BreachingConsu
       return groups
         .filter((g) => !g.error && isStalled(g))
         .sort((a, b) => (b.stalledSec ?? 0) - (a.stalledSec ?? 0))
-        .map((g) => ({ group: g.groupId, lag: g.lag, stalledSec: g.stalledSec ?? 0, ...withTopic(g) }));
+        .map(stalledItem);
     case 'maxStalledSec':
       return groups
         .filter((g) => !g.error && isStalled(g) && breaches(g.stalledSec ?? 0, watch.op, watch.threshold))
         .sort((a, b) => (b.stalledSec ?? 0) - (a.stalledSec ?? 0))
-        .map((g) => ({ group: g.groupId, lag: g.lag, stalledSec: g.stalledSec ?? 0, ...withTopic(g) }));
+        .map(stalledItem);
+    case 'deadLagGroups':
+      return groups
+        .filter((g) => !g.error && g.described && g.members === 0 && g.lag > 0)
+        .sort((a, b) => b.lag - a.lag)
+        .map((g) => ({ group: g.groupId, lag: g.lag, ...withTopic(g), active: false, members: 0, state: g.state }));
     case 'emptyGroups':
       return groups
         .filter((g) => !g.error && g.described && g.members === 0 && g.partitions > 0)
-        .map((g) => ({ group: g.groupId, lag: g.lag, members: 0 }));
+        .map((g) => ({ group: g.groupId, lag: g.lag, ...withTopic(g), active: false, members: 0, state: g.state }));
     case 'rebalancingGroups':
       return groups
         .filter((g) => !g.error && g.described && isRebalancing(g.state))
-        .map((g) => ({ group: g.groupId, lag: g.lag, state: g.state }));
+        .map((g) => ({ group: g.groupId, lag: g.lag, active: false, members: g.members, state: g.state }));
     case 'lagGroupsUnknown':
       return groups.filter((g) => g.error).map((g) => ({ group: g.groupId, lag: 0, state: 'lag không đọc được' }));
     case 'undescribedGroups':
