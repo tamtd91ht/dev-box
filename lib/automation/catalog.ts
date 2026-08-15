@@ -129,6 +129,41 @@ const INFRA_FIELDS: FieldDef[] = [
     hint: 'tự sinh từ catalog: chỉ số nghĩa là gì, đo bằng gì, chu kỳ, ngưỡng — đủ ngữ cảnh cho người trực hoặc bot AI phân tích',
     sample: 'RAM đã dùng (%) — tỉ lệ bộ nhớ Redis đang dùng so với giới hạn maxmemory…',
   },
+  {
+    name: 'consumers',
+    label: 'Consumer liên quan (chuỗi)',
+    kind: 'text',
+    hint: 'CHỈ Kafka chỉ số theo group: danh sách group liên quan (lag vượt ngưỡng / đứng im / mất member / rebalance…) kèm giá trị và topic — rỗng với stack/chỉ số khác',
+    sample: 'billing-worker=45.200 (invoice-created), sms-sender=12.800',
+  },
+  {
+    name: 'consumerCount',
+    label: 'Số consumer liên quan',
+    kind: 'number',
+    hint: 'tổng số group liên quan (kể cả phần bị cắt khỏi danh sách hiển thị); 0 khi không có',
+    sample: 2,
+  },
+  {
+    name: 'consumersJson',
+    label: 'Consumer liên quan (JSON)',
+    kind: 'text',
+    hint: 'bản máy đọc [{group,lag,topic?,topicLag?,stalledSec?,state?,members?}] — vào AlertMeta.consumers của metaJson; rỗng khi không có',
+    sample: '[{"group":"billing-worker","lag":45200,"topic":"invoice-created","topicLag":45200}]',
+  },
+  {
+    name: 'topics',
+    label: 'Topic ảnh hưởng (chuỗi)',
+    kind: 'text',
+    hint: 'CHỈ Kafka underReplicated/offline: topic có partition under-replicated/offline — rỗng với chỉ số khác',
+    sample: 'orders, payments',
+  },
+  {
+    name: 'topicCount',
+    label: 'Số topic ảnh hưởng',
+    kind: 'number',
+    hint: 'tổng số topic bị ảnh hưởng (kể cả phần bị cắt khỏi danh sách); 0 khi không có',
+    sample: 2,
+  },
 ];
 
 export const GROUPS: GroupDef[] = [

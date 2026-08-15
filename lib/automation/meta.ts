@@ -17,8 +17,11 @@ import { AGG_LABEL, metricDef, metricLabel, type FieldDef } from './catalog';
  *
  * Quy ước cho bot: KHÔNG có marker bọc. Bot tách metadata bằng cách tìm trong
  * tin nhắn dòng/đoạn JSON bắt đầu bằng `{"schemaVersion":` rồi JSON.parse.
+ *
+ * v2: thêm `consumers?: AlertMetaConsumer[]` — Kafka maxConsumerLag liệt kê đích
+ *     danh các consumer group vượt ngưỡng (bổ sung, tương thích ngược).
  */
-export const META_SCHEMA_VERSION = 1;
+export const META_SCHEMA_VERSION = 2;
 
 /** Ký hiệu người đọc của phép so sánh — dùng chung cho description, text và meta. */
 export const OP_TEXT: Record<InfraWatch['op'], string> = {
@@ -163,6 +166,21 @@ export interface AlertMetaAbsolute {
   text: string;
 }
 
+/** Một consumer group liên quan tới cảnh báo Kafka — cho bot/hệ ngoài đọc. */
+export interface AlertMetaConsumer {
+  group: string;
+  lag: number;
+  /** Topic lag nặng nhất của group (nếu probe đọc được). */
+  topic?: string;
+  topicLag?: number;
+  /** Ca đứng im: số giây offset không nhích. */
+  stalledSec?: number;
+  /** Ca rebalance / lag unknown: trạng thái group. */
+  state?: string;
+  /** Ca mất consumer: số member (thường 0). */
+  members?: number;
+}
+
 /**
  * Metadata chuẩn của MỘT sự kiện automation. Phần chung luôn có; phần infra /
  * social chỉ xuất hiện đúng nhóm. Đây là hợp đồng với hệ thống ngoài — đổi
@@ -196,6 +214,10 @@ export interface AlertMeta {
   detection?: AlertMetaDetection;
   description?: string;
   recovery?: AlertMetaRecovery;
+  /** Kafka (chỉ số theo group): đích danh group liên quan (lag/đứng im/mất member…). */
+  consumers?: AlertMetaConsumer[];
+  /** Kafka underReplicated/offline: topic bị ảnh hưởng. */
+  topics?: string[];
 
   // ── social ──
   conversation?: string;
@@ -223,6 +245,27 @@ const n = (v: string | number | undefined): number => {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 };
+
+/** Parse field máy-đọc `consumersJson` → AlertMetaConsumer[]. An toàn với mọi rác. */
+function parseConsumers(raw: string | number | undefined): AlertMetaConsumer[] {
+  if (typeof raw !== 'string' || !raw) return [];
+  try {
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((c): c is Record<string, unknown> => !!c && typeof c === 'object' && typeof (c as { group?: unknown }).group === 'string')
+      .map((c) => ({
+        group: String(c.group),
+        lag: Number(c.lag) || 0,
+        ...(c.topic ? { topic: String(c.topic), topicLag: Number(c.topicLag) || 0 } : {}),
+        ...(c.stalledSec !== undefined ? { stalledSec: Number(c.stalledSec) || 0 } : {}),
+        ...(c.state !== undefined ? { state: String(c.state) } : {}),
+        ...(c.members !== undefined ? { members: Number(c.members) || 0 } : {}),
+      }));
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Dựng AlertMeta từ một event — dẫn xuất thuần tuý, không đụng I/O. Event cũ
@@ -291,6 +334,13 @@ export function buildAlertMeta(event: AutomationEvent): AlertMeta {
       },
       description: s(f.description),
     };
+    // Danh sách group liên quan (Kafka): parse từ field máy-đọc. Event cũ không
+    // có field này → bỏ qua, meta không có `consumers` (không vỡ).
+    const consumers = parseConsumers(f.consumersJson);
+    if (consumers.length) meta.consumers = consumers;
+    // Topic bị ảnh hưởng (Kafka under-replicated/offline).
+    const topics = s(f.topics).split(',').map((t) => t.trim()).filter((t) => t && !t.startsWith('…'));
+    if (topics.length) meta.topics = topics;
     if (event.type === 'infra.recovered') {
       meta.recovery = { downSec: n(f.downSec), downText: humanizeSec(n(f.downSec)) };
     }

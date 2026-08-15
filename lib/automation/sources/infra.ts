@@ -20,13 +20,46 @@ import { listRabbitNodes, rabbitOverview } from '@/lib/rabbit';
 import { redisStats } from '@/lib/redis';
 import type { AutomationEvent, InfraStack, InfraWatch, WatchSeverity } from '../types';
 import { metricDef, metricLabel, stackDef } from '../catalog';
-import { alertTypeOf, buildDescription, OP_TEXT } from '../meta';
+import { alertTypeOf, buildDescription, humanizeSec, OP_TEXT } from '../meta';
 
 export type MetricMap = Record<string, number>;
+
+/**
+ * Chi tiết MỘT consumer group (chỉ Kafka) — probe giữ lại đủ dữ kiện để MỌI
+ * cảnh báo theo group (lag, đứng im, mất member, rebalance, lag unknown) nêu
+ * được đích danh group nào + topic nào, không chỉ con số tổng hợp.
+ */
+export interface KafkaGroupDetail {
+  groupId: string;
+  lag: number;
+  worstTopic: string | null;
+  worstTopicLag: number;
+  state: string;
+  members: number;
+  described: boolean;
+  partitions: number;
+  /** Số giây offset đứng im (còn lag mà không nhích); null = đang chạy/không lag. */
+  stalledSec: number | null;
+  /** true = lag KHÔNG đọc được (fetchOffsets lỗi) — khác với lag = 0. */
+  error: boolean;
+}
+
+/** Kết quả một probe: metrics phẳng + (Kafka) chi tiết group + topic bị ảnh hưởng. */
+export interface ProbePayload {
+  metrics: MetricMap;
+  kafkaGroups?: KafkaGroupDetail[];
+  /** Kafka: topic có partition under-replicated / offline (từ clusterHealth). */
+  affectedTopics?: string[];
+}
 
 export interface ProbeResult {
   at: number;
   metrics: MetricMap;
+  /** Chỉ Kafka: chi tiết từng group (đã lọc theo groupFilter nếu có) — nguồn của
+   *  danh sách group mà watcher đính vào cảnh báo tuỳ theo chỉ số. */
+  kafkaGroups?: KafkaGroupDetail[];
+  /** Chỉ Kafka: topic bị ảnh hưởng (under-replicated/offline) — cho cảnh báo theo topic. */
+  affectedTopics?: string[];
   /** Probe-level failure (host down, bad credentials…). `metrics.up` is 0 then. */
   error?: string;
 }
@@ -55,7 +88,7 @@ const sumOf = (xs: (number | null | undefined)[]): number =>
 
 // ── The probes ─────────────────────────────────────────────────────────────
 
-async function probeRedis(id: string): Promise<MetricMap> {
+async function probeRedis(id: string): Promise<ProbePayload> {
   const nodes = await redisStats(id);
   const m: MetricMap = { up: 1, nodes: nodes.length };
   put(m, 'memUsedMb', round(sumOf(nodes.map((n) => n.usedMemoryBytes)) / MB));
@@ -67,10 +100,10 @@ async function probeRedis(id: string): Promise<MetricMap> {
   put(m, 'opsPerSec', sumOf(nodes.map((n) => n.opsPerSec)));
   put(m, 'hitRatePct', minOf(nodes.map((n) => n.hitRatePct))); // worst node wins
   put(m, 'fragmentation', maxOf(nodes.map((n) => n.fragmentationRatio)));
-  return m;
+  return { metrics: m };
 }
 
-async function probeMongo(id: string): Promise<MetricMap> {
+async function probeMongo(id: string): Promise<ProbePayload> {
   const s = await mongoMonitor(id);
   const m: MetricMap = { up: 1 };
   put(m, 'connections', s.connectionsCurrent);
@@ -85,12 +118,12 @@ async function probeMongo(id: string): Promise<MetricMap> {
   put(m, 'memResidentMb', round(s.memResidentBytes / MB));
   put(m, 'replLagSec', maxOf(s.members.map((x) => x.lagSec)));
   put(m, 'membersUnhealthy', s.members.filter((x) => !x.healthy).length);
-  return m;
+  return { metrics: m };
 }
 
 const ES_STATUS: Record<string, number> = { green: 0, yellow: 1, red: 2 };
 
-async function probeEs(id: string): Promise<MetricMap> {
+async function probeEs(id: string): Promise<ProbePayload> {
   const h = await esHealth(id);
   const m: MetricMap = { up: 1 };
   put(m, 'statusLevel', ES_STATUS[(h.status || '').toLowerCase()] ?? 2);
@@ -118,7 +151,7 @@ async function probeEs(id: string): Promise<MetricMap> {
   } catch {
     /* cluster health still counts as up */
   }
-  return m;
+  return { metrics: m };
 }
 
 /**
@@ -145,9 +178,13 @@ export interface ProbeOpts {
   groupFilter?: string[];
 }
 
-async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promise<MetricMap> {
+async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promise<ProbePayload> {
   const h = await kafkaClusterHealth(id);
   const m: MetricMap = { up: 1 };
+  let kafkaGroups: KafkaGroupDetail[] | undefined;
+  // Topic có partition under-replicated/offline — cho cảnh báo theo topic nêu
+  // đích danh (clusterHealth đã gom sẵn, gột không cần thêm lượt gọi).
+  const affectedTopics = h.affectedTopics ?? [];
   put(m, 'brokers', h.brokers.length);
   put(m, 'noController', h.controllerId === null ? 1 : 0);
   put(m, 'underReplicated', h.underReplicated);
@@ -170,6 +207,21 @@ async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promis
       // would quietly report "no lag" for the one group that may be broken, so
       // it is excluded from the maxima and surfaced as its own metric instead.
       const ok = scoped.filter((g) => !g.error);
+      // Giữ chi tiết MỌI group trong phạm vi (kể cả lag=0, kể cả lag unknown):
+      // watcher sẽ chọn tập nào tuỳ chỉ số (đứng im, mất member, rebalance…),
+      // nên không được lọc sẵn ở đây.
+      kafkaGroups = scoped.map((g) => ({
+        groupId: g.groupId,
+        lag: g.totalLag,
+        worstTopic: g.worstTopic,
+        worstTopicLag: g.worstTopicLag,
+        state: g.state,
+        members: g.members,
+        described: g.described,
+        partitions: g.partitions,
+        stalledSec: g.stalledSec,
+        error: !!g.error,
+      }));
       put(m, 'groups', scoped.length);
       put(m, 'lagGroupsUnknown', scoped.length - ok.length);
       put(m, 'maxConsumerLag', maxOf(ok.map((g) => g.totalLag)) ?? 0);
@@ -190,10 +242,10 @@ async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promis
       /* cluster health alone still counts as up */
     }
   }
-  return m;
+  return { metrics: m, kafkaGroups, affectedTopics };
 }
 
-async function probeRabbit(id: string): Promise<MetricMap> {
+async function probeRabbit(id: string): Promise<ProbePayload> {
   const o = await rabbitOverview(id);
   const m: MetricMap = { up: 1 };
   put(m, 'messagesReady', o.messages.ready);
@@ -224,15 +276,15 @@ async function probeRabbit(id: string): Promise<MetricMap> {
   } catch {
     /* overview alone still counts as up */
   }
-  return m;
+  return { metrics: m };
 }
 
-async function probePg(id: string): Promise<MetricMap> {
+async function probePg(id: string): Promise<ProbePayload> {
   const r = await pingPg(id);
-  return { up: 1, latencyMs: round(r.latencyMs) };
+  return { metrics: { up: 1, latencyMs: round(r.latencyMs) } };
 }
 
-const PROBES: Record<InfraStack, (connectionId: string, metric?: string, opts?: ProbeOpts) => Promise<MetricMap>> = {
+const PROBES: Record<InfraStack, (connectionId: string, metric?: string, opts?: ProbeOpts) => Promise<ProbePayload>> = {
   redis: probeRedis,
   mongo: probeMongo,
   es: probeEs,
@@ -259,7 +311,8 @@ export async function probeStack(
   const run = PROBES[stack];
   if (!run) return { at, metrics: {}, error: `stack không hỗ trợ: ${stack}` };
   try {
-    return { at, metrics: await run(connectionId, metric, opts) };
+    const payload = await run(connectionId, metric, opts);
+    return { at, metrics: payload.metrics, kafkaGroups: payload.kafkaGroups, affectedTopics: payload.affectedTopics };
   } catch (e) {
     return { at, metrics: { up: 0 }, error: (e as Error).message || 'probe thất bại' };
   }
@@ -312,6 +365,77 @@ export interface InfraEventExtras {
    * watch này vốn đã là bậc cao nhất → cảnh báo không nhắc gì tới bậc, y như cũ.
    */
   ladderAbove?: { name: string; op: InfraWatch['op']; threshold: number }[];
+  /**
+   * Kafka: danh sách consumer group LIÊN QUAN tới cảnh báo — tuỳ chỉ số mà là
+   * "vượt ngưỡng lag", "đứng im", "mất member", "đang rebalance", "lag unknown".
+   * KHÔNG chỉ cái nặng nhất: mọi group thoả điều kiện đều được liệt kê. Watcher
+   * tính từ ProbeResult.kafkaGroups; vào cả fields ({{consumers}}) lẫn
+   * AlertMeta.consumers (metaJson).
+   */
+  breachingConsumers?: BreachingConsumer[];
+  /** Kafka: topic bị under-replicated/offline — cho cảnh báo theo topic. */
+  affectedTopics?: string[];
+}
+
+/**
+ * Một consumer group liên quan tới cảnh báo. `lag`/`topic` cho ca lag; `stalledSec`
+ * cho ca đứng im; `state`/`members` cho ca mất member / rebalance / lag unknown.
+ * Chỉ set field có nghĩa với ca đó — renderer tự chọn cách hiển thị theo đó.
+ */
+export interface BreachingConsumer {
+  group: string;
+  lag: number;
+  topic?: string;
+  topicLag?: number;
+  stalledSec?: number;
+  state?: string;
+  members?: number;
+}
+
+/** Trần số phần tử đưa vào cảnh báo — metaJson phải gọn dưới một tin Zalo. */
+const MAX_ITEMS_IN_ALERT = 20;
+
+/** Chuỗi người đọc cho MỘT group, tự chọn dạng theo dữ kiện có mặt. */
+function renderConsumer(c: BreachingConsumer): string {
+  const lag = c.lag ? ` · lag ${c.lag.toLocaleString('vi-VN')}` : '';
+  const topic = c.topic ? ` (${c.topic})` : '';
+  if (c.stalledSec !== undefined) return `${c.group}=đứng im ${humanizeSec(c.stalledSec)}${lag}${topic}`;
+  if (c.members !== undefined) return `${c.group} (${c.members} member${c.state ? `, ${c.state.toLowerCase()}` : ''})`;
+  if (c.state !== undefined) return `${c.group} (${c.state})`;
+  return `${c.group}=${c.lag.toLocaleString('vi-VN')}${topic}`;
+}
+
+/**
+ * Fields liệt kê consumer group liên quan. LUÔN trả đủ 3 khoá (rỗng khi không
+ * có), giống absText/ladderText — nhờ vậy emission ≡ catalog ở MỌI stack và
+ * check:automation không báo lệch.
+ *
+ * `consumers` là bản người đọc, `consumersJson` là bản máy đọc (buildAlertMeta
+ * parse thành AlertMeta.consumers), `consumerCount` là TỔNG số thật.
+ */
+function consumerFields(extras?: InfraEventExtras): Record<string, string | number> {
+  const list = extras?.breachingConsumers ?? [];
+  if (!list.length) return { consumers: '', consumerCount: 0, consumersJson: '' };
+  const shown = list.slice(0, MAX_ITEMS_IN_ALERT);
+  const human = shown.map(renderConsumer).join(', ');
+  const more = list.length > shown.length ? ` … (+${list.length - shown.length})` : '';
+  return {
+    consumers: human + more,
+    consumerCount: list.length,
+    consumersJson: JSON.stringify(shown),
+  };
+}
+
+/**
+ * Fields liệt kê topic bị ảnh hưởng (under-replicated/offline). LUÔN trả đủ 2
+ * khoá (rỗng khi không có) — cùng lý do với consumerFields.
+ */
+function topicFields(extras?: InfraEventExtras): Record<string, string | number> {
+  const list = (extras?.affectedTopics ?? []).filter(Boolean);
+  if (!list.length) return { topics: '', topicCount: 0 };
+  const shown = list.slice(0, MAX_ITEMS_IN_ALERT);
+  const more = list.length > shown.length ? ` … (+${list.length - shown.length})` : '';
+  return { topics: shown.join(', ') + more, topicCount: list.length };
 }
 
 /** "3899 MB" → "3.8 GB" khi đáng đọc; số đếm thì thêm dấu phân tách nghìn. */
@@ -416,8 +540,28 @@ function baseEvent(
       description: buildDescription(watch),
       ...absoluteFields(watch, extras),
       ...ladderFields(extras),
+      ...consumerFields(extras),
+      ...topicFields(extras),
     },
   };
+}
+
+/** Nhãn dẫn cho danh sách group trong tin, theo chỉ số đang cảnh báo. */
+function consumersLead(metric: string): string {
+  switch (metric) {
+    case 'stalledGroups':
+    case 'maxStalledSec':
+      return 'Group đứng im';
+    case 'emptyGroups':
+      return 'Group mất consumer';
+    case 'rebalancingGroups':
+      return 'Group đang rebalance';
+    case 'lagGroupsUnknown':
+    case 'undescribedGroups':
+      return 'Group không đọc được lag';
+    default:
+      return 'Consumer vượt ngưỡng';
+  }
 }
 
 const where = (w: InfraWatch): string => `${w.connectionLabel || w.connectionId}`;
@@ -437,7 +581,12 @@ export function infraBreachEvent(
     type: 'infra.metric',
     title: `${watch.name} — ${label} = ${value}`,
     // absText mang sẵn " · " đầu chuỗi khi có, rỗng khi không — text tự gọn.
-    text: `${where(watch)}: ${label} = ${value} (ngưỡng ${OP_TEXT[watch.op]} ${watch.threshold})${base.fields.absText}${base.fields.ladderText}`,
+    // consumers/topics (nếu có) nêu đích danh group/topic ngay trong tin mặc định.
+    text:
+      `${where(watch)}: ${label} = ${value} (ngưỡng ${OP_TEXT[watch.op]} ${watch.threshold})` +
+      `${base.fields.absText}${base.fields.ladderText}` +
+      (base.fields.consumers ? `\n${consumersLead(watch.metric)}: ${base.fields.consumers}` : '') +
+      (base.fields.topics ? `\nTopic ảnh hưởng: ${base.fields.topics}` : ''),
   };
 }
 

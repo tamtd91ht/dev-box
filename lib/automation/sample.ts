@@ -10,7 +10,7 @@
 // này import sources/infra.ts — gộp lại sẽ thành vòng import meta ↔ infra.
 
 import type { AutomationEvent, InfraStack, InfraWatch, TriggerType } from './types';
-import { infraBreachEvent, infraRecoveredEvent, type MetricMap } from './sources/infra';
+import { infraBreachEvent, infraRecoveredEvent, type BreachingConsumer, type MetricMap } from './sources/infra';
 
 interface SampleSpec {
   watch: InfraWatch;
@@ -22,6 +22,8 @@ interface SampleSpec {
   metrics?: MetricMap;
   /** MetricMap lúc hồi phục — số tuyệt đối phải khớp giá trị `ok`. */
   okMetrics?: MetricMap;
+  /** Kafka: danh sách consumer vượt ngưỡng mẫu — cho {{consumers}}/metaJson. */
+  breachingConsumers?: BreachingConsumer[];
 }
 
 /** Mỗi stack một watch "tiêu biểu" — metric hay được canh nhất của stack đó. */
@@ -109,6 +111,10 @@ const INFRA_SAMPLES: Record<InfraStack, SampleSpec> = {
     address: 'kf-01:9092, kf-02:9092, kf-03:9092',
     breach: 84210,
     ok: 1200,
+    breachingConsumers: [
+      { group: 'billing-worker', lag: 84210, topic: 'invoice-created', topicLag: 61050 },
+      { group: 'sms-sender', lag: 12800, topic: 'sms-outbound', topicLag: 12800 },
+    ],
   },
   rabbit: {
     watch: {
@@ -162,7 +168,7 @@ export function sampleEvent(trigger: TriggerType, stack: InfraStack = 'redis', a
   if (trigger === 'infra.metric' || trigger === 'infra.recovered') {
     const spec = INFRA_SAMPLES[stack] ?? INFRA_SAMPLES.redis;
     return trigger === 'infra.metric'
-      ? infraBreachEvent(spec.watch, spec.breach, at, { address: spec.address, metrics: spec.metrics })
+      ? infraBreachEvent(spec.watch, spec.breach, at, { address: spec.address, metrics: spec.metrics, breachingConsumers: spec.breachingConsumers })
       : infraRecoveredEvent(spec.watch, spec.ok, at, SAMPLE_DOWN_SEC, {
           address: spec.address,
           metrics: spec.okMetrics ?? spec.metrics,

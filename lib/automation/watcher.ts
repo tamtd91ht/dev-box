@@ -25,7 +25,7 @@ import { automation } from './runtime';
 import { newId } from './engine';
 import { listConnections, peekAddress } from './connections';
 import { MIN_WATCH_INTERVAL_SEC } from './normalize';
-import { breaches, infraBreachEvent, infraRecoveredEvent, probeStack, type ProbeResult } from './sources/infra';
+import { breaches, infraBreachEvent, infraRecoveredEvent, probeStack, type BreachingConsumer, type KafkaGroupDetail, type ProbeResult } from './sources/infra';
 import { trace } from './trace';
 import type { AutomationConfig, InfraWatch } from './types';
 
@@ -159,6 +159,86 @@ function stricter(a: InfraWatch, b: InfraWatch): boolean {
 
 const sec = (n: number | undefined, fallback: number): number =>
   typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : fallback;
+
+/** Chỉ số Kafka cảnh báo THEO GROUP → cần liệt kê đích danh group nào. */
+const KAFKA_GROUP_ALERT_METRICS = new Set([
+  'maxConsumerLag',
+  'totalConsumerLag',
+  'stalledGroups',
+  'maxStalledSec',
+  'emptyGroups',
+  'rebalancingGroups',
+  'lagGroupsUnknown',
+  'undescribedGroups',
+]);
+
+/** Chỉ số Kafka cảnh báo THEO TOPIC → cần liệt kê topic bị ảnh hưởng. */
+const KAFKA_TOPIC_ALERT_METRICS = new Set(['underReplicated', 'offline']);
+
+const isStalled = (g: { lag: number; stalledSec: number | null }): boolean =>
+  g.lag > 0 && g.stalledSec !== null;
+const isRebalancing = (state: string): boolean => /rebalanc|preparing/i.test(state);
+
+/**
+ * Chọn các consumer group LIÊN QUAN tới cảnh báo, tuỳ chỉ số — đích danh cái
+ * nào, KHÔNG phải cái nặng nhất. Trả về danh sách để metadata + tin nhắn nêu tên:
+ *
+ *   maxConsumerLag        → group có lag {op} ngưỡng
+ *   totalConsumerLag      → mọi group còn lag (đóng góp vào tổng)
+ *   stalledGroups         → group đang đứng im
+ *   maxStalledSec         → group đứng im đủ {op} ngưỡng giây
+ *   emptyGroups           → group mất consumer (0 member mà có commit)
+ *   rebalancingGroups     → group đang rebalance
+ *   lag/undescribed       → group không đọc được lag / describe
+ */
+function offendingConsumers(watch: InfraWatch, res: ProbeResult): BreachingConsumer[] | undefined {
+  if (watch.stack !== 'kafka' || !KAFKA_GROUP_ALERT_METRICS.has(watch.metric)) return undefined;
+  const groups = res.kafkaGroups;
+  if (!groups?.length) return undefined;
+
+  const withTopic = (g: KafkaGroupDetail) => (g.worstTopic ? { topic: g.worstTopic, topicLag: g.worstTopicLag } : {});
+  const lagItem = (g: KafkaGroupDetail): BreachingConsumer => ({ group: g.groupId, lag: g.lag, ...withTopic(g) });
+
+  switch (watch.metric) {
+    case 'maxConsumerLag':
+      return groups
+        .filter((g) => !g.error && breaches(g.lag, watch.op, watch.threshold))
+        .sort((a, b) => b.lag - a.lag)
+        .map(lagItem);
+    case 'totalConsumerLag':
+      return groups.filter((g) => !g.error && g.lag > 0).sort((a, b) => b.lag - a.lag).map(lagItem);
+    case 'stalledGroups':
+      return groups
+        .filter((g) => !g.error && isStalled(g))
+        .sort((a, b) => (b.stalledSec ?? 0) - (a.stalledSec ?? 0))
+        .map((g) => ({ group: g.groupId, lag: g.lag, stalledSec: g.stalledSec ?? 0, ...withTopic(g) }));
+    case 'maxStalledSec':
+      return groups
+        .filter((g) => !g.error && isStalled(g) && breaches(g.stalledSec ?? 0, watch.op, watch.threshold))
+        .sort((a, b) => (b.stalledSec ?? 0) - (a.stalledSec ?? 0))
+        .map((g) => ({ group: g.groupId, lag: g.lag, stalledSec: g.stalledSec ?? 0, ...withTopic(g) }));
+    case 'emptyGroups':
+      return groups
+        .filter((g) => !g.error && g.described && g.members === 0 && g.partitions > 0)
+        .map((g) => ({ group: g.groupId, lag: g.lag, members: 0 }));
+    case 'rebalancingGroups':
+      return groups
+        .filter((g) => !g.error && g.described && isRebalancing(g.state))
+        .map((g) => ({ group: g.groupId, lag: g.lag, state: g.state }));
+    case 'lagGroupsUnknown':
+      return groups.filter((g) => g.error).map((g) => ({ group: g.groupId, lag: 0, state: 'lag không đọc được' }));
+    case 'undescribedGroups':
+      return groups.filter((g) => !g.described).map((g) => ({ group: g.groupId, lag: g.lag, state: 'không describe được' }));
+    default:
+      return undefined;
+  }
+}
+
+/** Topic bị ảnh hưởng cho cảnh báo theo topic (under-replicated/offline). */
+function offendingTopics(watch: InfraWatch, res: ProbeResult): string[] | undefined {
+  if (watch.stack !== 'kafka' || !KAFKA_TOPIC_ALERT_METRICS.has(watch.metric)) return undefined;
+  return res.affectedTopics?.length ? res.affectedTopics : undefined;
+}
 
 class InfraWatcher {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -409,6 +489,10 @@ class InfraWatcher {
               metrics: res.metrics,
               // "Vì sao là bậc này" — rỗng khi watch vốn đã là bậc cao nhất.
               ladderAbove: this.quieterAbove(watch),
+              // Kafka: đích danh group liên quan (lag/đứng im/mất member…) và
+              // topic bị ảnh hưởng (under-replicated/offline) — tuỳ chỉ số.
+              breachingConsumers: offendingConsumers(watch, res),
+              affectedTopics: offendingTopics(watch, res),
             }),
           );
         }

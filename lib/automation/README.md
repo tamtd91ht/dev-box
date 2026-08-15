@@ -285,13 +285,30 @@ Event hạ tầng phát các field (đầy đủ khai ở `catalog.ts INFRA_FIEL
   (`meaning`), máy đo bằng gì và bao lâu (`probe` + `everySec` + cách gộp node), ngưỡng
   phát là gì (`opText threshold` + `forSec`), nối thêm `note`. Một cảnh báo phải TỰ
   GIẢI THÍCH — người trực (hoặc bot AI) đọc tin nhắn là đủ ngữ cảnh, không cần mở DevBox.
+- `consumers` `consumerCount` `consumersJson` — **Kafka, MỌI chỉ số theo consumer group**:
+  đích danh group LIÊN QUAN tới cảnh báo, KHÔNG phải chỉ cái nặng nhất (5 group cùng thoả
+  thì liệt kê cả 5). Tập group tuỳ chỉ số:
+  `maxConsumerLag` → group có lag `op` ngưỡng · `totalConsumerLag` → mọi group còn lag ·
+  `stalledGroups`/`maxStalledSec` → group đứng im (kèm số giây) · `emptyGroups` → group mất
+  consumer · `rebalancingGroups` → group đang rebalance · `lagGroupsUnknown`/`undescribedGroups`
+  → group không đọc được. `consumers` là bản người đọc (tự đổi dạng theo ca: `group=lag (topic)`,
+  `group=đứng im 5 phút · lag N`, `group (0 member)`…), `consumersJson` là bản máy đọc
+  `[{group,lag,topic?,topicLag?,stalledSec?,state?,members?}]` → `AlertMeta.consumers`. Với
+  watch có `groupFilter`, danh sách tự giới hạn trong các consumer đã chọn. Rỗng ở stack/chỉ
+  số khác. Trần 20 group; `consumerCount` là tổng thật.
+- `topics` `topicCount` — **Kafka `underReplicated`/`offline`** (cảnh báo THEO TOPIC): tên các
+  topic có partition under-replicated/offline (từ clusterHealth). Vào `AlertMeta.topics`. Rỗng
+  ở chỉ số khác.
 
 Hai biến template mới (mọi nhóm event đều có):
 
 | Biến | Là gì | Dùng khi |
 |---|---|---|
-| `{{metaJson}}` | AlertMeta v1 nén một dòng | body webhook, nhúng vào tin nhắn cho bot |
+| `{{metaJson}}` | AlertMeta v2 nén một dòng | body webhook, nhúng vào tin nhắn cho bot |
 | `{{metaJsonPretty}}` | Bản thụt dòng | log, nơi người đọc |
+
+> **AlertMeta v2** thêm `consumers?: [{group,lag,topic?,topicLag?}]` (Kafka lag) — bổ sung,
+> tương thích ngược. Bot cũ bỏ qua field lạ vẫn chạy; `schemaVersion` là 2.
 
 **Quy ước cho bot**: KHÔNG có marker bọc — bot quét tin nhắn, tìm đoạn JSON bắt
 đầu bằng `{"schemaVersion":` rồi `JSON.parse`; `schemaVersion` cho biết shape
