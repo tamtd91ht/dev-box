@@ -24,7 +24,7 @@ import {
   gStatus, gAuthUrl, gLogout, gRoots, gRootAdd, gRootRemove, gBrowse, gList,
   mimeIcon, fmtRel, withAuthuser, gDownload, gCanDownload, G_MIME,
   gDocLinks, gDocResolve, gDocLinkRemove, gDocLinkRename, gDocLinkPin, gDocLinkTouch, gDocDownload,
-  gDrives, gCreate,
+  gDrives, gCreate, isReauthError,
   type GFile, type GList as GListT, type GoogleAccount, type GoogleStatus, type GRoot, type GDocLink,
   type GDriveRoot,
 } from '@/lib/google';
@@ -34,6 +34,29 @@ import GoogleFilePreview from './GoogleFilePreview';
 import GoogleAuthWindow from './GoogleAuthWindow';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+
+/**
+ * Liên kết Google chết được PHÁT HIỆN ở tầng sâu (một lệnh browse/list bất kỳ
+ * trong view con), nhưng nút sửa nằm ở banner trên toolbar — nơi biết danh sách
+ * tài khoản. Cầu nối là event này: view con chỉ cần báo "có ca reauth", component
+ * gốc nghe được thì refresh status để cờ `invalid` (server vừa ghi lúc refresh
+ * thất bại) hiện thành banner ngay, không phải chờ người dùng F5.
+ *
+ * Dùng event của window thay vì thread callback qua 4 view × chục chỗ catch: các
+ * view con không cần biết gì về khái niệm "liên kết lại".
+ */
+const REAUTH_EVENT = 'devbox:google-reauth';
+
+/**
+ * Lỗi để hiện trong các view con. Khi liên kết Google đã chết thì KHÔNG in lại
+ * cả câu dài ở đây: banner "🔗 Liên kết lại" trên toolbar đã nói rõ và có nút
+ * sửa, in hai lần chỉ làm người đọc tưởng là hai vấn đề khác nhau.
+ */
+const gErrText = (e: unknown) => {
+  if (!isReauthError(e)) return (e as Error).message;
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(REAUTH_EVENT));
+  return 'Liên kết Google đã hết hiệu lực — bấm "🔗 Liên kết lại" ở thanh trên.';
+};
 
 /** What the in-app viewer is currently showing (desktop shell only). */
 interface ViewerTarget { name: string; url: string }
@@ -125,7 +148,7 @@ function KindList({ accountId, kind, onOpen }: { accountId: string; kind: 'docs'
       setFiles((cur) => (opts.append ? [...cur, ...res.files] : res.files));
       setNext(res.nextPageToken);
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setLoading(false);
     }
@@ -279,7 +302,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
   const [showAdd, setShowAdd] = useState(false);
 
   const reloadRoots = useCallback(() => {
-    gRoots(accountId).then(setRoots).catch((e) => setErr((e as Error).message));
+    gRoots(accountId).then(setRoots).catch((e) => setErr(gErrText(e)));
   }, [accountId]);
   useEffect(() => { reloadRoots(); }, [reloadRoots]);
 
@@ -302,7 +325,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
         return at >= 0 ? t.slice(0, at + 1) : [...t, { id, name }];
       });
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setLoading(false);
     }
@@ -323,7 +346,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
         const my = d[0];
         if (my) void openFolder(my.id, my.name, { key: `drive:${my.id}`, name: my.name });
       })
-      .catch((e) => { if (alive) setErr((e as Error).message); });
+      .catch((e) => { if (alive) setErr(gErrText(e)); });
     return () => { alive = false; };
   }, [accountId, openFolder]);
 
@@ -340,7 +363,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
         ? { files: [...prev.files, ...res.files], nextPageToken: res.nextPageToken }
         : res);
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setLoading(false);
     }
@@ -372,7 +395,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
         if (f.webViewLink) onOpenUrl(f.name, withAuthuser(f.webViewLink, accountEmail));
       }
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setCreating(false);
     }
@@ -386,7 +409,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
       setRoots(list);
       setAddUrl(''); setAddName('');
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setAdding(false);
     }
@@ -399,7 +422,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
       setRoots(await gRoots(accountId));
       if (activeRoot?.key === `root:${r.id}`) { setActiveRoot(null); setListing(null); setTrail([]); }
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     }
   };
 
@@ -602,7 +625,7 @@ function SharedView({ accountId, onOpen }: { accountId: string; onOpen: OpenFile
   const [editing, setEditing] = useState<string | null>(null);
 
   useEffect(() => {
-    gDocLinks().then(setLinks).catch((e) => setErr((e as Error).message));
+    gDocLinks().then(setLinks).catch((e) => setErr(gErrText(e)));
   }, []);
 
   /** Dán link → nhận diện + lưu + MỞ LUÔN (dán là để xem, không phải để lưu). */
@@ -616,7 +639,7 @@ function SharedView({ accountId, onOpen }: { accountId: string; onOpen: OpenFile
       setNote(`Mở "${res.file.name}" bằng ${res.usedBy}.`);
       onOpen({ id: res.file.id, name: res.file.name, mimeType: res.file.mimeType, webViewLink: res.file.webViewLink });
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setBusy(false);
     }
@@ -628,7 +651,7 @@ function SharedView({ accountId, onOpen }: { accountId: string; onOpen: OpenFile
   };
 
   const act = async (fn: () => Promise<GDocLink[]>) => {
-    try { setLinks(await fn()); } catch (e) { setErr((e as Error).message); }
+    try { setLinks(await fn()); } catch (e) { setErr(gErrText(e)); }
   };
 
   const remove = (l: GDocLink) => {
@@ -745,9 +768,14 @@ export default function GoogleWorkspace() {
   const [err, setErr] = useState<string | null>(null);
   const [waiting, setWaiting] = useState(false);
   const [authUrl, setAuthUrl] = useState<string | null>(null); // consent trong app
-  /** Đang consent để CẤP THÊM QUYỀN cho tài khoản này (không phải thêm mới) —
-   *  quyết định poll theo cờ canWrite thay vì theo số lượng tài khoản. */
-  const [pendingWriteId, setPendingWriteId] = useState<string | null>(null);
+  /**
+   * Đang consent LẠI cho một tài khoản ĐÃ CÓ (cấp thêm quyền ghi, hoặc liên kết
+   * lại khi token hết hạn) — không phải thêm tài khoản mới. Số tài khoản không
+   * đổi nên phải poll theo cờ của chính nó (`until`), lấy số lượng làm mốc thì
+   * poll chạy hết lượt rồi im và người dùng tưởng treo.
+   */
+  const [pendingReconsent, setPendingReconsent] =
+    useState<{ id: string; until: 'write' | 'valid' } | null>(null);
   const [viewer, setViewer] = useState<ViewerTarget | null>(null);
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -780,13 +808,21 @@ export default function GoogleWorkspace() {
       return s;
     } catch (e) {
       if ((e as Error & { status?: number }).status === 403) setEnabled(false);
-      else { setEnabled(true); setErr((e as Error).message); }
+      else { setEnabled(true); setErr(gErrText(e)); }
       return null;
     }
   }, []);
 
   useEffect(() => { void refreshStatus(); }, [refreshStatus]);
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  // Một view con vừa ăn lỗi "liên kết hết hiệu lực" → đọc lại status để cờ
+  // `invalid` server vừa ghi hiện thành banner có nút "🔗 Liên kết lại".
+  useEffect(() => {
+    const onReauth = () => { void refreshStatus(); };
+    window.addEventListener(REAUTH_EVENT, onReauth);
+    return () => window.removeEventListener(REAUTH_EVENT, onReauth);
+  }, [refreshStatus]);
   useEffect(() => {
     if (activeId && typeof window !== 'undefined') window.localStorage.setItem(ACTIVE_ACCOUNT_KEY, activeId);
   }, [activeId]);
@@ -815,21 +851,23 @@ export default function GoogleWorkspace() {
   };
 
   /**
-   * Chờ MỘT tài khoản đã có được cấp thêm quyền ghi.
+   * Chờ MỘT tài khoản đã có consent lại xong.
    *
    * Khác `pollForNewAccount`: consent lại cho tài khoản CŨ không làm số tài
-   * khoản tăng, nên điều kiện dừng phải là cờ `canWrite` của chính nó đổi —
-   * lấy số lượng làm mốc thì poll chạy hết 60 lượt rồi im, người dùng tưởng treo.
+   * khoản tăng, nên điều kiện dừng phải là cờ của chính nó đổi —
+   *   'write' → `canWrite` bật (vừa cấp quyền tạo file),
+   *   'valid' → `invalid` tắt (liên kết đã sống lại).
    */
-  const pollForWriteScope = (accountId: string) => {
+  const pollForReconsent = (accountId: string, until: 'write' | 'valid') => {
     setWaiting(true);
     if (pollRef.current) clearInterval(pollRef.current);
     let tries = 0;
     pollRef.current = setInterval(async () => {
       tries += 1;
       const s = await refreshStatus();
-      const granted = s?.accounts.find((a) => a.id === accountId)?.canWrite === true;
-      if (granted || tries > 60) {
+      const a = s?.accounts.find((x) => x.id === accountId);
+      const done = until === 'write' ? a?.canWrite === true : a?.invalid !== true;
+      if (done || tries > 60) {
         if (pollRef.current) clearInterval(pollRef.current);
         setWaiting(false);
       }
@@ -837,25 +875,32 @@ export default function GoogleWorkspace() {
   };
 
   /**
-   * Cấp thêm quyền tạo file cho tài khoản đang chọn.
+   * Consent LẠI cho một tài khoản đã đăng nhập — dùng cho cả hai việc:
+   *   · cấp thêm quyền tạo file (`until: 'write'`),
+   *   · liên kết lại khi refresh_token hết hạn/bị thu hồi (`until: 'valid'`).
+   *
+   * Cùng một luồng vì `exchangeCode` upsert THEO EMAIL: consent lại cùng email
+   * chỉ thay token của bản ghi cũ, giữ nguyên accountId → mọi lối tắt 📁 và link
+   * đã ghim theo accountId vẫn còn. Đó là lý do tồn tại của nút này: không phải
+   * gỡ tài khoản rồi thêm lại từ đầu.
    *
    * `login_hint` = email của chính nó, để Google khỏi bắt chọn lại tài khoản và
-   * để chắc chắn quyền được gắn vào ĐÚNG tài khoản đang xem (không có hint thì
-   * người dùng dễ chọn nhầm sang account khác, cấp quyền xong vẫn báo thiếu).
+   * để chắc chắn token mới gắn vào ĐÚNG tài khoản đang xem (không có hint thì
+   * người dùng dễ chọn nhầm sang account khác, xác thực xong vẫn báo lỗi cũ).
    */
-  const grantWrite = async (a: GoogleAccount) => {
+  const reconsent = async (a: GoogleAccount, until: 'write' | 'valid') => {
     setErr(null);
     try {
       const { url } = await gAuthUrl(a.email);
       if (typeof window !== 'undefined' && window.workspace?.isDesktop) {
-        setPendingWriteId(a.id);
+        setPendingReconsent({ id: a.id, until });
         setAuthUrl(url);
         return;
       }
       window.open(url, '_blank', 'noopener');
-      pollForWriteScope(a.id);
+      pollForReconsent(a.id, until);
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     }
   };
 
@@ -873,7 +918,7 @@ export default function GoogleWorkspace() {
       window.open(url, '_blank', 'noopener');
       pollForNewAccount();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     }
   };
 
@@ -886,7 +931,7 @@ export default function GoogleWorkspace() {
       if (ext) await ext(url); else window.open(url, '_blank', 'noopener');
       pollForNewAccount();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     }
   };
 
@@ -896,7 +941,7 @@ export default function GoogleWorkspace() {
       await gLogout(a.id);
       await refreshStatus();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     }
   };
 
@@ -1003,9 +1048,12 @@ export default function GoogleWorkspace() {
         {/* Account switcher — một chip mỗi tài khoản, ✕ trên chip đang chọn. */}
         <div className="g-accounts" role="tablist" aria-label="Google accounts">
           {st.accounts.map((a) => (
-            <span key={a.id} className={`g-acc${a.id === active.id ? ' on' : ''}`} title={a.email ?? a.id}>
+            <span key={a.id} className={`g-acc${a.id === active.id ? ' on' : ''}${a.invalid ? ' bad' : ''}`}
+              title={a.invalid ? `${a.email ?? a.id} — liên kết hết hiệu lực, cần "Liên kết lại"` : (a.email ?? a.id)}>
               <button className="g-acc-btn" role="tab" aria-selected={a.id === active.id} onClick={() => setActiveId(a.id)}>
-                Ⓖ {accLabel(a, st.accounts)}
+                {/* Chấm ⚠ để thấy tài khoản chết NGAY trên chip, không phải chọn
+                    vào mới biết — có nhiều tài khoản thì đó là khác biệt lớn. */}
+                {a.invalid ? '⚠' : 'Ⓖ'} {accLabel(a, st.accounts)}
               </button>
               {a.id === active.id && (
                 <button className="g-acc-x" onClick={() => void removeAccount(a)} title={`Đăng xuất ${a.email ?? a.id}`}>✕</button>
@@ -1019,17 +1067,44 @@ export default function GoogleWorkspace() {
       </div>
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '6px 0' }}>{err}</pre>}
 
+      {/* LIÊN KẾT HẾT HIỆU LỰC — refresh_token bị Google từ chối (hết hạn, bị thu
+          hồi ở myaccount.google.com, hoặc đổi mật khẩu). Trước đây chỗ này chỉ đổ
+          ra "invalid_grant Token has been expired or revoked" và cách duy nhất là
+          gỡ tài khoản rồi thêm lại — mất luôn lối tắt đã ghim. Nút dưới đây
+          consent lại vào ĐÚNG tài khoản đó nên mọi thứ đã ghim vẫn còn. */}
+      {active.invalid && (
+        <div className="g-scope-warn">
+          <span aria-hidden>🔗</span>
+          <span style={{ flex: 1 }}>
+            Liên kết Google với <b>{active.email ?? active.id}</b> đã hết hiệu lực — cần xác thực lại
+            để lấy token mới. Lối tắt và link đã ghim <b>vẫn giữ nguyên</b>, không cần gỡ tài khoản.
+            {active.invalidReason && (
+              <>
+                {' '}
+                <span className="small" style={{ color: 'var(--muted)' }}>
+                  (Google: {active.invalidReason})
+                </span>
+              </>
+            )}
+          </span>
+          <button className="sm" onClick={() => void reconsent(active, 'valid')} disabled={waiting}
+            title={`Xác thực lại ${active.email ?? active.id} — token mới, giữ nguyên mọi thứ đã ghim`}>
+            {waiting ? <span className="spinner" aria-hidden /> : '🔗'} Liên kết lại
+          </button>
+        </div>
+      )}
+
       {/* Token KHÔNG có quyền Drive nào: mọi thứ bên dưới sẽ chết bằng
           "insufficient authentication scopes". Nói trước ở đây, kèm nút sửa —
           để lỗi tự hiện ra lúc duyệt thì không ai đoán được là do đăng nhập. */}
-      {active.canRead === false && active.canWrite === false && (
+      {!active.invalid && active.canRead === false && active.canWrite === false && (
         <div className="g-scope-warn">
           <span aria-hidden>⚠️</span>
           <span style={{ flex: 1 }}>
             <b>{active.email ?? active.id}</b> chưa được cấp quyền Drive — duyệt hay tạo file đều sẽ lỗi.
             Đăng nhập lại và <b>tick các ô quyền Google Drive</b> ở màn hình Google trước khi bấm Tiếp tục.
           </span>
-          <button className="sm" onClick={() => void grantWrite(active)} disabled={waiting}>
+          <button className="sm" onClick={() => void reconsent(active, 'write')} disabled={waiting}>
             {waiting ? <span className="spinner" aria-hidden /> : '🔓'} Cấp quyền lại
           </button>
         </div>
@@ -1043,7 +1118,7 @@ export default function GoogleWorkspace() {
             accountId={active.id}
             accountEmail={active.email}
             canWrite={active.canWrite === true}
-            onGrantWrite={() => void grantWrite(active)}
+            onGrantWrite={() => void reconsent(active, 'write')}
             onOpen={openFile}
             onOpenUrl={openInApp}
           />
@@ -1094,10 +1169,12 @@ export default function GoogleWorkspace() {
         <GoogleAuthWindow url={authUrl}
           onDone={() => {
             setAuthUrl(null);
-            if (pendingWriteId) { pollForWriteScope(pendingWriteId); setPendingWriteId(null); }
-            else pollForNewAccount();
+            if (pendingReconsent) {
+              pollForReconsent(pendingReconsent.id, pendingReconsent.until);
+              setPendingReconsent(null);
+            } else pollForNewAccount();
           }}
-          onCancel={() => { setAuthUrl(null); setPendingWriteId(null); }} />
+          onCancel={() => { setAuthUrl(null); setPendingReconsent(null); }} />
       )}
     </div>
   );

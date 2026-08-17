@@ -13,7 +13,15 @@
 //      refreshes that account's token when stale.
 //
 // Tokens live in .googleauth.json (gitignored, per-machine):
-//   { accounts: [{ id, email, refresh_token, access_token, expiry, scope }] }
+//   { accounts: [{ id, email, refresh_token, access_token, expiry, scope, invalid? }] }
+//
+// LIÊN KẾT HẾT HIỆU LỰC: refresh_token của Google chết được (hết hạn với app ở
+// chế độ Testing, bị thu hồi ở myaccount.google.com, đổi mật khẩu). Lúc đó
+// getAccessToken KHÔNG xoá tài khoản — nó đánh dấu `invalid` và ném
+// GoogleReauthRequired, để UI hiện nút "🔗 Liên kết lại". Consent lại cùng email
+// đi qua exchangeCode và upsert vào ĐÚNG bản ghi cũ (khoá theo email), nên
+// accountId không đổi → lối tắt 📁 và link đã ghim theo accountId vẫn còn.
+// Không có nút đó thì cách duy nhất là gỡ tài khoản rồi thêm lại — mất hết.
 //
 // SCOPE: drive.readonly (duyệt mọi thứ đã có) + drive.file (TẠO mới; Google chỉ
 // cho sửa/xoá đúng những file do app này tạo, nên tài liệu cũ của người dùng
@@ -80,6 +88,16 @@ interface AccountTokens {
   /** Scope Google THỰC SỰ đã cấp (không phải cái ta xin) — dùng để biết tài
    *  khoản này đã có quyền mail chưa. Bản ghi cũ không có field này. */
   scope?: string;
+  /**
+   * refresh_token đã CHẾT (Google trả invalid_grant) — hết hạn, bị thu hồi ở
+   * myaccount.google.com, hoặc đổi mật khẩu. Đánh dấu lại thay vì để lỗi thô
+   * hiện ra mỗi lần duyệt: UI đọc cờ này để mời liên kết lại NGAY chỗ tài khoản,
+   * và người dùng không phải gỡ tài khoản rồi thêm lại từ đầu (gỡ là mất luôn
+   * lối tắt/link đã ghim theo accountId).
+   */
+  invalid?: boolean;
+  /** Google nói gì lúc refresh chết — để UI hiện đúng nguyên nhân. */
+  invalidReason?: string;
 }
 
 interface TokenFile {
@@ -192,6 +210,8 @@ export async function exchangeCode(code: string): Promise<{ id: string; email?: 
     // Gộp với scope đã có: include_granted_scopes=true nên lần cấp quyền mail
     // vẫn giữ quyền Drive, nhưng response chỉ liệt kê scope của lần này.
     scope: granted.join(' '),
+    // KHÔNG copy `invalid` từ bản ghi cũ: vừa consent xong thì refresh_token mới
+    // này còn sống — đó chính là điều nút "Liên kết lại" cần đạt được.
   };
   store.accounts = [...store.accounts.filter((a) => a.id !== acc.id), acc];
   await writeStore(store);
@@ -228,15 +248,58 @@ export async function exchangeCode(code: string): Promise<{ id: string; email?: 
   return { id: acc.id, email };
 }
 
+/**
+ * Lỗi refresh_token đã chết. Có type riêng để tầng route/UI nhận ra được mà
+ * không phải so chuỗi tiếng Việt.
+ */
+export class GoogleReauthRequired extends Error {
+  readonly code = 'google_reauth_required';
+  constructor(readonly accountId: string, readonly email: string | undefined, reason: string) {
+    super(
+      `Liên kết Google với ${email ?? accountId} đã hết hiệu lực` +
+        (reason ? ` (${reason})` : '') +
+        '. Bấm "🔗 Liên kết lại" để xác thực lại — lối tắt và link đã ghim vẫn giữ nguyên.',
+    );
+    this.name = 'GoogleReauthRequired';
+  }
+}
+
+/**
+ * Google báo refresh_token không dùng được nữa? (hết hạn / bị thu hồi / đổi mật
+ * khẩu). CHỈ những mã này — `invalid_client` là sai CLIENT_ID/SECRET trong
+ * .env.local, đánh dấu tài khoản trong ca đó là chỉ sai người: consent lại bao
+ * nhiêu lần cũng vẫn lỗi, phải sửa .env.
+ */
+const isInvalidGrant = (msg: string) =>
+  /invalid_grant|Token has been expired or revoked/i.test(msg);
+
 /** Valid access token for ONE account, silently refreshed. */
 export async function getAccessToken(accountId: string): Promise<string> {
   const store = await readStore();
   const acc = store.accounts.find((a) => a.id === accountId);
   if (!acc) throw new Error('Chưa đăng nhập Google (tài khoản không tồn tại trên máy này) — bấm "＋ Thêm tài khoản".');
+  // Đã biết token chết thì báo ngay, khỏi gọi Google chỉ để ăn lại invalid_grant.
+  if (acc.invalid) throw new GoogleReauthRequired(acc.id, acc.email, acc.invalidReason ?? '');
   if (Date.now() < acc.expiry) return acc.access_token;
-  const data = await tokenRequest({ grant_type: 'refresh_token', refresh_token: acc.refresh_token });
+  let data: TokenResponse;
+  try {
+    data = await tokenRequest({ grant_type: 'refresh_token', refresh_token: acc.refresh_token });
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (!isInvalidGrant(msg)) throw err;   // lỗi mạng/5xx: lần sau thử lại được
+    // GIỮ LẠI bản ghi (đừng logout tự động): accountId là khóa của lối tắt 📁 và
+    // của tài khoản đang chọn — xoá đi là người dùng mất hết, đúng cái mà tính
+    // năng này muốn tránh. Chỉ đánh dấu để UI mời liên kết lại.
+    acc.invalid = true;
+    acc.invalidReason = msg.replace(/^Google token endpoint:\s*/, '');
+    await writeStore(store);
+    throw new GoogleReauthRequired(acc.id, acc.email, acc.invalidReason);
+  }
   acc.access_token = data.access_token;
   acc.expiry = Date.now() + (data.expires_in - 60) * 1000;
+  // Refresh chạy được thì liên kết sống lại (ví dụ trước đó chỉ tạm lỗi).
+  delete acc.invalid;
+  delete acc.invalidReason;
   await writeStore(store);
   return acc.access_token;
 }
@@ -316,6 +379,10 @@ export interface GoogleAccountInfo {
   canWrite?: boolean;
   /** Duyệt được Drive chưa (đã có drive.readonly). */
   canRead?: boolean;
+  /** refresh_token đã chết → cần bấm "Liên kết lại" (không cần gỡ tài khoản). */
+  invalid?: boolean;
+  /** Google báo gì (vd. "invalid_grant Token has been expired or revoked"). */
+  invalidReason?: string;
 }
 
 export interface GoogleStatus {
@@ -336,6 +403,8 @@ export async function status(): Promise<GoogleStatus> {
         scopes,
         canWrite: scopes.includes(DRIVE_WRITE_SCOPE),
         canRead: scopes.includes(DRIVE_READ_SCOPE),
+        invalid: a.invalid === true,
+        invalidReason: a.invalidReason,
       };
     }),
     redirectUri: REDIRECT_URI,

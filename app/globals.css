@@ -4661,6 +4661,15 @@ pre.kafka-drawer-body {
   font-size: 10px; padding: 4px 8px 4px 0;
 }
 .g-acc-x:hover { color: var(--err); }
+/* Liên kết Google của tài khoản này đã hết hiệu lực (refresh_token bị thu hồi /
+   hết hạn). Tô viền cảnh báo để thấy ngay trên chip — có 3-4 tài khoản thì đỡ
+   phải bấm vào từng cái mới biết cái nào chết. */
+.g-acc.bad {
+  border-color: color-mix(in srgb, var(--warn) 60%, transparent);
+  background: var(--warn-bg);
+}
+.g-acc.bad .g-acc-btn { color: var(--warn); }
+.g-acc.bad.on .g-acc-btn { color: var(--warn); font-weight: 600; }
 
 /* ── Ẩn thông báo cho một hòm thư ──────────────────────────────────────────
    Cùng luật với nút ẩn thông báo bên Workspace: bật là 🔕 vàng hiện thường

@@ -4,8 +4,9 @@
 // tới Drive đều nhận accountId.
 //
 //   POST { action, ... }  where action is one of:
-//     'status'     {}                            → { ok, result: GoogleStatus }  (accounts[])
-//     'authUrl'    {}                            → { ok, result: { url } }       (thêm/đăng nhập lại tài khoản)
+//     'status'     {}                            → { ok, result: GoogleStatus }  (accounts[], kèm cờ invalid)
+//     'authUrl'    { loginHint? }                → { ok, result: { url } }       (thêm tài khoản, hoặc LIÊN KẾT LẠI
+//                                                   một tài khoản đã có: truyền loginHint = email của nó)
 //     'logout'     { accountId }                 → { ok, result: { done: true } }
 //     'roots'      { accountId }                 → { ok, result: GoogleRoot[] }  (roots của tài khoản đó)
 //     'rootAdd'    { accountId, url, name? }     → { ok, result: GoogleRoot[] }  (validates via files.get)
@@ -28,6 +29,12 @@
 //     'docLinkTouch'  { id }                     → { ok, result: GoogleDocLink[] }
 // (Tab Links dán link web chung — xem /api/links.)
 //
+// LỖI LIÊN KẾT HẾT HIỆU LỰC: mọi action đụng Drive có thể trả
+//   401 { ok: false, code: 'google_reauth_required', accountId, error }
+// khi refresh_token của tài khoản đó bị Google từ chối. Client đọc `code` để hiện
+// nút "🔗 Liên kết lại" (consent lại vào đúng tài khoản đó, giữ nguyên accountId
+// nên lối tắt/link đã ghim không mất) thay vì đổ ra lỗi thô của Google.
+//
 // QUYỀN: scope drive.readonly (duyệt mọi thứ) + drive.file (TẠO mới, và chỉ sửa
 // được file do DevBox tạo). Lệnh ghi duy nhất ở đây là files.create — không có
 // update/delete, nên tài liệu cũ của người dùng không có đường nào bị sửa. Sửa
@@ -35,7 +42,7 @@
 // Gated by GOOGLE_TOOL_ENABLED (403 when off).
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { GOOGLE_ENABLED, authUrl, logout, status } from '@/lib/googleAuth';
+import { GOOGLE_ENABLED, GoogleReauthRequired, authUrl, logout, status } from '@/lib/googleAuth';
 import {
   browseFolder, listByKind, getFile, extractDriveId, MIME,
   downloadContent, exportContent, listDrives, createInFolder, type DriveFile,
@@ -240,6 +247,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, result });
   } catch (err) {
     const msg = (err as Error).message || 'Google operation failed';
+    // Liên kết chết → 401 + code, để client hiện nút "Liên kết lại" thay vì đổ
+    // ra một khối lỗi Google mà người dùng không biết xử lý thế nào.
+    if (err instanceof GoogleReauthRequired) {
+      return NextResponse.json(
+        { ok: false, error: msg, code: err.code, accountId: err.accountId },
+        { status: 401 },
+      );
+    }
     const auth = msg.includes('Chưa đăng nhập') || msg.includes('Thiếu accountId');
     return NextResponse.json({ ok: false, error: msg }, { status: auth ? 401 : 502 });
   }
@@ -350,13 +365,21 @@ export async function GET(req: NextRequest) {
     return msg;
   };
 
+  /**
+   * Bọc lỗi bằng lời khuyên của `friendly` NHƯNG giữ nguyên
+   * GoogleReauthRequired: nó không phải lỗi Drive để dịch lại, và bọc thành
+   * Error thường là mất `code` → client không biết để hiện nút "Liên kết lại".
+   */
+  const rewrap = (err: unknown): Error =>
+    err instanceof GoogleReauthRequired ? err : new Error(friendly((err as Error).message));
+
   try {
     if (sp.has('preview')) {
       if (!accountId || !fileId) throw new Error('Thiếu accountId/fileId.');
       try {
         return NextResponse.json({ ok: true, result: await buildPreview(accountId, fileId) });
       } catch (err) {
-        throw new Error(friendly((err as Error).message));
+        throw rewrap(err);
       }
     }
     if (sp.has('content')) {
@@ -389,7 +412,7 @@ export async function GET(req: NextRequest) {
             },
           });
         } catch (err) {
-          throw new Error(friendly((err as Error).message));
+          throw rewrap(err);
         }
       }
 
@@ -402,6 +425,14 @@ export async function GET(req: NextRequest) {
     }
     return NextResponse.json({ ok: false, error: 'Unknown GET' }, { status: 400 });
   } catch (err) {
+    // Cùng luật với POST: liên kết chết thì trả code để UI mời "Liên kết lại"
+    // (rewrap() ở trên đã lo giữ nguyên type khi đi qua friendly()).
+    if (err instanceof GoogleReauthRequired) {
+      return NextResponse.json(
+        { ok: false, error: err.message, code: err.code, accountId: err.accountId },
+        { status: 401 },
+      );
+    }
     return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 502 });
   }
 }

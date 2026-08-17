@@ -12,6 +12,14 @@ export interface GoogleAccount {
   canWrite?: boolean;
   /** Duyệt được Drive chưa (đã có drive.readonly). */
   canRead?: boolean;
+  /**
+   * Liên kết đã hết hiệu lực: refresh_token bị Google từ chối (hết hạn, bị thu
+   * hồi, đổi mật khẩu). Tài khoản VẪN còn trong danh sách để không mất lối tắt
+   * đã ghim — UI chỉ cần mời "🔗 Liên kết lại".
+   */
+  invalid?: boolean;
+  /** Google báo gì (vd. "invalid_grant Token has been expired or revoked"). */
+  invalidReason?: string;
 }
 
 /** Một gốc của cây: My Drive, hoặc một Shared Drive. */
@@ -62,11 +70,18 @@ async function googleAction<T>(action: string, params: Record<string, unknown> =
   const data = await r.json().catch(() => ({}));
   if (!r.ok || (data as { ok?: boolean }).ok === false) {
     const err = new Error((data as { error?: string }).error || `HTTP ${r.status}`);
-    (err as Error & { status?: number }).status = r.status;
+    const d = data as { code?: string; accountId?: string };
+    Object.assign(err, { status: r.status, code: d.code, accountId: d.accountId });
     throw err;
   }
   return (data as { result: T }).result;
 }
+
+/** Lỗi này là "liên kết Google đã chết, cần xác thực lại" chứ không phải lỗi
+ *  thường? Các view con dùng nó để im lặng nhường cho banner "Liên kết lại"
+ *  ở trên thay vì in nguyên khối lỗi Google. */
+export const isReauthError = (e: unknown) =>
+  (e as { code?: string })?.code === 'google_reauth_required';
 
 export const gStatus = () => googleAction<GoogleStatus>('status');
 /** URL consent. loginHint = gợi ý sẵn email, để cấp thêm quyền cho ĐÚNG tài
