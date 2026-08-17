@@ -1570,6 +1570,13 @@ audio { width: 100%; margin-top: 12px; }
 /* ── Value theo kiểu key (string / hash / list / zset) ────────────────────── */
 .redis-val { margin-top: 6px; max-height: 38vh; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .redis-val-tools { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+/* Đang sửa value tại chỗ — viền cảnh báo để phân biệt rõ với lúc chỉ đọc, vì
+   nhìn nhầm ô sửa thành ô xem là gõ vào value thật của môi trường đang chạy. */
+.redis-edit {
+  margin-top: 8px; padding: 8px; border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+}
 /* Bảng field→value kiểu RedisInsight. Cuộn TRONG khối, không đẩy nút TTL/Xoá
    xuống ngoài tầm nhìn khi hash có hàng trăm field. */
 .redis-kv {

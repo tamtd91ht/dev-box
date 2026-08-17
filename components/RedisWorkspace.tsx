@@ -560,6 +560,31 @@ export default function RedisWorkspace() {
     void startFresh();
   }
 
+  /**
+   * Ghi value đã sửa tay trong panel (đã qua modal xác nhận).
+   *
+   * GIỮ NGUYÊN TTL: setValue phía server DEL key cũ rồi ghi lại để đổi kiểu
+   * không còn phần tử rác — nghĩa là TTL cũ mất theo. Sửa một key đang có hạn mà
+   * biến nó thành vĩnh viễn thì vừa sai ý người dùng, vừa phạm luật "không có key
+   * vĩnh viễn" của tab này. Nên đọc ttl hiện tại rồi truyền lại. ttl = -1 (không
+   * hạn) thì để nguyên là không hạn.
+   */
+  async function handleEditSave(input: { type: SetKeyInput['type']; value: unknown }): Promise<void> {
+    const key = value?.key;
+    if (!key) return;
+    const keepTtl = value && value.ttl > 0 ? value.ttl : undefined;
+    // Throws on failure → modal xác nhận tự hiện lỗi và ở lại.
+    await setRedisValue(activeIdRef.current, dbRef.current, {
+      key,
+      type: input.type,
+      value: input.value,
+      ttl: keepTtl,
+      overwrite: true, // sửa key đang có thì đương nhiên là ghi đè
+    });
+    flash(`Đã lưu value của "${key}"`);
+    await openKey(key); // đọc lại từ Redis: thấy đúng thứ vừa ghi, không phải tin bản nháp
+  }
+
   // Connections grouped by project for the left rail.
   const grouped = useMemo(() => {
     const m = new Map<string, PublicRedisConnection[]>();
@@ -918,11 +943,13 @@ export default function RedisWorkspace() {
                   </div>
                 ) : value ? (
                   <ValuePanel
+                    key={value.key}
                     value={value}
                     ttlInput={ttlInput}
                     onTtlInput={setTtlInput}
                     onApplyTtl={applyTtl}
                     onDelete={() => setDelKey(value.key)}
+                    onSaveValue={handleEditSave}
                     busy={busy}
                   />
                 ) : (
@@ -977,13 +1004,39 @@ interface ValuePanelProps {
   onTtlInput: (v: string) => void;
   onApplyTtl: () => void;
   onDelete: () => void;
+  /** Ghi value đã sửa tay. Throw để modal xác nhận hiện lỗi và ở lại. */
+  onSaveValue: (input: { type: EditableType; value: unknown }) => Promise<void>;
   busy: boolean;
 }
 
+/** Kiểu sửa được tại chỗ — đúng bằng những kiểu setValue() phía server nhận. */
+type EditableType = 'string' | 'list' | 'set' | 'hash';
+
+/**
+ * Key này sửa tay được không?
+ *
+ * zset cần cả score cho từng member và stream là append-only — setValue() không
+ * nhận hai kiểu đó, nên KHÔNG hiện nút Sửa thay vì để người dùng gõ xong rồi ăn
+ * lỗi "unsupported type" từ server. `truncated` cũng chặn: value đang bị cắt bớt
+ * cho vừa panel, lưu bản đang xem sẽ XOÁ những phần tử không được hiển thị.
+ */
+function editableTypeOf(v: ValueResult): EditableType | null {
+  if (v.truncated) return null;
+  return v.type === 'string' || v.type === 'list' || v.type === 'set' || v.type === 'hash'
+    ? v.type
+    : null;
+}
+
 /** Renders a key's value (type-aware), TTL, and the Set-TTL + Delete actions. */
-function ValuePanel({ value, ttlInput, onTtlInput, onApplyTtl, onDelete, busy }: ValuePanelProps) {
+function ValuePanel({ value, ttlInput, onTtlInput, onApplyTtl, onDelete, onSaveValue, busy }: ValuePanelProps) {
   const { key, type, ttl, truncated, size } = value;
   const isLock = /:lock:/i.test(key);
+  const editable = editableTypeOf(value);
+  /** Bản nháp đang sửa — null = đang ở chế độ chỉ đọc. */
+  const [draft, setDraft] = useState<string | null>(null);
+  /** Đã bấm Lưu → modal xác nhận. Không ghi gì trước khi xác nhận. */
+  const [confirming, setConfirming] = useState(false);
+
   return (
     <div>
       <div className="status-line">
@@ -1008,7 +1061,55 @@ function ValuePanel({ value, ttlInput, onTtlInput, onApplyTtl, onDelete, busy }:
         {size !== undefined && <> · {size} phần tử{truncated ? ` (hiển thị tối đa)` : ''}</>}
       </div>
 
-      <ValueBody value={value} />
+      {/* Sửa tay ngay trong ô kết quả. Chỉ hiện nút khi kiểu này ghi lại được,
+          và LUÔN phải qua modal xác nhận trước khi ghi (nút Lưu chỉ mở modal). */}
+      {draft === null ? (
+        <>
+          {editable && (
+            <div className="redis-val-tools">
+              <button className="chip-btn" onClick={() => setDraft(valueToText(value))}
+                title="Sửa value ngay tại đây rồi lưu lại (có bước xác nhận)">
+                ✏️ Sửa
+              </button>
+            </div>
+          )}
+          <ValueBody value={value} />
+          {/* Nói rõ VÌ SAO không sửa được, thay vì chỉ im lặng thiếu cái nút. */}
+          {!editable && type !== 'none' && (
+            <p className="small" style={{ color: 'var(--muted)', margin: '6px 0 0' }}>
+              {truncated
+                ? 'Value đang bị cắt bớt để hiển thị nên không cho sửa tay — lưu bản đang xem sẽ làm mất những phần tử không hiện ra.'
+                : `Kiểu ${type} không sửa tay được ở đây (chỉ string, list, set, hash).`}
+            </p>
+          )}
+        </>
+      ) : (
+        <ValueEditor
+          type={editable ?? 'string'}
+          draft={draft}
+          onDraft={setDraft}
+          onCancel={() => setDraft(null)}
+          onSave={() => setConfirming(true)}
+          busy={busy}
+        />
+      )}
+
+      {/* Xác nhận trước khi ghi — bày rõ ghi vào key nào, kiểu gì, TTL ra sao. */}
+      {confirming && draft !== null && (
+        <SaveValueModal
+          keyName={key}
+          type={editable ?? 'string'}
+          ttl={ttl}
+          draft={draft}
+          onCancel={() => setConfirming(false)}
+          onConfirm={async () => {
+            await onSaveValue({ type: editable ?? 'string', value: textToValue(editable ?? 'string', draft) });
+            // Chỉ tới đây khi ghi THÀNH CÔNG (lỗi thì throw, modal ở lại).
+            setConfirming(false);
+            setDraft(null);
+          }}
+        />
+      )}
 
       {/* Set TTL — capped at 30 days; no PERSIST offered. */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
@@ -1070,6 +1171,202 @@ function ValueBody({ value }: { value: ValueResult }) {
 
 function safeJson(v: unknown): string {
   try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+}
+
+// ── Sửa value tại chỗ: value ⇄ text ──────────────────────────────────────────
+//
+// Dùng ĐÚNG định dạng text của hộp "Thêm key" (string = nguyên văn, list/set =
+// mỗi dòng một phần tử, hash = `field=value` mỗi dòng). Hai chỗ nhập cùng một
+// kiểu dữ liệu mà bắt người dùng học hai cú pháp thì vô lý.
+
+/** Value đọc từ Redis → text để sửa. */
+function valueToText(v: ValueResult): string {
+  if (v.type === 'string') return v.value === null ? '' : String(v.value);
+  if (v.type === 'hash' && v.value && typeof v.value === 'object' && !Array.isArray(v.value)) {
+    return Object.entries(v.value as Record<string, string>)
+      .map(([f, val]) => `${f}=${val}`)
+      .join('\n');
+  }
+  if (Array.isArray(v.value)) return (v.value as unknown[]).map(String).join('\n');
+  return safeJson(v.value);
+}
+
+/** Text đã sửa → payload cho setValue(). Cùng luật với AddKeyModal.buildValue. */
+function textToValue(type: EditableType, text: string): unknown {
+  if (type === 'string') return text;
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (type === 'hash') {
+    return lines.map((line) => {
+      const idx = line.indexOf('=');
+      if (idx === -1) return { field: line, value: '' };
+      return { field: line.slice(0, idx).trim(), value: line.slice(idx + 1) };
+    });
+  }
+  return lines; // list / set → string[]
+}
+
+/** Đếm phần tử sắp ghi — modal xác nhận hiện con số này. */
+function countOf(type: EditableType, text: string): number {
+  if (type === 'string') return 1;
+  const v = textToValue(type, text);
+  return Array.isArray(v) ? v.length : 0;
+}
+
+/**
+ * Bản nháp có phần tử sẽ BỊ ĐỔI khi lưu không?
+ *
+ * Cú pháp "mỗi dòng một phần tử" trim hai đầu và bỏ dòng trống — điều đó có nghĩa
+ * một phần tử vốn là "  abc  " sẽ được ghi lại thành "abc", và phần tử rỗng thì
+ * mất hẳn. Lúc THÊM key mới thì không ai để ý, nhưng lúc SỬA key đang có thì đó
+ * là âm thầm làm sai dữ liệu — nên phải nói trước ở modal xác nhận.
+ * (Không tự ý bỏ trim: nó là cú pháp dùng chung với hộp Thêm key, và giữ khoảng
+ * trắng vô tình ở rìa còn hay gây lỗi hơn.)
+ */
+function lossyLines(type: EditableType, text: string): string[] {
+  if (type === 'string') return [];
+  const raw = text.split('\n');
+  const out: string[] = [];
+  for (const line of raw) {
+    if (line.trim() === '') {
+      if (line.length > 0) out.push('(dòng chỉ có khoảng trắng — sẽ bị bỏ)');
+      continue;
+    }
+    if (line !== line.trim()) out.push(line);
+  }
+  return out;
+}
+
+/** Ô sửa value: textarea + gợi ý cú pháp đúng theo kiểu, Lưu / Huỷ. */
+function ValueEditor({ type, draft, onDraft, onCancel, onSave, busy }: {
+  type: EditableType;
+  draft: string;
+  onDraft: (v: string) => void;
+  onCancel: () => void;
+  onSave: () => void;
+  busy: boolean;
+}) {
+  const hint =
+    type === 'string' ? 'Sửa nguyên văn giá trị string.'
+    : type === 'hash' ? 'Mỗi dòng một field: field=value'
+    : `Mỗi dòng một phần tử (${type}).`;
+  const empty = type !== 'string' && countOf(type, draft) === 0;
+  return (
+    <div className="redis-edit">
+      <div className="redis-val-tools">
+        <span className="badge warn">✏️ Đang sửa</span>
+        <span className="small" style={{ color: 'var(--muted)', flex: 1 }}>{hint}</span>
+      </div>
+      <textarea
+        className="input"
+        value={draft}
+        onChange={(e) => onDraft(e.target.value)}
+        spellCheck={false}
+        rows={12}
+        style={{ width: '100%', fontFamily: 'var(--mono)', fontSize: 12, resize: 'vertical' }}
+      />
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+        {/* Nút này KHÔNG ghi gì — nó mở modal xác nhận. */}
+        <button className="sm" onClick={onSave} disabled={busy || empty}
+          title="Xem lại rồi xác nhận trước khi ghi vào Redis">
+          💾 Lưu…
+        </button>
+        <button className="ghost sm" onClick={onCancel} disabled={busy}>Huỷ</button>
+        {empty && (
+          <span className="small" style={{ color: 'var(--warn)' }}>
+            Cần ít nhất một phần tử — {type} rỗng thì Redis không có key để giữ.
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Xác nhận ghi value.
+ *
+ * Đây là bước bắt buộc trước mọi lần ghi: ghi đè value của một key đang chạy
+ * thật là việc không hoàn tác được, nên phải bày ra ĐỦ thứ người dùng cần đối
+ * chiếu — key nào, kiểu gì, bao nhiêu phần tử, TTL sau khi lưu — rồi mới cho bấm.
+ */
+function SaveValueModal({ keyName, type, ttl, draft, onCancel, onConfirm }: {
+  keyName: string;
+  type: EditableType;
+  ttl: number;
+  draft: string;
+  onCancel: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const isLock = /:lock:/i.test(keyName);
+  const n = countOf(type, draft);
+  const lossy = lossyLines(type, draft);
+
+  const go = async () => {
+    setErr(null);
+    setBusy(true);
+    try {
+      await onConfirm();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={() => !busy && onCancel()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(560px, 94vw)' }}>
+        <div className="status-line" style={{ marginBottom: 10 }}>
+          <h3 style={{ margin: 0, flex: 1 }}>Ghi value mới?</h3>
+          {!busy && <button className="ghost sm" onClick={onCancel}>✕</button>}
+        </div>
+
+        <p className="small" style={{ margin: '0 0 8px' }}>
+          Ghi đè value của <code>{keyName}</code> (<b>{type}</b>
+          {type !== 'string' && <> · {n} phần tử</>}). Việc này <b>không hoàn tác được</b>.
+        </p>
+
+        {isLock && (
+          <div className="badge warn" style={{ marginBottom: 8 }}>
+            🔒 Đây là <b>lock key</b> — sửa value có thể làm rối lock của pod khác.
+          </div>
+        )}
+
+        <div className="badge info" style={{ marginBottom: 8 }}>
+          TTL: {ttl > 0
+            ? <>giữ nguyên <b>{humanizeTtl(ttl)}</b></>
+            : <>key không có hạn — vẫn để không hạn</>}
+        </div>
+
+        {/* Cú pháp "mỗi dòng một phần tử" trim hai đầu + bỏ dòng trống. Nói TRƯỚC
+            khi ghi, vì đây là lúc duy nhất còn quay lại được. */}
+        {lossy.length > 0 && (
+          <div className="badge warn" style={{ marginBottom: 8, whiteSpace: 'pre-wrap' }}>
+            ⚠️ {lossy.length} dòng sẽ bị cắt khoảng trắng ở hai đầu (hoặc bỏ hẳn nếu chỉ có
+            khoảng trắng). Muốn giữ nguyên khoảng trắng thì đổi key này sang <b>string</b> và
+            tự quản lý định dạng.
+          </div>
+        )}
+
+        {/* Xem lại đúng thứ sắp ghi. Cắt bớt phần hiển thị cho khỏi tràn màn
+            hình, nhưng ghi thì vẫn ghi trọn bản nháp. */}
+        <pre className="code redis-val" style={{ maxHeight: 220 }}>
+          {draft.length > 4000 ? `${draft.slice(0, 4000)}\n… (còn ${draft.length - 4000} ký tự nữa)` : draft}
+        </pre>
+
+        {err && <div className="badge err" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{err}</div>}
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+          <button className="sm" onClick={() => void go()} disabled={busy}
+            style={{ color: 'var(--warn)', borderColor: 'var(--warn)' }}>
+            {busy ? <span className="spinner" aria-hidden /> : '💾'} Xác nhận ghi
+          </button>
+          <button className="ghost sm" onClick={onCancel} disabled={busy}>Huỷ</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** Thử parse JSON — trả về bản đã format, hoặc null nếu không phải JSON. */
