@@ -2180,20 +2180,35 @@ pre.kafka-drawer-body {
 
 /* ── Results: collapsible document cards ───────────────────────────────── */
 .mongo-results { display: flex; flex-direction: column; gap: 6px; overflow: auto; min-height: 0; max-height: 58vh; }
-.mongo-doc { border: 1px solid var(--glass-brd); border-radius: 8px; overflow: hidden; }
+/* flex:none là BẮT BUỘC. `.mongo-results` là flex-column có max-height, nên một
+   flex item không khai báo shrink sẽ nhận flex-shrink:1 mặc định — quá 12 thẻ
+   là flexbox BÓP mọi thẻ cho vừa khung thay vì để container cuộn (đo được: 50
+   docs → mỗi thẻ còn 5px). Chữ vẫn nằm trong DOM nhưng bị overflow:hidden của
+   chính .mongo-doc cắt sạch, nên bảng kết quả trông như một loạt dòng trống và
+   thẻ mở ra chỉ còn thấy nút copy. */
+.mongo-doc { flex: none; border: 1px solid var(--glass-brd); border-radius: 8px; overflow: hidden; }
 .mongo-doc-head {
   display: flex; gap: 8px; align-items: center; padding: 5px 8px;
   background: var(--glass-bg); cursor: pointer; min-width: 0;
 }
 .mongo-doc-idx { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* Preview CUỘN NGANG thay vì cắt bằng ellipsis: một document là một dòng, kéo
+   ngang để đọc hết mà không phải mở thẻ ra. Thanh cuộn mảnh và chỉ hiện khi
+   con trỏ ở trên dòng đó — 50 thanh cuộn luôn hiện thì rối mắt. */
 .mongo-doc-preview {
   flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted); font-family: var(--mono);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow-x: auto; overflow-y: hidden; white-space: pre; scrollbar-width: thin;
 }
+.mongo-doc-preview::-webkit-scrollbar { height: 6px; }
+.mongo-doc-preview::-webkit-scrollbar-thumb { background: transparent; border-radius: 6px; }
+.mongo-doc:hover .mongo-doc-preview::-webkit-scrollbar-thumb { background: var(--glass-brd); }
 .mongo-doc-body { margin: 0; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; }
 
 /* ── Structured JSON tree (result documents) ───────────────────────────── */
 .mongo-json { font-family: var(--mono); font-size: 12px; line-height: 1.65; }
+/* Document truncated → không parse được → in thô. Nằm SẴN trong .mongo-doc-body
+   nên tự nó không đặt padding/max-height nữa (tránh lồng hai tầng cuộn). */
+.mongo-json-raw { margin: 0; padding: 0; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
 .mongo-json-row { display: flex; align-items: flex-start; gap: 4px; flex-wrap: wrap; min-width: 0; }
 .mongo-json-row:hover { background: var(--glass-bg); border-radius: 4px; }
 .mongo-json-caret {
@@ -2229,6 +2244,13 @@ pre.kafka-drawer-body {
 .mongo-field-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .mongo-field-tools { display: flex; gap: 4px; flex: none; }
 .mongo-json-input { resize: vertical; line-height: 1.6; tab-size: 2; }
+
+/* Chip khung JSON dựng sẵn trên ô query — cuộn ngang khi hẹp, không xuống dòng
+   lộn xộn giữa nhãn dài ("khoảng ngày") và nhãn ngắn ("$in"). */
+.mongo-snips {
+  display: flex; gap: 5px; flex-wrap: wrap; margin: 1px 0 3px;
+}
+.mongo-snip { font-family: var(--mono); font-size: 11px; padding: 2px 8px; white-space: nowrap; }
 .mongo-json-err { font-size: 11.5px; color: var(--err); word-break: break-word; }
 
 .mongo-field { position: relative; }
@@ -2246,7 +2268,12 @@ pre.kafka-drawer-body {
   padding: 5px 8px; border-radius: 6px;
 }
 .mongo-suggest-item.active, .mongo-suggest-item:hover { background: var(--glass-bg); color: var(--accent); }
-.mongo-suggest-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mongo-suggest-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none; }
+/* Bản xem trước đoạn sẽ chèn (vd `"email": ""`) — mờ hơn tên field, co lại trước. */
+.mongo-suggest-prev {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--faint); font-size: 11px;
+}
 .mongo-suggest-type { flex: none; font-size: 10.5px; color: var(--muted); }
 .mongo-suggest-hint { font-size: 10.5px; color: var(--muted); padding: 3px 8px 1px; border-top: 1px solid var(--glass-brd); margin-top: 2px; }
 

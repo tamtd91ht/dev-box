@@ -365,3 +365,75 @@ export function minifyJsonInput(text: string): FormatResult {
     return { text, error: (e as Error).message };
   }
 }
+
+// ── Enter trong ô query: tự đóng ngoặc rồi format ────────────────────────────
+
+/** Kết quả xử lý Enter. `null` = không can thiệp, để Enter xuống dòng như thường. */
+export interface EnterFixResult {
+  text: string;
+  /** Vị trí con trỏ sau khi thay text. */
+  caret: number;
+}
+
+/**
+ * Đếm ngoặc/nháy còn hở của một đoạn JSON đang gõ dở.
+ * Bỏ qua ngoặc nằm TRONG chuỗi — `{"a": "}"}` không phải là ngoặc hở.
+ */
+function scanOpen(src: string): { need: string; inString: boolean } {
+  const stack: string[] = [];
+  let quote = '';
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quote) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '{' || ch === '[') stack.push(ch === '{' ? '}' : ']');
+    else if (ch === '}' || ch === ']') {
+      if (stack[stack.length - 1] === ch) stack.pop();
+    }
+  }
+  return { need: stack.reverse().join(''), inString: !!quote };
+}
+
+/**
+ * Enter trong ô query JSON: ĐÓNG NGOẶC CÒN HỞ rồi format lại.
+ *
+ * Gõ `{` rồi Enter thì mong đợi ra `{}` đã format, chứ không phải một dấu `{`
+ * lẻ cộng một dòng trống — người dùng dùng Enter như "hoàn tất khối này".
+ * Chỉ can thiệp khi đoạn đang gõ THẬT SỰ còn ngoặc hở và con trỏ ở cuối; mọi
+ * trường hợp khác trả null để Enter xuống dòng như bình thường (còn cần xuống
+ * dòng thủ công khi soạn pipeline nhiều tầng).
+ *
+ * @param text  Nội dung ô hiện tại.
+ * @param caret Vị trí con trỏ.
+ * @returns Text mới + vị trí con trỏ, hoặc null nếu không nên can thiệp.
+ */
+export function closeAndFormatOnEnter(text: string, caret: number): EnterFixResult | null {
+  // Chỉ xử lý khi con trỏ ở cuối phần có nội dung — giữa dòng thì Enter là Enter.
+  if (text.slice(caret).trim() !== '') return null;
+  const head = text.slice(0, caret);
+  if (!head.trim()) return null;
+
+  const { need, inString } = scanOpen(head);
+  // Đang ở giữa một chuỗi chưa đóng nháy → chưa phải lúc đóng khối.
+  if (inString) return null;
+  if (!need) {
+    // Không hở gì: chỉ format lại cho gọn nếu parse được.
+    const f = formatJsonInput(head.trim());
+    if (f.error) return null;
+    return { text: f.text, caret: f.text.length };
+  }
+
+  const closed = head.trim() + need;
+  const f = formatJsonInput(closed);
+  // Đóng ngoặc mà vẫn không parse được (vd `{"a"` thiếu value) → để nguyên.
+  if (f.error) return null;
+
+  // Con trỏ về giữa khối rỗng nếu kết quả là khung trống, để gõ tiếp ngay.
+  // `{}` → giữa hai ngoặc · `{\n  "a": 1\n}` → cuối text.
+  const caretAt = /^[{[]\s*[}\]]$/.test(f.text) ? 1 : f.text.length;
+  return { text: f.text, caret: caretAt };
+}

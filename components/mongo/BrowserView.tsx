@@ -9,7 +9,7 @@
 // opens UpdateModal and is triple-gated (env flag + per-connection readOnly +
 // typed confirm), with the mandatory-filter rule enforced server-side.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   listMongoDatabases,
   listMongoCollections,
@@ -22,6 +22,7 @@ import {
   prettyDoc,
   formatJsonInput,
   minifyJsonInput,
+  closeAndFormatOnEnter,
   fmtBytes,
   fmtCount,
   type DatabaseInfo,
@@ -51,6 +52,47 @@ type CollTab = 'docs' | 'indexes' | 'stats';
 type QueryMode = 'find' | 'aggregate';
 
 const DEFAULT_LIMIT = 50;
+
+/**
+ * Khung JSON dựng sẵn cho ô query. `caretOffset` là vị trí con trỏ TRONG `text`
+ * sau khi chèn — luôn trỏ vào chỗ cần gõ tiếp (trong nháy, sau dấu hai chấm),
+ * để bấm xong là gõ được ngay chứ không phải rê chuột tìm chỗ.
+ *
+ * Chỉ để mồi cấu trúc — tên field cụ thể do autocomplete (FieldSuggest) lo,
+ * nên ở đây dùng `field` làm chỗ giữ chỗ và bôi đen sẵn để gõ đè.
+ */
+interface Snippet {
+  label: string;
+  title: string;
+  text: string;
+  caretOffset: number;
+  /** Số ký tự được BÔI ĐEN từ caretOffset — gõ là thay luôn. */
+  selectLen?: number;
+}
+
+const FILTER_SNIPPETS: Snippet[] = [
+  { label: '{ }', title: 'Khung filter rỗng — gõ tên field để gợi ý hiện lên', text: '{\n  \n}', caretOffset: 4 },
+  { label: 'field = value', title: 'So khớp bằng', text: '{\n  "field": ""\n}', caretOffset: 4, selectLen: 7 },
+  { label: '$and', title: 'Nhiều điều kiện cùng đúng', text: '{\n  "$and": [\n    {  },\n    {  }\n  ]\n}', caretOffset: 17 },
+  { label: '$or', title: 'Một trong các điều kiện', text: '{\n  "$or": [\n    {  },\n    {  }\n  ]\n}', caretOffset: 16 },
+  { label: '$in', title: 'Thuộc danh sách giá trị', text: '{\n  "field": { "$in": [] }\n}', caretOffset: 4, selectLen: 7 },
+  { label: '$regex', title: 'Khớp chuỗi (i = không phân biệt hoa thường)', text: '{\n  "field": { "$regex": "", "$options": "i" }\n}', caretOffset: 4, selectLen: 7 },
+  { label: 'khoảng số', title: 'Lớn hơn / nhỏ hơn', text: '{\n  "field": { "$gte": 0, "$lte": 0 }\n}', caretOffset: 4, selectLen: 7 },
+  { label: 'khoảng ngày', title: 'Lọc theo mốc thời gian (EJSON $date)', text: '{\n  "createdAt": { "$gte": { "$date": "2026-01-01T00:00:00Z" } }\n}', caretOffset: 4, selectLen: 11 },
+  { label: '_id', title: 'Tìm theo ObjectId', text: '{\n  "_id": { "$oid": "" }\n}', caretOffset: 21 },
+  { label: '$exists', title: 'Field có / không tồn tại', text: '{\n  "field": { "$exists": true }\n}', caretOffset: 4, selectLen: 7 },
+];
+
+const PIPELINE_SNIPPETS: Snippet[] = [
+  { label: '[ ]', title: 'Khung pipeline rỗng', text: '[\n  \n]', caretOffset: 4 },
+  { label: '$match', title: 'Lọc trước khi gom', text: '[\n  { "$match": {  } }\n]', caretOffset: 17 },
+  { label: '$group', title: 'Gom nhóm + đếm', text: '[\n  { "$group": { "_id": "$field", "n": { "$sum": 1 } } }\n]', caretOffset: 26, selectLen: 8 },
+  { label: '$sort + $limit', title: 'Sắp xếp rồi cắt', text: '[\n  { "$sort": { "field": -1 } },\n  { "$limit": 20 }\n]', caretOffset: 16, selectLen: 7 },
+  { label: '$project', title: 'Chọn cột trả về', text: '[\n  { "$project": { "_id": 0, "field": 1 } }\n]', caretOffset: 32, selectLen: 7 },
+  { label: '$unwind', title: 'Bung mảng thành nhiều dòng', text: '[\n  { "$unwind": "$field" }\n]', caretOffset: 17, selectLen: 6 },
+  { label: '$lookup', title: 'Join sang collection khác', text: '[\n  {\n    "$lookup": {\n      "from": "",\n      "localField": "",\n      "foreignField": "_id",\n      "as": "joined"\n    }\n  }\n]', caretOffset: 39 },
+  { label: 'đếm theo nhóm', title: 'Mẫu hay dùng: match → group → sort', text: '[\n  { "$match": {  } },\n  { "$group": { "_id": "$field", "n": { "$sum": 1 } } },\n  { "$sort": { "n": -1 } }\n]', caretOffset: 17 },
+];
 
 export default function BrowserView({ connectionId, readOnly, allowWrite, initialDb }: BrowserViewProps) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
@@ -96,6 +138,8 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
   const [stats, setStats] = useState<CollStatsResult | null>(null);
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
   const [busy, setBusy] = useState(false);
+  /** Tăng sau MỖI lần chạy query — dùng làm key để thẻ kết quả dựng lại từ đầu. */
+  const [runSeq, setRunSeq] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -143,6 +187,7 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
       const r = await findMongo(connectionId, selected.db, selected.coll, eff);
       setResult(r);
       setSkip(r.skip);
+      setRunSeq((n) => n + 1);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }, [connectionId, selected, filter, projection, sort, limit, skip]);
@@ -160,7 +205,10 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
   const runAggregate = useCallback(async () => {
     if (!selected) return;
     setBusy(true); setError(null); setResult(null); setCountInfo(null);
-    try { setAggResult(await aggregateMongo(connectionId, selected.db, selected.coll, pipeline)); }
+    try {
+      setAggResult(await aggregateMongo(connectionId, selected.db, selected.coll, pipeline));
+      setRunSeq((n) => n + 1);
+    }
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }, [connectionId, selected, pipeline]);
@@ -201,18 +249,80 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
     setJsonError(f.error && `Filter không parse được: ${f.error}`);
   }, [queryMode, pipeline, filter, projection, sort]);
 
-  /** Insert an autocomplete pick into the focused box, then restore the caret. */
-  const applyPick = useCallback((box: 'filter' | 'pipeline', r: { from: number; to: number; text: string }) => {
+  /**
+   * Insert an autocomplete pick into the focused box, then restore the caret.
+   * `caretOffset` cho phép gợi ý đặt con trỏ vào GIỮA đoạn vừa chèn — chèn
+   * `"email": ""` thì con trỏ nằm sẵn trong hai dấu nháy, gõ tiếp là xong.
+   */
+  const applyPick = useCallback((
+    box: 'filter' | 'pipeline',
+    r: { from: number; to: number; text: string; caretOffset?: number },
+  ) => {
     const ref = box === 'filter' ? filterRef : pipelineRef;
     const current = box === 'filter' ? filter : pipeline;
     const next = current.slice(0, r.from) + r.text + current.slice(r.to);
     (box === 'filter' ? setFilter : setPipeline)(next);
-    const at = r.from + r.text.length;
+    const at = r.from + (r.caretOffset ?? r.text.length);
     setCaret(at);
     requestAnimationFrame(() => {
       ref.current?.focus();
       ref.current?.setSelectionRange(at, at);
     });
+  }, [filter, pipeline]);
+
+  /**
+   * Chèn một khung JSON dựng sẵn vào ô query.
+   *
+   * Ô đang RỖNG (hoặc chỉ có khoảng trắng) → thay luôn, vì đó là lúc người dùng
+   * cần cái khung nhất. Ô đã có nội dung → chèn tại con trỏ, không đạp lên câu
+   * query đang gõ dở.
+   */
+  const insertSnippet = useCallback((box: 'filter' | 'pipeline', s: Snippet) => {
+    const ref = box === 'filter' ? filterRef : pipelineRef;
+    const current = box === 'filter' ? filter : pipeline;
+    const setter = box === 'filter' ? setFilter : setPipeline;
+
+    const blank = current.trim() === '';
+    const from = blank ? 0 : (ref.current?.selectionStart ?? current.length);
+    const to = blank ? current.length : (ref.current?.selectionEnd ?? from);
+    const next = current.slice(0, from) + s.text + current.slice(to);
+
+    setter(next);
+    setJsonError(null);
+    const at = from + s.caretOffset;
+    setCaret(at);
+    requestAnimationFrame(() => {
+      ref.current?.focus();
+      // Bôi đen chỗ giữ chỗ (vd `"field"`) để gõ là thay ngay.
+      ref.current?.setSelectionRange(at, at + (s.selectLen ?? 0));
+    });
+  }, [filter, pipeline]);
+
+  /**
+   * Enter trong ô query: đóng ngoặc còn hở + format (xem closeAndFormatOnEnter).
+   * Trả về true nếu đã xử lý — lúc đó chặn Enter mặc định.
+   *
+   * FieldSuggest cũng bắt Enter, nhưng nó nghe ở capture phase và chỉ khi đang
+   * có gợi ý hiện; lúc đó nó preventDefault nên handler này không chạy tới.
+   */
+  const handleEnter = useCallback((box: 'filter' | 'pipeline'): boolean => {
+    const ref = box === 'filter' ? filterRef : pipelineRef;
+    const el = ref.current;
+    if (!el) return false;
+    // Có vùng chọn thì Enter là thay thế vùng chọn, không phải "đóng khối".
+    if (el.selectionStart !== el.selectionEnd) return false;
+
+    const r = closeAndFormatOnEnter(box === 'filter' ? filter : pipeline, el.selectionStart);
+    if (!r) return false;
+
+    (box === 'filter' ? setFilter : setPipeline)(r.text);
+    setJsonError(null);
+    setCaret(r.caret);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(r.caret, r.caret);
+    });
+    return true;
   }, [filter, pipeline]);
 
   /** Select a collection → reset the query panel and auto-run the first page. */
@@ -365,6 +475,10 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
                             <button className="chip-btn" title="Gộp về một dòng" onClick={(e) => { e.preventDefault(); formatQuery(true); }}>⤹ Minify</button>
                           </span>
                         </span>
+                        <SnippetBar
+                          snippets={FILTER_SNIPPETS}
+                          onInsert={(s) => insertSnippet('filter', s)}
+                        />
                         <textarea
                           ref={filterRef}
                           className="input mono mongo-json-input"
@@ -377,6 +491,13 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { setSkip(0); void runFind({ skip: 0 }); }
                             else if (e.key === 'F' && e.shiftKey && (e.ctrlKey || e.metaKey)) { e.preventDefault(); formatQuery(); }
+                            // Enter trần: đóng ngoặc hở + format. Shift+Enter luôn
+                            // xuống dòng, để còn soạn tay khi cần.
+                            // `defaultPrevented` là điều kiện BẮT BUỘC: FieldSuggest
+                            // nghe ở capture phase nên khi nó vừa chèn một field bằng
+                            // Enter, handler này VẪN chạy tiếp — không chặn lại thì
+                            // cùng một phím Enter vừa chèn field vừa format chồng lên.
+                            else if (e.key === 'Enter' && !e.shiftKey && !e.defaultPrevented && handleEnter('filter')) e.preventDefault();
                           }}
                           placeholder='{"tenantId": "t_123", "status": "ACTIVE"}'
                         />
@@ -430,6 +551,10 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
                             <button className="chip-btn" title="Gộp về một dòng" onClick={(e) => { e.preventDefault(); formatQuery(true); }}>⤹ Minify</button>
                           </span>
                         </span>
+                        <SnippetBar
+                          snippets={PIPELINE_SNIPPETS}
+                          onInsert={(s) => insertSnippet('pipeline', s)}
+                        />
                         <textarea
                           ref={pipelineRef}
                           className="input mono mongo-json-input"
@@ -442,6 +567,7 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) void runAggregate();
                             else if (e.key === 'F' && e.shiftKey && (e.ctrlKey || e.metaKey)) { e.preventDefault(); formatQuery(); }
+                            else if (e.key === 'Enter' && !e.shiftKey && !e.defaultPrevented && handleEnter('pipeline')) e.preventDefault();
                           }}
                           placeholder='[{"$match": {"tenantId": "t_123"}}, {"$group": {"_id": "$status", "n": {"$sum": 1}}}]'
                         />
@@ -513,7 +639,11 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
                       {docs.length === 0 && <p className="empty">Không có document nào khớp.</p>}
                       {docs.map((d, i) => (
                         <DocCard
-                          key={`${result?.skip ?? 0}-${i}`}
+                          /* runSeq nằm trong key để mỗi lần chạy query mới là
+                             thẻ dựng lại từ đầu (đóng). Chỉ dùng skip là không
+                             đủ: aggregate luôn skip=0 nên React reuse thẻ cũ và
+                             giữ nguyên trạng thái đang mở của kết quả trước. */
+                          key={`${runSeq}-${result?.skip ?? 0}-${i}`}
                           json={d.json}
                           truncated={d.truncated}
                           index={(queryMode === 'find' ? (result?.skip ?? 0) : 0) + i}
@@ -591,6 +721,28 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
   );
 }
 
+/**
+ * Dãy chip khung JSON dựng sẵn, đặt ngay trên ô query. Đây là phần "gợi ý cấu
+ * trúc": không ai nhớ chính xác cú pháp `$lookup` hay `{"$date": …}`, bấm một
+ * cái là có khung đúng rồi điền tên field vào.
+ */
+function SnippetBar({ snippets, onInsert }: { snippets: Snippet[]; onInsert: (s: Snippet) => void }) {
+  return (
+    <div className="mongo-snips">
+      {snippets.map((s) => (
+        <button
+          key={s.label}
+          type="button"
+          className="chip-btn mongo-snip"
+          title={`${s.title}\n\n${s.text}`}
+          // Mouse-down để textarea không mất focus trước khi ta đặt lại con trỏ.
+          onMouseDown={(e) => { e.preventDefault(); onInsert(s); }}
+        >{s.label}</button>
+      ))}
+    </div>
+  );
+}
+
 interface DocCardProps {
   json: string;
   truncated: boolean;
@@ -606,20 +758,30 @@ interface DocCardProps {
 /** One document: collapsible, rendered either as a JSON tree or as raw text. */
 function DocCard({ json, truncated, index, tree, highlight, activeHit, hitOffset, forceOpen }: DocCardProps) {
   const [open, setOpen] = useState(false);
-  const pretty = prettyDoc(json);
-  const firstLine = summarize(json);
   const shown = open || forceOpen;
+  // Chỉ pretty-print khi THẬT SỰ cần (bấm copy, hoặc đang mở ở chế độ Raw).
+  // Trước đây gọi thẳng trong thân component nên mỗi lần re-render là
+  // parse + stringify cho CẢ TRANG 200 document, kể cả các thẻ đang đóng.
+  const pretty = useMemo(() => (shown && !tree ? prettyDoc(json) : ''), [shown, tree, json]);
+  const firstLine = useMemo(() => summarize(json), [json]);
+
   return (
     <div className="mongo-doc">
+      {/* Dòng tóm tắt ở LẠI khi thẻ mở — cuộn ngang để đọc nhanh mà vẫn thấy
+          mình đang mở document nào. */}
       <div className="mongo-doc-head" onClick={() => setOpen((v) => !v)}>
         <span className="mongo-tree-caret">{shown ? '▾' : '▸'}</span>
         <span className="mongo-doc-idx">#{index + 1}</span>
-        {!shown && <code className="mongo-doc-preview">{firstLine}</code>}
+        <code
+          className="mongo-doc-preview"
+          // Cuộn ngang bằng chuột/trackpad mà không kéo theo việc đóng/mở thẻ.
+          onClick={(e) => e.stopPropagation()}
+        >{firstLine}</code>
         {truncated && <span className="badge" style={{ color: 'var(--err)' }}>truncated</span>}
         <button
           className="chip-btn"
           title="Copy JSON"
-          onClick={(e) => { e.stopPropagation(); void navigator.clipboard?.writeText(pretty); }}
+          onClick={(e) => { e.stopPropagation(); void navigator.clipboard?.writeText(prettyDoc(json)); }}
         >⧉</button>
       </div>
       {shown && (
@@ -635,8 +797,11 @@ function DocCard({ json, truncated, index, tree, highlight, activeHit, hitOffset
   );
 }
 
-/** Compact single-line preview: `{_id: …, field: …}` capped for the row. */
+/**
+ * Dòng tóm tắt một document. KHÔNG cắt bằng `…` nữa — hàng preview giờ cuộn
+ * ngang (xem .mongo-doc-preview), nên cắt ở 160 ký tự sẽ giấu mất phần đuôi mà
+ * người dùng vốn kéo tới để đọc. Chỉ dựng lại về một dòng.
+ */
 function summarize(json: string): string {
-  const s = json.replace(/\s+/g, ' ');
-  return s.length > 160 ? `${s.slice(0, 160)}…` : s;
+  return json.replace(/\s+/g, ' ').trim();
 }
