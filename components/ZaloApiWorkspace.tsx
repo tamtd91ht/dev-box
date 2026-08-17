@@ -42,6 +42,7 @@ import {
   newZaloApiAccount,
   zaloApiAccountKey,
   zaloApiPartition,
+  zaloApiAutoConnect,
   type ZaloApiAccount,
 } from '@/lib/zaloapi/accounts';
 import { zaloIncomingEvent } from '@/lib/zaloapi/event';
@@ -90,6 +91,7 @@ function ZaloApiAccountView({
   flags,
   captureOn,
   onUnread,
+  onToggleAutoConnect,
 }: {
   account: ZaloApiAccount;
   active: boolean;
@@ -99,9 +101,12 @@ function ZaloApiAccountView({
   captureOn: boolean;
   /** Báo số tin chưa đọc của tài khoản này lên parent. */
   onUnread: (instanceId: string, n: number) => void;
+  /** Bật/tắt tự kết nối cho tài khoản này (parent giữ danh sách + localStorage). */
+  onToggleAutoConnect: (instanceId: string) => void;
 }) {
   const accountKey = zaloApiAccountKey(account.instanceId);
   const partition = zaloApiPartition(account.instanceId);
+  const autoConnectOn = zaloApiAutoConnect(account);
 
   const ref = useRef<WebviewElement | null>(null);
   const [status, setStatus] = useState<Status>('loading');
@@ -226,45 +231,63 @@ function ZaloApiAccountView({
   }, [status, log]);
 
   // Phiên còn sống từ lần chạy trước (server giữ qua reload).
+  //
+  // `sessionProbed` là ĐIỀU KIỆN CHẶN cho auto-connect bên dưới: hàm này là một
+  // lượt fetch, mà `dom-ready` của webview có thể bắn TRƯỚC khi nó trả lời. Thiếu
+  // cờ này thì auto-connect sẽ login lại trong khi phiên vẫn đang sống — Zalo chỉ
+  // cho MỘT kết nối mỗi tài khoản, nên hoá ra là tự đá chính mình ra.
+  const [sessionProbed, setSessionProbed] = useState(false);
   useEffect(() => {
     void zaloApiStatus(accountKey)
       .then((s) => {
         setSession(s);
         if (s) { setViewMode('chat'); log('info', `Phiên còn sống · uid ${s.uid}`); }
       })
-      .catch(() => { /* chưa đăng nhập */ });
+      .catch(() => { /* chưa đăng nhập */ })
+      .finally(() => setSessionProbed(true));
   }, [accountKey, log]);
 
   // ── KẾT NỐI: trích credential → login server-side ─────────────────────────
-  const connect = useCallback(async () => {
+  /**
+   * `silent` = lượt TỰ kết nối lúc mở app: mọi trở ngại đều là trạng thái bình
+   * thường (chưa quét QR, cookie đã hết hạn) chứ không phải sự cố, nên chỉ ghi
+   * Console của tab, không dùng giọng lỗi và không bắn thông báo.
+   * Trả về true khi đã có phiên.
+   */
+  const connect = useCallback(async (silent = false): Promise<boolean> => {
+    // Giọng thông báo: lượt tự động dùng 'info' để Console không đỏ lên vì một
+    // chuyện không có gì sai.
+    const fail = (msg: string) => { log(silent ? 'info' : 'err', msg); };
     setBusy(true);
     try {
       const bridge = window.workspace;
       if (!bridge?.readZaloCookies) {
-        log('err', 'Bản app này chưa hỗ trợ đọc cookie phiên — cập nhật app rồi thử lại.');
-        return;
+        fail('Bản app này chưa hỗ trợ đọc cookie phiên — cập nhật app rồi thử lại.');
+        return false;
       }
       const guest = (await exec(buildExtractScript())) as ExtractResult;
       if (!guest.loggedIn) {
-        log('err', 'Chưa đăng nhập Zalo — quét QR ở khung bên dưới trước đã.');
-        return;
+        fail(silent
+          ? 'Tự kết nối: chưa đăng nhập Zalo — quét QR ở khung bên dưới rồi bấm Kết nối.'
+          : 'Chưa đăng nhập Zalo — quét QR ở khung bên dưới trước đã.');
+        return false;
       }
       const ck = await bridge.readZaloCookies(partition, SESSION_COOKIES);
       if (!ck.ok || !ck.header) {
-        log('err', 'Không đọc được cookie phiên: ' + (ck.error ?? 'không rõ'));
-        return;
+        fail('Không đọc được cookie phiên: ' + (ck.error ?? 'không rõ'));
+        return false;
       }
       const imei = guest.session?.imei ?? '';
       if (!imei) {
-        log('err', 'Không tìm thấy imei trong phiên — tải lại trang Zalo rồi kết nối lại.');
-        return;
+        fail('Không tìm thấy imei trong phiên — tải lại trang Zalo rồi kết nối lại.');
+        return false;
       }
       const creds = { cookie: ck.header, imei, userAgent: String((await exec('navigator.userAgent')) ?? '') };
       credsRef.current = creds;
       const info = await zaloApiLogin({ accountKey, ...creds });
       setSession(info);
       setViewMode('chat'); // kết nối xong → hiện màn chat luôn
-      log('info', `Đã kết nối · uid ${info.uid}`);
+      log('info', `${silent ? 'Tự kết nối' : 'Đã kết nối'} · uid ${info.uid}`);
       // NHẢ webview Zalo: Zalo chỉ cho 1 kết nối/tài khoản. Nếu webview vẫn giữ
       // Zalo Web mở thì nó + listener server tranh nhau → Zalo đá qua lại (cmd
       // 3000 "trùng kết nối"), tin không về ổn định. Điều hướng webview sang
@@ -275,9 +298,11 @@ function ZaloApiAccountView({
         setStatus('loading');
         log('info', 'Đã nhả webview Zalo (about:blank) — listener server độc chiếm kết nối. Bấm ⟳ để mở lại Zalo.');
       } catch { /* webview chưa gắn — bỏ qua */ }
+      return true;
     } catch (e) {
       setSession(null);
-      log('err', 'Kết nối lỗi: ' + (e as Error).message);
+      fail((silent ? 'Tự kết nối không thành: ' : 'Kết nối lỗi: ') + (e as Error).message);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -292,6 +317,32 @@ function ZaloApiAccountView({
     setWsState('off');
     log('info', 'Đã ngắt kết nối.');
   }, [accountKey, log]);
+
+  // ── TỰ KẾT NỐI khi mở app ─────────────────────────────────────────────────
+  //
+  // Cookie phiên Zalo nằm trong partition `persist:zaloapi-<id>` nên nó SỐNG QUA
+  // lần khởi động; chỉ phiên server-side là mất (cố ý — credential toàn quyền
+  // không ghi đĩa, xem lib/zaloapi/server/session.ts). Vì vậy mở app lên là dựng
+  // lại phiên được mà KHÔNG cần lưu thêm gì: chờ webview nạp xong Zalo rồi trích
+  // cookie y như bấm Kết nối bằng tay.
+  //
+  // Chỉ thử MỘT lần cho mỗi tài khoản mỗi lần chạy app: cookie hết hạn thì thử
+  // lại cũng vô ích, mà `dom-ready` còn bắn lại sau mỗi lần điều hướng (kể cả
+  // cú about:blank do chính connect gây ra) — không chốt lại sẽ thành vòng lặp.
+  const autoTriedRef = useRef(false);
+  useEffect(() => {
+    if (!autoConnectOn) return;
+    // sessionProbed: phải biết CHẮC là chưa có phiên mới được login (xem ghi chú
+    // ở effect zaloApiStatus phía trên).
+    if (!sessionProbed || status !== 'ready' || session || autoTriedRef.current) return;
+    autoTriedRef.current = true;
+    log('info', 'Đang thử tự kết nối lại phiên…');
+    void connect(true);
+  }, [autoConnectOn, sessionProbed, status, session, connect, log]);
+
+  // Bật lại công tắc thì cho thử lại ngay trong phiên chạy này (không phải mở
+  // lại app mới có tác dụng).
+  useEffect(() => { if (!autoConnectOn) autoTriedRef.current = false; }, [autoConnectOn]);
 
   // ── NHẬN TIN: listener server-side + poll nuôi automation + ghi Console ───
   const captureRef = useRef(captureOn);
@@ -446,6 +497,19 @@ function ZaloApiAccountView({
           </button>
         )}
 
+        {/* Công tắc tự kết nối. Zalo chỉ cho MỘT kết nối mỗi tài khoản, nên tài
+            khoản chỉ dùng để quét QR thử thì nên tắt — không thì nó chiếm chỗ
+            của phiên thật. */}
+        {!disabled && (
+          <button
+            className={`za-btn${autoConnectOn ? ' is-on' : ''}`}
+            onClick={() => onToggleAutoConnect(account.instanceId)}
+            title={autoConnectOn
+              ? 'Tự kết nối khi mở app đang BẬT — bấm để tắt cho tài khoản này'
+              : 'Tự kết nối khi mở app đang TẮT — bấm để bật (cần cookie phiên còn hạn)'}
+          >{autoConnectOn ? '⚡ Tự kết nối' : '⚡ Tự kết nối: tắt'}</button>
+        )}
+
         <button
           className="za-btn"
           onClick={() => setArchiveOpen(true)}
@@ -593,6 +657,12 @@ export default function ZaloApiWorkspace({
     persist(accounts.map((a) => (a.instanceId === id ? { ...a, label } : a)));
   }, [accounts, persist]);
 
+  const toggleAutoConnect = useCallback((id: string) => {
+    persist(accounts.map((a) => (
+      a.instanceId === id ? { ...a, autoConnect: !zaloApiAutoConnect(a) } : a
+    )));
+  }, [accounts, persist]);
+
   const removeAccount = useCallback(async (id: string) => {
     const acc = accounts.find((a) => a.instanceId === id);
     if (!acc) return;
@@ -691,6 +761,7 @@ export default function ZaloApiWorkspace({
               flags={flags}
               captureOn={captureOn}
               onUnread={setAccountUnread}
+              onToggleAutoConnect={toggleAutoConnect}
             />
           ))
         )}
