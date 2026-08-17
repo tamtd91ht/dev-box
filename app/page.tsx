@@ -50,6 +50,7 @@ import ThemeToggle from '@/components/ThemeToggle';
 import DesktopConsole from '@/components/DesktopConsole';
 import ConfigSyncButton from '@/components/ConfigSyncButton';
 import UpdateButton from '@/components/UpdateButton';
+import UpdatePrompt from '@/components/UpdatePrompt';
 import { resolveAuth, authReady as isAuthReady } from '@/lib/request';
 import {
   fetchFullConfig,
@@ -865,6 +866,11 @@ export default function Home() {
       {/* Job chuyển đổi file chạy ngầm: host này in PDF hộ (Chromium của
           Electron) và báo đường dẫn khi xong. */}
       <ConvertHost />
+
+      {/* Mở app → kiểm tra Git, có bản mới thì hỏi "cập nhật không?" một lần.
+          Đã mới nhất / không phải repo / mất mạng thì không hiện gì.
+          Tắt bằng SELF_UPDATE_PROMPT=false trong .env.local. */}
+      <UpdatePrompt />
 
       {/* ── Footer ───────────────────────────────────────────────────── */}
       <footer className="appfoot">

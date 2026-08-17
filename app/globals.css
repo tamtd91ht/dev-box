@@ -1372,7 +1372,8 @@ audio { width: 100%; margin-top: 12px; }
 }
 .cfgsync-grid .muted, .cfgsync-row.muted { color: var(--muted); }
 .cfgsync-row.small, .cfgsync-grid + .cfgsync-row.small { font-size: 10.5px; line-height: 1.5; }
-.cfgsync-panel .warn { color: var(--warn); }
+/* .upd-prompt dùng lại .cfgsync-row/.cfgsync-msg nên phải nằm trong luật này. */
+.cfgsync-panel .warn, .upd-prompt .warn { color: var(--warn); }
 .cfgsync-panel code {
   font-size: 10.5px; padding: 1px 4px; border-radius: 4px;
   background: var(--glass); color: var(--accent);
@@ -1427,6 +1428,21 @@ audio { width: 100%; margin-top: 12px; }
 }
 .upd-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upd-list li.muted { color: var(--muted); }
+
+/* Hộp thoại "có phiên bản mới" lúc mở app (components/UpdatePrompt).
+   Dùng lại .modal + .upd-list + .cfgsync-go/.cfgsync-msg đã có — hộp này chỉ cần
+   khung rộng hơn .open-dlg một chút để tên commit không bị cắt quá sớm. */
+.upd-prompt { width: 520px; display: flex; flex-direction: column; gap: 10px; }
+.upd-prompt-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* .cfgsync-go là `flex: 1` để giãn đầy panel hẹp ở footer. Trong hộp thoại này
+   nút đứng cạnh nhau và có cả dòng chú thích cùng hàng, nên để nó co theo nội
+   dung — không thì hai nút kéo nhau ra bằng nhau và trông như một thanh liền. */
+.upd-prompt-acts .cfgsync-go { flex: none; }
+/* Style <code> của panel bị khoá trong .cfgsync-panel, hộp này ở ngoài đó. */
+.upd-prompt code {
+  font-size: 10.5px; padding: 1px 4px; border-radius: 4px;
+  background: var(--glass); color: var(--accent);
+}
 
 /* ── Coming-soon toast ───────────────────────────────────────── */
 .toast {

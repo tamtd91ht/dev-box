@@ -14,12 +14,35 @@
 //   3. Chỉ merge --ff-only. Không reset --hard, không checkout -f, không
 //      clean. Không có đường nào trong file này làm mất việc chưa commit của
 //      người dùng — trường hợp xấu nhất là nó từ chối chạy.
+//
+// HAI CỬA VÀO, cùng một logic ở dưới:
+//   · nút ⬇ ở footer (components/UpdateButton) — chờ người dùng để ý badge,
+//   · hộp thoại lúc MỞ APP (components/UpdatePrompt) — chủ động HỎI khi có bản mới.
+// Cả hai cửa đều chỉ chạy khi người dùng bấm; không có đường nào tự pull.
+// Cửa thứ hai tắt được bằng SELF_UPDATE_PROMPT=false (xem PROMPT_ON_START).
 
 import { execFile } from 'child_process';
 import path from 'path';
 
 /** Thư mục app = cwd của tiến trình Next. Hằng số, không nhận từ đâu khác. */
 const APP_DIR = path.resolve(process.cwd());
+
+const off = (v: string | undefined) => /^(0|false|no|off)$/i.test(v ?? '');
+
+/**
+ * Hỏi cập nhật NGAY LÚC MỞ APP (ngoài nút ⬇ ở footer vốn chỉ chờ người dùng để ý).
+ *
+ * Cờ này chỉ bật/tắt VIỆC HỎI, không bao giờ bật "tự cập nhật":
+ *   · bật (mặc định) → mở app, thấy có bản mới là HỎI, mỗi lần đều hỏi,
+ *   · tắt            → không hỏi gì nữa, app chạy bình thường.
+ *
+ * KHÔNG CÓ chế độ tự pull. Kéo code mới rồi khởi động lại là thay thứ đang chạy
+ * dưới chân người dùng — luôn phải do họ bấm đồng ý. Ai muốn cập nhật mà không
+ * bị hỏi lúc mở app thì tắt cờ này và tự bấm nút ⬇ ở footer.
+ *
+ *   SELF_UPDATE_PROMPT=false
+ */
+export const PROMPT_ON_START = !off(process.env.SELF_UPDATE_PROMPT);
 
 const MAX_BUFFER = 8 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 30_000;
@@ -95,6 +118,9 @@ export interface UpdateStatus {
   pending: PendingCommit[];
   /** Lần fetch gần nhất, epoch ms. */
   fetchedAt: number | null;
+  /** Có hỏi cập nhật lúc mở app không (SELF_UPDATE_PROMPT). Client đọc cờ này
+   *  thay vì tự đoán bằng NEXT_PUBLIC_ — server là nơi duy nhất biết .env. */
+  promptOnStart: boolean;
 }
 
 /** Kết quả một lần bấm "Cập nhật". */
@@ -128,6 +154,28 @@ export class UpdateError extends Error {
 /** Lần fetch gần nhất trong tiến trình này — chỉ để hiện "vừa kiểm tra". */
 let lastFetchedAt: number | null = null;
 
+/**
+ * `git fetch` đang chạy, nếu có — để hai lần gọi song song DÙNG CHUNG một lượt.
+ *
+ * Lúc mở app có hai người hỏi gần như cùng lúc: hộp thoại UpdatePrompt (~2.5s)
+ * và badge của UpdateButton (~4s). Hai `git fetch` chồng nhau trên cùng một repo
+ * thì git thứ hai có thể chết vì "cannot lock ref" — vô hại nhưng làm footer
+ * hiện lỗi vu vơ, và dù sao cũng là một lần chạm mạng thừa.
+ */
+let inFlightFetch: Promise<void> | null = null;
+
+/** fetch dùng chung: ai gọi trong lúc đang chạy thì chờ chính lượt đó. */
+function fetchOnce(): Promise<void> {
+  if (inFlightFetch) return inFlightFetch;
+  inFlightFetch = git(['fetch', '--prune', 'origin'], {
+    timeoutMs: NET_TIMEOUT_MS,
+    withStderr: true,
+  })
+    .then(() => { lastFetchedAt = Date.now(); })
+    .finally(() => { inFlightFetch = null; });
+  return inFlightFetch;
+}
+
 /** Bỏ dòng trống, trim từng dòng. */
 function lines(out: string): string[] {
   return out.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -152,6 +200,7 @@ export async function getStatus(fetch = false): Promise<UpdateStatus> {
     dirtyFiles: [],
     pending: [],
     fetchedAt: lastFetchedAt,
+    promptOnStart: PROMPT_ON_START,
   };
 
   try {
@@ -168,11 +217,8 @@ export async function getStatus(fetch = false): Promise<UpdateStatus> {
 
   if (fetch) {
     // --prune để nhánh đã xoá trên remote không còn lảng vảng ở local.
-    await git(['fetch', '--prune', 'origin'], {
-      timeoutMs: NET_TIMEOUT_MS,
-      withStderr: true,
-    });
-    lastFetchedAt = Date.now();
+    // Đi qua fetchOnce() để hai lần gọi song song không đua nhau trên ref lock.
+    await fetchOnce();
   }
 
   const branch = (await git(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
@@ -253,6 +299,7 @@ export async function getStatus(fetch = false): Promise<UpdateStatus> {
     dirtyFiles,
     pending,
     fetchedAt: lastFetchedAt,
+    promptOnStart: PROMPT_ON_START,
   };
 }
 
