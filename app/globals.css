@@ -7636,3 +7636,54 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   flex: 1; min-width: 0; color: var(--muted); font-size: 11.5px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* ── Chuyển cấu hình connection sang máy khác (ConnTransferButton) ────────── */
+.ctf-modal { width: min(640px, 94vw); }
+.ctf-tabs { display: flex; gap: 6px; }
+.ctf-listhead {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin: 12px 0 6px; color: var(--muted); font-size: 12px;
+}
+.ctf-listhead-acts { display: flex; gap: 6px; flex: none; }
+/* Danh sách cuộn TRONG modal — 20 cụm không được đẩy nút xác nhận ra ngoài khung. */
+.ctf-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 34vh; overflow: auto; padding: 4px;
+  border: 1px solid var(--glass-brd); border-radius: 10px;
+}
+.ctf-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 9px; border-radius: 8px; cursor: pointer;
+}
+.ctf-row:hover { background: var(--glass-2); }
+.ctf-row input[type="checkbox"] { flex: none; cursor: pointer; }
+.ctf-row-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.ctf-row-name { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.ctf-row-sub {
+  color: var(--muted); font-size: 11.5px; font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ctf-tag {
+  flex: none; font-size: 10.5px; line-height: 1.6; padding: 0 6px; border-radius: 5px;
+  background: var(--glass-2); border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.ctf-tag.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); background: var(--warn-bg); }
+.ctf-warn {
+  margin-top: 10px; padding: 9px 11px; border-radius: 10px; font-size: 12px; line-height: 1.55;
+  background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+}
+.ctf-warn strong { color: var(--warn); }
+.ctf-warn.err { background: var(--err-bg); border-color: var(--err); }
+.ctf-warn.err strong { color: var(--err); }
+.ctf-modes { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 7px; }
+.ctf-mode { display: flex; align-items: center; gap: 5px; cursor: pointer; color: var(--text); }
+.ctf-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  margin-top: 12px; flex-wrap: wrap;
+}
+.ctf-confirm { flex: 1; min-width: 180px; color: var(--muted); font-size: 12.5px; }
+.ctf-pickfile { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.ctf-filename {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-family: var(--mono); font-size: 11.5px;
+}

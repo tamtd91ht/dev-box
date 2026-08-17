@@ -27,6 +27,7 @@ import {
   listKafkaTopicGroups,
 } from '@/lib/kafka';
 import DateTimeField from '@/components/DateTimeField';
+import ConnTransferButton from './ConnTransferButton';
 import HealthStrip from './kafka/HealthStrip';
 import {
   loadPresets,
@@ -614,9 +615,17 @@ export default function KafkaWorkspace() {
       <aside className="panel">
         <div className="status-line" style={{ justifyContent: 'space-between' }}>
           <strong>Kafka clusters</strong>
-          <button className="chip-btn" onClick={() => { setManageOpen((v) => !v); setEditConn(null); }}>
-            {manageOpen ? '✕ Đóng' : '+ Thêm'}
-          </button>
+          <span style={{ display: 'flex', gap: 6 }}>
+            <ConnTransferButton
+              kind="kafka"
+              connections={connections}
+              onImported={(summary) => { void loadConnections(); flash(summary); }}
+              onError={setError}
+            />
+            <button className="chip-btn" onClick={() => { setManageOpen((v) => !v); setEditConn(null); }}>
+              {manageOpen ? '✕ Đóng' : '+ Thêm'}
+            </button>
+          </span>
         </div>
 
         {connections.length === 0 && !manageOpen && (

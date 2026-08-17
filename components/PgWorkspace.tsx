@@ -161,6 +161,7 @@ export default function PgWorkspace() {
           if (activeId === deletedId) setActiveId(list[0]?.id ?? '');
           flash('Đã xoá server khỏi danh sách');
         }}
+        onImported={(summary) => { void loadConnections(); flash(summary); }}
         onError={setError}
       />
 

@@ -21,6 +21,7 @@ import {
   type RedisNode,
   type SetKeyInput,
 } from '@/lib/redis';
+import ConnTransferButton from './ConnTransferButton';
 import MonitorStrip from './redis/MonitorStrip';
 
 /** localStorage key remembering the last-selected connection. */
@@ -498,6 +499,12 @@ export default function RedisWorkspace() {
       <div className="panel redis-conn-rail">
         <div className="status-line">
           <h3 style={{ margin: 0, flex: 1 }}>Redis</h3>
+          <ConnTransferButton
+            kind="redis"
+            connections={connections}
+            onImported={(summary) => { void loadConnections(); flash(summary); }}
+            onError={setError}
+          />
           <button
             className={manageOpen ? 'sm' : 'ghost sm'}
             onClick={() => setManageOpen((o) => !o)}

@@ -5,6 +5,7 @@
 
 import { useEffect } from 'react';
 import { mutateEsConnection, type PublicEsConnection } from '@/lib/es';
+import ConnTransferButton from '../ConnTransferButton';
 import ConnectionForm from './ConnectionForm';
 
 export interface ConnRailProps {
@@ -22,13 +23,15 @@ export interface ConnRailProps {
   onCloseForm: () => void;
   onSaved: (r: { list: PublicEsConnection[]; activeId: string }) => void;
   onDeleted: (list: PublicEsConnection[], deletedId: string) => void;
+  /** Sau khi import từ file: nạp lại danh sách từ server rồi báo cho người dùng. */
+  onImported: (summary: string) => void;
   onError: (msg: string) => void;
 }
 
 export default function ConnRail(props: ConnRailProps) {
   const {
     connections, activeId, pings, manageOpen, editConn, menuId,
-    onActivate, onPing, onMenu, onEdit, onToggleManage, onCloseForm, onSaved, onDeleted, onError,
+    onActivate, onPing, onMenu, onEdit, onToggleManage, onCloseForm, onSaved, onDeleted, onImported, onError,
   } = props;
 
   useEffect(() => {
@@ -46,7 +49,10 @@ export default function ConnRail(props: ConnRailProps) {
     <aside className="panel">
       <div className="status-line" style={{ justifyContent: 'space-between' }}>
         <strong>Elastic clusters</strong>
-        <button className="chip-btn" onClick={onToggleManage}>{manageOpen ? '✕ Đóng' : '+ Thêm'}</button>
+        <span style={{ display: 'flex', gap: 6 }}>
+          <ConnTransferButton kind="es" connections={connections} onImported={onImported} onError={onError} />
+          <button className="chip-btn" onClick={onToggleManage}>{manageOpen ? '✕ Đóng' : '+ Thêm'}</button>
+        </span>
       </div>
 
       {connections.length === 0 && !manageOpen && (

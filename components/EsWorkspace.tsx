@@ -185,6 +185,7 @@ export default function EsWorkspace() {
           if (activeId === deletedId) setActiveId(list[0]?.id ?? '');
           flash('Đã xoá cluster khỏi danh sách');
         }}
+        onImported={(summary) => { void loadConnections(); flash(summary); }}
         onError={setError}
       />
 
