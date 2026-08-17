@@ -15,6 +15,12 @@
 // Chèn/xóa dòng-cột có đủ 4 hướng (trên/dưới/trái/phải) — cả ở ribbon lẫn
 // menu chuột phải trên đầu dòng/cột.
 //
+// CHỌN & COPY: quét chuột chọn vùng bất kỳ, Shift+click/Shift+mũi tên nới vùng,
+// bấm-kéo trên dãy đầu cột (hoặc đầu dòng) để chọn một hay nhiều cột/dòng liền
+// nhau, Ctrl+A chọn cả vùng có dữ liệu. Ctrl+C (hoặc nút Copy ở status bar /
+// menu chuột phải) chép giá trị đang hiện ra clipboard dạng TSV + HTML — dán
+// sang Excel/Sheets/Word giữ đúng hàng cột.
+//
 // KÍCH THƯỚC: kéo mép phải đầu cột để đổi độ rộng, mép dưới đầu dòng để đổi
 // chiều cao (double-click = vừa nội dung / về mặc định). Với .xlsx kích thước
 // lưu vào file qua op colWidth/rowHeight; CSV chỉ đổi trong phiên xem.
@@ -208,6 +214,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
    *  cột thì "chèn dòng" chỉ nên chèn 1 dòng (chứ không phải mấy nghìn dòng). */
   const [selKind, setSelKind] = useState<'cells' | 'row' | 'col'>('cells');
   const selDragRef = useRef<Pos | null>(null);
+  /** Đang kéo chuột trên DÃY ĐẦU CỘT / ĐẦU DÒNG để chọn nhiều cột/dòng liền nhau. */
+  const headDragRef = useRef<{ kind: 'col' | 'row'; anchor: number } | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [rowLimit, setRowLimit] = useState(RENDER_STEP);
   /** Lưới nở thêm khi đi tới mép (giữ cảm giác "vô tận" của Excel). */
@@ -896,9 +904,92 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     });
   }, [dispRows, dispCols, rowLimit]);
 
+  // ── Sao chép vùng chọn (Ctrl+C / menu chuột phải) ──────────────────────────
+  // Ra hai định dạng như Excel: text/plain là TSV (dán sang Excel/Sheets/Notepad
+  // đều đúng ô), text/html là <table> (giữ dạng bảng khi dán vào Word/mail).
+  // Lấy TEXT ĐANG HIỆN (cellAt) — ô công thức copy ra KẾT QUẢ, số đã format giữ
+  // nguyên cách hiện, đúng như copy từ Excel.
+
+  /** Escape một ô cho TSV: tab/xuống dòng/nháy kép → bọc trong "..." như Excel. */
+  const tsvCell = useCallback((s: string) => (
+    /[\t\n\r"]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  ), []);
+
+  const htmlEsc = useCallback((s: string) => (
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  ), []);
+
+  /** Vùng sẽ được copy — vùng đã quét, hoặc chỉ ô đang chọn. */
+  const copyRange = useCallback(async (rg: SelRange) => {
+    // Chọn cả cột/dòng thì vùng phủ tới tận mép lưới trống — cắt về phần CÓ DỮ
+    // LIỆU, không thì dán ra hàng nghìn dòng rỗng.
+    const r2 = Math.max(rg.r1, Math.min(rg.r2, Math.max(usedRows, rg.r1)));
+    const c2 = Math.max(rg.c1, Math.min(rg.c2, Math.max(usedCols, rg.c1)));
+    const lines: string[] = [];
+    const rowsHtml: string[] = [];
+    for (let r = rg.r1; r <= r2; r++) {
+      const vals: string[] = [];
+      const tds: string[] = [];
+      for (let c = rg.c1; c <= c2; c++) {
+        const v = cellAt(r, c).v;
+        vals.push(tsvCell(v));
+        tds.push(`<td>${htmlEsc(v) || '&nbsp;'}</td>`);
+      }
+      lines.push(vals.join('\t'));
+      rowsHtml.push(`<tr>${tds.join('')}</tr>`);
+    }
+    const text = lines.join('\r\n');
+    const html = `<table>${rowsHtml.join('')}</table>`;
+    const nCells = (r2 - rg.r1 + 1) * (c2 - rg.c1 + 1);
+    const label = `${colLetter(rg.c1 - 1)}${rg.r1}:${colLetter(c2 - 1)}${r2}`;
+    try {
+      // ClipboardItem cho cả hai flavor; trình duyệt/WebView cũ thì lùi về text.
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+        await navigator.clipboard.write([new ClipboardItem({
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+          'text/html': new Blob([html], { type: 'text/html' }),
+        })]);
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
+      flash(`Đã copy ${label} · ${nCells} ô`);
+    } catch {
+      // Clipboard API cần ngữ cảnh bảo mật/quyền — fallback execCommand.
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      gridRef.current?.focus();
+      flash(ok ? `Đã copy ${label} · ${nCells} ô` : 'Không copy được — trình duyệt chặn truy cập clipboard.');
+    }
+  }, [cellAt, usedRows, usedCols, tsvCell, htmlEsc, flash]);
+
+  const copySelection = useCallback(() => {
+    const rg = selRange ?? (sel ? { r1: sel.r, c1: sel.c, r2: sel.r, c2: sel.c } : null);
+    if (rg) void copyRange(rg);
+  }, [selRange, sel, copyRange]);
+
   const onGridKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (editing || !sel) return;
     const k = e.key;
+    // Ctrl+C sao chép vùng chọn; Ctrl+A chọn toàn bộ vùng có dữ liệu.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (k === 'c' || k === 'C')) {
+      e.preventDefault();
+      copySelection();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (k === 'a' || k === 'A')) {
+      e.preventDefault();
+      selExtentRef.current = null;
+      setSel({ r: 1, c: 1 });
+      setSelRange({ r1: 1, c1: 1, r2: Math.max(usedRows, 1), c2: Math.max(usedCols, 1) });
+      setSelKind('cells');
+      return;
+    }
     // Ctrl+B / I / U — đậm/nghiêng/gạch chân như Excel (chỉ .xlsx có style).
     if ((e.ctrlKey || e.metaKey) && !e.altKey && 'biu'.includes(k.toLowerCase())) {
       e.preventDefault();
@@ -928,7 +1019,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       e.preventDefault();
       setEditing({ ...sel, seed: k });
     }
-  }, [editing, sel, moveSel, extendSel, clearRange, cellAt, commitEdit, file, grid, active, applyFormat]);
+  }, [editing, sel, moveSel, extendSel, clearRange, cellAt, commitEdit, file, grid, active, applyFormat, copySelection, usedRows, usedCols]);
 
   // Giữ ô chọn trong khung nhìn.
   useEffect(() => {
@@ -1015,7 +1106,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   }, [placeRef, refText]);
 
   useEffect(() => {
-    const up = () => { pointDragRef.current = null; selDragRef.current = null; };
+    const up = () => { pointDragRef.current = null; selDragRef.current = null; headDragRef.current = null; };
     window.addEventListener('mouseup', up);
     return () => window.removeEventListener('mouseup', up);
   }, []);
@@ -1159,20 +1250,48 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const rowOpCount = selKind === 'col' ? 1 : rowSpan;
   const colOpCount = selKind === 'row' ? 1 : colSpan;
 
-  /** Đầu dòng/cột: click chọn cả dòng/cột (để định dạng hàng loạt như Excel). */
-  const selectWholeRow = (r: number) => {
-    setSel({ r, c: 1 });
+  /** Đầu dòng/cột: chọn cả dòng/cột (để định dạng — hoặc copy — hàng loạt như
+   *  Excel). Truyền `to` để chọn DẢI liền nhau (kéo chuột hoặc Shift+click). */
+  const selectWholeRow = (r: number, to = r) => {
+    const r1 = Math.min(r, to); const r2 = Math.max(r, to);
+    setSel({ r: r1, c: 1 });
     selExtentRef.current = null;
-    setSelRange({ r1: r, c1: 1, r2: r, c2: Math.max(usedCols, MIN_COLS) });
+    setSelRange({ r1, c1: 1, r2, c2: Math.max(usedCols, MIN_COLS) });
     setSelKind('row');
     gridRef.current?.focus();
   };
-  const selectWholeCol = (c: number) => {
-    setSel({ r: 1, c });
+  const selectWholeCol = (c: number, to = c) => {
+    const c1 = Math.min(c, to); const c2 = Math.max(c, to);
+    setSel({ r: 1, c: c1 });
     selExtentRef.current = null;
-    setSelRange({ r1: 1, c1: c, r2: Math.max(usedRows, MIN_ROWS), c2: c });
+    setSelRange({ r1: 1, c1, r2: Math.max(usedRows, MIN_ROWS), c2 });
     setSelKind('col');
     gridRef.current?.focus();
+  };
+
+  /** mousedown trên đầu cột/dòng → bắt đầu kéo chọn nhiều cột/dòng.
+   *  Shift+click nới dải từ cột/dòng đã chọn trước đó (như Excel). */
+  const onHeadMouseDown = (kind: 'col' | 'row', idx: number, e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); // khỏi bôi đen chữ khi kéo qua nhiều đầu cột
+    if (e.shiftKey && selRange && selKind === kind) {
+      const anchor = kind === 'col' ? selRange.c1 : selRange.r1;
+      const far = kind === 'col' ? selRange.c2 : selRange.r2;
+      // Neo là đầu XA so với chỗ vừa bấm → dải nới đúng chiều.
+      const from = idx < anchor ? far : anchor;
+      headDragRef.current = { kind, anchor: from };
+      if (kind === 'col') selectWholeCol(from, idx); else selectWholeRow(from, idx);
+      return;
+    }
+    headDragRef.current = { kind, anchor: idx };
+    if (kind === 'col') selectWholeCol(idx); else selectWholeRow(idx);
+  };
+
+  /** Kéo qua đầu cột/dòng khác → nới dải đang chọn. */
+  const onHeadMouseEnter = (kind: 'col' | 'row', idx: number) => {
+    const d = headDragRef.current;
+    if (!d || d.kind !== kind) return;
+    if (kind === 'col') selectWholeCol(d.anchor, idx); else selectWholeRow(d.anchor, idx);
   };
 
   return (
@@ -1347,13 +1466,14 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                   <th
                     key={ci}
                     className={`sheet-colhead${inSel ? ' on' : ''}`}
-                    onClick={() => selectWholeCol(c)}
+                    onMouseDown={(e) => onHeadMouseDown('col', c, e)}
+                    onMouseEnter={() => onHeadMouseEnter('col', c)}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       if (!selRange || c < selRange.c1 || c > selRange.c2) selectWholeCol(c);
                       setCtx({ x: e.clientX, y: e.clientY, kind: 'col' });
                     }}
-                    title={`Chọn cả cột ${colLetter(ci)} · kéo mép phải để đổi rộng · chuột phải để chèn/xóa cột`}
+                    title={`Chọn cả cột ${colLetter(ci)} (kéo ngang / Shift+click để chọn nhiều cột, Ctrl+C để copy) · kéo mép phải để đổi rộng · chuột phải để chèn/xóa cột`}
                   >
                     {/* Bọc trong div: <th> không neo được con absolute một cách
                         đáng tin (xem .sheet-head-inner trong globals.css). */}
@@ -1394,13 +1514,14 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                 >
                   <th
                     className={`sheet-rownum${(selRange ? r >= selRange.r1 && r <= selRange.r2 : sel?.r === r) ? ' sel' : ''}`}
-                    onClick={() => selectWholeRow(r)}
+                    onMouseDown={(e) => onHeadMouseDown('row', r, e)}
+                    onMouseEnter={() => onHeadMouseEnter('row', r)}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       if (!selRange || r < selRange.r1 || r > selRange.r2) selectWholeRow(r);
                       setCtx({ x: e.clientX, y: e.clientY, kind: 'row' });
                     }}
-                    title={`Chọn cả dòng ${r} · kéo mép dưới để đổi cao · chuột phải để chèn/xóa dòng`}
+                    title={`Chọn cả dòng ${r} (kéo dọc / Shift+click để chọn nhiều dòng, Ctrl+C để copy) · kéo mép dưới để đổi cao · chuột phải để chèn/xóa dòng`}
                   >
                     {r}
                     {/* Tay nắm mép dưới là con TRỰC TIẾP của <th>: căng bằng cặp
@@ -1547,6 +1668,15 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
             </>
           )}
           <span><b>Count:</b> {rangeStats.count}</span>
+          <button
+            className="ghost sm"
+            style={{ marginLeft: 'auto' }}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={copySelection}
+            title="Sao chép giá trị vùng đang chọn (Ctrl+C) — dán sang Excel/Sheets giữ nguyên hàng cột"
+          >
+            ⧉ Copy
+          </button>
         </div>
       )}
 
@@ -1566,6 +1696,11 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
               top: Math.min(ctx.y, Math.max(8, window.innerHeight - 300)),
             }}
           >
+            <button onClick={() => { copySelection(); setCtx(null); }}>
+              <span aria-hidden>⧉</span> Sao chép {rangeLabel}{' '}
+              <span className="small" style={{ color: 'var(--muted)' }}>Ctrl+C</span>
+            </button>
+            <span className="sheet-ctx-sep" aria-hidden />
             {ctx.kind !== 'col' && (
               <>
                 <button onClick={() => { insertRowAt(fmtRange.r1, rowOpCount); setCtx(null); }}>
