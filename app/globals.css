@@ -3997,10 +3997,18 @@ pre.kafka-drawer-body {
 .sheet-table thead .sheet-rownum-h { z-index: 3; cursor: default; }
 .sheet-rownum:hover { color: var(--text); }
 .sheet-rownum.sel { color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--bg-1)); }
-.sheet-grid tbody tr:hover td { background: var(--glass-bg); }
+/* :not(.insel):not(.selc) — highlight theo dòng KHÔNG được đè màu vùng đang
+   quét (tr:hover td đặc hiệu hơn .sheet-cell.insel nên nếu không loại trừ thì
+   rê chuột tới đâu là mất màu chọn tới đó). */
+.sheet-grid tbody tr:hover td:not(.insel):not(.selc) { background: var(--glass-bg); }
 .sheet-grid tbody tr.sel td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 
-.sheet-cell { cursor: cell; }
+/* cursor:cell + user-select:none — kéo chuột qua các ô là QUÉT CHỌN VÙNG,
+   không phải bôi đen chữ. Không có user-select thì trình duyệt vào chế độ chọn
+   text, mouseenter của các ô sau không bắn và vùng chọn không nới ra được. */
+.sheet-cell { cursor: cell; user-select: none; }
+/* Ô đang sửa thì trả lại quyền bôi đen trong ô nhập. */
+.sheet-cell input { user-select: text; }
 .sheet-cell-dirty { background: color-mix(in srgb, var(--warn) 14%, transparent) !important; }
 
 /* Ô đang chọn — viền đậm kiểu Excel (inset để không xô layout). */
@@ -6584,7 +6592,8 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   background: #ffffff; color: #1f2933;
   border-bottom: 1px solid #e2e6ea; border-right: 1px solid #e2e6ea;
 }
-.sheet-grid.paper tbody tr:hover td { background: #f4f7fa; }
+/* Loại trừ ô đang chọn — xem ghi chú ở .sheet-grid tbody tr:hover td. */
+.sheet-grid.paper tbody tr:hover td:not(.insel):not(.selc) { background: #f4f7fa; }
 .sheet-grid.paper td.selc { background: color-mix(in srgb, var(--accent) 10%, #fff); }
 .sheet-grid.paper td.insel { background: color-mix(in srgb, var(--accent) 14%, #fff); }
 .sheet-grid.paper td.inref { background: color-mix(in srgb, var(--ok) 12%, #fff); }
