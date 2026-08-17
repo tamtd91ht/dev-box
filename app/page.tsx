@@ -41,8 +41,10 @@ import OpenLinkDialog from '@/components/OpenLinkDialog';
 import NotificationCenter from '@/components/NotificationCenter';
 import QuickTabs, { type TabInfo } from '@/components/QuickTabs';
 import UltraBar from '@/components/UltraBar';
+import TabVisibilityBar from '@/components/TabVisibilityBar';
 import * as recentTabs from '@/lib/recentTabs';
 import * as ultraView from '@/lib/ultraView';
+import * as hiddenTabs from '@/lib/hiddenTabs';
 import { notices } from '@/lib/noticeStore';
 import ThemeToggle from '@/components/ThemeToggle';
 import DesktopConsole from '@/components/DesktopConsole';
@@ -251,6 +253,25 @@ export default function Home() {
   const ultra = useSyncExternalStore(
     ultraView.subscribe, ultraView.getSnapshot, ultraView.getServerSnapshot,
   );
+
+  // ── Tính năng bị ẩn khỏi menu ───────────────────────────────────────────────
+  // CHỈ ảnh hưởng thanh menu. Pane vẫn mount theo `visited` như cũ nên automation
+  // / watcher / mail poll của tab bị ẩn vẫn chạy — xem lib/hiddenTabs.
+  const hidden = useSyncExternalStore(
+    hiddenTabs.subscribe, hiddenTabs.getSnapshot, hiddenTabs.getServerSnapshot,
+  );
+  const hiddenSet = useMemo(() => new Set(hidden), [hidden]);
+  const visibleTabs = useMemo(() => TABS.filter((t) => !hiddenSet.has(t.key)), [hiddenSet]);
+
+  // Ẩn đúng tab ĐANG MỞ thì không được để màn hình trống: nhảy sang tab hiện
+  // gần nhất vừa dùng, không có thì lấy tab hiện đầu tiên. Pack và màn hình
+  // quản lý packs không ẩn được nên không tính ở đây.
+  useEffect(() => {
+    if (!hiddenSet.has(mode)) return;
+    const fallback = recents.find((r) => r.key !== mode && !hiddenSet.has(r.key))?.key
+      ?? visibleTabs[0]?.key;
+    if (fallback) setMode(fallback);
+  }, [hiddenSet, mode, visibleTabs, recents]);
 
   // Ctrl+Shift+U bật/tắt nhanh, lấy tab đang mở làm pane đầu tiên.
   useEffect(() => {
@@ -506,13 +527,13 @@ export default function Home() {
         </div>
 
         <div className="modeswitch" role="tablist" aria-label="Workspace">
-          {TABS.map((t) => {
+          {visibleTabs.map((t) => {
             // Thông báo chưa đọc gắn với tab này (hòm thư local) — badge đỏ
             // kiểu "có thư đến" trên đúng menu mục tiêu (vd Git khi có conflict).
             const nUnread = noticeSnap.unreadByTab[t.key] ?? 0;
             return (
+            <span key={t.key} className="ms-wrap">
             <button
-              key={t.key}
               role="tab"
               aria-selected={shown(t.key)}
               className={[
@@ -570,6 +591,17 @@ export default function Home() {
                 <span className="ms-badge">{t.badge}</span>
               )}
             </button>
+            {/* Ẩn tính năng: chỉ hiện khi rê chuột lên tab. Nằm NGOÀI <button>
+                vì button lồng button là HTML không hợp lệ — trình duyệt sẽ tự
+                tháo lồng và nút ✕ rơi ra ngoài menu. */}
+            <button
+              className="ms-hide"
+              tabIndex={-1}
+              title={`Ẩn "${t.label}" khỏi menu — bật lại ở nút ⚙ trên thanh tiêu đề. Automation của tab này vẫn chạy.`}
+              aria-label={`Ẩn ${t.label}`}
+              onClick={(e) => { e.stopPropagation(); hiddenTabs.hide(t.key); }}
+            >✕</button>
+            </span>
             );
           })}
 
@@ -617,6 +649,8 @@ export default function Home() {
           </button>
           {/* Ultra View: xem nhiều workspace cùng lúc (Ctrl+Shift+U). */}
           <UltraBar state={ultra} current={mode} allKeys={ultraKeys} info={tabInfo} />
+          {/* Hiện/ẩn tính năng — NƠI DUY NHẤT bật lại tab đã ẩn, nên luôn hiện. */}
+          <TabVisibilityBar hidden={hidden} allKeys={TABS.map((t) => t.key)} info={tabInfo} />
           {/* Hòm thông báo: xem lại lịch sử (local, 2 ngày) + xóa tất cả. */}
           <NotificationCenter />
           <ThemeToggle />

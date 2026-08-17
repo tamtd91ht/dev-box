@@ -199,13 +199,16 @@ a:hover { text-decoration: underline; }
   background: var(--glass); border: 1px solid var(--glass-brd);
   backdrop-filter: blur(12px);
 }
-.modeswitch button {
+/* :not(.ms-hide) là BẮT BUỘC — `.modeswitch button` (0,1,1) đặc hiệu hơn
+   `.ms-hide` (0,1,0) nên nếu không loại ra, nó đè display/position của nút ✕
+   và nút đó hiện thường trực, nằm sai chỗ. */
+.modeswitch button:not(.ms-hide) {
   display: inline-flex; align-items: center; gap: 7px; flex: none; white-space: nowrap;
   padding: 6px 14px; border-radius: 9px; font-size: 12.5px; font-weight: 600;
   color: var(--muted); background: transparent; border: none; box-shadow: none;
   cursor: pointer; transition: color .15s, background .15s;
 }
-.modeswitch button:hover:not(.on) { color: var(--text); background: var(--glass-2); transform: none; box-shadow: none; }
+.modeswitch button:not(.ms-hide):hover:not(.on) { color: var(--text); background: var(--glass-2); transform: none; box-shadow: none; }
 .modeswitch button.on {
   color: #fff;
   background: linear-gradient(135deg, var(--grad-a), var(--grad-b));
@@ -218,6 +221,43 @@ a:hover { text-decoration: underline; }
   background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent);
 }
 .modeswitch button.on .ms-badge { background: rgba(255,255,255,.22); color: #fff; }
+
+/* ── Ẩn tính năng khỏi menu: nút ✕ hiện khi rê chuột lên tab ────────────── */
+/* Bọc ngoài mỗi tab. `display: contents` để lớp bọc KHÔNG tự thành một ô lưới
+   riêng — .modeswitch vẫn xếp các <button> y như trước khi có lớp này, cả ở
+   menu ngang lẫn menu dọc (nơi button phải width:100%). */
+/* Lớp bọc là hộp THẬT (không phải display:contents): nút ✕ dùng position
+   absolute nên cần một containing block ôm đúng lấy tab. Với display:contents
+   thì lớp bọc không sinh hộp, ✕ sẽ neo theo .modeswitch và văng ra xa hàng
+   trăm px. `display: contents` cũng làm :hover trên lớp bọc vô hiệu.
+   inline-flex giữ tab nằm đúng dòng như trước; menu dọc thì cho giãn full. */
+.ms-wrap { position: relative; display: inline-flex; flex: none; }
+.modeswitch .ms-hide {
+  position: absolute; top: -5px; right: -4px; z-index: 2;
+  display: none; align-items: center; justify-content: center;
+  width: 16px; height: 16px; padding: 0; border-radius: 50%;
+  font-size: 9px; line-height: 1; font-weight: 700;
+  color: var(--muted); background: var(--bg-1);
+  border: 1px solid var(--glass-brd); box-shadow: none; cursor: pointer;
+}
+/* Chỉ hiện khi rê chuột lên tab (hoặc focus bàn phím). Hover đặt trên lớp bọc
+   nên di chuột từ tab sang ✕ không bị mất nút giữa chừng. */
+.ms-wrap:hover .ms-hide,
+.modeswitch .ms-hide:focus-visible { display: inline-flex; }
+.modeswitch .ms-hide:hover {
+  color: #fff; background: var(--err); border-color: var(--err);
+  transform: none; box-shadow: none;
+}
+/* Menu dọc: tab chiếm cả bề rộng nên ✕ nằm gọn trong lề phải, không nhô ra
+   ngoài sidebar như ở menu ngang. */
+/* Menu dọc: lớp bọc giãn hết bề rộng sidebar, nếu không tab co lại theo nội
+   dung và mất dạng "mỗi tab một hàng đầy". */
+.shell[data-nav='left'] .ms-wrap,
+.shell[data-nav='right'] .ms-wrap { display: flex; width: 100%; }
+/* Tab dọc rộng cả sidebar nên ✕ phải nằm GỌN trong lề phải. Giữ nguyên mốc
+   top:-5px/right:-4px của menu ngang thì nút nhô ra ngoài sidebar. */
+.shell[data-nav='left'] .modeswitch .ms-hide,
+.shell[data-nav='right'] .modeswitch .ms-hide { top: 4px; right: 5px; }
 
 /* Key + host chip button (opens settings) */
 .chip-btn {
@@ -628,6 +668,93 @@ html[data-modal-over-webview] .workspace[data-webview] {
 /* Tab đang có khung trong Ultra View — gạch chân mảnh để phân biệt với tab
    "đang chọn" thường, vì lúc này nhiều tab cùng sáng. */
 .modeswitch button.ms-ultra { box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* ── Bảng hiện/ẩn tính năng (nút ⚙ trên thanh tiêu đề) ──────────────────── */
+/* Cùng dạng MODAL giữa màn hình như .ultra-pop, và vì cùng lý do: ở menu dọc
+   cụm nút bị dồn xuống đáy sidebar hẹp nên dropdown sẽ tràn khỏi cửa sổ, còn
+   pane <webview> thì vẽ ở tầng native che mất mọi thứ. */
+.tvis { position: relative; display: flex; align-items: center; }
+.tvis-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 32px; padding: 0 9px;
+  font-size: 12px; font-weight: 600; color: var(--text);
+  background: var(--glass); border: 1px solid var(--glass-brd);
+  border-radius: 10px; cursor: pointer;
+  transition: border-color .2s, background .2s, transform .15s;
+}
+.tvis-btn:hover {
+  border-color: var(--glass-brd-hover); background: var(--glass-2); transform: translateY(-1px);
+}
+.tvis-btn.is-on {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+.tvis-ico { font-size: 13px; line-height: 1; }
+.tvis-count {
+  min-width: 16px; padding: 0 5px; border-radius: 20px;
+  font-size: 10px; line-height: 16px; text-align: center;
+  background: var(--accent); color: #fff;
+}
+.tvis-scrim {
+  position: fixed; inset: 0; z-index: 9090;
+  background: rgb(3 5 14 / .62);
+  backdrop-filter: blur(6px) saturate(80%);
+  -webkit-backdrop-filter: blur(6px) saturate(80%);
+}
+.tvis-pop {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  z-index: 9100;
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(76vh, 680px); overflow: auto;
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 14px;
+  background: var(--qt-surface);
+  border: 1px solid var(--glass-brd); border-radius: 14px;
+  box-shadow: 0 24px 70px rgb(0 0 0 / .55), 0 0 0 1px rgb(255 255 255 / .04) inset;
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+.tvis-pop-head {
+  display: flex; flex-direction: row; align-items: flex-start;
+  justify-content: space-between; gap: 10px;
+}
+.tvis-pop-head > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tvis-pop-head b { font-size: 13px; }
+.tvis-pop-sub { font-size: 11px; color: var(--muted); line-height: 1.45; }
+.tvis-pop-x {
+  flex: none; margin: -2px -2px 0 0;
+  background: none; border: 0; cursor: pointer;
+  color: var(--muted); font-size: 19px; line-height: 1; padding: 0 2px;
+}
+.tvis-pop-x:hover { color: var(--text); }
+/* Nhắc rõ: ẩn là chuyện giao diện, automation vẫn chạy. */
+.tvis-note {
+  padding: 8px 10px; border-radius: 9px; font-size: 11.5px; line-height: 1.5;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.tvis-note b { color: var(--text); }
+.tvis-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tvis-stat { font-size: 11px; color: var(--muted); }
+.tvis-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
+.tvis-item {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 8px; font-size: 11.5px; color: var(--text);
+  border: 1px solid transparent; border-radius: 8px; cursor: pointer;
+}
+.tvis-item:hover { background: var(--glass-2); }
+.tvis-item input { flex: none; cursor: pointer; margin: 0; }
+.tvis-item.is-off { color: var(--faint); }
+.tvis-item.is-off .tvis-item-badge { opacity: .45; }
+.tvis-item-ico { font-size: 12px; flex: none; }
+.tvis-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tvis-item-badge {
+  flex: none; font-family: var(--mono); font-size: 9px; font-weight: 700;
+  letter-spacing: .04em; padding: 1px 5px; border-radius: 20px; text-transform: uppercase;
+  background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent);
+}
 .empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 12px; padding: 60px 20px; text-align: center; color: var(--muted);
@@ -6111,8 +6238,10 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   gap: 2px; background: transparent; border: none; padding: 0;
   overflow-y: auto; min-height: 0;
 }
-.shell[data-nav='left'] .modeswitch button,
-.shell[data-nav='right'] .modeswitch button {
+/* :not(.ms-hide) — nếu không, `width:100%` ở đây đè width:16px của nút ✕ và
+   nút đó phình ra phủ kín cả tab, chặn hết click vào chính tab. */
+.shell[data-nav='left'] .modeswitch button:not(.ms-hide),
+.shell[data-nav='right'] .modeswitch button:not(.ms-hide) {
   justify-content: flex-start; width: 100%; text-align: left;
 }
 /* Divider + zone label + appbar-right về dạng khối dọc. */
