@@ -66,6 +66,23 @@ function escapeGlob(s: string): string {
   return s.replace(/[\\*?[\]]/g, (ch) => '\\' + ch);
 }
 
+/**
+ * Chuỗi này có chứa wildcard glob THẬT SỰ không (`*` `?` `[`)?
+ *
+ * Dùng để quyết định một mẫu Tìm nhanh là MỘT key cụ thể (tra thẳng) hay một
+ * DẢI key (phải scan). Ký tự đứng sau `\` là literal — `a\*b` là tên key có
+ * dấu sao, không phải mẫu khớp nhiều key — nên phải bỏ qua đúng như Redis
+ * hiểu, chứ không thể tìm `*` bằng includes().
+ */
+function hasGlobWildcard(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '\\') { i++; continue; } // ký tự kế tiếp là literal
+    if (ch === '*' || ch === '?' || ch === '[') return true;
+  }
+  return false;
+}
+
 /** Cách dịch ô tìm kiếm thành SCAN MATCH. */
 type MatchMode =
   /** exact OFF — bọc `*` hai đầu: gõ `profile` là tìm `*profile*`. */
@@ -738,12 +755,17 @@ export default function RedisWorkspace() {
                   currentDb={db}
                   onNotice={flash}
                   onRun={({ connectionId, db: presetDb, key, presetName }) => {
-                    // Đổi cụm/DB nếu preset trỏ chỗ khác, rồi đặt mẫu key —
-                    // effect auto-scan sẵn có lo phần quét, không nhân đôi logic.
                     if (connectionId !== activeId) setActiveId(connectionId);
                     if (presetDb !== db) setDb(presetDb);
-                    setRawPattern(true);
-                    setExact(false);
+                    // Preset đã điền xong biến thì thường ra một tên key ĐẦY ĐỦ
+                    // — lúc đó tra thẳng (TYPE+TTL), không quét: nhanh tức thì
+                    // và không bao giờ bỏ sót dù DB lớn cỡ nào.
+                    // Chỉ khi mẫu CÒN wildcard (`callbot_listen:vhs.vn:*`) mới
+                    // phải scan, vì lúc đó nó là một dải key chứ không phải một
+                    // key cụ thể.
+                    const wild = hasGlobWildcard(key);
+                    setExact(!wild);
+                    setRawPattern(wild);
                     setQuery(key);
                     setSelectedKey(null);
                     flash(`Tìm nhanh: ${presetName}`);

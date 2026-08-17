@@ -34,7 +34,8 @@ export const KEY_PATTERN_HELP = [
   '',
   'Tên biến dùng chữ, số, dấu _ - . — vd {{tenant_id}}, {{node.ip}}.',
   'Biến lặp lại chỉ hỏi một lần rồi điền vào mọi chỗ.',
-  'Có thể dùng * như SCAN thường: callbot_listen:{{domain}}:*',
+  'Điền xong ra một key đầy đủ → tra THẲNG bằng TYPE/TTL, tức thì và không bỏ sót.',
+  'Để * trong mẫu (callbot_listen:{{domain}}:*) thì thành một DẢI key → phải quét SCAN.',
 ].join('\n');
 
 export interface QuickFindPanelProps {
@@ -291,13 +292,15 @@ function EditModal(props: {
                 </tr>
                 <tr>
                   <td><code>callbot_listen:{'{{domain}}'}:*</code></td>
-                  <td>hỏi <b>domain</b>, phần <code>*</code> quét mọi ip</td>
+                  <td>hỏi <b>domain</b>, <code>*</code> quét mọi ip (dải key → dùng SCAN)</td>
                 </tr>
               </tbody>
             </table>
             Tên biến dùng chữ, số, <code>_</code> <code>-</code> <code>.</code> — vd{' '}
             <code>{'{{tenant_id}}'}</code>. Biến lặp lại chỉ hỏi một lần rồi điền vào mọi chỗ.
-            Dấu <code>*</code> hoạt động như khi tìm thường (SCAN MATCH).
+            Mẫu điền xong mà <b>không còn</b> <code>*</code> thì tra thẳng đúng key đó
+            (nhanh tức thì, DB lớn cỡ nào cũng không bỏ sót). Còn <code>*</code> thì
+            nó là một dải key nên phải quét SCAN.
           </div>
         )}
 
