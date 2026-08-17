@@ -6664,6 +6664,37 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .sheet-grid.paper .sheet-cell input { background: #fff; color: #1f2933; }
 /* Vùng đang chọn (kéo chuột / Shift) — nhạt hơn ô active. */
 .sheet-cell.insel { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+
+/* ── Khung bao vùng quét, kiểu Excel ──────────────────────────────────────
+   Excel vẽ MỘT đường viền quanh cả vùng chứ không kẻ từng ô. Với <td> rời
+   rạc thì mỗi ô ở rìa tự kẻ cạnh của mình (.rng-t/-b/-l/-r do JSX gắn theo
+   vị trí trong vùng) — ghép lại thành đúng một khung liền.
+   Dùng box-shadow inset chứ không phải border: bảng để border-collapse nên
+   border sẽ chen vào layout và làm lưới nhảy 1px mỗi lần đổi vùng chọn.
+   Gom nhiều shadow trong MỘT khai báo vì box-shadow không cộng dồn được qua
+   nhiều rule — ô góc cần 2 cạnh cùng lúc. */
+.sheet-cell.rng { --rng-brd: var(--accent); }
+.sheet-cell.rng-t { box-shadow: inset 0 2px 0 0 var(--rng-brd); }
+.sheet-cell.rng-b { box-shadow: inset 0 -2px 0 0 var(--rng-brd); }
+.sheet-cell.rng-l { box-shadow: inset 2px 0 0 0 var(--rng-brd); }
+.sheet-cell.rng-r { box-shadow: inset -2px 0 0 0 var(--rng-brd); }
+.sheet-cell.rng-t.rng-b { box-shadow: inset 0 2px 0 0 var(--rng-brd), inset 0 -2px 0 0 var(--rng-brd); }
+.sheet-cell.rng-t.rng-l { box-shadow: inset 0 2px 0 0 var(--rng-brd), inset 2px 0 0 0 var(--rng-brd); }
+.sheet-cell.rng-t.rng-r { box-shadow: inset 0 2px 0 0 var(--rng-brd), inset -2px 0 0 0 var(--rng-brd); }
+.sheet-cell.rng-b.rng-l { box-shadow: inset 0 -2px 0 0 var(--rng-brd), inset 2px 0 0 0 var(--rng-brd); }
+.sheet-cell.rng-b.rng-r { box-shadow: inset 0 -2px 0 0 var(--rng-brd), inset -2px 0 0 0 var(--rng-brd); }
+.sheet-cell.rng-l.rng-r { box-shadow: inset 2px 0 0 0 var(--rng-brd), inset -2px 0 0 0 var(--rng-brd); }
+.sheet-cell.rng-t.rng-b.rng-l { box-shadow: inset 0 2px 0 0 var(--rng-brd), inset 0 -2px 0 0 var(--rng-brd), inset 2px 0 0 0 var(--rng-brd); }
+.sheet-cell.rng-t.rng-b.rng-r { box-shadow: inset 0 2px 0 0 var(--rng-brd), inset 0 -2px 0 0 var(--rng-brd), inset -2px 0 0 0 var(--rng-brd); }
+.sheet-cell.rng-t.rng-l.rng-r { box-shadow: inset 0 2px 0 0 var(--rng-brd), inset 2px 0 0 0 var(--rng-brd), inset -2px 0 0 0 var(--rng-brd); }
+.sheet-cell.rng-b.rng-l.rng-r { box-shadow: inset 0 -2px 0 0 var(--rng-brd), inset 2px 0 0 0 var(--rng-brd), inset -2px 0 0 0 var(--rng-brd); }
+.sheet-cell.rng-t.rng-b.rng-l.rng-r {
+  box-shadow: inset 0 2px 0 0 var(--rng-brd), inset 0 -2px 0 0 var(--rng-brd),
+              inset 2px 0 0 0 var(--rng-brd), inset -2px 0 0 0 var(--rng-brd);
+}
+/* Ô NEO trong vùng vẫn giữ viền ô hiện hành của nó — đặt sau và đủ đặc hiệu
+   để thắng mọi tổ hợp .rng-* ở trên (Excel cũng vẽ ô neo nổi hơn phần còn lại). */
+.sheet-cell.selc.selc { box-shadow: inset 0 0 0 2px var(--accent); }
 /* Status bar Sum/Avg/Count như Excel. */
 .sheet-statusbar {
   flex: none; display: flex; align-items: center; gap: 16px;
