@@ -702,11 +702,17 @@ html[data-modal-over-webview] .workspace[data-webview] {
   backdrop-filter: blur(6px) saturate(80%);
   -webkit-backdrop-filter: blur(6px) saturate(80%);
 }
+/* Căn giữa bằng INSET + margin:auto, KHÔNG dùng top:50%+translate(-50%,-50%):
+   với cách kia, một bảng cao hơn khung nhìn sẽ tràn ĐỀU hai đầu và phần đầu
+   (tiêu đề + nút ×) bị cắt mất trên mép màn hình — đo được -273px với danh
+   sách 23 tab. inset:0 + margin:auto thì trình duyệt tự kẹp trong viewport,
+   và max-height cùng overflow:auto lo phần còn lại. */
 .tvis-pop {
-  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  position: fixed; inset: 0; margin: auto;
   z-index: 9100;
-  width: min(420px, calc(100vw - 32px));
-  max-height: min(76vh, 680px); overflow: auto;
+  width: min(460px, calc(100vw - 32px));
+  height: fit-content;
+  max-height: min(82vh, 760px); overflow: auto;
   display: flex; flex-direction: column; gap: 9px;
   padding: 14px;
   background: var(--qt-surface);
@@ -716,6 +722,11 @@ html[data-modal-over-webview] .workspace[data-webview] {
   -webkit-backdrop-filter: blur(18px) saturate(150%);
 }
 .tvis-pop-head {
+  /* Dính khi cuộn — danh sách dài thì vẫn thấy mình đang ở bảng nào và với tới
+     được nút ×. Âm margin + padding bù lại để nền phủ kín mép bảng. */
+  position: sticky; top: -14px; z-index: 1;
+  margin: -14px -14px 0; padding: 14px 14px 9px;
+  background: var(--qt-surface);
   display: flex; flex-direction: row; align-items: flex-start;
   justify-content: space-between; gap: 10px;
 }
@@ -755,6 +766,30 @@ html[data-modal-over-webview] .workspace[data-webview] {
   letter-spacing: .04em; padding: 1px 5px; border-radius: 20px; text-transform: uppercase;
   background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent);
 }
+.tvis-group {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); font-weight: 700; margin-top: 2px;
+}
+
+/* Hộp xác nhận trước khi ẩn — cùng tầng portal với bảng ⚙ nên cũng nổi trên
+   mọi pane. Hẹp hơn bảng vì chỉ có một câu hỏi. */
+.tvis-confirm {
+  position: fixed; inset: 0; margin: auto;
+  z-index: 9100;
+  width: min(400px, calc(100vw - 32px)); height: fit-content;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 16px;
+  background: var(--qt-surface);
+  border: 1px solid var(--glass-brd); border-radius: 14px;
+  box-shadow: 0 24px 70px rgb(0 0 0 / .55), 0 0 0 1px rgb(255 255 255 / .04) inset;
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+.tvis-confirm-head { display: flex; align-items: center; gap: 9px; font-size: 14px; }
+.tvis-confirm-ico { font-size: 17px; flex: none; }
+.tvis-confirm-body { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+.tvis-confirm-body b { color: var(--text); }
+.tvis-confirm-acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
 .empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 12px; padding: 60px 20px; text-align: center; color: var(--muted);

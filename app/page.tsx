@@ -262,6 +262,8 @@ export default function Home() {
   );
   const hiddenSet = useMemo(() => new Set(hidden), [hidden]);
   const visibleTabs = useMemo(() => TABS.filter((t) => !hiddenSet.has(t.key)), [hiddenSet]);
+  /** Tab đang chờ xác nhận ẩn (bấm ✕ trên menu) — TabVisibilityBar dựng hộp hỏi. */
+  const [pendingHide, setPendingHide] = useState<string | null>(null);
 
   // Ẩn đúng tab ĐANG MỞ thì không được để màn hình trống: nhảy sang tab hiện
   // gần nhất vừa dùng, không có thì lấy tab hiện đầu tiên. Pack và màn hình
@@ -599,7 +601,7 @@ export default function Home() {
               tabIndex={-1}
               title={`Ẩn "${t.label}" khỏi menu — bật lại ở nút ⚙ trên thanh tiêu đề. Automation của tab này vẫn chạy.`}
               aria-label={`Ẩn ${t.label}`}
-              onClick={(e) => { e.stopPropagation(); hiddenTabs.hide(t.key); }}
+              onClick={(e) => { e.stopPropagation(); setPendingHide(t.key); }}
             >✕</button>
             </span>
             );
@@ -650,7 +652,16 @@ export default function Home() {
           {/* Ultra View: xem nhiều workspace cùng lúc (Ctrl+Shift+U). */}
           <UltraBar state={ultra} current={mode} allKeys={ultraKeys} info={tabInfo} />
           {/* Hiện/ẩn tính năng — NƠI DUY NHẤT bật lại tab đã ẩn, nên luôn hiện. */}
-          <TabVisibilityBar hidden={hidden} allKeys={TABS.map((t) => t.key)} info={tabInfo} />
+          <TabVisibilityBar
+            hidden={hidden}
+            allKeys={TABS.map((t) => t.key)}
+            info={tabInfo}
+            pending={pendingHide}
+            onResolvePending={(ok) => {
+              if (ok && pendingHide) hiddenTabs.hide(pendingHide);
+              setPendingHide(null);
+            }}
+          />
           {/* Hòm thông báo: xem lại lịch sử (local, 2 ngày) + xóa tất cả. */}
           <NotificationCenter />
           <ThemeToggle />
