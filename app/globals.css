@@ -7526,6 +7526,21 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 12px 14px; border-top: 1px solid var(--glass-brd); background: var(--glass);
 }
+/* ── Popup xác nhận đóng phiên (components/terminal/CloseTerminalDialog.tsx) ─
+   Dùng lại khung .tw-modal, chỉ hẹp lại vì nội dung chỉ có một câu hỏi. */
+.tw-modal-sm { width: min(440px, calc(100vw - 32px)); }
+.tw-confirm { display: flex; gap: 12px; align-items: flex-start; }
+.tw-confirm-ico { font-size: 20px; line-height: 1.2; }
+.tw-confirm-text { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.tw-confirm-main { margin: 0; font-size: 13px; color: var(--text); line-height: 1.5; }
+.tw-confirm-cwd {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  background: var(--glass-2); border: 1px solid var(--glass-brd);
+  border-radius: 7px; padding: 3px 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tw-new.danger { background: var(--err); color: #fff; border-color: transparent; }
+
 .tw-keyhint { font-size: 10.5px; color: var(--faint); }
 .tw-keyhint kbd {
   font-family: var(--mono); font-size: 10px; padding: 1px 5px; border-radius: 4px;
