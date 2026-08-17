@@ -329,6 +329,34 @@ export async function scan(conn: RedisConnection, db: number, match: string, cur
   return { cursor: next, keys: await enrichKeys(client, keys) };
 }
 
+/**
+ * TRA TRỰC TIẾP một key theo tên — KHÔNG quét.
+ *
+ * Vì sao cần hàm riêng thay vì SCAN MATCH <key>: SCAN phải đi hết keyspace mới
+ * kết luận được "không có", và mỗi vòng chỉ soi COUNT slot. Trên DB lớn, tìm
+ * ĐÚNG một key mà key đó nằm ở cuối keyspace thì UI hết vòng lặp trước khi tới
+ * — người dùng thấy "không có kết quả" trong khi key rõ ràng tồn tại. Đó chính
+ * là lỗi được báo.
+ *
+ * TYPE + TTL là O(1) và không phụ thuộc kích thước DB, nên tra thẳng vừa đúng
+ * vừa nhanh hơn hẳn. Trả về CÙNG shape với scan() để UI dùng chung một đường
+ * hiển thị (danh sách 0 hoặc 1 dòng), cursor luôn '0' vì không có gì để tiếp.
+ *
+ * Cluster: ioredis Cluster tự route theo hash slot của key, nên không phải
+ * đoán shard nào giữ nó — khác hẳn SCAN (phải đi từng master node).
+ */
+export async function lookupKey(conn: RedisConnection, db: number, key: string): Promise<ScanResult> {
+  const k = typeof key === 'string' ? key.trim() : '';
+  if (!k) return { cursor: '0', keys: [] };
+  const client = getClient(conn, db);
+  const type = (await client.type(k)) as RedisKeyType;
+  // TYPE trả 'none' cho key không tồn tại — đây là cách phân biệt đáng tin duy
+  // nhất (EXISTS cũng được nhưng rồi vẫn phải gọi TYPE để hiện icon loại key).
+  if (type === 'none') return { cursor: '0', keys: [] };
+  const ttl = await client.ttl(k);
+  return { cursor: '0', keys: [{ key: k, type, ttl }] };
+}
+
 /** SCAN one round across cluster master nodes; opaque cursor = `n<idx>:<cursor>`. */
 async function scanCluster(client: Cluster, pattern: string, cursor: string, count: number): Promise<ScanResult> {
   // `nodes()` reads local topology, which is empty until the cluster is connected

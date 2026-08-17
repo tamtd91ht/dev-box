@@ -8,6 +8,7 @@ import {
   pingRedis,
   scanRedis,
   getRedisValue,
+  lookupRedisKey,
   setRedisTtl,
   setRedisValue,
   deleteRedisKey,
@@ -33,6 +34,20 @@ import Splitter from './Splitter';
 const LAST_CONN_KEY = 'redis.lastConn';
 /** Keys fetched per SCAN round. */
 const SCAN_COUNT = 300;
+/**
+ * Trần THỜI GIAN cho một lượt tìm tự động, không phải trần số vòng.
+ *
+ * Đếm vòng là sai cách: mỗi vòng chỉ soi ~SCAN_COUNT slot, nên bất kỳ con số
+ * cố định nào cũng quy ra một mốc keyspace cứng — DB lớn hơn mốc đó thì key
+ * nằm sau nó VĨNH VIỄN không tìm ra, và đó chính là lỗi được báo (guard 100
+ * vòng = 30k slot, DB 1 triệu key thì hụt 97%). Chặn theo thời gian thì giới
+ * hạn là "người dùng chờ bao lâu" — đúng thứ ta thật sự muốn giới hạn — và DB
+ * to cỡ nào cũng quét được xa nhất trong khoảng đó.
+ *
+ * Vẫn cần một trần vì vòng lặp này chạy trên UI thread; hết thời gian thì
+ * cuộn xuống (hoặc bấm "tải thêm") là tiếp tục từ đúng cursor đang dừng.
+ */
+const AUTO_SCAN_BUDGET_MS = 15_000;
 /**
  * Soft cap on auto-loaded keys. Infinite scroll keeps SCANning until the cursor is
  * exhausted OR this many keys are loaded — then it pauses and offers a manual
@@ -172,6 +187,13 @@ export default function RedisWorkspace() {
   softLimitRef.current = softLimit;
   const matchRef = useRef(match);
   matchRef.current = match;
+  // "Đúng key" đổi hẳn CÁCH tra (lookup thay vì scan) nên runScan phải đọc được
+  // cả cờ này và nguyên văn ô tìm — qua ref, cùng lý do với matchRef: handler
+  // cuộn và vòng auto-continue gọi runScan ngoài closure hiện tại.
+  const exactRef = useRef(exact);
+  exactRef.current = exact;
+  const queryRef = useRef(query);
+  queryRef.current = query;
   /** The key list scroll container — watched for infinite-scroll. */
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -308,7 +330,17 @@ export default function RedisWorkspace() {
       setError(null);
       const from = fresh ? '0' : cursorRef.current;
       try {
-        const r = await scanRedis(connId, dbAtStart, matchRef.current.trim() || '*', from, SCAN_COUNT);
+        // "Đúng key" → TRA THẲNG bằng TYPE/TTL, không quét. SCAN phải đi hết
+        // keyspace mới kết luận được "không có", nên trên DB lớn một key nằm
+        // cuối keyspace sẽ không bao giờ tìm ra dù nó tồn tại. Áp cho cả single
+        // lẫn cluster (ioredis Cluster tự route theo hash slot của key).
+        //
+        // Ô tìm RỖNG thì vẫn scan: "đúng key" của chuỗi rỗng là vô nghĩa, còn
+        // hành vi mong đợi lúc đó là duyệt tất cả như bình thường.
+        const exactKey = exactRef.current ? queryRef.current.trim() : '';
+        const r = exactKey
+          ? await lookupRedisKey(connId, dbAtStart, exactKey)
+          : await scanRedis(connId, dbAtStart, matchRef.current.trim() || '*', from, SCAN_COUNT);
         // Discard the result if the operator switched connection/DB mid-scan.
         if (activeIdRef.current !== connId || dbRef.current !== dbAtStart) return null;
         let total = 0;
@@ -339,16 +371,26 @@ export default function RedisWorkspace() {
    * so the first screen fills even when a round returns few keys (sparse matches).
    * Infinite-scroll takes over once the list overflows. The running total comes from
    * runScan's return value — not a React-state mirror — so the soft cap is exact.
+   *
+   * Giới hạn là THỜI GIAN, không phải số vòng — xem AUTO_SCAN_BUDGET_MS. Trần
+   * đếm vòng cũ (100) quy ra ~30k slot, nên trên DB triệu key mà từ khoá chỉ
+   * khớp ở cuối thì UI dừng giữa đường và hiện "không có kết quả" trong khi key
+   * vẫn tồn tại — đúng lỗi được báo.
    */
   const maybeFillViewport = useCallback(
     async (startTotal: number) => {
       let total = startTotal;
-      let guard = 0;
-      while (guard++ < 100 && total < softLimitRef.current) {
+      const deadline = Date.now() + AUTO_SCAN_BUDGET_MS;
+      // Đang TÌM (có từ khoá) thì không dừng ở chỗ lấp đầy màn hình: người dùng
+      // cần biết CÓ BAO NHIÊU key khớp, mà kết quả khớp rải khắp keyspace. Chỉ
+      // chế độ duyệt-tất-cả mới dừng sớm, vì lúc đó cuộn xuống là tải thêm và
+      // quét tiếp cả DB ngay từ đầu là vô ích.
+      const searching = queryRef.current.trim() !== '';
+      while (total < softLimitRef.current && Date.now() < deadline) {
         // Let React paint the appended rows before measuring overflow.
         await new Promise((res) => setTimeout(res, 0));
         const el = listRef.current;
-        if (el && el.scrollHeight > el.clientHeight + 4) break; // now scrollable
+        if (!searching && el && el.scrollHeight > el.clientHeight + 4) break; // now scrollable
         const r = await runScan(false);
         if (r === null || r.cursor === '0') break;
         total = r.total;
@@ -377,8 +419,11 @@ export default function RedisWorkspace() {
       void startFresh();
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
+    // `exact` nằm trong deps vì nó đổi hẳn CÁCH tra (lookup vs scan), mà không
+    // luôn đổi `match`: ô tìm rỗng thì match='*' ở cả hai chế độ, thiếu nó thì
+    // bật/tắt "Đúng key" lúc đó sẽ không chạy lại.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, db, match]);
+  }, [activeId, db, match, exact]);
 
   // Infinite scroll: near the bottom → auto-load the next round (under the soft cap).
   const onListScroll = useCallback(() => {
@@ -713,9 +758,18 @@ export default function RedisWorkspace() {
               </button>
             </div>
             <div className="small" style={{ color: 'var(--muted)', marginTop: 6 }}>
-              Dùng <b>SCAN</b> cursor-based (không block instance) — tự tải thêm khi cuộn xuống.
-              {' '}Bỏ trống ô tìm để duyệt tất cả key.
-              {isClusterActive && ' Cluster: quét gộp toàn bộ master node.'}
+              {exact && query.trim() ? (
+                <>
+                  Đang tra <b>trực tiếp</b> đúng tên key (TYPE + TTL) — không quét keyspace,
+                  nên DB lớn cỡ nào cũng tức thì và không bỏ sót.
+                </>
+              ) : (
+                <>
+                  Dùng <b>SCAN</b> cursor-based (không block instance) — tự tải thêm khi cuộn xuống.
+                  {' '}Bỏ trống ô tìm để duyệt tất cả key.
+                  {isClusterActive && ' Cluster: quét gộp toàn bộ master node.'}
+                </>
+              )}
             </div>
 
             {error && <pre className="code" style={{ color: 'var(--err)', marginTop: 10, marginBottom: 0 }}>{error}</pre>}
@@ -725,9 +779,27 @@ export default function RedisWorkspace() {
             <div className="redis-split">
               <div className="redis-keys">
                 <div className="small" style={{ color: 'var(--muted)', margin: '10px 0 6px' }}>
-                  {scanStarted
-                    ? `${keys.length} key${scanExhausted ? ' (đã hết)' : atSoftCap ? ' (tạm dừng)' : '…'}`
-                    : 'Đang tải…'}
+                  {!scanStarted ? 'Đang tải…' : (
+                    <>
+                      {keys.length} key
+                      {scanExhausted ? ' (đã hết)' : atSoftCap ? ' (tạm dừng)' : '…'}
+                      {/* Không tìm thấy gì mà CHƯA quét hết keyspace là ca dễ
+                          hiểu sai nhất: "0 key" trông như không tồn tại. Nói rõ
+                          ra và chỉ đường sang cách tra chắc chắn. */}
+                      {keys.length === 0 && scanExhausted && !exact && query.trim() && (
+                        <span style={{ color: 'var(--warn)' }}>
+                          {' '}— không có key nào chứa “{query.trim()}”. Biết chính xác tên key
+                          thì bật <b>Đúng key</b> để tra trực tiếp.
+                        </span>
+                      )}
+                      {keys.length === 0 && exact && query.trim() && scanExhausted && (
+                        <span style={{ color: 'var(--warn)' }}>
+                          {' '}— key “{query.trim()}” không tồn tại ở DB {db}
+                          {isClusterActive ? ' (cluster)' : ''}.
+                        </span>
+                      )}
+                    </>
+                  )}
                 </div>
                 <div className="endpoint-list" ref={listRef} onScroll={onListScroll}>
                   {keys.map((k) => (
@@ -759,22 +831,43 @@ export default function RedisWorkspace() {
                   )}
                 </div>
 
-                {/* Soft-cap pause: keep going only when the operator asks. */}
-                {atSoftCap && (
+                {/* Tạm dừng — hoặc vì chạm trần số key (soft cap), hoặc vì hết
+                    thời gian quét tự động. Cả hai đều phải có đường đi tiếp:
+                    trước đây chỉ soft cap mới hiện nút, nên khi dừng vì hết
+                    thời gian mà chưa đủ key là người dùng kẹt, không biết còn
+                    keyspace chưa quét. */}
+                {scanStarted && !scanning && !scanExhausted && (
                   <button
                     className="ghost sm"
                     style={{ marginTop: 8, width: '100%' }}
                     onClick={loadMorePastCap}
-                    disabled={scanning}
-                    title={`Đã tải ${keys.length} key — tải thêm ${SOFT_LIMIT} nữa`}
+                    title={atSoftCap
+                      ? `Đã tải ${keys.length} key — tải thêm ${SOFT_LIMIT} nữa`
+                      : 'Còn keyspace chưa quét — quét tiếp từ chỗ đang dừng'}
                   >
-                    {scanning ? <span className="spinner" aria-hidden /> : '↓'} Tải thêm (đã dừng ở {keys.length})
+                    ↓ Quét tiếp {atSoftCap ? `(đã dừng ở ${keys.length})` : '(chưa quét hết keyspace)'}
                   </button>
                 )}
 
                 {scanStarted && !scanning && keys.length === 0 && (
                   <div className="empty" style={{ padding: '20px 8px' }}>
-                    <p className="small">Không có key nào khớp pattern.</p>
+                    {/* Nói ĐÚNG cái đã biết: "không có key nào khớp" chỉ đúng
+                        khi đã quét hết. Chưa hết mà nói vậy là sai — và đó là
+                        cách người dùng bị dẫn tới kết luận "key không tồn tại"
+                        trong khi nó vẫn nằm đâu đó phía sau. */}
+                    {exact && query.trim() ? (
+                      <p className="small">
+                        Key <code>{query.trim()}</code> không tồn tại ở DB {db}
+                        {isClusterActive ? ' (cluster)' : ''}.
+                      </p>
+                    ) : scanExhausted ? (
+                      <p className="small">Không có key nào khớp pattern.</p>
+                    ) : (
+                      <p className="small">
+                        Chưa thấy key nào khớp — <b>và chưa quét hết keyspace</b>.
+                        Bấm “Quét tiếp” ở trên, hoặc bật <b>Đúng key</b> nếu biết chính xác tên.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

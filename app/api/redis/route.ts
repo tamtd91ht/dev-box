@@ -4,6 +4,7 @@
 //     'test'   { mode?, host?, port?, nodes?, password? } → { ok, result: { latencyMs } }  (no saved connection)
 //     'ping'   { connectionId, db? }             → { ok, result: { latencyMs } }
 //     'scan'   { connectionId, db?, match, cursor, count } → { ok, result: { cursor, keys[] } }
+//     'lookup' { connectionId, db?, key }         → { ok, result: { cursor:'0', keys[0..1] } }
 //     'value'  { connectionId, db?, key }         → { ok, result: { key, type, ttl, value, ... } }
 //     'setTtl' { connectionId, db?, key, seconds }→ { ok, result: { applied } }
 //     'set'    { connectionId, db?, key, type, value, ttl?, overwrite? } → { ok, result: { created, type } }
@@ -19,7 +20,7 @@
 // it instead of the request hanging.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { REDIS_ENABLED, normalizeDb, ping, scan, getValue, setTtl, setValue, del, testConnection, infoStats } from '@/lib/redisClient';
+import { REDIS_ENABLED, normalizeDb, ping, scan, lookupKey, getValue, setTtl, setValue, del, testConnection, infoStats } from '@/lib/redisClient';
 import { getConnection } from '@/lib/redisConnections';
 
 export const runtime = 'nodejs';
@@ -82,6 +83,10 @@ export async function POST(req: NextRequest) {
         break;
       case 'scan':
         result = await scan(conn, db, String(body.match ?? '*'), String(body.cursor ?? '0'), Number(body.count ?? 100));
+        break;
+      // Tra ĐÚNG một key theo tên (ô "Đúng key") — TYPE+TTL O(1), không quét.
+      case 'lookup':
+        result = await lookupKey(conn, db, String(body.key ?? ''));
         break;
       case 'value':
         result = await getValue(conn, db, String(body.key ?? ''));

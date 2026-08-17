@@ -162,6 +162,17 @@ export function scanRedis(
   return redisAction<ScanResult>('scan', { connectionId, db, match, cursor, count });
 }
 
+/**
+ * Tra ĐÚNG một key theo tên — TYPE+TTL O(1), KHÔNG quét keyspace.
+ *
+ * Dùng cho ô tìm khi bật "Đúng key". SCAN MATCH <key> cũng ra kết quả nhưng
+ * phải đi hết keyspace mới kết luận được, nên trên DB lớn key nằm cuối là
+ * không bao giờ tìm thấy. Trả cùng shape với scan để UI dùng chung một đường.
+ */
+export function lookupRedisKey(connectionId: string, db: number, key: string): Promise<ScanResult> {
+  return redisAction<ScanResult>('lookup', { connectionId, db, key });
+}
+
 export function getRedisValue(connectionId: string, db: number, key: string): Promise<ValueResult> {
   return redisAction<ValueResult>('value', { connectionId, db, key });
 }
