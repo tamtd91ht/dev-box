@@ -1853,6 +1853,97 @@ pre.kafka-drawer-body {
 .kafka-preset-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kafka-preset-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
 .kafka-preset-desc { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ── Redis · Tìm nhanh (QuickFindPanel) ─────────────────────────────────── */
+.rqf-anchor { position: relative; display: inline-flex; }
+.rqf-panel {
+  /* Neo mép PHẢI nút để panel mở sang trái, luôn nằm trong khung. */
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+  width: 360px; max-width: 86vw;
+  /* Tổ tiên `.redis-layout > .panel` có overflow:auto nên dropdown bị KẸP
+     trong vùng cuộn đó — trần chiều cao phải vừa khung Redis, không phải 60vh
+     của cả màn hình, nếu không danh sách preset dài bị cắt cụt ở đáy.
+     (Cùng lý do đã ghi ở .kafka-preset-panel.) */
+  max-height: min(52vh, 440px); overflow: auto;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--glass-brd); border-radius: 14px; padding: 12px;
+  background: color-mix(in srgb, var(--bg-1) 94%, transparent);
+  backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: 0 20px 50px rgba(0,0,0,.35);
+}
+.rqf-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.rqf-list { display: flex; flex-direction: column; gap: 6px; }
+.rqf-row { display: flex; align-items: stretch; gap: 4px; }
+.rqf-run {
+  flex: 1; min-width: 0; text-align: left; cursor: pointer;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 10px; border-radius: 9px; color: var(--text);
+  border: 1px solid var(--border, rgba(127,127,127,.22)); background: var(--glass-2);
+  box-shadow: none;
+}
+.rqf-run:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  transform: none; box-shadow: none;
+}
+.rqf-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rqf-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.rqf-desc { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rqf-vars { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+/* Chip tên biến — cho thấy ngay preset này sẽ hỏi những gì. */
+.rqf-varchip {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 20px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent);
+}
+
+/* Form tạo/sửa + form chạy */
+.rqf-modal { width: min(560px, 94vw); gap: 8px; }
+.rqf-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.rqf-field > span { font-size: 11px; color: var(--muted); }
+.rqf-field-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rqf-row2 { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.rqf-acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.rqf-err {
+  padding: 8px 10px; border-radius: 9px; font-size: 12px;
+  background: var(--err-bg); border: 1px solid var(--err); color: var(--err);
+}
+/* Dấu ? cạnh nhãn "Mẫu key" — tooltip native, hover là thấy. */
+.rqf-hint {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-left: 5px; border-radius: 50%;
+  font-size: 9.5px; font-weight: 700; cursor: help;
+  background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent);
+}
+.rqf-help {
+  padding: 10px 12px; border-radius: 10px; font-size: 12px; line-height: 1.6;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.rqf-help code {
+  font-family: var(--mono); font-size: 11px; color: var(--text);
+  background: var(--glass-2); padding: 1px 4px; border-radius: 4px;
+}
+.rqf-help-tbl { width: 100%; border-collapse: collapse; margin: 7px 0; font-size: 11.5px; }
+.rqf-help-tbl th {
+  text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--faint); font-weight: 700; padding: 3px 6px 3px 0;
+}
+.rqf-help-tbl td { padding: 3px 6px 3px 0; vertical-align: top; border-top: 1px solid var(--glass-brd); }
+.rqf-help-tbl td:first-child { white-space: nowrap; }
+/* Xem trước biến / key sẽ tra */
+.rqf-preview {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
+  padding: 8px 10px; border-radius: 9px; font-size: 12px;
+  background: var(--glass-2); border: 1px solid var(--glass-brd);
+}
+.rqf-preview code { font-family: var(--mono); font-size: 11.5px; word-break: break-all; }
+.rqf-preview-muted { color: var(--muted); font-size: 11.5px; width: 100%; }
+.rqf-key-ok { color: var(--ok); }
+.rqf-key-bad { color: var(--warn); }
+.rqf-run-desc { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+.rqf-run-target { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-bottom: 2px; }
+
 .kafka-window-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
 .kafka-window-chips .chip-btn[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--accent) 60%, transparent);

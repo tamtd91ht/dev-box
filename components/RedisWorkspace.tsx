@@ -23,6 +23,7 @@ import {
 } from '@/lib/redis';
 import ConnTransferButton from './ConnTransferButton';
 import MonitorStrip from './redis/MonitorStrip';
+import QuickFindPanel from './redis/QuickFindPanel';
 
 /** localStorage key remembering the last-selected connection. */
 import { readLocal, writeLocal } from '@/lib/localKeys';
@@ -50,16 +51,31 @@ function escapeGlob(s: string): string {
   return s.replace(/[\\*?[\]]/g, (ch) => '\\' + ch);
 }
 
+/** Cách dịch ô tìm kiếm thành SCAN MATCH. */
+type MatchMode =
+  /** exact OFF — bọc `*` hai đầu: gõ `profile` là tìm `*profile*`. */
+  | 'contains'
+  /** exact ON — khớp đúng tên key, glob metachar bị escape. */
+  | 'exact'
+  /**
+   * Mẫu glob THÔ, không escape gì. Dùng cho Tìm nhanh: mẫu key của preset có
+   * thể chứa `*` cố ý (`callbot_listen:{{domain}}:*`) nên không được escape,
+   * mà cũng không được bọc thêm `*` hai đầu như chế độ contains.
+   */
+  | 'pattern';
+
 /**
  * Build the SCAN MATCH pattern from the search box, RedisInsight-style:
  *   • exact ON  → match the key verbatim (glob metachars escaped).
  *   • exact OFF → wildcard both sides: `*keyword*` (no need to type `*`).
+ *   • pattern   → dùng nguyên văn (Tìm nhanh).
  *   • empty box → `*` (browse everything).
  */
-function buildMatch(query: string, exact: boolean): string {
+function buildMatch(query: string, mode: MatchMode): string {
   const q = query.trim();
   if (!q) return '*';
-  return exact ? escapeGlob(q) : `*${escapeGlob(q)}*`;
+  if (mode === 'pattern') return q;
+  return mode === 'exact' ? escapeGlob(q) : `*${escapeGlob(q)}*`;
 }
 
 /** Small glyph per Redis type, shown in the key table. */
@@ -111,8 +127,17 @@ export default function RedisWorkspace() {
   const [db, setDb] = useState(0); // logical DB index (0–15), chosen at browse time
   const [query, setQuery] = useState(''); // raw search box text (NOT a glob — see buildMatch)
   const [exact, setExact] = useState(false); // ON = match the key verbatim; OFF = *query* both sides
+  /**
+   * Bật khi key đến từ Tìm nhanh: mẫu dùng nguyên văn (giữ `*` cố ý trong
+   * preset). Tự tắt ngay khi người dùng gõ lại vào ô tìm, để ô tìm luôn hoạt
+   * động y như cũ.
+   */
+  const [rawPattern, setRawPattern] = useState(false);
   // The actual SCAN MATCH pattern fed to Redis — derived so downstream code is unchanged.
-  const match = useMemo(() => buildMatch(query, exact), [query, exact]);
+  const match = useMemo(
+    () => buildMatch(query, rawPattern ? 'pattern' : exact ? 'exact' : 'contains'),
+    [query, exact, rawPattern],
+  );
   const [keys, setKeys] = useState<ScannedKey[]>([]);
   const [cursor, setCursor] = useState('0');
   const [scanning, setScanning] = useState(false);
@@ -641,7 +666,8 @@ export default function RedisWorkspace() {
               <input
                 type="text"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                // Gõ tay → thoát chế độ mẫu thô của Tìm nhanh, ô tìm về hành vi thường.
+                onChange={(e) => { setQuery(e.target.value); setRawPattern(false); }}
                 placeholder={exact ? 'nhập đúng tên key' : 'nhập từ khoá (khớp mọi vị trí) — vd: profile'}
                 title={exact ? 'Khớp đúng tên key' : 'Khớp chứa từ khoá ở bất kỳ vị trí nào (không cần gõ *)'}
                 style={{ flex: '1 1 220px', minWidth: 180, fontFamily: 'var(--mono)', fontSize: 12 }}
@@ -651,9 +677,34 @@ export default function RedisWorkspace() {
                 style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--muted)', whiteSpace: 'nowrap', cursor: 'pointer' }}
                 title="Bật: khớp đúng tên key · Tắt: khớp chứa từ khoá (*từ khoá*)"
               >
-                <input type="checkbox" checked={exact} onChange={(e) => setExact(e.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={exact}
+                  onChange={(e) => { setExact(e.target.checked); setRawPattern(false); }}
+                />
                 Đúng key
               </label>
+              {/* Tìm nhanh: chỉ hiện khi đã có kết nối, vì preset nào cũng phải
+                  trỏ vào một cụm Redis + DB cụ thể. */}
+              {connections.length > 0 && (
+                <QuickFindPanel
+                  connections={connections}
+                  currentConnectionId={activeId}
+                  currentDb={db}
+                  onNotice={flash}
+                  onRun={({ connectionId, db: presetDb, key, presetName }) => {
+                    // Đổi cụm/DB nếu preset trỏ chỗ khác, rồi đặt mẫu key —
+                    // effect auto-scan sẵn có lo phần quét, không nhân đôi logic.
+                    if (connectionId !== activeId) setActiveId(connectionId);
+                    if (presetDb !== db) setDb(presetDb);
+                    setRawPattern(true);
+                    setExact(false);
+                    setQuery(key);
+                    setSelectedKey(null);
+                    flash(`Tìm nhanh: ${presetName}`);
+                  }}
+                />
+              )}
               <button className="ghost sm" onClick={() => void startFresh()} disabled={scanning} title="Quét lại từ đầu">
                 {scanning ? <span className="spinner" aria-hidden /> : '↻'} Làm mới
               </button>
