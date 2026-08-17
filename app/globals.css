@@ -6604,12 +6604,13 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* Loại trừ ô đang chọn — xem ghi chú ở .sheet-grid tbody tr:hover td. */
 .sheet-grid.paper tbody tr:hover td:not(.insel):not(.selc) { background: #f4f7fa; }
 .sheet-grid.paper td.selc { background: color-mix(in srgb, var(--accent) 10%, #fff); }
-.sheet-grid.paper td.insel { background: color-mix(in srgb, var(--accent) 14%, #fff); }
+/* Vùng quét phải THẤY RÕ trên nền giấy trắng — 14% nhạt gần như vô hình. */
+.sheet-grid.paper td.insel { background: color-mix(in srgb, var(--accent) 30%, #fff); }
 .sheet-grid.paper td.inref { background: color-mix(in srgb, var(--ok) 12%, #fff); }
 .sheet-grid.paper td.sheet-cell-dirty { background: color-mix(in srgb, var(--warn) 22%, #fff) !important; }
 .sheet-grid.paper .sheet-cell input { background: #fff; color: #1f2933; }
 /* Vùng đang chọn (kéo chuột / Shift) — nhạt hơn ô active. */
-.sheet-cell.insel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.sheet-cell.insel { background: color-mix(in srgb, var(--accent) 26%, transparent); }
 /* Status bar Sum/Avg/Count như Excel. */
 .sheet-statusbar {
   flex: none; display: flex; align-items: center; gap: 16px;

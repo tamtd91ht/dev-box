@@ -15,11 +15,15 @@
 // Chèn/xóa dòng-cột có đủ 4 hướng (trên/dưới/trái/phải) — cả ở ribbon lẫn
 // menu chuột phải trên đầu dòng/cột.
 //
-// CHỌN & COPY: quét chuột chọn vùng bất kỳ, Shift+click/Shift+mũi tên nới vùng,
-// bấm-kéo trên dãy đầu cột (hoặc đầu dòng) để chọn một hay nhiều cột/dòng liền
-// nhau, Ctrl+A chọn cả vùng có dữ liệu. Ctrl+C (hoặc nút Copy ở status bar /
-// menu chuột phải) chép giá trị đang hiện ra clipboard dạng TSV + HTML — dán
-// sang Excel/Sheets/Word giữ đúng hàng cột.
+// CHỌN & COPY/PASTE: quét chuột chọn vùng bất kỳ, Shift+click/Shift+mũi tên nới
+// vùng, bấm-kéo trên dãy đầu cột (hoặc đầu dòng) để chọn một hay nhiều cột/dòng
+// liền nhau, Ctrl+A chọn cả vùng có dữ liệu.
+// Ctrl+C chép giá trị ĐANG HIỆN ra clipboard dạng TSV + HTML (dán sang
+// Excel/Sheets/Word giữ đúng hàng cột); Ctrl+V dán TSV/CSV vào từ ô đang chọn,
+// mỗi ô thành một op 'set' như gõ tay nên vẫn đi đúng đường lưu. Cả hai bắt qua
+// SỰ KIỆN copy/paste GỐC của trình duyệt (onCopy/onPaste trên lưới) chứ không
+// đoán phím trong onKeyDown — đó là lý do bản trước Ctrl+C không ăn. Nút ⧉ Copy
+// / ⎘ Dán ở status bar và menu chuột phải đi qua Clipboard API (cần quyền).
 //
 // KÍCH THƯỚC: kéo mép phải đầu cột để đổi độ rộng, mép dưới đầu dòng để đổi
 // chiều cao (double-click = vừa nội dung / về mặc định). Với .xlsx kích thước
@@ -175,6 +179,10 @@ export interface SheetWorkspaceProps {
 export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspaceProps = {}) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [flags, setFlags] = useState<SheetFlags | null>(null);
+  /** flags.allowWrite cho các callback đọc — `allowWrite` bên dưới nằm sau các
+   *  early return nên không dùng được trong useCallback. */
+  const allowWriteRef = useRef(false);
+  allowWriteRef.current = flags?.allowWrite === true;
 
   const [file, setFile] = useState<SheetOpenResult | null>(null);
   /** Local working copy of every sheet's visible grid. */
@@ -919,10 +927,12 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   ), []);
 
-  /** Vùng sẽ được copy — vùng đã quét, hoặc chỉ ô đang chọn. */
-  const copyRange = useCallback(async (rg: SelRange) => {
-    // Chọn cả cột/dòng thì vùng phủ tới tận mép lưới trống — cắt về phần CÓ DỮ
-    // LIỆU, không thì dán ra hàng nghìn dòng rỗng.
+  /** Vùng đích của copy/paste: vùng đã quét, hoặc chỉ ô đang chọn. */
+  const ioRange: SelRange | null = selRange ?? (sel ? { r1: sel.r, c1: sel.c, r2: sel.r, c2: sel.c } : null);
+
+  /** Dựng TSV + HTML cho một vùng. Cắt về phần CÓ DỮ LIỆU vì chọn cả cột/dòng
+   *  phủ tới tận mép lưới trống — không cắt thì dán ra hàng nghìn dòng rỗng. */
+  const serializeRange = useCallback((rg: SelRange) => {
     const r2 = Math.max(rg.r1, Math.min(rg.r2, Math.max(usedRows, rg.r1)));
     const c2 = Math.max(rg.c1, Math.min(rg.c2, Math.max(usedCols, rg.c1)));
     const lines: string[] = [];
@@ -938,12 +948,36 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       lines.push(vals.join('\t'));
       rowsHtml.push(`<tr>${tds.join('')}</tr>`);
     }
-    const text = lines.join('\r\n');
-    const html = `<table>${rowsHtml.join('')}</table>`;
-    const nCells = (r2 - rg.r1 + 1) * (c2 - rg.c1 + 1);
-    const label = `${colLetter(rg.c1 - 1)}${rg.r1}:${colLetter(c2 - 1)}${r2}`;
+    return {
+      text: lines.join('\r\n'),
+      html: `<table>${rowsHtml.join('')}</table>`,
+      nCells: (r2 - rg.r1 + 1) * (c2 - rg.c1 + 1),
+      label: `${colLetter(rg.c1 - 1)}${rg.r1}:${colLetter(c2 - 1)}${r2}`,
+    };
+  }, [cellAt, usedRows, usedCols, tsvCell, htmlEsc]);
+
+  /**
+   * Ctrl+C do TRÌNH DUYỆT bắn ra (sự kiện `copy` trên lưới) — không tự đoán
+   * phím trong onKeyDown. Ghi thẳng vào e.clipboardData nên không cần quyền
+   * clipboard, chạy được cả khi không phải ngữ cảnh bảo mật (http://…).
+   */
+  const onGridCopy = useCallback((e: React.ClipboardEvent) => {
+    // Đang sửa trong ô → để input tự copy đoạn text bôi đen của nó.
+    if (editing || !ioRange) return;
+    const { text, html, nCells, label } = serializeRange(ioRange);
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', text);
+    e.clipboardData.setData('text/html', html);
+    flash(`Đã copy ${label} · ${nCells} ô`);
+  }, [editing, ioRange, serializeRange, flash]);
+
+  /** Nút Copy / menu chuột phải — không có sự kiện `copy` nên đi Clipboard API,
+   *  và lùi về execCommand khi API bị chặn. */
+  const copySelection = useCallback(async () => {
+    if (!ioRange) return;
+    const { text, html, nCells, label } = serializeRange(ioRange);
+    const ok = `Đã copy ${label} · ${nCells} ô`;
     try {
-      // ClipboardItem cho cả hai flavor; trình duyệt/WebView cũ thì lùi về text.
       if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
         await navigator.clipboard.write([new ClipboardItem({
           'text/plain': new Blob([text], { type: 'text/plain' }),
@@ -952,36 +986,140 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       } else {
         await navigator.clipboard.writeText(text);
       }
-      flash(`Đã copy ${label} · ${nCells} ô`);
+      flash(ok);
     } catch {
-      // Clipboard API cần ngữ cảnh bảo mật/quyền — fallback execCommand.
       const ta = document.createElement('textarea');
       ta.value = text;
       ta.style.position = 'fixed';
       ta.style.opacity = '0';
       document.body.appendChild(ta);
       ta.select();
-      const ok = document.execCommand('copy');
+      const done = document.execCommand('copy');
       document.body.removeChild(ta);
       gridRef.current?.focus();
-      flash(ok ? `Đã copy ${label} · ${nCells} ô` : 'Không copy được — trình duyệt chặn truy cập clipboard.');
+      flash(done ? ok : 'Không copy được — trình duyệt chặn truy cập clipboard.');
     }
-  }, [cellAt, usedRows, usedCols, tsvCell, htmlEsc, flash]);
+  }, [ioRange, serializeRange, flash]);
 
-  const copySelection = useCallback(() => {
-    const rg = selRange ?? (sel ? { r1: sel.r, c1: sel.c, r2: sel.r, c2: sel.c } : null);
-    if (rg) void copyRange(rg);
-  }, [selRange, sel, copyRange]);
+  // ── Dán (Ctrl+V) ───────────────────────────────────────────────────────────
+  // Nhận TSV/CSV từ Excel, Sheets, Notepad… Mỗi ô dán vào là một op 'set' như
+  // gõ tay, nên vẫn đi đúng đường lưu (backup + replay server-side).
+
+  /** Tách TSV/CSV có hỗ trợ ô bọc "..." (chứa tab/xuống dòng/nháy kép). */
+  const parseClipTable = useCallback((raw: string): string[][] => {
+    const text = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    // Có tab → TSV (Excel/Sheets luôn ra TSV); không thì thử CSV dấu phẩy.
+    const sep = text.includes('\t') ? '\t' : ',';
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let cur = '';
+    let quoted = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (quoted) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') { cur += '"'; i++; } // "" = một dấu nháy
+          else quoted = false;
+        } else cur += ch;
+        continue;
+      }
+      if (ch === '"' && cur === '') { quoted = true; continue; }
+      if (ch === sep) { row.push(cur); cur = ''; continue; }
+      if (ch === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; continue; }
+      cur += ch;
+    }
+    if (cur !== '' || row.length > 0) { row.push(cur); rows.push(row); }
+    // Excel hay kèm dòng trống ở cuối — bỏ đi cho khỏi ghi đè thừa một dòng.
+    while (rows.length > 1 && rows[rows.length - 1].every((v) => v === '')) rows.pop();
+    return rows;
+  }, []);
+
+  /** Dán bảng vào lưới, góc trên-trái là ô đang chọn. */
+  const pasteTable = useCallback((rows: string[][]) => {
+    if (!sel || rows.length === 0) return;
+    const nR = rows.length;
+    const nC = rows.reduce((m, r) => Math.max(m, r.length), 0);
+    if (nC === 0) return;
+    const r0 = sel.r; const c0 = sel.c;
+    setGrids((gs) => gs.map((g, i) => {
+      if (i !== active) return g;
+      const ng = g.slice();
+      while (ng.length < r0 + nR - 1) ng.push([]);
+      for (let dr = 0; dr < nR; dr++) {
+        const row = ng[r0 + dr - 1].slice();
+        while (row.length < c0 + nC - 1) row.push({ ...EMPTY_CELL });
+        for (let dc = 0; dc < nC; dc++) {
+          const value = rows[dr][dc] ?? '';
+          const cur = row[c0 + dc - 1];
+          const keepS = cur?.s !== undefined ? { s: cur.s } : {};
+          const isFormula = value.startsWith('=') && value.trim().length > 1;
+          row[c0 + dc - 1] = isFormula
+            ? { v: '', t: 'f', f: value.slice(1).trim(), d: true, ...keepS }
+            : { v: value, t: 's', d: true, ...keepS };
+        }
+        ng[r0 + dr - 1] = row;
+      }
+      return ng;
+    }));
+    // Một op 'set' cho mỗi ô — server replay y như người dùng gõ từng ô.
+    setOps((os) => os.map((o, i) => {
+      if (i !== active) return o;
+      const add: SheetOp[] = [];
+      for (let dr = 0; dr < nR; dr++) {
+        for (let dc = 0; dc < nC; dc++) {
+          add.push({ op: 'set', r: r0 + dr, c: c0 + dc, value: rows[dr][dc] ?? '' });
+        }
+      }
+      return [...o, ...add];
+    }));
+    // Chọn đúng vùng vừa dán, như Excel.
+    selExtentRef.current = null;
+    setSelRange({ r1: r0, c1: c0, r2: r0 + nR - 1, c2: c0 + nC - 1 });
+    setSelKind('cells');
+    setPadR((p) => Math.max(p, r0 + nR + PAD_ROWS));
+    setPadC((p) => Math.max(p, c0 + nC + PAD_COLS));
+    setRowLimit((l) => Math.max(l, r0 + nR + 5));
+    flash(`Đã dán ${nR}×${nC} ô vào ${colLetter(c0 - 1)}${r0}`);
+  }, [sel, active, flash]);
+
+  /** Nút "Dán" / menu chuột phải — đọc clipboard qua API (cần quyền; Ctrl+V
+   *  không cần vì đi qua sự kiện `paste`). */
+  const pasteFromClipboard = useCallback(async () => {
+    if (!sel) return;
+    if (!allowWriteRef.current) {
+      flash('Ghi file đang tắt — đặt OFFICE_ALLOW_WRITE=true trong .env.local để sửa/dán.');
+      return;
+    }
+    try {
+      const raw = await navigator.clipboard.readText();
+      if (!raw) { flash('Clipboard đang trống.'); return; }
+      pasteTable(parseClipTable(raw));
+    } catch {
+      flash('Trình duyệt chặn đọc clipboard — bấm vào lưới rồi nhấn Ctrl+V.');
+      gridRef.current?.focus();
+    }
+  }, [sel, parseClipTable, pasteTable, flash]);
+
+  const onGridPaste = useCallback((e: React.ClipboardEvent) => {
+    if (editing || !sel) return; // đang sửa ô → để input nhận text như thường
+    if (!allowWriteRef.current) {
+      e.preventDefault();
+      flash('Ghi file đang tắt — đặt OFFICE_ALLOW_WRITE=true trong .env.local để sửa/dán.');
+      return;
+    }
+    // Ưu tiên text/plain: Excel gửi kèm text/html rất rối, TSV mới là dạng sạch.
+    const raw = e.clipboardData.getData('text/plain');
+    if (!raw) return;
+    e.preventDefault();
+    pasteTable(parseClipTable(raw));
+  }, [editing, sel, parseClipTable, pasteTable, flash]);
 
   const onGridKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (editing || !sel) return;
     const k = e.key;
-    // Ctrl+C sao chép vùng chọn; Ctrl+A chọn toàn bộ vùng có dữ liệu.
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && (k === 'c' || k === 'C')) {
-      e.preventDefault();
-      copySelection();
-      return;
-    }
+    // Ctrl+C / Ctrl+V KHÔNG bắt ở đây — sự kiện `copy`/`paste` gốc của trình
+    // duyệt (onGridCopy/onGridPaste) mới là chỗ xử lý, đáng tin hơn hẳn.
+    // Ctrl+A chọn toàn bộ vùng có dữ liệu.
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (k === 'a' || k === 'A')) {
       e.preventDefault();
       selExtentRef.current = null;
@@ -991,9 +1129,11 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       return;
     }
     // Ctrl+B / I / U — đậm/nghiêng/gạch chân như Excel (chỉ .xlsx có style).
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && 'biu'.includes(k.toLowerCase())) {
-      e.preventDefault();
+    // k.length === 1 để "Backspace"/"Insert"… không lọt vào (includes bắt cả
+    // chữ cái nằm giữa tên phím), và CSV thì nhường phím lại cho trình duyệt.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && k.length === 1 && 'biu'.includes(k.toLowerCase())) {
       if (file?.kind !== 'xlsx') return;
+      e.preventDefault();
       const key = k.toLowerCase() === 'b' ? 'b' : k.toLowerCase() === 'i' ? 'i' : 'u';
       const cur = grid[sel.r - 1]?.[sel.c - 1]?.s;
       const on = cur !== undefined ? styleRef.current[active]?.[cur]?.[key] : undefined;
@@ -1019,7 +1159,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       e.preventDefault();
       setEditing({ ...sel, seed: k });
     }
-  }, [editing, sel, moveSel, extendSel, clearRange, cellAt, commitEdit, file, grid, active, applyFormat, copySelection, usedRows, usedCols]);
+  }, [editing, sel, moveSel, extendSel, clearRange, cellAt, commitEdit, file, grid, active, applyFormat, usedRows, usedCols]);
 
   // Giữ ô chọn trong khung nhìn.
   useEffect(() => {
@@ -1440,6 +1580,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
         ref={gridRef}
         tabIndex={0}
         onKeyDown={onGridKeyDown}
+        onCopy={onGridCopy}
+        onPaste={onGridPaste}
       >
         {/* xlsx: nền "giấy trắng" như Excel thật — màu chữ/nền của file vốn
             thiết kế cho giấy trắng, render trên dark theme sẽ chìm nghỉm. */}
@@ -1655,27 +1797,41 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
         </div>
       )}
 
-      {/* Status bar kiểu Excel: quét vùng là thấy Sum/Avg/Count ngay. */}
-      {rangeStats && rangeStats.count > 0 && (
+      {/* Status bar kiểu Excel: có vùng chọn là thấy Sum/Avg/Count + nút Copy.
+          Hiện cả khi vùng chọn TOÀN Ô TRỐNG — nút Copy phải luôn với tới được,
+          và đó cũng là chỗ người dùng nhìn để biết mình đang chọn cái gì. */}
+      {selRange && (
         <div className="sheet-statusbar">
           <span title="Vùng đang chọn">
-            {colLetter(selRange!.c1 - 1)}{selRange!.r1}:{colLetter(selRange!.c2 - 1)}{selRange!.r2}
+            {colLetter(selRange.c1 - 1)}{selRange.r1}:{colLetter(selRange.c2 - 1)}{selRange.r2}
+            {' · '}{selRange.r2 - selRange.r1 + 1}×{selRange.c2 - selRange.c1 + 1}
           </span>
-          {rangeStats.nums > 0 && (
+          {rangeStats && rangeStats.nums > 0 && (
             <>
               <span><b>Sum:</b> {rangeStats.sum.toLocaleString('vi-VN', { maximumFractionDigits: 6 })}</span>
               <span><b>Avg:</b> {rangeStats.avg.toLocaleString('vi-VN', { maximumFractionDigits: 6 })}</span>
             </>
           )}
-          <span><b>Count:</b> {rangeStats.count}</span>
+          {rangeStats && <span><b>Count:</b> {rangeStats.count}</span>}
           <button
             className="ghost sm"
             style={{ marginLeft: 'auto' }}
             onMouseDown={(e) => e.preventDefault()}
-            onClick={copySelection}
+            onClick={() => void copySelection()}
             title="Sao chép giá trị vùng đang chọn (Ctrl+C) — dán sang Excel/Sheets giữ nguyên hàng cột"
           >
             ⧉ Copy
+          </button>
+          <button
+            className="ghost sm"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => void pasteFromClipboard()}
+            disabled={!allowWrite}
+            title={allowWrite
+              ? 'Dán từ clipboard vào ô đang chọn (Ctrl+V)'
+              : 'Dán cần quyền ghi — đặt OFFICE_ALLOW_WRITE=true trong .env.local'}
+          >
+            ⎘ Dán
           </button>
         </div>
       )}
@@ -1696,9 +1852,13 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
               top: Math.min(ctx.y, Math.max(8, window.innerHeight - 300)),
             }}
           >
-            <button onClick={() => { copySelection(); setCtx(null); }}>
+            <button onClick={() => { void copySelection(); setCtx(null); }}>
               <span aria-hidden>⧉</span> Sao chép {rangeLabel}{' '}
               <span className="small" style={{ color: 'var(--muted)' }}>Ctrl+C</span>
+            </button>
+            <button disabled={!allowWrite} onClick={() => { void pasteFromClipboard(); setCtx(null); }}>
+              <span aria-hidden>⎘</span> Dán vào {sel ? `${colLetter(sel.c - 1)}${sel.r}` : ''}{' '}
+              <span className="small" style={{ color: 'var(--muted)' }}>Ctrl+V</span>
             </button>
             <span className="sheet-ctx-sep" aria-hidden />
             {ctx.kind !== 'col' && (
