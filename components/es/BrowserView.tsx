@@ -23,11 +23,13 @@ import {
   prettyDoc,
   fmtBytes,
   fmtCount,
+  deriveEsFieldNames,
   type EsIndexInfo,
   type EsSearchResult,
   type WireDoc,
 } from '@/lib/es';
 import { flattenEsMapping, type EsField } from '@/lib/esDsl';
+import ExportModal from './ExportModal';
 import QueryEditor from './QueryEditor';
 import AggsResult from './AggsResult';
 import JsonViewer from './JsonViewer';
@@ -201,6 +203,8 @@ function BrowserSession({
   const [fields, setFields] = useState<EsField[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   /** `over.from` chỉ dùng cho phân trang Prev/Next — nó đè lên from trong body. */
   const runSearch = useCallback(async (over?: { from?: number }) => {
@@ -335,6 +339,7 @@ function BrowserSession({
             </div>
 
             {error && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{error}</pre>}
+            {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
 
             {idxTab === 'docs' && (
               <>
@@ -365,6 +370,16 @@ function BrowserSession({
                         {fmtCount(result.total)}{result.totalRelation === 'gte' ? '+' : ''} khớp · hiển thị {result.docs.length} · from {result.from} · {result.tookMs}ms
                       </span>
                       <div style={{ display: 'flex', gap: 6 }}>
+                        {/* Xuất .xlsx — chỉ có nghĩa khi truy vấn đang trả về
+                            document; size=0 (chỉ lấy aggs) thì không có gì để xuất. */}
+                        <button
+                          className="chip-btn"
+                          disabled={busy || result.docs.length === 0}
+                          title={result.docs.length === 0
+                            ? 'Không có document nào để xuất'
+                            : 'Xuất TOÀN BỘ kết quả khớp query ra .xlsx (chọn cột trong hộp thoại)'}
+                          onClick={() => setExportOpen(true)}
+                        >⬇ Export</button>
                         <button className="chip-btn" disabled={busy || result.size === 0 || result.from === 0}
                           onClick={() => void runSearch({ from: Math.max(0, result.from - result.size) })}>← Prev</button>
                         <button className="chip-btn" disabled={busy || result.size === 0 || result.from + result.docs.length >= Math.min(result.total, 10000 - result.size)}
@@ -433,6 +448,34 @@ function BrowserSession({
         )}
       </div>
       {treeVisible && <Splitter {...tree.grip} />}
+
+      {exportOpen && selected && result && (
+        <ExportModal
+          connectionId={connectionId}
+          index={selected}
+          // Truyền BODY nguyên bản chứ không phải query rời: tab này cho gõ cả
+          // sort/_source/size kiểu Dev Tools, tách lấy mỗi `query` sẽ xuất ra
+          // một tập kết quả KHÁC với cái người dùng đang nhìn.
+          body={body}
+          querySummary={body.trim() ? 'body _search đang gõ' : 'match_all'}
+          // Gợi ý field: mapping (đầy đủ) + tên field có thật trong kết quả.
+          fieldSuggestions={[...new Set([
+            '_id',
+            ...deriveEsFieldNames(result.docs),
+            ...fields.map((f) => f.path),
+          ])]}
+          // Cột mặc định lấy từ kết quả THẬT — mapping có thể hàng trăm field
+          // mà truy vấn chỉ trả về vài cái.
+          initialPaths={['_id', ...deriveEsFieldNames(result.docs)].slice(0, 8)}
+          defaultTitle={selected}
+          onClose={() => setExportOpen(false)}
+          onDone={(rows, filename) => {
+            setExportOpen(false);
+            setNotice(`Đã xuất ${rows.toLocaleString('en-US')} dòng → ${filename}`);
+            setTimeout(() => setNotice(null), 5000);
+          }}
+        />
+      )}
     </div>
   );
 }

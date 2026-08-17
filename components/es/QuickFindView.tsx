@@ -22,6 +22,7 @@ import {
   searchEs,
   listEsIndices,
   prettyDoc,
+  deriveEsFieldNames,
   type PublicEsConnection,
   type EsSearchResult,
   type WireDoc,
@@ -70,17 +71,6 @@ interface RunField extends EsQuickFindField {
 }
 
 type RunTab = 'conditions' | 'source';
-
-function deriveFieldNames(docs: WireDoc[]): string[] {
-  const keys = new Set<string>();
-  for (const d of docs.slice(0, 25)) {
-    try {
-      for (const k of Object.keys(JSON.parse(d.json) as Record<string, unknown>)) keys.add(k);
-    } catch { /* truncated doc — skip */ }
-  }
-  keys.delete('_id');
-  return [...keys].sort((a, b) => a.localeCompare(b));
-}
 
 export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [quickFinds, setQuickFinds] = useState<EsQuickFind[]>([]);
@@ -163,11 +153,11 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
     setRunTab('source');
     if (!run || srcSuggestions.length > 0 || runIndices.length === 0) return;
     const have = result?.docs?.length ? result.docs : null;
-    if (have) { setSrcSuggestions(deriveFieldNames(have)); return; }
+    if (have) { setSrcSuggestions(deriveEsFieldNames(have)); return; }
     setSrcLoading(true);
     try {
       const sample = await searchEs(run.connectionId, indexArg, { query: '', sort: '', source: '', size: 5, from: 0 });
-      setSrcSuggestions(deriveFieldNames(sample.docs));
+      setSrcSuggestions(deriveEsFieldNames(sample.docs));
     } catch { /* best-effort */ }
     finally { setSrcLoading(false); }
   }, [run, result, srcSuggestions.length, runIndices.length, indexArg]);
@@ -447,8 +437,8 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           index={indexArg}
           query={lastQuery}
           querySummary={querySummary}
-          fieldSuggestions={[...new Set(['_id', ...srcSuggestions, ...srcSelected, ...run.fields.map((f) => f.path), ...deriveFieldNames(result.docs)])]}
-          initialPaths={srcSelected.length ? ['_id', ...srcSelected] : ['_id', ...deriveFieldNames(result.docs)].slice(0, 8)}
+          fieldSuggestions={[...new Set(['_id', ...srcSuggestions, ...srcSelected, ...run.fields.map((f) => f.path), ...deriveEsFieldNames(result.docs)])]}
+          initialPaths={srcSelected.length ? ['_id', ...srcSelected] : ['_id', ...deriveEsFieldNames(result.docs)].slice(0, 8)}
           defaultTitle={run.name}
           onClose={() => setExportOpen(false)}
           onDone={(rows, filename) => {

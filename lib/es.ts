@@ -192,3 +192,24 @@ export function esConsole(
 // ── Shared formatters ─────────────────────────────────────────────────────────
 
 export { fmtBytes, fmtCount, prettyDoc } from '@/lib/mongo';
+
+/**
+ * Tên field top-level suy từ chính kết quả trả về — nguồn gợi ý cột khi export.
+ *
+ * Vì sao không dùng mapping: index thật thường khai hàng trăm field mà một truy
+ * vấn chỉ trả về vài chục, và `_source` có thể đã lọc bớt. Lấy từ document thật
+ * cho danh sách đúng thứ ĐANG có trong tay. Chỉ soi 25 doc đầu là đủ đại diện
+ * mà không tốn thời gian parse cả trang.
+ *
+ * `_id` bị loại vì nó không nằm trong `_source` — chỗ gọi tự thêm vào nếu cần.
+ */
+export function deriveEsFieldNames(docs: WireDoc[]): string[] {
+  const keys = new Set<string>();
+  for (const d of docs.slice(0, 25)) {
+    try {
+      for (const k of Object.keys(JSON.parse(d.json) as Record<string, unknown>)) keys.add(k);
+    } catch { /* doc bị cắt — bỏ qua */ }
+  }
+  keys.delete('_id');
+  return [...keys].sort((a, b) => a.localeCompare(b));
+}

@@ -28,14 +28,47 @@ const MAX_DEFAULT_COLUMNS = 5;
 export interface ExportModalProps {
   connectionId: string;
   index: string;
-  /** JSON query string of the run being exported. */
-  query: string;
+  /**
+   * Chỉ phần `query` (tab Tìm nhanh ráp sẵn). Bỏ trống khi dùng `body`.
+   */
+  query?: string;
+  /**
+   * NGUYÊN body _search kiểu Dev Tools (tab Dữ liệu). Có `body` thì server bỏ
+   * qua mọi field rời — nên `_source` và `size` phải chèn thẳng vào body, xem
+   * buildBodyPage() bên dưới.
+   */
+  body?: string;
   querySummary: string;
   fieldSuggestions: string[];
   initialPaths: string[];
   defaultTitle: string;
   onClose: () => void;
   onDone: (rows: number, filename: string) => void;
+}
+
+/**
+ * Ráp body cho MỘT trang export khi nguồn là body _search nguyên bản.
+ *
+ * Vì sao phải viết lại body thay vì truyền `source`/`size` rời: server ưu tiên
+ * `body` và BỎ QUA các field rời khi body có nội dung (xem search() ở
+ * lib/esClient). Nên muốn export chỉ lấy đúng field đang cần + phân trang đủ
+ * lớn thì phải sửa ngay trong body.
+ *
+ * Giữ nguyên phần còn lại của body người dùng gõ (query, sort, aggs…): export
+ * phải ra ĐÚNG tập kết quả họ đang nhìn, không phải một truy vấn khác.
+ * `aggs` bị bỏ — export là bảng dòng, phần thống kê không dùng tới và giữ lại
+ * chỉ tốn thời gian tính ở mỗi trang.
+ */
+function buildBodyPage(raw: string, tops: string[], size: number, from: number): string {
+  let parsed: Record<string, unknown> = {};
+  if (raw.trim()) {
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; } catch { parsed = {}; }
+  }
+  const next: Record<string, unknown> = { ...parsed, size, from };
+  delete next.aggs;
+  delete next.track_total_hits;
+  if (tops.length) next._source = tops;
+  return JSON.stringify(next);
 }
 
 interface ColumnDraft extends ReportColumn { key: number; }
@@ -52,7 +85,7 @@ function prettyHeader(path: string): string {
 }
 
 export default function ExportModal(props: ExportModalProps) {
-  const { connectionId, index, query, querySummary, fieldSuggestions, initialPaths, defaultTitle, onClose, onDone } = props;
+  const { connectionId, index, query, body, querySummary, fieldSuggestions, initialPaths, defaultTitle, onClose, onDone } = props;
 
   const [title, setTitle] = useState(defaultTitle);
   let seq = 0;
@@ -85,7 +118,11 @@ export default function ExportModal(props: ExportModalProps) {
       let from = 0;
       for (;;) {
         setProgress(`Đang tải dữ liệu… ${docs.length} dòng`);
-        const page = await searchEs(connectionId, index, { query, sort: '', source, size: PAGE, from });
+        // Hai nguồn: body nguyên bản (tab Dữ liệu) thì phân trang bằng cách
+        // viết lại body; query rời (tab Tìm nhanh) thì truyền field rời như cũ.
+        const page = body !== undefined
+          ? await searchEs(connectionId, index, { body: buildBodyPage(body, tops, PAGE, from) })
+          : await searchEs(connectionId, index, { query, sort: '', source, size: PAGE, from });
         for (const d of page.docs) {
           try { docs.push(JSON.parse(d.json) as Record<string, unknown>); } catch { /* truncated — skip row */ }
         }
