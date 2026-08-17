@@ -1550,6 +1550,43 @@ audio { width: 100%; margin-top: 12px; }
   min-width: 0; border-left: 1px solid var(--border, rgba(127,127,127,.2)); padding-left: 16px;
   overflow: auto;
 }
+
+/* ── Value theo kiểu key (string / hash / list / zset) ────────────────────── */
+.redis-val { margin-top: 6px; max-height: 38vh; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.redis-val-tools { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+/* Bảng field→value kiểu RedisInsight. Cuộn TRONG khối, không đẩy nút TTL/Xoá
+   xuống ngoài tầm nhìn khi hash có hàng trăm field. */
+.redis-kv {
+  margin-top: 6px; max-height: 38vh; overflow: auto;
+  border: 1px solid var(--glass-brd); border-radius: 9px;
+}
+.redis-kv-row {
+  display: grid; grid-template-columns: minmax(90px, 32%) minmax(0, 1fr);
+  gap: 10px; align-items: start;
+  padding: 6px 9px; border-bottom: 1px solid var(--glass-brd);
+}
+.redis-kv-row:last-child { border-bottom: none; }
+.redis-kv-row:hover { background: var(--glass-bg); }
+.redis-kv-k {
+  font-family: var(--mono); font-size: 11.5px; color: var(--accent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Chỉ số của list và score của zset là số — canh phải cho dễ đối chiếu. */
+.redis-kv-idx, .redis-kv-score { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.redis-kv-v {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text);
+  min-width: 0; overflow-wrap: anywhere;
+}
+/* Value là JSON lồng: một dòng khi thu gọn, bung ra khi bấm. */
+.redis-kv-json { display: block; }
+.redis-kv-json > span {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.redis-kv-fmt {
+  background: none; border: none; padding: 0 4px 0 0; cursor: pointer; box-shadow: none;
+  color: var(--muted); font-family: var(--mono); font-size: 10.5px;
+}
+.redis-kv-fmt:hover { color: var(--accent); transform: none; box-shadow: none; }
 @media (max-width: 900px) {
   .redis-layout { grid-template-columns: 1fr; }
   .redis-split { grid-template-columns: 1fr; }

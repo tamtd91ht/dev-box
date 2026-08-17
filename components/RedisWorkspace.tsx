@@ -213,6 +213,12 @@ export default function RedisWorkspace() {
   queryRef.current = query;
   /** The key list scroll container — watched for infinite-scroll. */
   const listRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * openKey qua ref: runScan cần mở value ngay khi tra chính xác ra đúng 1 key,
+   * nhưng openKey khai báo phía dưới. Ref tránh phải xáo thứ tự khai báo hoặc
+   * đưa openKey vào deps của runScan (deps rỗng là chủ ý — xem ghi chú ở đó).
+   */
+  const openKeyRef = useRef<((key: string) => Promise<void>) | null>(null);
 
   const activeConn = connections.find((c) => c.id === activeId) ?? null;
   const isClusterActive = activeConn?.mode === 'cluster';
@@ -370,6 +376,10 @@ export default function RedisWorkspace() {
         setCursor(r.cursor);
         cursorRef.current = r.cursor;
         setScanStarted(true);
+        // Tra CHÍNH XÁC chỉ có thể ra 0 hoặc 1 key — không có gì để chọn giữa,
+        // nên mở luôn value thay vì bắt bấm thêm một cái nữa vào đúng dòng duy
+        // nhất vừa hiện ra.
+        if (exactKey && r.keys.length === 1) void openKeyRef.current?.(r.keys[0].key);
         return { cursor: r.cursor, total };
       } catch (e) {
         setError((e as Error).message);
@@ -480,6 +490,7 @@ export default function RedisWorkspace() {
       setValueLoading(false);
     }
   }, []);
+  openKeyRef.current = openKey;
 
   // ── Set TTL (bounded ≤ 30 days; enforced again server-side) ─────────────────
   async function applyTtl() {
@@ -997,9 +1008,7 @@ function ValuePanel({ value, ttlInput, onTtlInput, onApplyTtl, onDelete, busy }:
         {size !== undefined && <> · {size} phần tử{truncated ? ` (hiển thị tối đa)` : ''}</>}
       </div>
 
-      <pre className="code" style={{ marginTop: 6, maxHeight: '38vh', overflow: 'auto' }}>
-        {renderValue(value)}
-      </pre>
+      <ValueBody value={value} />
 
       {/* Set TTL — capped at 30 days; no PERSIST offered. */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
@@ -1036,15 +1045,152 @@ function ValuePanel({ value, ttlInput, onTtlInput, onApplyTtl, onDelete, busy }:
   );
 }
 
-/** Pretty-print a value by shape. */
-function renderValue(v: ValueResult): string {
-  if (v.type === 'none') return '(không tồn tại)';
-  if (v.type === 'string') return v.value === null ? '(null)' : String(v.value);
-  try {
-    return JSON.stringify(v.value, null, 2);
-  } catch {
-    return String(v.value);
+/**
+ * Value hiện theo ĐÚNG KIỂU của key, thay vì đổ tất cả vào một khối JSON:
+ *  · string — nguyên văn; nếu nội dung LÀ json thì có nút Format bật/tắt.
+ *  · hash   — bảng field → value như RedisInsight, có ô lọc field.
+ *  · list/set/zset — bảng có số thứ tự (zset kèm score).
+ * Kiểu lạ thì vẫn rơi về JSON như cũ, không chặn đường đọc.
+ */
+function ValueBody({ value }: { value: ValueResult }) {
+  const { type } = value;
+  if (type === 'none') return <pre className="code redis-val">(không tồn tại)</pre>;
+  if (type === 'string') return <StringValue raw={value.value === null ? '(null)' : String(value.value)} />;
+  if (type === 'hash' && value.value && typeof value.value === 'object' && !Array.isArray(value.value)) {
+    return <HashValue map={value.value as Record<string, string>} />;
   }
+  if (type === 'zset' && Array.isArray(value.value)) {
+    return <ZsetValue items={value.value as { member: string; score: string }[]} />;
+  }
+  if ((type === 'list' || type === 'set') && Array.isArray(value.value)) {
+    return <ListValue items={(value.value as unknown[]).map(String)} ordered={type === 'list'} />;
+  }
+  return <pre className="code redis-val">{safeJson(value.value)}</pre>;
+}
+
+function safeJson(v: unknown): string {
+  try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+}
+
+/** Thử parse JSON — trả về bản đã format, hoặc null nếu không phải JSON. */
+function tryFormatJson(raw: string): string | null {
+  const t = raw.trim();
+  // Chỉ thử khi trông đã giống JSON: tránh JSON.parse nuốt "123"/"true" thành
+  // số/boolean rồi "format" một chuỗi vốn không phải JSON.
+  if (!(t.startsWith('{') && t.endsWith('}')) && !(t.startsWith('[') && t.endsWith(']'))) return null;
+  try {
+    return JSON.stringify(JSON.parse(t), null, 2);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Value kiểu string. Rất nhiều key Redis chứa JSON — nhận ra thì bật sẵn bản
+ * format cho dễ đọc, kèm nút chuyển qua lại vì đôi khi cần đúng chuỗi thô
+ * (so sánh byte, copy nguyên văn).
+ */
+function StringValue({ raw }: { raw: string }) {
+  const pretty = useMemo(() => tryFormatJson(raw), [raw]);
+  const [formatted, setFormatted] = useState(true);
+  const show = pretty && formatted ? pretty : raw;
+  return (
+    <>
+      {pretty && (
+        <div className="redis-val-tools">
+          <button
+            className={'chip-btn' + (formatted ? ' on' : '')}
+            onClick={() => setFormatted((v) => !v)}
+            title={formatted ? 'Xem chuỗi gốc' : 'Format JSON cho dễ đọc'}
+          >{'{ }'} {formatted ? 'JSON đã format' : 'Chuỗi gốc'}</button>
+          <button className="chip-btn" title="Copy nội dung"
+            onClick={() => void navigator.clipboard?.writeText(show)}>⧉ Copy</button>
+        </div>
+      )}
+      <pre className="code redis-val">{show}</pre>
+    </>
+  );
+}
+
+/** Hash → bảng field/value như RedisInsight, kèm ô lọc khi hash to. */
+function HashValue({ map }: { map: Record<string, string> }) {
+  const [filter, setFilter] = useState('');
+  const rows = useMemo(() => {
+    const all = Object.entries(map);
+    const f = filter.trim().toLowerCase();
+    if (!f) return all;
+    return all.filter(([k, v]) => k.toLowerCase().includes(f) || String(v).toLowerCase().includes(f));
+  }, [map, filter]);
+  const total = Object.keys(map).length;
+  return (
+    <>
+      <div className="redis-val-tools">
+        <input
+          className="input"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="lọc field / value…"
+          style={{ flex: 1, minWidth: 120, fontFamily: 'var(--mono)', fontSize: 12 }}
+        />
+        <span className="small" style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+          {filter.trim() ? `${rows.length}/${total}` : `${total}`} field
+        </span>
+      </div>
+      <div className="redis-kv">
+        {rows.map(([k, v]) => (
+          <div className="redis-kv-row" key={k}>
+            <code className="redis-kv-k" title={k}>{k}</code>
+            <FieldValue raw={String(v)} />
+          </div>
+        ))}
+        {rows.length === 0 && <p className="empty" style={{ padding: '12px 8px' }}>Không có field nào khớp.</p>}
+      </div>
+    </>
+  );
+}
+
+/** Một value trong bảng — tự format khi nó là JSON lồng (rất hay gặp trong hash). */
+function FieldValue({ raw }: { raw: string }) {
+  const pretty = useMemo(() => tryFormatJson(raw), [raw]);
+  const [open, setOpen] = useState(false);
+  if (!pretty) return <code className="redis-kv-v" title={raw}>{raw}</code>;
+  return (
+    <code className="redis-kv-v redis-kv-json">
+      <button className="redis-kv-fmt" onClick={() => setOpen((v) => !v)}
+        title={open ? 'Thu gọn' : 'Format JSON'}>{open ? '▾' : '▸'} {'{ }'}</button>
+      {open ? <pre className="code redis-val" style={{ marginTop: 4 }}>{pretty}</pre> : <span title={raw}>{raw}</span>}
+    </code>
+  );
+}
+
+/** list/set → bảng có số thứ tự (list giữ thứ tự, set thì chỉ để đếm). */
+function ListValue({ items, ordered }: { items: string[]; ordered: boolean }) {
+  return (
+    <div className="redis-kv">
+      {items.map((v, i) => (
+        <div className="redis-kv-row" key={`${i}-${v}`}>
+          <code className="redis-kv-k redis-kv-idx" title={ordered ? `index ${i}` : undefined}>{i}</code>
+          <FieldValue raw={v} />
+        </div>
+      ))}
+      {items.length === 0 && <p className="empty" style={{ padding: '12px 8px' }}>(rỗng)</p>}
+    </div>
+  );
+}
+
+/** zset → member kèm score. */
+function ZsetValue({ items }: { items: { member: string; score: string }[] }) {
+  return (
+    <div className="redis-kv">
+      {items.map((it, i) => (
+        <div className="redis-kv-row" key={`${i}-${it.member}`}>
+          <code className="redis-kv-k redis-kv-score" title="score">{it.score}</code>
+          <FieldValue raw={it.member} />
+        </div>
+      ))}
+      {items.length === 0 && <p className="empty" style={{ padding: '12px 8px' }}>(rỗng)</p>}
+    </div>
+  );
 }
 
 // ── Delete confirmation modal (typed-confirm) ────────────────────────────────────
