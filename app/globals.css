@@ -31,6 +31,16 @@
   --grid-line: rgba(255, 255, 255, 0.05);
   --grid-op: 0.5;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* Nền "kính" cho hover/row/khối phụ. Trước đây 100 chỗ trong file này gọi
+     var(--glass-bg) mà KHÔNG ai định nghĩa nó — mọi nền hover, nền dòng và nền
+     header thẻ document đều rơi về transparent, nên bảng kết quả Mongo trông
+     như một loạt dòng trống. Định nghĩa ở cả hai theme, ngang với --glass. */
+  --glass-bg: rgba(255, 255, 255, 0.045);
+  /* Nền popup/panel nổi (dropdown gợi ý field, menu ⋯). Cũng đang bị gọi mà
+     chưa định nghĩa — fallback var(--panel, var(--bg)) rơi tiếp về --bg cũng
+     không tồn tại → popup trong suốt, chữ chồng lên nội dung phía sau. */
+  --panel: #131829;
   color-scheme: dark;
 }
 
@@ -63,6 +73,8 @@
   --shadow-sm: 0 4px 20px rgba(50, 60, 120, 0.12);
   --grid-line: rgba(30, 41, 82, 0.06);
   --grid-op: 0.7;
+  --glass-bg: rgba(19, 30, 64, 0.05);
+  --panel: #ffffff;
   color-scheme: light;
 }
 
