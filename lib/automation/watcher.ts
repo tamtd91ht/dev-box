@@ -25,7 +25,7 @@ import { automation } from './runtime';
 import { newId } from './engine';
 import { listConnections, peekAddress } from './connections';
 import { MIN_WATCH_INTERVAL_SEC } from './normalize';
-import { breaches, groupActive, infraBreachEvent, infraRecoveredEvent, probeStack, type BreachingConsumer, type KafkaGroupDetail, type ProbeResult } from './sources/infra';
+import { breaches, groupActive, infraBreachEvent, infraRecoveredEvent, probeStack, type BreachingConsumer, type BreachingHost, type KafkaGroupDetail, type ProbeResult } from './sources/infra';
 import { trace } from './trace';
 import type { AutomationConfig, InfraWatch } from './types';
 
@@ -255,6 +255,76 @@ function offendingTopics(watch: InfraWatch, res: ProbeResult): string[] | undefi
   if (watch.stack !== 'kafka' || !KAFKA_TOPIC_ALERT_METRICS.has(watch.metric)) return undefined;
   return res.affectedTopics?.length ? res.affectedTopics : undefined;
 }
+
+/** Chỉ số Kafka cảnh báo THEO HOST broker → cần liệt kê đích danh máy nào. */
+const KAFKA_HOST_ALERT_METRICS = new Set([
+  'hostDiskUsedPct',
+  'hostDiskFreeGb',
+  'hostMemUsedPct',
+  'hostCpuPct',
+  'hostLoad1PerCore',
+  'hostsDown',
+]);
+
+/**
+ * Chọn các HOST broker liên quan tới cảnh báo, tuỳ chỉ số. Cùng nguyên tắc với
+ * offendingConsumers: nêu MỌI máy thoả điều kiện, không chỉ máy tệ nhất — "đĩa
+ * 92%" mà không biết máy nào thì người trực vẫn phải đi dò từng broker.
+ *
+ * Chỉ đính field có nghĩa với chỉ số đang báo, để tin nhắn không lẫn số liệu
+ * không liên quan (cảnh báo đĩa thì không cần biết CPU bao nhiêu).
+ */
+function offendingHosts(watch: InfraWatch, res: ProbeResult): BreachingHost[] | undefined {
+  if (watch.stack !== 'kafka' || !KAFKA_HOST_ALERT_METRICS.has(watch.metric)) return undefined;
+  const hosts = res.kafkaHosts;
+  if (!hosts?.length) return undefined;
+
+  // Mất số liệu là ca riêng: máy không trả lời thì không có con số nào để so.
+  if (watch.metric === 'hostsDown') {
+    const down = hosts.filter((h) => !h.reachable);
+    return down.length
+      ? down.map((h) => ({ host: h.host, unreachable: true, error: h.error }))
+      : undefined;
+  }
+
+  const live = hosts.filter((h) => h.reachable);
+  // Đĩa: kèm cả % lẫn GB còn trống lẫn mount, bất kể watch dùng chỉ số nào
+  // trong hai — người đọc cần cả ba để quyết định có phải đi dọn ngay không.
+  const diskItem = (h: (typeof live)[number]): BreachingHost => ({
+    host: h.host,
+    ...(h.diskUsedPct !== null ? { diskUsedPct: h.diskUsedPct } : {}),
+    ...(h.diskFreeGb !== null ? { diskFreeGb: h.diskFreeGb } : {}),
+    ...(h.worstMount ? { mount: h.worstMount } : {}),
+  });
+
+  switch (watch.metric) {
+    case 'hostDiskUsedPct':
+      return pick(live.filter((h) => h.diskUsedPct !== null && breaches(h.diskUsedPct, watch.op, watch.threshold))
+        .sort((a, b) => (b.diskUsedPct ?? 0) - (a.diskUsedPct ?? 0))
+        .map(diskItem));
+    case 'hostDiskFreeGb':
+      return pick(live.filter((h) => h.diskFreeGb !== null && breaches(h.diskFreeGb, watch.op, watch.threshold))
+        .sort((a, b) => (a.diskFreeGb ?? 0) - (b.diskFreeGb ?? 0))
+        .map(diskItem));
+    case 'hostMemUsedPct':
+      return pick(live.filter((h) => h.memUsedPct !== null && breaches(h.memUsedPct, watch.op, watch.threshold))
+        .sort((a, b) => (b.memUsedPct ?? 0) - (a.memUsedPct ?? 0))
+        .map((h) => ({ host: h.host, memUsedPct: h.memUsedPct ?? undefined })));
+    case 'hostCpuPct':
+      return pick(live.filter((h) => h.cpuPct !== null && breaches(h.cpuPct, watch.op, watch.threshold))
+        .sort((a, b) => (b.cpuPct ?? 0) - (a.cpuPct ?? 0))
+        .map((h) => ({ host: h.host, cpuPct: h.cpuPct ?? undefined })));
+    case 'hostLoad1PerCore':
+      return pick(live.filter((h) => h.load1PerCore !== null && breaches(h.load1PerCore, watch.op, watch.threshold))
+        .sort((a, b) => (b.load1PerCore ?? 0) - (a.load1PerCore ?? 0))
+        .map((h) => ({ host: h.host, load1PerCore: h.load1PerCore ?? undefined })));
+    default:
+      return undefined;
+  }
+}
+
+/** Danh sách rỗng → undefined, để fields host vắng mặt thay vì hiện dòng trống. */
+const pick = (xs: BreachingHost[]): BreachingHost[] | undefined => (xs.length ? xs : undefined);
 
 class InfraWatcher {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -509,6 +579,8 @@ class InfraWatcher {
               // topic bị ảnh hưởng (under-replicated/offline) — tuỳ chỉ số.
               breachingConsumers: offendingConsumers(watch, res),
               affectedTopics: offendingTopics(watch, res),
+              // Kafka: đích danh HOST broker liên quan (đĩa/RAM/CPU/mất exporter).
+              breachingHosts: offendingHosts(watch, res),
             }),
           );
         }

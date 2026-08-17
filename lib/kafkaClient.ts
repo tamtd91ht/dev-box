@@ -320,6 +320,8 @@ export interface KafkaHostMetrics {
   /** Cumulative CPU seconds — client diffs polls into busy %. */
   cpuIdleSec?: number;
   cpuTotalSec?: number;
+  /** Số core (đếm nhãn `cpu` của node_cpu_seconds_total) — để quy load1 về mỗi core. */
+  cpuCores?: number;
   at: number;
 }
 
@@ -386,11 +388,17 @@ async function fetchOneHostMetrics(url: string): Promise<KafkaHostMetrics> {
       .slice(0, 3);
 
     // CPU: cumulative seconds summed across all cpus; idle separately.
+    // Số core đếm từ nhãn `cpu` (mỗi core một chuỗi per mode) — cần để quy
+    // load1 về "mỗi core", vì load 8 trên máy 16 core là nhàn còn trên máy
+    // 2 core là ngộp; không có nó thì một ngưỡng load không dùng chung được
+    // cho các broker khác cấu hình.
     let cpuIdleSec = 0;
     let cpuTotalSec = 0;
+    const cores = new Set<string>();
     for (const r of rows) {
       if (r.name !== 'node_cpu_seconds_total') continue;
       cpuTotalSec += r.value;
+      if (r.labels.cpu) cores.add(r.labels.cpu);
       if (r.labels.mode === 'idle') cpuIdleSec += r.value;
     }
 
@@ -405,6 +413,7 @@ async function fetchOneHostMetrics(url: string): Promise<KafkaHostMetrics> {
       disks,
       cpuIdleSec: cpuTotalSec > 0 ? cpuIdleSec : undefined,
       cpuTotalSec: cpuTotalSec > 0 ? cpuTotalSec : undefined,
+      cpuCores: cores.size > 0 ? cores.size : undefined,
       at: Date.now(),
     };
   } catch (e) {

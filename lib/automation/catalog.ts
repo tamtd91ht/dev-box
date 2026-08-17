@@ -164,6 +164,27 @@ const INFRA_FIELDS: FieldDef[] = [
     hint: 'tổng số topic bị ảnh hưởng (kể cả phần bị cắt khỏi danh sách); 0 khi không có',
     sample: 2,
   },
+  {
+    name: 'hosts',
+    label: 'Host broker liên quan (chuỗi)',
+    kind: 'text',
+    hint: 'CHỈ Kafka chỉ số host (đĩa/RAM/CPU/load/mất exporter): đích danh máy nào kèm số liệu — rỗng với stack/chỉ số khác',
+    sample: '192.168.2.94=đĩa 91% /var/lib/kafka, còn 18.4 GB',
+  },
+  {
+    name: 'hostCount',
+    label: 'Số host broker liên quan',
+    kind: 'number',
+    hint: 'tổng số host liên quan (kể cả phần bị cắt khỏi danh sách hiển thị); 0 khi không có',
+    sample: 2,
+  },
+  {
+    name: 'hostsJson',
+    label: 'Host broker liên quan (JSON)',
+    kind: 'text',
+    hint: 'bản máy đọc [{host,diskUsedPct?,diskFreeGb?,mount?,memUsedPct?,cpuPct?,load1PerCore?,unreachable?}] — vào AlertMeta.hosts của metaJson; rỗng khi không có',
+    sample: '[{"host":"192.168.2.94","diskUsedPct":91,"diskFreeGb":18.4,"mount":"/var/lib/kafka"}]',
+  },
 ];
 
 export const GROUPS: GroupDef[] = [
@@ -387,6 +408,12 @@ const KAFKA_LAG_NOTE =
   'cộng fetchTopicOffsets cho mỗi topic phân biệt. Chi phí tăng theo SỐ GROUP × SỐ TOPIC. ' +
   'Nên để ≥120s; cụm nhiều group thì 300s. Lag không đổi trong 30 giây, nên đo dày hơn không cho thêm thông tin gì.';
 
+const KAFKA_HOST_NOTE =
+  'Rẻ và KHÔNG đụng vào Kafka: đọc HTTP node_exporter của từng broker host (song song, timeout 5s/host), ' +
+  'không gọi broker hay controller lượt nào. Chi phí không tăng theo số topic/group — chỉ theo số host. ' +
+  'Chỉ hoạt động khi cụm đã khai "Metrics URL" trong cấu hình kết nối; chưa khai thì mọi chỉ số host vắng mặt ' +
+  'và watch không bao giờ khớp (nên bật nhầm cũng không sinh báo giả).';
+
 const ES_NODES_NOTE =
   'Ngoài /_cluster/health còn gọi thêm /_cat/nodes (một round-trip nữa, master trả lời). Nên để ≥60s.';
 
@@ -408,6 +435,7 @@ const ES_HEALTH_PROBE = '/_cluster/health';
 const ES_NODES_PROBE = '/_cluster/health + /_cat/nodes';
 const KAFKA_META_PROBE = 'describeCluster + metadata toàn bộ topic';
 const KAFKA_LAG_PROBE = 'listGroups + describeGroups + fetchOffsets cho từng consumer group';
+const KAFKA_HOST_PROBE = 'node_exporter /metrics của từng broker host';
 const RABBIT_OVERVIEW_PROBE = '/api/overview (management API)';
 const RABBIT_NODES_PROBE = '/api/overview + /api/nodes (management API)';
 const PG_PROBE = 'truy vấn ping (SELECT 1)';
@@ -965,6 +993,106 @@ export const STACKS: StackDef[] = [
         probe: KAFKA_META_PROBE,
         agg: 'count',
         meaning: 'tổng số partition trong cụm.',
+      },
+
+      // ── Chỉ số HOST của broker (node_exporter) ────────────────────────────
+      // Kafka không nói gì về máy chạy nó. Mà đĩa đầy là cách một cụm Kafka
+      // chết thường gặp nhất và im lặng nhất: mọi chỉ số cluster vẫn "xanh"
+      // cho tới đúng lúc broker không ghi được nữa. Chỉ có ở cụm đã khai
+      // metricsUrls; cụm chưa khai thì các chỉ số này vắng mặt và watch không
+      // bao giờ khớp (metric vắng mặt không được đánh giá).
+      {
+        key: 'hostDiskUsedPct',
+        label: 'Đĩa broker đã dùng',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 85 },
+        hint: 'Mount CHẬT NHẤT trong các broker — đĩa đầy là broker ngừng ghi, cluster vẫn xanh tới phút chót',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostdisk',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'max',
+        meaning: 'phần trăm đã dùng của phân vùng chật nhất trên các broker host. Kafka ghi log liên tục nên đĩa đầy làm broker ngừng nhận message — và các chỉ số cluster vẫn báo bình thường cho tới đúng lúc đó, nên đây là cảnh báo đi TRƯỚC sự cố.',
+      },
+      {
+        key: 'hostDiskFreeGb',
+        label: 'Đĩa broker còn trống',
+        unit: 'GB',
+        suggest: { op: 'lt', threshold: 20 },
+        hint: 'Dùng thay % khi các broker có đĩa lệch nhau nhiều — 10% của 4TB khác hẳn 10% của 100GB',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostdisk',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'min',
+        meaning: 'dung lượng trống còn lại (GB) trên phân vùng chật nhất của các broker. Dùng thay phần trăm khi các broker có đĩa lệch nhau nhiều: 10% của 4TB là 400GB còn rất thoải mái, 10% của 100GB là sắp chết.',
+      },
+      {
+        key: 'hostMemUsedPct',
+        label: 'RAM broker đã dùng',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 90 },
+        hint: 'Kafka dựa vào page cache của OS — RAM cạn là đọc rơi xuống đĩa, độ trễ tăng vọt',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostram',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'max',
+        meaning: 'phần trăm RAM đã dùng trên broker tốn nhiều nhất (tính theo MemAvailable). Kafka phục vụ phần lớn lượt đọc từ page cache của OS, nên RAM cạn không làm nó chết ngay mà làm mọi lượt đọc rơi xuống đĩa — độ trễ tăng vọt trong khi cluster vẫn xanh.',
+      },
+      {
+        key: 'hostCpuPct',
+        label: 'CPU broker',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 90 },
+        hint: 'Cần HAI vòng đo mới có số (tính từ chênh lệch bộ đếm) — vòng đầu luôn vắng mặt',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostcpu',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'max',
+        meaning: 'phần trăm CPU đang bận trên broker tải cao nhất, tính từ chênh lệch bộ đếm giữa hai vòng đo liên tiếp — nên vòng đo ĐẦU TIÊN sau khi bật watch không có số (chỉ số vắng mặt, không phải 0).',
+      },
+      {
+        key: 'hostLoad1PerCore',
+        label: 'Load broker (mỗi core)',
+        suggest: { op: 'gt', threshold: 1.5 },
+        hint: 'load1 chia số core — ngưỡng dùng chung được cho broker khác cấu hình. >1 = có tiến trình phải xếp hàng',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostcpu',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'max',
+        meaning: 'load average 1 phút chia cho số core, của broker cao nhất. Chia core rồi thì một ngưỡng dùng chung được cho mọi máy dù khác cấu hình: >1 nghĩa là đã có tiến trình phải xếp hàng chờ CPU, >2 là ngộp thật sự.',
+      },
+      {
+        key: 'hostsDown',
+        label: 'Host broker không lấy được số liệu',
+        suggest: { op: 'gt', threshold: 0 },
+        hint: 'node_exporter tắt / firewall / máy chết — KHÔNG chắc broker đã chết, dùng kèm chỉ số brokers',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostdown',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'count',
+        meaning: 'số host broker mà node_exporter không trả lời (tắt, firewall, hoặc máy đã chết). Lưu ý đây là chỗ ĐO bị mất chứ chưa chắc broker chết — đối chiếu với chỉ số "Số broker" mới kết luận được: cả hai cùng giảm là máy chết thật, chỉ mình chỉ số này tăng là exporter hỏng.',
+      },
+      {
+        key: 'hostsTotal',
+        label: 'Số host broker đang giám sát',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostdown',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'count',
+        meaning: 'số endpoint node_exporter đã khai trong cấu hình cụm — mẫu số của "host không lấy được số liệu".',
       },
     ],
   },

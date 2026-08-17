@@ -13,7 +13,7 @@
 // one probe + one StackDef.
 
 import { esHealth, listEsNodes } from '@/lib/es';
-import { kafkaClusterHealth, kafkaConsumerLag } from '@/lib/kafka';
+import { kafkaClusterHealth, kafkaConsumerLag, kafkaHostMetrics } from '@/lib/kafka';
 import { mongoMonitor } from '@/lib/mongo';
 import { pingPg } from '@/lib/pg';
 import { listRabbitNodes, rabbitOverview } from '@/lib/rabbit';
@@ -44,12 +44,34 @@ export interface KafkaGroupDetail {
   error: boolean;
 }
 
+/**
+ * Chi tiết MỘT host broker (từ node_exporter). Giữ lại để cảnh báo nêu đích
+ * danh MÁY nào đầy đĩa / hết RAM, chứ không chỉ "một máy nào đó trong cụm".
+ */
+export interface KafkaHostDetail {
+  /** Hostname/IP rút từ URL exporter — nhãn hiển thị. */
+  host: string;
+  /** Có lấy được số liệu không (false = exporter tắt / timeout / lỗi mạng). */
+  reachable: boolean;
+  error?: string;
+  diskUsedPct: number | null;
+  diskFreeGb: number | null;
+  /** Mount chật nhất — chỗ thật sự sắp đầy. */
+  worstMount: string | null;
+  memUsedPct: number | null;
+  /** null ở lần đo ĐẦU TIÊN: CPU% cần chênh lệch giữa hai lần đo. */
+  cpuPct: number | null;
+  load1PerCore: number | null;
+}
+
 /** Kết quả một probe: metrics phẳng + (Kafka) chi tiết group + topic bị ảnh hưởng. */
 export interface ProbePayload {
   metrics: MetricMap;
   kafkaGroups?: KafkaGroupDetail[];
   /** Kafka: topic có partition under-replicated / offline (từ clusterHealth). */
   affectedTopics?: string[];
+  /** Kafka: chi tiết từng host broker (khi cụm có khai metricsUrls). */
+  kafkaHosts?: KafkaHostDetail[];
 }
 
 export interface ProbeResult {
@@ -60,6 +82,8 @@ export interface ProbeResult {
   kafkaGroups?: KafkaGroupDetail[];
   /** Chỉ Kafka: topic bị ảnh hưởng (under-replicated/offline) — cho cảnh báo theo topic. */
   affectedTopics?: string[];
+  /** Chỉ Kafka: chi tiết host broker (node_exporter) — cho cảnh báo nêu đích danh máy. */
+  kafkaHosts?: KafkaHostDetail[];
   /** Probe-level failure (host down, bad credentials…). `metrics.up` is 0 then. */
   error?: string;
 }
@@ -174,6 +198,27 @@ export const KAFKA_LAG_METRICS = new Set([
 ]);
 
 /**
+ * Chỉ số HOST của broker, lấy từ node_exporter khai trong connection
+ * (metricsUrls). Kafka không nói gì về RAM/đĩa/CPU của máy chạy nó — mà đĩa đầy
+ * là cách một cụm Kafka chết thường gặp nhất, và im lặng nhất: cluster vẫn
+ * "xanh" cho tới đúng lúc broker không ghi được nữa.
+ *
+ * Cùng cơ chế tiết kiệm như KAFKA_LAG_METRICS: chỉ fetch khi watch thật sự đọc
+ * một trong các chỉ số này. Cụm KHÔNG khai metricsUrls thì mọi chỉ số ở đây
+ * vắng mặt — watch không bao giờ khớp (metric vắng mặt không được đánh giá,
+ * xem watcher.ts), nên bật nhầm cũng không gây báo giả.
+ */
+export const KAFKA_HOST_METRICS = new Set([
+  'hostDiskUsedPct',
+  'hostDiskFreeGb',
+  'hostMemUsedPct',
+  'hostCpuPct',
+  'hostLoad1PerCore',
+  'hostsDown',
+  'hostsTotal',
+]);
+
+/**
  * Group đang "active" theo kiểu AKHQ: có consumer sống đang gán/tiêu thụ.
  * 🟢 = Stable + có member → lag đang được xử lý (dù to). 🟡 = ngược lại
  * (Empty/0 member) → lag không ai tiêu thụ, kẹt thật dù nhỏ. Đây là thứ phân
@@ -187,6 +232,102 @@ export function groupActive(state: string, members: number): boolean {
 export interface ProbeOpts {
   /** Chỉ xét các consumer group này (theo groupId). Rỗng/không có = mọi group. */
   groupFilter?: string[];
+}
+
+/**
+ * Bộ đếm CPU của lần đo TRƯỚC, theo từng URL exporter.
+ *
+ * node_exporter chỉ trả BỘ ĐẾM TÍCH LUỸ (tổng số giây CPU từ lúc boot), không
+ * trả phần trăm. Muốn ra "CPU đang bận bao nhiêu %" phải lấy chênh lệch giữa
+ * hai lần đo: busy% = 1 − Δidle/Δtotal. Nên lần đo ĐẦU TIÊN của mỗi host luôn
+ * cho cpuPct = null (chưa có mốc so sánh) — watch CPU vì thế bỏ qua vòng đầu
+ * rồi mới có số từ vòng thứ hai. Đây là cách duy nhất đúng, cùng công thức mà
+ * HealthStrip trên tab Kafka đang dùng.
+ *
+ * Map ở cấp module: watcher chạy trong một tiến trình client duy nhất, mỗi
+ * (cụm, host) chỉ có một dòng, và dọn theo URL nên không phình.
+ */
+const cpuPrev = new Map<string, { idle: number; total: number; at: number }>();
+
+/**
+ * Bộ đếm cũ quá thì bỏ: máy vừa reboot (counter về 0) hoặc watch vừa bị tắt
+ * lâu. Lấy chênh lệch qua một quãng dài như thế ra con số vô nghĩa.
+ */
+const CPU_PREV_MAX_AGE_MS = 15 * 60 * 1000;
+
+/** Đọc node_exporter của mọi broker host và gộp thành chỉ số cụm + chi tiết máy. */
+async function kafkaHostPayload(id: string): Promise<{ metrics: MetricMap; hosts: KafkaHostDetail[] }> {
+  const raw = await kafkaHostMetrics(id);
+  const m: MetricMap = {};
+  if (raw.length === 0) return { metrics: m, hosts: [] };
+
+  const now = Date.now();
+  const hosts: KafkaHostDetail[] = raw.map((h) => {
+    if (h.error) {
+      return {
+        host: h.host, reachable: false, error: h.error,
+        diskUsedPct: null, diskFreeGb: null, worstMount: null,
+        memUsedPct: null, cpuPct: null, load1PerCore: null,
+      };
+    }
+
+    // Đĩa: lấy mount CHẬT NHẤT, không phải mount lớn nhất — chỗ sắp đầy mới là
+    // chỗ làm broker chết, dù nó có nhỏ.
+    let diskUsedPct: number | null = null;
+    let diskFreeGb: number | null = null;
+    let worstMount: string | null = null;
+    for (const d of h.disks ?? []) {
+      if (d.sizeBytes <= 0) continue;
+      const usedPct = ((d.sizeBytes - d.availBytes) / d.sizeBytes) * 100;
+      if (diskUsedPct === null || usedPct > diskUsedPct) {
+        diskUsedPct = round(usedPct);
+        diskFreeGb = round(d.availBytes / GB);
+        worstMount = d.mount;
+      }
+    }
+
+    const memUsedPct = h.memTotalBytes && h.memAvailableBytes !== undefined
+      ? round(((h.memTotalBytes - h.memAvailableBytes) / h.memTotalBytes) * 100)
+      : null;
+
+    // CPU%: cần mốc lần trước (xem ghi chú ở cpuPrev).
+    let cpuPct: number | null = null;
+    if (h.cpuIdleSec !== undefined && h.cpuTotalSec !== undefined) {
+      const prev = cpuPrev.get(h.url);
+      if (prev && now - prev.at <= CPU_PREV_MAX_AGE_MS && h.cpuTotalSec > prev.total) {
+        const dTotal = h.cpuTotalSec - prev.total;
+        const dIdle = h.cpuIdleSec - prev.idle;
+        if (dTotal > 0) cpuPct = round(Math.min(100, Math.max(0, (1 - dIdle / dTotal) * 100)));
+      }
+      cpuPrev.set(h.url, { idle: h.cpuIdleSec, total: h.cpuTotalSec, at: now });
+    }
+
+    // load1 quy về MỖI CORE: load 8 trên máy 16 core là nhàn, trên máy 2 core
+    // là ngộp — chuẩn hoá rồi thì một ngưỡng (vd 1.5) dùng chung được cho mọi
+    // broker dù khác cấu hình. Không đếm được core thì để null thay vì trả
+    // load1 thô: một con số mang tên "mỗi core" mà không chia core sẽ khiến
+    // người ta đặt ngưỡng sai.
+    const load1PerCore = typeof h.load1 === 'number' && h.cpuCores
+      ? round(h.load1 / h.cpuCores)
+      : null;
+
+    return {
+      host: h.host, reachable: true,
+      diskUsedPct, diskFreeGb, worstMount, memUsedPct, cpuPct, load1PerCore,
+    };
+  });
+
+  const live = hosts.filter((h) => h.reachable);
+  put(m, 'hostsTotal', hosts.length);
+  put(m, 'hostsDown', hosts.length - live.length);
+  // Gộp theo máy TỆ NHẤT: một broker đầy đĩa là đủ để cụm gãy, không cần đợi
+  // trung bình cả cụm xấu đi.
+  put(m, 'hostDiskUsedPct', maxOf(live.map((h) => h.diskUsedPct)));
+  put(m, 'hostDiskFreeGb', minOf(live.map((h) => h.diskFreeGb)));
+  put(m, 'hostMemUsedPct', maxOf(live.map((h) => h.memUsedPct)));
+  put(m, 'hostCpuPct', maxOf(live.map((h) => h.cpuPct)));
+  put(m, 'hostLoad1PerCore', maxOf(live.map((h) => h.load1PerCore)));
+  return { metrics: m, hosts };
 }
 
 async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promise<ProbePayload> {
@@ -257,7 +398,22 @@ async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promis
       /* cluster health alone still counts as up */
     }
   }
-  return { metrics: m, kafkaGroups, affectedTopics };
+
+  // Chỉ số HOST của broker (node_exporter). Chỉ chạy khi watch đang hỏi một
+  // chỉ số host — hoặc khi không nêu metric (nút "Thử ngay" của trình soạn
+  // watch, cần thấy hết những gì cụm này báo được).
+  let kafkaHosts: KafkaHostDetail[] | undefined;
+  if (metric === undefined || KAFKA_HOST_METRICS.has(metric)) {
+    try {
+      const hp = await kafkaHostPayload(id);
+      Object.assign(m, hp.metrics);
+      if (hp.hosts.length) kafkaHosts = hp.hosts;
+    } catch {
+      /* exporter hỏng không làm cụm thành "down" — chỉ số host vắng mặt là đủ */
+    }
+  }
+
+  return { metrics: m, kafkaGroups, affectedTopics, kafkaHosts };
 }
 
 async function probeRabbit(id: string): Promise<ProbePayload> {
@@ -327,7 +483,13 @@ export async function probeStack(
   if (!run) return { at, metrics: {}, error: `stack không hỗ trợ: ${stack}` };
   try {
     const payload = await run(connectionId, metric, opts);
-    return { at, metrics: payload.metrics, kafkaGroups: payload.kafkaGroups, affectedTopics: payload.affectedTopics };
+    return {
+      at,
+      metrics: payload.metrics,
+      kafkaGroups: payload.kafkaGroups,
+      affectedTopics: payload.affectedTopics,
+      kafkaHosts: payload.kafkaHosts,
+    };
   } catch (e) {
     return { at, metrics: { up: 0 }, error: (e as Error).message || 'probe thất bại' };
   }
@@ -390,6 +552,12 @@ export interface InfraEventExtras {
   breachingConsumers?: BreachingConsumer[];
   /** Kafka: topic bị under-replicated/offline — cho cảnh báo theo topic. */
   affectedTopics?: string[];
+  /**
+   * Kafka: các HOST broker liên quan tới cảnh báo host (đĩa/RAM/CPU/load/mất
+   * exporter). Nêu đích danh máy nào, vì "đĩa 92%" mà không biết máy nào thì
+   * người trực vẫn phải đi dò từng broker.
+   */
+  breachingHosts?: BreachingHost[];
 }
 
 /**
@@ -407,6 +575,25 @@ export interface BreachingConsumer {
   active?: boolean;
   state?: string;
   members?: number;
+}
+
+/**
+ * Một HOST broker liên quan tới cảnh báo host. Chỉ set field có nghĩa với ca
+ * đó (đĩa thì có diskUsedPct + mount, CPU thì có cpuPct…) — renderer tự chọn
+ * cách hiển thị theo dữ kiện có mặt, cùng lối với BreachingConsumer.
+ */
+export interface BreachingHost {
+  host: string;
+  diskUsedPct?: number;
+  diskFreeGb?: number;
+  /** Mount chật nhất — biết ngay phải đi dọn thư mục nào. */
+  mount?: string;
+  memUsedPct?: number;
+  cpuPct?: number;
+  load1PerCore?: number;
+  /** Có ca "mất số liệu": exporter không trả lời. */
+  unreachable?: boolean;
+  error?: string;
 }
 
 /** Trần số phần tử đưa vào cảnh báo — metaJson phải gọn dưới một tin Zalo. */
@@ -449,6 +636,39 @@ function consumerFields(extras?: InfraEventExtras): Record<string, string | numb
     consumers: human + more,
     consumerCount: list.length,
     consumersJson: JSON.stringify(shown),
+  };
+}
+
+/** Chuỗi người đọc cho MỘT host, tự chọn dạng theo dữ kiện có mặt. */
+function renderHost(h: BreachingHost): string {
+  if (h.unreachable) return `${h.host}=không lấy được số liệu${h.error ? ` (${h.error})` : ''}`;
+  const bits: string[] = [];
+  if (h.diskUsedPct !== undefined) {
+    const free = h.diskFreeGb !== undefined ? `, còn ${h.diskFreeGb} GB` : '';
+    bits.push(`đĩa ${h.diskUsedPct}%${h.mount ? ` ${h.mount}` : ''}${free}`);
+  } else if (h.diskFreeGb !== undefined) {
+    bits.push(`đĩa còn ${h.diskFreeGb} GB${h.mount ? ` ${h.mount}` : ''}`);
+  }
+  if (h.memUsedPct !== undefined) bits.push(`RAM ${h.memUsedPct}%`);
+  if (h.cpuPct !== undefined) bits.push(`CPU ${h.cpuPct}%`);
+  if (h.load1PerCore !== undefined) bits.push(`load ${h.load1PerCore}/core`);
+  return `${h.host}=${bits.join(' · ') || '?'}`;
+}
+
+/**
+ * Fields liệt kê host broker liên quan. LUÔN trả đủ 3 khoá (rỗng khi không có)
+ * — cùng lý do với consumerFields: emission phải ≡ catalog ở mọi stack để
+ * check:automation không báo lệch.
+ */
+function hostFields(extras?: InfraEventExtras): Record<string, string | number> {
+  const list = extras?.breachingHosts ?? [];
+  if (!list.length) return { hosts: '', hostCount: 0, hostsJson: '' };
+  const shown = list.slice(0, MAX_ITEMS_IN_ALERT);
+  const more = list.length > shown.length ? ` … (+${list.length - shown.length})` : '';
+  return {
+    hosts: shown.map(renderHost).join(', ') + more,
+    hostCount: list.length,
+    hostsJson: JSON.stringify(shown),
   };
 }
 
@@ -568,6 +788,7 @@ function baseEvent(
       ...ladderFields(extras),
       ...consumerFields(extras),
       ...topicFields(extras),
+      ...hostFields(extras),
     },
   };
 }
@@ -589,6 +810,24 @@ function consumersLead(metric: string): string {
       return 'Group không đọc được lag';
     default:
       return 'Consumer vượt ngưỡng';
+  }
+}
+
+/** Nhãn dẫn cho danh sách host broker trong tin, theo chỉ số đang cảnh báo. */
+function hostsLead(metric: string): string {
+  switch (metric) {
+    case 'hostDiskUsedPct':
+    case 'hostDiskFreeGb':
+      return 'Broker sắp đầy đĩa';
+    case 'hostMemUsedPct':
+      return 'Broker cạn RAM';
+    case 'hostCpuPct':
+    case 'hostLoad1PerCore':
+      return 'Broker tải cao';
+    case 'hostsDown':
+      return 'Host không lấy được số liệu';
+    default:
+      return 'Host broker';
   }
 }
 
@@ -614,7 +853,8 @@ export function infraBreachEvent(
       `${where(watch)}: ${label} = ${value} (ngưỡng ${OP_TEXT[watch.op]} ${watch.threshold})` +
       `${base.fields.absText}${base.fields.ladderText}` +
       (base.fields.consumers ? `\n${consumersLead(watch.metric)}: ${base.fields.consumers}` : '') +
-      (base.fields.topics ? `\nTopic ảnh hưởng: ${base.fields.topics}` : ''),
+      (base.fields.topics ? `\nTopic ảnh hưởng: ${base.fields.topics}` : '') +
+      (base.fields.hosts ? `\n${hostsLead(watch.metric)}: ${base.fields.hosts}` : ''),
   };
 }
 

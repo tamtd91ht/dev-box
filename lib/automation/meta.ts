@@ -20,8 +20,11 @@ import { AGG_LABEL, metricDef, metricLabel, type FieldDef } from './catalog';
  *
  * v2: thêm `consumers?: AlertMetaConsumer[]` — Kafka maxConsumerLag liệt kê đích
  *     danh các consumer group vượt ngưỡng (bổ sung, tương thích ngược).
+ * v3: thêm `hosts?: AlertMetaHost[]` — Kafka chỉ số HOST broker (đĩa/RAM/CPU/
+ *     load/mất exporter, đọc từ node_exporter) liệt kê đích danh máy nào
+ *     (bổ sung, tương thích ngược).
  */
-export const META_SCHEMA_VERSION = 2;
+export const META_SCHEMA_VERSION = 3;
 
 /** Ký hiệu người đọc của phép so sánh — dùng chung cho description, text và meta. */
 export const OP_TEXT: Record<InfraWatch['op'], string> = {
@@ -166,6 +169,25 @@ export interface AlertMetaAbsolute {
   text: string;
 }
 
+/** Một HOST broker liên quan tới cảnh báo Kafka theo host — cho bot/hệ ngoài đọc. */
+export interface AlertMetaHost {
+  /** Hostname/IP của broker. */
+  host: string;
+  /** Ca đĩa: phần trăm đã dùng + dung lượng trống + mount chật nhất. */
+  diskUsedPct?: number;
+  diskFreeGb?: number;
+  mount?: string;
+  /** Ca RAM. */
+  memUsedPct?: number;
+  /** Ca CPU (vắng mặt ở vòng đo đầu tiên — cần hai vòng mới tính được). */
+  cpuPct?: number;
+  /** Ca load: load average 1 phút đã chia số core. */
+  load1PerCore?: number;
+  /** Ca mất số liệu: node_exporter không trả lời. */
+  unreachable?: boolean;
+  error?: string;
+}
+
 /** Một consumer group liên quan tới cảnh báo Kafka — cho bot/hệ ngoài đọc. */
 export interface AlertMetaConsumer {
   group: string;
@@ -220,6 +242,8 @@ export interface AlertMeta {
   consumers?: AlertMetaConsumer[];
   /** Kafka underReplicated/offline: topic bị ảnh hưởng. */
   topics?: string[];
+  /** Kafka (chỉ số host): đích danh broker host liên quan (đĩa/RAM/CPU/mất exporter). */
+  hosts?: AlertMetaHost[];
 
   // ── social ──
   conversation?: string;
@@ -265,6 +289,32 @@ function parseConsumers(raw: string | number | undefined): AlertMetaConsumer[] {
         ...(c.state !== undefined ? { state: String(c.state) } : {}),
         ...(c.members !== undefined ? { members: Number(c.members) || 0 } : {}),
       }));
+  } catch {
+    return [];
+  }
+}
+
+/** Parse field máy-đọc `hostsJson` → AlertMetaHost[]. An toàn với mọi rác. */
+function parseHosts(raw: string | number | undefined): AlertMetaHost[] {
+  if (typeof raw !== 'string' || !raw) return [];
+  try {
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return [];
+    const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
+    return arr
+      .filter((h): h is Record<string, unknown> => !!h && typeof h === 'object' && typeof (h as { host?: unknown }).host === 'string')
+      .map((h) => {
+        const out: AlertMetaHost = { host: String(h.host) };
+        const d = num(h.diskUsedPct); if (d !== undefined) out.diskUsedPct = d;
+        const f = num(h.diskFreeGb); if (f !== undefined) out.diskFreeGb = f;
+        if (h.mount !== undefined) out.mount = String(h.mount);
+        const m = num(h.memUsedPct); if (m !== undefined) out.memUsedPct = m;
+        const c = num(h.cpuPct); if (c !== undefined) out.cpuPct = c;
+        const l = num(h.load1PerCore); if (l !== undefined) out.load1PerCore = l;
+        if (h.unreachable === true) out.unreachable = true;
+        if (h.error !== undefined) out.error = String(h.error);
+        return out;
+      });
   } catch {
     return [];
   }
@@ -344,6 +394,9 @@ export function buildAlertMeta(event: AutomationEvent): AlertMeta {
     // Topic bị ảnh hưởng (Kafka under-replicated/offline).
     const topics = s(f.topics).split(',').map((t) => t.trim()).filter((t) => t && !t.startsWith('…'));
     if (topics.length) meta.topics = topics;
+    // Host broker liên quan (Kafka chỉ số host) — cùng lối với consumers.
+    const hosts = parseHosts(f.hostsJson);
+    if (hosts.length) meta.hosts = hosts;
     if (event.type === 'infra.recovered') {
       meta.recovery = { downSec: n(f.downSec), downText: humanizeSec(n(f.downSec)) };
     }

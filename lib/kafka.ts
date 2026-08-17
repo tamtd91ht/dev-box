@@ -198,6 +198,8 @@ export interface KafkaHostMetrics {
   disks?: KafkaDiskMount[];
   cpuIdleSec?: number;
   cpuTotalSec?: number;
+  /** Số core (đếm nhãn `cpu` của node_cpu_seconds_total) — để quy load1 về mỗi core. */
+  cpuCores?: number;
   at: number;
 }
 
