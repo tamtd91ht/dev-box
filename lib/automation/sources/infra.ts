@@ -14,7 +14,7 @@
 
 import { esHealth, listEsNodes } from '@/lib/es';
 import { kafkaClusterHealth, kafkaConsumerLag, kafkaHostMetrics, kafkaBrokerReach } from '@/lib/kafka';
-import type { KafkaBrokerReach } from '@/lib/kafka';
+import type { KafkaBrokerReach, KafkaProtocolProbe } from '@/lib/kafka';
 import { mongoMonitor } from '@/lib/mongo';
 import { pingPg } from '@/lib/pg';
 import { listRabbitNodes, rabbitOverview } from '@/lib/rabbit';
@@ -75,6 +75,8 @@ export interface ProbePayload {
   kafkaHosts?: KafkaHostDetail[];
   /** Kafka: bắt tay TCP từng seed broker — chỉ đo khi cụm KHÔNG trả lời. */
   brokerReach?: KafkaBrokerReach[];
+  /** Kafka: kết quả hỏi cụm bằng giao thức Kafka (kèm advertised.listeners). */
+  kafkaProtocol?: KafkaProtocolProbe;
 }
 
 export interface ProbeResult {
@@ -92,6 +94,11 @@ export interface ProbeResult {
    * node nào chết / cả cụm chết / cổng mở mà Kafka không phục vụ.
    */
   brokerReach?: KafkaBrokerReach[];
+  /**
+   * Chỉ Kafka: cụm có nói được GIAO THỨC Kafka không (khác hẳn "cổng TCP mở"),
+   * kèm advertised.listeners — nguyên nhân kinh điển của "kết nối được mà vẫn hỏng".
+   */
+  kafkaProtocol?: KafkaProtocolProbe;
   /** Probe-level failure (host down, bad credentials…). `metrics.up` is 0 then. */
   error?: string;
 }
@@ -508,8 +515,8 @@ export async function probeStack(
     // Bọc try riêng: chẩn đoán hỏng thì vẫn phải báo mất kết nối như cũ.
     if (stack === 'kafka') {
       try {
-        const brokerReach = await kafkaBrokerReach(connectionId);
-        return { at, metrics: { up: 0 }, brokerReach, error };
+        const report = await kafkaBrokerReach(connectionId);
+        return { at, metrics: { up: 0 }, brokerReach: report.brokers, kafkaProtocol: report.protocol, error };
       } catch { /* không chẩn đoán được — vẫn báo mất kết nối */ }
     }
     return { at, metrics: { up: 0 }, error };
@@ -586,6 +593,8 @@ export interface InfraEventExtras {
    * gói đi không tới, thường là mất mạng/VPN hoặc firewall).
    */
   brokerReach?: KafkaBrokerReach[];
+  /** Kafka: cụm có nói được giao thức Kafka không + advertised.listeners. */
+  kafkaProtocol?: KafkaProtocolProbe;
 }
 
 /**
@@ -711,12 +720,16 @@ function hostFields(extras?: InfraEventExtras): Record<string, string | number> 
 function brokerReachFields(extras?: InfraEventExtras): Record<string, string | number> {
   const list = extras?.brokerReach ?? [];
   if (!list.length) {
-    return { brokerReach: '', brokersUp: 0, brokersTotal: 0, reachSummary: '', brokerReachJson: '' };
+    return {
+      brokerReach: '', brokersUp: 0, brokersTotal: 0, reachSummary: '',
+      brokerReachJson: '', advertised: '',
+    };
   }
   const up = list.filter((b) => b.reachable);
   const down = list.filter((b) => !b.reachable);
+  const proto = extras?.kafkaProtocol;
 
-  // Mỗi broker một dòng: '192.168.2.218:9092 = TCP OK (2ms)' / '= ECONNREFUSED'.
+  // Mỗi broker một dòng: '192.168.2.218:9092 = TCP mở (2ms)' / '= ECONNREFUSED'.
   const rendered = list.map((b) => (b.reachable
     ? `${b.addr} = TCP mở${b.latencyMs !== undefined ? ` (${b.latencyMs}ms)` : ''}`
     : `${b.addr} = KHÔNG kết nối được${b.error ? ` (${b.error})` : ''}`));
@@ -725,35 +738,75 @@ function brokerReachFields(extras?: InfraEventExtras): Record<string, string | n
     brokerReach: rendered.join(' · '),
     brokersUp: up.length,
     brokersTotal: list.length,
-    reachSummary: reachSummary(up, down),
+    reachSummary: reachSummary(up, down, proto),
     brokerReachJson: JSON.stringify(list),
+    // advertised.listeners cụm trả về — rỗng khi cụm không nói được giao thức.
+    advertised: (proto?.advertised ?? []).join(', '),
   };
 }
 
 /**
- * Kết luận chẩn đoán từ kết quả bắt tay. Phân biệt ba ca có HƯỚNG XỬ LÝ KHÁC
- * HẲN nhau — đây là toàn bộ giá trị của việc đo từng broker:
- *
- *   · không node nào bắt tay được → nghi mạng/VPN/firewall phía DevBox, hoặc
- *     cả cụm cùng chết. Kiểm tra đường mạng TRƯỚC khi đi soi từng broker.
- *   · một số node bắt tay được   → mạng thông; các node còn lại mới là chỗ hỏng.
- *   · MỌI node đều bắt tay được  → cổng có người nghe mà cụm vẫn không phục vụ:
- *     tiến trình Kafka đang khởi động, mất quorum KRaft/ZooKeeper, hoặc
- *     advertised.listeners trỏ sai địa chỉ DevBox không tới được.
+ * Kết luận chẩn đoán, dựa trên CẢ HAI phép đo: bắt tay TCP từng broker và một
+ * câu hỏi bằng giao thức Kafka. Mỗi ca có HƯỚNG XỬ LÝ khác hẳn nhau — đó là
+ * toàn bộ lý do phải đo riêng thay vì chỉ báo "0/1".
  */
-function reachSummary(up: KafkaBrokerReach[], down: KafkaBrokerReach[]): string {
+function reachSummary(
+  up: KafkaBrokerReach[],
+  down: KafkaBrokerReach[],
+  proto?: KafkaProtocolProbe,
+): string {
   const total = up.length + down.length;
+
+  // 1) Không cổng nào mở — mạng hoặc cả cụm.
   if (up.length === 0) {
     return `KHÔNG bắt tay TCP được node nào trong ${total} — nghi mất mạng/VPN/firewall từ DevBox, `
       + 'hoặc cả cụm cùng chết. Kiểm tra đường mạng trước.';
   }
+
+  const tcpPart = down.length
+    ? `${down.length}/${total} node không kết nối được (${down.map((b) => b.addr).join(', ')}); ${up.length} node còn TCP bình thường`
+    : `Cả ${total} node đều mở cổng TCP`;
+
+  // 2) Cổng mở nhưng KHÔNG nói được giao thức Kafka.
+  if (proto && !proto.spoke) {
+    return `${tcpPart}, NHƯNG cụm không trả lời câu hỏi Kafka (${proto.error ?? 'không rõ'}) — `
+      + 'tiến trình chưa sẵn sàng (đang khởi động / recovery log), mất quorum KRaft-ZooKeeper, '
+      + 'hoặc thứ đang nghe cổng đó không phải Kafka.';
+  }
+
+  // 3) Cụm TRẢ LỜI được — nghĩa là lúc probe chính hỏng thì lỗi ở chỗ khác.
+  if (proto?.spoke) {
+    const bits: string[] = [];
+    if (proto.controllerId === null) {
+      // Không controller = mất quorum, kể cả khi describeCluster trả lời được.
+      bits.push('cụm KHÔNG có controller (mất quorum KRaft/ZooKeeper)');
+    }
+    // advertised.listeners khác hẳn địa chỉ ta đang gọi là nguyên nhân kinh
+    // điển: bắt tay seed OK, nhưng mọi thao tác sau đi tới địa chỉ quảng bá.
+    const adv = proto.advertised ?? [];
+    const seedHosts = new Set([...up, ...down].map((b) => b.host));
+    const advHosts = adv.map((a) => a.slice(0, a.lastIndexOf(':')) || a);
+    const mismatch = advHosts.filter((h) => !seedHosts.has(h));
+    if (mismatch.length) {
+      bits.push(`cụm quảng bá địa chỉ KHÁC với địa chỉ DevBox đang gọi (advertised.listeners = `
+        + `${adv.join(', ')}) — mọi thao tác sau bước bắt tay đều đi tới đó, nên nếu DevBox không `
+        + 'phân giải/không tới được các host này thì kết nối vẫn hỏng dù cổng seed vẫn mở');
+    }
+    if (!bits.length) {
+      bits.push('cụm trả lời BÌNH THƯỜNG vào lúc chẩn đoán — nhiều khả năng là sự cố thoáng qua '
+        + '(mạng chớp, broker vừa restart) và đã tự hồi, hoặc phép đo chính hỏng ở bước nặng hơn '
+        + '(metadata toàn bộ topic)');
+    }
+    return `${tcpPart}; ${bits.join(' · ')}.`;
+  }
+
+  // 4) Có cổng mở nhưng không hỏi được giao thức (không đo được) — như cũ.
   if (down.length === 0) {
     return `Cả ${total} node đều MỞ cổng TCP nhưng cụm không phục vụ — tiến trình Kafka còn sống mà `
       + 'chưa sẵn sàng (đang khởi động, mất quorum KRaft/ZooKeeper), hoặc advertised.listeners trỏ '
       + 'sai địa chỉ mà DevBox không tới được.';
   }
-  return `${down.length}/${total} node không kết nối được (${down.map((b) => b.addr).join(', ')}); `
-    + `${up.length} node còn TCP bình thường → mạng thông, hỏng ở đúng (các) node kia.`;
+  return `${tcpPart} → mạng thông, hỏng ở đúng (các) node kia.`;
 }
 
 /**

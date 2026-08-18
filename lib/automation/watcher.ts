@@ -584,6 +584,8 @@ class InfraWatcher {
               // Kafka MẤT KẾT NỐI: bắt tay TCP từng seed broker (probeStack chỉ
               // đo khi cụm không trả lời) — node nào chết, IP nào, lỗi gì.
               brokerReach: res.brokerReach,
+              // Cụm có nói được giao thức Kafka không + advertised.listeners.
+              kafkaProtocol: res.kafkaProtocol,
             }),
           );
         }

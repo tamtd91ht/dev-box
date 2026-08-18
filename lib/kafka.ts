@@ -218,13 +218,32 @@ export interface KafkaBrokerReach {
   error?: string;
 }
 
+/** Kết quả hỏi cụm bằng GIAO THỨC Kafka (không phải chỉ TCP). */
+export interface KafkaProtocolProbe {
+  spoke: boolean;
+  latencyMs?: number;
+  /** null = không có controller → dấu hiệu mất quorum. */
+  controllerId?: number | null;
+  clusterId?: string;
+  /** advertised.listeners cụm trả về ('host:port'). */
+  advertised?: string[];
+  error?: string;
+}
+
+export interface KafkaReachReport {
+  brokers: KafkaBrokerReach[];
+  /** Vắng mặt khi không seed broker nào mở cổng. */
+  protocol?: KafkaProtocolProbe;
+}
+
 /**
- * Bắt tay TCP tới TỪNG seed broker. Dùng khi cụm không trả lời: phân biệt được
- * "cả cụm chết / một node chết / cổng mở nhưng Kafka không phục vụ" — xem ghi
- * chú brokerReachability trong lib/kafkaClient.
+ * Chẩn đoán cụm không trả lời: bắt tay TCP TỪNG seed broker + hỏi một câu Kafka
+ * thật. Phân biệt "cả cụm chết / một node chết / cổng mở mà không nói được giao
+ * thức / nói được nhưng advertised.listeners trỏ đi đâu" — xem brokerReachability
+ * trong lib/kafkaClient.
  */
-export function kafkaBrokerReach(connectionId: string): Promise<KafkaBrokerReach[]> {
-  return kafkaAction<KafkaBrokerReach[]>('brokerReach', { connectionId });
+export function kafkaBrokerReach(connectionId: string): Promise<KafkaReachReport> {
+  return kafkaAction<KafkaReachReport>('brokerReach', { connectionId });
 }
 
 export function listKafkaTopics(connectionId: string): Promise<TopicSummary[]> {

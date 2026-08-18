@@ -270,6 +270,11 @@ export interface AlertMeta {
   brokers?: AlertMetaBroker[];
   /** Câu kết luận chẩn đoán đi kèm `brokers` (mất mạng / node chết / cụm chưa phục vụ). */
   diagnosis?: string;
+  /**
+   * Kafka: advertised.listeners cụm trả về lúc chẩn đoán. Khác với địa chỉ
+   * DevBox đang gọi là nguyên nhân kinh điển của "kết nối được mà vẫn hỏng".
+   */
+  advertised?: string[];
 
   // ── social ──
   conversation?: string;
@@ -454,6 +459,8 @@ export function buildAlertMeta(event: AutomationEvent): AlertMeta {
       meta.brokers = brokers;
       const diagnosis = s(f.reachSummary);
       if (diagnosis) meta.diagnosis = diagnosis;
+      const adv = s(f.advertised).split(',').map((a) => a.trim()).filter(Boolean);
+      if (adv.length) meta.advertised = adv;
     }
     if (event.type === 'infra.recovered') {
       meta.recovery = { downSec: n(f.downSec), downText: humanizeSec(n(f.downSec)) };

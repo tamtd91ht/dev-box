@@ -214,6 +214,13 @@ const INFRA_FIELDS: FieldDef[] = [
     sample: 3,
   },
   {
+    name: 'advertised',
+    label: 'advertised.listeners cụm trả về',
+    kind: 'text',
+    hint: 'CHỈ Kafka mất kết nối: địa chỉ cụm TỰ QUẢNG BÁ cho client. Khác với địa chỉ DevBox đang gọi là nguyên nhân kinh điển của "kết nối được mà vẫn hỏng". Rỗng khi cụm không trả lời được',
+    sample: 'kafka-1.omicrm.services:9092, kafka-2.omicrm.services:9092',
+  },
+  {
     name: 'brokerReachJson',
     label: 'Từng broker (JSON)',
     kind: 'text',

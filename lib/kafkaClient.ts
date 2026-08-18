@@ -53,6 +53,12 @@ const PEEK_TIMEOUT_MS = 10_000;
 const MAX_VALUE_BYTES = 1_048_576;
 /** Drop cached clients unused for longer than this. */
 const IDLE_EVICT_MS = 10 * 60 * 1000;
+/**
+ * Client nằm im quá mốc này thì phải kiểm tra còn sống trước khi dùng lại (xem
+ * getAdmin). Ngắn hơn hẳn chu kỳ watch nhỏ nhất (60s) để watch nào cũng được
+ * kiểm tra, nhưng đủ dài để một tràng thao tác trong UI không phải trả phí.
+ */
+const STALE_CHECK_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 
@@ -149,6 +155,8 @@ interface Cached {
   /** broker list signature — recreate when the connection profile changes. */
   sig: string;
   lastUsed: number;
+  /** Lần cuối client này được XÁC NHẬN còn nói chuyện được với cụm. */
+  lastOkAt: number;
 }
 const clients = new Map<string, Cached>();
 
@@ -188,19 +196,73 @@ function getEntry(conn: KafkaConnection): Cached {
   }
   if (existing && existing.adminConnected) existing.admin.disconnect().catch(() => {});
   const kafka = newKafka(conn.brokers);
-  const entry: Cached = { kafka, admin: kafka.admin(), adminConnected: false, sig, lastUsed: now };
+  const entry: Cached = { kafka, admin: kafka.admin(), adminConnected: false, sig, lastUsed: now, lastOkAt: 0 };
   clients.set(conn.id, entry);
   return entry;
 }
 
-/** Cached admin client, connected on first use. */
+/**
+ * Vứt admin client đang cache của một kết nối, để lượt sau dựng lại từ đầu.
+ *
+ * Cần thiết vì `adminConnected` chỉ ghi lại rằng connect() TỪNG thành công, chứ
+ * không phải socket còn sống: broker restart, TCP nửa mở, hay VPN/firewall cắt
+ * kết nối đều để lại một client hỏng mà cờ vẫn `true`. Client đó sẽ hỏng mãi
+ * (mọi lượt sau tái dùng nó) — với watch chạy nền thì thành "cụm down" kéo dài
+ * trong khi cụm hoàn toàn khỏe.
+ */
+export function dropCachedClient(connectionId: string): void {
+  const entry = clients.get(connectionId);
+  if (!entry) return;
+  if (entry.adminConnected) entry.admin.disconnect().catch(() => {});
+  clients.delete(connectionId);
+}
+
+/**
+ * Admin client dùng lại từ cache, kết nối ở lần dùng đầu.
+ *
+ * KIỂM TRA CÒN SỐNG trước khi giao ra: `adminConnected` chỉ nói connect() TỪNG
+ * thành công, không nói socket còn dùng được. Broker restart, TCP nửa mở, hay
+ * VPN/firewall cắt kết nối đều để lại client hỏng mà cờ vẫn `true` — và vì
+ * evict-idle là 10 phút trong khi watch chạy mỗi 5 phút, client hỏng đó KHÔNG
+ * BAO GIỜ bị dọn: một lần đứt thoáng qua thành "cụm down" kéo dài trong khi cụm
+ * đã khỏe trở lại.
+ *
+ * Phép kiểm tra chỉ chạy khi client đã NẰM IM quá STALE_CHECK_MS. Đo trên cụm
+ * thật, describeCluster mất ~180ms — quá đắt để bắt mọi thao tác tương tác (mở
+ * topic, peek message) phải trả thêm, nhưng không đáng kể với một client vừa
+ * ngồi không vài phút. Thao tác liên tiếp (người dùng đang bấm trong UI) không
+ * phải trả gì: socket vừa dùng xong thì đang sống là chắc chắn.
+ *
+ * Đây đúng là ca của watch: chạy mỗi 300s nên LẦN NÀO client cũng đã nằm im,
+ * lần nào cũng được kiểm tra.
+ */
 async function getAdmin(conn: KafkaConnection): Promise<Admin> {
   const entry = getEntry(conn);
-  if (!entry.adminConnected) {
-    await entry.admin.connect();
-    entry.adminConnected = true;
+  if (entry.adminConnected) {
+    if (Date.now() - entry.lastOkAt < STALE_CHECK_MS) return entry.admin;
+    try {
+      await entry.admin.describeCluster();
+      entry.lastOkAt = Date.now();
+      return entry.admin;
+    } catch {
+      // Client cache đã chết — bỏ đi rồi dựng lại từ đầu ngay bên dưới.
+      dropCachedClient(conn.id);
+    }
   }
-  return entry.admin;
+  const fresh = getEntry(conn);
+  if (!fresh.adminConnected) {
+    try {
+      await fresh.admin.connect();
+    } catch (e) {
+      // connect() hỏng để lại entry chưa kết nối trong cache — bỏ hẳn để lượt
+      // sau dựng client mới thay vì tái dùng cái vừa hỏng.
+      dropCachedClient(conn.id);
+      throw e;
+    }
+    fresh.adminConnected = true;
+    fresh.lastOkAt = Date.now();
+  }
+  return fresh.admin;
 }
 
 function getKafka(conn: KafkaConnection): Kafka {
@@ -497,12 +559,69 @@ function probeBrokerTcp(addr: string): Promise<KafkaBrokerReach> {
 }
 
 /**
- * Bắt tay TCP tới MỌI seed broker, song song. Dùng cho chẩn đoán lúc cụm không
- * trả lời — xem ghi chú ở đầu mục.
+ * Hỏi cụm một câu Kafka THẬT (describeCluster) bằng client dùng-một-lần, để
+ * phân biệt hai ca mà TCP không phân biệt nổi:
+ *
+ *   · cổng mở NHƯNG không nói được giao thức Kafka → tiến trình chưa sẵn sàng,
+ *     mất quorum, hoặc thứ đang nghe cổng đó không phải Kafka
+ *   · nói được → cụm sống, và ta ĐỌC ĐƯỢC advertised.listeners nó trả về. Đây
+ *     là nguyên nhân kinh điển của "kết nối được mà vẫn hỏng": client bắt tay
+ *     seed broker xong, mọi thao tác sau phải đi tới địa chỉ ĐƯỢC QUẢNG BÁ, mà
+ *     địa chỉ đó có thể là hostname nội bộ DevBox không phân giải/không tới
+ *     được.
+ *
+ * Client RIÊNG, không đụng cache: đang chẩn đoán chính cái cache có thể đã hỏng.
  */
-export async function brokerReachability(conn: KafkaConnection): Promise<KafkaBrokerReach[]> {
+async function probeKafkaProtocol(brokers: string[]): Promise<KafkaProtocolProbe> {
+  const admin = newKafka(brokers).admin();
+  const t0 = Date.now();
+  try {
+    const cluster = await admin.describeCluster();
+    return {
+      spoke: true,
+      latencyMs: Date.now() - t0,
+      controllerId: cluster.controller ?? null,
+      clusterId: cluster.clusterId ?? '',
+      advertised: cluster.brokers.map((b) => `${b.host}:${b.port}`),
+    };
+  } catch (e) {
+    return { spoke: false, error: (e as Error).message || 'không rõ' };
+  } finally {
+    admin.disconnect().catch(() => {});
+  }
+}
+
+/** Kết quả hỏi cụm bằng giao thức Kafka (không phải chỉ TCP). */
+export interface KafkaProtocolProbe {
+  /** Cụm có trả lời được câu hỏi Kafka hay không. */
+  spoke: boolean;
+  latencyMs?: number;
+  /** Có controller hay không — null là dấu hiệu mất quorum. */
+  controllerId?: number | null;
+  clusterId?: string;
+  /** advertised.listeners cụm trả về, dạng 'host:port'. */
+  advertised?: string[];
+  error?: string;
+}
+
+/**
+ * Chẩn đoán MỘT cụm không trả lời: bắt tay TCP từng seed broker, và (nếu có
+ * broker nào mở cổng) hỏi thêm một câu Kafka thật để biết cụm có nói được giao
+ * thức không, kèm advertised.listeners.
+ */
+export async function brokerReachability(conn: KafkaConnection): Promise<KafkaReachReport> {
   const list = (conn.brokers ?? []).map((b) => String(b ?? '').trim()).filter(Boolean);
-  return Promise.all(list.map(probeBrokerTcp));
+  const brokers = await Promise.all(list.map(probeBrokerTcp));
+  const open = brokers.filter((b) => b.reachable).map((b) => b.addr);
+  // Không cổng nào mở thì hỏi giao thức chỉ tổ chờ thêm một nhịp timeout vô ích.
+  const protocol = open.length ? await probeKafkaProtocol(open) : undefined;
+  return { brokers, protocol };
+}
+
+export interface KafkaReachReport {
+  brokers: KafkaBrokerReach[];
+  /** Vắng mặt khi không seed broker nào mở cổng (không có gì để hỏi). */
+  protocol?: KafkaProtocolProbe;
 }
 
 export async function listTopics(conn: KafkaConnection): Promise<TopicSummary[]> {
