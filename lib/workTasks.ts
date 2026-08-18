@@ -79,12 +79,21 @@ export async function setWorkConfig(connectionId: unknown, database: unknown): P
   await fs.writeFile(CONFIG_FILE, JSON.stringify({ connectionId: id, database: db }, null, 2) + '\n', 'utf8');
 }
 
-async function coll(): Promise<Collection<Document>> {
+/**
+ * Collection trong cụm Mongo đã cấu hình cho tab Công việc. Mọi kho con của tab
+ * (task, ghi chú…) DÙNG CHUNG con trỏ này — cùng cụm, cùng database, chỉ khác
+ * tên collection — nên người dùng chỉ phải cấu hình một lần.
+ */
+export async function workColl(name: string): Promise<Collection<Document>> {
   const cfg = await readConfig();
   if (!cfg) throw new Error('Chưa cấu hình MongoDB cho tab Công việc.');
   const conn = await getConnection(cfg.connectionId);
   if (!conn) throw new Error('Connection đã bị xóa khỏi danh sách quản lý Mongo — cấu hình lại.');
-  return internalClient(conn).db(cfg.database).collection(WORK_COLLECTION);
+  return internalClient(conn).db(cfg.database).collection(name);
+}
+
+async function coll(): Promise<Collection<Document>> {
+  return workColl(WORK_COLLECTION);
 }
 
 // ── Task model ───────────────────────────────────────────────────────────────

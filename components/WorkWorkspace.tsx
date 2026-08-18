@@ -26,9 +26,16 @@
 //
 // Kho lưu: một cụm Mongo chọn từ danh sách quản lý Mongo hiện có, hoặc nhập
 // connection mới (tự lưu vào menu Mongo luôn). First-run hiện panel cấu hình.
+//
+// HAI TAB CON (dãy nút ở đầu toolbar):
+//   · 📅 Lịch công việc — mọi thứ mô tả ở trên.
+//   · 📝 Ghi chú (components/work/NotesPanel) — kho thông tin dạng text: tên +
+//     tag + nội dung, không trạng thái/deadline/cảnh báo. Cùng cụm Mongo, cùng
+//     database, KHÁC collection ('devbox_work_notes').
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ConnectionForm from './mongo/ConnectionForm';
+import NotesPanel from './work/NotesPanel';
 import type { PublicMongoConnection } from '@/lib/mongo';
 
 // ── Types (khớp lib/workTasks) ───────────────────────────────────────────────
@@ -521,7 +528,12 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
 
 // ── Workspace chính ──────────────────────────────────────────────────────────
 
+/** Hai tab con của workspace — lịch task và kho ghi chú. */
+type Sub = 'tasks' | 'notes';
+
 export default function WorkWorkspace() {
+  /** Tab con đang xem. Ghi chú mount lazy (chỉ gọi API khi người dùng mở). */
+  const [sub, setSub] = useState<Sub>('tasks');
   const [view, setView] = useState<ConfigView | null>(null);
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [showSetup, setShowSetup] = useState(false);
@@ -809,10 +821,21 @@ export default function WorkWorkspace() {
   return (
     <div className="panel sheet-panel">
       <div className="sheet-toolbar">
-        <button className="ghost sm" onClick={() => setYm(({ y, m }) => (m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 }))}>‹</button>
-        <b style={{ minWidth: 110, textAlign: 'center' }}>{monthLabel}</b>
-        <button className="ghost sm" onClick={() => setYm(({ y, m }) => (m === 11 ? { y: y + 1, m: 0 } : { y, m: m + 1 }))}>›</button>
-        <button className="ghost sm" onClick={() => { const d = new Date(); setYm({ y: d.getFullYear(), m: d.getMonth() }); setSelDate(TODAY()); }}>Hôm nay</button>
+        {/* Tab con: lịch công việc ↔ ghi chú. Cả hai dùng chung kho Mongo. */}
+        <div className="wk-subtabs" role="tablist" aria-label="Tab con Công việc">
+          <button role="tab" aria-selected={sub === 'tasks'} className={`wk-subtab${sub === 'tasks' ? ' on' : ''}`}
+            onClick={() => setSub('tasks')} title="Lịch tháng + danh sách công việc">📅 Công việc</button>
+          <button role="tab" aria-selected={sub === 'notes'} className={`wk-subtab${sub === 'notes' ? ' on' : ''}`}
+            onClick={() => setSub('notes')} title="Kho ghi chú: tên + tag + nội dung">📝 Ghi chú</button>
+        </div>
+        {sub === 'tasks' && (
+          <>
+            <button className="ghost sm" onClick={() => setYm(({ y, m }) => (m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 }))}>‹</button>
+            <b style={{ minWidth: 110, textAlign: 'center' }}>{monthLabel}</b>
+            <button className="ghost sm" onClick={() => setYm(({ y, m }) => (m === 11 ? { y: y + 1, m: 0 } : { y, m: m + 1 }))}>›</button>
+            <button className="ghost sm" onClick={() => { const d = new Date(); setYm({ y: d.getFullYear(), m: d.getMonth() }); setSelDate(TODAY()); }}>Hôm nay</button>
+          </>
+        )}
         <span style={{ flex: 1 }} />
         <span className="badge" title="Kho lưu trữ">🍃 {view.connectionName} / {view.config?.database}</span>
         <button
@@ -825,9 +848,18 @@ export default function WorkWorkspace() {
               .catch((e) => setErr((e as Error).message));
           }}
         >⚙</button>
-        <button className="ghost sm" onClick={() => void loadTasks()} title="Tải lại">↻</button>
-        <button className="sm" onClick={() => { setFormErr(null); setForm({ task: null }); }}>＋ Thêm công việc</button>
+        {sub === 'tasks' && (
+          <>
+            <button className="ghost sm" onClick={() => void loadTasks()} title="Tải lại">↻</button>
+            <button className="sm" onClick={() => { setFormErr(null); setForm({ task: null }); }}>＋ Thêm công việc</button>
+          </>
+        )}
       </div>
+      {sub === 'notes' ? (
+        /* Ghi chú dùng chung helper workAction — cùng endpoint /api/work. */
+        <NotesPanel action={workAction} />
+      ) : (
+      <>
       {/* ── Bộ lọc: keyword (dự án/tên/tag, không dấu) + thời gian ── */}
       <div className="wk-filter">
         <input
@@ -1004,6 +1036,9 @@ export default function WorkWorkspace() {
           )}
         </aside>
       </div>
+      )}
+
+      </>
       )}
 
       {form && (

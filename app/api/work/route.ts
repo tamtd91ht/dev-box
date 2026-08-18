@@ -19,6 +19,12 @@
 //     'status'       { id, status }              → { ok }   status ∈ pending|active|done|cancelled
 //     'remove'       { id }                      → { ok }
 //
+// GHI CHÚ (kho riêng, collection 'devbox_work_notes' — cùng cụm/db với task):
+//     'notes-list'   {}                          → { notes }
+//     'note-add'     { name, tags, body }        → { note }
+//     'note-update'  { id, name, tags, body }    → { note }
+//     'note-remove'  { id }                      → { ok }
+//
 // Gate theo MONGO_TOOL_ENABLED — tính năng sống trên cụm Mongo do người dùng
 // quản lý trong tab Mongo, tắt tool Mongo là tắt luôn chỗ này.
 
@@ -27,6 +33,7 @@ import { MONGO_ENABLED } from '@/lib/mongoClient';
 import {
   getWorkConfigView, setWorkConfig, listTasks, addTask, updateTask, setTaskStatus, removeTask,
 } from '@/lib/workTasks';
+import { listNotes, addNote, updateNote, removeNote } from '@/lib/workNotes';
 import { ensureWorkWatch, getWorkWatchState, runWorkWatchNow } from '@/lib/workWatch';
 
 export const runtime = 'nodejs';
@@ -86,6 +93,20 @@ export async function POST(req: NextRequest) {
         break;
       case 'remove':
         await removeTask(body.id);
+        result = { ok: true };
+        break;
+      // ── Ghi chú — kho phẳng, không cảnh báo nên không đụng workWatch ──────
+      case 'notes-list':
+        result = { notes: await listNotes() };
+        break;
+      case 'note-add':
+        result = { note: await addNote(body) };
+        break;
+      case 'note-update':
+        result = { note: await updateNote(body.id, body) };
+        break;
+      case 'note-remove':
+        await removeNote(body.id);
         result = { ok: true };
         break;
       default:
