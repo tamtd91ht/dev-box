@@ -13,7 +13,8 @@
 // one probe + one StackDef.
 
 import { esHealth, listEsNodes } from '@/lib/es';
-import { kafkaClusterHealth, kafkaConsumerLag, kafkaHostMetrics } from '@/lib/kafka';
+import { kafkaClusterHealth, kafkaConsumerLag, kafkaHostMetrics, kafkaBrokerReach } from '@/lib/kafka';
+import type { KafkaBrokerReach } from '@/lib/kafka';
 import { mongoMonitor } from '@/lib/mongo';
 import { pingPg } from '@/lib/pg';
 import { listRabbitNodes, rabbitOverview } from '@/lib/rabbit';
@@ -72,6 +73,8 @@ export interface ProbePayload {
   affectedTopics?: string[];
   /** Kafka: chi tiết từng host broker (khi cụm có khai metricsUrls). */
   kafkaHosts?: KafkaHostDetail[];
+  /** Kafka: bắt tay TCP từng seed broker — chỉ đo khi cụm KHÔNG trả lời. */
+  brokerReach?: KafkaBrokerReach[];
 }
 
 export interface ProbeResult {
@@ -84,6 +87,11 @@ export interface ProbeResult {
   affectedTopics?: string[];
   /** Chỉ Kafka: chi tiết host broker (node_exporter) — cho cảnh báo nêu đích danh máy. */
   kafkaHosts?: KafkaHostDetail[];
+  /**
+   * Chỉ Kafka, chỉ khi MẤT KẾT NỐI: bắt tay TCP tới từng seed broker. Cho biết
+   * node nào chết / cả cụm chết / cổng mở mà Kafka không phục vụ.
+   */
+  brokerReach?: KafkaBrokerReach[];
   /** Probe-level failure (host down, bad credentials…). `metrics.up` is 0 then. */
   error?: string;
 }
@@ -491,7 +499,20 @@ export async function probeStack(
       kafkaHosts: payload.kafkaHosts,
     };
   } catch (e) {
-    return { at, metrics: { up: 0 }, error: (e as Error).message || 'probe thất bại' };
+    const error = (e as Error).message || 'probe thất bại';
+    // MẤT KẾT NỐI KAFKA — đo thêm từng broker trước khi trả về.
+    //
+    // describeCluster ném MỘT lỗi cho cả cụm, nên nếu dừng ở đây cảnh báo chỉ
+    // nói được "Kết nối được 0/1": người trực vẫn phải tự ssh từng máy để biết
+    // node nào chết. Một lượt bắt tay TCP (3s, song song) trả lời sẵn câu đó.
+    // Bọc try riêng: chẩn đoán hỏng thì vẫn phải báo mất kết nối như cũ.
+    if (stack === 'kafka') {
+      try {
+        const brokerReach = await kafkaBrokerReach(connectionId);
+        return { at, metrics: { up: 0 }, brokerReach, error };
+      } catch { /* không chẩn đoán được — vẫn báo mất kết nối */ }
+    }
+    return { at, metrics: { up: 0 }, error };
   }
 }
 
@@ -558,6 +579,13 @@ export interface InfraEventExtras {
    * người trực vẫn phải đi dò từng broker.
    */
   breachingHosts?: BreachingHost[];
+  /**
+   * Kafka, chỉ ca MẤT KẾT NỐI: bắt tay TCP tới từng seed broker. Biến cảnh báo
+   * từ "Kết nối được 0/1" thành câu trả lời chẩn đoán được: node nào chết, IP
+   * nào, lỗi gì (ECONNREFUSED = máy sống mà Kafka không nghe cổng · timeout =
+   * gói đi không tới, thường là mất mạng/VPN hoặc firewall).
+   */
+  brokerReach?: KafkaBrokerReach[];
 }
 
 /**
@@ -670,6 +698,62 @@ function hostFields(extras?: InfraEventExtras): Record<string, string | number> 
     hostCount: list.length,
     hostsJson: JSON.stringify(shown),
   };
+}
+
+/**
+ * Fields chẩn đoán MẤT KẾT NỐI Kafka: từng seed broker có bắt tay TCP được
+ * không. LUÔN trả đủ khoá (rỗng khi không đo) — template tham chiếu
+ * {{brokerReach}} không được vỡ ở những cảnh báo khác.
+ *
+ * `reachSummary` là câu kết luận đọc-là-hiểu, thứ người trực cần nhất lúc 2 giờ
+ * sáng: cả cụm chết hay chỉ một node, và nghi ngờ ở đâu.
+ */
+function brokerReachFields(extras?: InfraEventExtras): Record<string, string | number> {
+  const list = extras?.brokerReach ?? [];
+  if (!list.length) {
+    return { brokerReach: '', brokersUp: 0, brokersTotal: 0, reachSummary: '', brokerReachJson: '' };
+  }
+  const up = list.filter((b) => b.reachable);
+  const down = list.filter((b) => !b.reachable);
+
+  // Mỗi broker một dòng: '192.168.2.218:9092 = TCP OK (2ms)' / '= ECONNREFUSED'.
+  const rendered = list.map((b) => (b.reachable
+    ? `${b.addr} = TCP mở${b.latencyMs !== undefined ? ` (${b.latencyMs}ms)` : ''}`
+    : `${b.addr} = KHÔNG kết nối được${b.error ? ` (${b.error})` : ''}`));
+
+  return {
+    brokerReach: rendered.join(' · '),
+    brokersUp: up.length,
+    brokersTotal: list.length,
+    reachSummary: reachSummary(up, down),
+    brokerReachJson: JSON.stringify(list),
+  };
+}
+
+/**
+ * Kết luận chẩn đoán từ kết quả bắt tay. Phân biệt ba ca có HƯỚNG XỬ LÝ KHÁC
+ * HẲN nhau — đây là toàn bộ giá trị của việc đo từng broker:
+ *
+ *   · không node nào bắt tay được → nghi mạng/VPN/firewall phía DevBox, hoặc
+ *     cả cụm cùng chết. Kiểm tra đường mạng TRƯỚC khi đi soi từng broker.
+ *   · một số node bắt tay được   → mạng thông; các node còn lại mới là chỗ hỏng.
+ *   · MỌI node đều bắt tay được  → cổng có người nghe mà cụm vẫn không phục vụ:
+ *     tiến trình Kafka đang khởi động, mất quorum KRaft/ZooKeeper, hoặc
+ *     advertised.listeners trỏ sai địa chỉ DevBox không tới được.
+ */
+function reachSummary(up: KafkaBrokerReach[], down: KafkaBrokerReach[]): string {
+  const total = up.length + down.length;
+  if (up.length === 0) {
+    return `KHÔNG bắt tay TCP được node nào trong ${total} — nghi mất mạng/VPN/firewall từ DevBox, `
+      + 'hoặc cả cụm cùng chết. Kiểm tra đường mạng trước.';
+  }
+  if (down.length === 0) {
+    return `Cả ${total} node đều MỞ cổng TCP nhưng cụm không phục vụ — tiến trình Kafka còn sống mà `
+      + 'chưa sẵn sàng (đang khởi động, mất quorum KRaft/ZooKeeper), hoặc advertised.listeners trỏ '
+      + 'sai địa chỉ mà DevBox không tới được.';
+  }
+  return `${down.length}/${total} node không kết nối được (${down.map((b) => b.addr).join(', ')}); `
+    + `${up.length} node còn TCP bình thường → mạng thông, hỏng ở đúng (các) node kia.`;
 }
 
 /**
@@ -789,6 +873,7 @@ function baseEvent(
       ...consumerFields(extras),
       ...topicFields(extras),
       ...hostFields(extras),
+      ...brokerReachFields(extras),
     },
   };
 }

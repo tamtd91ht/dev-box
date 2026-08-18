@@ -21,6 +21,7 @@
 //     / a timeout, and reads use RAW leader fetches — no consumer groups, nothing
 //     is ever committed.
 
+import { createConnection } from 'net';
 import { Kafka, logLevel, type Admin } from 'kafkajs';
 import type { KafkaConnection } from '@/lib/kafkaConnections';
 
@@ -430,6 +431,78 @@ async function fetchOneHostMetrics(url: string): Promise<KafkaHostMetrics> {
 export async function hostMetrics(conn: KafkaConnection): Promise<KafkaHostMetrics[]> {
   const urls = conn.metricsUrls ?? [];
   return Promise.all(urls.map(fetchOneHostMetrics));
+}
+
+// ── Chẩn đoán "mất kết nối" theo TỪNG broker ────────────────────────────────
+//
+// Khi cụm không trả lời, describeCluster chỉ ném MỘT lỗi cho cả cụm: cảnh báo
+// ra "Kết nối được 0/1" mà không nói được node nào chết. Người trực vẫn phải
+// tự ssh từng máy — đúng thứ cảnh báo lẽ ra phải trả lời sẵn.
+//
+// Nên khi cụm down, ta bắt tay TCP tới TỪNG seed broker: phân biệt được
+//   · cả 3 node cùng chết  → nhiều khả năng đứt mạng/VPN phía mình
+//   · 1 node chết           → sự cố máy đó
+//   · TCP mở nhưng cụm vẫn lỗi → tiến trình Kafka còn sống mà không phục vụ
+//     được (đang khởi động, mất ZK/KRaft quorum, sai cấu hình listener)
+//
+// Chỉ TCP connect, KHÔNG nói giao thức Kafka: rẻ, không phụ thuộc kafkajs đang
+// ở trạng thái nào, và trả lời đúng câu hỏi "cổng này có ai nghe không".
+
+/** Kết quả bắt tay TCP tới một broker. */
+export interface KafkaBrokerReach {
+  /** Nguyên văn 'host:port' như trong cấu hình. */
+  addr: string;
+  host: string;
+  port: number;
+  /** TCP bắt tay được hay không. */
+  reachable: boolean;
+  /** Thời gian bắt tay (ms) khi thành công. */
+  latencyMs?: number;
+  /** Lý do hỏng, đã rút gọn: 'timeout 3s' · 'ECONNREFUSED' · 'EHOSTUNREACH'… */
+  error?: string;
+}
+
+const BROKER_TCP_TIMEOUT_MS = 3000;
+
+/** Bắt tay TCP một broker. KHÔNG BAO GIỜ ném — hỏng cũng là một kết quả đo. */
+function probeBrokerTcp(addr: string): Promise<KafkaBrokerReach> {
+  // 'host:port' — host IPv6 dạng [::1]:9092 cũng tách đúng nhờ lastIndexOf.
+  const cut = addr.lastIndexOf(':');
+  const host = cut > 0 ? addr.slice(0, cut) : addr;
+  const port = cut > 0 ? Number(addr.slice(cut + 1)) : 9092;
+  const base = { addr, host, port: Number.isFinite(port) ? port : 9092 };
+
+  return new Promise<KafkaBrokerReach>((resolve) => {
+    const t0 = Date.now();
+    let done = false;
+    // Mọi nhánh kết thúc đều đi qua đây: đảm bảo socket luôn được huỷ và
+    // promise chỉ resolve một lần (timeout và error có thể cùng bắn).
+    const finish = (r: Omit<KafkaBrokerReach, 'addr' | 'host' | 'port'>) => {
+      if (done) return;
+      done = true;
+      sock.destroy();
+      resolve({ ...base, ...r });
+    };
+    const sock = createConnection({ host: base.host, port: base.port });
+    sock.setTimeout(BROKER_TCP_TIMEOUT_MS);
+    sock.on('connect', () => finish({ reachable: true, latencyMs: Date.now() - t0 }));
+    sock.on('timeout', () => finish({ reachable: false, error: `timeout ${BROKER_TCP_TIMEOUT_MS / 1000}s` }));
+    sock.on('error', (e) => finish({
+      reachable: false,
+      // `code` (ECONNREFUSED/EHOSTUNREACH/ENOTFOUND) nói đúng bản chất hơn hẳn
+      // câu message dài của Node, và là thứ người trực tra được ngay.
+      error: (e as NodeJS.ErrnoException).code || e.message,
+    }));
+  });
+}
+
+/**
+ * Bắt tay TCP tới MỌI seed broker, song song. Dùng cho chẩn đoán lúc cụm không
+ * trả lời — xem ghi chú ở đầu mục.
+ */
+export async function brokerReachability(conn: KafkaConnection): Promise<KafkaBrokerReach[]> {
+  const list = (conn.brokers ?? []).map((b) => String(b ?? '').trim()).filter(Boolean);
+  return Promise.all(list.map(probeBrokerTcp));
 }
 
 export async function listTopics(conn: KafkaConnection): Promise<TopicSummary[]> {

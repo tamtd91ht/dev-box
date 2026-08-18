@@ -185,6 +185,41 @@ const INFRA_FIELDS: FieldDef[] = [
     hint: 'bản máy đọc [{host,diskUsedPct?,diskFreeGb?,mount?,memUsedPct?,cpuPct?,load1PerCore?,unreachable?}] — vào AlertMeta.hosts của metaJson; rỗng khi không có',
     sample: '[{"host":"192.168.2.94","diskUsedPct":91,"diskFreeGb":18.4,"mount":"/var/lib/kafka"}]',
   },
+  {
+    name: 'reachSummary',
+    label: 'Chẩn đoán mất kết nối',
+    kind: 'text',
+    hint: 'CHỈ Kafka mất kết nối: câu kết luận hướng xử lý — mất mạng/VPN, node nào chết, hay cụm mở cổng mà chưa phục vụ. Rỗng với chỉ số khác',
+    sample: '1/3 node không kết nối được (192.168.2.220:9092); 2 node còn TCP bình thường → mạng thông, hỏng ở đúng (các) node kia.',
+  },
+  {
+    name: 'brokerReach',
+    label: 'Từng broker (chuỗi)',
+    kind: 'text',
+    hint: 'CHỈ Kafka mất kết nối: kết quả bắt tay TCP tới TỪNG seed broker, nêu rõ IP và lỗi. Rỗng với chỉ số khác',
+    sample: '192.168.2.218:9092 = TCP mở (2ms) · 192.168.2.220:9092 = KHÔNG kết nối được (ECONNREFUSED)',
+  },
+  {
+    name: 'brokersUp',
+    label: 'Số broker bắt tay được',
+    kind: 'number',
+    hint: 'số seed broker còn mở cổng TCP lúc cụm mất kết nối; 0 khi không node nào trả lời',
+    sample: 2,
+  },
+  {
+    name: 'brokersTotal',
+    label: 'Tổng số seed broker',
+    kind: 'number',
+    hint: 'số seed broker khai trong cấu hình kết nối; 0 khi không đo (chỉ số khác)',
+    sample: 3,
+  },
+  {
+    name: 'brokerReachJson',
+    label: 'Từng broker (JSON)',
+    kind: 'text',
+    hint: 'bản máy đọc [{addr,host,port,reachable,latencyMs?,error?}] — vào AlertMeta.brokers của metaJson; rỗng khi không có',
+    sample: '[{"addr":"192.168.2.220:9092","host":"192.168.2.220","port":9092,"reachable":false,"error":"ECONNREFUSED"}]',
+  },
 ];
 
 export const GROUPS: GroupDef[] = [
@@ -797,7 +832,19 @@ export const STACKS: StackDef[] = [
       // EVERY kafka metric pays for clusterHealth, which calls
       // fetchTopicMetadata over ALL topics — cost scales with the topic count,
       // and it is the controller that answers.
-      { ...UP, cost: 'heavy', costNote: KAFKA_META_NOTE, minEverySec: 60, probe: KAFKA_META_PROBE },
+      {
+        ...UP,
+        cost: 'heavy',
+        costNote: KAFKA_META_NOTE,
+        minEverySec: 60,
+        probe: KAFKA_META_PROBE,
+        // Riêng Kafka, khi mất kết nối DevBox đo thêm TỪNG seed broker (bắt tay
+        // TCP) rồi đính vào cảnh báo — nói rõ node nào chết thay vì chỉ "0/1".
+        meaning: `${UP.meaning} Riêng Kafka: khi mất kết nối, DevBox bắt tay TCP tới TỪNG broker `
+          + 'trong danh sách để chỉ rõ node nào không kết nối được và lỗi gì (ECONNREFUSED = máy sống '
+          + 'nhưng Kafka không nghe cổng · timeout = gói không tới nơi, thường do mất mạng/VPN hoặc '
+          + 'firewall), kèm một câu kết luận hướng xử lý.',
+      },
       {
         key: 'underReplicated',
         label: 'Partition under-replicated',

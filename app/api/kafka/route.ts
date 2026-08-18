@@ -24,6 +24,7 @@ import {
   testConnection,
   clusterHealth,
   hostMetrics,
+  brokerReachability,
   listTopics,
   describeTopic,
   listGroups,
@@ -106,6 +107,9 @@ export async function POST(req: NextRequest) {
         break;
       case 'hostMetrics': // node_exporter RAM/disk/cpu/load (optional, per connection)
         result = await hostMetrics(conn);
+        break;
+      case 'brokerReach': // bắt tay TCP từng seed broker — chẩn đoán lúc cụm không trả lời
+        result = await brokerReachability(conn);
         break;
       case 'describeTopic':
         result = await describeTopic(conn, String(body.topic ?? ''));

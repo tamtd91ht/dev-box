@@ -208,6 +208,25 @@ export function kafkaHostMetrics(connectionId: string): Promise<KafkaHostMetrics
   return kafkaAction<KafkaHostMetrics[]>('hostMetrics', { connectionId });
 }
 
+/** Kết quả bắt tay TCP tới một seed broker (chẩn đoán "mất kết nối"). */
+export interface KafkaBrokerReach {
+  addr: string;
+  host: string;
+  port: number;
+  reachable: boolean;
+  latencyMs?: number;
+  error?: string;
+}
+
+/**
+ * Bắt tay TCP tới TỪNG seed broker. Dùng khi cụm không trả lời: phân biệt được
+ * "cả cụm chết / một node chết / cổng mở nhưng Kafka không phục vụ" — xem ghi
+ * chú brokerReachability trong lib/kafkaClient.
+ */
+export function kafkaBrokerReach(connectionId: string): Promise<KafkaBrokerReach[]> {
+  return kafkaAction<KafkaBrokerReach[]>('brokerReach', { connectionId });
+}
+
 export function listKafkaTopics(connectionId: string): Promise<TopicSummary[]> {
   return kafkaAction<TopicSummary[]>('listTopics', { connectionId });
 }

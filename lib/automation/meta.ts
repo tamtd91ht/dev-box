@@ -23,8 +23,12 @@ import { AGG_LABEL, metricDef, metricLabel, type FieldDef } from './catalog';
  * v3: thêm `hosts?: AlertMetaHost[]` — Kafka chỉ số HOST broker (đĩa/RAM/CPU/
  *     load/mất exporter, đọc từ node_exporter) liệt kê đích danh máy nào
  *     (bổ sung, tương thích ngược).
+ * v4: thêm `brokers?: AlertMetaBroker[]` + `diagnosis?: string` — Kafka MẤT KẾT
+ *     NỐI: bắt tay TCP tới TỪNG seed broker, nên cảnh báo nói được node nào
+ *     chết thay vì chỉ "0/1", kèm một câu kết luận hướng xử lý (bổ sung, tương
+ *     thích ngược).
  */
-export const META_SCHEMA_VERSION = 3;
+export const META_SCHEMA_VERSION = 4;
 
 /** Ký hiệu người đọc của phép so sánh — dùng chung cho description, text và meta. */
 export const OP_TEXT: Record<InfraWatch['op'], string> = {
@@ -170,6 +174,21 @@ export interface AlertMetaAbsolute {
 }
 
 /** Một HOST broker liên quan tới cảnh báo Kafka theo host — cho bot/hệ ngoài đọc. */
+/**
+ * Kết quả bắt tay TCP tới MỘT seed broker (Kafka mất kết nối). Chỉ TCP, không
+ * nói giao thức Kafka — trả lời đúng câu "cổng này có ai nghe không".
+ */
+export interface AlertMetaBroker {
+  /** Nguyên văn 'host:port' như trong cấu hình. */
+  addr: string;
+  host: string;
+  port: number;
+  reachable: boolean;
+  latencyMs?: number;
+  /** Mã lỗi Node khi hỏng: ECONNREFUSED · EHOSTUNREACH · ENOTFOUND · timeout 3s. */
+  error?: string;
+}
+
 export interface AlertMetaHost {
   /** Hostname/IP của broker. */
   host: string;
@@ -244,6 +263,13 @@ export interface AlertMeta {
   topics?: string[];
   /** Kafka (chỉ số host): đích danh broker host liên quan (đĩa/RAM/CPU/mất exporter). */
   hosts?: AlertMetaHost[];
+  /**
+   * Kafka MẤT KẾT NỐI: bắt tay TCP tới từng seed broker. Cho bot/người trực
+   * biết node nào chết thay vì chỉ "Kết nối được 0/1".
+   */
+  brokers?: AlertMetaBroker[];
+  /** Câu kết luận chẩn đoán đi kèm `brokers` (mất mạng / node chết / cụm chưa phục vụ). */
+  diagnosis?: string;
 
   // ── social ──
   conversation?: string;
@@ -289,6 +315,30 @@ function parseConsumers(raw: string | number | undefined): AlertMetaConsumer[] {
         ...(c.state !== undefined ? { state: String(c.state) } : {}),
         ...(c.members !== undefined ? { members: Number(c.members) || 0 } : {}),
       }));
+  } catch {
+    return [];
+  }
+}
+
+/** Parse field máy-đọc `brokerReachJson` → AlertMetaBroker[]. An toàn với mọi rác. */
+function parseBrokers(raw: string | number | undefined): AlertMetaBroker[] {
+  if (typeof raw !== 'string' || !raw) return [];
+  try {
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((b): b is Record<string, unknown> => !!b && typeof b === 'object' && typeof (b as { addr?: unknown }).addr === 'string')
+      .map((b) => {
+        const out: AlertMetaBroker = {
+          addr: String(b.addr),
+          host: String(b.host ?? ''),
+          port: Number(b.port) || 0,
+          reachable: b.reachable === true,
+        };
+        if (Number.isFinite(Number(b.latencyMs))) out.latencyMs = Number(b.latencyMs);
+        if (b.error !== undefined) out.error = String(b.error);
+        return out;
+      });
   } catch {
     return [];
   }
@@ -397,6 +447,14 @@ export function buildAlertMeta(event: AutomationEvent): AlertMeta {
     // Host broker liên quan (Kafka chỉ số host) — cùng lối với consumers.
     const hosts = parseHosts(f.hostsJson);
     if (hosts.length) meta.hosts = hosts;
+    // Kafka mất kết nối: từng seed broker + câu kết luận chẩn đoán. Chỉ có mặt
+    // ở ca 'up' nên vắng field này là bình thường, meta không vỡ.
+    const brokers = parseBrokers(f.brokerReachJson);
+    if (brokers.length) {
+      meta.brokers = brokers;
+      const diagnosis = s(f.reachSummary);
+      if (diagnosis) meta.diagnosis = diagnosis;
+    }
     if (event.type === 'infra.recovered') {
       meta.recovery = { downSec: n(f.downSec), downText: humanizeSec(n(f.downSec)) };
     }

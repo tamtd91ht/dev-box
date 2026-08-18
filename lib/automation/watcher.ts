@@ -581,6 +581,9 @@ class InfraWatcher {
               affectedTopics: offendingTopics(watch, res),
               // Kafka: đích danh HOST broker liên quan (đĩa/RAM/CPU/mất exporter).
               breachingHosts: offendingHosts(watch, res),
+              // Kafka MẤT KẾT NỐI: bắt tay TCP từng seed broker (probeStack chỉ
+              // đo khi cụm không trả lời) — node nào chết, IP nào, lỗi gì.
+              brokerReach: res.brokerReach,
             }),
           );
         }
