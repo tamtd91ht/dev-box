@@ -66,6 +66,8 @@ import ConnectionsLiveView from './rabbit/ConnectionsLiveView';
 import PublishModal from './rabbit/PublishModal';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import SessionHistory from './SessionHistory';
+import { recordSession, type RabbitSession } from '@/lib/sessionHistory';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 
@@ -94,6 +96,8 @@ export default function RabbitWorkspace() {
   const [pings, setPings] = useState<Record<string, number | 'err'>>({});
 
   const [subView, setSubView] = useState<SubView>('overview');
+  /** Tăng lên mỗi lần ghi một phiên — buộc SessionHistory đọc lại danh sách. */
+  const [sessBump, setSessBump] = useState(0);
   /** '' = every vhost the account can see. Scopes binding reads + new declarations. */
   const [vhostScope, setVhostScope] = useState('');
 
@@ -263,6 +267,15 @@ export default function RabbitWorkspace() {
     setSelectedQueue({ vhost, name });
     setQueueDetail(null); setPeek(null);
     setQDetailLoading(true); setError(null);
+    // Ghi phiên: mở queue nào, ở vhost nào. KHÔNG ghi depth/message — đúng lý do
+    // đã nêu ngay dưới đây ở clearQueue: số liệu cũ tệ hơn là không có số liệu.
+    const st: RabbitSession = { subView: 'queues', vhost, queue: name, exchange: '' };
+    recordSession('rabbit', {
+      label: `📥 ${name}${vhost && vhost !== '/' ? ` (${vhost})` : ''}`,
+      connectionId: activeId,
+      state: st as unknown as Record<string, unknown>,
+    });
+    setSessBump((n) => n + 1);
     try { setQueueDetail(await describeRabbitQueue(activeId, vhost, name)); }
     catch (e) { setError((e as Error).message); }
     finally { setQDetailLoading(false); }
@@ -272,6 +285,13 @@ export default function RabbitWorkspace() {
     setSelectedExchange({ vhost, name });
     setExchangeDetail(null);
     setXDetailLoading(true); setError(null);
+    const st: RabbitSession = { subView: 'exchanges', vhost, queue: '', exchange: name };
+    recordSession('rabbit', {
+      label: `📤 ${name || '(default)'}${vhost && vhost !== '/' ? ` (${vhost})` : ''}`,
+      connectionId: activeId,
+      state: st as unknown as Record<string, unknown>,
+    });
+    setSessBump((n) => n + 1);
     try { setExchangeDetail(await describeRabbitExchange(activeId, vhost, name)); }
     catch (e) { setError((e as Error).message); }
     finally { setXDetailLoading(false); }
@@ -287,6 +307,26 @@ export default function RabbitWorkspace() {
   const clearExchange = useCallback(() => {
     setSelectedExchange(null); setExchangeDetail(null);
   }, []);
+
+  /**
+   * Khôi phục một phiên: về đúng view + vhost rồi mở lại queue/exchange đó.
+   * Số liệu (depth, rate) luôn tải MỚI — phiên chỉ nhớ mình đang xem cái gì.
+   */
+  const restoreSession = useCallback((raw: Record<string, unknown>) => {
+    const st = raw as Partial<RabbitSession>;
+    const vhost = typeof st.vhost === 'string' ? st.vhost : '/';
+    const queue = typeof st.queue === 'string' ? st.queue : '';
+    const exchange = typeof st.exchange === 'string' ? st.exchange : '';
+    if (queue) {
+      setSubView('queues');
+      void selectQueue(vhost, queue);
+    } else if (st.subView === 'exchanges') {
+      // Exchange mặc định có tên RỖNG — hợp lệ, nên phân biệt bằng subView chứ
+      // không bằng việc chuỗi tên có rỗng hay không.
+      setSubView('exchanges');
+      void selectExchange(vhost, exchange);
+    }
+  }, [selectQueue, selectExchange]);
 
   /**
    * Cross-view jump used by the DLX links and binding tables. The target's vhost
@@ -449,6 +489,12 @@ export default function RabbitWorkspace() {
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 {readOnly && <span className="badge" title="Thao tác ghi bị chặn">🔒 read-only</span>}
+                <SessionHistory
+                  scope="rabbit"
+                  connectionId={activeId}
+                  reloadKey={sessBump}
+                  onRestore={restoreSession}
+                />
                 <button className="chip-btn" onClick={reloadCurrent}>↻ Tải lại</button>
               </div>
             </div>

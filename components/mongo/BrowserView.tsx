@@ -40,6 +40,9 @@ import ResultFindBar from './ResultFindBar';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
 
+import SessionHistory from '../SessionHistory';
+import { recordSession, short, type MongoSession } from '@/lib/sessionHistory';
+
 export interface BrowserViewProps {
   connectionId: string;
   readOnly: boolean;
@@ -140,6 +143,8 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
   const [busy, setBusy] = useState(false);
   /** Tăng sau MỖI lần chạy query — dùng làm key để thẻ kết quả dựng lại từ đầu. */
   const [runSeq, setRunSeq] = useState(0);
+  /** Tăng lên mỗi lần ghi một phiên — buộc SessionHistory đọc lại danh sách. */
+  const [sessBump, setSessBump] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -178,6 +183,53 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
     }
   }, [initialDb, expandDb]);
 
+  // ── Phiên làm việc ──────────────────────────────────────────────────────────
+  /**
+   * Ghi một phiên sau khi CHẠY query. Chỉ lưu ý định (db/collection + filter/
+   * sort/projection), không lưu document trả về — xem lib/sessionHistory.
+   */
+  const noteSession = useCallback((mode: QueryMode, q: string) => {
+    if (!selected) return;
+    const state: MongoSession = {
+      subView: mode,
+      database: selected.db,
+      collection: selected.coll,
+      filter: mode === 'find' ? filter : q,
+      sort: mode === 'find' ? sort : '',
+      projection: mode === 'find' ? projection : '',
+    };
+    const trimmed = q.trim();
+    recordSession('mongo', {
+      label: `${selected.db}.${selected.coll}${trimmed ? ` · ${short(trimmed)}` : ''}${mode === 'aggregate' ? ' (agg)' : ''}`,
+      connectionId,
+      state: state as unknown as Record<string, unknown>,
+    });
+    setSessBump((n) => n + 1);
+  }, [connectionId, selected, filter, sort, projection]);
+
+  /**
+   * Khôi phục: mở lại db/collection và ĐIỀN LẠI query — KHÔNG tự chạy. Người
+   * dùng bấm ▶ Find khi đã nhìn thấy mình sắp chạy gì.
+   */
+  const restoreSession = useCallback((raw: Record<string, unknown>) => {
+    const st = raw as Partial<MongoSession>;
+    const db = typeof st.database === 'string' ? st.database : '';
+    const coll = typeof st.collection === 'string' ? st.collection : '';
+    if (!db || !coll) return;
+    setQueryMode(st.subView === 'aggregate' ? 'aggregate' : 'find');
+    if (st.subView === 'aggregate') setPipeline(typeof st.filter === 'string' ? st.filter : '');
+    else {
+      setFilter(typeof st.filter === 'string' ? st.filter : '');
+      setSort(typeof st.sort === 'string' ? st.sort : '');
+      setProjection(typeof st.projection === 'string' ? st.projection : '');
+    }
+    setSelected({ db, coll });
+    setSkip(0);
+    setResult(null); setAggResult(null); setCountInfo(null);
+    void expandDb(db);
+    flash('Đã điền lại phiên — bấm ▶ để chạy.');
+  }, [expandDb, flash]);
+
   // ── Query runners ───────────────────────────────────────────────────────────
   const runFind = useCallback(async (over?: { skip?: number }) => {
     if (!selected) return;
@@ -188,9 +240,10 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
       setResult(r);
       setSkip(r.skip);
       setRunSeq((n) => n + 1);
+      noteSession('find', filter);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [connectionId, selected, filter, projection, sort, limit, skip]);
+  }, [connectionId, selected, filter, projection, sort, limit, skip, noteSession]);
 
   const runCount = useCallback(async () => {
     if (!selected) return;
@@ -208,10 +261,11 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
     try {
       setAggResult(await aggregateMongo(connectionId, selected.db, selected.coll, pipeline));
       setRunSeq((n) => n + 1);
+      noteSession('aggregate', pipeline);
     }
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [connectionId, selected, pipeline]);
+  }, [connectionId, selected, pipeline, noteSession]);
 
   const loadStats = useCallback(async () => {
     if (!selected) return;
@@ -400,6 +454,12 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
           onChange={(e) => setTreeFilter(e.target.value)}
           placeholder="lọc db / collection…"
           style={{ margin: '6px 0' }}
+        />
+        <SessionHistory
+          scope="mongo"
+          connectionId={connectionId}
+          reloadKey={sessBump}
+          onRestore={restoreSession}
         />
         {dbsLoading && dbs.length === 0 && <p className="empty"><span className="spinner" /> Đang tải…</p>}
         <ul className="mongo-db-list">

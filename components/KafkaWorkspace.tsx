@@ -42,6 +42,8 @@ import {
 
 /** localStorage key remembering the last-selected connection. */
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import SessionHistory from './SessionHistory';
+import { recordSession, type KafkaSession } from '@/lib/sessionHistory';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 
@@ -197,6 +199,8 @@ export default function KafkaWorkspace() {
   const [notice, setNotice] = useState<string | null>(null);
 
   // ── Quick-search presets ────────────────────────────────────────────────────
+  /** Tăng lên mỗi lần ghi một phiên — buộc SessionHistory đọc lại danh sách. */
+  const [sessBump, setSessBump] = useState(0);
   const [presets, setPresets] = useState<KafkaPreset[]>([]);
   /** Dropdown "Tìm nhanh" (neo dưới nút ở thanh trạng thái) đang mở hay không. */
   const [presetOpen, setPresetOpen] = useState(false);
@@ -370,6 +374,15 @@ export default function KafkaWorkspace() {
         toInput: toLocalInput(now),
         keyword: '',
       });
+      // Ghi phiên: mở topic nào ở cluster nào. KHÔNG ghi message — payload là
+      // dữ liệu nhạy cảm và số liệu offset/lag cũ dễ gây hiểu nhầm.
+      const state: KafkaSession = { subView: 'topics', topic: name, group: '' };
+      recordSession('kafka', {
+        label: `📨 ${name}`,
+        connectionId: connId,
+        state: state as unknown as Record<string, unknown>,
+      });
+      setSessBump((n) => n + 1);
       try {
         const detail = await describeKafkaTopic(connId, name);
         patchTab(tabId, { detail, detailLoading: false });
@@ -379,6 +392,22 @@ export default function KafkaWorkspace() {
     },
     [patchTab],
   );
+
+  /**
+   * Khôi phục một phiên: mở lại topic đó ở tab đang đứng nếu tab còn trống,
+   * không thì mở tab mới. Chỉ MỞ topic (kèm partition/offset hiện tại) — không
+   * tự search message theo khoảng thời gian cũ.
+   */
+  const restoreSession = useCallback((raw: Record<string, unknown>) => {
+    const st = raw as Partial<KafkaSession>;
+    const topic = typeof st.topic === 'string' ? st.topic : '';
+    if (!topic || !activeId) return;
+    setSubView('topics');
+    const cur = tabs.find((t) => t.id === activeTabId);
+    const target = cur && cur.connectionId === activeId && !cur.topic ? cur : openTab(activeId);
+    void selectTopicIn(target.id, activeId, topic);
+  }, [activeId, activeTabId, tabs, openTab, selectTopicIn]);
+
 
   const filteredTopics = useMemo(() => {
     const q = topicFilter.trim().toLowerCase();
@@ -835,6 +864,12 @@ export default function KafkaWorkspace() {
                   <span className="kafka-meta" style={{ margin: 0 }}>
                     {topicsLoading ? <span className="spinner" /> : `${filteredTopics.length}/${topics.length}`}
                   </span>
+                  <SessionHistory
+                    scope="kafka"
+                    connectionId={activeId}
+                    reloadKey={sessBump}
+                    onRestore={restoreSession}
+                  />
                 </div>
                 <div className="endpoint-list kafka-scroll" style={{ flex: 1, marginTop: 8 }}>
                   {filteredTopics.map((t) => (

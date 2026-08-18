@@ -25,6 +25,8 @@ import {
 import ConnTransferButton from './ConnTransferButton';
 import MonitorStrip from './redis/MonitorStrip';
 import QuickFindPanel from './redis/QuickFindPanel';
+import SessionHistory from './SessionHistory';
+import { recordSession, short, type RedisSession } from '@/lib/sessionHistory';
 
 /** localStorage key remembering the last-selected connection. */
 import { readLocal, writeLocal } from '@/lib/localKeys';
@@ -189,6 +191,9 @@ export default function RedisWorkspace() {
   // Delete confirmation modal state (typed-confirm).
   const [delKey, setDelKey] = useState<string | null>(null);
 
+  /** Tăng lên mỗi lần ghi một phiên — buộc SessionHistory đọc lại danh sách. */
+  const [sessBump, setSessBump] = useState(0);
+
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const dbRef = useRef(db);
@@ -211,6 +216,8 @@ export default function RedisWorkspace() {
   exactRef.current = exact;
   const queryRef = useRef(query);
   queryRef.current = query;
+  const rawPatternRef = useRef(rawPattern);
+  rawPatternRef.current = rawPattern;
   /** The key list scroll container — watched for infinite-scroll. */
   const listRef = useRef<HTMLDivElement | null>(null);
   /**
@@ -227,6 +234,26 @@ export default function RedisWorkspace() {
     setNotice(msg);
     setTimeout(() => setNotice((n) => (n === msg ? null : n)), 3500);
   }, []);
+
+  /**
+   * Khôi phục một phiên cũ: ĐIỀN LẠI ô tìm + DB + chế độ khớp, KHÔNG tự quét.
+   * Người dùng thấy rõ sắp tra gì rồi mới bấm ↻ Làm mới — xem lib/sessionHistory.
+   *
+   * Đọc phòng thủ từng field: object đến từ localStorage, có thể do bản app cũ ghi.
+   */
+  const restoreSession = useCallback((raw: Record<string, unknown>) => {
+    const s = raw as Partial<RedisSession>;
+    const n = Number(s.db);
+    setDb(Number.isInteger(n) && n >= 0 && n <= 15 ? n : 0);
+    setQuery(typeof s.query === 'string' ? s.query : '');
+    setExact(s.exact === true);
+    setRawPattern(s.rawPattern === true);
+    setSelectedKey(null);
+    setKeys([]);
+    setScanStarted(false);
+    setCursor('0');
+    flash('Đã điền lại phiên — bấm ↻ Làm mới để quét.');
+  }, [flash]);
 
   // ── Load / refresh the connection list ──────────────────────────────────────
   const loadConnections = useCallback(async (preferId?: string) => {
@@ -376,6 +403,25 @@ export default function RedisWorkspace() {
         setCursor(r.cursor);
         cursorRef.current = r.cursor;
         setScanStarted(true);
+        // Ghi PHIÊN — chỉ ở lượt `fresh` (một ý định tra mới). Các lượt nối
+        // tiếp của infinite-scroll là cùng một phiên, ghi lại sẽ đẻ ra hàng
+        // loạt dòng trùng nhau.
+        if (fresh) {
+          const state: RedisSession = {
+            db: dbAtStart,
+            query: queryRef.current,
+            exact: exactRef.current,
+            rawPattern: rawPatternRef.current,
+            selectedKey: null,
+          };
+          const q = queryRef.current.trim();
+          recordSession('redis', {
+            label: `DB${dbAtStart} · ${q ? short(q) : 'tất cả key'}${exactRef.current && q ? ' (đúng key)' : ''}`,
+            connectionId: connId,
+            state: state as unknown as Record<string, unknown>,
+          });
+          setSessBump((n) => n + 1);
+        }
         // Tra CHÍNH XÁC chỉ có thể ra 0 hoặc 1 key — không có gì để chọn giữa,
         // nên mở luôn value thay vì bắt bấm thêm một cái nữa vào đúng dòng duy
         // nhất vừa hiện ra.
@@ -808,6 +854,12 @@ export default function RedisWorkspace() {
                   }}
                 />
               )}
+              <SessionHistory
+                scope="redis"
+                connectionId={activeId}
+                reloadKey={sessBump}
+                onRestore={restoreSession}
+              />
               <button className="ghost sm" onClick={() => void startFresh()} disabled={scanning} title="Quét lại từ đầu">
                 {scanning ? <span className="spinner" aria-hidden /> : '↻'} Làm mới
               </button>

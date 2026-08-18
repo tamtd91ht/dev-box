@@ -7023,6 +7023,37 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-st-n { font-family: var(--mono); opacity: .75; }
 .wk-stfilter { display: flex; gap: 4px; flex-wrap: wrap; }
 
+/* "⏱ Phiên gần đây" — dùng chung cho Redis · Mongo · ES · Kafka · Rabbit.
+   Xem lib/sessionHistory: danh sách chỉ nhớ Ý ĐỊNH, không nhớ kết quả. */
+.sess-hist { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sess-hist-head {
+  display: inline-flex; align-items: center; gap: 4px; align-self: flex-start;
+  font-size: 11px; font-weight: 600; line-height: 1.6; padding: 2px 8px; cursor: pointer;
+  border-radius: 6px; white-space: nowrap;
+  background: transparent; border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.sess-hist-head:hover { border-color: var(--glass-brd-hover); color: var(--text); }
+.sess-hist-caret { font-size: 9px; opacity: .8; }
+.sess-hist-n { font-family: var(--mono); opacity: .75; }
+.sess-hist-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 210px; overflow-y: auto;
+  border: 1px solid var(--glass-brd); border-radius: 8px; padding: 4px;
+}
+.sess-hist-clear { align-self: flex-start; font-size: 10px; }
+.sess-item { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.sess-item-open {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; text-align: left;
+  background: transparent; border: 0; border-radius: 6px; padding: 3px 6px; cursor: pointer; color: inherit;
+}
+.sess-item-open:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.sess-item-label {
+  font-size: 11.5px; font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sess-item-time { font-size: 10px; color: var(--faint); }
+.sess-item-x { flex: none; font-size: 10px; }
+
 /* Work: tab con (📅 Công việc ↔ 📝 Ghi chú) */
 .wk-subtabs { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--glass-bg); border: 1px solid var(--glass-brd); }
 .wk-subtab {

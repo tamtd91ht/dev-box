@@ -36,6 +36,9 @@ import JsonViewer from './JsonViewer';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
 
+import SessionHistory from '../SessionHistory';
+import { recordSession, short, type EsSession } from '@/lib/sessionHistory';
+
 export interface BrowserViewProps {
   connectionId: string;
   /** Index pre-selected from the Overview jump (optional). */
@@ -80,6 +83,16 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
     setTabs((list) => list.map((t) => (t.id === id ? { ...t, index } : t)));
   }, []);
 
+  /** Tăng lên mỗi lần ghi một phiên — buộc SessionHistory đọc lại danh sách. */
+  const [sessBump, setSessBump] = useState(0);
+  /**
+   * Body cần điền vào tab khi khôi phục một phiên. Mang `seq` để BrowserSession
+   * phân biệt được hai lần khôi phục CÙNG một body (bấm lại cùng dòng) — so
+   * sánh nội dung thì lần thứ hai không kích hoạt gì.
+   */
+  const [restore, setRestore] = useState<{ tabId: string; body: string; seq: number } | null>(null);
+  const restoreSeq = useRef(0);
+
   const addTab = useCallback((index = '') => {
     const t = newTab(index);
     setTabs((list) => [...list, t]);
@@ -101,6 +114,28 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
     setTabs(next);
     if (activeId === id) setActiveId((next[gone] ?? next[next.length - 1]).id);
   }, [tabs, activeId]);
+
+  /**
+   * Khôi phục một phiên: mở index của nó ở tab đang đứng (nếu tab trống hoặc
+   * đã đúng index) hoặc một tab mới, rồi ĐIỀN body — KHÔNG tự chạy _search.
+   */
+  const restoreSession = useCallback((raw: Record<string, unknown>) => {
+    const st = raw as Partial<EsSession>;
+    const index = typeof st.index === 'string' ? st.index : '';
+    const body = typeof st.query === 'string' ? st.query : '';
+    if (!index) return;
+    const cur = tabs.find((t) => t.id === activeId);
+    let target = cur?.id ?? '';
+    if (cur && (!cur.index || cur.index === index)) setTabIndex(cur.id, index);
+    else {
+      const t = newTab(index);
+      setTabs((list) => [...list, t]);
+      setActiveId(t.id);
+      target = t.id;
+    }
+    restoreSeq.current += 1;
+    setRestore({ tabId: target, body, seq: restoreSeq.current });
+  }, [tabs, activeId, setTabIndex]);
 
   // Jump from Overview: mở index đó ở tab đang đứng nếu tab còn trống, còn không
   // thì thêm tab mới — không đè lên phiên đang có kết quả.
@@ -139,6 +174,13 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
           onClick={() => addTab()}>+</button>
       </div>
 
+      <SessionHistory
+        scope="es"
+        connectionId={connectionId}
+        reloadKey={sessBump}
+        onRestore={restoreSession}
+      />
+
       {idxError && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{idxError}</pre>}
 
       {/* Mọi tab đều được mount, chỉ tab không active thì ẩn — nhờ vậy body
@@ -154,6 +196,8 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
             idxLoading={idxLoading}
             onReloadIndices={loadIndices}
             onOpenInNewTab={addTab}
+            restoreBody={restore && restore.tabId === t.id ? restore : null}
+            onRecordSession={() => setSessBump((n) => n + 1)}
           />
         </div>
       ))}
@@ -172,12 +216,17 @@ interface BrowserSessionProps {
   idxLoading: boolean;
   onReloadIndices: () => void;
   onOpenInNewTab: (index: string) => void;
+  /** Body cần điền khi khôi phục phiên (null = không có gì để điền). */
+  restoreBody: { body: string; seq: number } | null;
+  /** Báo lên cha là vừa ghi một phiên, để danh sách đọc lại. */
+  onRecordSession: () => void;
 }
 
 /** Một phiên truy vấn: index + body + kết quả + mapping của riêng một tab. */
 function BrowserSession({
   connectionId, tabId, index: selected, onPickIndex,
   indices, idxLoading, onReloadIndices, onOpenInNewTab,
+  restoreBody, onRecordSession,
 }: BrowserSessionProps) {
   /** Tiền tố khoá model Monaco cho mọi khung JSON của phiên này. Gồm cả index
    *  vì đổi index là nội dung khác hẳn, đừng dùng lại model cũ.
@@ -206,6 +255,19 @@ function BrowserSession({
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
+  /**
+   * Điền body từ một phiên vừa khôi phục. Theo `seq` chứ không theo nội dung:
+   * bấm lại đúng dòng cũ vẫn phải điền lại (người dùng có thể đã sửa ô body).
+   * Chỉ ĐIỀN, không chạy — xem lib/sessionHistory.
+   */
+  const restoredSeq = useRef(0);
+  useEffect(() => {
+    if (!restoreBody || restoreBody.seq === restoredSeq.current) return;
+    restoredSeq.current = restoreBody.seq;
+    setBody(restoreBody.body);
+    setResult(null); setCountInfo(null); setError(null);
+  }, [restoreBody]);
+
   /** `over.from` chỉ dùng cho phân trang Prev/Next — nó đè lên from trong body. */
   const runSearch = useCallback(async (over?: { from?: number }) => {
     if (!selected) return;
@@ -213,9 +275,17 @@ function BrowserSession({
     try {
       const r = await searchEs(connectionId, selected, { body, from: over?.from });
       setResult(r);
+      // Ghi phiên: index + body, KHÔNG ghi hits trả về.
+      const state: EsSession = { subView: 'browser', index: selected, query: body };
+      recordSession('es', {
+        label: `${selected}${body.trim() ? ` · ${short(body)}` : ' · match_all'}`,
+        connectionId,
+        state: state as unknown as Record<string, unknown>,
+      });
+      onRecordSession();
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [connectionId, selected, body]);
+  }, [connectionId, selected, body, onRecordSession]);
 
   const runCount = useCallback(async () => {
     if (!selected) return;
