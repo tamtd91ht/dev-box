@@ -1903,8 +1903,12 @@ ipcMain.handle('browserExt:list', () => {
 /** Mo hop thoai chon thu muc extension. Tra ve { ok, path } hoac { ok:false }. */
 ipcMain.handle('browserExt:pickDir', async () => {
   try {
-    const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-    const r = await dialog.showOpenDialog(win, {
+    fs.mkdirSync(extDir(), { recursive: true });
+    // KHONG truyen cua so cha. Goi showOpenDialog(win, ...) gan hop thoai
+    // modal VAO cua so — ma luc nay panel extension dang mo de <webview>
+    // native giu input, hop thoai bi ket phia sau va khong bam duoc gi.
+    // Dialog dung mot minh thi noi len tren, thao tac binh thuong.
+    const r = await dialog.showOpenDialog({
       title: 'Chọn thư mục extension (thư mục chứa manifest.json)',
       properties: ['openDirectory'],
       defaultPath: extDir(),

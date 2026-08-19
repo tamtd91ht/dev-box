@@ -8240,3 +8240,7 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   font-size: 14px;
   line-height: 1;
 }
+
+/* Ô dán đường dẫn — đường vào thứ hai khi hộp thoại native trục trặc. */
+.bx-manual { gap: 8px; margin-bottom: 10px; }
+.bx-manual-input { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; }

@@ -67,6 +67,7 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [manualPath, setManualPath] = useState('');
 
   const refresh = useCallback(async () => {
     const api = window.browserExt;
@@ -123,11 +124,43 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
   const addExt = useCallback(async () => {
     const api = window.browserExt;
     if (!api) return;
-    const picked = await api.pickDir();
-    if (!picked.ok || !picked.path) return;          // huỷ hộp thoại — không báo lỗi
+    // Nhả webview TRƯỚC khi mở hộp thoại native. Guest của Electron vẽ ở tầng
+    // native và giữ input; mở dialog trong lúc cờ này còn bật thì hộp thoại
+    // hiện lên nhưng không bấm được gì. Gắn lại ngay sau khi dialog đóng.
+    const root = document.documentElement;
+    root.removeAttribute('data-modal-over-webview');
+    let picked;
+    try {
+      picked = await api.pickDir();
+    } finally {
+      root.setAttribute('data-modal-over-webview', '1');
+    }
+    if (picked.canceled) return;                     // người dùng bấm Cancel — im lặng
+    if (!picked.ok || !picked.path) {
+      // Hộp thoại native lỗi/không mở được: nói rõ và chỉ sang ô dán đường dẫn
+      // bên dưới, thay vì để người dùng bấm hoài mà không thấy gì xảy ra.
+      setErr(
+        'Không mở được hộp thoại chọn thư mục'
+        + (picked.error ? `: ${picked.error}` : '')
+        + '. Dán đường dẫn vào ô bên dưới.',
+      );
+      return;
+    }
     const dirPath = picked.path;
     await run(() => api.add(dirPath));
   }, [run]);
+
+  /** Thêm bằng đường dẫn gõ/dán tay — đường vào KHÔNG phụ thuộc hộp thoại
+   *  native, để lỡ dialog trục trặc thì tính năng vẫn dùng được. */
+  const addManual = useCallback(async () => {
+    const api = window.browserExt;
+    // Explorer ("Copy as path") kèm sẵn dấu nháy kép — bỏ đi, nếu không
+    // đường dẫn sẽ không khớp và báo "không có manifest.json".
+    const p = manualPath.trim().replace(/^"+|"+$/g, '').trim();
+    if (!api || !p) return;
+    await run(() => api.add(p));
+    setManualPath('');
+  }, [manualPath, run]);
 
   if (typeof window !== 'undefined' && !window.browserExt) {
     return (
@@ -173,6 +206,24 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
           </button>
           <button className="ghost sm" disabled={busy} onClick={() => void window.browserExt?.openDir()}>
             📁 Mở thư mục
+          </button>
+        </div>
+
+        {/* Đường vào THỨ HAI, không phụ thuộc hộp thoại native: dán thẳng đường
+            dẫn. Hộp thoại chọn file của Electron nằm trên tầng native cùng chỗ
+            với <webview>, gặp máy/driver nào đó là kẹt — có ô này thì tính năng
+            vẫn dùng được thay vì tắc hẳn. */}
+        <div className="row bx-manual">
+          <input
+            className="input bx-manual-input"
+            placeholder="…hoặc dán đường dẫn thư mục extension rồi Enter"
+            value={manualPath}
+            onChange={(e) => setManualPath(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void addManual(); }}
+            spellCheck={false}
+          />
+          <button className="ghost sm" onClick={() => void addManual()} disabled={busy || !manualPath.trim()}>
+            Thêm
           </button>
         </div>
 
