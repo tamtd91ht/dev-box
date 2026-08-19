@@ -8322,3 +8322,63 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .bx-bar-btn.busy { cursor: default; color: var(--accent); }
 .bx-bar-btn:disabled { opacity: .7; cursor: default; }
 .bx-bar-btn .spinner { width: 12px; height: 12px; border-width: 2px; }
+
+/* ── Thanh dấu trang có cây thư mục (components/BookmarkBar.tsx) ──────────── */
+.bmk-bar {
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  padding: 3px 6px; min-height: 30px;
+  border-bottom: 1px solid var(--glass-brd);
+}
+/* Rê tới khoảng trống của thanh = thả về gốc cây. */
+.bmk-bar.drop { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
+.bmk-hint { font-size: 11.5px; color: var(--faint); padding: 2px 4px; }
+
+.bmk-chip { display: inline-flex; border-radius: 7px; }
+/* Đích thả đang được rê tới — viền sáng để biết sẽ rơi vào đâu. */
+.bmk-chip.drop { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bmk-chip-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  max-width: 210px; padding: 3px 8px;
+  border: none; border-radius: 7px; background: transparent;
+  color: var(--text); font-size: 12px; cursor: pointer;
+}
+.bmk-chip-btn:hover { background: var(--glass-2); }
+.bmk-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bmk-prof {
+  font-size: 10px; padding: 0 5px; border-radius: 999px;
+  background: var(--glass-2); color: var(--muted);
+}
+
+/* Menu thả xuống + menu chuột phải. Portal ra <body> nên position:fixed. */
+.bmk-menu {
+  position: fixed; z-index: 90;
+  min-width: 190px; max-width: 320px; max-height: 70vh; overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--glass-brd); border-radius: 10px;
+  background: var(--bg-1); box-shadow: var(--shadow);
+  font-size: 12.5px;
+}
+.bmk-menu-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 8px; border-radius: 6px; cursor: pointer;
+}
+.bmk-menu-row:hover { background: var(--glass-2); }
+.bmk-menu-row.drop { outline: 2px solid var(--accent); outline-offset: -2px; }
+.bmk-menu-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bmk-menu-arrow { color: var(--muted); }
+.bmk-menu-empty { padding: 7px 9px; color: var(--faint); }
+
+.bmk-ctx button {
+  display: block; width: 100%; text-align: left;
+  padding: 6px 9px; border: none; border-radius: 6px;
+  background: transparent; color: var(--text); font-size: 12.5px; cursor: pointer;
+}
+.bmk-ctx button:hover { background: var(--glass-2); }
+.bmk-ctx button.danger { color: var(--err); }
+.bmk-ctx button.danger:hover { background: color-mix(in srgb, var(--err) 14%, transparent); }
+.bmk-menu-sep { height: 1px; margin: 4px 2px; background: var(--glass-brd); }
+
+/* Chấm trạng thái kiêm tay cầm kéo URL xuống thanh dấu trang. */
+.ws-dot--drag { cursor: grab; }
+.ws-dot--drag:active { cursor: grabbing; }

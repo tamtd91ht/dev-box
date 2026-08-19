@@ -608,7 +608,23 @@ export default function LinkViewer({
             /* Ô địa chỉ thật: hiện URL guest đang mở, gõ + Enter để đi tới,
                Esc trả về URL hiện tại. Click chọn hết chữ như trình duyệt. */
             <div className="ws-omni">
-              <span className={`ws-dot ws-dot--${status === 'failed' ? 'loading' : status}`} />
+              {/* CHẤM TRẠNG THÁI KIÊM TAY CẦM ĐỂ KÉO — đúng cách Chrome làm.
+                  Không thể cho kéo chính <input>: kéo bên trong ô nhập là thao
+                  tác BÔI CHỌN CHỮ, đặt draggable lên đó sẽ cướp mất chuyện đó.
+                  Nên tay cầm là một phần tử riêng ngay cạnh ô. */}
+              <span
+                className={`ws-dot ws-dot--${status === 'failed' ? 'loading' : status} ws-dot--drag`}
+                draggable={!!liveUrl}
+                title={liveUrl ? 'Kéo xuống thanh dấu trang để lưu' : undefined}
+                onDragStart={(e) => {
+                  if (!liveUrl) { e.preventDefault(); return; }
+                  // Đủ cả hai kiểu: `text/uri-list` là chuẩn cho URL, còn
+                  // `text/plain` để thả được sang ô nhập/ứng dụng khác.
+                  e.dataTransfer.setData('text/uri-list', liveUrl);
+                  e.dataTransfer.setData('text/plain', liveUrl);
+                  e.dataTransfer.effectAllowed = 'copyLink';
+                }}
+              />
               <input
                 className="ws-omni-input"
                 value={draft ?? liveUrl}

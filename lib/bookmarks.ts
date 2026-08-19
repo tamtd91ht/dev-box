@@ -1,16 +1,55 @@
 // Client helpers + types cho tab Browser. Browser-safe.
 
+export type BookmarkKind = 'link' | 'folder';
+
 export interface Bookmark {
   id: string;
   name: string;
+  /** Rỗng với folder. */
   url: string;
+  kind: BookmarkKind;
+  /** undefined = nằm ở gốc cây. */
+  parentId?: string;
+  /** Thứ tự trong cùng một thư mục, nhỏ hơn đứng trước. */
+  order: number;
   profile?: string;
   username?: string;
   password?: string;
   addedAt: string;
 }
 
-export type BookmarkMeta = Partial<Omit<Bookmark, 'id' | 'addedAt'>>;
+export type BookmarkMeta = Partial<Omit<Bookmark, 'id' | 'addedAt' | 'kind'>>;
+
+/** Một nút trên cây đã dựng — dùng để vẽ menu thả xuống lồng nhau. */
+export interface BmNode extends Bookmark {
+  children: BmNode[];
+}
+
+/**
+ * Dựng cây từ mảng phẳng, sắp theo `order`.
+ *
+ * Mục có `parentId` trỏ tới thư mục KHÔNG CÒN TỒN TẠI thì đưa về gốc thay vì
+ * bỏ đi — dữ liệu lệch (xoá nửa chừng, sửa file tay) không được phép làm dấu
+ * trang biến mất khỏi giao diện.
+ */
+export function bmTree(list: Bookmark[]): BmNode[] {
+  const byId = new Map<string, BmNode>();
+  for (const b of list) byId.set(b.id, { ...b, children: [] });
+
+  const roots: BmNode[] = [];
+  for (const n of byId.values()) {
+    const parent = n.parentId ? byId.get(n.parentId) : undefined;
+    if (parent && parent.kind === 'folder' && parent.id !== n.id) parent.children.push(n);
+    else roots.push(n);
+  }
+
+  const sort = (arr: BmNode[]) => {
+    arr.sort((a, b) => a.order - b.order);
+    arr.forEach((n) => sort(n.children));
+  };
+  sort(roots);
+  return roots;
+}
 
 async function bmAction(action: string, params: Record<string, unknown> = {}): Promise<Bookmark[]> {
   const r = await fetch('/api/bookmarks', {
@@ -23,7 +62,11 @@ async function bmAction(action: string, params: Record<string, unknown> = {}): P
 
 export const bmList = () => bmAction('list');
 export const bmAdd = (url: string, meta: BookmarkMeta = {}) => bmAction('add', { url, ...meta });
+export const bmAddFolder = (name: string, parentId?: string) => bmAction('addFolder', { name, parentId });
 export const bmUpdate = (id: string, patch: BookmarkMeta) => bmAction('update', { id, ...patch });
+/** Chuyển sang thư mục khác và/hoặc chèn trước `beforeId` (bỏ trống = xuống cuối). */
+export const bmMove = (id: string, parentId?: string, beforeId?: string) => bmAction('move', { id, parentId, beforeId });
+/** Xoá — với thư mục là xoá cả nhánh bên trong. */
 export const bmRemove = (id: string) => bmAction('remove', { id });
 
 /** Scheme mặc định khi người dùng gõ thiếu: máy nội bộ / mạng riêng gần như

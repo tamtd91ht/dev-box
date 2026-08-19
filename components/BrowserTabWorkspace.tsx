@@ -10,9 +10,13 @@
 // Viewer tái dùng LinkViewer (webview + fill login + save session).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { bmList, bmAdd, bmUpdate, bmRemove, normalizeUrl, bmPartition, type Bookmark } from '@/lib/bookmarks';
+import {
+  bmList, bmAdd, bmAddFolder, bmUpdate, bmMove, bmRemove,
+  normalizeUrl, bmPartition, type Bookmark,
+} from '@/lib/bookmarks';
 import BrowserExtensions from './BrowserExtensions';
 import BrowserExtBar from './BrowserExtBar';
+import BookmarkBar from './BookmarkBar';
 import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
 import { onOpenUrl } from '@/lib/openTarget';
@@ -252,6 +256,29 @@ export default function BrowserTabWorkspace() {
     setCtx({ x, y, bm });
   };
 
+  /** Tạo thư mục — hỏi tên rồi lưu. */
+  const newFolder = useCallback(async (parentId?: string) => {
+    const name = window.prompt('Tên thư mục mới:');
+    if (!name || !name.trim()) return;
+    try { setBookmarks(await bmAddFolder(name.trim(), parentId)); }
+    catch (e) { setErr((e as Error).message); }
+  }, []);
+
+  /** Kéo thả: chuyển một mục sang thư mục khác / đổi vị trí. */
+  const moveBookmarkTo = useCallback(async (id: string, parentId?: string, beforeId?: string) => {
+    try { setBookmarks(await bmMove(id, parentId, beforeId)); }
+    catch (e) { setErr((e as Error).message); }
+  }, []);
+
+  /** Thả một URL (kéo từ ô địa chỉ) vào thanh hoặc vào một thư mục. */
+  const dropUrl = useCallback(async (rawUrl: string, parentId?: string) => {
+    const url = normalizeUrl(rawUrl);
+    if (!url) return;
+    try {
+      setBookmarks(await bmAdd(url, { parentId, name: hostOf(url) }));
+    } catch (e) { setErr((e as Error).message); }
+  }, []);
+
   /** Một chip dấu trang — click mở tại chỗ, chuột phải ra menu (tab mới…). */
   const markChip = (b: Bookmark) => (
     <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${b.profile}` : ''} — chuột phải để mở trong tab mới`}
@@ -266,12 +293,14 @@ export default function BrowserTabWorkspace() {
   );
 
   /** Danh sách dấu trang chọn nhanh — dùng cho cả trang new-tab lẫn panel ＋. */
-  const marksList = bookmarks.length > 0 && (
+  const marksList = bookmarks.some((b) => b.kind === 'link') && (
     <div className="bt-home-marks">
       <div className="small" style={{ color: 'var(--muted)', width: '100%', marginBottom: 4 }}>
         Dấu trang <span style={{ color: 'var(--faint)' }}>— chuột phải: mở trong tab mới</span>
       </div>
-      {bookmarks.map(markChip)}
+      {/* Chỉ LINK: folder không có URL để mở, đưa vào đây chỉ tổ bấm nhầm.
+          Cấu trúc thư mục xem ở thanh dấu trang phía trên. */}
+      {bookmarks.filter((b) => b.kind === 'link').map(markChip)}
     </div>
   );
 
@@ -324,8 +353,11 @@ export default function BrowserTabWorkspace() {
               <>
                 <div className="bt-menu-backdrop" onClick={() => setMenuOpen(false)} />
                 <div className="bt-menu">
-                  <button onClick={() => { setShowMarks((v) => !v); setMenuOpen(false); }}>🔖 Dấu trang ({bookmarks.length})</button>
-                  <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t?.profile ?? '', addedAt: '' }); setMenuOpen(false); }}>☆ Lưu trang hiện tại</button>
+                  <button onClick={() => { setShowMarks((v) => !v); setMenuOpen(false); }}>
+                    🔖 {showMarks ? 'Ẩn' : 'Hiện'} thanh dấu trang ({bookmarks.filter((b) => b.kind === 'link').length})
+                  </button>
+                  <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t?.profile ?? '', kind: 'link', order: 0, addedAt: '' }); setMenuOpen(false); }}>☆ Lưu trang hiện tại</button>
+                  <button onClick={() => { setShowMarks(true); void newFolder(); setMenuOpen(false); }}>📁 Thư mục mới</button>
                   <button onClick={() => { setPwOpen(true); setMenuOpen(false); }}>🔑 Mật khẩu đã lưu</button>
                   <button onClick={() => { setFull((v) => !v); setMenuOpen(false); }}>{full ? '🗕 Thoát tràn viền' : '🗖 Tràn viền'}</button>
                   <div className="bt-menu-sep" />
@@ -346,12 +378,17 @@ export default function BrowserTabWorkspace() {
         </div>
       )}
 
-      {/* Dải dấu trang — bật từ menu ⋯ */}
+      {/* Thanh dấu trang — cây thư mục như Chrome. Bật/tắt từ menu ⋯. */}
       {showMarks && (
-        <div className="bt-marks">
-          {bookmarks.map(markChip)}
-          {bookmarks.length === 0 && <span className="small" style={{ color: 'var(--muted)', padding: '4px 6px' }}>Chưa có dấu trang — mở trang rồi ☆ Lưu trang.</span>}
-        </div>
+        <BookmarkBar
+          bookmarks={bookmarks}
+          onOpen={(b, background) => openBookmark(b, background)}
+          onEdit={(b) => setEdit(structuredClone(b))}
+          onRemove={(b) => void removeBookmark(b)}
+          onNewFolder={(pid) => void newFolder(pid)}
+          onMove={(id, pid, before) => void moveBookmarkTo(id, pid, before)}
+          onDropUrl={(url, pid) => void dropUrl(url, pid)}
+        />
       )}
 
       {/* ── Vùng nội dung ──
