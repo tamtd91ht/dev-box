@@ -22,6 +22,7 @@
 // CHỈ NHẬN THƯ MỤC ĐÃ GIẢI NÉN. File .crx là zip đã ký, Electron không đọc.
 
 import { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 interface ExtItem {
   path: string;
@@ -68,6 +69,28 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [manualPath, setManualPath] = useState('');
+  /** createPortal cần document — server render không có. */
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => setMounted(true), []);
+
+  // TỰ ĐÓNG khi người dùng rời tab Browser (bấm sang Redis/Kafka/…).
+  //
+  // Modal đã portal ra body nên nó KHÔNG bị pane Browser kéo đi nữa — nghĩa là
+  // nó sẽ nằm nguyên trên màn hình, đè lên tab vừa chuyển sang. Đúng về mặt
+  // hiển thị nhưng sai về ý người dùng: chuyển tab là đã bỏ dở việc ở đây.
+  //
+  // Không có prop nào cho biết tab đang hiện, nhưng pane cha mang aria-hidden
+  // (app/page.tsx) — bám vào đó thì không phải đổi chữ ký component.
+  useEffect(() => {
+    const pane = document.querySelector('main.workspace[data-webview]:has(.bt-root)');
+    if (!pane) return;
+    const obs = new MutationObserver(() => {
+      if (pane.getAttribute('aria-hidden') === 'true') onClose();
+    });
+    obs.observe(pane, { attributes: true, attributeFilter: ['aria-hidden'] });
+    return () => obs.disconnect();
+  }, [onClose]);
 
   const refresh = useCallback(async () => {
     const api = window.browserExt;
@@ -97,6 +120,10 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
   // <webview> của Electron vẽ ở tầng native, nằm TRÊN mọi phần tử HTML bất kể
   // z-index — ở tab Browser nó che mất modal này. Cờ trên <html> đẩy tạm các
   // pane webview ra ngoài màn hình. Cùng cách UpdatePrompt đang dùng.
+  //
+  // CỜ NÀY ĐẨY *MỌI* PANE CÓ WEBVIEW, KHÔNG RIÊNG TAB BROWSER — nên nó phải
+  // được gỡ chắc chắn khi modal đóng. Quên gỡ là Workspace/Links/Google/Zalo
+  // API cũng bị đẩy ra ngoài màn hình theo, dù chẳng liên quan gì.
   useEffect(() => {
     const root = document.documentElement;
     root.setAttribute('data-modal-over-webview', '1');
@@ -162,8 +189,23 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
     setManualPath('');
   }, [manualPath, run]);
 
-  if (typeof window !== 'undefined' && !window.browserExt) {
-    return (
+  // PORTAL ra document.body — BẮT BUỘC, không phải cho đẹp.
+  //
+  // Modal này render bên trong pane Browser. Pane đó là `position: fixed;
+  // left: -200vw` khi bị ẩn (xem paneStyle trong app/page.tsx) — chuyển sang
+  // tab khác là cả pane bị đẩy ra ngoài màn hình. Nhưng `.modal-backdrop` cũng
+  // `position: fixed; inset: 0`, mà fixed thì neo vào VIEWPORT chứ không theo
+  // cha, nên nó ở lại phủ kín màn hình và NUỐT MỌI CLICK của Redis/Kafka/…
+  // trong khi phần modal bên trong đã trôi đi mất — nhìn như "hộp thoại đơ
+  // nằm đè lên tất cả, bấm gì cũng không được".
+  //
+  // Ra thẳng body thì modal không còn là con của pane, không bị kéo đi, và
+  // đóng/bấm lại bình thường. Cùng lý do TabVisibilityBar và NotificationCenter
+  // đã portal.
+  if (!mounted) return null;
+
+  if (!window.browserExt) {
+    return createPortal(
       <div className="modal-backdrop" onClick={onClose}>
         <div className="modal" onClick={(e) => e.stopPropagation()}>
           <h3 style={{ marginTop: 0 }}>🧩 Extension</h3>
@@ -174,11 +216,12 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
             <button onClick={onClose}>Đóng</button>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body,
     );
   }
 
-  return (
+  return createPortal(
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal bx-modal" onClick={(e) => e.stopPropagation()}>
         <div className="status-line" style={{ marginBottom: 8 }}>
@@ -287,6 +330,7 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
 
         {dir && <p className="small bx-dir">Danh sách lưu ở <code>{dir}</code></p>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
