@@ -792,6 +792,42 @@ function wireWebviewHardening(win) {
       void loadEnabledExtensions(ses);
     }
 
+    // POPUP EXTENSION KHONG BAO GIO TU DIEU HUONG.
+    //
+    // Popup la mot o nho treo duoi thanh cong cu — no phai day URL RA TAB
+    // BROWSER, khong duoc tu bien thanh trinh duyet trong chinh no. Nguoi dung
+    // gap dung canh do: bam Submit xong trang OMICALL hien ra BEN TRONG popup
+    // 420px, con tab Browser van nam o trang login cu.
+    //
+    // Chan o TANG DIEU HUONG chu khong chi va chrome.tabs: popup co the di
+    // bang <a href>, form submit, location.href hay meta refresh — va OTool
+    // dung mot trong nhung duong do chu khong phai chrome.tabs (da kiem chung:
+    // tabs.update khong he duoc goi). Chan o day thi moi duong deu quy ve mot
+    // moi.
+    // Nhan dien popup extension bang PARTITION + URL: luc did-attach-webview
+    // guest.getURL() co the con rong (chua tai xong), nen kiem tra ca trong
+    // handler thay vi chot mot lan o day.
+    if (BROWSER_PARTITION.test(partition)) {
+      guest.on('will-navigate', (e, url) => {
+        // Chi ap cho POPUP EXTENSION, khong dung toi tab web binh thuong —
+        // tab Browser phai duoc tu do dieu huong.
+        let from = '';
+        try { from = guest.getURL() || ''; } catch { from = ''; }
+        if (!from.startsWith('chrome-extension://')) return;
+        // Di trong chinh extension (doi trang popup, router noi bo) → cho phep.
+        if (url.startsWith('chrome-extension://')) return;
+        e.preventDefault();
+        if (/^https?:\/\//i.test(url)) {
+          const host = BrowserWindow.fromWebContents(guest.hostWebContents || guest)
+            || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+          if (host && !host.isDestroyed()) host.webContents.send('browserExt:navigate', url);
+          log('ExtPopupNavOut', url.slice(0, 100));
+        } else {
+          log('ExtPopupNavBlocked', url.slice(0, 100));
+        }
+      });
+    }
+
     if (partition) {
       guestByPartition.set(partition, guest);
       guest.on('destroyed', () => {

@@ -243,6 +243,24 @@ export default function BrowserExtBar({
     };
   }, [open]);
 
+  // Popup xin điều hướng (chrome.tabs.update, hoặc nó tự đổi location và bị
+  // main chặn lại — xem will-navigate trong main.cjs).
+  //
+  // ĐÓNG POPUP sau khi điều hướng, đúng như Chrome: popup là một ô nhỏ để thao
+  // tác, xong việc thì biến mất nhường chỗ cho trang vừa mở. Để nó nằm lại che
+  // mất chính cái trang mình vừa bảo nó mở là vô lý.
+  useEffect(() => {
+    const offNav = window.browserExt?.onNavigate?.((url: string) => {
+      if (typeof url !== 'string' || !url) return;
+      onNavigate(url);
+      setOpenId(null);
+    });
+    // chrome.tabs.create cũng phải đóng popup: tab mới lên trước mặt, popup
+    // treo lại là che mất trang vừa mở.
+    const offOpen = window.browserExt?.onOpenTab?.(() => setOpenId(null));
+    return () => { offNav?.(); offOpen?.(); };
+  }, [onNavigate]);
+
   /** Nạp lại extension rồi tải lại trang đang xem, để thay đổi có hiệu lực ngay. */
   const [reloading, setReloading] = useState(false);
   const reloadExts = useCallback(async () => {
@@ -346,10 +364,7 @@ export default function BrowserExtBar({
         document.body,
       )}
 
-      {/* chrome.tabs.update từ popup đi qua đây: preload gửi ipc lên main,
-          main phát ngược xuống renderer, và tab Browser tự điều hướng — xem
-          onNavigate ở BrowserTabWorkspace. */}
-      <ExtNavBridge onNavigate={onNavigate} />
+
     </div>
   );
 }
@@ -370,13 +385,4 @@ function ExtIcon({ url, name }: { url: string; name: string }) {
   );
 }
 
-/** Nghe yêu cầu điều hướng do popup phát ra và chuyển cho tab Browser. */
-function ExtNavBridge({ onNavigate }: { onNavigate: (url: string) => void }) {
-  useEffect(() => {
-    const off = window.browserExt?.onNavigate?.((url: string) => {
-      if (typeof url === 'string' && url) onNavigate(url);
-    });
-    return () => { off?.(); };
-  }, [onNavigate]);
-  return null;
-}
+
