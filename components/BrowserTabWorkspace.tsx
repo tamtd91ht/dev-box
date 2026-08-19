@@ -125,6 +125,12 @@ export default function BrowserTabWorkspace() {
       const idx = cur.findIndex((t) => t.id === id);
       const next = cur.filter((t) => t.id !== id);
       setActiveId((a) => (a === id ? next[Math.max(0, idx - 1)]?.id ?? null : a));
+      // ĐÓNG TAB CUỐI thì phải tắt panel new-tab, nếu không màn hình KẸT HẲN:
+      // ô nhập URL của panel nằm trong thanh tab (`hasTabs && newTabOpen`), mà
+      // thanh tab biến mất cùng tab cuối — còn lại đúng một dòng chữ "gõ địa
+      // chỉ ở ô phía trên" trỏ vào một cái ô không còn tồn tại. Tắt panel thì
+      // trang chủ Browser hiện ra với ô nhập của chính nó.
+      if (next.length === 0) setNewTabOpen(false);
       return next;
     });
   }, []);
@@ -185,6 +191,8 @@ export default function BrowserTabWorkspace() {
   const closeAllTabs = () => {
     existedRef.current.clear();
     setTabs([]); setActiveId(null);
+    // Cùng lý do như closeTab: hết tab mà panel new-tab còn bật là kẹt màn hình.
+    setNewTabOpen(false);
   };
 
   const saveEdit = async () => {
@@ -365,7 +373,13 @@ export default function BrowserTabWorkspace() {
           đây chỉ để TRỐNG kèm một dòng nhắc: vẽ lại lần hai là hai ô giống hệt
           nhau trên cùng màn hình, không biết gõ vào ô nào. */}
       {activeId === null && (
-        newTabOpen ? (
+        // `hasTabs &&` là LƯỚI AN TOÀN, không thừa: dòng "gõ địa chỉ ở ô phía
+        // trên" chỉ đúng khi thanh tab còn đó để chứa cái ô ấy. Hết tab mà vẫn
+        // rơi vào nhánh này thì màn hình kẹt hẳn — không ô nhập, không lối ra,
+        // chuyển tab khác rồi quay lại vẫn thế vì state không tự phục hồi.
+        // closeTab/closeAllTabs đã tắt cờ, nhưng chặn ở đây thì mọi đường dẫn
+        // tới trạng thái đó đều an toàn.
+        (hasTabs && newTabOpen) ? (
           <div className="bt-home">
             <p className="small" style={{ color: 'var(--muted)' }}>
               Tab mới — gõ địa chỉ ở ô phía trên rồi Enter.
