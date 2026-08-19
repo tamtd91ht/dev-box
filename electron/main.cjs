@@ -17,7 +17,7 @@
 // It knows NOTHING about Zalo specifically — plugins are declared in the
 // renderer (lib/workspace/plugins.ts). Nothing here is hardcoded per website.
 
-const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard, net } = require('electron');
+const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard, net, dialog } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -448,6 +448,133 @@ const CLIENT_HINTS_PATCH = `
 })();
 `;
 
+
+// ── Chrome extension cho tab Browser ─────────────────────────────────────────
+//
+// CHI AP CHO `persist:browser-*`. Workspace (Zalo/Telegram), Links, Google
+// viewer, Zalo API deu KHONG nap extension: cac tab do la APP-TRONG-APP dang
+// dang nhap that, mot content script hong la hong phien lam viec cua nguoi
+// dung — con tab Browser thi von la trinh duyet, hong thi dong tab la xong.
+//
+// ELECTRON HO TRO DEN DAU (doc ky truoc khi ky vong):
+//   ✓ content script  — chen JS/CSS vao trang. Day la thu chay TOT NHAT, va la
+//     ly do chinh de co tinh nang nay.
+//   ✓ chrome.storage, chrome.runtime (messaging co ban), i18n
+//   ✓ MV3 service worker — ho tro MOT PHAN
+//   ✗ chrome.tabs, chrome.webRequest, declarativeNetRequest
+//   ✗ browser action / popup toolbar / options page / devtools page
+//
+// He qua: extension TU VIET dang content script chay ngon. Extension tai ve tu
+// Chrome Web Store (uBlock Origin, trinh quan ly mat khau...) phan lon KHONG
+// chay dung vi chung song bang chrome.tabs/webRequest va cai nut tren thanh
+// cong cu. Ta van nap, nhung bao truoc trong UI chu khong hua hen.
+//
+// CHI NAP THU MUC DA GIAI NEN. File .crx la zip da ky, Electron khong doc —
+// nguoi dung tu giai nen roi tro vao thu muc.
+//
+// NAP LAI MOI LAN CHAY: Electron khong nho extension qua cac lan khoi dong,
+// nen danh sach nam trong extensions.json va duoc nap lai khi partition duoc
+// cau hinh lan dau.
+
+/** Thu muc chua extension + file khai bao. Nam trong userData (gitignored). */
+const extDir = () => path.join(app.getPath('userData'), 'extensions');
+const extManifestFile = () => path.join(extDir(), 'extensions.json');
+
+/**
+ * Danh sach extension da dang ky: [{ id, path, name, version, enabled }].
+ * `id` la id do Electron cap luc nap — doi moi lan nap nen KHONG dung lam khoa
+ * ben vung; khoa that su la `path`.
+ */
+function readExtRegistry() {
+  try {
+    const raw = fs.readFileSync(extManifestFile(), 'utf8');
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list.filter((e) => e && typeof e.path === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeExtRegistry(list) {
+  try {
+    fs.mkdirSync(extDir(), { recursive: true });
+    fs.writeFileSync(extManifestFile(), JSON.stringify(list, null, 2), 'utf8');
+    return true;
+  } catch (err) {
+    log('ExtRegistryError', String((err && err.message) || err));
+    return false;
+  }
+}
+
+/**
+ * Doc manifest.json cua mot thu muc extension.
+ * Tra ve null neu khong phai extension hop le — UI dung cai nay de tu choi
+ * NGAY luc nguoi dung chon thu muc, thay vi de Electron nem loi kho hieu.
+ */
+function readExtManifest(dir) {
+  try {
+    const raw = fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8');
+    const m = JSON.parse(raw);
+    if (!m || typeof m !== 'object') return null;
+    return {
+      name: typeof m.name === 'string' ? m.name : path.basename(dir),
+      version: typeof m.version === 'string' ? m.version : '?',
+      manifestVersion: m.manifest_version === 2 ? 2 : 3,
+      // Cac field bao hieu extension se KHONG chay dung tren webview.
+      wantsTabs: JSON.stringify(m.permissions || []).includes('tabs'),
+      wantsWebRequest: /webRequest|declarativeNetRequest/.test(JSON.stringify(m.permissions || [])),
+      hasAction: !!(m.action || m.browser_action || m.page_action),
+      hasContentScripts: Array.isArray(m.content_scripts) && m.content_scripts.length > 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Cac session `persist:browser-*` da cau hinh — de nap/go extension nong. */
+const browserSessions = new Set();
+
+/**
+ * Nap mot extension vao MOT session. Nuot loi va tra ve ket qua thay vi nem:
+ * mot extension hong khong duoc phep lam chet ca tab Browser.
+ */
+async function loadExtInto(ses, entry) {
+  try {
+    const ext = await ses.extensions.loadExtension(entry.path, { allowFileAccess: false });
+    return { ok: true, id: ext.id, name: ext.name, version: ext.version };
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    log('ExtLoadError', `${entry.path} · ${msg}`);
+    return { ok: false, error: msg };
+  }
+}
+
+/** Nap moi extension dang bat vao mot session browser vua duoc tao. */
+async function loadEnabledExtensions(ses) {
+  const list = readExtRegistry().filter((e) => e.enabled !== false);
+  for (const entry of list) {
+    if (!fs.existsSync(entry.path)) {
+      log('ExtMissing', entry.path);
+      continue;
+    }
+    const r = await loadExtInto(ses, entry);
+    if (r.ok) log('ExtLoaded', `${r.name} ${r.version} · ${entry.path}`);
+  }
+}
+
+/** Go mot extension khoi moi session browser (theo duong dan thu muc). */
+function unloadExtEverywhere(dirPath) {
+  const target = path.resolve(dirPath);
+  for (const ses of browserSessions) {
+    try {
+      for (const ext of ses.extensions.getAllExtensions()) {
+        if (path.resolve(ext.path) === target) ses.extensions.removeExtension(ext.id);
+      }
+    } catch {
+      /* session da chet — bo qua */
+    }
+  }
+}
 function configurePartition(part) {
   if (!part || configuredPartitions.has(part)) return;
   configuredPartitions.add(part);
@@ -504,6 +631,13 @@ function configurePartition(part) {
 
   wireDownloadPolicy(ses, part);
   wireSessionCookiePersistence(ses, part);
+
+  // Extension CHI cho tab Browser. Cac partition khac (Workspace/Links/Google/
+  // Zalo API) la app-trong-app dang dang nhap that — khong chen script la vao.
+  if (BROWSER_PARTITION.test(part)) {
+    browserSessions.add(ses);
+    void loadEnabledExtensions(ses);
+  }
 }
 
 /**
@@ -1714,6 +1848,165 @@ ipcMain.handle('workspace:copyText', (_evt, text) => {
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err && err.message };
+  }
+});
+
+// ── IPC: quan ly extension cua tab Browser ───────────────────────────────────
+//
+// Moi handler deu tra ve { ok, ... } chu khong nem: panel extension la tinh
+// nang phu, loi cua no khong duoc phep noi len thanh unhandled rejection trong
+// renderer.
+
+/** Danh sach extension + trang thai nap that su trong session. */
+ipcMain.handle('browserExt:list', () => {
+  const reg = readExtRegistry();
+  // Doi chieu voi cai DANG song trong session dau tien — de UI phan biet
+  // "da bat" (trong registry) voi "nap duoc that" (Electron chap nhan).
+  const live = new Map();
+  for (const ses of browserSessions) {
+    try {
+      for (const ext of ses.extensions.getAllExtensions()) {
+        live.set(path.resolve(ext.path), { id: ext.id, name: ext.name, version: ext.version });
+      }
+    } catch {
+      /* session da chet */
+    }
+    break;
+  }
+  const items = reg.map((e) => {
+    const man = readExtManifest(e.path);
+    const l = live.get(path.resolve(e.path));
+    const gone = !fs.existsSync(e.path);
+    return {
+      path: e.path,
+      name: (man && man.name) || e.name || path.basename(e.path),
+      version: (man && man.version) || e.version || '?',
+      enabled: e.enabled !== false,
+      loaded: !!l,
+      missing: gone,
+      // Canh bao kha nang tuong thich — UI hien de nguoi dung biet truoc.
+      warnings: gone
+        ? ['thư mục không còn trên đĩa — đã xoá hoặc đổi tên?']
+        : man
+        ? [
+            man.wantsTabs && 'dùng chrome.tabs (không có trên webview)',
+            man.wantsWebRequest && 'dùng webRequest/declarativeNetRequest (không có)',
+            man.hasAction && 'có nút trên thanh công cụ (không hiển thị được)',
+            !man.hasContentScripts && 'không có content script — nhiều khả năng không làm gì',
+          ].filter(Boolean)
+        : ['không đọc được manifest.json'],
+    };
+  });
+  return { ok: true, items, dir: extDir(), sessions: browserSessions.size };
+});
+
+/** Mo hop thoai chon thu muc extension. Tra ve { ok, path } hoac { ok:false }. */
+ipcMain.handle('browserExt:pickDir', async () => {
+  try {
+    const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+    const r = await dialog.showOpenDialog(win, {
+      title: 'Chọn thư mục extension (thư mục chứa manifest.json)',
+      properties: ['openDirectory'],
+      defaultPath: extDir(),
+    });
+    if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+    return { ok: true, path: r.filePaths[0] };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+/** Them mot thu muc extension vao registry va nap ngay vao cac session dang song. */
+ipcMain.handle('browserExt:add', async (_evt, dirPath) => {
+  if (typeof dirPath !== 'string' || !dirPath) return { ok: false, error: 'thiếu đường dẫn' };
+  const abs = path.resolve(dirPath);
+  const man = readExtManifest(abs);
+  if (!man) return { ok: false, error: 'Thư mục không có manifest.json hợp lệ. Nếu đây là file .crx, hãy giải nén ra thư mục trước.' };
+
+  const reg = readExtRegistry();
+  if (reg.some((e) => path.resolve(e.path) === abs)) return { ok: false, error: 'Extension này đã có trong danh sách.' };
+
+  const entry = { path: abs, name: man.name, version: man.version, enabled: true };
+  reg.push(entry);
+  if (!writeExtRegistry(reg)) return { ok: false, error: 'không ghi được extensions.json' };
+
+  // Nap nong vao cac session browser dang mo. Session mo sau se tu nap trong
+  // configurePartition.
+  let loadErr = null;
+  for (const ses of browserSessions) {
+    const r = await loadExtInto(ses, entry);
+    if (!r.ok) loadErr = r.error;
+  }
+  log('ExtAdded', `${man.name} ${man.version} · ${abs}`);
+  return { ok: true, warning: loadErr, needsRestart: browserSessions.size === 0 };
+});
+
+/** Bat/tat mot extension. Tat = go khoi session ngay; bat = nap lai ngay. */
+ipcMain.handle('browserExt:toggle', async (_evt, dirPath, enabled) => {
+  if (typeof dirPath !== 'string' || !dirPath) return { ok: false, error: 'thiếu đường dẫn' };
+  const abs = path.resolve(dirPath);
+  const reg = readExtRegistry();
+  const entry = reg.find((e) => path.resolve(e.path) === abs);
+  if (!entry) return { ok: false, error: 'không có trong danh sách' };
+
+  entry.enabled = !!enabled;
+  if (!writeExtRegistry(reg)) return { ok: false, error: 'không ghi được extensions.json' };
+
+  if (entry.enabled) {
+    let loadErr = null;
+    for (const ses of browserSessions) {
+      const r = await loadExtInto(ses, entry);
+      if (!r.ok) loadErr = r.error;
+    }
+    log('ExtEnabled', abs);
+    return { ok: true, warning: loadErr };
+  }
+  unloadExtEverywhere(abs);
+  log('ExtDisabled', abs);
+  return { ok: true };
+});
+
+/** Xoa khoi danh sach (KHONG xoa thu muc tren dia — do la file cua nguoi dung). */
+ipcMain.handle('browserExt:remove', (_evt, dirPath) => {
+  if (typeof dirPath !== 'string' || !dirPath) return { ok: false, error: 'thiếu đường dẫn' };
+  const abs = path.resolve(dirPath);
+  const reg = readExtRegistry().filter((e) => path.resolve(e.path) !== abs);
+  if (!writeExtRegistry(reg)) return { ok: false, error: 'không ghi được extensions.json' };
+  unloadExtEverywhere(abs);
+  log('ExtRemoved', abs);
+  return { ok: true };
+});
+
+/** Nap lai tat ca extension dang bat — dung sau khi sua code extension. */
+ipcMain.handle('browserExt:reload', async () => {
+  const reg = readExtRegistry().filter((e) => e.enabled !== false);
+  for (const ses of browserSessions) {
+    try {
+      for (const ext of ses.extensions.getAllExtensions()) ses.extensions.removeExtension(ext.id);
+    } catch {
+      /* bo qua */
+    }
+  }
+  let n = 0;
+  for (const ses of browserSessions) {
+    for (const entry of reg) {
+      if (!fs.existsSync(entry.path)) continue;
+      const r = await loadExtInto(ses, entry);
+      if (r.ok) n++;
+    }
+  }
+  log('ExtReloaded', `${n} lần nạp trên ${browserSessions.size} session`);
+  return { ok: true, count: n, sessions: browserSessions.size };
+});
+
+/** Mo thu muc extensions trong Explorer. */
+ipcMain.handle('browserExt:openDir', () => {
+  try {
+    fs.mkdirSync(extDir(), { recursive: true });
+    void shell.openPath(extDir());
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
   }
 });
 

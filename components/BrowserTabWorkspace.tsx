@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { bmList, bmAdd, bmUpdate, bmRemove, normalizeUrl, bmPartition, type Bookmark } from '@/lib/bookmarks';
+import BrowserExtensions from './BrowserExtensions';
 import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
 import { onOpenUrl } from '@/lib/openTarget';
@@ -35,6 +36,7 @@ export default function BrowserTabWorkspace() {
   const [newTabOpen, setNewTabOpen] = useState(false); // panel nhập URL khi đã có tab
   const [ctx, setCtx] = useState<Ctx | null>(null); // menu chuột phải trên dấu trang
   const [pwOpen, setPwOpen] = useState(false); // modal 🔑 Mật khẩu đã lưu
+  const [extOpen, setExtOpen] = useState(false); // modal 🧩 Extension (chỉ tab Browser)
   const rootRef = useRef<HTMLDivElement | null>(null);
   // Id các tab đang mở — đọc đồng bộ trong openTab để biết tab đã tồn tại chưa
   // (state `tabs` trong closure có thể cũ khi mở liên tiếp nhiều tab).
@@ -264,6 +266,7 @@ export default function BrowserTabWorkspace() {
                   <button onClick={() => { setShowMarks((v) => !v); setMenuOpen(false); }}>🔖 Dấu trang ({bookmarks.length})</button>
                   <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t?.profile ?? '', addedAt: '' }); setMenuOpen(false); }}>☆ Lưu trang hiện tại</button>
                   <button onClick={() => { setPwOpen(true); setMenuOpen(false); }}>🔑 Mật khẩu đã lưu</button>
+                  <button onClick={() => { setExtOpen(true); setMenuOpen(false); }}>🧩 Extension</button>
                   <button onClick={() => { setFull((v) => !v); setMenuOpen(false); }}>{full ? '🗕 Thoát tràn viền' : '🗖 Tràn viền'}</button>
                   <div className="bt-menu-sep" />
                   <button onClick={() => { closeAllTabs(); setMenuOpen(false); }}>✕ Đóng tất cả tab</button>
@@ -338,6 +341,7 @@ export default function BrowserTabWorkspace() {
 
       {/* Trình quản lý mật khẩu đã lưu */}
       {pwOpen && <PasswordManager onClose={() => setPwOpen(false)} />}
+      {extOpen && <BrowserExtensions onClose={() => setExtOpen(false)} />}
 
       {/* Menu chuột phải trên dấu trang — như trình duyệt thật */}
       {ctx && (

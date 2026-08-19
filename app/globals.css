@@ -8181,3 +8181,54 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--muted); font-family: var(--mono); font-size: 11.5px;
 }
+
+/* ── 🧩 Extension của tab Browser (components/BrowserExtensions.tsx) ───────── */
+/* Rộng hơn .modal mặc định: mỗi dòng phải chứa được đường dẫn thư mục đầy đủ
+   cộng danh sách cảnh báo tương thích, 560px thì đường dẫn bị cắt liên tục. */
+.bx-modal { width: 720px; }
+
+.bx-note {
+  margin: 0 0 10px; padding: 9px 11px;
+  color: var(--muted); line-height: 1.55;
+  background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 9px;
+}
+.bx-note code { font-family: var(--mono); font-size: 11.5px; }
+
+.bx-actions { gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+
+.bx-ok, .bx-warn, .bx-err { margin: 0 0 9px; padding: 7px 10px; border-radius: 8px; }
+.bx-ok   { color: var(--ok);   background: var(--ok-bg);   border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); }
+.bx-warn { color: var(--warn); background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+.bx-err  { color: var(--err);  background: var(--err-bg);  border: 1px solid color-mix(in srgb, var(--err) 40%, transparent); }
+
+.bx-list { display: flex; flex-direction: column; gap: 8px; }
+
+.bx-item {
+  display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px;
+  background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 10px;
+}
+/* Đã tắt: mờ đi nhưng KHÔNG ẩn — người dùng vẫn phải thấy để bật lại. */
+.bx-item.off { opacity: 0.55; }
+.bx-item-main { flex: 1; min-width: 0; }
+.bx-item-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+
+/* Đường dẫn dài: xuống dòng giữa chừng thay vì kéo giãn modal ngang. */
+.bx-item-path {
+  margin-top: 3px; color: var(--faint); font-family: var(--mono); font-size: 11px;
+  word-break: break-all;
+}
+
+.bx-warns { margin: 5px 0 0; padding-left: 15px; color: var(--warn); line-height: 1.5; }
+
+.bx-badge {
+  padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600;
+  border: 1px solid currentColor;
+}
+.bx-badge.ok   { color: var(--ok);   background: var(--ok-bg); }
+.bx-badge.warn { color: var(--warn); background: var(--warn-bg); }
+.bx-badge.bad  { color: var(--err);  background: var(--err-bg); }
+
+.bx-item-act { display: flex; gap: 6px; flex-shrink: 0; }
+
+.bx-dir { margin: 10px 0 0; color: var(--faint); word-break: break-all; }
+.bx-dir code { font-family: var(--mono); font-size: 11px; }

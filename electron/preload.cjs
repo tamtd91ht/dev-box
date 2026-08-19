@@ -143,3 +143,23 @@ contextBridge.exposeInMainWorld('desktopUpdate', {
   /** Giết next dev rồi mở lại app. Không bao giờ trả về nếu thành công. */
   relaunch: () => ipcRenderer.invoke('desktop:relaunch'),
 });
+
+// Extension cho tab Browser. Đứng riêng khỏi `workspace` vì chỉ áp cho các
+// partition `persist:browser-*` — Workspace/Links/Google/Zalo API không nạp
+// extension (xem khối "Chrome extension cho tab Browser" trong main.cjs).
+contextBridge.exposeInMainWorld('browserExt', {
+  /** → { ok, items:[{path,name,version,enabled,loaded,missing,warnings[]}], dir, sessions } */
+  list: () => ipcRenderer.invoke('browserExt:list'),
+  /** Hộp thoại chọn thư mục → { ok, path } | { ok:false, canceled } */
+  pickDir: () => ipcRenderer.invoke('browserExt:pickDir'),
+  /** Thêm thư mục extension (phải chứa manifest.json) → { ok, warning?, needsRestart? } */
+  add: (dirPath) => ipcRenderer.invoke('browserExt:add', dirPath),
+  /** Bật/tắt → { ok, warning? } */
+  toggle: (dirPath, enabled) => ipcRenderer.invoke('browserExt:toggle', dirPath, enabled),
+  /** Bỏ khỏi danh sách (KHÔNG xoá thư mục trên đĩa) → { ok } */
+  remove: (dirPath) => ipcRenderer.invoke('browserExt:remove', dirPath),
+  /** Nạp lại tất cả — dùng sau khi sửa code extension → { ok, count, sessions } */
+  reload: () => ipcRenderer.invoke('browserExt:reload'),
+  /** Mở thư mục extensions trong Explorer → { ok } */
+  openDir: () => ipcRenderer.invoke('browserExt:openDir'),
+});

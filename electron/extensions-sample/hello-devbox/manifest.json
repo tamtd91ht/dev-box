@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Hello DevBox",
+  "version": "1.0.0",
+  "description": "Extension mau — chung minh content script chay trong tab Browser cua DevBox.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
