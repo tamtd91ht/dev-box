@@ -111,29 +111,51 @@ export default function BrowserExtBar({
     ? open.popupUrl + '#__devbox=' + encodeURIComponent(JSON.stringify({ partition, activeUrl }))
     : '';
 
+  // Chẩn đoán khi popup trắng. Script của extension ném lỗi thì <webview> chỉ
+  // hiện nền trắng và không báo gì — bắt console-message mức error cùng
+  // did-fail-load để có cái mà đọc, thay vì phải mở DevTools mới biết.
+  const [diag, setDiag] = useState('');
+  useEffect(() => {
+    setDiag('');
+    if (!open) return;
+    const el = wvRef.current;
+    if (!el) return;
+    const onMsg = (ev: Event) => {
+      const e = ev as Event & { level?: number; message?: string };
+      // level 3 = error trong Electron.
+      if (e.level === 3 && e.message) setDiag((d) => d || `Lỗi trong popup: ${e.message}`);
+    };
+    const onFail = (ev: Event) => {
+      const e = ev as Event & { errorCode?: number; errorDescription?: string };
+      // -3 = ABORTED, xảy ra khi điều hướng bị thay thế — không phải lỗi thật.
+      if (e.errorCode === -3) return;
+      setDiag(`Không tải được popup: ${e.errorDescription || e.errorCode}`);
+    };
+    el.addEventListener('console-message', onMsg as EventListener);
+    el.addEventListener('did-fail-load', onFail as EventListener);
+    return () => {
+      el.removeEventListener('console-message', onMsg as EventListener);
+      el.removeEventListener('did-fail-load', onFail as EventListener);
+    };
+  }, [open]);
+
   return (
     <div className="bx-bar">
-      {withPopup.map((e) => {
-        // Extension chỉ chạy ở những trang khai trong `matches`. Nói thẳng
-        // trong tooltip, vì "bấm mãi không thấy gì" ở trang không khớp trông
-        // y hệt tính năng hỏng, dù thật ra chỉ là đang đứng sai trang.
-        const active = matchesUrl(e.matches, activeUrl);
-        const where = e.matches.length ? `\nChỉ chạy ở: ${e.matches.join(', ')}` : '';
-        return (
-          <button
-            key={e.id}
-            className={`bx-bar-btn${openId === e.id ? ' on' : ''}${active ? '' : ' dim'}`}
-            title={
-              (e.actionTitle || e.name)
-              + (e.matches.length && !active ? '\n⚠ Trang đang xem KHÔNG khớp' : '')
-              + where
-            }
-            onClick={() => setOpenId((v) => (v === e.id ? null : e.id))}
-          >
-            <ExtIcon url={e.iconUrl} name={e.name} />
-          </button>
-        );
-      })}
+      {/* POPUP KHÔNG PHỤ THUỘC TRANG ĐANG XEM — đúng như Chrome: `matches` chỉ
+          chi phối content script, còn nút trên thanh công cụ thì bấm ở đâu cũng
+          mở được. Bản trước làm mờ icon khi URL không khớp là sai nguyên tắc,
+          và còn dựa trên `activeUrl` vốn là URL LÚC MỞ TAB chứ không phải địa
+          chỉ hiện tại (trang tự chuyển hướng là lệch ngay). Đã bỏ hẳn. */}
+      {withPopup.map((e) => (
+        <button
+          key={e.id}
+          className={`bx-bar-btn${openId === e.id ? ' on' : ''}`}
+          title={e.actionTitle || e.name}
+          onClick={() => setOpenId((v) => (v === e.id ? null : e.id))}
+        >
+          <ExtIcon url={e.iconUrl} name={e.name} />
+        </button>
+      ))}
 
       <button className="bx-bar-btn bx-bar-manage" onClick={onManage} title="Quản lý extension">
         🧩
@@ -144,6 +166,16 @@ export default function BrowserExtBar({
           <div className="bx-popup-head">
             <b>{open.name}</b>
             <span style={{ flex: 1 }} />
+            <button
+              className="ghost sm"
+              onClick={() => {
+                const el = wvRef.current as (HTMLElement & { openDevTools?: () => void }) | null;
+                try { el?.openDevTools?.(); } catch { /* chưa attach */ }
+              }}
+              title="Mở DevTools của popup — xem lỗi khi popup trắng"
+            >
+              🔍
+            </button>
             <button className="ghost sm" onClick={() => setOpenId(null)} title="Đóng (Esc)">✕</button>
           </div>
           {/* Popup nạp bằng chính URL chrome-extension:// nên nó ở ĐÚNG origin
@@ -155,6 +187,10 @@ export default function BrowserExtBar({
             partition={partition}
             style={{ width: '100%', flex: 1, border: 0 }}
           />
+          {/* Popup trắng là ca hay gặp nhất và khó đoán nhất — script của
+              extension ném lỗi thì <webview> chỉ hiện nền trắng, không báo gì.
+              Dòng này gom lỗi console + did-fail-load để nhìn là biết ngay. */}
+          {diag && <div className="bx-popup-diag" title={diag}>{diag}</div>}
         </div>
       )}
 
@@ -180,32 +216,6 @@ function ExtIcon({ url, name }: { url: string; name: string }) {
     // eslint-disable-next-line @next/next/no-img-element
     <img src={url} alt={name} width={16} height={16} onError={() => setBad(true)} />
   );
-}
-
-/**
- * Trang đang xem có khớp mẫu `matches` của extension không.
- *
- * Chỉ hiểu dạng match-pattern hay gặp (`*://*.host/path*`) — đủ để trả lời câu
- * "extension này có làm gì ở trang tôi đang mở không". Không khai matches thì
- * coi như khớp: nhiều extension chỉ có popup, không có content script.
- */
-function matchesUrl(patterns: string[], url: string): boolean {
-  if (!patterns.length) return true;
-  if (!url) return false;
-  return patterns.some((p) => {
-    if (p === '<all_urls>') return true;
-    // Thoát mọi ký tự regex TRỪ '*' — '*' là ký tự đại diện của match-pattern,
-    // xử lý riêng ở dưới. Sau bước này '*' vẫn là '*' trần.
-    let rx = p.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
-    // '*://' = http hoặc https (Chrome không cho '*' thành scheme tuỳ ý).
-    rx = rx.replace(/^\*:/, 'https?:');
-    // '//*.host' — theo luật Chrome, '*.' khớp CẢ domain gốc lẫn mọi subdomain,
-    // nên phần subdomain phải là tuỳ chọn: 'omicrm.vn' cũng khớp '*.omicrm.vn'.
-    rx = rx.replace(/^(https\?:|[a-z]+:)\/\/\*\\\./, '$1//(?:[^/]+\\.)?');
-    // '*' còn lại (trong path) = bất kỳ.
-    rx = rx.replace(/\*/g, '.*');
-    try { return new RegExp('^' + rx + '$').test(url); } catch { return false; }
-  });
 }
 
 /** Nghe yêu cầu điều hướng do popup phát ra và chuyển cho tab Browser. */

@@ -8281,12 +8281,6 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
    ép nền trắng vì popup extension gần như luôn thiết kế cho nền sáng. */
 .bx-popup webview { background: #fff; }
 
-/* Extension không khớp trang đang xem: mờ đi nhưng VẪN BẤM ĐƯỢC — popup vẫn mở
-   được, chỉ là content script không chạy ở trang này. Ẩn hẳn thì người dùng
-   tưởng extension biến mất. */
-.bx-bar-btn.dim { opacity: 0.4; }
-.bx-bar-btn.dim:hover { opacity: 1; }
-
 /* Dòng "Chỉ chạy ở:" trong bảng quản lý — trả lời câu hỏi vì sao cài xong mà
    ở trang hiện tại không thấy gì. */
 .bx-item-match { margin-top: 3px; color: var(--muted); }
@@ -8294,4 +8288,13 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   font-family: var(--mono); font-size: 10.5px;
   padding: 1px 5px; margin-right: 4px;
   border-radius: 4px; background: var(--glass-2);
+}
+
+/* Dòng chẩn đoán khi popup trắng — script của extension ném lỗi thì <webview>
+   chỉ hiện nền trắng và không báo gì, nên phải kéo lỗi ra ngoài cho thấy. */
+.bx-popup-diag {
+  padding: 6px 9px; font-size: 11px; line-height: 1.45;
+  color: var(--err); background: var(--err-bg);
+  border-top: 1px solid color-mix(in srgb, var(--err) 35%, transparent);
+  max-height: 5.5em; overflow: auto; word-break: break-word;
 }
