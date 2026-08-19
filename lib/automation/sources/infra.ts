@@ -767,10 +767,13 @@ function brokerReachFields(extras?: InfraEventExtras): Record<string, string | n
     brokerReachJson: JSON.stringify(list),
     // advertised.listeners cụm trả về — rỗng khi cụm không nói được giao thức.
     advertised: (proto?.advertised ?? []).join(', '),
-    // DNS: nameserver đang dùng + kết quả phân giải từng hostname. Rỗng khi mọi
-    // địa chỉ đều là IP (không có gì để phân giải).
+    // DNS: nameserver đang dùng + kết quả phân giải từng hostname. Ca mọi địa chỉ
+    // đều là IP thì dnsResolve nói thẳng "KHÔNG CẦN" chứ không để rỗng — rỗng
+    // đọc như chưa đo, và người trực sẽ đi tra một hướng đã bị loại trừ.
     dnsServers: (dns?.servers ?? []).join(', '),
-    dnsResolve: (dns?.hosts ?? []).map(renderDnsResult).join(' · '),
+    dnsResolve: dns?.hosts.length
+      ? dns.hosts.map(renderDnsResult).join(' · ')
+      : (dns?.noNames ? 'KHÔNG CẦN — mọi địa chỉ đều là IP thuần' : ''),
     dnsJson: dns ? JSON.stringify(dns) : '',
   };
 }
@@ -829,9 +832,12 @@ function reachSummary(
 
   // 2) Cổng mở nhưng KHÔNG nói được giao thức Kafka.
   if (proto && !proto.spoke) {
+    // Ca này KHÔNG có advertised.listeners (chưa nói được giao thức thì chưa hỏi
+    // được cụm quảng bá gì), nên nếu seed toàn IP thì không tên nào để tra —
+    // dnsText nói rõ điều đó thay vì bỏ trống mục DNS.
     return `${tcpPart}, NHƯNG cụm không trả lời câu hỏi Kafka (${proto.error ?? 'không rõ'}) — `
       + 'tiến trình chưa sẵn sàng (đang khởi động / recovery log), mất quorum KRaft-ZooKeeper, '
-      + 'hoặc thứ đang nghe cổng đó không phải Kafka.';
+      + `hoặc thứ đang nghe cổng đó không phải Kafka.${dnsText(dns)}`;
   }
 
   // 3) Cụm TRẢ LỜI được — nghĩa là lúc probe chính hỏng thì lỗi ở chỗ khác.
@@ -847,7 +853,8 @@ function reachSummary(
     const seedHosts = new Set([...up, ...down].map((b) => b.host));
     const advHosts = adv.map((a) => a.slice(0, a.lastIndexOf(':')) || a);
     const mismatch = advHosts.filter((h) => !seedHosts.has(h));
-    if (mismatch.length) {
+    const mismatched = mismatch.length > 0;
+    if (mismatched) {
       // Không dừng ở "NẾU không phân giải được" nữa: ta ĐÃ tra thật, nên nói
       // luôn tra bằng DNS nào và ra IP gì — đó là bước người trực làm tiếp.
       const bad = failedDns(dns, mismatch);
@@ -891,16 +898,19 @@ function reachSummary(
         + '(mạng chớp, broker vừa restart) và đã tự hồi, hoặc phép đo chính hỏng ở bước nặng hơn '
         + '(metadata toàn bộ topic)');
     }
-    return `${tcpPart}; ${bits.join(' · ')}.`;
+    // Nhánh mismatch đã tự chèn phần DNS vào bits; các nhánh còn lại thì chưa,
+    // nên bù ở đây để mục DNS không bao giờ vắng mặt.
+    const dnsTail = mismatched ? '' : dnsText(dns);
+    return `${tcpPart}; ${bits.join(' · ')}.${dnsTail}`;
   }
 
   // 4) Có cổng mở nhưng không hỏi được giao thức (không đo được) — như cũ.
   if (down.length === 0) {
     return `Cả ${total} node đều MỞ cổng TCP nhưng cụm không phục vụ — tiến trình Kafka còn sống mà `
       + 'chưa sẵn sàng (đang khởi động, mất quorum KRaft/ZooKeeper), hoặc advertised.listeners trỏ '
-      + 'sai địa chỉ mà DevBox không tới được.';
+      + `sai địa chỉ mà DevBox không tới được.${dnsText(dns)}`;
   }
-  return `${tcpPart} → mạng thông, hỏng ở đúng (các) node kia.`;
+  return `${tcpPart} → mạng thông, hỏng ở đúng (các) node kia.${dnsText(dns)}`;
 }
 
 /**
@@ -932,9 +942,19 @@ function dnsServerText(dns?: KafkaDnsDiagnosis): string {
 /** Cả phần DNS cho ca không có mismatch: nameserver + kết quả từng tên. */
 function dnsText(dns?: KafkaDnsDiagnosis): string {
   const hosts = dns?.hosts ?? [];
-  if (!hosts.length) return '';
+  // Toàn IP thuần: nói thẳng là KHÔNG CÓ GÌ để phân giải, thay vì im lặng. Im
+  // lặng ở đây trông y hệt "cảnh báo chưa biết đo DNS", nên người trực vẫn đi
+  // tra DNS — một hướng điều tra đã bị loại trừ sẵn.
+  if (!hosts.length) return dns?.noNames ? ` ${DNS_NO_NAMES}` : '';
   return ` Phân giải tên: ${hosts.map(renderDnsResult).join(' · ')}.${dnsServerText(dns)}`;
 }
+
+/**
+ * Ca "không có tên nào": đã đo và kết luận DNS không liên quan. Nói rõ cả lý do
+ * (địa chỉ toàn IP) để không ai phải đoán vì sao mục phân giải tên trống.
+ */
+const DNS_NO_NAMES = 'Phân giải tên: KHÔNG CẦN — mọi địa chỉ đều là IP thuần, '
+  + 'không có tên nào để tra, nên DNS chắc chắn không phải nguyên nhân.';
 
 /**
  * Fields liệt kê topic bị ảnh hưởng (under-replicated/offline). LUÔN trả đủ 2

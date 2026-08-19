@@ -698,6 +698,12 @@ export interface KafkaDnsDiagnosis {
    */
   servers: string[];
   hosts: KafkaDnsResult[];
+  /**
+   * true = không có hostname nào để tra (mọi địa chỉ đều là IP thuần và chưa lấy
+   * được advertised.listeners). `hosts` rỗng vì KHÔNG CÓ GÌ để phân giải, chứ
+   * không phải vì chưa đo — phân biệt được hai ca đó mới nói đúng hướng xử lý.
+   */
+  noNames?: boolean;
 }
 
 const DNS_TIMEOUT_MS = 3000;
@@ -711,14 +717,22 @@ function addrHost(addr: string): string {
 /**
  * Phân giải các hostname liên quan theo CẢ HAI đường. IP thuần bị bỏ qua (không
  * có gì để hỏi), mỗi tên chỉ hỏi một lần. KHÔNG BAO GIỜ ném — hỏng là kết quả đo.
+ *
+ * LUÔN trả về report, kể cả khi không có tên nào để tra (cụm khai seed toàn IP
+ * và chưa lấy được advertised.listeners). Trả undefined ở ca đó làm mục DNS biến
+ * mất khỏi cảnh báo, trùng hình dạng với ca "code cũ chưa biết tra DNS" — người
+ * trực không phân biệt được "không cần tra" với "chưa đo". `hosts` rỗng cộng với
+ * `noNames` nói thẳng: không có gì để phân giải, nên DNS không phải nghi phạm.
  */
-async function dnsDiagnosis(hostnames: string[]): Promise<KafkaDnsDiagnosis | undefined> {
+async function dnsDiagnosis(hostnames: string[]): Promise<KafkaDnsDiagnosis> {
   const names = [...new Set(hostnames.filter((h) => h && !isIP(h)))];
-  if (!names.length) return undefined;
 
   // getServers() có thể ném khi chưa có resolver nào được cấu hình.
   let servers: string[] = [];
   try { servers = getServers(); } catch { servers = []; }
+
+  // Không tên nào: vẫn báo resolver đang dùng để cảnh báo tự chứng minh là đã đo.
+  if (!names.length) return { servers, hosts: [], noNames: true };
 
   // Resolver RIÊNG với timeout riêng: mặc định của c-ares là 5s × 4 lần thử,
   // quá lâu cho một vòng watcher. Không đụng resolver toàn cục (dns.setServers)

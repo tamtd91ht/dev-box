@@ -33,7 +33,11 @@ import { AGG_LABEL, metricDef, metricLabel, type FieldDef } from './catalog';
  *     "không phân giải được" mà không nói DNS nào thì không tra tiếp được. Mỗi
  *     tên đo HAI đường (`system` = getaddrinfo, đường kafkajs đi · `nameserver`
  *     = hỏi thẳng DNS, bỏ qua hosts file) và gắn cờ `hostsFileOverride` khi hai
- *     đường lệch nhau (bổ sung, tương thích ngược).
+ *     đường lệch nhau (bổ sung, tương thích ngược). `dns` LUÔN có mặt ở ca Kafka
+ *     mất kết nối: khi địa chỉ toàn IP thuần thì `hosts` rỗng kèm `noNames:true`
+ *     — "không có gì để phân giải" là một KẾT LUẬN, còn vắng `dns` hẳn thì mới
+ *     là chưa đo. v5 chưa từng phát ra bản không có `noNames` nên không bot nào
+ *     phải sửa.
  */
 export const META_SCHEMA_VERSION = 5;
 
@@ -224,6 +228,11 @@ export interface AlertMetaDns {
   /** Nameserver tiến trình DevBox đang dùng (dns.getServers()). */
   servers: string[];
   hosts: AlertMetaDnsHost[];
+  /**
+   * true = không có hostname nào để tra (địa chỉ toàn IP thuần). `hosts` rỗng vì
+   * không có gì để phân giải, KHÔNG phải vì chưa đo.
+   */
+  noNames?: boolean;
 }
 
 export interface AlertMetaHost {
@@ -385,9 +394,14 @@ function parseDns(raw: string | number | undefined): AlertMetaDns | undefined {
         if (h.hostsFileOverride === true) out.hostsFileOverride = true;
         return out;
       });
-    // Không nameserver và không hostname nào → không có gì để nói.
-    if (!servers.length && !hosts.length) return undefined;
-    return { servers, hosts };
+    const noNames = rec.noNames === true;
+    // Không nameserver, không hostname, và cũng không phải ca "toàn IP" → payload
+    // rỗng thật, không có gì để nói. Giữ lại khi có noNames: đó là một kết luận
+    // ("không có gì để phân giải"), không phải thiếu dữ liệu.
+    if (!servers.length && !hosts.length && !noNames) return undefined;
+    const out: AlertMetaDns = { servers, hosts };
+    if (noNames) out.noNames = true;
+    return out;
   } catch {
     return undefined;
   }

@@ -262,14 +262,20 @@ export interface KafkaDnsDiagnosis {
   /** Nameserver tiến trình Node đang dùng (dns.getServers()). */
   servers: string[];
   hosts: KafkaDnsResult[];
+  /**
+   * true = không có hostname nào để tra (mọi địa chỉ đều là IP thuần và chưa lấy
+   * được advertised.listeners). `hosts` rỗng vì KHÔNG CÓ GÌ để phân giải, chứ
+   * không phải vì chưa đo — phân biệt được hai ca đó mới nói đúng hướng xử lý.
+   */
+  noNames?: boolean;
 }
 
 export interface KafkaReachReport {
   brokers: KafkaBrokerReach[];
   /** Vắng mặt khi không seed broker nào mở cổng. */
   protocol?: KafkaProtocolProbe;
-  /** Vắng mặt khi mọi địa chỉ đều là IP — không có gì để phân giải. */
-  dns?: KafkaDnsDiagnosis;
+  /** LUÔN có. `noNames` = mọi địa chỉ đều là IP nên không có gì để phân giải. */
+  dns: KafkaDnsDiagnosis;
 }
 
 /**
