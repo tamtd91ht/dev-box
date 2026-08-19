@@ -256,6 +256,10 @@ export default function BrowserTabWorkspace() {
           ))}
           <button className="bt-newtab" onClick={openNewTabPage} title="Tab mới (khung dưới trống, gõ địa chỉ để mở)">＋</button>
           <span style={{ flex: 1 }} />
+          {/* 🧩 Extension đứng NGOÀI menu ⋯ như thanh công cụ Chrome: đang ở
+              trang bất kỳ vẫn thấy ngay, không phải mở menu mới biết có. */}
+          <button className="ghost sm bt-ext-btn" onClick={() => setExtOpen(true)}
+            title="Extension — thêm/bật/tắt cho tab Browser">🧩</button>
           {/* Menu ⋯ gom các nút phụ như trình duyệt thật */}
           <div className="bt-menu-wrap">
             <button className={`ghost sm${menuOpen ? ' on' : ''}`} onClick={() => setMenuOpen((v) => !v)} title="Thêm">⋯</button>
@@ -266,7 +270,6 @@ export default function BrowserTabWorkspace() {
                   <button onClick={() => { setShowMarks((v) => !v); setMenuOpen(false); }}>🔖 Dấu trang ({bookmarks.length})</button>
                   <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t?.profile ?? '', addedAt: '' }); setMenuOpen(false); }}>☆ Lưu trang hiện tại</button>
                   <button onClick={() => { setPwOpen(true); setMenuOpen(false); }}>🔑 Mật khẩu đã lưu</button>
-                  <button onClick={() => { setExtOpen(true); setMenuOpen(false); }}>🧩 Extension</button>
                   <button onClick={() => { setFull((v) => !v); setMenuOpen(false); }}>{full ? '🗕 Thoát tràn viền' : '🗖 Tràn viền'}</button>
                   <div className="bt-menu-sep" />
                   <button onClick={() => { closeAllTabs(); setMenuOpen(false); }}>✕ Đóng tất cả tab</button>
@@ -333,7 +336,9 @@ export default function BrowserTabWorkspace() {
             <p className="small" style={{ color: 'var(--muted)' }}>
               Nhiều tab mở song song; mỗi profile giữ phiên đăng nhập riêng.{' '}
               <button className="ghost sm" onClick={() => setPwOpen(true)}
-                title="Xem/sửa mật khẩu đã lưu — tự điền khi mở lại trang">🔑 Mật khẩu đã lưu</button>
+                title="Xem/sửa mật khẩu đã lưu — tự điền khi mở lại trang">🔑 Mật khẩu đã lưu</button>{' '}
+              <button className="ghost sm" onClick={() => setExtOpen(true)}
+                title="Extension — thêm/bật/tắt cho tab Browser">🧩 Extension</button>
             </p>
           </div>
         )

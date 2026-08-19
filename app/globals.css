@@ -8232,3 +8232,11 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 
 .bx-dir { margin: 10px 0 0; color: var(--faint); word-break: break-all; }
 .bx-dir code { font-family: var(--mono); font-size: 11px; }
+
+/* Nút 🧩 trên thanh tab — đứng ngoài menu ⋯ như thanh công cụ Chrome, để đang
+   ở trang bất kỳ vẫn thấy ngay. Vuông, cỡ bằng nút ⋯ bên cạnh. */
+.bt-ext-btn {
+  padding: 3px 7px;
+  font-size: 14px;
+  line-height: 1;
+}
