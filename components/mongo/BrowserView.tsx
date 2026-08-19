@@ -824,6 +824,12 @@ function DocCard({ json, truncated, index, tree, highlight, activeHit, hitOffset
   // parse + stringify cho CẢ TRANG 200 document, kể cả các thẻ đang đóng.
   const pretty = useMemo(() => (shown && !tree ? prettyDoc(json) : ''), [shown, tree, json]);
   const firstLine = useMemo(() => summarize(json), [json]);
+  // Dòng preview vừa CUỘN NGANG vừa BẤM ĐƯỢC để mở thẻ. Trước đây nó chặn hẳn
+  // sự kiện click (stopPropagation) nên bấm vào phần chữ — tức gần như toàn bộ
+  // bề ngang của dòng — chẳng mở gì cả, chỉ mỗi mũi tên bé xíu bên trái ăn
+  // click. Giờ nhớ vị trí lúc nhấn chuột: nhả ra gần chỗ cũ (và không kéo trôi
+  // thanh cuộn) thì tính là click → mở thẻ; kéo để đọc ngang thì không.
+  const drag = useRef<{ x: number; y: number; scroll: number } | null>(null);
 
   return (
     <div className="mongo-doc">
@@ -834,8 +840,21 @@ function DocCard({ json, truncated, index, tree, highlight, activeHit, hitOffset
         <span className="mongo-doc-idx">#{index + 1}</span>
         <code
           className="mongo-doc-preview"
-          // Cuộn ngang bằng chuột/trackpad mà không kéo theo việc đóng/mở thẻ.
-          onClick={(e) => e.stopPropagation()}
+          title="Bấm để xem JSON đầy đủ"
+          onMouseDown={(e) => {
+            drag.current = { x: e.clientX, y: e.clientY, scroll: e.currentTarget.scrollLeft };
+          }}
+          onClick={(e) => {
+            const d = drag.current;
+            drag.current = null;
+            const moved =
+              !d ||
+              Math.abs(e.clientX - d.x) > 4 ||
+              Math.abs(e.clientY - d.y) > 4 ||
+              e.currentTarget.scrollLeft !== d.scroll;
+            // Kéo ngang để đọc → giữ nguyên trạng thái thẻ; bấm dứt khoát → mở.
+            if (moved) e.stopPropagation();
+          }}
         >{firstLine}</code>
         {truncated && <span className="badge" style={{ color: 'var(--err)' }}>truncated</span>}
         <button
