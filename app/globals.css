@@ -8271,7 +8271,10 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
      style — xem hiệu ứng `place` trong BrowserExtBar.tsx. */
   position: fixed; z-index: 80;
   display: flex; flex-direction: column;
-  max-width: 96vw; max-height: 78vh;
+  /* KHÔNG đặt max-height ở đây: chiều cao do JS tính theo chỗ trống thật còn
+     lại (xem `place` trong BrowserExtBar.tsx), max-height sẽ cắt mất nó và
+     popup lại phải cuộn dọc. */
+  max-width: 96vw;
   border: 1px solid var(--glass-brd); border-radius: 12px; overflow: hidden;
   background: var(--bg-1); box-shadow: var(--shadow);
 }

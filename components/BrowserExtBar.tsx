@@ -35,9 +35,21 @@ interface ExtItem {
   matches: string[];
 }
 
-/** Kích thước popup của Chrome — bám theo để layout của extension không vỡ. */
-const POPUP_W = 380;
-const POPUP_H = 600;
+/**
+ * Kích thước popup.
+ *
+ * Chrome giới hạn popup ở 800px cao vì nó treo dưới thanh công cụ của một cửa
+ * sổ thật. Ở đây popup là một panel trong app, không có ràng buộc đó — và
+ * extension nội bộ thường là form dài (OTool: Email + Code + 3 lựa chọn +
+ * Submit). Để thấp thì phải cuộn dọc, vừa xấu vừa khó dùng.
+ *
+ * Nên: cao TỐI ĐA theo chỗ trống thật sự còn lại tới đáy cửa sổ, chặn dưới bởi
+ * MIN_H để không bao giờ tí hon, chặn trên bởi MAX_H để trên màn hình lớn nó
+ * không kéo dài vô nghĩa.
+ */
+const POPUP_W = 420;
+const MIN_H = 480;
+const MAX_H = 900;
 
 export default function BrowserExtBar({
   partition,
@@ -60,8 +72,8 @@ export default function BrowserExtBar({
   const barRef = useRef<HTMLDivElement | null>(null);
   /** createPortal cần document — server render không có. */
   const [mounted, setMounted] = useState(false);
-  /** Vị trí neo popup, tính từ thanh công cụ (px so với viewport). */
-  const [pos, setPos] = useState({ top: 0, right: 0 });
+  /** Vị trí + kích thước popup, tính từ thanh công cụ (px so với viewport). */
+  const [pos, setPos] = useState({ top: 0, right: 0, height: MIN_H });
 
   useEffect(() => setMounted(true), []);
 
@@ -92,11 +104,19 @@ export default function BrowserExtBar({
     const place = () => {
       const r = barRef.current?.getBoundingClientRect();
       if (!r) return;
+      const top = Math.round(r.bottom + 6);
+      // Chiều cao = chỗ trống thật tới đáy cửa sổ, chừa 12px mép dưới.
+      // Cửa sổ thấp thì vẫn lấy MIN_H và cho nó nhô lên trên (top âm được
+      // chặn ở 8px) — thà đè lên thanh tab còn hơn popup cao 150px phải cuộn.
+      const room = window.innerHeight - top - 12;
+      const height = Math.min(MAX_H, Math.max(MIN_H, room));
       setPos({
-        top: Math.round(r.bottom + 6),
-        // Neo mép PHẢI theo mép phải của thanh: popup rộng 380px, neo trái sẽ
-        // tràn ra ngoài khi thanh nằm sát bên phải cửa sổ.
+        // Không đủ chỗ bên dưới thì đẩy lên cho vừa màn hình.
+        top: Math.max(8, Math.min(top, window.innerHeight - height - 12)),
+        // Neo mép PHẢI theo mép phải của thanh: neo trái sẽ tràn ra ngoài khi
+        // thanh nằm sát bên phải cửa sổ.
         right: Math.max(8, Math.round(window.innerWidth - r.right)),
+        height,
       });
     };
     place();
@@ -208,7 +228,7 @@ export default function BrowserExtBar({
         <div
           className="bx-popup"
           ref={popupRef}
-          style={{ width: POPUP_W, maxHeight: POPUP_H, top: pos.top, right: pos.right }}
+          style={{ width: POPUP_W, height: pos.height, top: pos.top, right: pos.right }}
         >
           <div className="bx-popup-head">
             <b>{open.name}</b>

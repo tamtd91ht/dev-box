@@ -1919,6 +1919,38 @@ function extUrl(live, rel) {
   return live.url.replace(/\/+$/, '') + '/' + String(rel).replace(/^\/+/, '');
 }
 
+/**
+ * Doc icon cua extension thanh data: URI.
+ *
+ * KHONG dung duoc chrome-extension://<id>/icon.png tren thanh cong cu: UI
+ * DevBox chay o origin khac (http://localhost), va Chrome CHAN moi truy cap
+ * vao file trong extension tru khi manifest khai `web_accessible_resources`.
+ * Da kiem chung bang Electron that: anh bao onerror, fetch bao "Failed to
+ * fetch". Phan lon extension khong khai icon la web-accessible (chang viec gi
+ * phai khai), nen khong the doi ho sua manifest.
+ *
+ * Main process thi doc thang tu dia, khong qua giao thuc nao — nen tra ve
+ * data: URI la xong. Icon nho (vai KB) nen nhung thang vao JSON khong tot kem.
+ */
+const ICON_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.webp': 'image/webp' };
+const MAX_ICON_BYTES = 256 * 1024;
+
+function iconDataUri(dir, rel) {
+  if (!dir || !rel) return '';
+  try {
+    // Chan duong dan thoat ra ngoai thu muc extension (../../etc).
+    const abs = path.resolve(dir, rel);
+    if (!abs.startsWith(path.resolve(dir) + path.sep)) return '';
+    const st = fs.statSync(abs);
+    if (!st.isFile() || st.size > MAX_ICON_BYTES) return '';
+    const mime = ICON_MIME[path.extname(abs).toLowerCase()];
+    if (!mime) return '';
+    return 'data:' + mime + ';base64,' + fs.readFileSync(abs).toString('base64');
+  } catch {
+    return '';
+  }
+}
+
 /** Danh sach extension + trang thai nap that su trong session. */
 ipcMain.handle('browserExt:list', () => {
   const reg = readExtRegistry();
@@ -1953,8 +1985,9 @@ ipcMain.handle('browserExt:list', () => {
       popupUrl: extUrl(l, man && man.popupPage),
       actionTitle: (man && man.actionTitle) || '',
       matches: (man && man.matches) || [],
-      /** chrome-extension://<id>/<icon> — rong neu chua nap hoac khong khai icon. */
-      iconUrl: extUrl(l, man && man.icon),
+      /** data: URI cua icon. KHONG dung chrome-extension:// vi UI DevBox o
+       *  origin khac se bi Chrome chan — xem iconDataUri. */
+      iconUrl: iconDataUri(e.path, man && man.icon),
       // Canh bao kha nang tuong thich — UI hien de nguoi dung biet truoc.
       warnings: gone
         ? ['thư mục không còn trên đĩa — đã xoá hoặc đổi tên?']
