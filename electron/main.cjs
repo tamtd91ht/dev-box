@@ -545,6 +545,12 @@ function readExtManifest(dir) {
       wantsWebRequest: /webRequest|declarativeNetRequest/.test(JSON.stringify(m.permissions || [])),
       hasAction: !!(m.action || m.browser_action || m.page_action),
       hasContentScripts: Array.isArray(m.content_scripts) && m.content_scripts.length > 0,
+      /** Cac mau URL extension nay chay tren — UI hien de nguoi dung biet phai
+       *  mo trang nao thi no moi lam gi. Thieu thong tin nay thi "cai xong khong
+       *  thay gi" trong nhu loi, du that ra chi la dang dung sai trang. */
+      matches: (Array.isArray(m.content_scripts) ? m.content_scripts : [])
+        .flatMap((c) => (Array.isArray(c && c.matches) ? c.matches : []))
+        .filter((x) => typeof x === 'string'),
       // Thanh cong cu trong DevBox can 3 thu nay: trang popup, icon, tooltip.
       popupPage: (() => {
         const a = m.action || m.browser_action || m.page_action || {};
@@ -1900,6 +1906,19 @@ ipcMain.handle('workspace:copyText', (_evt, text) => {
 // nang phu, loi cua no khong duoc phep noi len thanh unhandled rejection trong
 // renderer.
 
+/**
+ * Ghep `chrome-extension://<id>/` voi mot duong dan trong extension.
+ *
+ * Electron KHONG hua `ext.url` co dau '/' cuoi hay khong (typings khong noi),
+ * va manifest thi co the ghi 'popup.html' lan '/popup.html'. Ghep thang bang
+ * `a + b` la sinh ra `chrome-extension://<id>popup.html` — URL sai, icon vo va
+ * popup khong mo duoc. Chuan hoa ca hai dau, dung mot cho duy nhat.
+ */
+function extUrl(live, rel) {
+  if (!live || !live.url || !rel) return '';
+  return live.url.replace(/\/+$/, '') + '/' + String(rel).replace(/^\/+/, '');
+}
+
 /** Danh sach extension + trang thai nap that su trong session. */
 ipcMain.handle('browserExt:list', () => {
   const reg = readExtRegistry();
@@ -1931,10 +1950,11 @@ ipcMain.handle('browserExt:list', () => {
       // trang popup — id chi ton tai sau khi Electron nap thanh cong.
       id: (l && l.id) || '',
       /** chrome-extension://<id>/<popup> — rong neu chua nap hoac khong co popup. */
-      popupUrl: l && l.url && man && man.popupPage ? l.url + man.popupPage : '',
+      popupUrl: extUrl(l, man && man.popupPage),
       actionTitle: (man && man.actionTitle) || '',
+      matches: (man && man.matches) || [],
       /** chrome-extension://<id>/<icon> — rong neu chua nap hoac khong khai icon. */
-      iconUrl: l && l.url && man && man.icon ? l.url + man.icon : '',
+      iconUrl: extUrl(l, man && man.icon),
       // Canh bao kha nang tuong thich — UI hien de nguoi dung biet truoc.
       warnings: gone
         ? ['thư mục không còn trên đĩa — đã xoá hoặc đổi tên?']

@@ -31,6 +31,7 @@ interface ExtItem {
   actionTitle: string;
   iconUrl: string;
   warnings: string[];
+  matches: string[];
 }
 
 /** Kích thước popup của Chrome — bám theo để layout của extension không vỡ. */
@@ -112,19 +113,27 @@ export default function BrowserExtBar({
 
   return (
     <div className="bx-bar">
-      {withPopup.map((e) => (
-        <button
-          key={e.id}
-          className={`bx-bar-btn${openId === e.id ? ' on' : ''}`}
-          title={e.actionTitle || e.name}
-          onClick={() => setOpenId((v) => (v === e.id ? null : e.id))}
-        >
-          {e.iconUrl
-            /* eslint-disable-next-line @next/next/no-img-element */
-            ? <img src={e.iconUrl} alt={e.name} width={16} height={16} />
-            : <span aria-hidden>🧩</span>}
-        </button>
-      ))}
+      {withPopup.map((e) => {
+        // Extension chỉ chạy ở những trang khai trong `matches`. Nói thẳng
+        // trong tooltip, vì "bấm mãi không thấy gì" ở trang không khớp trông
+        // y hệt tính năng hỏng, dù thật ra chỉ là đang đứng sai trang.
+        const active = matchesUrl(e.matches, activeUrl);
+        const where = e.matches.length ? `\nChỉ chạy ở: ${e.matches.join(', ')}` : '';
+        return (
+          <button
+            key={e.id}
+            className={`bx-bar-btn${openId === e.id ? ' on' : ''}${active ? '' : ' dim'}`}
+            title={
+              (e.actionTitle || e.name)
+              + (e.matches.length && !active ? '\n⚠ Trang đang xem KHÔNG khớp' : '')
+              + where
+            }
+            onClick={() => setOpenId((v) => (v === e.id ? null : e.id))}
+          >
+            <ExtIcon url={e.iconUrl} name={e.name} />
+          </button>
+        );
+      })}
 
       <button className="bx-bar-btn bx-bar-manage" onClick={onManage} title="Quản lý extension">
         🧩
@@ -155,6 +164,48 @@ export default function BrowserExtBar({
       <ExtNavBridge onNavigate={onNavigate} />
     </div>
   );
+}
+
+/**
+ * Icon extension, tự lùi về 🧩 khi ảnh không tải được.
+ *
+ * Không có nhánh lùi này thì trình duyệt vẽ biểu tượng "ảnh vỡ" — nhìn như app
+ * hỏng, trong khi chỉ là extension không khai icon hoặc khai sai đường dẫn.
+ */
+function ExtIcon({ url, name }: { url: string; name: string }) {
+  const [bad, setBad] = useState(false);
+  useEffect(() => setBad(false), [url]);   // đổi extension thì thử lại từ đầu
+  if (!url || bad) return <span aria-hidden>🧩</span>;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={url} alt={name} width={16} height={16} onError={() => setBad(true)} />
+  );
+}
+
+/**
+ * Trang đang xem có khớp mẫu `matches` của extension không.
+ *
+ * Chỉ hiểu dạng match-pattern hay gặp (`*://*.host/path*`) — đủ để trả lời câu
+ * "extension này có làm gì ở trang tôi đang mở không". Không khai matches thì
+ * coi như khớp: nhiều extension chỉ có popup, không có content script.
+ */
+function matchesUrl(patterns: string[], url: string): boolean {
+  if (!patterns.length) return true;
+  if (!url) return false;
+  return patterns.some((p) => {
+    if (p === '<all_urls>') return true;
+    // Thoát mọi ký tự regex TRỪ '*' — '*' là ký tự đại diện của match-pattern,
+    // xử lý riêng ở dưới. Sau bước này '*' vẫn là '*' trần.
+    let rx = p.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+    // '*://' = http hoặc https (Chrome không cho '*' thành scheme tuỳ ý).
+    rx = rx.replace(/^\*:/, 'https?:');
+    // '//*.host' — theo luật Chrome, '*.' khớp CẢ domain gốc lẫn mọi subdomain,
+    // nên phần subdomain phải là tuỳ chọn: 'omicrm.vn' cũng khớp '*.omicrm.vn'.
+    rx = rx.replace(/^(https\?:|[a-z]+:)\/\/\*\\\./, '$1//(?:[^/]+\\.)?');
+    // '*' còn lại (trong path) = bất kỳ.
+    rx = rx.replace(/\*/g, '.*');
+    try { return new RegExp('^' + rx + '$').test(url); } catch { return false; }
+  });
 }
 
 /** Nghe yêu cầu điều hướng do popup phát ra và chuyển cho tab Browser. */

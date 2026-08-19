@@ -42,6 +42,8 @@ interface ExtItem {
   popupUrl: string;
   actionTitle: string;
   iconUrl: string;
+  /** Các mẫu URL extension chạy trên — nó chỉ làm việc ở những trang này. */
+  matches: string[];
 }
 
 interface ListResult {
@@ -185,7 +187,7 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
       return;
     }
     const dirPath = picked.path;
-    await run(() => api.add(dirPath));
+    await run(() => api.add(dirPath), 'Đã thêm extension.');
   }, [run]);
 
   /** Thêm bằng đường dẫn gõ/dán tay — đường vào KHÔNG phụ thuộc hộp thoại
@@ -196,7 +198,7 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
     // đường dẫn sẽ không khớp và báo "không có manifest.json".
     const p = manualPath.trim().replace(/^"+|"+$/g, '').trim();
     if (!api || !p) return;
-    await run(() => api.add(p));
+    await run(() => api.add(p), 'Đã thêm extension.');
     setManualPath('');
   }, [manualPath, run]);
 
@@ -313,6 +315,11 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
                   ) : null}
                 </div>
                 <div className="bx-item-path small" title={it.path}>{it.path}</div>
+                {it.matches.length > 0 && (
+                  <div className="bx-item-match small">
+                    Chỉ chạy ở: {it.matches.map((m) => <code key={m}>{m}</code>)}
+                  </div>
+                )}
                 {it.warnings.length > 0 && (
                   <ul className="bx-warns small">
                     {it.warnings.map((w) => <li key={w}>⚠ {w}</li>)}
@@ -323,14 +330,17 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
                 <button
                   className="ghost sm"
                   disabled={busy || it.missing}
-                  onClick={() => run(() => window.browserExt!.toggle(it.path, !it.enabled))}
+                  onClick={() => run(
+                    () => window.browserExt!.toggle(it.path, !it.enabled),
+                    it.enabled ? 'Đã tắt.' : 'Đã bật.',
+                  )}
                 >
                   {it.enabled ? 'Tắt' : 'Bật'}
                 </button>
                 <button
                   className="ghost sm"
                   disabled={busy}
-                  onClick={() => run(() => window.browserExt!.remove(it.path))}
+                  onClick={() => run(() => window.browserExt!.remove(it.path), 'Đã bỏ khỏi danh sách.')}
                   title="Bỏ khỏi danh sách (không xoá thư mục trên đĩa)"
                 >
                   ✕
