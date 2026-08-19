@@ -507,6 +507,26 @@ function writeExtRegistry(list) {
 }
 
 /**
+ * Chon icon hop nhat cho thanh cong cu: uu tien 32-48px (thanh cong cu nho),
+ * khong co thi lay cai nao cung duoc. Tra ve duong dan TUONG DOI trong
+ * extension — UI ghep voi chrome-extension://<id>/ de hien.
+ */
+function pickIcon(m) {
+  const a = m.action || m.browser_action || m.page_action || {};
+  const sets = [a.default_icon, m.icons].filter((x) => x && typeof x === 'object');
+  for (const set of sets) {
+    for (const size of ['32', '48', '16', '64', '128']) {
+      if (typeof set[size] === 'string') return set[size];
+    }
+    const first = Object.values(set).find((v) => typeof v === 'string');
+    if (first) return first;
+  }
+  // default_icon co the la mot chuoi don thay vi map.
+  if (typeof a.default_icon === 'string') return a.default_icon;
+  return '';
+}
+
+/**
  * Doc manifest.json cua mot thu muc extension.
  * Tra ve null neu khong phai extension hop le — UI dung cai nay de tu choi
  * NGAY luc nguoi dung chon thu muc, thay vi de Electron nem loi kho hieu.
@@ -525,6 +545,16 @@ function readExtManifest(dir) {
       wantsWebRequest: /webRequest|declarativeNetRequest/.test(JSON.stringify(m.permissions || [])),
       hasAction: !!(m.action || m.browser_action || m.page_action),
       hasContentScripts: Array.isArray(m.content_scripts) && m.content_scripts.length > 0,
+      // Thanh cong cu trong DevBox can 3 thu nay: trang popup, icon, tooltip.
+      popupPage: (() => {
+        const a = m.action || m.browser_action || m.page_action || {};
+        return typeof a.default_popup === 'string' ? a.default_popup : '';
+      })(),
+      actionTitle: (() => {
+        const a = m.action || m.browser_action || m.page_action || {};
+        return typeof a.default_title === 'string' ? a.default_title : '';
+      })(),
+      icon: pickIcon(m),
     };
   } catch {
     return null;
@@ -700,7 +730,20 @@ function wireWebviewHardening(win) {
 
   // Enforce safe webPreferences on every guest BEFORE it is created.
   wc.on('will-attach-webview', (_event, prefs, params) => {
+    // Renderer KHONG duoc tu chon preload cho guest — xoa sach roi main process
+    // tu quyet dinh. Ngoai le duy nhat: POPUP CUA EXTENSION.
+    //
+    // Popup nap bang chinh URL chrome-extension:// nen no o dung origin cua
+    // extension (chrome.storage/runtime la hang that). Nhung Electron khong
+    // cap chrome.tabs/chrome.cookies cho guest, ma popup song bang hai thu do.
+    // Preload nay va vao — duong dan do CHINH MAIN PROCESS dat, khong phai
+    // chuoi tu renderer, nen khong co gi de loi dung.
     delete prefs.preload;
+    const src = String(params.src || '');
+    if (/^chrome-extension:\/\//i.test(src) && BROWSER_PARTITION.test(String(params.partition || ''))) {
+      prefs.preload = path.join(__dirname, 'ext-popup-preload.cjs');
+      log('ExtPopupPreload', src.slice(0, 90));
+    }
     prefs.nodeIntegration = false;
     prefs.contextIsolation = true;
     prefs.sandbox = true;
@@ -1866,7 +1909,7 @@ ipcMain.handle('browserExt:list', () => {
   for (const ses of browserSessions) {
     try {
       for (const ext of ses.extensions.getAllExtensions()) {
-        live.set(path.resolve(ext.path), { id: ext.id, name: ext.name, version: ext.version });
+        live.set(path.resolve(ext.path), { id: ext.id, name: ext.name, version: ext.version, url: ext.url });
       }
     } catch {
       /* session da chet */
@@ -1884,15 +1927,25 @@ ipcMain.handle('browserExt:list', () => {
       enabled: e.enabled !== false,
       loaded: !!l,
       missing: gone,
+      // Thanh cong cu: chi hien nut khi extension DA NAP that (co id) va co
+      // trang popup — id chi ton tai sau khi Electron nap thanh cong.
+      id: (l && l.id) || '',
+      /** chrome-extension://<id>/<popup> — rong neu chua nap hoac khong co popup. */
+      popupUrl: l && l.url && man && man.popupPage ? l.url + man.popupPage : '',
+      actionTitle: (man && man.actionTitle) || '',
+      /** chrome-extension://<id>/<icon> — rong neu chua nap hoac khong khai icon. */
+      iconUrl: l && l.url && man && man.icon ? l.url + man.icon : '',
       // Canh bao kha nang tuong thich — UI hien de nguoi dung biet truoc.
       warnings: gone
         ? ['thư mục không còn trên đĩa — đã xoá hoặc đổi tên?']
         : man
         ? [
-            man.wantsTabs && 'dùng chrome.tabs (không có trên webview)',
-            man.wantsWebRequest && 'dùng webRequest/declarativeNetRequest (không có)',
-            man.hasAction && 'có nút trên thanh công cụ (không hiển thị được)',
-            !man.hasContentScripts && 'không có content script — nhiều khả năng không làm gì',
+            // chrome.tabs va chrome.cookies DA duoc DevBox va (xem
+            // ext-popup-preload.cjs) nen khong canh bao nua — chi noi ro pham vi.
+            man.wantsTabs && 'dùng chrome.tabs — DevBox chỉ trả về TAB ĐANG XEM, không thấy các tab khác',
+            man.wantsWebRequest && 'dùng webRequest/declarativeNetRequest — KHÔNG có, phần chặn/sửa request sẽ không chạy',
+            man.hasAction && !man.popupPage && 'có nút trên thanh công cụ nhưng không khai popup — bấm sẽ không ra gì',
+            !man.hasContentScripts && !man.popupPage && 'không có content script lẫn popup — nhiều khả năng không làm gì',
           ].filter(Boolean)
         : ['không đọc được manifest.json'],
     };
@@ -2002,6 +2055,98 @@ ipcMain.handle('browserExt:reload', async () => {
   log('ExtReloaded', `${n} lần nạp trên ${browserSessions.size} session`);
   return { ok: true, count: n, sessions: browserSessions.size };
 });
+
+/**
+ * Doc cookie cua mot partition browser — thay cho `chrome.cookies.getAll` mà
+ * Electron khong cap cho extension trong <webview>.
+ *
+ * CHI cho partition `browser-*`. Cookie phien la toan quyen tai khoan, khong
+ * mo cho moi partition — Workspace (Zalo/Telegram) co duong rieng da kiem toan
+ * (`zaloapi:readCookies`), khong gop chung vao day.
+ *
+ * BAT BUOC co `domain`: khong cho goi rong de quet sach cookie cua moi site
+ * trong profile. Extension phai noi ro no muon domain nao.
+ *
+ * Tra ve ca HttpOnly — do la diem khac biet duy nhat so voi `document.cookie`
+ * doc trong trang, va cung la ly do handler nay ton tai.
+ */
+ipcMain.handle('browserExt:getCookies', async (_evt, partition, domain, names) => {
+  const part = String(partition || '');
+  if (!BROWSER_PARTITION.test(part)) {
+    return { ok: false, error: 'partition khong phai browser-*' };
+  }
+  const dom = String(domain || '').trim().toLowerCase().replace(/^\./, '');
+  // Chan ca chuoi rong lan ky tu la: domain di thang vao regex ben duoi.
+  if (!dom || !/^[a-z0-9.-]+$/.test(dom)) {
+    return { ok: false, error: 'domain khong hop le' };
+  }
+  try {
+    const ses = session.fromPartition(part);
+    // LAY HET roi loc — `.get({domain})` cua Electron BO SOT cookie gan o
+    // subdomain (bai hoc tu zaloapi:readCookies, thieu cookie la hong ca luot).
+    const raw = await ses.cookies.get({});
+    const esc = dom.replace(/[.]/g, '\.');
+    const re = new RegExp(`(^|\.)${esc}$`, 'i');
+    const all = raw.filter((c) => re.test(String(c.domain || '').replace(/^\./, '')));
+
+    const wanted = Array.isArray(names) && names.length ? names : null;
+    const list = all
+      .filter((c) => !wanted || wanted.includes(c.name))
+      .map((c) => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        secure: !!c.secure,
+        httpOnly: !!c.httpOnly,
+        // chrome.cookies tra `expirationDate` (giay); Electron dung `expirationDate`
+        // cung don vi, nhung cookie phien thi khong co truong nay.
+        ...(typeof c.expirationDate === 'number' ? { expirationDate: c.expirationDate } : {}),
+        session: typeof c.expirationDate !== 'number',
+      }));
+    log('ExtCookies', `${part} · ${dom} · ${list.length}/${raw.length}`);
+    return { ok: true, cookies: list };
+  } catch (err) {
+    log('ExtCookiesError', `${part} · ${err && err.message}`);
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+/**
+ * Popup extension xin dieu huong tab dang xem (chrome.tabs.update) hoac mo tab
+ * moi (chrome.tabs.create).
+ *
+ * Popup KHONG tu dieu khien webview nao ca — no chi gui y dinh len main, main
+ * phat xuong renderer, va tab Browser tu quyet dinh. Nho vay khong can dinh vi
+ * guest theo partition (nhieu tab dung chung mot partition, dinh vi kieu do se
+ * tro nham tab), va renderer van la noi duy nhat biet tab nao dang active.
+ */
+function relayFromPopup(evt, channel, url) {
+  if (typeof url !== 'string' || !url) return;
+  // Chi cho http/https: popup la code ben thu ba, khong de no bat app mo
+  // file:// hay chrome-extension:// tuy y.
+  let ok = false;
+  try {
+    const u = new URL(url);
+    ok = u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    ok = false;
+  }
+  if (!ok) {
+    log('ExtPopupNavBlocked', url.slice(0, 90));
+    return;
+  }
+  // Gui len CUA SO CHUA popup, khong broadcast ra moi cua so.
+  const host = BrowserWindow.fromWebContents(evt.sender)
+    || BrowserWindow.getFocusedWindow()
+    || BrowserWindow.getAllWindows()[0];
+  if (!host || host.isDestroyed()) return;
+  host.webContents.send(channel, url);
+  log('ExtPopupNav', channel + ' · ' + url.slice(0, 90));
+}
+
+ipcMain.on('extPopup:navigate', (evt, url) => relayFromPopup(evt, 'browserExt:navigate', url));
+ipcMain.on('extPopup:openTab', (evt, url) => relayFromPopup(evt, 'browserExt:openTab', url));
 
 /** Mo thu muc extensions trong Explorer. */
 ipcMain.handle('browserExt:openDir', () => {

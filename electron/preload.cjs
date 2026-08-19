@@ -162,4 +162,27 @@ contextBridge.exposeInMainWorld('browserExt', {
   reload: () => ipcRenderer.invoke('browserExt:reload'),
   /** Mở thư mục extensions trong Explorer → { ok } */
   openDir: () => ipcRenderer.invoke('browserExt:openDir'),
+
+  /** chrome.tabs.update từ popup → điều hướng tab đang xem. Trả về hàm gỡ. */
+  onNavigate: (cb) => {
+    const h = (_e, url) => cb(url);
+    ipcRenderer.on('browserExt:navigate', h);
+    return () => ipcRenderer.removeListener('browserExt:navigate', h);
+  },
+
+  /** chrome.tabs.create từ popup → mở tab mới. Trả về hàm gỡ. */
+  onOpenTab: (cb) => {
+    const h = (_e, url) => cb(url);
+    ipcRenderer.on('browserExt:openTab', h);
+    return () => ipcRenderer.removeListener('browserExt:openTab', h);
+  },
+});
+
+// Cầu cookie cho extension: thay `chrome.cookies.getAll` mà Electron không cấp
+// cho extension chạy trong <webview>. Khoá theo partition browser-* + bắt buộc
+// nêu domain — xem handler trong main.cjs.
+contextBridge.exposeInMainWorld('browserExtCookies', {
+  /** → { ok, cookies:[{name,value,domain,path,secure,httpOnly,session,…}] } */
+  get: (partition, domain, names) =>
+    ipcRenderer.invoke('browserExt:getCookies', partition, domain, names),
 });

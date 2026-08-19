@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { bmList, bmAdd, bmUpdate, bmRemove, normalizeUrl, bmPartition, type Bookmark } from '@/lib/bookmarks';
 import BrowserExtensions from './BrowserExtensions';
+import BrowserExtBar from './BrowserExtBar';
 import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
 import { onOpenUrl } from '@/lib/openTarget';
@@ -127,6 +128,43 @@ export default function BrowserTabWorkspace() {
       return next;
     });
   }, []);
+
+  /**
+   * chrome.tabs.update tu popup extension → doi dia chi TAB DANG XEM.
+   *
+   * Id cua tab la `${partition}|${url}` nen doi URL la doi ca id — phai doi
+   * ca activeId theo, khong thi tab vua doi khong con la tab dang xem nua va
+   * khung duoi nhay ve trang new-tab.
+   *
+   * Chua co tab nao dang xem thi mo tab moi: popup bam "di toi" ma khong co gi
+   * xay ra la kho hieu hon la mo them tab.
+   */
+  const navigateActive = useCallback((rawUrl: string) => {
+    const url = normalizeUrl(rawUrl);
+    if (!url) return;
+    const cur = activeRef.current;
+    if (!cur) { openTab(url); return; }
+    setTabs((list) => {
+      const i = list.findIndex((t) => t.id === cur);
+      if (i < 0) return list;
+      const t = list[i];
+      const nextId = `${t.partition}|${url}`;
+      // Da o dung dia chi roi thi khong dung vao — tranh tai lai trang.
+      if (nextId === t.id) return list;
+      const next = [...list];
+      next[i] = { ...t, id: nextId, url, name: hostOf(url) };
+      existedRef.current.delete(cur);
+      existedRef.current.add(nextId);
+      setActiveId(nextId);
+      return next;
+    });
+  }, [openTab]);
+
+  // Popup extension goi chrome.tabs.create → mo tab moi that.
+  useEffect(() => {
+    const off = window.browserExt?.onOpenTab?.((url: string) => openTab(url));
+    return () => { off?.(); };
+  }, [openTab]);
 
   const go = () => {
     if (!addr.trim()) return;
@@ -256,10 +294,15 @@ export default function BrowserTabWorkspace() {
           ))}
           <button className="bt-newtab" onClick={openNewTabPage} title="Tab mới (khung dưới trống, gõ địa chỉ để mở)">＋</button>
           <span style={{ flex: 1 }} />
-          {/* 🧩 Extension đứng NGOÀI menu ⋯ như thanh công cụ Chrome: đang ở
-              trang bất kỳ vẫn thấy ngay, không phải mở menu mới biết có. */}
-          <button className="ghost sm bt-ext-btn" onClick={() => setExtOpen(true)}
-            title="Extension — thêm/bật/tắt cho tab Browser">🧩</button>
+          {/* Thanh công cụ extension — icon từng extension có popup, cộng nút
+              🧩 quản lý. Đứng NGOÀI menu ⋯ như Chrome: đang ở trang bất kỳ vẫn
+              bấm được ngay. */}
+          <BrowserExtBar
+            partition={tabs.find((t) => t.id === activeId)?.partition ?? bmPartition(profile || undefined)}
+            activeUrl={tabs.find((t) => t.id === activeId)?.url ?? ''}
+            onNavigate={navigateActive}
+            onManage={() => setExtOpen(true)}
+          />
           {/* Menu ⋯ gom các nút phụ như trình duyệt thật */}
           <div className="bt-menu-wrap">
             <button className={`ghost sm${menuOpen ? ' on' : ''}`} onClick={() => setMenuOpen((v) => !v)} title="Thêm">⋯</button>

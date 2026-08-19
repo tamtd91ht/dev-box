@@ -7,15 +7,16 @@
 // app-trong-app đang đăng nhập thật, một content script hỏng là hỏng phiên làm
 // việc; tab Browser thì vốn là trình duyệt, hỏng thì đóng tab là xong.
 //
-// ELECTRON HỖ TRỢ ĐẾN ĐÂU — đọc kỹ trước khi kỳ vọng:
-//   ✓ content script (chèn JS/CSS vào trang) — thứ chạy TỐT NHẤT
-//   ✓ chrome.storage, chrome.runtime (messaging cơ bản), i18n
+// CHẠY ĐƯỢC ĐẾN ĐÂU — đọc kỹ trước khi kỳ vọng:
+//   ✓ content script (chèn JS/CSS vào trang)
+//   ✓ popup — DevBox tự dựng thanh công cụ, xem components/BrowserExtBar.tsx
+//   ✓ chrome.storage, chrome.runtime (messaging cơ bản), i18n — hàng thật
+//   ✓ chrome.tabs / chrome.cookies — DevBox VÁ, xem electron/ext-popup-preload.cjs
 //   ✓ MV3 service worker — một phần
-//   ✗ chrome.tabs, chrome.webRequest, declarativeNetRequest
-//   ✗ nút/popup trên thanh công cụ, trang tuỳ chọn, devtools page
+//   ✗ chrome.webRequest, declarativeNetRequest — nên uBlock Origin vẫn không chạy
+//   ✗ trang tuỳ chọn, devtools page
 //
-// Nên: extension TỰ VIẾT dạng content script chạy ngon. Extension tải từ Chrome
-// Web Store (uBlock Origin, trình quản lý mật khẩu…) phần lớn KHÔNG chạy đúng.
+// chrome.tabs bản vá chỉ thấy TAB ĐANG XEM, không phải mọi tab của cửa sổ.
 // Panel này đọc manifest.json và cảnh báo trước từng cái, thay vì để người dùng
 // tự đoán vì sao cài xong chẳng thấy gì.
 //
@@ -35,6 +36,12 @@ interface ExtItem {
   missing: boolean;
   /** Cảnh báo tương thích đọc từ manifest.json. */
   warnings: string[];
+  /** Id Electron cấp lúc nạp — rỗng nếu chưa nạp được. */
+  id: string;
+  /** chrome-extension://<id>/<popup> — rỗng nếu không có popup. */
+  popupUrl: string;
+  actionTitle: string;
+  iconUrl: string;
 }
 
 interface ListResult {
@@ -57,6 +64,10 @@ declare global {
       remove(dirPath: string): Promise<Res>;
       reload(): Promise<{ ok: boolean; count: number; sessions: number }>;
       openDir(): Promise<Res>;
+      /** chrome.tabs.update từ popup → điều hướng tab đang xem. */
+      onNavigate?(cb: (url: string) => void): () => void;
+      /** chrome.tabs.create từ popup → mở tab mới. */
+      onOpenTab?(cb: (url: string) => void): () => void;
     };
   }
 }
@@ -231,11 +242,12 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
 
         <p className="small bx-note">
           Chỉ áp cho <b>tab Browser</b>. Workspace (Zalo/Telegram), Links, Google và Zalo API
-          không nạp extension. Electron chỉ chạy <b>content script</b> (chèn JS/CSS vào trang) —
-          không có <code>chrome.tabs</code>, <code>chrome.webRequest</code> hay nút trên thanh
-          công cụ, nên phần lớn extension tải từ Chrome Web Store sẽ <b>không chạy đúng</b>.
-          Chỉ nhận <b>thư mục đã giải nén</b> có <code>manifest.json</code>, không nhận
-          file <code>.crx</code>.
+          không nạp extension. Chạy được: <b>content script</b>, <b>popup</b> (bấm icon trên
+          thanh công cụ), <code>storage</code>, <code>runtime</code>, và bản vá cho{' '}
+          <code>tabs</code> + <code>cookies</code>. <b>Không</b> có <code>webRequest</code>/
+          <code>declarativeNetRequest</code> — nên extension chặn quảng cáo kiểu uBlock Origin
+          vẫn không chạy. Chỉ nhận <b>thư mục đã giải nén</b> có <code>manifest.json</code>,
+          không nhận file <code>.crx</code>.
         </p>
 
         <div className="row bx-actions">
