@@ -8,6 +8,7 @@
 //   · chrome.tabs.query   — popup can biet tab dang xem (url/id)
 //   · chrome.tabs.update  — dieu huong tab dang xem
 //   · chrome.cookies.getAll / .get — doc cookie HttpOnly cua profile
+//   · chrome.storage.sync — Electron KHONG co, tro ve local (xem ben duoi)
 //
 // KHONG ghi de thu gi da co: moi shim deu nam sau `if (!c.tabs)` / `if
 // (!c.cookies)`. Ban Electron sau nay cap that chrome.tabs thi doan nay tu dong
@@ -105,6 +106,41 @@ const INSTALL = `(function(){
     };
 
     if (!c.runtime) c.runtime = {};
+
+    // chrome.storage.sync KHONG TON TAI tren Electron — goi la nhan
+    // lastError: '"sync" is not available in this instance of Chrome'.
+    //
+    // Day la thu phá nhieu extension nhat ma khong lo ra manh moi nao:
+    // @plasmohq/storage (Plasmo dung mac dinh) chon 'sync' truoc, va no thuong
+    // duoc goi trong axios interceptor de lay token TRUOC MOI REQUEST. Interceptor
+    // nem thi request KHONG BAO GIO duoc gui, va axios bao "Network Error" —
+    // nhin nhu loi mang trong khi mang hoan toan binh thuong. Da kiem chung
+    // bang Electron that: khong mot request nao roi trinh duyet, con fetch thu
+    // cong toi dung host do thi tra ve 200.
+    //
+    // Tro 'sync' ve 'local': du lieu khong dong bo qua may (Electron von khong
+    // co tai khoan Chrome de dong bo), nhung doc/ghi chay dung va extension
+    // song. Chi dap khi 'sync' VANG MAT hoac hong — ban Electron nao cap that
+    // thi giu nguyen.
+    try {
+      var st = c.storage;
+      if (st && st.local) {
+        var swap = function(){
+          Object.defineProperty(st, 'sync', { value: st.local, configurable: true, writable: true });
+          console.info('[devbox] chrome.storage.sync khong dung duoc — da tro ve local');
+        };
+        // DOI NGAY, khong do truoc.
+        //
+        // Do bang mot lan get la sai thoi diem: loi cua 'sync' den qua
+        // chrome.runtime.lastError TRONG CALLBACK (khong nem), nen ket qua chi
+        // biet duoc sau vai chuc ms — trong khi popup co the goi storage ngay
+        // dong script dau tien. Do xong moi doi la da muon.
+        //
+        // Va Electron KHONG BAO GIO co 'sync' that: no can tai khoan Chrome de
+        // dong bo. Nen khong co gi de mat khi doi thang.
+        swap();
+      }
+    } catch (e) { console.error('[devbox] shim storage.sync loi:', e); }
   } catch (e) { console.error('[devbox] cai shim loi:', e); }
 })();`;
 
