@@ -230,14 +230,28 @@ export interface KafkaProtocolProbe {
   error?: string;
 }
 
-/** Phân giải MỘT hostname bằng resolver của hệ điều hành nơi DevBox chạy. */
-export interface KafkaDnsResult {
-  host: string;
+/** Phân giải một hostname theo MỘT đường (getaddrinfo hoặc nameserver). */
+export interface KafkaDnsAnswer {
   resolved: boolean;
   addresses?: string[];
   ms?: number;
-  /** ENOTFOUND = không có bản ghi · EAI_AGAIN = DNS không trả lời. */
+  /** ENOTFOUND = không có bản ghi · EAI_AGAIN/ETIMEOUT = DNS không trả lời. */
   error?: string;
+}
+
+/**
+ * Phân giải một hostname theo CẢ HAI đường — vì hai đường trả lời hai câu khác
+ * nhau: getaddrinfo là đường kafkajs thật sự đi (ăn theo /etc/hosts), còn
+ * Resolver hỏi thẳng nameserver.
+ */
+export interface KafkaDnsResult {
+  host: string;
+  /** getaddrinfo của OS — đường kafkajs/socket Node đi. */
+  system: KafkaDnsAnswer;
+  /** Hỏi thẳng nameserver, BỎ QUA hosts file. Vắng khi không đọc được resolver. */
+  nameserver?: KafkaDnsAnswer;
+  /** true = hai đường khác nhau → tên đang bị /etc/hosts hoặc NSS can thiệp. */
+  hostsFileOverride?: boolean;
 }
 
 /**
@@ -247,8 +261,6 @@ export interface KafkaDnsResult {
 export interface KafkaDnsDiagnosis {
   /** Nameserver tiến trình Node đang dùng (dns.getServers()). */
   servers: string[];
-  /** Phân giải qua getaddrinfo của HỆ ĐIỀU HÀNH — nên còn ăn theo /etc/hosts. */
-  viaSystemResolver: true;
   hosts: KafkaDnsResult[];
 }
 

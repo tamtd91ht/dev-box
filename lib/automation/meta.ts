@@ -30,8 +30,10 @@ import { AGG_LABEL, metricDef, metricLabel, type FieldDef } from './catalog';
  * v5: thêm `dns?: AlertMetaDns` — Kafka MẤT KẾT NỐI với địa chỉ dạng hostname:
  *     DevBox phân giải tên bằng NAMESERVER NÀO và ra IP gì. Cần vì trên
  *     container/VPN resolver của DevBox thường khác máy người đọc cảnh báo, nên
- *     "không phân giải được" mà không nói DNS nào thì không tra tiếp được (bổ
- *     sung, tương thích ngược).
+ *     "không phân giải được" mà không nói DNS nào thì không tra tiếp được. Mỗi
+ *     tên đo HAI đường (`system` = getaddrinfo, đường kafkajs đi · `nameserver`
+ *     = hỏi thẳng DNS, bỏ qua hosts file) và gắn cờ `hostsFileOverride` khi hai
+ *     đường lệch nhau (bổ sung, tương thích ngược).
  */
 export const META_SCHEMA_VERSION = 5;
 
@@ -194,23 +196,33 @@ export interface AlertMetaBroker {
   error?: string;
 }
 
-/** Phân giải MỘT hostname trên máy DevBox. */
-export interface AlertMetaDnsHost {
-  host: string;
+/** Phân giải một hostname theo MỘT đường (getaddrinfo hoặc nameserver). */
+export interface AlertMetaDnsAnswer {
   resolved: boolean;
   /** IP nhận được khi phân giải thành công. */
   addresses?: string[];
   ms?: number;
-  /** ENOTFOUND = không có bản ghi · EAI_AGAIN = DNS không trả lời · timeout 3s. */
+  /** ENOTFOUND = không có bản ghi · EAI_AGAIN/ETIMEOUT = DNS không trả lời. */
   error?: string;
+}
+
+/**
+ * Phân giải một hostname trên máy DevBox theo CẢ HAI đường: getaddrinfo của OS
+ * (đường kafkajs thật sự đi, ăn theo /etc/hosts) và hỏi thẳng nameserver.
+ */
+export interface AlertMetaDnsHost {
+  host: string;
+  system: AlertMetaDnsAnswer;
+  /** Hỏi thẳng nameserver, BỎ QUA hosts file. Vắng khi không đọc được resolver. */
+  nameserver?: AlertMetaDnsAnswer;
+  /** true = hai đường khác nhau → tên bị /etc/hosts hoặc NSS can thiệp. */
+  hostsFileOverride?: boolean;
 }
 
 /** DevBox tra tên bằng DNS nào, ra IP gì (Kafka mất kết nối, địa chỉ có hostname). */
 export interface AlertMetaDns {
   /** Nameserver tiến trình DevBox đang dùng (dns.getServers()). */
   servers: string[];
-  /** true = tra qua getaddrinfo của OS, nên /etc/hosts cũng có thể quyết định. */
-  viaSystemResolver?: boolean;
   hosts: AlertMetaDnsHost[];
 }
 
@@ -367,22 +379,28 @@ function parseDns(raw: string | number | undefined): AlertMetaDns | undefined {
     const hosts = (Array.isArray(rec.hosts) ? rec.hosts : [])
       .filter((h): h is Record<string, unknown> => !!h && typeof h === 'object' && typeof (h as { host?: unknown }).host === 'string')
       .map((h) => {
-        const out: AlertMetaDnsHost = { host: String(h.host), resolved: h.resolved === true };
-        if (Array.isArray(h.addresses) && h.addresses.length) out.addresses = h.addresses.map(String);
-        if (h.ms !== undefined) out.ms = Number(h.ms) || 0;
-        if (h.error !== undefined) out.error = String(h.error);
+        const out: AlertMetaDnsHost = { host: String(h.host), system: parseDnsAnswer(h.system) };
+        const ns = h.nameserver;
+        if (ns && typeof ns === 'object') out.nameserver = parseDnsAnswer(ns);
+        if (h.hostsFileOverride === true) out.hostsFileOverride = true;
         return out;
       });
     // Không nameserver và không hostname nào → không có gì để nói.
     if (!servers.length && !hosts.length) return undefined;
-    return {
-      servers,
-      ...(rec.viaSystemResolver === true ? { viaSystemResolver: true } : {}),
-      hosts,
-    };
+    return { servers, hosts };
   } catch {
     return undefined;
   }
+}
+
+function parseDnsAnswer(raw: unknown): AlertMetaDnsAnswer {
+  if (!raw || typeof raw !== 'object') return { resolved: false };
+  const a = raw as Record<string, unknown>;
+  const out: AlertMetaDnsAnswer = { resolved: a.resolved === true };
+  if (Array.isArray(a.addresses) && a.addresses.length) out.addresses = a.addresses.map(String);
+  if (a.ms !== undefined) out.ms = Number(a.ms) || 0;
+  if (a.error !== undefined) out.error = String(a.error);
+  return out;
 }
 
 /** Parse field máy-đọc `brokerReachJson` → AlertMetaBroker[]. An toàn với mọi rác. */

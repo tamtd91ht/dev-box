@@ -14,7 +14,9 @@
 
 import { esHealth, listEsNodes } from '@/lib/es';
 import { kafkaClusterHealth, kafkaConsumerLag, kafkaHostMetrics, kafkaBrokerReach } from '@/lib/kafka';
-import type { KafkaBrokerReach, KafkaDnsDiagnosis, KafkaDnsResult, KafkaProtocolProbe } from '@/lib/kafka';
+import type {
+  KafkaBrokerReach, KafkaDnsAnswer, KafkaDnsDiagnosis, KafkaDnsResult, KafkaProtocolProbe,
+} from '@/lib/kafka';
 import { mongoMonitor } from '@/lib/mongo';
 import { pingPg } from '@/lib/pg';
 import { listRabbitNodes, rabbitOverview } from '@/lib/rabbit';
@@ -777,12 +779,21 @@ function brokerReachFields(extras?: InfraEventExtras): Record<string, string | n
  * 'kafka-1.omicrm.services = 10.0.0.11 (4ms)' / 'kafka-1.omicrm.services = ENOTFOUND'.
  * Ca hỏng in THẲNG mã lỗi, không bọc thêm ngoặc: chuỗi này thường đã nằm trong
  * một cặp ngoặc của câu kết luận, ngoặc lồng ngoặc đọc rất rối.
+ *
+ * Khi hai đường tra khác nhau thì in CẢ HAI, vì lúc đó chênh lệch chính là phát
+ * hiện: tên chỉ chạy được nhờ /etc/hosts của riêng máy DevBox.
  */
 function renderDnsResult(d: KafkaDnsResult): string {
-  if (d.resolved) {
-    return `${d.host} = ${(d.addresses ?? []).join(', ')}${d.ms !== undefined ? ` (${d.ms}ms)` : ''}`;
+  const sys = renderDnsAnswer(d.system);
+  if (!d.hostsFileOverride || !d.nameserver) return `${d.host} = ${sys}`;
+  return `${d.host} = ${sys} theo getaddrinfo NHƯNG ${renderDnsAnswer(d.nameserver)} khi hỏi thẳng nameserver`;
+}
+
+function renderDnsAnswer(a: KafkaDnsAnswer): string {
+  if (a.resolved) {
+    return `${(a.addresses ?? []).join(', ')}${a.ms !== undefined ? ` (${a.ms}ms)` : ''}`;
   }
-  return `${d.host} = ${d.error || 'không phân giải được'}`;
+  return a.error || 'không phân giải được';
 }
 
 /**
@@ -841,15 +852,33 @@ function reachSummary(
       // luôn tra bằng DNS nào và ra IP gì — đó là bước người trực làm tiếp.
       const bad = failedDns(dns, mismatch);
       const advDns = (dns?.hosts ?? []).filter((h) => mismatch.includes(h.host));
+      const overridden = overriddenDns(dns, mismatch);
+      // Tên mà getaddrinfo trượt NHƯNG nameserver lại có bản ghi: bản ghi DNS
+      // không thiếu, hỏng ở tầng phân giải của chính máy DevBox (resolv.conf,
+      // systemd-resolved, NSS, hoặc hosts file ghi đè sai). Khuyên "thêm bản ghi
+      // DNS" ở ca này là chỉ sai chỗ hoàn toàn.
+      const localBroken = bad.filter((h) => h.nameserver?.resolved);
       let tail: string;
-      if (bad.length) {
+      if (localBroken.length && localBroken.length === bad.length) {
+        tail = ` và getaddrinfo của DevBox KHÔNG PHÂN GIẢI ĐƯỢC các host đó DÙ NAMESERVER CÓ BẢN GHI `
+          + `(${localBroken.map(renderDnsResult).join(' · ')})${dnsServerText(dns)} → bản ghi DNS không `
+          + 'thiếu, hỏng ở tầng phân giải của chính máy DevBox: xem /etc/resolv.conf, '
+          + 'systemd-resolved/NSS, hoặc một dòng /etc/hosts ghi đè sai';
+      } else if (bad.length) {
         tail = ` và DevBox KHÔNG PHÂN GIẢI ĐƯỢC các host đó (${bad.map(renderDnsResult).join(' · ')})`
           + `${dnsServerText(dns)} → đây chính là chỗ hỏng: thêm bản ghi DNS/hosts hoặc sửa `
           + 'advertised.listeners về địa chỉ DevBox tới được';
+      } else if (overridden.length) {
+        // Phân giải được NHƯNG chỉ nhờ hosts file: chạy trên DevBox mà pod/máy
+        // khác sẽ hỏng. Im lặng ở đây là để lại một quả mìn.
+        tail = ` — DevBox phân giải được các host đó NHƯNG KHÔNG PHẢI TỪ DNS `
+          + `(${overridden.map(renderDnsResult).join(' · ')})${dnsServerText(dns)}: tên đang được `
+          + '/etc/hosts (hoặc NSS) của riêng máy DevBox vá tại chỗ, nên máy/pod khác không có bản '
+          + 'vá đó sẽ KHÔNG kết nối được — nên thêm bản ghi DNS thật';
       } else if (advDns.length) {
         tail = ` — DevBox phân giải được các host đó (${advDns.map(renderDnsResult).join(' · ')})`
-          + `${dnsServerText(dns)}, nên nếu vẫn hỏng thì là chặn ĐƯỜNG MẠNG tới IP đó (firewall/`
-          + 'routing/VPN), không phải DNS';
+          + `${dnsServerText(dns)}, cả getaddrinfo và hỏi thẳng nameserver đều khớp, nên nếu vẫn `
+          + 'hỏng thì là chặn ĐƯỜNG MẠNG tới IP đó (firewall/routing/VPN), không phải DNS';
       } else {
         tail = ' — mọi thao tác sau bước bắt tay đều đi tới đó, nên nếu DevBox không phân giải/không '
           + 'tới được các host này thì kết nối vẫn hỏng dù cổng seed vẫn mở';
@@ -874,10 +903,20 @@ function reachSummary(
   return `${tcpPart} → mạng thông, hỏng ở đúng (các) node kia.`;
 }
 
-/** Các hostname trong `names` mà DevBox tra tên KHÔNG ra IP. */
+/**
+ * Các hostname trong `names` mà DevBox tra tên KHÔNG ra IP. Xét đường
+ * getaddrinfo, vì đó là đường kafkajs THẬT SỰ đi — nameserver có bản ghi mà
+ * getaddrinfo vẫn trượt thì kết nối vẫn hỏng.
+ */
 function failedDns(dns: KafkaDnsDiagnosis | undefined, names: string[]): KafkaDnsResult[] {
   const want = new Set(names);
-  return (dns?.hosts ?? []).filter((h) => want.has(h.host) && !h.resolved);
+  return (dns?.hosts ?? []).filter((h) => want.has(h.host) && !h.system.resolved);
+}
+
+/** Các hostname mà hai đường tra KHÔNG khớp — /etc/hosts hoặc NSS đang can thiệp. */
+function overriddenDns(dns: KafkaDnsDiagnosis | undefined, names: string[]): KafkaDnsResult[] {
+  const want = new Set(names);
+  return (dns?.hosts ?? []).filter((h) => want.has(h.host) && h.hostsFileOverride);
 }
 
 /**
@@ -887,9 +926,7 @@ function failedDns(dns: KafkaDnsDiagnosis | undefined, names: string[]): KafkaDn
 function dnsServerText(dns?: KafkaDnsDiagnosis): string {
   const list = dns?.servers ?? [];
   if (!list.length) return '';
-  // Nói rõ là tra qua getaddrinfo: /etc/hosts có thể thắng nameserver, nên câu
-  // kết luận không được khẳng định "phân giải được nghĩa là DNS này trả lời".
-  return ` [DNS DevBox đang dùng: ${list.join(', ')} — tra qua getaddrinfo của OS nên /etc/hosts cũng tính]`;
+  return ` [DNS DevBox đang dùng: ${list.join(', ')}]`;
 }
 
 /** Cả phần DNS cho ca không có mismatch: nameserver + kết quả từng tên. */

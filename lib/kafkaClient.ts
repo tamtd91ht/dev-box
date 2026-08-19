@@ -23,6 +23,8 @@
 
 import { createConnection, isIP } from 'net';
 import { getServers, lookup as dnsLookup } from 'dns';
+// Resolver bản promise: hỏi THẲNG nameserver, không qua getaddrinfo/hosts file.
+import { Resolver as PromiseResolver } from 'dns/promises';
 import { Kafka, logLevel, type Admin } from 'kafkajs';
 import type { KafkaConnection } from '@/lib/kafkaConnections';
 
@@ -642,19 +644,50 @@ export interface KafkaReachReport {
 // không phân giải được thì hỏng" — đúng nhưng vô dụng lúc 2 giờ sáng, vì trên
 // container/VPN thì resolver rất hay khác với máy người đang ngồi.
 //
-// Ta trả về CẢ HAI: danh sách nameserver mà tiến trình Node đang dùng, và kết
-// quả phân giải từng hostname (IP hoặc mã lỗi ENOTFOUND/EAI_AGAIN).
+// Mỗi tên hỏi HAI ĐƯỜNG, vì hai đường trả lời hai câu khác nhau:
+//
+//   1. dns.lookup() → getaddrinfo của HỆ ĐIỀU HÀNH. Đây là đường kafkajs (và
+//      mọi socket Node) THẬT SỰ đi, nên nó là sự thật về "kết nối được hay
+//      không". Nhưng nó ăn theo cả /etc/hosts, mDNS, NSS…
+//   2. dns.Resolver → hỏi TRỰC TIẾP nameserver, KHÔNG qua hosts file.
+//
+// Tách bạch được hai đường mới nói đúng bản chất. Ba ca đáng chú ý:
+//   · cả hai ra IP giống nhau        → DNS lành, hỏng (nếu có) là ở đường mạng
+//   · getaddrinfo ra IP, nameserver KHÔNG → tên đang được /etc/hosts (hoặc NSS)
+//     "vá" tại chỗ. Chạy được trên DevBox nhưng máy khác/pod khác sẽ hỏng —
+//     đúng loại bẫy mà cảnh báo phải nói ra thay vì im lặng
+//   · nameserver ra IP, getaddrinfo KHÔNG → hosts file/NSS đang CHẶN hoặc ghi
+//     đè sai; sửa ở máy DevBox, không phải ở DNS
 
-/** Kết quả phân giải một hostname. */
-export interface KafkaDnsResult {
-  host: string;
+/** Kết quả phân giải một hostname theo MỘT đường (getaddrinfo hoặc nameserver). */
+export interface KafkaDnsAnswer {
   /** Phân giải ra IP được hay không. */
   resolved: boolean;
   /** Các IP nhận được (đã lọc trùng). */
   addresses?: string[];
   ms?: number;
-  /** ENOTFOUND = không có bản ghi · EAI_AGAIN = hỏi được DNS nhưng không trả lời. */
+  /** ENOTFOUND = không có bản ghi · EAI_AGAIN/ETIMEOUT = DNS không trả lời. */
   error?: string;
+}
+
+/** Kết quả phân giải một hostname, theo cả hai đường. */
+export interface KafkaDnsResult {
+  host: string;
+  /**
+   * Đường HỆ ĐIỀU HÀNH (getaddrinfo) — chính là đường kafkajs đi, nên đây là
+   * câu trả lời cho "DevBox có kết nối tới được hay không".
+   */
+  system: KafkaDnsAnswer;
+  /**
+   * Hỏi thẳng nameserver, BỎ QUA hosts file. Vắng mặt khi không đọc được danh
+   * sách nameserver (không có gì để hỏi).
+   */
+  nameserver?: KafkaDnsAnswer;
+  /**
+   * true khi hai đường KHÁC nhau (một bên ra IP mà bên kia không, hoặc ra bộ IP
+   * khác) — dấu hiệu tên đang bị /etc/hosts hay NSS can thiệp.
+   */
+  hostsFileOverride?: boolean;
 }
 
 export interface KafkaDnsDiagnosis {
@@ -664,12 +697,6 @@ export interface KafkaDnsDiagnosis {
    * DevBox dùng, không phải DNS của máy người đang xem cảnh báo.
    */
   servers: string[];
-  /**
-   * dns.lookup() đi qua getaddrinfo của HỆ ĐIỀU HÀNH, nên còn ăn theo
-   * /etc/hosts, mDNS, NSS… — tức có thể phân giải được cả khi nameserver
-   * ở trên không biết tên đó. Cờ này để câu kết luận không nói quá.
-   */
-  viaSystemResolver: true;
   hosts: KafkaDnsResult[];
 }
 
@@ -682,28 +709,70 @@ function addrHost(addr: string): string {
 }
 
 /**
- * Phân giải các hostname liên quan. IP thuần bị bỏ qua (không có gì để hỏi), và
- * mỗi tên chỉ hỏi một lần. KHÔNG BAO GIỜ ném — hỏng cũng là kết quả đo.
+ * Phân giải các hostname liên quan theo CẢ HAI đường. IP thuần bị bỏ qua (không
+ * có gì để hỏi), mỗi tên chỉ hỏi một lần. KHÔNG BAO GIỜ ném — hỏng là kết quả đo.
  */
 async function dnsDiagnosis(hostnames: string[]): Promise<KafkaDnsDiagnosis | undefined> {
   const names = [...new Set(hostnames.filter((h) => h && !isIP(h)))];
   if (!names.length) return undefined;
-  const hosts = await Promise.all(names.map(resolveHost));
+
   // getServers() có thể ném khi chưa có resolver nào được cấu hình.
   let servers: string[] = [];
   try { servers = getServers(); } catch { servers = []; }
-  return { servers, viaSystemResolver: true, hosts };
+
+  // Resolver RIÊNG với timeout riêng: mặc định của c-ares là 5s × 4 lần thử,
+  // quá lâu cho một vòng watcher. Không đụng resolver toàn cục (dns.setServers)
+  // vì đó là state dùng chung cho cả tiến trình.
+  let resolver: PromiseResolver | undefined;
+  if (servers.length) {
+    try {
+      resolver = new PromiseResolver({ timeout: DNS_TIMEOUT_MS, tries: 1 });
+      resolver.setServers(servers);
+    } catch {
+      resolver = undefined;
+    }
+  }
+
+  const hosts = await Promise.all(names.map((h) => resolveHost(h, resolver)));
+  return { servers, hosts };
 }
 
-function resolveHost(host: string): Promise<KafkaDnsResult> {
-  return new Promise<KafkaDnsResult>((resolve) => {
+/** Hỏi một tên theo cả hai đường rồi so kết quả. */
+async function resolveHost(host: string, resolver?: PromiseResolver): Promise<KafkaDnsResult> {
+  const [system, nameserver] = await Promise.all([
+    systemLookup(host),
+    resolver ? nameserverLookup(host, resolver) : Promise.resolve(undefined),
+  ]);
+  const out: KafkaDnsResult = { host, system };
+  if (nameserver) {
+    out.nameserver = nameserver;
+    // Chỉ gắn cờ khi CẢ HAI đo được (một bên timeout thì chưa kết luận nổi).
+    const conclusive = system.error !== `timeout ${DNS_TIMEOUT_MS / 1000}s`
+      && nameserver.error !== `timeout ${DNS_TIMEOUT_MS / 1000}s`;
+    if (conclusive && differs(system, nameserver)) out.hostsFileOverride = true;
+  }
+  return out;
+}
+
+/** Hai đường có cho kết quả khác nhau không (có/không ra IP, hoặc khác bộ IP). */
+function differs(a: KafkaDnsAnswer, b: KafkaDnsAnswer): boolean {
+  if (a.resolved !== b.resolved) return true;
+  if (!a.resolved) return false;
+  const x = [...(a.addresses ?? [])].sort();
+  const y = [...(b.addresses ?? [])].sort();
+  return x.length !== y.length || x.some((v, i) => v !== y[i]);
+}
+
+/** Đường HỆ ĐIỀU HÀNH: getaddrinfo — chính đường kafkajs/socket Node đi. */
+function systemLookup(host: string): Promise<KafkaDnsAnswer> {
+  return new Promise<KafkaDnsAnswer>((resolve) => {
     const t0 = Date.now();
     let done = false;
-    const finish = (r: Omit<KafkaDnsResult, 'host'>) => {
+    const finish = (r: KafkaDnsAnswer) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      resolve({ host, ...r });
+      resolve(r);
     };
     // getaddrinfo không nhận timeout, nên tự chặn: một resolver chết có thể treo
     // tới hàng chục giây và làm cả vòng watcher trễ nhịp.
@@ -713,17 +782,35 @@ function resolveHost(host: string): Promise<KafkaDnsResult> {
     );
     dnsLookup(host, { all: true, verbatim: true }, (err, addrs) => {
       if (err) {
-        finish({
-          resolved: false,
-          error: (err as NodeJS.ErrnoException).code || err.message,
-          ms: Date.now() - t0,
-        });
+        finish({ resolved: false, error: (err as NodeJS.ErrnoException).code || err.message, ms: Date.now() - t0 });
         return;
       }
       const addresses = [...new Set(addrs.map((a) => a.address))];
       finish({ resolved: addresses.length > 0, addresses, ms: Date.now() - t0 });
     });
   });
+}
+
+/**
+ * Hỏi THẲNG nameserver, bỏ qua hosts file. Hỏi cả A và AAAA: chỉ hỏi A thôi thì
+ * một cụm chỉ có bản ghi IPv6 sẽ bị báo oan là "nameserver không biết tên này".
+ */
+async function nameserverLookup(host: string, resolver: PromiseResolver): Promise<KafkaDnsAnswer> {
+  const t0 = Date.now();
+  const [v4, v6] = await Promise.all([
+    resolver.resolve4(host).catch((e: NodeJS.ErrnoException) => e),
+    resolver.resolve6(host).catch((e: NodeJS.ErrnoException) => e),
+  ]);
+  const addresses = [...new Set([
+    ...(Array.isArray(v4) ? v4 : []),
+    ...(Array.isArray(v6) ? v6 : []),
+  ])];
+  const ms = Date.now() - t0;
+  if (addresses.length) return { resolved: true, addresses, ms };
+  // Không có bản ghi nào: lấy lỗi của truy vấn A làm lỗi đại diện (ENODATA khi
+  // tên có tồn tại mà không có bản ghi loại đó, NXDOMAIN/ENOTFOUND khi không có tên).
+  const err = !Array.isArray(v4) ? v4 : (!Array.isArray(v6) ? v6 : undefined);
+  return { resolved: false, error: err?.code || err?.message || 'không có bản ghi', ms };
 }
 
 export async function listTopics(conn: KafkaConnection): Promise<TopicSummary[]> {
