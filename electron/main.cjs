@@ -588,7 +588,16 @@ async function loadExtInto(ses, entry) {
 /** Nap moi extension dang bat vao mot session browser vua duoc tao. */
 async function loadEnabledExtensions(ses) {
   const list = readExtRegistry().filter((e) => e.enabled !== false);
+  // Cai DA NAP roi thi bo qua — ham nay duoc goi lai moi lan mot guest browser
+  // gan vao (xem did-attach-webview), nen phai idempotent, khong duoc nap chong.
+  let already = new Set();
+  try {
+    already = new Set(ses.extensions.getAllExtensions().map((x) => path.resolve(x.path)));
+  } catch {
+    /* session moi tinh — chua co gi */
+  }
   for (const entry of list) {
+    if (already.has(path.resolve(entry.path))) continue;
     if (!fs.existsSync(entry.path)) {
       log('ExtMissing', entry.path);
       continue;
@@ -769,6 +778,20 @@ function wireWebviewHardening(win) {
     // reach it. A background webview cannot receive a trusted key from the
     // renderer's element-level sendInputEvent; the main process can focus this
     // webContents and inject the key regardless of which tab is showing.
+    // NAP LAI EXTENSION moi lan mot guest browser gan vao.
+    //
+    // configurePartition chi chay MOT LAN cho moi partition (co cai gac
+    // configuredPartitions o dau ham), nen neu chi dua vao no thi: dong het tab
+    // roi mo lai tab cung profile → partition da cau hinh → khong nap gi ca, va
+    // extension coi nhu bien mat. Dung trieu chung nguoi dung gap: "vao khong
+    // co, an nap lai cung khong co, phai mo tab khac moi co".
+    // loadEnabledExtensions da idempotent nen goi lai o day khong nap chong.
+    if (BROWSER_PARTITION.test(partition)) {
+      const ses = session.fromPartition(partition);
+      browserSessions.add(ses);
+      void loadEnabledExtensions(ses);
+    }
+
     if (partition) {
       guestByPartition.set(partition, guest);
       guest.on('destroyed', () => {

@@ -38,24 +38,25 @@ interface ExtItem {
 /**
  * Kích thước popup.
  *
- * Chrome giới hạn popup ở 800px cao vì nó treo dưới thanh công cụ của một cửa
- * sổ thật. Ở đây popup là một panel trong app, không có ràng buộc đó — và
- * extension nội bộ thường là form dài (OTool: Email + Code + 3 lựa chọn +
- * Submit). Để thấp thì phải cuộn dọc, vừa xấu vừa khó dùng.
+ * Chiều cao KHÔNG đặt cứng và cũng không lấy theo chỗ trống màn hình — cả hai
+ * cách đều cho ra khung dư thừa hoặc thiếu. Thay vào đó HỎI CHÍNH POPUP nó cao
+ * bao nhiêu (scrollHeight) rồi ôm sát nội dung, chỉ chừa PAD_BOTTOM cho thoáng
+ * dưới nút cuối.
  *
- * Nên: cao TỐI ĐA theo chỗ trống thật sự còn lại tới đáy cửa sổ, chặn dưới bởi
- * MIN_H để không bao giờ tí hon, chặn trên bởi MAX_H để trên màn hình lớn nó
- * không kéo dài vô nghĩa.
+ * MIN_H chỉ là chiều cao tạm lúc chưa đo được; MAX_H chặn trên theo chỗ trống
+ * thật để popup không bao giờ tràn khỏi cửa sổ.
  */
 const POPUP_W = 420;
-const MIN_H = 480;
-const MAX_H = 900;
+const MIN_H = 180;
+const HEAD_H = 34;      // thanh tiêu đề popup (tên + 🔍 + ✕)
+const PAD_BOTTOM = 14;  // khoảng thở dưới nút cuối của extension
 
 export default function BrowserExtBar({
   partition,
   activeUrl,
   onNavigate,
   onManage,
+  onReloadPage,
 }: {
   /** Partition của tab đang xem — popup hỏi cookie/tab theo profile này. */
   partition: string;
@@ -65,6 +66,8 @@ export default function BrowserExtBar({
   onNavigate: (url: string) => void;
   /** Mở bảng quản lý extension (🧩). */
   onManage: () => void;
+  /** Tải lại trang đang xem — sau khi nạp lại extension. */
+  onReloadPage: () => void;
 }) {
   const [items, setItems] = useState<ExtItem[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -99,17 +102,21 @@ export default function BrowserExtBar({
 
   // Popup đã portal ra body nên nó KHÔNG còn neo theo thanh công cụ được nữa —
   // phải tự tính toạ độ. Đo lại khi mở, và khi cửa sổ đổi kích thước.
+  /** Chiều cao nội dung thật của popup, do chính nó báo về (0 = chưa đo được). */
+  const [contentH, setContentH] = useState(0);
+
   useEffect(() => {
     if (!openId) return;
     const place = () => {
       const r = barRef.current?.getBoundingClientRect();
       if (!r) return;
       const top = Math.round(r.bottom + 6);
-      // Chiều cao = chỗ trống thật tới đáy cửa sổ, chừa 12px mép dưới.
-      // Cửa sổ thấp thì vẫn lấy MIN_H và cho nó nhô lên trên (top âm được
-      // chặn ở 8px) — thà đè lên thanh tab còn hơn popup cao 150px phải cuộn.
-      const room = window.innerHeight - top - 12;
-      const height = Math.min(MAX_H, Math.max(MIN_H, room));
+      // Trần cứng: chỗ trống thật tới đáy cửa sổ. Popup không bao giờ được
+      // tràn ra ngoài màn hình, dù nội dung có dài đến đâu.
+      const room = Math.max(MIN_H, window.innerHeight - top - 12);
+      // Ôm SÁT nội dung khi đã đo được; chưa đo thì tạm MIN_H.
+      const wanted = contentH ? contentH + HEAD_H + PAD_BOTTOM : MIN_H;
+      const height = Math.min(room, Math.max(MIN_H, wanted));
       setPos({
         // Không đủ chỗ bên dưới thì đẩy lên cho vừa màn hình.
         top: Math.max(8, Math.min(top, window.innerHeight - height - 12)),
@@ -122,7 +129,7 @@ export default function BrowserExtBar({
     place();
     window.addEventListener('resize', place);
     return () => window.removeEventListener('resize', place);
-  }, [openId]);
+  }, [openId, contentH]);
 
   // Bấm ra ngoài / Esc → đóng popup, đúng như Chrome.
   useEffect(() => {
@@ -165,6 +172,7 @@ export default function BrowserExtBar({
   const [loading, setLoading] = useState(false);
   useEffect(() => {
     setDiag('');
+    setContentH(0);          // đổi extension thì đo lại từ đầu
     if (!open) return;
     // Popup của OTool gọi API rồi mới vẽ — mất vài giây, trong lúc đó <webview>
     // là nền trắng trơn. Không báo gì thì nhìn y như hỏng.
@@ -183,19 +191,75 @@ export default function BrowserExtBar({
       if (e.errorCode === -3) return;
       setDiag(`Không tải được popup: ${e.errorDescription || e.errorCode}`);
     };
+    // ĐO CHIỀU CAO THẬT của popup rồi ôm sát, thay vì đoán.
+    //
+    // Đo NHIỀU LẦN chứ không một lần: popup của OTool gọi API rồi mới vẽ (đo
+    // được là mất ~6 giây), lúc dom-ready nó gần như rỗng. Đo một lần là ra
+    // một cái khung tí xíu rồi kẹt ở đó.
+    const wv = el as HTMLElement & { executeJavaScript?: (c: string) => Promise<number> };
+    const measure = () => {
+      // ĐO PHẦN TỬ NỘI DUNG, không phải body.
+      //
+      // body.scrollHeight VÔ NGHĨA ở đây: body giãn đầy khung nên nó luôn trả
+      // về đúng chiều cao <webview> đang có — đo được 800px chỉ vì khung cao
+      // 800px. Đã kiểm chứng bằng Electron thật.
+      //
+      // Cách đúng: lấy ĐÁY của phần tử nằm thấp nhất trong luồng tài liệu. Bỏ
+      // qua position:fixed (toast, overlay bám mép dưới sẽ kéo số đo xuống sai)
+      // và phần tử ẩn. Popup OTool đo ra 344px — khớp nội dung thật.
+      wv.executeJavaScript?.(`(function(){
+        var b = document.body; if (!b) return 0;
+        var best = 0, all = b.querySelectorAll('*');
+        for (var i = 0; i < all.length; i++) {
+          var el = all[i], cs = getComputedStyle(el);
+          if (cs.position === 'fixed' || cs.display === 'none') continue;
+          var r = el.getBoundingClientRect();
+          if (r.height === 0) continue;
+          var bottom = r.bottom + (window.scrollY || 0);
+          if (bottom > best) best = bottom;
+        }
+        return Math.ceil(best);
+      })()`)
+        .then((h) => { if (typeof h === 'number' && h > 0) setContentH(Math.ceil(h)); })
+        .catch(() => { /* chưa attach hoặc đã đóng — bỏ qua */ });
+    };
+    // Đo tại các mốc render, rồi vài nhịp nữa để bắt phần vẽ sau khi có API.
+    const timers = [120, 600, 1500, 3000, 6000, 9000].map((ms) => setTimeout(measure, ms));
+
     el.addEventListener('console-message', onMsg as EventListener);
     el.addEventListener('did-fail-load', onFail as EventListener);
+    el.addEventListener('dom-ready', measure);
     el.addEventListener('dom-ready', done);
     el.addEventListener('did-finish-load', done);
     el.addEventListener('did-stop-loading', done);
     return () => {
+      timers.forEach(clearTimeout);
       el.removeEventListener('console-message', onMsg as EventListener);
       el.removeEventListener('did-fail-load', onFail as EventListener);
+      el.removeEventListener('dom-ready', measure);
       el.removeEventListener('dom-ready', done);
       el.removeEventListener('did-finish-load', done);
       el.removeEventListener('did-stop-loading', done);
     };
   }, [open]);
+
+  /** Nạp lại extension rồi tải lại trang đang xem, để thay đổi có hiệu lực ngay. */
+  const [reloading, setReloading] = useState(false);
+  const reloadExts = useCallback(async () => {
+    setReloading(true);
+    try {
+      await window.browserExt?.reload();
+      await refresh();
+      // Content script chỉ chèn vào LÚC TRANG TẢI — nạp lại extension mà không
+      // tải lại trang thì trang hiện tại vẫn chạy bản cũ.
+      onReloadPage();
+    } catch {
+      /* nút phụ trợ — im lặng */
+    } finally {
+      setReloading(false);
+      setOpenId(null);          // popup cũ trỏ vào id extension đã bị thay
+    }
+  }, [refresh, onReloadPage]);
 
   return (
     <div className="bx-bar" ref={barRef}>
@@ -214,6 +278,19 @@ export default function BrowserExtBar({
           <ExtIcon url={e.iconUrl} name={e.name} />
         </button>
       ))}
+
+      {/* Nạp lại extension NGAY TRONG TAB ĐANG XEM.
+          Sửa code extension xong thì phải nạp lại mới thấy đổi, và content
+          script chỉ chèn vào lúc trang tải — nên nạp lại extension rồi tải lại
+          trang, hai việc trong một nút. Trước đây phải mở tab khác mới ăn. */}
+      <button
+        className={`bx-bar-btn${reloading ? ' busy' : ''}`}
+        onClick={() => void reloadExts()}
+        disabled={reloading}
+        title="Nạp lại extension + tải lại trang hiện tại"
+      >
+        {reloading ? <span className="spinner" aria-hidden /> : '↻'}
+      </button>
 
       <button className="bx-bar-btn bx-bar-manage" onClick={onManage} title="Quản lý extension">
         🧩

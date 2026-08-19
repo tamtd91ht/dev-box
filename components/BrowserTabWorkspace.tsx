@@ -38,6 +38,11 @@ export default function BrowserTabWorkspace() {
   const [ctx, setCtx] = useState<Ctx | null>(null); // menu chuột phải trên dấu trang
   const [pwOpen, setPwOpen] = useState(false); // modal 🔑 Mật khẩu đã lưu
   const [extOpen, setExtOpen] = useState(false); // modal 🧩 Extension (chỉ tab Browser)
+  /** Tăng lên để BUỘC remount viewer của tab đang xem (nút ↻ trên thanh
+   *  extension). Đổi `key` là React dựng <webview> mới → trang tải lại từ đầu
+   *  → content script của extension được chèn lại. Không có cách nào nhẹ hơn:
+   *  content script chỉ chèn vào lúc trang tải. */
+  const [reloadNonce, setReloadNonce] = useState(0);
   const rootRef = useRef<HTMLDivElement | null>(null);
   // Id các tab đang mở — đọc đồng bộ trong openTab để biết tab đã tồn tại chưa
   // (state `tabs` trong closure có thể cũ khi mở liên tiếp nhiều tab).
@@ -310,6 +315,7 @@ export default function BrowserTabWorkspace() {
             activeUrl={tabs.find((t) => t.id === activeId)?.url ?? ''}
             onNavigate={navigateActive}
             onManage={() => setExtOpen(true)}
+            onReloadPage={() => setReloadNonce((n) => n + 1)}
           />
           {/* Menu ⋯ gom các nút phụ như trình duyệt thật */}
           <div className="bt-menu-wrap">
@@ -357,7 +363,12 @@ export default function BrowserTabWorkspace() {
         <div className="lv-wrap bt-viewer" hidden={activeId === null}>
           <div className="lv-body">
             {tabs.map((t) => (
-              <BrowserTab key={t.id} tab={t} hidden={t.id !== activeId} onClose={() => closeTab(t.id)}
+              <BrowserTab
+                // Nonce CHỈ áp cho tab đang xem: đưa vào key của mọi tab thì
+                // bấm ↻ sẽ tải lại cả những tab nền, mất hết trạng thái của
+                // chúng dù người dùng không đụng tới.
+                key={t.id === activeId ? `${t.id}#${reloadNonce}` : t.id}
+                tab={t} hidden={t.id !== activeId} onClose={() => closeTab(t.id)}
                 onOpenNewTab={(u) => openTab(u, { profile: t.profile, background: true })}
                 onSaveBookmark={async (name, url) => {
                   await bmAdd(url, { name, profile: t.profile, ...t.creds });
