@@ -14,7 +14,7 @@
 
 import { esHealth, listEsNodes } from '@/lib/es';
 import { kafkaClusterHealth, kafkaConsumerLag, kafkaHostMetrics, kafkaBrokerReach } from '@/lib/kafka';
-import type { KafkaBrokerReach, KafkaProtocolProbe } from '@/lib/kafka';
+import type { KafkaBrokerReach, KafkaDnsDiagnosis, KafkaDnsResult, KafkaProtocolProbe } from '@/lib/kafka';
 import { mongoMonitor } from '@/lib/mongo';
 import { pingPg } from '@/lib/pg';
 import { listRabbitNodes, rabbitOverview } from '@/lib/rabbit';
@@ -77,6 +77,8 @@ export interface ProbePayload {
   brokerReach?: KafkaBrokerReach[];
   /** Kafka: kết quả hỏi cụm bằng giao thức Kafka (kèm advertised.listeners). */
   kafkaProtocol?: KafkaProtocolProbe;
+  /** Kafka: DevBox phân giải hostname bằng DNS nào, ra IP gì. */
+  kafkaDns?: KafkaDnsDiagnosis;
 }
 
 export interface ProbeResult {
@@ -99,6 +101,12 @@ export interface ProbeResult {
    * kèm advertised.listeners — nguyên nhân kinh điển của "kết nối được mà vẫn hỏng".
    */
   kafkaProtocol?: KafkaProtocolProbe;
+  /**
+   * Chỉ Kafka: DNS mà DevBox dùng để phân giải hostname (seed khai bằng tên,
+   * hoặc advertised.listeners), kèm kết quả từng tên. Trả lời câu hỏi tiếp ngay
+   * sau "cụm quảng bá hostname khác": phân giải bằng resolver nào, ra IP gì.
+   */
+  kafkaDns?: KafkaDnsDiagnosis;
   /** Probe-level failure (host down, bad credentials…). `metrics.up` is 0 then. */
   error?: string;
 }
@@ -516,7 +524,14 @@ export async function probeStack(
     if (stack === 'kafka') {
       try {
         const report = await kafkaBrokerReach(connectionId);
-        return { at, metrics: { up: 0 }, brokerReach: report.brokers, kafkaProtocol: report.protocol, error };
+        return {
+          at,
+          metrics: { up: 0 },
+          brokerReach: report.brokers,
+          kafkaProtocol: report.protocol,
+          kafkaDns: report.dns,
+          error,
+        };
       } catch { /* không chẩn đoán được — vẫn báo mất kết nối */ }
     }
     return { at, metrics: { up: 0 }, error };
@@ -595,6 +610,12 @@ export interface InfraEventExtras {
   brokerReach?: KafkaBrokerReach[];
   /** Kafka: cụm có nói được giao thức Kafka không + advertised.listeners. */
   kafkaProtocol?: KafkaProtocolProbe;
+  /**
+   * Kafka: DNS mà DevBox dùng để phân giải hostname + kết quả từng tên. Vì trên
+   * container/VPN resolver rất hay khác máy người đang đọc cảnh báo, nên "không
+   * phân giải được" mà không nói DNS nào thì người trực không tra được tiếp.
+   */
+  kafkaDns?: KafkaDnsDiagnosis;
 }
 
 /**
@@ -723,11 +744,13 @@ function brokerReachFields(extras?: InfraEventExtras): Record<string, string | n
     return {
       brokerReach: '', brokersUp: 0, brokersTotal: 0, reachSummary: '',
       brokerReachJson: '', advertised: '',
+      dnsServers: '', dnsResolve: '', dnsJson: '',
     };
   }
   const up = list.filter((b) => b.reachable);
   const down = list.filter((b) => !b.reachable);
   const proto = extras?.kafkaProtocol;
+  const dns = extras?.kafkaDns;
 
   // Mỗi broker một dòng: '192.168.2.218:9092 = TCP mở (2ms)' / '= ECONNREFUSED'.
   const rendered = list.map((b) => (b.reachable
@@ -738,11 +761,28 @@ function brokerReachFields(extras?: InfraEventExtras): Record<string, string | n
     brokerReach: rendered.join(' · '),
     brokersUp: up.length,
     brokersTotal: list.length,
-    reachSummary: reachSummary(up, down, proto),
+    reachSummary: reachSummary(up, down, proto, dns),
     brokerReachJson: JSON.stringify(list),
     // advertised.listeners cụm trả về — rỗng khi cụm không nói được giao thức.
     advertised: (proto?.advertised ?? []).join(', '),
+    // DNS: nameserver đang dùng + kết quả phân giải từng hostname. Rỗng khi mọi
+    // địa chỉ đều là IP (không có gì để phân giải).
+    dnsServers: (dns?.servers ?? []).join(', '),
+    dnsResolve: (dns?.hosts ?? []).map(renderDnsResult).join(' · '),
+    dnsJson: dns ? JSON.stringify(dns) : '',
   };
+}
+
+/**
+ * 'kafka-1.omicrm.services = 10.0.0.11 (4ms)' / 'kafka-1.omicrm.services = ENOTFOUND'.
+ * Ca hỏng in THẲNG mã lỗi, không bọc thêm ngoặc: chuỗi này thường đã nằm trong
+ * một cặp ngoặc của câu kết luận, ngoặc lồng ngoặc đọc rất rối.
+ */
+function renderDnsResult(d: KafkaDnsResult): string {
+  if (d.resolved) {
+    return `${d.host} = ${(d.addresses ?? []).join(', ')}${d.ms !== undefined ? ` (${d.ms}ms)` : ''}`;
+  }
+  return `${d.host} = ${d.error || 'không phân giải được'}`;
 }
 
 /**
@@ -754,13 +794,22 @@ function reachSummary(
   up: KafkaBrokerReach[],
   down: KafkaBrokerReach[],
   proto?: KafkaProtocolProbe,
+  dns?: KafkaDnsDiagnosis,
 ): string {
   const total = up.length + down.length;
 
   // 1) Không cổng nào mở — mạng hoặc cả cụm.
   if (up.length === 0) {
+    // Seed khai bằng hostname mà không phân giải được thì KHÔNG phải lỗi mạng:
+    // hỏng ngay ở bước tra tên, và nói rõ tra bằng DNS nào mới tra tiếp được.
+    const bad = failedDns(dns, [...up, ...down].map((b) => b.host));
+    if (bad.length) {
+      return `KHÔNG bắt tay TCP được node nào trong ${total} vì KHÔNG PHÂN GIẢI ĐƯỢC TÊN `
+        + `(${bad.map(renderDnsResult).join(' · ')})${dnsServerText(dns)} — sửa DNS/hosts trước, `
+        + 'chưa phải lỗi Kafka.';
+    }
     return `KHÔNG bắt tay TCP được node nào trong ${total} — nghi mất mạng/VPN/firewall từ DevBox, `
-      + 'hoặc cả cụm cùng chết. Kiểm tra đường mạng trước.';
+      + `hoặc cả cụm cùng chết. Kiểm tra đường mạng trước.${dnsText(dns)}`;
   }
 
   const tcpPart = down.length
@@ -788,9 +837,25 @@ function reachSummary(
     const advHosts = adv.map((a) => a.slice(0, a.lastIndexOf(':')) || a);
     const mismatch = advHosts.filter((h) => !seedHosts.has(h));
     if (mismatch.length) {
+      // Không dừng ở "NẾU không phân giải được" nữa: ta ĐÃ tra thật, nên nói
+      // luôn tra bằng DNS nào và ra IP gì — đó là bước người trực làm tiếp.
+      const bad = failedDns(dns, mismatch);
+      const advDns = (dns?.hosts ?? []).filter((h) => mismatch.includes(h.host));
+      let tail: string;
+      if (bad.length) {
+        tail = ` và DevBox KHÔNG PHÂN GIẢI ĐƯỢC các host đó (${bad.map(renderDnsResult).join(' · ')})`
+          + `${dnsServerText(dns)} → đây chính là chỗ hỏng: thêm bản ghi DNS/hosts hoặc sửa `
+          + 'advertised.listeners về địa chỉ DevBox tới được';
+      } else if (advDns.length) {
+        tail = ` — DevBox phân giải được các host đó (${advDns.map(renderDnsResult).join(' · ')})`
+          + `${dnsServerText(dns)}, nên nếu vẫn hỏng thì là chặn ĐƯỜNG MẠNG tới IP đó (firewall/`
+          + 'routing/VPN), không phải DNS';
+      } else {
+        tail = ' — mọi thao tác sau bước bắt tay đều đi tới đó, nên nếu DevBox không phân giải/không '
+          + 'tới được các host này thì kết nối vẫn hỏng dù cổng seed vẫn mở';
+      }
       bits.push(`cụm quảng bá địa chỉ KHÁC với địa chỉ DevBox đang gọi (advertised.listeners = `
-        + `${adv.join(', ')}) — mọi thao tác sau bước bắt tay đều đi tới đó, nên nếu DevBox không `
-        + 'phân giải/không tới được các host này thì kết nối vẫn hỏng dù cổng seed vẫn mở');
+        + `${adv.join(', ')})${tail}`);
     }
     if (!bits.length) {
       bits.push('cụm trả lời BÌNH THƯỜNG vào lúc chẩn đoán — nhiều khả năng là sự cố thoáng qua '
@@ -807,6 +872,31 @@ function reachSummary(
       + 'sai địa chỉ mà DevBox không tới được.';
   }
   return `${tcpPart} → mạng thông, hỏng ở đúng (các) node kia.`;
+}
+
+/** Các hostname trong `names` mà DevBox tra tên KHÔNG ra IP. */
+function failedDns(dns: KafkaDnsDiagnosis | undefined, names: string[]): KafkaDnsResult[] {
+  const want = new Set(names);
+  return (dns?.hosts ?? []).filter((h) => want.has(h.host) && !h.resolved);
+}
+
+/**
+ * ' (DNS DevBox đang dùng: 10.0.0.2, 8.8.8.8)'. Rỗng khi không đọc được resolver
+ * — thà không nói gì còn hơn nói "DNS: " trống làm người đọc tưởng mất cấu hình.
+ */
+function dnsServerText(dns?: KafkaDnsDiagnosis): string {
+  const list = dns?.servers ?? [];
+  if (!list.length) return '';
+  // Nói rõ là tra qua getaddrinfo: /etc/hosts có thể thắng nameserver, nên câu
+  // kết luận không được khẳng định "phân giải được nghĩa là DNS này trả lời".
+  return ` [DNS DevBox đang dùng: ${list.join(', ')} — tra qua getaddrinfo của OS nên /etc/hosts cũng tính]`;
+}
+
+/** Cả phần DNS cho ca không có mismatch: nameserver + kết quả từng tên. */
+function dnsText(dns?: KafkaDnsDiagnosis): string {
+  const hosts = dns?.hosts ?? [];
+  if (!hosts.length) return '';
+  return ` Phân giải tên: ${hosts.map(renderDnsResult).join(' · ')}.${dnsServerText(dns)}`;
 }
 
 /**

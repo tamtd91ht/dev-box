@@ -230,10 +230,34 @@ export interface KafkaProtocolProbe {
   error?: string;
 }
 
+/** Phân giải MỘT hostname bằng resolver của hệ điều hành nơi DevBox chạy. */
+export interface KafkaDnsResult {
+  host: string;
+  resolved: boolean;
+  addresses?: string[];
+  ms?: number;
+  /** ENOTFOUND = không có bản ghi · EAI_AGAIN = DNS không trả lời. */
+  error?: string;
+}
+
+/**
+ * DevBox phân giải hostname bằng DNS NÀO, và ra IP gì. Cần cho ca "cổng seed mở
+ * nhưng cụm quảng bá hostname khác": câu hỏi tiếp theo luôn là resolver nào.
+ */
+export interface KafkaDnsDiagnosis {
+  /** Nameserver tiến trình Node đang dùng (dns.getServers()). */
+  servers: string[];
+  /** Phân giải qua getaddrinfo của HỆ ĐIỀU HÀNH — nên còn ăn theo /etc/hosts. */
+  viaSystemResolver: true;
+  hosts: KafkaDnsResult[];
+}
+
 export interface KafkaReachReport {
   brokers: KafkaBrokerReach[];
   /** Vắng mặt khi không seed broker nào mở cổng. */
   protocol?: KafkaProtocolProbe;
+  /** Vắng mặt khi mọi địa chỉ đều là IP — không có gì để phân giải. */
+  dns?: KafkaDnsDiagnosis;
 }
 
 /**

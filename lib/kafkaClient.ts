@@ -21,7 +21,8 @@
 //     / a timeout, and reads use RAW leader fetches — no consumer groups, nothing
 //     is ever committed.
 
-import { createConnection } from 'net';
+import { createConnection, isIP } from 'net';
+import { getServers, lookup as dnsLookup } from 'dns';
 import { Kafka, logLevel, type Admin } from 'kafkajs';
 import type { KafkaConnection } from '@/lib/kafkaConnections';
 
@@ -615,13 +616,114 @@ export async function brokerReachability(conn: KafkaConnection): Promise<KafkaRe
   const open = brokers.filter((b) => b.reachable).map((b) => b.addr);
   // Không cổng nào mở thì hỏi giao thức chỉ tổ chờ thêm một nhịp timeout vô ích.
   const protocol = open.length ? await probeKafkaProtocol(open) : undefined;
-  return { brokers, protocol };
+  // Mọi hostname đang dính vào đường đi: seed broker khai bằng tên, và
+  // advertised.listeners cụm trả về (chỗ client THẬT SỰ đi tới sau bắt tay).
+  const hostnames = [
+    ...brokers.map((b) => b.host),
+    ...(protocol?.advertised ?? []).map(addrHost),
+  ];
+  const dns = await dnsDiagnosis(hostnames);
+  return { brokers, protocol, dns };
 }
 
 export interface KafkaReachReport {
   brokers: KafkaBrokerReach[];
   /** Vắng mặt khi không seed broker nào mở cổng (không có gì để hỏi). */
   protocol?: KafkaProtocolProbe;
+  /** Vắng mặt khi mọi địa chỉ đều là IP — không có gì để phân giải. */
+  dns?: KafkaDnsDiagnosis;
+}
+
+// ── Chẩn đoán DNS ────────────────────────────────────────────────────────────
+//
+// "Cổng seed mở nhưng cụm quảng bá hostname khác" là ca hỏng kinh điển, và câu
+// hỏi tiếp theo của người trực luôn là: DevBox phân giải hostname đó bằng DNS
+// NÀO, và ra IP gì? Không có hai thông tin đó thì cảnh báo chỉ nói được "nếu
+// không phân giải được thì hỏng" — đúng nhưng vô dụng lúc 2 giờ sáng, vì trên
+// container/VPN thì resolver rất hay khác với máy người đang ngồi.
+//
+// Ta trả về CẢ HAI: danh sách nameserver mà tiến trình Node đang dùng, và kết
+// quả phân giải từng hostname (IP hoặc mã lỗi ENOTFOUND/EAI_AGAIN).
+
+/** Kết quả phân giải một hostname. */
+export interface KafkaDnsResult {
+  host: string;
+  /** Phân giải ra IP được hay không. */
+  resolved: boolean;
+  /** Các IP nhận được (đã lọc trùng). */
+  addresses?: string[];
+  ms?: number;
+  /** ENOTFOUND = không có bản ghi · EAI_AGAIN = hỏi được DNS nhưng không trả lời. */
+  error?: string;
+}
+
+export interface KafkaDnsDiagnosis {
+  /**
+   * Nameserver tiến trình Node đang dùng (dns.getServers()). Trên Linux đây là
+   * nội dung /etc/resolv.conf lúc tiến trình khởi động — nên nó là DNS THẬT mà
+   * DevBox dùng, không phải DNS của máy người đang xem cảnh báo.
+   */
+  servers: string[];
+  /**
+   * dns.lookup() đi qua getaddrinfo của HỆ ĐIỀU HÀNH, nên còn ăn theo
+   * /etc/hosts, mDNS, NSS… — tức có thể phân giải được cả khi nameserver
+   * ở trên không biết tên đó. Cờ này để câu kết luận không nói quá.
+   */
+  viaSystemResolver: true;
+  hosts: KafkaDnsResult[];
+}
+
+const DNS_TIMEOUT_MS = 3000;
+
+/** 'kafka-1.omicrm.services:9092' → 'kafka-1.omicrm.services' (IPv6 [::1] cũng đúng). */
+function addrHost(addr: string): string {
+  const cut = addr.lastIndexOf(':');
+  return cut > 0 ? addr.slice(0, cut) : addr;
+}
+
+/**
+ * Phân giải các hostname liên quan. IP thuần bị bỏ qua (không có gì để hỏi), và
+ * mỗi tên chỉ hỏi một lần. KHÔNG BAO GIỜ ném — hỏng cũng là kết quả đo.
+ */
+async function dnsDiagnosis(hostnames: string[]): Promise<KafkaDnsDiagnosis | undefined> {
+  const names = [...new Set(hostnames.filter((h) => h && !isIP(h)))];
+  if (!names.length) return undefined;
+  const hosts = await Promise.all(names.map(resolveHost));
+  // getServers() có thể ném khi chưa có resolver nào được cấu hình.
+  let servers: string[] = [];
+  try { servers = getServers(); } catch { servers = []; }
+  return { servers, viaSystemResolver: true, hosts };
+}
+
+function resolveHost(host: string): Promise<KafkaDnsResult> {
+  return new Promise<KafkaDnsResult>((resolve) => {
+    const t0 = Date.now();
+    let done = false;
+    const finish = (r: Omit<KafkaDnsResult, 'host'>) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ host, ...r });
+    };
+    // getaddrinfo không nhận timeout, nên tự chặn: một resolver chết có thể treo
+    // tới hàng chục giây và làm cả vòng watcher trễ nhịp.
+    const timer = setTimeout(
+      () => finish({ resolved: false, error: `timeout ${DNS_TIMEOUT_MS / 1000}s`, ms: Date.now() - t0 }),
+      DNS_TIMEOUT_MS,
+    );
+    dnsLookup(host, { all: true, verbatim: true }, (err, addrs) => {
+      if (err) {
+        finish({
+          resolved: false,
+          error: (err as NodeJS.ErrnoException).code || err.message,
+          ms: Date.now() - t0,
+        });
+        return;
+      }
+      const addresses = [...new Set(addrs.map((a) => a.address))];
+      finish({ resolved: addresses.length > 0, addresses, ms: Date.now() - t0 });
+    });
+  });
 }
 
 export async function listTopics(conn: KafkaConnection): Promise<TopicSummary[]> {

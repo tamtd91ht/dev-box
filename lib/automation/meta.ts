@@ -27,8 +27,13 @@ import { AGG_LABEL, metricDef, metricLabel, type FieldDef } from './catalog';
  *     NỐI: bắt tay TCP tới TỪNG seed broker, nên cảnh báo nói được node nào
  *     chết thay vì chỉ "0/1", kèm một câu kết luận hướng xử lý (bổ sung, tương
  *     thích ngược).
+ * v5: thêm `dns?: AlertMetaDns` — Kafka MẤT KẾT NỐI với địa chỉ dạng hostname:
+ *     DevBox phân giải tên bằng NAMESERVER NÀO và ra IP gì. Cần vì trên
+ *     container/VPN resolver của DevBox thường khác máy người đọc cảnh báo, nên
+ *     "không phân giải được" mà không nói DNS nào thì không tra tiếp được (bổ
+ *     sung, tương thích ngược).
  */
-export const META_SCHEMA_VERSION = 4;
+export const META_SCHEMA_VERSION = 5;
 
 /** Ký hiệu người đọc của phép so sánh — dùng chung cho description, text và meta. */
 export const OP_TEXT: Record<InfraWatch['op'], string> = {
@@ -189,6 +194,26 @@ export interface AlertMetaBroker {
   error?: string;
 }
 
+/** Phân giải MỘT hostname trên máy DevBox. */
+export interface AlertMetaDnsHost {
+  host: string;
+  resolved: boolean;
+  /** IP nhận được khi phân giải thành công. */
+  addresses?: string[];
+  ms?: number;
+  /** ENOTFOUND = không có bản ghi · EAI_AGAIN = DNS không trả lời · timeout 3s. */
+  error?: string;
+}
+
+/** DevBox tra tên bằng DNS nào, ra IP gì (Kafka mất kết nối, địa chỉ có hostname). */
+export interface AlertMetaDns {
+  /** Nameserver tiến trình DevBox đang dùng (dns.getServers()). */
+  servers: string[];
+  /** true = tra qua getaddrinfo của OS, nên /etc/hosts cũng có thể quyết định. */
+  viaSystemResolver?: boolean;
+  hosts: AlertMetaDnsHost[];
+}
+
 export interface AlertMetaHost {
   /** Hostname/IP của broker. */
   host: string;
@@ -275,6 +300,12 @@ export interface AlertMeta {
    * DevBox đang gọi là nguyên nhân kinh điển của "kết nối được mà vẫn hỏng".
    */
   advertised?: string[];
+  /**
+   * Kafka MẤT KẾT NỐI: DNS DevBox dùng để phân giải hostname (seed khai bằng tên
+   * và/hoặc advertised.listeners) + kết quả từng tên. Vắng mặt khi mọi địa chỉ
+   * đều là IP — không có gì để phân giải.
+   */
+  dns?: AlertMetaDns;
 
   // ── social ──
   conversation?: string;
@@ -322,6 +353,35 @@ function parseConsumers(raw: string | number | undefined): AlertMetaConsumer[] {
       }));
   } catch {
     return [];
+  }
+}
+
+/** Parse field máy-đọc `dnsJson` → AlertMetaDns. An toàn với mọi rác. */
+function parseDns(raw: string | number | undefined): AlertMetaDns | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const o = JSON.parse(raw) as unknown;
+    if (!o || typeof o !== 'object') return undefined;
+    const rec = o as Record<string, unknown>;
+    const servers = Array.isArray(rec.servers) ? rec.servers.map(String) : [];
+    const hosts = (Array.isArray(rec.hosts) ? rec.hosts : [])
+      .filter((h): h is Record<string, unknown> => !!h && typeof h === 'object' && typeof (h as { host?: unknown }).host === 'string')
+      .map((h) => {
+        const out: AlertMetaDnsHost = { host: String(h.host), resolved: h.resolved === true };
+        if (Array.isArray(h.addresses) && h.addresses.length) out.addresses = h.addresses.map(String);
+        if (h.ms !== undefined) out.ms = Number(h.ms) || 0;
+        if (h.error !== undefined) out.error = String(h.error);
+        return out;
+      });
+    // Không nameserver và không hostname nào → không có gì để nói.
+    if (!servers.length && !hosts.length) return undefined;
+    return {
+      servers,
+      ...(rec.viaSystemResolver === true ? { viaSystemResolver: true } : {}),
+      hosts,
+    };
+  } catch {
+    return undefined;
   }
 }
 
@@ -461,6 +521,8 @@ export function buildAlertMeta(event: AutomationEvent): AlertMeta {
       if (diagnosis) meta.diagnosis = diagnosis;
       const adv = s(f.advertised).split(',').map((a) => a.trim()).filter(Boolean);
       if (adv.length) meta.advertised = adv;
+      const dns = parseDns(f.dnsJson);
+      if (dns) meta.dns = dns;
     }
     if (event.type === 'infra.recovered') {
       meta.recovery = { downSec: n(f.downSec), downText: humanizeSec(n(f.downSec)) };

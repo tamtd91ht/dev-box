@@ -221,6 +221,27 @@ const INFRA_FIELDS: FieldDef[] = [
     sample: 'kafka-1.omicrm.services:9092, kafka-2.omicrm.services:9092',
   },
   {
+    name: 'dnsServers',
+    label: 'DNS DevBox đang dùng',
+    kind: 'text',
+    hint: 'CHỈ Kafka mất kết nối, khi có địa chỉ dạng hostname: các nameserver tiến trình DevBox đang dùng (dns.getServers()). Trên container/VPN resolver thường KHÁC máy người đọc cảnh báo, nên đây là thứ phải tra. Rỗng khi mọi địa chỉ đều là IP',
+    sample: '10.96.0.10, 8.8.8.8',
+  },
+  {
+    name: 'dnsResolve',
+    label: 'Kết quả phân giải tên',
+    kind: 'text',
+    hint: 'CHỈ Kafka mất kết nối: từng hostname (seed khai bằng tên + advertised.listeners) ra IP gì, hoặc lỗi ENOTFOUND/EAI_AGAIN/timeout. Rỗng khi không có tên nào để phân giải',
+    sample: 'kafka-1.omicrm.services = ENOTFOUND · kafka-2.omicrm.services = 10.20.1.32 (4ms)',
+  },
+  {
+    name: 'dnsJson',
+    label: 'Phân giải tên (JSON)',
+    kind: 'text',
+    hint: 'bản máy đọc {servers,viaSystemResolver,hosts:[{host,resolved,addresses?,ms?,error?}]} — vào AlertMeta.dns của metaJson; rỗng khi không đo',
+    sample: '{"servers":["10.96.0.10"],"viaSystemResolver":true,"hosts":[{"host":"kafka-1.omicrm.services","resolved":false,"error":"ENOTFOUND"}]}',
+  },
+  {
     name: 'brokerReachJson',
     label: 'Từng broker (JSON)',
     kind: 'text',
@@ -850,7 +871,10 @@ export const STACKS: StackDef[] = [
         meaning: `${UP.meaning} Riêng Kafka: khi mất kết nối, DevBox bắt tay TCP tới TỪNG broker `
           + 'trong danh sách để chỉ rõ node nào không kết nối được và lỗi gì (ECONNREFUSED = máy sống '
           + 'nhưng Kafka không nghe cổng · timeout = gói không tới nơi, thường do mất mạng/VPN hoặc '
-          + 'firewall), kèm một câu kết luận hướng xử lý.',
+          + 'firewall), kèm một câu kết luận hướng xử lý. Nếu địa chỉ (seed hoặc advertised.listeners '
+          + 'cụm quảng bá) là HOSTNAME, DevBox tra tên luôn và cho biết nó dùng NAMESERVER nào cùng IP '
+          + 'nhận được — resolver của DevBox thường khác máy người trực, nên đây là thứ phải biết mới '
+          + 'phân biệt được hỏng DNS với hỏng đường mạng.',
       },
       {
         key: 'underReplicated',

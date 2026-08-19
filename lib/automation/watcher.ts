@@ -586,6 +586,8 @@ class InfraWatcher {
               brokerReach: res.brokerReach,
               // Cụm có nói được giao thức Kafka không + advertised.listeners.
               kafkaProtocol: res.kafkaProtocol,
+              // DevBox phân giải hostname (seed/advertised) bằng DNS nào, ra IP gì.
+              kafkaDns: res.kafkaDns,
             }),
           );
         }
