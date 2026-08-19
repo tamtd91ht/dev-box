@@ -36,7 +36,28 @@ export default function BrowserTabWorkspace() {
   const [err, setErr] = useState<string | null>(null);
   const [edit, setEdit] = useState<Bookmark | null>(null); // dấu trang đang sửa/tạo
   const [full, setFull] = useState(false); // tràn viền: che header app, webview cao tối đa
-  const [showMarks, setShowMarks] = useState(false); // dải dấu trang gập lại mặc định
+  /** Thanh dấu trang — MẶC ĐỊNH HIỆN, như Chrome.
+   *
+   *  Trước đây mặc định tắt, mà tính năng chính của nó là KÉO ĐỊA CHỈ THẢ VÀO:
+   *  không hiện thanh thì không có chỗ nào để thả, người dùng kéo mãi không
+   *  được và cũng không đoán ra vì sao.
+   *
+   *  Khởi tạo `true` rồi đọc lại localStorage trong effect: đọc thẳng ở đây sẽ
+   *  lệch giữa server render và client (hydration mismatch). */
+  const [showMarks, setShowMarks] = useState(true);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('bt:marks') === '0') setShowMarks(false);
+    } catch { /* localStorage bị chặn — cứ hiện */ }
+  }, []);
+  /** Nhớ lựa chọn ẩn/hiện qua các lần mở app. */
+  const toggleMarks = useCallback(() => {
+    setShowMarks((v) => {
+      const next = !v;
+      try { localStorage.setItem('bt:marks', next ? '1' : '0'); } catch { /* bỏ qua */ }
+      return next;
+    });
+  }, []);
   const [menuOpen, setMenuOpen] = useState(false); // menu ⋯ (lưu/dấu trang/tràn viền)
   const [newTabOpen, setNewTabOpen] = useState(false); // panel nhập URL khi đã có tab
   const [ctx, setCtx] = useState<Ctx | null>(null); // menu chuột phải trên dấu trang
@@ -353,7 +374,7 @@ export default function BrowserTabWorkspace() {
               <>
                 <div className="bt-menu-backdrop" onClick={() => setMenuOpen(false)} />
                 <div className="bt-menu">
-                  <button onClick={() => { setShowMarks((v) => !v); setMenuOpen(false); }}>
+                  <button onClick={() => { toggleMarks(); setMenuOpen(false); }}>
                     🔖 {showMarks ? 'Ẩn' : 'Hiện'} thanh dấu trang ({bookmarks.filter((b) => b.kind === 'link').length})
                   </button>
                   <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t?.profile ?? '', kind: 'link', order: 0, addedAt: '' }); setMenuOpen(false); }}>☆ Lưu trang hiện tại</button>

@@ -226,7 +226,9 @@ export default function BookmarkBar(props: BookmarkBarProps) {
     >
       {tree.map(chip)}
       {tree.length === 0 && (
-        <span className="bmk-hint">Kéo địa chỉ từ ô trên xuống đây để lưu · chuột phải để tạo thư mục</span>
+        <span className="bmk-hint">
+          Kéo <b>🔖</b> ở ô địa chỉ xuống đây để lưu · chuột phải để tạo thư mục
+        </span>
       )}
 
       {mounted && menu && createPortal(dropdown(menu), document.body)}

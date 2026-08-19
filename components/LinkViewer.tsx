@@ -608,23 +608,32 @@ export default function LinkViewer({
             /* Ô địa chỉ thật: hiện URL guest đang mở, gõ + Enter để đi tới,
                Esc trả về URL hiện tại. Click chọn hết chữ như trình duyệt. */
             <div className="ws-omni">
-              {/* CHẤM TRẠNG THÁI KIÊM TAY CẦM ĐỂ KÉO — đúng cách Chrome làm.
-                  Không thể cho kéo chính <input>: kéo bên trong ô nhập là thao
-                  tác BÔI CHỌN CHỮ, đặt draggable lên đó sẽ cướp mất chuyện đó.
-                  Nên tay cầm là một phần tử riêng ngay cạnh ô. */}
-              <span
-                className={`ws-dot ws-dot--${status === 'failed' ? 'loading' : status} ws-dot--drag`}
-                draggable={!!liveUrl}
-                title={liveUrl ? 'Kéo xuống thanh dấu trang để lưu' : undefined}
-                onDragStart={(e) => {
-                  if (!liveUrl) { e.preventDefault(); return; }
-                  // Đủ cả hai kiểu: `text/uri-list` là chuẩn cho URL, còn
-                  // `text/plain` để thả được sang ô nhập/ứng dụng khác.
-                  e.dataTransfer.setData('text/uri-list', liveUrl);
-                  e.dataTransfer.setData('text/plain', liveUrl);
-                  e.dataTransfer.effectAllowed = 'copyLink';
-                }}
-              />
+              <span className={`ws-dot ws-dot--${status === 'failed' ? 'loading' : status}`} />
+              {/* TAY CẦM ĐỂ KÉO — phải là phần tử RIÊNG, không phải chính
+                  <input>: kéo bên trong ô nhập là thao tác bôi chọn chữ, đặt
+                  draggable lên đó sẽ cướp mất.
+                  Bản trước dùng chính chấm trạng thái 8×8px làm tay cầm — quá
+                  nhỏ để trúng và không có dấu hiệu gì cho biết kéo được, nên
+                  thực tế không ai kéo nổi. Nay là một nút riêng có biểu tượng
+                  và vùng bấm đủ rộng. */}
+              {liveUrl && (
+                <span
+                  className="ws-omni-drag"
+                  draggable
+                  role="img"
+                  aria-label="Kéo để lưu dấu trang"
+                  title="Kéo xuống thanh dấu trang để lưu"
+                  onDragStart={(e) => {
+                    // Đủ cả hai kiểu: `text/uri-list` là chuẩn cho URL, còn
+                    // `text/plain` để thả được sang ô nhập/ứng dụng khác.
+                    e.dataTransfer.setData('text/uri-list', liveUrl);
+                    e.dataTransfer.setData('text/plain', liveUrl);
+                    e.dataTransfer.effectAllowed = 'copyLink';
+                  }}
+                >
+                  🔖
+                </span>
+              )}
               <input
                 className="ws-omni-input"
                 value={draft ?? liveUrl}

@@ -8326,13 +8326,22 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* ── Thanh dấu trang có cây thư mục (components/BookmarkBar.tsx) ──────────── */
 .bmk-bar {
   display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
-  padding: 3px 6px; min-height: 30px;
+  padding: 4px 6px; min-height: 34px;
   border-bottom: 1px solid var(--glass-brd);
+  /* Viền trong suốt sẵn: đổi màu khi rê tới thì thanh KHÔNG bị nhảy cao lên
+     một pixel, tránh cảm giác giật lúc kéo ngang qua. */
+  border-top: 2px dashed transparent;
+  transition: background .12s;
 }
-/* Rê tới khoảng trống của thanh = thả về gốc cây. */
-.bmk-bar.drop { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+/* Rê tới khoảng trống của thanh = thả về gốc cây. Phải thấy RÕ, vì đây là đích
+   thả chính khi kéo địa chỉ xuống. */
+.bmk-bar.drop {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-top-color: var(--accent);
+}
 
 .bmk-hint { font-size: 11.5px; color: var(--faint); padding: 2px 4px; }
+.bmk-hint b { color: var(--muted); font-weight: 600; }
 
 .bmk-chip { display: inline-flex; border-radius: 7px; }
 /* Đích thả đang được rê tới — viền sáng để biết sẽ rơi vào đâu. */
@@ -8379,6 +8388,16 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .bmk-ctx button.danger:hover { background: color-mix(in srgb, var(--err) 14%, transparent); }
 .bmk-menu-sep { height: 1px; margin: 4px 2px; background: var(--glass-brd); }
 
-/* Chấm trạng thái kiêm tay cầm kéo URL xuống thanh dấu trang. */
-.ws-dot--drag { cursor: grab; }
-.ws-dot--drag:active { cursor: grabbing; }
+/* Tay cầm kéo URL xuống thanh dấu trang.
+   Phải ĐỦ LỚN và NHÌN THẤY ĐƯỢC: bản trước dùng chính chấm trạng thái 8×8px,
+   không ai biết là kéo được và cũng khó trúng chuột. */
+.ws-omni-drag {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; flex: none;
+  margin-right: 2px; border-radius: 6px;
+  font-size: 13px; line-height: 1;
+  cursor: grab; user-select: none;
+  opacity: .75; transition: opacity .12s, background .12s;
+}
+.ws-omni-drag:hover { opacity: 1; background: var(--glass-2); }
+.ws-omni-drag:active { cursor: grabbing; }
