@@ -8266,7 +8266,10 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* Popup của extension — thả xuống từ icon, neo mép phải để không tràn ra ngoài
    cửa sổ khi icon nằm sát bên phải thanh tab. */
 .bx-popup {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 80;
+  /* `fixed` chứ không phải `absolute`: popup đã portal ra <body> (thanh tab có
+     overflow-x:auto sẽ cắt cụt nó), nên toạ độ do JS đo và đặt qua inline
+     style — xem hiệu ứng `place` trong BrowserExtBar.tsx. */
+  position: fixed; z-index: 80;
   display: flex; flex-direction: column;
   max-width: 96vw; max-height: 78vh;
   border: 1px solid var(--glass-brd); border-radius: 12px; overflow: hidden;
@@ -8297,4 +8300,17 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   color: var(--err); background: var(--err-bg);
   border-top: 1px solid color-mix(in srgb, var(--err) 35%, transparent);
   max-height: 5.5em; overflow: auto; word-break: break-word;
+}
+
+/* Khung bọc <webview> của popup — `relative` để overlay "Đang mở…" phủ lên
+   được. Không có khung này thì overlay chỉ là một dòng chữ đẩy webview xuống. */
+.bx-popup-body { position: relative; flex: 1; min-height: 0; }
+
+/* Popup của extension thường gọi API rồi mới vẽ — vài giây đó <webview> là nền
+   trắng trơn, không báo gì thì nhìn y như hỏng. */
+.bx-popup-loading {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  font-size: 12.5px; color: var(--muted);
+  background: var(--bg-1);
 }

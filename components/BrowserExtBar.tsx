@@ -18,6 +18,7 @@
 // Hai thứ này bơm vào popup qua preload riêng (electron/ext-popup-preload.cjs).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 interface ExtItem {
   path: string;
@@ -56,6 +57,13 @@ export default function BrowserExtBar({
   const [items, setItems] = useState<ExtItem[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  /** createPortal cần document — server render không có. */
+  const [mounted, setMounted] = useState(false);
+  /** Vị trí neo popup, tính từ thanh công cụ (px so với viewport). */
+  const [pos, setPos] = useState({ top: 0, right: 0 });
+
+  useEffect(() => setMounted(true), []);
 
   const refresh = useCallback(async () => {
     try {
@@ -76,6 +84,25 @@ export default function BrowserExtBar({
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [refresh]);
+
+  // Popup đã portal ra body nên nó KHÔNG còn neo theo thanh công cụ được nữa —
+  // phải tự tính toạ độ. Đo lại khi mở, và khi cửa sổ đổi kích thước.
+  useEffect(() => {
+    if (!openId) return;
+    const place = () => {
+      const r = barRef.current?.getBoundingClientRect();
+      if (!r) return;
+      setPos({
+        top: Math.round(r.bottom + 6),
+        // Neo mép PHẢI theo mép phải của thanh: popup rộng 380px, neo trái sẽ
+        // tràn ra ngoài khi thanh nằm sát bên phải cửa sổ.
+        right: Math.max(8, Math.round(window.innerWidth - r.right)),
+      });
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [openId]);
 
   // Bấm ra ngoài / Esc → đóng popup, đúng như Chrome.
   useEffect(() => {
@@ -115,11 +142,16 @@ export default function BrowserExtBar({
   // hiện nền trắng và không báo gì — bắt console-message mức error cùng
   // did-fail-load để có cái mà đọc, thay vì phải mở DevTools mới biết.
   const [diag, setDiag] = useState('');
+  const [loading, setLoading] = useState(false);
   useEffect(() => {
     setDiag('');
     if (!open) return;
+    // Popup của OTool gọi API rồi mới vẽ — mất vài giây, trong lúc đó <webview>
+    // là nền trắng trơn. Không báo gì thì nhìn y như hỏng.
+    setLoading(true);
     const el = wvRef.current;
     if (!el) return;
+    const done = () => setLoading(false);
     const onMsg = (ev: Event) => {
       const e = ev as Event & { level?: number; message?: string };
       // level 3 = error trong Electron.
@@ -133,14 +165,20 @@ export default function BrowserExtBar({
     };
     el.addEventListener('console-message', onMsg as EventListener);
     el.addEventListener('did-fail-load', onFail as EventListener);
+    el.addEventListener('dom-ready', done);
+    el.addEventListener('did-finish-load', done);
+    el.addEventListener('did-stop-loading', done);
     return () => {
       el.removeEventListener('console-message', onMsg as EventListener);
       el.removeEventListener('did-fail-load', onFail as EventListener);
+      el.removeEventListener('dom-ready', done);
+      el.removeEventListener('did-finish-load', done);
+      el.removeEventListener('did-stop-loading', done);
     };
   }, [open]);
 
   return (
-    <div className="bx-bar">
+    <div className="bx-bar" ref={barRef}>
       {/* POPUP KHÔNG PHỤ THUỘC TRANG ĐANG XEM — đúng như Chrome: `matches` chỉ
           chi phối content script, còn nút trên thanh công cụ thì bấm ở đâu cũng
           mở được. Bản trước làm mờ icon khi URL không khớp là sai nguyên tắc,
@@ -161,8 +199,17 @@ export default function BrowserExtBar({
         🧩
       </button>
 
-      {open && (
-        <div className="bx-popup" ref={popupRef} style={{ width: POPUP_W, height: POPUP_H }}>
+      {/* PORTAL ra document.body — BẮT BUỘC, không phải cho đẹp.
+          Thanh tab (.lv-tabbar) có `overflow-x: auto`, mà overflow khác
+          `visible` thì CẮT CỤT mọi con tràn ra ngoài — popup nằm dưới thanh tab
+          bị clip sạch, kể cả nút đóng. Nhìn y như "bấm xong chẳng có gì".
+          Ra thẳng body thì không cha nào cắt được nữa. */}
+      {open && mounted && createPortal(
+        <div
+          className="bx-popup"
+          ref={popupRef}
+          style={{ width: POPUP_W, maxHeight: POPUP_H, top: pos.top, right: pos.right }}
+        >
           <div className="bx-popup-head">
             <b>{open.name}</b>
             <span style={{ flex: 1 }} />
@@ -181,17 +228,25 @@ export default function BrowserExtBar({
           {/* Popup nạp bằng chính URL chrome-extension:// nên nó ở ĐÚNG origin
               của extension — chrome.storage/runtime là hàng thật. Preload riêng
               chỉ bù chrome.tabs + chrome.cookies. */}
-          <webview
-            ref={wvRef as unknown as React.Ref<HTMLElement>}
-            src={popupSrc}
-            partition={partition}
-            style={{ width: '100%', flex: 1, border: 0 }}
-          />
+          <div className="bx-popup-body">
+            <webview
+              ref={wvRef as unknown as React.Ref<HTMLElement>}
+              src={popupSrc}
+              partition={partition}
+              style={{ width: '100%', height: '100%', border: 0 }}
+            />
+            {loading && (
+              <div className="bx-popup-loading">
+                <span className="spinner" aria-hidden /> Đang mở…
+              </div>
+            )}
+          </div>
           {/* Popup trắng là ca hay gặp nhất và khó đoán nhất — script của
               extension ném lỗi thì <webview> chỉ hiện nền trắng, không báo gì.
               Dòng này gom lỗi console + did-fail-load để nhìn là biết ngay. */}
           {diag && <div className="bx-popup-diag" title={diag}>{diag}</div>}
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* chrome.tabs.update từ popup đi qua đây: preload gửi ipc lên main,
