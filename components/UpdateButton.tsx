@@ -23,6 +23,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  *  khi chạy trên trình duyệt thường. */
 interface DesktopUpdateBridge {
   relaunch: () => Promise<{ ok: boolean; error?: string }>;
+  /** Dọn cache rồi nạp lại. `wipeBuild` xoá luôn `.next` phía server. */
+  hardReload?: (opts?: { wipeBuild?: boolean }) => Promise<{
+    ok: boolean; error?: string; cleared?: string[]; needsRelaunch?: boolean;
+  }>;
 }
 
 declare global {

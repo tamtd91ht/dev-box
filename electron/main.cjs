@@ -2292,6 +2292,73 @@ ipcMain.handle('desktop:getLogs', () => logBuffer);
  * Đánh đổi: các phiên terminal đang mở sẽ mất. Đúng, và renderer đã cảnh báo
  * trước khi gọi tới đây.
  */
+/**
+ * "Hard reload" — nut trong app, de khi sua code ma man hinh khong doi thi loai
+ * bo han gia thuyet "dang an cache cu" thay vi ngoi doan.
+ *
+ * Xoa theo dung thu tu tu ngoai vao trong:
+ *   1. HTTP cache + storage cua session UI (chunk JS/CSS cu cua Next)
+ *   2. `.next` tren dia — cache BUILD phia server. Renderer khong the tu xoa
+ *      cai nay, phai o main process. `wipeBuild` mac dinh TAT vi xoa xong lan
+ *      nap dau mat ~10-30s bien dich lai.
+ *   3. localStorage cua app (tuy chon) — noi giu cac co giao dien nhu bt:marks
+ *
+ * `.next` dang bi tien trinh `next dev` mo, nen xoa thang se EBUSY tren Windows.
+ * Phai dung server truoc, xoa, roi de lan reload sau spawn lai — dung duong ma
+ * desktop:relaunch da di.
+ */
+ipcMain.handle('desktop:hardReload', async (_evt, opts) => {
+  const wipeBuild = !!(opts && opts.wipeBuild);
+  const cleared = [];
+  try {
+    // 1. Cache cua session UI chinh.
+    const ses = session.defaultSession;
+    await ses.clearCache();
+    await ses.clearCodeCaches({});
+    cleared.push('http-cache');
+
+    // 2. Cache build tren dia. Chi khi duoc yeu cau ro rang.
+    //
+    // Xoa .next thi PHAI khoi dong lai ca app, khong phai chi reload trang:
+    //   · `next dev` dang mo file trong .next → tren Windows xoa thang la EBUSY,
+    //     bat buoc giet server truoc.
+    //   · giet roi thi khong con backend; reload trang se ra man hinh loi. Duong
+    //     dung la relaunch, va desktop:relaunch da lam san viec do.
+    // Nen o day chi giet + xoa, roi bao renderer goi relaunch.
+    if (wipeBuild) {
+      const appPath = app.getAppPath();
+      const nextDir = path.join(appPath, '.next');
+
+      // stopDevServer() CO CHU Y GIU server song khi con phien terminal — luc do
+      // .next van bi giu va xoa se that bai. Noi ro thay vi de nguoi dung bam
+      // xong tuong da don sach.
+      if (liveTerminals > 0) {
+        return {
+          ok: false,
+          error: `Con ${liveTerminals} phien terminal dang chay nen next dev phai song, khong xoa duoc .next. Dong terminal roi thu lai.`,
+          cleared,
+        };
+      }
+
+      try { stopDevServer(); } catch { /* chua chay thi thoi */ }
+      try {
+        await fs.promises.rm(nextDir, { recursive: true, force: true });
+        cleared.push('.next');
+        log('HardReload', 'da xoa .next — se khoi dong lai app va bien dich lai (~10-30s)');
+      } catch (err) {
+        log('HardReloadError', `.next: ${err && err.message}`);
+        return { ok: false, error: `Khong xoa duoc .next: ${err && err.message}`, cleared };
+      }
+    }
+
+    log('HardReload', `da don: ${cleared.join(', ')}`);
+    return { ok: true, cleared, needsRelaunch: wipeBuild };
+  } catch (err) {
+    log('HardReloadError', err && err.message);
+    return { ok: false, error: err && err.message, cleared };
+  }
+});
+
 ipcMain.handle('desktop:relaunch', () => {
   log('RelaunchRequested', 'cập nhật xong → khởi động lại app');
   try {

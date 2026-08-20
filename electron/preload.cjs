@@ -142,6 +142,12 @@ contextBridge.exposeInMainWorld('desktopConsole', {
 contextBridge.exposeInMainWorld('desktopUpdate', {
   /** Giết next dev rồi mở lại app. Không bao giờ trả về nếu thành công. */
   relaunch: () => ipcRenderer.invoke('desktop:relaunch'),
+  /**
+   * Dọn cache rồi nạp lại — để loại bỏ giả thuyết "đang ăn chunk cũ".
+   * `{ wipeBuild: true }` xoá luôn `.next` (cache build phía server), tốn thêm
+   * ~10-30s biên dịch lại ở lần nạp đầu nên phải chọn có ý thức.
+   */
+  hardReload: (opts) => ipcRenderer.invoke('desktop:hardReload', opts || {}),
 });
 
 // Extension cho tab Browser. Đứng riêng khỏi `workspace` vì chỉ áp cho các
