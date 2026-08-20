@@ -88,16 +88,17 @@ export default function OpenLinkDialog({ onGoTab }: { onGoTab: GoTab }) {
   /**
    * Mở URL vào một tab trong app.
    *
-   * Bật tab đích TRƯỚC, rồi mới phát event: tab chỉ được mount sau lần ghé đầu
-   * tiên (`visited` trong page.tsx), nên nếu phát ngay thì chưa có ai nghe. Phát
-   * lại sau một nhịp render để tab vừa mount cũng nhận được — cả hai tab đích
-   * đều dựng id tab từ URL nên gọi trùng chỉ kích hoạt lại đúng tab đó.
+   * Bật tab đích rồi phát yêu cầu MỘT lần. Không cần phát lại sau
+   * requestAnimationFrame như bản trước: emitOpenUrl giữ yêu cầu lại
+   * (xem `pending` trong lib/openTarget.ts) nên tab mount trễ bao lâu cũng
+   * nhận được. Phát lại theo nhịp render là đoán thời điểm — một frame không
+   * đủ cho tab còn phải chạy effect khởi tạo, và đó chính là lý do lần bấm đầu
+   * ra trang trắng.
    */
   const route = useCallback(
     (u: string, target: OpenTarget) => {
       onGoTab(target);
       emitOpenUrl({ url: u, target });
-      requestAnimationFrame(() => emitOpenUrl({ url: u, target }));
     },
     [onGoTab],
   );
