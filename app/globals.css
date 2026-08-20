@@ -3693,6 +3693,25 @@ pre.kafka-drawer-body {
 
 .ws-canvas { position: relative; flex: 1; min-height: 0; }
 .ws-webview { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+/* Popup NHỎ (menu dấu trang, menu chuột phải, hộp thoại thư mục) cần nổi trên
+   <webview> nhưng KHÔNG được làm biến mất cả trang đang xem.
+   Cờ data-modal-over-webview đẩy CẢ pane ra -200vw — đúng cho modal phủ kín màn
+   hình, nhưng dùng cho một menu bé thì thanh tab, thanh dấu trang và cả trang
+   web đều bay theo: bấm chuột phải xong màn hình trắng trơn, mất hết ngữ cảnh.
+   Ở đây chỉ ẩn ĐÚNG phần tử <webview>. Vẫn phải dịch offscreen chứ không phải
+   display:none / visibility:hidden — guest vẽ ở tầng native nên bỏ qua cả hai,
+   mà display:none còn detach guest và huỷ luôn phiên đang chạy.
+   Phải ghi ĐỦ cả bốn cạnh: `inset: 0` ở trên đã đặt right/bottom, chỉ ghi `left`
+   thì hai lệnh đánh nhau và webview co lại tại chỗ thay vì đi hẳn ra ngoài.
+   Khối này đặt SAU rule gốc — cùng độ cụ thể thì rule sau mới thắng. */
+html[data-popup-over-webview] .ws-webview {
+  left: -200vw !important; right: auto !important;
+  top: 0 !important; bottom: auto !important;
+  pointer-events: none !important;
+}
+/* .ws-canvas giữ nguyên chỗ nên layout không nhảy — cho nó cái nền để chỗ trống
+   không lộ ra một ô đen thô. */
+html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
 
 /* Quét danh sách hội thoại (components/WorkspaceScan.tsx) — modal thường, nên
    nó nổi trên <webview> giống hộp thoại "Mở link ở đâu?". */
@@ -6195,10 +6214,27 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 /* Trong panel ＋ dấu trang canh trái (không giữa như trang home). */
 .bt-newtab-panel .bt-home-marks { justify-content: flex-start; max-width: none; }
+/* Trong panel ＋ thì cây dùng hết bề rộng, không kẹp 720px như trang chủ. */
+.bt-newtab-panel .bt-home-marks-tree { width: 100%; max-width: none; align-self: stretch; }
 
 /* Menu ⋯ */
 .bt-menu-wrap { position: relative; flex: none; }
-.bt-menu-backdrop { position: fixed; inset: 0; z-index: 20; }
+/* Backdrop + menu đã portal ra <body>: z-index phải cao hơn .bt-viewer (6) và
+   .bt-root.bt-full (100), nếu không chế độ tràn viền sẽ che mất menu. */
+.bt-menu-backdrop { position: fixed; inset: 0; z-index: 140; }
+/* Bản portal: fixed, toạ độ do JS neo theo rect của nút ⋯. Tách class riêng để
+   .bt-menu gốc (absolute) không bị ảnh hưởng nếu còn nơi nào dùng. */
+.bt-menu.bt-menu-fixed {
+  position: fixed; top: auto; right: auto; z-index: 141;
+  min-width: 250px;
+}
+/* Cột dấu ✓ cố định để nhãn các mục thẳng hàng, kể cả mục không có dấu. */
+.bt-menu-check {
+  flex: none; width: 14px; display: inline-block;
+  color: var(--accent); font-weight: 700;
+}
+.bt-menu button.danger { color: var(--err); }
+.bt-menu button.danger:hover { background: color-mix(in srgb, var(--err) 14%, transparent); }
 .bt-menu {
   position: absolute; top: calc(100% + 4px); right: 0; z-index: 21; min-width: 190px;
   display: flex; flex-direction: column; padding: 5px;
@@ -6206,11 +6242,34 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   box-shadow: 0 12px 34px rgba(0,0,0,.45);
 }
 .bt-menu button {
+  display: flex; align-items: center; gap: 8px;
   text-align: left; border: none; background: transparent; color: var(--text);
   padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 13px;
 }
 .bt-menu button:hover { background: var(--glass-2); }
 .bt-menu-sep { height: 1px; background: var(--glass-brd); margin: 4px 2px; }
+/* Phím tắt canh phải trong hàng menu, như menu của Chrome. */
+.bt-menu button:has(.bt-menu-key) { display: flex; align-items: center; gap: 12px; }
+.bt-menu-key { margin-left: auto; font-size: 11px; color: var(--faint); white-space: nowrap; }
+
+/* Hộp thoại nhỏ trong tab Browser (Thư mục mới). position:fixed + z-index cao
+   để không bị .bt-viewer che; muốn nổi trên <webview> thì component bật cờ
+   data-modal-over-webview như BookmarkBar đang làm. */
+.bt-modal-back {
+  position: fixed; inset: 0; z-index: 120;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.45);
+}
+.bt-modal {
+  display: flex; flex-direction: column; gap: 10px;
+  min-width: 340px; max-width: 460px; padding: 16px;
+  background: var(--bg-1); border: 1px solid var(--glass-brd); border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0,0,0,.5);
+}
+.bt-modal code {
+  font-size: 11.5px; padding: 1px 4px; border-radius: 4px;
+  background: var(--glass-2); color: var(--text);
+}
 
 /* Menu chuột phải trên dấu trang — đặt tại con trỏ trong .bt-root. z-index cao
    hơn webview overlay để không bị khung trang che. */
@@ -6376,6 +6435,22 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .bt-home-title { font-size: 18px; font-weight: 700; }
 .bt-home .bt-addr { max-width: 640px; }
 .bt-home-marks { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 720px; }
+/* Trang chủ / panel ＋: dấu trang xếp THEO CÂY THƯ MỤC, không dàn phẳng.
+   Canh trái (không giữa như bản phẳng cũ) — cây có thụt cấp thì canh giữa làm
+   các cấp lệch nhau, không đọc ra được cái nào nằm trong cái nào. */
+.bt-home-marks-tree {
+  display: flex; flex-direction: column; gap: 4px;
+  /* .bt-home có `align-items: center` nên con bị co về bề rộng nội dung; đặt
+     width + align-self để khối cây có bề rộng thật và các cấp thụt đúng. */
+  width: min(720px, 100%); align-self: center; text-align: left;
+}
+.bt-home-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.bt-home-dir {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  margin-top: 4px;
+}
+.bt-home-dir-empty { font-weight: 400; font-size: 11px; color: var(--faint); }
 /* Vùng viewer chiếm hết phần còn lại; lv-body giãn tối đa cho webview. */
 .bt-viewer { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 /* Trang new-tab (chưa chọn tab nào): giấu CẢ cụm viewer đi nhưng KHÔNG unmount,
@@ -8325,6 +8400,12 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 
 /* ── Thanh dấu trang có cây thư mục (components/BookmarkBar.tsx) ──────────── */
 .bmk-bar {
+  /* flex: none BẮT BUỘC — .bt-root là flex column và .bt-viewer bên dưới có
+     flex:1 + min-height:0. Thiếu dòng này thì thanh mang flex-shrink mặc định
+     (1) và bị viewer nén dẹt khi đang mở tab: trang chủ không có viewer nên vẫn
+     thấy thanh, vào tab là mất. Các thanh cùng cấp (.bt-marks, .bt-tabbar) đều
+     đã khai flex:none vì đúng lý do này. */
+  flex: none;
   display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
   padding: 4px 6px; min-height: 34px;
   border-bottom: 1px solid var(--glass-brd);
@@ -8343,9 +8424,41 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .bmk-hint { font-size: 11.5px; color: var(--faint); padding: 2px 4px; }
 .bmk-hint b { color: var(--muted); font-weight: 600; }
 
-.bmk-chip { display: inline-flex; border-radius: 7px; }
-/* Đích thả đang được rê tới — viền sáng để biết sẽ rơi vào đâu. */
-.bmk-chip.drop { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* position:relative để vẽ VẠCH CHÈN bằng ::before/::after ngay cạnh chip. */
+.bmk-chip { position: relative; display: inline-flex; border-radius: 7px; }
+
+/* Folder đang bung menu — nền sáng để biết menu trên màn hình thuộc chip nào. */
+.bmk-chip.open > .bmk-chip-btn { background: var(--glass-2); }
+
+/* Mục đang được kéo đi: mờ lại, như Chrome. */
+.bmk-chip.dragging, .bmk-menu-row.dragging { opacity: .4; }
+
+/* ── Dấu hiệu đích thả ──
+   Chrome phân biệt rõ hai chuyện, và đây là chỗ bản trước làm sai: một cái
+   outline duy nhất cho mọi kiểu thả nên không biết mục sẽ nằm CẠNH folder hay
+   VÀO TRONG nó — hai kết quả hoàn toàn khác nhau.
+     · vạch dọc/ngang  = chèn vào giữa hai mục, thứ tự đổi
+     · khung bao quanh = rơi vào trong folder */
+.bmk-chip.drop-before::before,
+.bmk-chip.drop-after::after {
+  content: ''; position: absolute; top: 1px; bottom: 1px; width: 2px;
+  background: var(--accent); border-radius: 2px;
+}
+.bmk-chip.drop-before::before { left: -2px; }
+.bmk-chip.drop-after::after { right: -2px; }
+.bmk-chip.drop-into { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 7px; }
+
+.bmk-menu-row.drop-before::before,
+.bmk-menu-row.drop-after::after {
+  content: ''; position: absolute; left: 4px; right: 4px; height: 2px;
+  background: var(--accent); border-radius: 2px;
+}
+.bmk-menu-row.drop-before::before { top: -1px; }
+.bmk-menu-row.drop-after::after { bottom: -1px; }
+.bmk-menu-row.drop-into { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Rê xuống chỗ trống trong menu = xuống cuối thư mục đó. */
+.bmk-menu.drop-end { outline: 2px solid var(--accent); outline-offset: -1px; }
 .bmk-chip-btn {
   display: inline-flex; align-items: center; gap: 5px;
   max-width: 210px; padding: 3px 8px;
@@ -8369,11 +8482,13 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   font-size: 12.5px;
 }
 .bmk-menu-row {
+  position: relative;
   display: flex; align-items: center; gap: 7px;
   padding: 5px 8px; border-radius: 6px; cursor: pointer;
 }
-.bmk-menu-row:hover { background: var(--glass-2); }
-.bmk-menu-row.drop { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* `.open` chứ không chỉ `:hover`: menu con mở ra thì con trỏ rời sang menu đó,
+   hàng cha mất hover và trông như không liên quan gì tới nhánh đang bung. */
+.bmk-menu-row:hover, .bmk-menu-row.open { background: var(--glass-2); }
 .bmk-menu-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bmk-menu-arrow { color: var(--muted); }
 .bmk-menu-empty { padding: 7px 9px; color: var(--faint); }
@@ -8387,6 +8502,9 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .bmk-ctx button.danger { color: var(--err); }
 .bmk-ctx button.danger:hover { background: color-mix(in srgb, var(--err) 14%, transparent); }
 .bmk-menu-sep { height: 1px; margin: 4px 2px; background: var(--glass-brd); }
+/* Phím tắt canh phải trong menu chuột phải, như Chrome. */
+.bmk-ctx button:has(.bmk-menu-key) { display: flex; align-items: center; gap: 12px; }
+.bmk-menu-key { margin-left: auto; font-size: 11px; color: var(--faint); white-space: nowrap; }
 
 /* Tay cầm kéo URL xuống thanh dấu trang.
    Phải ĐỦ LỚN và NHÌN THẤY ĐƯỢC: bản trước dùng chính chấm trạng thái 8×8px,
@@ -8401,3 +8519,166 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .ws-omni-drag:hover { opacity: 1; background: var(--glass-2); }
 .ws-omni-drag:active { cursor: grabbing; }
+
+
+/* ── Nút "Nạp lại sạch" ở footer (components/HardReloadButton.tsx) ────────── */
+.hrl-wrap { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+.hrl-back { position: fixed; inset: 0; z-index: 130; }
+/* Mở LÊN TRÊN: nút nằm ở footer, thả xuống là ra ngoài mép dưới cửa sổ. */
+.hrl-pop {
+  position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 131;
+  min-width: 260px; display: flex; flex-direction: column; padding: 5px;
+  background: var(--bg-1); border: 1px solid var(--glass-brd); border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0,0,0,.45);
+}
+.hrl-pop button {
+  display: flex; flex-direction: column; gap: 2px; text-align: left;
+  border: none; background: transparent; color: var(--text);
+  padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 12.5px;
+}
+.hrl-pop button:hover { background: var(--glass-2); }
+.hrl-sub { font-size: 11px; color: var(--muted); font-weight: 400; }
+.hrl-sep { height: 1px; margin: 4px 2px; background: var(--glass-brd); }
+.hrl-note {
+  max-width: 260px; font-size: 11px; color: var(--warn);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+
+/* ── Diff kiểu SourceTree (components/git/DiffView.tsx) ───────────────────── */
+.dv { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+
+/* Thanh tiêu đề: đường dẫn + số dòng thêm/xoá + công tắc chế độ xem. */
+.dv-bar {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; margin-bottom: 8px;
+  border-bottom: 1px solid var(--glass-brd);
+}
+.dv-path {
+  flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* Đường dẫn dài thì cắt ĐẦU, giữ tên file ở cuối — tên file mới là thứ cần
+     đọc, cắt cuối là mất đúng phần quan trọng. */
+  direction: rtl; text-align: left;
+}
+.dv-bar-gap { flex: none; }
+.dv-churn { flex: none; display: flex; gap: 6px; font-size: 11px; font-weight: 700; }
+.dv-churn-add { color: var(--ok, #3fb950); }
+.dv-churn-del { color: var(--err, #f85149); }
+
+.dv-body {
+  flex: 1; min-height: 0; overflow: auto;
+  font: 12px/1.55 var(--mono, ui-monospace, Consolas, monospace);
+}
+
+/* ── Hunk ── */
+.dv-hunk { border: 1px solid var(--glass-brd); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+.dv-hunk-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 8px; border: none; cursor: pointer;
+  background: var(--glass-2); color: var(--muted);
+  font: 600 11px/1.4 var(--mono, ui-monospace, Consolas, monospace);
+  text-align: left;
+}
+.dv-hunk-head:hover { color: var(--text); }
+.dv-hunk-caret { flex: none; width: 10px; }
+.dv-hunk-range { flex: none; color: var(--accent); }
+.dv-hunk-section {
+  flex: 1; min-width: 0; font-weight: 400;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dv-hunk-count { flex: none; font-weight: 400; color: var(--faint); }
+
+/* ── Dòng, chế độ một cột ──
+   grid chứ không phải flex: hai cột số dòng phải THẲNG HÀNG tuyệt đối giữa mọi
+   dòng, flex với nội dung dài ngắn khác nhau sẽ làm chúng nhảy. */
+.dv-rows { display: block; }
+.dv-row {
+  display: grid; grid-template-columns: 48px 48px 16px 1fr;
+  align-items: baseline;
+}
+.dv-no {
+  padding: 0 8px; text-align: right;
+  color: var(--faint); font-size: 11px;
+  /* Số dòng không được chọn khi copy — copy một đoạn diff rồi dán ra là dính cả
+     số dòng thì phải xoá tay từng dòng. */
+  user-select: none;
+  border-right: 1px solid var(--glass-brd);
+}
+.dv-sign { text-align: center; user-select: none; color: var(--faint); }
+.dv-text { white-space: pre; padding-left: 4px; }
+
+/* Nền cho dòng thêm/xoá — dải màu nhạt chạy hết chiều rộng, đọc nhanh hơn hẳn
+   so với chỉ đổi màu chữ. */
+.dv-row--add { background: color-mix(in srgb, var(--ok, #3fb950) 12%, transparent); }
+.dv-row--del { background: color-mix(in srgb, var(--err, #f85149) 12%, transparent); }
+.dv-row--add .dv-sign { color: var(--ok, #3fb950); }
+.dv-row--del .dv-sign { color: var(--err, #f85149); }
+.dv-row--meta { color: var(--faint); font-style: italic; }
+.dv-row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+/* Đoạn chữ THỰC SỰ khác nhau trong một cặp dòng sửa. */
+.dv-mark { background: none; color: inherit; border-radius: 3px; padding: 0 1px; }
+.dv-mark--add { background: color-mix(in srgb, var(--ok, #3fb950) 34%, transparent); }
+.dv-mark--del { background: color-mix(in srgb, var(--err, #f85149) 34%, transparent); }
+
+/* ── Chế độ hai cột ── */
+.dv-rows--split { display: block; }
+.dv-srow { display: grid; grid-template-columns: 1fr 1fr; }
+.dv-side {
+  display: grid; grid-template-columns: 44px 1fr;
+  align-items: baseline; min-width: 0;
+  border-right: 1px solid var(--glass-brd);
+}
+.dv-side--add { background: color-mix(in srgb, var(--ok, #3fb950) 12%, transparent); }
+.dv-side--del { background: color-mix(in srgb, var(--err, #f85149) 12%, transparent); }
+/* Ô trống bên đối diện khi hai bên lệch số dòng — tô sọc mờ để thấy rõ là
+   "không có gì ở đây", chứ không phải một dòng rỗng thật. */
+.dv-side--blank {
+  background: repeating-linear-gradient(
+    45deg, transparent, transparent 5px,
+    color-mix(in srgb, var(--muted) 10%, transparent) 5px,
+    color-mix(in srgb, var(--muted) 10%, transparent) 10px
+  );
+}
+
+/* Bật xuống dòng: mặc định TẮT vì code thụt lề mà tự ngắt dòng thì rất khó dò
+   theo cấu trúc; ai cần đọc dòng dài thì bật. */
+.dv-body--wrap .dv-text { white-space: pre-wrap; word-break: break-word; }
+
+
+/* ── Danh sách file thay đổi ở tab Git (FileGroupBlock) ───────────────────── */
+.gf-list { display: flex; flex-direction: column; }
+.gf-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px; border-radius: 6px; cursor: pointer;
+  /* Hàng gọn (không padding lớn như .ep-item): một repo đang sửa 20-30 file thì
+     hàng thấp mới xem được hết mà không phải cuộn liên tục. */
+  min-height: 26px;
+}
+.gf-row:hover { background: var(--glass-2); }
+.gf-row.active { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+
+/* Tên file: thư mục mờ, tên file rõ. Cắt ở ĐẦU chuỗi để luôn thấy tên file. */
+.gf-name {
+  flex: 1; min-width: 0; display: flex; align-items: baseline;
+  font: 12px/1.4 var(--mono, ui-monospace, Consolas, monospace);
+  overflow: hidden; white-space: nowrap;
+}
+.gf-dir {
+  color: var(--faint); flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis;
+  direction: rtl; text-align: left;
+}
+.gf-base { color: var(--text); flex: none; }
+.gf-row.active .gf-base { font-weight: 600; }
+
+/* Nút hành động: ẩn cho tới khi trỏ vào hàng. Luôn hiện thì mỗi hàng ba nút,
+   danh sách dài thành một rừng nút và không còn thấy tên file đâu. */
+.gf-acts { flex: none; display: flex; gap: 2px; opacity: 0; transition: opacity .1s; }
+.gf-row:hover .gf-acts, .gf-row.active .gf-acts { opacity: 1; }
+/* Bàn phím phải tới được nút dù chuột không trỏ vào. `opacity` đặt trên CẢ CỤM,
+   nên không thể "hiện lại" từ một nút con — phải bắt ở chính cụm bằng :has().
+   Ẩn bằng opacity (chứ không display:none) để nút vẫn nằm trong luồng tab. */
+.gf-acts:has(button:focus-visible) { opacity: 1; }
+.gf-acts .gf-danger { color: var(--err, #f85149); }

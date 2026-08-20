@@ -628,7 +628,12 @@ export default function LinkViewer({
                     // `text/plain` để thả được sang ô nhập/ứng dụng khác.
                     e.dataTransfer.setData('text/uri-list', liveUrl);
                     e.dataTransfer.setData('text/plain', liveUrl);
-                    e.dataTransfer.effectAllowed = 'copyLink';
+                    // 'copyLink' KHÔNG chứa 'move'. Thanh dấu trang đặt
+                    // dropEffect theo nguồn kéo, nhưng để chắc chắn mọi đích
+                    // thả (kể cả ô nhập của trang khác) đều nhận được, khai
+                    // 'all' — nguồn hẹp hơn đích là cách nhanh nhất để một cú
+                    // thả bị huỷ im lặng, không có lỗi nào để lần ra.
+                    e.dataTransfer.effectAllowed = 'all';
                   }}
                 >
                   🔖

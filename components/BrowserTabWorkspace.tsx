@@ -9,10 +9,11 @@
 // Tách khỏi tab Links (Links = bookmark tài liệu có tổ chức, dự án/tags).
 // Viewer tái dùng LinkViewer (webview + fill login + save session).
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   bmList, bmAdd, bmAddFolder, bmUpdate, bmMove, bmRemove,
-  normalizeUrl, bmPartition, type Bookmark,
+  normalizeUrl, bmPartition, bmTree, type Bookmark, type BmNode,
 } from '@/lib/bookmarks';
 import BrowserExtensions from './BrowserExtensions';
 import BrowserExtBar from './BrowserExtBar';
@@ -45,12 +46,41 @@ export default function BrowserTabWorkspace() {
    *  Khởi tạo `true` rồi đọc lại localStorage trong effect: đọc thẳng ở đây sẽ
    *  lệch giữa server render và client (hydration mismatch). */
   const [showMarks, setShowMarks] = useState(true);
+  /** Hộp thoại "thư mục mới": parentId = tạo bên trong thư mục nào (undefined =
+   *  gốc); `pendingUrl` = URL vừa kéo xuống, tạo xong thì lưu luôn vào đó. */
+  /** Nút ⋯ — cần rect của nó để đặt menu đã portal ra body. */
+  const menuBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const [folderAsk, setFolderAsk] = useState<{
+    parentId?: string; name: string;
+    /** URL vừa kéo xuống — tạo thư mục xong thì lưu mới vào đó. */
+    pendingUrl?: string;
+    /** Mục SẴN CÓ cần chuyển vào thư mục mới (không tạo bản sao). */
+    moveId?: string;
+  } | null>(null);
   useEffect(() => {
     try {
+      // RESET MỘT LẦN. Trước đây openBookmark() tự gọi setShowMarks(false), nên
+      // rất dễ tưởng thanh "bị lỗi mất" rồi bấm công tắc trong menu ⋯ để thử —
+      // và cái bấm đó ghi '0' xuống localStorage. Sửa xong phần logic thì giá
+      // trị '0' cũ vẫn nằm đó và tiếp tục ẩn thanh qua mọi lần tải lại, kể cả
+      // hard reload: người dùng thấy "sửa rồi mà vẫn thế". Cờ dưới đây bỏ đúng
+      // MỘT lần lựa chọn cũ, sau đó tôn trọng lựa chọn mới bình thường.
+      if (!localStorage.getItem('bt:marks:v2')) {
+        localStorage.setItem('bt:marks:v2', '1');
+        localStorage.removeItem('bt:marks');
+        return;
+      }
       if (localStorage.getItem('bt:marks') === '0') setShowMarks(false);
     } catch { /* localStorage bị chặn — cứ hiện */ }
   }, []);
-  /** Nhớ lựa chọn ẩn/hiện qua các lần mở app. */
+  /** Đặt hiện/ẩn thanh dấu trang, nhớ lựa chọn qua các lần mở app. */
+  const setMarks = useCallback((next: boolean) => {
+    setShowMarks(next);
+    try { localStorage.setItem('bt:marks', next ? '1' : '0'); } catch { /* bỏ qua */ }
+  }, []);
+
   const toggleMarks = useCallback(() => {
     setShowMarks((v) => {
       const next = !v;
@@ -58,6 +88,27 @@ export default function BrowserTabWorkspace() {
       return next;
     });
   }, []);
+
+  /** Menu chuột phải trên thanh chỉ hiện khi thanh đang bật, nên đây luôn là
+   *  hành động ẨN — dùng setMarks(false) cho rõ ý, không dựa vào toggle. */
+  const hideMarks = useCallback(() => setMarks(false), [setMarks]);
+
+  /** Ctrl/Cmd+Shift+B ẩn/hiện thanh dấu trang — đúng phím của Chrome.
+   *
+   *  Bắt ở `document` chứ không phải trên .bt-root: focus hầu như luôn nằm
+   *  TRONG <webview>, mà guest là process riêng nên keydown của nó không nổi
+   *  lên DOM của host. Nghe ở document thì mọi lúc con trỏ ở phần chrome của
+   *  app (thanh tab, ô địa chỉ, thanh dấu trang) phím đều ăn. */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'B' || e.key === 'b')) {
+        e.preventDefault();
+        toggleMarks();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [toggleMarks]);
   const [menuOpen, setMenuOpen] = useState(false); // menu ⋯ (lưu/dấu trang/tràn viền)
   const [newTabOpen, setNewTabOpen] = useState(false); // panel nhập URL khi đã có tab
   const [ctx, setCtx] = useState<Ctx | null>(null); // menu chuột phải trên dấu trang
@@ -202,6 +253,18 @@ export default function BrowserTabWorkspace() {
     return () => { off?.(); };
   }, [openTab]);
 
+  /* Hai callback ổn định cho BrowserTab (React.memo). Nhận `tab` làm tham số
+     thay vì bắt biến từ closure — nhờ vậy tham chiếu không đổi giữa các lần
+     render, và memo mới thật sự chặn được render lại của <webview>. */
+  const openTabBackground = useCallback((url: string, tab: Tab) => {
+    openTab(url, { profile: tab.profile, background: true });
+  }, [openTab]);
+
+  const saveBookmarkFromTab = useCallback(async (name: string, url: string, tab: Tab) => {
+    await bmAdd(url, { name, profile: tab.profile, ...tab.creds });
+    reload();
+  }, [reload]);
+
   const go = () => {
     if (!addr.trim()) return;
     openTab(addr, { profile });
@@ -209,13 +272,19 @@ export default function BrowserTabWorkspace() {
   };
 
   /** Mở dấu trang. background = chuột phải → "Mở trong tab mới": thêm tab
-   *  nhưng giữ nguyên trang đang xem, và giữ dải dấu trang/panel mở để chọn tiếp. */
+   *  nhưng giữ nguyên trang đang xem.
+   *
+   *  KHÔNG tắt thanh dấu trang ở đây. Trước đây có `setShowMarks(false)` —
+   *  còn sót từ thời thanh này là một dải chọn nhanh, chọn xong thì thu lại.
+   *  Giờ nó là thanh dấu trang thường trực như Chrome, nên tắt đi là bấm một
+   *  dấu trang xong thanh biến mất: trông đúng như "trang chủ có, vào tab thì
+   *  không có". Ẩn/hiện chỉ do người dùng quyết (menu ⋯ / Ctrl+Shift+B). */
   const openBookmark = (b: Bookmark, background = false) => {
     openTab(b.url, {
       name: b.name, profile: b.profile, background,
       creds: { username: b.username, password: b.password },
     });
-    if (!background) { setNewTabOpen(false); setShowMarks(false); }
+    if (!background) setNewTabOpen(false);
   };
 
   const closeAllTabs = () => {
@@ -277,13 +346,82 @@ export default function BrowserTabWorkspace() {
     setCtx({ x, y, bm });
   };
 
-  /** Tạo thư mục — hỏi tên rồi lưu. */
-  const newFolder = useCallback(async (parentId?: string) => {
-    const name = window.prompt('Tên thư mục mới:');
-    if (!name || !name.trim()) return;
-    try { setBookmarks(await bmAddFolder(name.trim(), parentId)); }
-    catch (e) { setErr((e as Error).message); }
+  /**
+   * Tạo thư mục. Mở hộp thoại trong app, KHÔNG dùng window.prompt: Electron
+   * chặn prompt() trong renderer và trả về null không báo gì — bấm "Thư mục
+   * mới" xong chẳng có gì xảy ra, cũng không có lỗi nào để lần ra.
+   *
+   * Nhập được CẢ ĐƯỜNG DẪN nhiều cấp kiểu `Work/Infra/Kafka` — tạo một lúc cả
+   * chuỗi thư mục lồng nhau, khỏi phải bấm ba lần rồi kéo vào nhau.
+   */
+  const newFolder = useCallback((parentId?: string) => {
+    setFolderAsk({ parentId, name: '' });
   }, []);
+
+  /** Thật sự tạo thư mục sau khi người dùng xác nhận trong hộp thoại. */
+  const createFolders = useCallback(async (raw: string, parentId?: string): Promise<string | undefined> => {
+    // Tách theo '/' và bỏ đoạn rỗng: "Work//Infra/" vẫn ra hai cấp đúng.
+    const parts = raw.split('/').map((x) => x.trim()).filter(Boolean);
+    if (!parts.length) return undefined;
+    let pid = parentId;
+    let list: Bookmark[] = [];
+    for (const part of parts) {
+      list = await bmAddFolder(part, pid);
+      // bmAddFolder trả về CẢ danh sách, thư mục vừa tạo là mục có order lớn
+      // nhất trong cha đó — dùng làm cha cho cấp kế tiếp.
+      const made = list
+        .filter((b) => b.kind === 'folder' && b.parentId === pid)
+        .reduce<Bookmark | null>((m, b) => (!m || b.order > m.order ? b : m), null);
+      if (!made) break;
+      pid = made.id;
+    }
+    if (list.length) setBookmarks(list);
+    return pid;
+  }, []);
+
+  /** Hộp thoại phải nổi TRÊN <webview>: guest của Electron vẽ ở tầng native, đè
+   *  mọi phần tử HTML bất kể z-index.
+   *
+   *  Dùng cờ `popup` (ẩn riêng <webview>) chứ không phải `modal` (đẩy cả pane ra
+   *  -200vw): hộp thoại này nhỏ, giữ được thanh tab và thanh dấu trang phía sau
+   *  thì người dùng còn thấy mình đang ở tab nào. */
+  //
+  // Menu ⋯ cũng nằm trong danh sách: nó là <div> trong luồng tài liệu với
+  // z-index 21, mà guest <webview> vẽ ở tầng native nên đè lên bất kể z-index.
+  // Menu vẫn mở, chỉ là KHÔNG THẤY GÌ khi đang ở trong một trang — đúng hiện
+  // tượng "ngoài trang chủ có nút, vào trang thì không có".
+  useEffect(() => {
+    const root = document.documentElement;
+    if (folderAsk || menuOpen) root.setAttribute('data-popup-over-webview', '1');
+    else root.removeAttribute('data-popup-over-webview');
+    return () => root.removeAttribute('data-popup-over-webview');
+  }, [folderAsk, menuOpen]);
+
+  /** Esc đóng menu ⋯. Menu đã portal ra body nên không nhận keydown của cây
+   *  con nữa — phải nghe ở window. */
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [menuOpen]);
+
+  /** Xác nhận hộp thoại: tạo chuỗi thư mục, rồi lưu URL đang chờ (nếu có). */
+  const submitFolder = useCallback(async () => {
+    if (!folderAsk) return;
+    const { name, parentId, pendingUrl, moveId } = folderAsk;
+    if (!name.trim()) return;
+    setFolderAsk(null);
+    setShowMarks(true);
+    try {
+      const deepest = await createFolders(name, parentId);
+      if (moveId) setBookmarks(await bmMove(moveId, deepest));
+      else if (pendingUrl) {
+        const url = normalizeUrl(pendingUrl);
+        if (url) setBookmarks(await bmAdd(url, { parentId: deepest, name: hostOf(url) }));
+      }
+    } catch (e) { setErr((e as Error).message); }
+  }, [folderAsk, createFolders]);
 
   /** Kéo thả: chuyển một mục sang thư mục khác / đổi vị trí. */
   const moveBookmarkTo = useCallback(async (id: string, parentId?: string, beforeId?: string) => {
@@ -291,12 +429,24 @@ export default function BrowserTabWorkspace() {
     catch (e) { setErr((e as Error).message); }
   }, []);
 
-  /** Thả một URL (kéo từ ô địa chỉ) vào thanh hoặc vào một thư mục. */
-  const dropUrl = useCallback(async (rawUrl: string, parentId?: string) => {
+  /**
+   * Thả một URL (kéo từ ô địa chỉ) vào thanh hoặc vào một thư mục.
+   *
+   * `beforeId` = thả vào GIỮA hai mục có sẵn. Store chỉ biết thêm vào cuối, nên
+   * thêm rồi chuyển ngay — không có API 'add tại vị trí'. Hai lượt gọi liền
+   * nhau, nhưng đổi lại người dùng thả đâu là nằm đó, không bị nhảy về cuối.
+   */
+  const dropUrl = useCallback(async (rawUrl: string, parentId?: string, beforeId?: string) => {
     const url = normalizeUrl(rawUrl);
     if (!url) return;
     try {
-      setBookmarks(await bmAdd(url, { parentId, name: hostOf(url) }));
+      const list = await bmAdd(url, { parentId, name: hostOf(url) });
+      if (!beforeId) { setBookmarks(list); return; }
+      // Mục vừa thêm là mục có order lớn nhất trong thư mục đích.
+      const added = list
+        .filter((b) => b.parentId === parentId)
+        .reduce<Bookmark | null>((m, b) => (!m || b.order > m.order ? b : m), null);
+      setBookmarks(added ? await bmMove(added.id, parentId, beforeId) : list);
     } catch (e) { setErr((e as Error).message); }
   }, []);
 
@@ -313,15 +463,50 @@ export default function BrowserTabWorkspace() {
     </span>
   );
 
-  /** Danh sách dấu trang chọn nhanh — dùng cho cả trang new-tab lẫn panel ＋. */
-  const marksList = bookmarks.some((b) => b.kind === 'link') && (
-    <div className="bt-home-marks">
-      <div className="small" style={{ color: 'var(--muted)', width: '100%', marginBottom: 4 }}>
+  /**
+   * Danh sách dấu trang ở trang chủ / panel ＋ — THEO CÂY THƯ MỤC.
+   *
+   * Bản trước làm `bookmarks.filter(kind === 'link')`, tức là dàn phẳng: mọi
+   * link trong mọi thư mục đổ ra thành một đống rời rạc, xếp cạnh nhau không
+   * theo thứ tự nào. Sắp xếp vào thư mục ở thanh dấu trang xong ra trang chủ
+   * thấy y như chưa làm gì.
+   *
+   * Nay đi theo cây: mỗi thư mục là một NHÓM có tiêu đề, link ở gốc nằm trong
+   * nhóm "không thư mục" đầu tiên. Lồng sâu thì thụt vào theo cấp.
+   */
+  const marksList = bookmarks.length > 0 && (
+    <div className="bt-home-marks-tree">
+      <div className="small" style={{ color: 'var(--muted)', marginBottom: 4 }}>
         Dấu trang <span style={{ color: 'var(--faint)' }}>— chuột phải: mở trong tab mới</span>
       </div>
-      {/* Chỉ LINK: folder không có URL để mở, đưa vào đây chỉ tổ bấm nhầm.
-          Cấu trúc thư mục xem ở thanh dấu trang phía trên. */}
-      {bookmarks.filter((b) => b.kind === 'link').map(markChip)}
+      {(() => {
+        const rows: React.ReactNode[] = [];
+        const walk = (nodes: BmNode[], depth: number) => {
+          // Link trước, thư mục sau — trong mỗi cấp, để mắt bắt được link ngay
+          // thay vì phải nhảy qua các tiêu đề thư mục.
+          const links = nodes.filter((n) => n.kind === 'link');
+          const dirs = nodes.filter((n) => n.kind === 'folder');
+          if (links.length) {
+            rows.push(
+              <div key={`l${depth}-${nodes[0]?.id ?? 'x'}`} className="bt-home-row"
+                style={{ paddingLeft: depth * 14 }}>
+                {links.map(markChip)}
+              </div>,
+            );
+          }
+          for (const d of dirs) {
+            rows.push(
+              <div key={`d-${d.id}`} className="bt-home-dir" style={{ paddingLeft: depth * 14 }}>
+                📁 {d.name}
+                {d.children.length === 0 && <span className="bt-home-dir-empty">trống</span>}
+              </div>,
+            );
+            walk(d.children, depth + 1);
+          }
+        };
+        walk(bmTree(bookmarks), 0);
+        return rows;
+      })()}
     </div>
   );
 
@@ -367,25 +552,21 @@ export default function BrowserTabWorkspace() {
             onManage={() => setExtOpen(true)}
             onReloadPage={() => setReloadNonce((n) => n + 1)}
           />
-          {/* Menu ⋯ gom các nút phụ như trình duyệt thật */}
+          {/* Nút cấu hình ⋯ — như menu ba chấm của Chrome.
+              Menu PORTAL ra <body> + position:fixed, KHÔNG để absolute trong
+              .bt-menu-wrap: thanh tab (.lv-tabbar) có `overflow-x: auto`, tức là
+              một khung cắt — menu absolute bên trong bị cắt cụt theo chiều cao
+              thanh tab nên thả xuống là mất hút. Đây mới là lý do thật nút ⋯
+              không dùng được khi đang ở trong một trang. */}
           <div className="bt-menu-wrap">
-            <button className={`ghost sm${menuOpen ? ' on' : ''}`} onClick={() => setMenuOpen((v) => !v)} title="Thêm">⋯</button>
-            {menuOpen && (
-              <>
-                <div className="bt-menu-backdrop" onClick={() => setMenuOpen(false)} />
-                <div className="bt-menu">
-                  <button onClick={() => { toggleMarks(); setMenuOpen(false); }}>
-                    🔖 {showMarks ? 'Ẩn' : 'Hiện'} thanh dấu trang ({bookmarks.filter((b) => b.kind === 'link').length})
-                  </button>
-                  <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t?.profile ?? '', kind: 'link', order: 0, addedAt: '' }); setMenuOpen(false); }}>☆ Lưu trang hiện tại</button>
-                  <button onClick={() => { setShowMarks(true); void newFolder(); setMenuOpen(false); }}>📁 Thư mục mới</button>
-                  <button onClick={() => { setPwOpen(true); setMenuOpen(false); }}>🔑 Mật khẩu đã lưu</button>
-                  <button onClick={() => { setFull((v) => !v); setMenuOpen(false); }}>{full ? '🗕 Thoát tràn viền' : '🗖 Tràn viền'}</button>
-                  <div className="bt-menu-sep" />
-                  <button onClick={() => { closeAllTabs(); setMenuOpen(false); }}>✕ Đóng tất cả tab</button>
-                </div>
-              </>
-            )}
+            <button
+              ref={menuBtnRef}
+              className={`ghost sm${menuOpen ? ' on' : ''}`}
+              onClick={() => setMenuOpen((v) => !v)}
+              title="Cấu hình tab Browser"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+            >⋯</button>
           </div>
         </div>
       )}
@@ -406,9 +587,11 @@ export default function BrowserTabWorkspace() {
           onOpen={(b, background) => openBookmark(b, background)}
           onEdit={(b) => setEdit(structuredClone(b))}
           onRemove={(b) => void removeBookmark(b)}
-          onNewFolder={(pid) => void newFolder(pid)}
+          onNewFolder={(pid) => newFolder(pid)}
+          onNewFolderWith={(id, pid) => setFolderAsk({ parentId: pid, name: '', moveId: id })}
           onMove={(id, pid, before) => void moveBookmarkTo(id, pid, before)}
-          onDropUrl={(url, pid) => void dropUrl(url, pid)}
+          onHideBar={hideMarks}
+          onDropUrl={(url, pid, before) => void dropUrl(url, pid, before)}
         />
       )}
 
@@ -426,12 +609,17 @@ export default function BrowserTabWorkspace() {
                 // bấm ↻ sẽ tải lại cả những tab nền, mất hết trạng thái của
                 // chúng dù người dùng không đụng tới.
                 key={t.id === activeId ? `${t.id}#${reloadNonce}` : t.id}
-                tab={t} hidden={t.id !== activeId} onClose={() => closeTab(t.id)}
-                onOpenNewTab={(u) => openTab(u, { profile: t.profile, background: true })}
-                onSaveBookmark={async (name, url) => {
-                  await bmAdd(url, { name, profile: t.profile, ...t.creds });
-                  reload();
-                }} />
+                tab={t}
+                hidden={t.id !== activeId}
+                // Truyền các hàm ỔN ĐỊNH (useCallback ở trên) chứ không phải
+                // closure tạo mới mỗi lần render: BrowserTab bọc React.memo, mà
+                // memo so sánh prop theo tham chiếu — closure mới là mỗi lần gõ
+                // một chữ trong form "Sửa dấu trang" lại render lại TOÀN BỘ
+                // <webview> đang mở. Đó chính là chỗ gây lag khi nhập.
+                onClose={closeTab}
+                onOpenNewTab={openTabBackground}
+                onSaveBookmark={saveBookmarkFromTab}
+              />
             ))}
           </div>
         </div>
@@ -464,13 +652,106 @@ export default function BrowserTabWorkspace() {
               <button className="ghost sm" onClick={() => setPwOpen(true)}
                 title="Xem/sửa mật khẩu đã lưu — tự điền khi mở lại trang">🔑 Mật khẩu đã lưu</button>{' '}
               <button className="ghost sm" onClick={() => setExtOpen(true)}
-                title="Extension — thêm/bật/tắt cho tab Browser">🧩 Extension</button>
+                title="Extension — thêm/bật/tắt cho tab Browser">🧩 Extension</button>{' '}
+              {/* Cùng công tắc với menu ⋯, nhưng menu ⋯ chỉ có khi đã mở tab —
+                  ở trang chủ mà tắt thanh dấu trang thì không còn chỗ nào bật
+                  lại được ngoài phím tắt. */}
+              <button className="ghost sm" onClick={toggleMarks}
+                title="Ẩn/hiện thanh dấu trang (Ctrl+Shift+B)">
+                🔖 {showMarks ? 'Ẩn' : 'Hiện'} thanh dấu trang
+              </button>
             </p>
           </div>
         )
       )}
 
       {/* Trình quản lý mật khẩu đã lưu */}
+      {/* Hộp thoại "Thư mục mới" — thay window.prompt (Electron chặn prompt).
+          Nhận cả đường dẫn nhiều cấp: Work/Infra/Kafka. */}
+      {folderAsk && (
+        <div className="bt-modal-back" onMouseDown={() => setFolderAsk(null)}>
+          <div className="bt-modal" onMouseDown={(e) => e.stopPropagation()}>
+            <b>📁 Thư mục mới</b>
+            <p className="small" style={{ color: 'var(--muted)', margin: 0 }}>
+              Gõ nhiều cấp bằng dấu <code>/</code> — ví dụ <code>Work/Infra/Kafka</code>.
+              {folderAsk.pendingUrl && <> Dấu trang sẽ được lưu vào cấp trong cùng.</>}
+            </p>
+            <input
+              className="input" autoFocus placeholder="Tên thư mục…"
+              value={folderAsk.name}
+              onChange={(e) => setFolderAsk((v) => (v ? { ...v, name: e.target.value } : v))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); void submitFolder(); }
+                else if (e.key === 'Escape') { e.stopPropagation(); setFolderAsk(null); }
+              }}
+            />
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+              <button className="ghost sm" onClick={() => setFolderAsk(null)}>Hủy</button>
+              <button onClick={() => void submitFolder()} disabled={!folderAsk.name.trim()}>Tạo</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Menu cấu hình ⋯ — portal ra <body> để thoát khỏi khung cắt
+          `overflow-x: auto` của thanh tab. Neo theo rect của nút. */}
+      {mounted && menuOpen && createPortal(
+        <>
+          <div className="bt-menu-backdrop" onMouseDown={() => setMenuOpen(false)} />
+          <div
+            className="bt-menu bt-menu-fixed"
+            role="menu"
+            style={(() => {
+              const r = menuBtnRef.current?.getBoundingClientRect();
+              const W = 250;
+              return {
+                // Canh phải theo nút, kẹp trong màn hình để không tràn mép.
+                left: Math.max(6, Math.min((r?.right ?? window.innerWidth) - W, window.innerWidth - W - 6)),
+                top: (r?.bottom ?? 40) + 4,
+              };
+            })()}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {/* Mục bật/tắt kiểu Chrome: có dấu ✓ cho biết trạng thái hiện tại,
+                nhãn KHÔNG đổi theo trạng thái. Nhãn kiểu "Ẩn/Hiện" đọc mơ hồ —
+                không rõ đang mô tả trạng thái hay hành động sắp làm. */}
+            <button role="menuitemcheckbox" aria-checked={showMarks}
+              onClick={() => { toggleMarks(); setMenuOpen(false); }}>
+              <span className="bt-menu-check">{showMarks ? '✓' : ''}</span>
+              Hiện thanh dấu trang
+              <span className="bt-menu-key">Ctrl+Shift+B</span>
+            </button>
+            <div className="bt-menu-sep" />
+            <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t?.profile ?? '', kind: 'link', order: 0, addedAt: '' }); setMenuOpen(false); }}>
+              <span className="bt-menu-check" />☆ Lưu trang hiện tại…
+            </button>
+            <button onClick={() => { setMarks(true); setMenuOpen(false); void dropUrl(tabs.find((x) => x.id === activeId)?.url ?? ''); }}>
+              <span className="bt-menu-check" />🔖 Lưu nhanh vào thanh dấu trang
+            </button>
+            <button onClick={() => { setMarks(true); setMenuOpen(false); newFolder(); }}>
+              <span className="bt-menu-check" />📁 Thư mục mới…
+            </button>
+            <div className="bt-menu-sep" />
+            <button onClick={() => { setPwOpen(true); setMenuOpen(false); }}>
+              <span className="bt-menu-check" />🔑 Mật khẩu đã lưu
+            </button>
+            <button onClick={() => { setExtOpen(true); setMenuOpen(false); }}>
+              <span className="bt-menu-check" />🧩 Extension
+            </button>
+            <button role="menuitemcheckbox" aria-checked={full}
+              onClick={() => { setFull((v) => !v); setMenuOpen(false); }}>
+              <span className="bt-menu-check">{full ? '✓' : ''}</span>
+              Tràn viền
+            </button>
+            <div className="bt-menu-sep" />
+            <button className="danger" onClick={() => { closeAllTabs(); setMenuOpen(false); }}>
+              <span className="bt-menu-check" />✕ Đóng tất cả tab
+            </button>
+          </div>
+        </>,
+        document.body,
+      )}
+
       {pwOpen && <PasswordManager onClose={() => setPwOpen(false)} />}
       {extOpen && <BrowserExtensions onClose={() => setExtOpen(false)} />}
 
@@ -527,11 +808,28 @@ export default function BrowserTabWorkspace() {
   );
 }
 
-/** Một tab = LinkViewer với partition theo profile. */
-function BrowserTab({ tab, hidden, onClose, onSaveBookmark, onOpenNewTab }: {
-  tab: Tab; hidden: boolean; onClose: () => void; onSaveBookmark: (name: string, url: string) => Promise<void>;
-  onOpenNewTab: (url: string) => void;
+/**
+ * Một tab = LinkViewer với partition theo profile.
+ *
+ * BỌC React.memo: đây là cây con ĐẮT NHẤT của tab Browser (LinkViewer ~760
+ * dòng, bên trong là <webview>). Không có memo thì mọi lần state của
+ * BrowserTabWorkspace đổi — gõ một chữ trong form "Sửa dấu trang" chẳng hạn —
+ * đều render lại từng tab đang mở, và cảm giác là nhập rất lag.
+ *
+ * Ba callback nhận thêm `tab` rồi tự bind trong đây bằng useCallback: nếu để
+ * cha tạo closure `() => closeTab(t.id)` thì tham chiếu đổi mỗi lần render và
+ * memo vô hiệu — memo chỉ so sánh prop theo tham chiếu.
+ */
+const BrowserTab = memo(function BrowserTab({ tab, hidden, onClose, onSaveBookmark, onOpenNewTab }: {
+  tab: Tab; hidden: boolean;
+  onClose: (id: string) => void;
+  onSaveBookmark: (name: string, url: string, tab: Tab) => Promise<void>;
+  onOpenNewTab: (url: string, tab: Tab) => void;
 }) {
+  const close = useCallback(() => onClose(tab.id), [onClose, tab.id]);
+  const openNew = useCallback((u: string) => onOpenNewTab(u, tab), [onOpenNewTab, tab]);
+  const save = useCallback((name: string, url: string) => onSaveBookmark(name, url, tab), [onSaveBookmark, tab]);
+
   return (
     <LinkViewer
       name={tab.name}
@@ -542,11 +840,11 @@ function BrowserTab({ tab, hidden, onClose, onSaveBookmark, onOpenNewTab }: {
       profile={tab.profile}
       passwordManager
       addressBar
-      onOpenNewTab={onOpenNewTab}
-      onClose={onClose}
-      onSaveLink={onSaveBookmark}
+      onOpenNewTab={openNew}
+      onClose={close}
+      onSaveLink={save}
     />
   );
-}
+});
 
 function hostOf(url: string): string { try { return new URL(url).hostname; } catch { return url; } }
