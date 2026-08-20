@@ -18,6 +18,7 @@
 // không có ô gõ tay, vì gõ sai một cái tên thì query trả rỗng mà không ai biết.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { usePresetSync } from '@/lib/presetSync';
 import {
   searchEs,
   listEsIndices,
@@ -103,7 +104,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  useEffect(() => { setQuickFinds(loadEsQuickFinds()); }, []);
+  const reloadQf = useCallback(() => setQuickFinds(loadEsQuickFinds()), []);
+  useEffect(() => { reloadQf(); }, [reloadQf]);
+  usePresetSync('es.quickfinds', reloadQf);
 
   const connName = useCallback(
     (id: string) => connections.find((c) => c.id === id)?.name ?? null,

@@ -9,6 +9,7 @@
 // Results: one row per line, click → pretty-JSON modal. Export → styled .xlsx.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { usePresetSync } from '@/lib/presetSync';
 import {
   pgQuickFind,
   listPgDatabases,
@@ -68,7 +69,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  useEffect(() => { setQuickFinds(loadPgQuickFinds()); }, []);
+  const reloadQf = useCallback(() => setQuickFinds(loadPgQuickFinds()), []);
+  useEffect(() => { reloadQf(); }, [reloadQf]);
+  usePresetSync('pg.quickfinds', reloadQf);
 
   const connName = useCallback(
     (id: string) => connections.find((c) => c.id === id)?.name ?? null,

@@ -17,7 +17,8 @@
 // Preset là bookmark cá nhân của từng máy nên nằm ở localStorage (khác với
 // connection do server giữ). Module chỉ chạy phía browser.
 
-import { readLocal, writeLocal } from './localKeys';
+import { readLocal } from './localKeys';
+import { persistPresets } from './presetSync';
 
 const QUICKFINDS_KEY = 'redis.quickfinds';
 
@@ -108,7 +109,10 @@ export function loadRedisQuickFinds(): RedisQuickFind[] {
 
 function save(list: RedisQuickFind[]): void {
   if (typeof window === 'undefined') return;
-  writeLocal(QUICKFINDS_KEY, JSON.stringify(list));
+  // Ghi cache localStorage RỒI đẩy lên configs/presets.json — preset là
+  // dữ liệu người dùng tự dựng, phải sống sót qua dọn cache và đẩy được
+  // lên git như mọi config khác.
+  persistPresets(QUICKFINDS_KEY, list);
 }
 
 function newId(): string {

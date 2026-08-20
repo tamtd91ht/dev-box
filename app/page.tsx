@@ -50,6 +50,8 @@ import ThemeToggle from '@/components/ThemeToggle';
 import DesktopConsole from '@/components/DesktopConsole';
 import ConfigSyncButton from '@/components/ConfigSyncButton';
 import UpdateButton from '@/components/UpdateButton';
+import HardReloadButton from '@/components/HardReloadButton';
+import { hydratePresets } from '@/lib/presetSync';
 import UpdatePrompt from '@/components/UpdatePrompt';
 import { resolveAuth, authReady as isAuthReady } from '@/lib/request';
 import {
@@ -193,6 +195,11 @@ const NAV_KEY = 'devbox.navPos';
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>('git');
+
+  // Kéo "nút tìm nhanh" (preset Redis/Kafka/Mongo/ES/PG) từ configs/presets.json
+  // về localStorage một lần lúc khởi động. Chạy ở đây — gốc cây — để tab nào mở
+  // cũng đã có dữ liệu, không phải mỗi tab tự đồng bộ.
+  useEffect(() => { void hydratePresets(); }, []);
 
   // Vị trí thanh menu tính năng: ngang trên (mặc định) / dọc trái / dọc phải.
   // Menu dọc trả nhiều chiều cao cho vùng làm việc — lưu localStorage.
@@ -883,6 +890,9 @@ export default function Home() {
           {/* Kéo bản mới của CHÍNH app này từ Git về. Badge = số commit đang
               chờ, nên liếc là biết có bản mới mà không phải bấm vào. */}
           <UpdateButton />
+          {/* Dọn cache rồi nạp lại — để phân biệt "code sai" với "đang ăn bản
+              cũ" mà không phải ngồi đoán. */}
+          <HardReloadButton />
           {/* Desktop only: log của shell + next dev, ẩn mặc định. */}
           <DesktopConsole />
         </span>

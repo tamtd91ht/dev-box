@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePresetSync } from '@/lib/presetSync';
 import {
   fetchKafkaConnections,
   mutateKafkaConnection,
@@ -211,10 +212,10 @@ export default function KafkaWorkspace() {
   /** Vùng nút + panel — dùng để biết cú bấm có rơi ra ngoài dropdown không. */
   const presetAnchorRef = useRef<HTMLSpanElement>(null);
 
-  // Presets live in localStorage — hydrate on mount (client-only).
-  useEffect(() => {
-    setPresets(loadPresets());
-  }, []);
+  // Preset nằm ở configs/presets.json, localStorage chỉ là cache đồng bộ.
+  const reloadPresets = useCallback(() => { setPresets(loadPresets()); }, []);
+  useEffect(() => { reloadPresets(); }, [reloadPresets]);
+  usePresetSync('kafka.presets', reloadPresets);
 
   // Dropdown thì phải đóng khi bấm ra ngoài — dock nổi trước đây không cần.
   // KHÔNG đóng khi form thêm/sửa hoặc modal chạy đang mở: chúng là modal riêng

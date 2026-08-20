@@ -35,6 +35,7 @@
 // browser, so every server-side bound (maxTimeMS, limit clamp) applies here too.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { usePresetSync } from '@/lib/presetSync';
 import {
   findMongo,
   listMongoDatabases,
@@ -121,7 +122,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [notice, setNotice] = useState<string | null>(null);
 
   // Presets live in localStorage — hydrate on mount (client-only).
-  useEffect(() => { setQuickFinds(loadQuickFinds()); }, []);
+  const reloadQf = useCallback(() => setQuickFinds(loadQuickFinds()), []);
+  useEffect(() => { reloadQf(); }, [reloadQf]);
+  usePresetSync('mongo.quickfinds', reloadQf);
 
   const connName = useCallback(
     (id: string) => connections.find((c) => c.id === id)?.name ?? null,

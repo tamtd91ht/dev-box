@@ -10,7 +10,8 @@
 // RedisWorkspace qua onRun, để việc tra key đi đúng một đường sẵn có (cùng chỗ
 // mà ô tìm kiếm thường vẫn dùng) — không nhân đôi logic scan/hiển thị giá trị.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePresetSync } from '@/lib/presetSync';
 import type { PublicRedisConnection } from '@/lib/redis';
 import {
   loadRedisQuickFinds,
@@ -57,7 +58,10 @@ export default function QuickFindPanel(props: QuickFindPanelProps) {
   const [running, setRunning] = useState<RedisQuickFind | null>(null);
   const anchorRef = useRef<HTMLSpanElement | null>(null);
 
-  useEffect(() => { setList(loadRedisQuickFinds()); }, []);
+  const reloadList = useCallback(() => setList(loadRedisQuickFinds()), []);
+  useEffect(() => { reloadList(); }, [reloadList]);
+  // Preset giờ nằm ở configs/presets.json; hydrate xong thì nạp lại.
+  usePresetSync('redis.quickfinds', reloadList);
 
   // Bấm ra ngoài / Esc → đóng popover. Khi đang mở form con thì không đóng, để
   // một cú bấm lỡ tay không làm mất cả form đang gõ dở.

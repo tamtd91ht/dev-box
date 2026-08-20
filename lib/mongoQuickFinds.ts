@@ -18,7 +18,8 @@
 // Browser-only module.
 
 /** localStorage key holding the preset array (JSON). */
-import { readLocal, writeLocal } from './localKeys';
+import { readLocal } from './localKeys';
+import { persistPresets } from './presetSync';
 
 const QUICKFINDS_KEY = 'mongo.quickfinds';
 
@@ -90,7 +91,10 @@ export function loadQuickFinds(): MongoQuickFind[] {
 /** Persist the full preset list. */
 function save(list: MongoQuickFind[]): void {
   if (typeof window === 'undefined') return;
-  writeLocal(QUICKFINDS_KEY, JSON.stringify(list));
+  // Ghi cache localStorage RỒI đẩy lên configs/presets.json — preset là
+  // dữ liệu người dùng tự dựng, phải sống sót qua dọn cache và đẩy được
+  // lên git như mọi config khác.
+  persistPresets(QUICKFINDS_KEY, list);
 }
 
 /** A non-crypto id — presets are local bookmarks, collision-safety isn't critical. */
