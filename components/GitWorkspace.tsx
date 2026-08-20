@@ -40,19 +40,10 @@ import FolderPicker from './FolderPicker';
 import { readLocal, writeLocal } from '@/lib/localKeys';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import DiffView from './git/DiffView';
 
 const LAST_REPO_KEY = 'git.lastRepo';
 const LAST_PROJECT_KEY = 'git.lastProject';
-
-/** Colour a single diff line by its leading character. */
-function diffLineStyle(line: string): React.CSSProperties {
-  if (line.startsWith('+') && !line.startsWith('+++')) return { color: 'var(--ok, #3fb950)' };
-  if (line.startsWith('-') && !line.startsWith('---')) return { color: 'var(--err, #f85149)' };
-  if (line.startsWith('@@')) return { color: 'var(--accent, #6c8cff)' };
-  if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('+++') || line.startsWith('---'))
-    return { color: 'var(--muted)', fontWeight: 600 };
-  return {};
-}
 
 interface SelectedFile {
   path: string;
@@ -1165,22 +1156,15 @@ export default function GitWorkspace() {
 
                 {commitFile && (
                   <>
-                    <div className="status-line" style={{ marginTop: 12 }}>
-                      <h3 style={{ margin: 0, flex: 1, minWidth: 0, fontSize: 13 }}>{commitFile}</h3>
-                      {commitDiffLoading && <span className="small" style={{ color: 'var(--muted)' }}>đang tải…</span>}
-                    </div>
-                    {commitDiff ? (
-                      <pre className="code" style={{ marginTop: 8, maxHeight: '48vh', overflow: 'auto' }}>
-                        {commitDiff.split('\n').map((line, i) => (
-                          <div key={i} style={diffLineStyle(line)}>{line || ' '}</div>
-                        ))}
-                      </pre>
-                    ) : !commitDiffLoading ? (
-                      <div className="empty" style={{ padding: '18px 8px' }}>
-                        <div className="empty-ico">≡</div>
-                        <p className="small">Không có diff hiển thị (file nhị phân hoặc chỉ đổi chế độ).</p>
+                    {commitDiffLoading ? (
+                      <div className="status-line" style={{ marginTop: 12 }}>
+                        <span className="small" style={{ color: 'var(--muted)' }}>đang tải diff…</span>
                       </div>
-                    ) : null}
+                    ) : (
+                      /* Tên file do DiffView hiện — bỏ <h3> ở đây, nếu không cùng
+                         một đường dẫn hiện hai lần liền nhau. */
+                      <DiffView patch={commitDiff} path={commitFile} />
+                    )}
                   </>
                 )}
               </>
@@ -1297,26 +1281,15 @@ export default function GitWorkspace() {
         <div className="panel">
           {selected ? (
             <>
-              <div className="status-line">
-                <span className={`badge ${selected.staged ? 'info' : ''}`}>{selected.staged ? 'staged' : 'working'}</span>
-                <code className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {selected.path}
-                </code>
-              </div>
-              {diff ? (
-                <pre className="code" style={{ marginTop: 10, maxHeight: '60vh', overflow: 'auto' }}>
-                  {diff.split('\n').map((line, i) => (
-                    <div key={i} style={diffLineStyle(line)}>{line || ' '}</div>
-                  ))}
-                </pre>
-              ) : (
-                <div className="empty" style={{ padding: '24px 8px' }}>
-                  <div className="empty-ico">≡</div>
-                  <p className="small">
-                    Không có diff hiển thị (file mới chưa stage, hoặc thay đổi binary). Stage để xem.
-                  </p>
-                </div>
-              )}
+              {/* Đường dẫn + badge + số dòng nằm TRONG DiffView để đi kèm công
+                  tắc chế độ xem — tách thành hàng riêng thì hai cụm thông tin về
+                  cùng một file lại ở hai chỗ. DiffView cũng tự lo ca "không có
+                  diff" (binary / file mới chưa stage). */}
+              <DiffView
+                patch={diff}
+                path={selected.path}
+                badge={selected.staged ? 'staged' : 'working'}
+              />
             </>
           ) : (
             <div className="empty">
@@ -3140,47 +3113,57 @@ function FileGroupBlock({
         <span className="group-title" style={{ flex: 1 }}>{title} ({files.length})</span>
         <button className="ghost sm" onClick={headerAction.onClick} disabled={busy}>{headerAction.label}</button>
       </div>
-      <div className="endpoint-list">
+      <div className="gf-list">
         {files.map((f) => {
           const isSel = selected?.path === f.path && selected?.staged === staged;
+          // Tách thư mục / tên file: tên file in đậm màu thường, thư mục mờ đi.
+          // Danh sách cũ in cả đường dẫn một màu một cỡ nên mắt phải đọc hết
+          // chuỗi mới thấy tên file — trong khi tên file là thứ cần nhận ra đầu
+          // tiên. SourceTree cũng tách hai phần như vậy.
+          const shown = f.origPath ? `${f.origPath} → ${f.path}` : f.path;
+          const cut = shown.lastIndexOf('/');
+          const dir = cut >= 0 ? shown.slice(0, cut + 1) : '';
+          const base = cut >= 0 ? shown.slice(cut + 1) : shown;
           return (
             <div
               key={`${f.group}:${f.path}`}
-              className={`ep-item ${isSel ? 'active' : ''}`}
+              className={`gf-row${isSel ? ' active' : ''}`}
               onClick={() => onSelect(f)}
-              style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+              title={shown}
             >
               <span className={`git-badge ${gitBadgeClass(f.code)}`} title={f.code} style={gitBadgeStyle(f.code)}>
                 {codeLabel(f.code)}
               </span>
-              <code className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {f.origPath ? `${f.origPath} → ${f.path}` : f.path}
-              </code>
-              <button
-                className="ghost sm"
-                onClick={(e) => { e.stopPropagation(); onView(f); }}
-                title="Xem thay đổi 2 ô: nội dung trước ↔ sau"
-              >
-                ⇄ view
-              </button>
-              {onDiscard && (
+              <span className="gf-name">
+                {dir && <span className="gf-dir">{dir}</span>}
+                <span className="gf-base">{base}</span>
+              </span>
+              {/* Các nút chỉ hiện khi trỏ vào hàng (hoặc hàng đang chọn). Trước
+                  đây ba nút luôn hiện trên MỌI hàng, nên một danh sách 20 file là
+                  60 nút giành lấy sự chú ý — chính chỗ làm giao diện rối nhất. */}
+              <span className="gf-acts">
                 <button
                   className="ghost sm"
-                  onClick={(e) => { e.stopPropagation(); onDiscard(f); }}
+                  onClick={(e) => { e.stopPropagation(); onView(f); }}
+                  title="Xem thay đổi 2 ô: nội dung trước ↔ sau"
+                >⇄</button>
+                {onDiscard && (
+                  <button
+                    className="ghost sm gf-danger"
+                    onClick={(e) => { e.stopPropagation(); onDiscard(f); }}
+                    disabled={busy}
+                    title={discardTitle}
+                  >✕</button>
+                )}
+                <button
+                  className="ghost sm"
+                  onClick={(e) => { e.stopPropagation(); onRow(f); }}
                   disabled={busy}
-                  title={discardTitle}
+                  title={rowLabel}
                 >
-                  ✕
+                  {rowLabel}
                 </button>
-              )}
-              <button
-                className="ghost sm"
-                onClick={(e) => { e.stopPropagation(); onRow(f); }}
-                disabled={busy}
-                title={rowLabel}
-              >
-                {rowLabel}
-              </button>
+              </span>
             </div>
           );
         })}
