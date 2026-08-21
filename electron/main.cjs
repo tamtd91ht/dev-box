@@ -865,7 +865,7 @@ function wireWebviewHardening(win) {
     // did-create-window) nen URL that khong he duoc request lan hai — quan trong
     // voi link dung mot lan / link xac nhan qua email — nhung PHAI SONG mot luc,
     // xem POPUP_STUB_TTL_MS.
-    guest.setWindowOpenHandler(({ url }) => {
+    guest.setWindowOpenHandler(({ url, disposition }) => {
       if (!/^https?:\/\//i.test(url)) return { action: 'deny' };
 
       if (isWorkspaceApp) {
@@ -896,6 +896,22 @@ function wireWebviewHardening(win) {
         if (!win.isDestroyed()) {
           win.webContents.send('workspace:openInBrowserTab', url);
           log('OpenInBrowserTab', url);
+        } else {
+          shell.openExternal(url);
+        }
+      } else if (
+        disposition === 'background-tab' &&
+        (/^persist:links-/.test(partition) || partition === 'persist:ws-google-viewer')
+      ) {
+        // CTRL+CLICK / CHUỘT GIỮA trong tab Links hay viewer Google
+        // (disposition 'background-tab'): người dùng chủ ý muốn TAB MỚI TRONG
+        // APP, không phải trình duyệt ngoài — mở thành tab mới ở tab Links
+        // (viewer Google không có dải tab nên cũng gửi sang Links). Click
+        // target=_blank thường (foreground-tab/new-window) giữ luật cũ: ra
+        // trình duyệt ngoài.
+        if (!win.isDestroyed()) {
+          win.webContents.send('workspace:openInLinksTab', url);
+          log('OpenInLinksTab', url);
         } else {
           shell.openExternal(url);
         }

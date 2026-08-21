@@ -105,13 +105,29 @@ export default function LinksWorkspace() {
     tabKeysRef.current = m;
   }, [tabs]);
 
-  // Hộp thoại phải nổi TRÊN <webview> (guest vẽ ở tầng native, đè mọi z-index).
+  /** Menu chuột phải trên thanh tab: Đóng tab này / Đóng hết.
+   *  tabId = null khi chuột phải vào khoảng trống của thanh. */
+  const [tabCtx, setTabCtx] = useState<{ x: number; y: number; tabId: string | null } | null>(null);
+
+  // Click bất kỳ đâu (hoặc chuột phải chỗ khác) → đóng menu ngữ cảnh.
+  useEffect(() => {
+    if (!tabCtx) return;
+    const close = () => setTabCtx(null);
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close, true);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close, true);
+    };
+  }, [tabCtx]);
+
+  // Hộp thoại/menu phải nổi TRÊN <webview> (guest vẽ ở tầng native, đè mọi z-index).
   useEffect(() => {
     const root = document.documentElement;
-    if (dupAsk) root.setAttribute('data-popup-over-webview', '1');
+    if (dupAsk || tabCtx) root.setAttribute('data-popup-over-webview', '1');
     else root.removeAttribute('data-popup-over-webview');
     return () => root.removeAttribute('data-popup-over-webview');
-  }, [dupAsk]);
+  }, [dupAsk, tabCtx]);
 
   // Bộ lọc: 1 dự án + 1 tag (click lần nữa để bỏ).
   const [fProject, setFProject] = useState<string | null>(null);
@@ -137,7 +153,12 @@ export default function LinksWorkspace() {
    *  Link ĐANG MỞ SẴN thì không âm thầm nhảy về tab cũ nữa mà HỎI (chuyển tới
    *  hay mở thêm tab mới) — mở hai tab cùng một trang là nhu cầu thật.
    *  `forceNew` = người dùng đã chọn "Mở thêm tab mới" trong hộp thoại. */
-  const openInApp = useCallback((name: string, target: string, profile?: string, meta?: SavedLinkMeta, forceNew = false) => {
+  const openInApp = useCallback((
+    name: string, target: string, profile?: string, meta?: SavedLinkMeta,
+    forceNew = false,
+    /** Tab mới chạy NỀN (ctrl+click kiểu Chrome) — giữ nguyên trang đang đọc. */
+    background = false,
+  ) => {
     if (typeof window === 'undefined' || !window.workspace?.isDesktop) {
       window.open(target, '_blank'); // plain browser — <webview> không tồn tại
       return;
@@ -150,7 +171,7 @@ export default function LinksWorkspace() {
       // vọng, kích hoạt tab vừa mở chứ đừng bật hộp thoại lên trước mặt.
       const recent = recentOpenRef.current;
       if (recent && recent.key === key && Date.now() - recent.at < 2000) {
-        setActiveTab(recent.id);
+        if (!background) setActiveTab(recent.id);
         return;
       }
       const existingId = tabKeysRef.current.get(key);
@@ -164,8 +185,23 @@ export default function LinksWorkspace() {
     const id = `tab-${++tabSeqRef.current}`;
     recentOpenRef.current = { key, at: Date.now(), id };
     setTabs((cur) => [...cur, { id, name, url: target, partition, meta }]);
-    setActiveTab(id);
+    if (!background) setActiveTab(id);
   }, [tabs]);
+
+  // Ctrl+click / chuột giữa TRONG một webview (tab Links, viewer Google) →
+  // main process gửi về đây (workspace:openInLinksTab): mở tab mới CHẠY NỀN
+  // như Chrome, giữ nguyên trang đang đọc; phiên lấy theo tab đang xem.
+  // forceNew: ctrl+click là chủ ý muốn THÊM tab, kể cả link đang mở sẵn.
+  useEffect(() => {
+    if (!window.workspace?.onOpenInLinksTab) return;
+    return window.workspace.onOpenInLinksTab((u) => {
+      const from = tabs.find((t) => t.id === activeTab);
+      const profile = from
+        ? from.partition.replace(/^persist:links-/, '').replace(/^shared$/, '')
+        : '';
+      openInApp(nameFor(u), u, profile || undefined, undefined, true, true);
+    });
+  }, [openInApp, tabs, activeTab]);
 
   // Link bấm trong tin nhắn Zalo/Telegram đã chọn "Mở trong tab Links".
   // Không profile: link lạ chưa thuộc nhóm đăng nhập nào → phiên chung.
@@ -437,9 +473,20 @@ export default function LinksWorkspace() {
         /* activeTab=null → chế độ THU NHỎ: chỉ còn thanh tab dưới đáy, danh
            sách link lộ ra để mở thêm; webview các tab vẫn sống offscreen. */
         <div className={`lv-wrap${activeTab ? '' : ' lv-min'}`}>
-          <div className="lv-tabbar" role="tablist" aria-label="Link tabs">
+          <div
+            className="lv-tabbar"
+            role="tablist"
+            aria-label="Link tabs"
+            // Chuột phải khoảng trống của thanh → menu chỉ có "Đóng hết".
+            onContextMenu={(e) => { e.preventDefault(); setTabCtx({ x: e.clientX, y: e.clientY, tabId: null }); }}
+          >
             {tabs.map((t) => (
-              <span key={t.id} className={`lv-tab${t.id === activeTab ? ' on' : ''}`} title={t.url}>
+              <span key={t.id} className={`lv-tab${t.id === activeTab ? ' on' : ''}`}
+                title={`${t.url} — chuột phải: Đóng tab / Đóng hết`}
+                onContextMenu={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  setTabCtx({ x: e.clientX, y: e.clientY, tabId: t.id });
+                }}>
                 <button className="lv-tab-btn" role="tab" aria-selected={t.id === activeTab}
                   onClick={() => setActiveTab(t.id)}>
                   {t.name}
@@ -448,17 +495,11 @@ export default function LinksWorkspace() {
                   onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}>✕</button>
               </span>
             ))}
+            {/* ＋ dính ngay cạnh tab cuối — như Chrome: bấm là về màn hình mở
+                link mới, các tab đang mở giữ nguyên (webview vẫn sống). */}
+            <button className="bt-newtab" onClick={() => setActiveTab(null)}
+              title="Link mới — về danh sách/ô nhập để mở thêm (các tab giữ nguyên)">＋</button>
             <span style={{ flex: 1 }} />
-            {activeTab ? (
-              <button className="ghost sm" title="Về danh sách để mở thêm link — các tab vẫn giữ nguyên"
-                onClick={() => setActiveTab(null)}>＋ Link mới</button>
-            ) : (
-              <span className="small" style={{ color: 'var(--muted)', padding: '0 6px' }}>
-                chọn link ở danh sách trên để mở tab mới
-              </span>
-            )}
-            <button className="ghost sm" title="Đóng tất cả tab, về danh sách"
-              onClick={() => { setTabs([]); setActiveTab(null); }}>✕ Đóng hết</button>
           </div>
           <div className="lv-body">
             {tabs.map((t) => (
@@ -503,6 +544,28 @@ export default function LinksWorkspace() {
           }}
           onCancel={() => setDupAsk(null)}
         />
+      )}
+
+      {/* Menu chuột phải trên thanh tab — thay cho nút "✕ Đóng hết" thường trực. */}
+      {tabCtx && (
+        <div
+          className="bt-ctx"
+          style={{
+            position: 'fixed',
+            left: Math.min(tabCtx.x, window.innerWidth - 210),
+            top: Math.min(tabCtx.y, window.innerHeight - 110),
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {tabCtx.tabId && (
+            <button onClick={() => { closeTab(tabCtx.tabId!); setTabCtx(null); }}>
+              ✕ Đóng tab này
+            </button>
+          )}
+          <button className="danger" onClick={() => { setTabs([]); setActiveTab(null); setTabCtx(null); }}>
+            ✕ Đóng hết ({tabs.length} tab)
+          </button>
+        </div>
       )}
 
       {pwOpen && <PasswordManager onClose={() => setPwOpen(false)} />}

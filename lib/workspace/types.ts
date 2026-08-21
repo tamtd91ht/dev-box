@@ -158,6 +158,9 @@ export interface WorkspaceBridge {
   /** Link target=_blank bấm TRONG tab Browser → mở thành tab mới ngay trong tab
    *  Browser (giữ phiên của profile). Optional: preload cũ chưa expose. */
   onOpenInBrowserTab?(cb: (url: string) => void): () => void;
+  /** Ctrl+click / chuột giữa trong tab Links hay viewer Google → mở thành tab
+   *  mới (chạy nền) trong tab Links. Optional: preload cũ chưa expose. */
+  onOpenInLinksTab?(cb: (url: string) => void): () => void;
   /** Phím tắt khung app bấm khi con trỏ đang ở TRONG một <webview> (đang chat
    *  Zalo chẳng hạn): phím không bubble ra host page, main process bắt hộ rồi
    *  chuyển về đây. Trả về hàm hủy đăng ký. Optional: preload cũ chưa expose. */
