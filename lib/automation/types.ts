@@ -306,6 +306,9 @@ export interface MentionAssignment {
   /**
    * 'topic'  — cảnh báo Kafka dính một trong các topic ở `values`
    *            (dò trong fields.topics / fields.groups / title / text).
+   *            Giá trị đặc biệt: '*' = mọi sự kiện dính topic/consumer;
+   *            '*:<cụm>' = như trên nhưng riêng một cụm (id hoặc tên) —
+   *            gán cả cụm cho một người, khỏi liệt kê từng topic.
    * 'infra'  — sự cố hạ tầng kiểu devops: mất kết nối, host down, đĩa/RAM/CPU/
    *            load/heap… `values` rỗng = cả nhóm metric đó; có giá trị = giới
    *            hạn đúng các metric key này.
@@ -315,6 +318,12 @@ export interface MentionAssignment {
   kind: 'topic' | 'infra' | 'custom';
   /** kind 'topic': danh sách topic. kind 'infra': (tuỳ chọn) danh sách metric key. */
   values?: string[];
+  /**
+   * kind 'topic', chỉ có tác dụng với token tất-cả ('*' / '*:<cụm>'): sự kiện
+   * NHẮC TỚI một topic trong danh sách này thì wildcard bỏ qua — "gán cả cụm,
+   * trừ mấy topic ồn ào". Tên topic tường minh trong `values` không bị ảnh hưởng.
+   */
+  excludes?: string[];
   /** kind 'custom': tất cả điều kiện phải đúng (AND). */
   conditions?: AutomationCondition[];
   /** Alias trong danh bạ mention — nhiều người một dòng. */

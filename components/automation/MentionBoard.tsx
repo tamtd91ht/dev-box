@@ -27,12 +27,18 @@ interface RowDraft {
   enabled: boolean;
   kind: MentionAssignment['kind'];
   valuesText: string;
+  /** Chỉ dùng khi values có token ★ tất-cả: topic loại trừ, phẩy phân tách. */
+  excludesText: string;
   tagText: string;
   note: string;
   conditions: AutomationCondition[];
 }
 
 const splitList = (s: string) => s.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
+
+/** Dòng có token "tất cả" ('*' / '*:<cụm>') không — quyết định hiện ô loại trừ. */
+const hasWildcard = (valuesText: string) =>
+  splitList(valuesText).some((v) => v === '*' || v.startsWith('*:'));
 
 /** alias tự sinh từ tên: bỏ dấu tiếng Việt, thường hoá, nối bằng gạch. */
 const aliasOf = (name: string) =>
@@ -52,6 +58,8 @@ const kafkaTopicsCache = new Map<string, string[]>();
 /**
  * Bộ chọn topic theo CỤM: chọn cụm → gợi ý đúng topic của cụm đó, bấm topic là
  * thêm vào dòng; đổi sang cụm khác chọn tiếp — nhiều cụm gom vào một dòng.
+ * Mục "★ Tất cả topic của cụm này" thêm token `*:<tên cụm>` — người đó nhận MỌI
+ * cảnh báo dính topic/consumer của cụm, khỏi check từng topic (xem mention.ts).
  * Nhập tay vẫn còn (ô text bên cạnh) cho topic chưa tồn tại/regex tương lai.
  */
 function TopicPicker({ onAdd }: { onAdd: (topic: string) => void }) {
@@ -92,11 +100,21 @@ function TopicPicker({ onAdd }: { onAdd: (topic: string) => void }) {
       <select
         value=""
         disabled={!connId || loading}
-        onChange={(e) => { if (e.target.value) onAdd(e.target.value); }}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (!v) return;
+          // "Tất cả" → token wildcard theo TÊN cụm (mention.ts hiểu '*:<cụm>'):
+          // sự kiện nào của cụm dính topic/consumer là tag, khỏi check từng topic.
+          if (v === '__all') {
+            const name = (conns ?? []).find((c) => c.id === connId)?.name ?? connId;
+            onAdd(`*:${name}`);
+          } else onAdd(v);
+        }}
         style={{ fontSize: 12, maxWidth: 220 }}
-        title="Bấm một topic là thêm vào dòng — chọn tiếp topic khác hoặc đổi cụm"
+        title="Bấm một topic là thêm vào dòng — chọn tiếp topic khác hoặc đổi cụm. '★ Tất cả' = mọi cảnh báo dính topic/consumer của cụm này, không cần liệt kê từng topic"
       >
         <option value="">{loading ? 'đang tải topic…' : `＋ chọn topic (${topics.length})`}</option>
+        {connId && <option value="__all">★ Tất cả topic của cụm này</option>}
         {topics.map((t) => <option key={t} value={t}>{t}</option>)}
       </select>
     </span>
@@ -143,6 +161,7 @@ export default function MentionBoard({ onClose, accountKey }: {
     enabled: a.enabled,
     kind: a.kind,
     valuesText: (a.values ?? []).join(', '),
+    excludesText: (a.excludes ?? []).join(', '),
     tagText: a.tag.join(', '),
     note: a.note ?? '',
     conditions: (a.conditions ?? []).map((c) => ({ ...c })),
@@ -167,6 +186,9 @@ export default function MentionBoard({ onClose, accountKey }: {
           enabled: r.enabled,
           kind: r.kind,
           values: splitList(r.valuesText),
+          // Loại trừ chỉ có nghĩa khi có token ★ — không có thì lưu rỗng để
+          // config không mang theo danh sách chết gây hiểu lầm.
+          excludes: r.kind === 'topic' && hasWildcard(r.valuesText) ? splitList(r.excludesText) : [],
           conditions: r.kind === 'custom' ? r.conditions.filter((c) => c.field.trim()) : [],
           tag: splitList(r.tagText),
           note: r.note.trim(),
@@ -284,6 +306,16 @@ export default function MentionBoard({ onClose, accountKey }: {
               <button className="ghost sm" title="Xoá dòng"
                 onClick={() => setRows((cur) => cur.filter((_, j) => j !== i))}>✕</button>
             </div>
+            {/* Ô loại trừ chỉ hiện khi dòng có token ★ tất-cả — với topic liệt
+                kê tường minh thì "loại trừ" vô nghĩa (đừng liệt kê là xong). */}
+            {r.kind === 'topic' && hasWildcard(r.valuesText) && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }}>
+                <span className="small" style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>🚫 trừ topic</span>
+                <input className="input" style={{ flex: 1, fontFamily: 'var(--mono)', fontSize: 12 }}
+                  placeholder="sự kiện nhắc tới topic này thì ★ không tag — phẩy phân tách: log-spam, test-events"
+                  value={r.excludesText} onChange={(e) => patchRow(i, { excludesText: e.target.value })} />
+              </div>
+            )}
             {r.kind === 'custom' && (
               <div style={{ marginTop: 6, display: 'grid', gap: 4 }}>
                 {r.conditions.map((c, ci) => (
@@ -316,7 +348,7 @@ export default function MentionBoard({ onClose, accountKey }: {
         <button className="ghost sm"
           onClick={() => setRows((cur) => [...cur, {
             id: `mention-${Date.now().toString(36)}`, enabled: true, kind: 'topic',
-            valuesText: '', tagText: '', note: '', conditions: [],
+            valuesText: '', excludesText: '', tagText: '', note: '', conditions: [],
           }])}>
           ＋ Thêm dòng phân công
         </button>

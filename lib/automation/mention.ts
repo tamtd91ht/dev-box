@@ -53,12 +53,50 @@ function topicHaystack(event: AutomationEvent): string {
     .toLowerCase();
 }
 
+/**
+ * Token "tất cả topic" trong values của dòng kind 'topic':
+ *   '*'        — mọi sự kiện dính topic/consumer, bất kể cụm nào
+ *   '*:<cụm>'  — như trên nhưng riêng một cụm; <cụm> so với instanceId HOẶC
+ *                instanceLabel (không phân hoa/thường) — người dùng gõ/chọn theo
+ *                TÊN cụm cho dễ đọc, còn id vẫn khớp nếu ai đó dán id.
+ */
+export const ALL_TOPICS = '*';
+const isWildcard = (v: string) => v === ALL_TOPICS || v.startsWith(`${ALL_TOPICS}:`);
+
+/** Sự kiện có "dính topic" không — có nêu topic hoặc consumer group cụ thể. */
+function isTopicEvent(event: AutomationEvent): boolean {
+  const f = event.fields ?? {};
+  return Boolean(String(f.topics ?? '').trim() || String(f.groups ?? '').trim());
+}
+
+function wildcardMatches(token: string, event: AutomationEvent, excludes: string[]): boolean {
+  if (!isTopicEvent(event)) return false;
+  // Loại trừ: sự kiện NHẮC TỚI một topic trong danh sách là wildcard im — dùng
+  // cho "gán cả cụm trừ mấy topic ồn ào". Dò cùng haystack với khớp thuận, nên
+  // hành vi thuận/nghịch đối xứng. Sự kiện gộp topic loại trừ + topic khác cũng
+  // bị bỏ — chấp nhận: người cần chắc ăn thì liệt kê tường minh trong values.
+  if (excludes.length) {
+    const hay = topicHaystack(event);
+    if (excludes.some((x) => hay.includes(x))) return false;
+  }
+  if (token === ALL_TOPICS) return true;
+  const want = token.slice(ALL_TOPICS.length + 1).trim().toLowerCase();
+  if (!want) return false;
+  return event.instanceId.toLowerCase() === want || event.instanceLabel.toLowerCase() === want;
+}
+
 /** Một dòng phân công có khớp event này không? */
 export function assignmentMatches(a: MentionAssignment, event: AutomationEvent): boolean {
   if (!a.enabled || a.tag.length === 0) return false;
   switch (a.kind) {
     case 'topic': {
-      const topics = (a.values ?? []).map((t) => t.trim().toLowerCase()).filter(Boolean);
+      const values = (a.values ?? []).map((t) => t.trim()).filter(Boolean);
+      if (!values.length) return false;
+      // Wildcard "gán cả cụm": sự kiện nào dính topic/consumer là tag luôn,
+      // khỏi phải liệt kê đuổi theo danh sách topic của cụm.
+      const excludes = (a.excludes ?? []).map((t) => t.trim().toLowerCase()).filter(Boolean);
+      if (values.some((v) => isWildcard(v) && wildcardMatches(v, event, excludes))) return true;
+      const topics = values.filter((v) => !isWildcard(v)).map((t) => t.toLowerCase());
       if (!topics.length) return false;
       const hay = topicHaystack(event);
       return topics.some((t) => hay.includes(t));
@@ -76,10 +114,20 @@ export function assignmentMatches(a: MentionAssignment, event: AutomationEvent):
   }
 }
 
+/** Token wildcard viết cho người đọc — dry-run/trace nói "tất cả topic" thay vì '*'. */
+function topicTokenLabel(v: string): string {
+  if (v === ALL_TOPICS) return 'tất cả topic (mọi cụm)';
+  if (v.startsWith(`${ALL_TOPICS}:`)) return `tất cả topic cụm ${v.slice(2)}`;
+  return v;
+}
+
 /** Nhãn ngắn của một dòng — cho dry-run/trace. */
 function assignmentLabel(a: MentionAssignment): string {
   if (a.note?.trim()) return a.note.trim();
-  if (a.kind === 'topic') return `topic ${(a.values ?? []).join(', ')}`;
+  if (a.kind === 'topic') {
+    const ex = (a.excludes ?? []).filter(Boolean);
+    return `topic ${(a.values ?? []).map(topicTokenLabel).join(', ')}${ex.length ? ` (trừ ${ex.join(', ')})` : ''}`;
+  }
   if (a.kind === 'infra') return (a.values?.length ? `metric ${a.values.join(', ')}` : 'sự cố hạ tầng');
   return 'điều kiện tuỳ ý';
 }

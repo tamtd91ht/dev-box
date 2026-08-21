@@ -412,6 +412,7 @@ function normMentionAssignment(raw: unknown, index: number): MentionAssignment |
     enabled: bool(a.enabled, true),
     kind,
     values: strArr(a.values).map((s) => s.trim()).filter(Boolean),
+    excludes: strArr(a.excludes).map((s) => s.trim()).filter(Boolean),
     conditions: (Array.isArray(a.conditions) ? a.conditions : [])
       .map(normCondition)
       .filter((c): c is AutomationCondition => !!c),
