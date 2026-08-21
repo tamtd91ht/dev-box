@@ -1160,13 +1160,58 @@ function forwardStream(stream, source) {
 // ── Production build ───────────────────────────────────────────────────────
 //
 // `next start` chỉ phục vụ được code ĐÃ build, nên trước khi start phải trả
-// lời được "build trong .next có phải code hiện tại không?". Cách trả lời:
-// ghi lại commit HEAD tại thời điểm build thành công (build-info.json cạnh
-// devserver.pid), lần khởi động sau so với HEAD đang có. Lệch — nút "Cập
-// nhật" vừa pull, hoặc người dùng tự pull — là build lại. Nhờ vậy luồng cập
-// nhật không phải biết gì về build: cứ pull + khởi động lại là đủ.
+// lời được "build trong .next có phải code hiện tại không?". "Code hiện tại"
+// là CODE LOCAL TRÊN ĐĨA — không phải git HEAD: người dùng sửa dở chưa commit
+// thì app vẫn phải chạy đúng bản đang sửa. (Phiên bản đầu so HEAD với
+// build-info.json — bẫy kinh điển: sửa code mà app không đổi vì HEAD không
+// đổi.) Git chỉ còn một vai: badge nút "Cập nhật" báo có bản mới, người dùng
+// tự chọn kéo về; kéo xong file local đổi → fingerprint lệch → tự build lại.
+//
+// Cách trả lời: fingerprint = sha1 của (đường dẫn + size + mtime) mọi file
+// nguồn mà `next build` ăn vào, ghi lại lúc build thành công (build-info.json
+// cạnh devserver.pid), lần khởi động sau tính lại rồi so. Lệch là build lại.
 
 const buildInfoFile = () => path.join(app.getPath('userData'), 'build-info.json');
+
+// Nguồn vào của `next build`. KHÔNG gồm electron/ (vỏ desktop, không qua next
+// build) và public/monaco (bản copy từ node_modules — scripts/copy-monaco.cjs
+// tự lo, postinstall đã chạy nó nên đổi version monaco vẫn lộ ra qua mtime).
+const BUILD_SRC_DIRS = ['app', 'components', 'lib', 'public'];
+const BUILD_SRC_FILES = [
+  'package.json', 'package-lock.json', 'next.config.js', 'tsconfig.json',
+  '.env', '.env.local', '.env.production',
+];
+const BUILD_SRC_SKIP = new Set(['public/monaco']);
+
+/** Fingerprint code local: `<sha1>·<số file>`. `·0` nghĩa là không đọc được nguồn. */
+function buildFingerprint(appPath) {
+  const hash = require('crypto').createHash('sha1');
+  let files = 0;
+  const addFile = (abs, rel) => {
+    try {
+      const st = fs.statSync(abs);
+      hash.update(`${rel}|${st.size}|${Math.round(st.mtimeMs)}\n`);
+      files++;
+    } catch { /* file khai trong danh sách nhưng không có (.env tuỳ máy) — bỏ qua */ }
+  };
+  const walk = (dir, rel) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    entries.sort((a, b) => (a.name < b.name ? -1 : 1));
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      const r = `${rel}/${e.name}`;
+      if (e.isDirectory()) {
+        if (!BUILD_SRC_SKIP.has(r)) walk(path.join(dir, e.name), r);
+      } else if (e.isFile()) {
+        addFile(path.join(dir, e.name), r);
+      }
+    }
+  };
+  for (const d of BUILD_SRC_DIRS) walk(path.join(appPath, d), d);
+  for (const f of BUILD_SRC_FILES) addFile(path.join(appPath, f), f);
+  return `${hash.digest('hex')}·${files}`;
+}
 
 /** Commit HEAD hiện tại của repo app — đọc thẳng .git, không spawn git. '' nếu không đọc được. */
 function gitHead(appPath) {
@@ -1189,18 +1234,20 @@ function gitHead(appPath) {
   return '';
 }
 
-function savedBuildHead() {
+function savedBuildFingerprint() {
   try {
-    return String(JSON.parse(fs.readFileSync(buildInfoFile(), 'utf8')).head || '');
+    return String(JSON.parse(fs.readFileSync(buildInfoFile(), 'utf8')).fingerprint || '');
   } catch {
     return '';
   }
 }
 
-function rememberBuildHead(head) {
+function rememberBuild(fingerprint, head) {
   try {
     fs.mkdirSync(path.dirname(buildInfoFile()), { recursive: true });
-    fs.writeFileSync(buildInfoFile(), JSON.stringify({ head, at: Date.now() }), 'utf8');
+    // head chỉ để người debug liếc build-info.json biết build từ commit nào —
+    // quyết định build lại hay không dựa hoàn toàn vào fingerprint.
+    fs.writeFileSync(buildInfoFile(), JSON.stringify({ fingerprint, head, at: Date.now() }), 'utf8');
   } catch (err) {
     log('BuildInfoWriteError', err && err.message);
   }
@@ -1243,24 +1290,26 @@ function runNode(appPath, args, timeoutMs, source) {
   });
 }
 
-/** Đảm bảo .next chứa build production của ĐÚNG code hiện tại. true = dùng được. */
+/** Đảm bảo .next chứa build production của ĐÚNG code local hiện tại. true = dùng được. */
 async function ensureProdBuild(appPath, nextBin) {
-  const head = gitHead(appPath);
   // BUILD_ID chỉ tồn tại sau `next build` — .next của `next dev` không có nó.
   const hasBuild = fs.existsSync(path.join(appPath, '.next', 'BUILD_ID'));
-  if (hasBuild && head && savedBuildHead() === head) return true;
-  if (hasBuild && !head) return true; // không đọc được git → đành tin build sẵn có
+  // Fingerprint tính TRƯỚC khi build: nếu người dùng sửa code trong lúc build
+  // chạy thì lần khởi động sau vẫn thấy lệch và build lại — không nuốt mất sửa.
+  const fp = buildFingerprint(appPath);
+  if (hasBuild && fp.endsWith('·0')) return true; // không đọc được nguồn → đành tin build sẵn có
+  if (hasBuild && savedBuildFingerprint() === fp) return true;
 
   log(
     'BuildStarting',
-    `next build (${hasBuild ? 'code đã đổi so với lần build trước' : 'chưa có build production'}) — có thể mất vài phút`,
+    `next build (${hasBuild ? 'file nguồn local đã đổi so với lần build trước' : 'chưa có build production'}) — có thể mất vài phút`,
   );
   // Hook `prebuild` của npm không chạy khi spawn thẳng next bin → tự gọi
   // copy-monaco (idempotent, chỉ copy khi thiếu/đổi version).
   await runNode(appPath, [path.join(appPath, 'scripts', 'copy-monaco.cjs')], 2 * 60_000, 'build');
   const code = await runNode(appPath, [nextBin, 'build'], 15 * 60_000, 'build');
   if (code === 0) {
-    rememberBuildHead(head);
+    rememberBuild(fp, gitHead(appPath));
     log('BuildDone', 'build production sẵn sàng');
     return true;
   }
@@ -2285,9 +2334,10 @@ ipcMain.handle('desktop:getLogs', () => logBuffer);
  * probe thấy :3000 có người trả lời và dùng lại nó — app "mới" chạy y nguyên
  * code cũ, người dùng bấm cập nhật xong không thấy gì đổi.
  *
- * Ở chế độ production, lần mở sau ensureServer() còn thấy HEAD đã lệch khỏi
- * build-info.json nên tự `next build` lại trước khi `next start` — nút Cập
- * nhật vì thế không phải biết gì về build.
+ * Ở chế độ production, lần mở sau ensureServer() còn thấy fingerprint file
+ * nguồn local đã lệch khỏi build-info.json (pull vừa đổi file) nên tự
+ * `next build` lại trước khi `next start` — nút Cập nhật vì thế không phải
+ * biết gì về build.
  *
  * Đánh đổi: các phiên terminal đang mở sẽ mất. Đúng, và renderer đã cảnh báo
  * trước khi gọi tới đây.
