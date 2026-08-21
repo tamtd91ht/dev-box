@@ -15,6 +15,7 @@
 
 import WebSocket from 'ws';
 import { decodeEventData } from './crypto';
+import { scanFileDone } from './uploadHub';
 import { trace } from './trace';
 import { API_TYPE, API_VERSION, type ZaloContext } from './client';
 
@@ -581,6 +582,9 @@ export class ZaloListener {
       try {
         const decoded = await decodeEventData(parsed as { data: unknown; encrypt: unknown }, this.cipherKey ?? undefined);
         this.stats.decoded += 1;
+        // Sự kiện file_done (upload FILE đính kèm xong, mang fileUrl) đi qua
+        // đúng đường khung mã hoá này — giao cho uploadHub trước khi rút tin.
+        try { scanFileDone(decoded); } catch { /* khung lạ — không được chết listener */ }
         const msgs = extractMessages(groupHint, decoded, Date.now(), this.ctx.uid);
         if (msgs.length) {
           for (const msg of msgs) {

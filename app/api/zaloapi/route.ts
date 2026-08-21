@@ -34,7 +34,7 @@
 // Mọi lượt gửi ghi một dòng ZALOAPI_AUDIT ra stdout, cùng quy ước SHEET_AUDIT.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { login, sendMessage, uploadImage, sendPhoto, getGroupHistory, scanContacts, sendReaction } from '@/lib/zaloapi/server/client';
+import { login, sendMessage, uploadImage, sendPhoto, uploadFile, sendFileMessage, getGroupHistory, scanContacts, sendReaction } from '@/lib/zaloapi/server/client';
 import { reactionByKey, REACTION_SOURCE, UNREACT_RTYPE } from '@/lib/zaloapi/reactions';
 import { ZALOAPI_ENABLED, ZALOAPI_ALLOW_SEND } from '@/lib/zaloapi/server/flags';
 import {
@@ -456,6 +456,47 @@ export async function POST(req: NextRequest) {
           if (dest && echoId) setMessageStatus(accountKey, dest, echoId, result.ok ? 'sent' : 'failed');
           // eslint-disable-next-line no-console
           console.log(`ZALOAPI_AUDIT operation=SEND_IMAGE account=${accountKey} thread=${threadId || '(self)'} group=${group} size=${buffer.length} ok=${result.ok} ts=${new Date().toISOString()}`);
+          return NextResponse.json({ ok: true, result: { ...result, threadId: dest } });
+        } catch (err) {
+          return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 400 });
+        }
+      }
+
+      // Gửi FILE đính kèm: upload asyncfile theo chunk → chờ file_done (qua
+      // WebSocket, xem uploadHub) → gửi tin asyncfile/msg. LISTENER phải chạy
+      // mới nhận được file_done nên tự bật nếu chưa — kết nối WS mất ~1-2s,
+      // trong lúc các chunk còn đang upload nên hầu như không đội thêm thời gian.
+      case 'sendFile': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        if (!ZALOAPI_ALLOW_SEND) {
+          return NextResponse.json({ ok: false, error: 'Gửi đang tắt. Đặt ZALOAPI_ALLOW_SEND=true trong .env.local.' }, { status: 403 });
+        }
+        const b64 = typeof body.dataBase64 === 'string' ? body.dataBase64 : '';
+        if (!b64) return NextResponse.json({ ok: false, error: 'thiếu dữ liệu file' }, { status: 400 });
+        const buffer = Buffer.from(b64, 'base64');
+        if (!buffer.length) return NextResponse.json({ ok: false, error: 'file rỗng' }, { status: 400 });
+        if (buffer.length > 100 * 1024 * 1024) {
+          return NextResponse.json({ ok: false, error: 'file quá 100MB — gửi qua kênh khác' }, { status: 400 });
+        }
+        const fileName = (typeof body.fileName === 'string' && body.fileName.trim()) || `file_${Date.now()}`;
+        const group = !!body.group;
+        const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
+
+        let ctx;
+        try { ctx = await getFreshContext(accountKey); }
+        catch (err) { return NextResponse.json({ ok: false, error: `${(err as Error).message}` }, { status: 409 }); }
+
+        if (listenerState(accountKey).state === 'off') startListener(accountKey, ctx);
+
+        const dest = threadId || ctx.uid;
+        try {
+          const attachment = await uploadFile(ctx, { buffer, fileName, threadId, group });
+          const now = Date.now();
+          const echoId = dest ? recordOutgoing(accountKey, { threadId: dest, group, text: `📄 ${fileName}`, at: now, status: 'sending' }) : '';
+          const result = await sendFileMessage(ctx, { threadId, group, attachment });
+          if (dest && echoId) setMessageStatus(accountKey, dest, echoId, result.ok ? 'sent' : 'failed');
+          // eslint-disable-next-line no-console
+          console.log(`ZALOAPI_AUDIT operation=SEND_FILE account=${accountKey} thread=${threadId || '(self)'} group=${group} size=${buffer.length} ok=${result.ok} ts=${new Date().toISOString()}`);
           return NextResponse.json({ ok: true, result: { ...result, threadId: dest } });
         } catch (err) {
           return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 400 });

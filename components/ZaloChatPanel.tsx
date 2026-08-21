@@ -22,6 +22,7 @@ import {
   zaloApiHistory,
   zaloApiSendMessage,
   zaloApiSendImage,
+  zaloApiSendFile,
   zaloApiLoadOlder,
   zaloApiContacts,
   zaloApiReact,
@@ -340,8 +341,13 @@ export default function ZaloChatPanel({
     } catch (e) { setErr((e as Error).message); }
   }, [accountKey]);
 
-  // ĐÍNH KÈM ảnh (dán/chọn) — chỉ nạp vào hàng chờ + xem trước, KHÔNG gửi ngay.
+  // ĐÍNH KÈM (dán ảnh / chọn file bất kỳ) — chỉ nạp vào hàng chờ + xem trước,
+  // KHÔNG gửi ngay. Ảnh đi đường photo, file thường đi đường asyncfile.
   const addPending = useCallback((file: File, fallbackName?: string) => {
+    if (file.size > 100 * 1024 * 1024) {
+      setErr(`"${file.name}" quá 100MB — gửi qua kênh khác.`);
+      return;
+    }
     const named = file.name ? file : new File([file], fallbackName || `screenshot_${Date.now()}.png`, { type: file.type || 'image/png' });
     const url = URL.createObjectURL(named);
     pendingSeq.current += 1;
@@ -369,12 +375,30 @@ export default function ZaloChatPanel({
     try {
       let dest = activeThread;
       if (pending.length) {
-        // Gửi từng ảnh đính kèm; chú thích (chữ đang gõ) gắn vào ảnh ĐẦU TIÊN.
-        for (let i = 0; i < pending.length; i++) {
-          const p = pending[i];
+        // Gửi từng đính kèm: ảnh đi đường photo (có chú thích — chữ đang gõ
+        // gắn vào ảnh ĐẦU TIÊN); file thường đi đường asyncfile (Zalo không
+        // có chỗ caption cho file — chữ đang gõ được gửi thành tin riêng sau).
+        let captionUsed = false;
+        for (const p of pending) {
           const dataBase64 = await fileToBase64(p.file);
-          const res = await zaloApiSendImage({ accountKey, threadId: activeThread, group, dataBase64, fileName: p.file.name, caption: i === 0 ? text.trim() : '' });
-          if (!res.ok) setErr(res.detail || 'gửi ảnh không thành công');
+          if (p.file.type.startsWith('image/')) {
+            const res = await zaloApiSendImage({
+              accountKey, threadId: activeThread, group, dataBase64, fileName: p.file.name,
+              caption: !captionUsed ? text.trim() : '',
+            });
+            captionUsed = captionUsed || !!text.trim();
+            if (!res.ok) setErr(res.detail || 'gửi ảnh không thành công');
+            dest = res.threadId || dest;
+          } else {
+            const res = await zaloApiSendFile({ accountKey, threadId: activeThread, group, dataBase64, fileName: p.file.name });
+            if (!res.ok) setErr(res.detail || 'gửi file không thành công');
+            dest = res.threadId || dest;
+          }
+        }
+        // Toàn file thường mà có chữ đang gõ → gửi chữ thành tin riêng, không nuốt.
+        if (text.trim() && !captionUsed) {
+          const res = await zaloApiSendMessage({ accountKey, threadId: activeThread, text, group });
+          if (!res.ok) setErr(res.detail || 'gửi không thành công');
           dest = res.threadId || dest;
         }
       } else {
@@ -800,20 +824,33 @@ export default function ZaloChatPanel({
               {pending.length > 0 && (
                 <div className="zc-attach">
                   {pending.map((p) => (
-                    <span key={p.id} className="zc-attach-item">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={p.url} alt="đính kèm" />
-                      <button className="zc-attach-x" title="Bỏ ảnh" onClick={() => removePending(p.id)}>✕</button>
+                    <span key={p.id} className="zc-attach-item" title={p.file.name}>
+                      {p.file.type.startsWith('image/') ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={p.url} alt="đính kèm" />
+                      ) : (
+                        // File thường: không có gì để xem trước — chip tên + cỡ.
+                        <span className="small" style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 4,
+                          padding: '6px 8px', maxWidth: 180, overflow: 'hidden',
+                          textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          📄 {p.file.name} · {p.file.size > 1024 * 1024
+                            ? `${(p.file.size / 1024 / 1024).toFixed(1)}MB`
+                            : `${Math.max(1, Math.round(p.file.size / 1024))}KB`}
+                        </span>
+                      )}
+                      <button className="zc-attach-x" title="Bỏ đính kèm" onClick={() => removePending(p.id)}>✕</button>
                     </span>
                   ))}
-                  <span className="zc-attach-hint">Enter hoặc bấm Gửi để gửi {pending.length} ảnh</span>
+                  <span className="zc-attach-hint">Enter hoặc bấm Gửi để gửi {pending.length} đính kèm</span>
                 </div>
               )}
               <div className="zc-composer">
-                <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => void onPickImage(e)} />
+                <input ref={fileRef} type="file" multiple hidden onChange={(e) => void onPickImage(e)} />
                 <button
                   className="zc-composer-attach"
-                  title="Gửi ảnh (chú thích lấy từ ô soạn nếu có)"
+                  title="Đính kèm ảnh hoặc file bất kỳ (≤100MB). Ảnh mang chú thích từ ô soạn; file thường gửi kèm chữ thành tin riêng"
                   onClick={() => fileRef.current?.click()}
                   disabled={!canSend || sending}
                 >📎</button>

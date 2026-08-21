@@ -122,6 +122,18 @@ export function zaloApiLogout(accountKey: string): Promise<{ dropped: boolean }>
   return call<{ dropped: boolean }>('logout', { accountKey });
 }
 
+/** Gửi FILE đính kèm (mọi loại, ≤100MB): upload asyncfile rồi gửi tin file.
+ *  Cần listener đang chạy (route tự bật) — fileUrl về qua WebSocket. */
+export function zaloApiSendFile(params: {
+  accountKey: string;
+  threadId?: string;
+  group?: boolean;
+  dataBase64: string;
+  fileName: string;
+}): Promise<ZaloSendResult> {
+  return call<ZaloSendResult>('sendFile', params);
+}
+
 /** Người từng xuất hiện trong tin nhắn của tài khoản (uid + tên, mới nhắn lên
  *  đầu) — gợi ý cho danh bạ mention của bảng phân công tag. */
 export function zaloApiPeople(accountKey: string): Promise<{ uid: string; name: string }[]> {

@@ -11,9 +11,11 @@
 // memory). KHÔNG generateZaloUUID lại: phần UUID ngẫu nhiên sẽ khác, cookie gắn
 // với imei gốc bị từ chối.
 
+import { createHash } from 'crypto';
 import { encodeAES, decodeAES, decodeRespAES, getSignKey, ParamsEncryptor } from './crypto';
 import { readImageMeta } from './imageMeta';
 import { trace } from './trace';
+import { waitFileDone } from './uploadHub';
 
 /** Hằng số API — port từ ctx mặc định của zca-js. Đổi khi Zalo nâng version. */
 export const API_TYPE = 30;
@@ -574,6 +576,157 @@ export async function sendPhoto(
   const decoded = raw.data ? decryptRespSecret(ctx.secretKey, raw.data) : null;
   const msgId = decoded && typeof decoded === 'object' ? String((decoded as Record<string, unknown>)['msgId'] ?? '') : '';
   return { ok: true, msgId: msgId || undefined, detail: 'đã gửi ảnh qua API', raw: decoded };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  GỬI FILE ĐÍNH KÈM — port từ nhánh "others" của zca-js uploadAttachment +
+//  sendMessage (asyncfile). Khác ảnh ở MỘT điểm cốt lõi: HTTP upload chỉ trả
+//  fileId; fileUrl về SAU qua WebSocket (file_done, xem uploadHub) — nên
+//  LISTENER phải đang chạy thì gửi file mới hoàn tất.
+// ════════════════════════════════════════════════════════════════════════════
+
+export interface FileAttachment {
+  fileId: string;
+  /** md5 hex của toàn bộ file — Zalo đối chiếu khi nhận. */
+  checksum: string;
+  fileUrl: string;
+  totalSize: number;
+  fileName: string;
+}
+
+/**
+ * Upload buffer FILE theo chunk (multipart `chunkContent`, params mã hoá ở
+ * query — cùng khuôn uploadImage nhưng endpoint asyncfile/upload), rồi chờ
+ * file_done để lấy fileUrl.
+ */
+export async function uploadFile(
+  ctx: ZaloContext,
+  opts: { buffer: Buffer; fileName: string; threadId: string; group: boolean },
+): Promise<FileAttachment> {
+  const host = ctx.serviceMap.file?.[0];
+  if (!host) throw new Error('serviceMap thiếu host file — bản build không lộ đường upload');
+  const dest = opts.threadId || ctx.uid;
+  if (!dest) throw new Error('không có threadId để upload file');
+
+  const totalSize = opts.buffer.length;
+  const totalChunk = Math.max(1, Math.ceil(totalSize / UPLOAD_CHUNK));
+  const clientId = Date.now();
+  const typeParam = opts.group ? '11' : '2';
+  const path = `/api/${opts.group ? 'group' : 'message'}/asyncfile/upload`;
+
+  let fileId = '';
+  let done: Promise<{ fileUrl: string }> | null = null;
+  for (let i = 0; i < totalChunk; i++) {
+    const chunk = opts.buffer.subarray(i * UPLOAD_CHUNK, (i + 1) * UPLOAD_CHUNK);
+    const params: Record<string, unknown> = {
+      totalChunk,
+      fileName: opts.fileName,
+      clientId,
+      totalSize,
+      imei: ctx.imei,
+      isE2EE: 0,
+      jxl: 0,
+      chunkId: i + 1,
+      [opts.group ? 'grid' : 'toid']: dest,
+    };
+    const encrypted = encodeAES(ctx.secretKey, JSON.stringify(params));
+    if (!encrypted) throw new Error('mã hoá params upload file thất bại');
+    const url = makeURL(`${host}${path}`, { type: typeParam, params: encrypted });
+
+    const form = new FormData();
+    form.append('chunkContent', new Blob([new Uint8Array(chunk)], { type: 'application/octet-stream' }), opts.fileName);
+
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), REQ_TIMEOUT_MS);
+    let raw: ZaloEnvelope;
+    try {
+      const res = await fetch(url, { method: 'POST', headers: headers(ctx), body: form, signal: ac.signal });
+      const text = await res.text().catch(() => '');
+      if (!text.trim()) throw new Error(`upload file: Zalo trả rỗng (HTTP ${res.status})`);
+      raw = JSON.parse(text) as ZaloEnvelope;
+    } catch (e) {
+      throw new Error(`upload file chunk ${i + 1}/${totalChunk}: ${(e as Error).message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (raw.error_code && raw.error_code !== 0) {
+      trace('uploadFile', `Zalo lỗi ${raw.error_code}`, { chunk: i + 1, totalChunk, msg: raw.error_message });
+      throw new Error(`upload file lỗi ${raw.error_code}: ${raw.error_message ?? ''}`);
+    }
+    const decoded = raw.data ? unwrap(decryptRespSecret(ctx.secretKey, raw.data)) : null;
+    if (decoded && decoded['fileId'] != null && !fileId) {
+      fileId = String(decoded['fileId']);
+      // Đăng ký chờ NGAY khi biết fileId — file_done có thể về trước khi vòng
+      // upload kết thúc (Zalo phát nó ngay lúc ghép đủ chunk phía server).
+      done = waitFileDone(fileId);
+      // Reject của promise này được await bên dưới; chặn unhandled-rejection
+      // trong lúc còn đang upload các chunk còn lại.
+      done.catch(() => {});
+    }
+  }
+
+  if (!fileId || !done) throw new Error('upload xong nhưng response không có fileId — xem trace');
+  const checksum = createHash('md5').update(opts.buffer).digest('hex');
+  const { fileUrl } = await done;
+  trace('uploadFile', 'upload file OK', { fileId, totalSize, fileName: opts.fileName });
+  return { fileId, checksum, fileUrl, totalSize, fileName: opts.fileName };
+}
+
+/** Gửi tin FILE tham chiếu attachment đã upload — nhánh asyncfile/msg. */
+export async function sendFileMessage(
+  ctx: ZaloContext,
+  opts: { threadId: string; group: boolean; attachment: FileAttachment },
+): Promise<SendResult> {
+  const host = ctx.serviceMap.file?.[0];
+  if (!host) return { ok: false, detail: 'serviceMap thiếu host file' };
+  const dest = opts.threadId || ctx.uid;
+  if (!dest) return { ok: false, detail: 'không có threadId để gửi file' };
+  const a = opts.attachment;
+  const isGroup = opts.group;
+  const dot = a.fileName.lastIndexOf('.');
+  const extension = dot > 0 ? a.fileName.slice(dot + 1).toLowerCase() : '';
+
+  // `extention` sai chính tả là CỦA ZALO — sửa lại là server từ chối.
+  const payload: Record<string, unknown> = {
+    fileId: a.fileId,
+    checksum: a.checksum,
+    checksumSha: '',
+    extention: extension,
+    totalSize: a.totalSize,
+    fileName: a.fileName,
+    clientId: Date.now(),
+    fType: 1,
+    fileCount: 0,
+    fdata: '{}',
+    toid: isGroup ? undefined : String(dest),
+    grid: isGroup ? String(dest) : undefined,
+    fileUrl: a.fileUrl,
+    zsource: -1,
+    ttl: 0,
+  };
+
+  const encrypted = encodeAES(ctx.secretKey, JSON.stringify(payload));
+  if (!encrypted) return { ok: false, detail: 'mã hoá params gửi file thất bại' };
+  const url = makeURL(`${host}/api/${isGroup ? 'group' : 'message'}/asyncfile/msg`, { nretry: 0 });
+  const body = new URLSearchParams({ params: encrypted });
+
+  let raw: ZaloEnvelope;
+  try {
+    raw = await fetchZalo(
+      url,
+      { method: 'POST', headers: { ...headers(ctx), 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() },
+      'gửi file',
+    );
+  } catch (e) {
+    return { ok: false, detail: (e as Error).message };
+  }
+  if (raw.error_code && raw.error_code !== 0) {
+    trace('sendFile', `Zalo lỗi ${raw.error_code}`, { msg: raw.error_message });
+    return { ok: false, detail: `Zalo trả lỗi ${raw.error_code}: ${raw.error_message ?? ''}`, raw };
+  }
+  const decoded = raw.data ? decryptRespSecret(ctx.secretKey, raw.data) : null;
+  const msgId = decoded && typeof decoded === 'object' ? String((decoded as Record<string, unknown>)['msgId'] ?? '') : '';
+  return { ok: true, msgId: msgId || undefined, detail: 'đã gửi file qua API', raw: decoded };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
