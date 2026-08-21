@@ -172,6 +172,14 @@ export default function GitWorkspace() {
   const [mrModalOpen, setMrModalOpen] = useState(false);
   const [mrHighlight, setMrHighlight] = useState<string>('');
   const [view, setView] = useState<'changes' | 'history'>('changes');
+  /** Gập toàn bộ phần đầu (tab dự án, TẤT CẢ REPO, thanh repo) để nhường chỗ
+   *  tối đa cho vùng diff — hàng tab Thay đổi/History trở thành thanh tóm tắt
+   *  mỏng (tên repo + branch + Pull/Push/↻). Nhớ lựa chọn qua các lần mở app. */
+  const [headerHidden, setHeaderHidden] = useState(false);
+  useEffect(() => { if (readLocal('git.headerCollapsed') === '1') setHeaderHidden(true); }, []);
+  const toggleHeader = useCallback(() => {
+    setHeaderHidden((v) => { writeLocal('git.headerCollapsed', v ? '0' : '1'); return !v; });
+  }, []);
   const [commits, setCommits] = useState<CommitLog[]>([]);
   const [logLoading, setLogLoading] = useState(false);
   // ── Xem nội dung thay đổi của một commit trong tab Lịch sử ──────────────────
@@ -438,6 +446,8 @@ export default function GitWorkspace() {
 
   const clean = status && status.files.length === 0;
   const repoName = repos.find((r) => r.path === repo)?.name ?? '';
+  // Chưa có repo nào thì BUỘC hiện phần đầu — mọi lối cấu hình nằm ở đó.
+  const headerCollapsed = headerHidden && repos.length > 0;
   // cloud-saas-* product repos must be coded on `dev` (branch_guard convention) —
   // warn (don't block) when committing elsewhere.
   const branchWarn =
@@ -709,7 +719,7 @@ export default function GitWorkspace() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       {/* ── Project tabs (each = a named root folder) ───────────────────────── */}
-      <ProjectTabs
+      {!headerCollapsed && <ProjectTabs
         projects={projects}
         activeId={activeProjectId}
         configured={projectsConfigured}
@@ -732,9 +742,9 @@ export default function GitWorkspace() {
               ?? '';
           });
         }}
-      />
+      />}
 
-      {activeProject && (
+      {!headerCollapsed && activeProject && (
         <div
           className="small"
           style={{ color: 'var(--muted)', marginTop: -6, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}
@@ -779,7 +789,7 @@ export default function GitWorkspace() {
       ) : (
         <>
       {/* ── All-repos overview (status check + pull all) ───────────────────── */}
-      <AllReposPanel
+      {!headerCollapsed && <AllReposPanel
         activeRepo={repo}
         projectId={activeProjectId}
         rows={overviewRows}
@@ -787,9 +797,10 @@ export default function GitWorkspace() {
         onCheck={loadOverview}
         onOpenRepo={(p) => setRepo(p)}
         onAfterPull={() => refresh(repo)}
-      />
+      />}
 
       {/* ── Repo + branch bar ──────────────────────────────────────────────── */}
+      {!headerCollapsed && (
       <div className="panel">
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <label className="small" style={{ color: 'var(--muted)' }}>Repo</label>
@@ -1001,6 +1012,7 @@ export default function GitWorkspace() {
         {error && <pre className="code" style={{ color: 'var(--err)', marginTop: 10, marginBottom: 0 }}>{error}</pre>}
         {notice && <div className="small" style={{ color: 'var(--ok)', marginTop: 10 }}>{notice}</div>}
       </div>
+      )}
 
       {/* ── Sub-tabs: Changes | History ────────────────────────────────────── */}
       <div className="gitsub" role="tablist" aria-label="Git view">
@@ -1021,15 +1033,84 @@ export default function GitWorkspace() {
         >
           <span aria-hidden>⌛</span> History
         </button>
-        {view === 'history' && (
+        {/* Đang gập phần đầu: hàng tab kiêm luôn thanh tóm tắt — phân cấp
+            Project › Repo CHỌN ĐƯỢC tại chỗ (khỏi phải Mở rộng chỉ để nhảy
+            repo khác), kèm badge branch và bộ nút tối thiểu Pull/Push/↻. */}
+        {headerCollapsed && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 6, minWidth: 0 }}>
+            <select
+              value={activeProjectId}
+              onChange={(e) => setActiveProjectId(e.target.value)}
+              disabled={busy || !!commandRunning}
+              title="Project — thư mục gốc chứa các repo"
+              style={{ padding: '4px 6px', fontSize: 12, maxWidth: 150 }}
+            >
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <span aria-hidden style={{ color: 'var(--muted)' }}>›</span>
+            <select
+              value={repo}
+              onChange={(e) => setRepo(e.target.value)}
+              disabled={busy || !!commandRunning || reposLoading}
+              title={repo || 'Chọn repo'}
+              style={{ padding: '4px 6px', fontFamily: 'var(--mono)', fontSize: 12, maxWidth: 300 }}
+            >
+              {repos.map((r) => (
+                <option key={r.path} value={r.path}>{repoOptionLabel(r.name, overview[r.path])}</option>
+              ))}
+            </select>
+            {status && (
+              <span
+                className={branchWarn ? 'badge warn' : 'badge info'}
+                style={{ fontFamily: 'var(--mono)' }}
+                title={branchWarn
+                  ? `Repo đang ở branch ${status.branch} — quy ước dự án: code trên dev`
+                  : 'branch hiện tại'}
+              >
+                ⎇ {status.detached ? '(detached)' : status.branch}
+                {status.ahead > 0 ? ` ↑${status.ahead}` : ''}
+                {status.behind > 0 ? ` ↓${status.behind}` : ''}
+              </span>
+            )}
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        {headerCollapsed && (
           <>
-            <span style={{ flex: 1 }} />
-            <button className="ghost sm" onClick={() => loadLog(repo)} disabled={logLoading} title="Làm mới history">
-              ↻
-            </button>
+            <button className="ghost sm" onClick={() => run('Pull', () => gitAction('pull', { repo }))}
+              disabled={busy || !!commandRunning} title="git pull --ff-only">↓ Pull</button>
+            <button className="ghost sm" onClick={() => run('Push', () => gitAction('push', { repo }))}
+              disabled={busy || !!commandRunning || (!!status && status.ahead === 0 && !!status.upstream)}
+              title="git push">↑ Push{status && status.ahead > 0 ? ` (${status.ahead})` : ''}</button>
+            <button className="ghost sm" onClick={() => refresh(repo)} disabled={busy || !!commandRunning}
+              title="Làm mới trạng thái">↻</button>
           </>
         )}
+        {view === 'history' && !headerCollapsed && (
+          <button className="ghost sm" onClick={() => loadLog(repo)} disabled={logLoading} title="Làm mới history">
+            ↻
+          </button>
+        )}
+        <button
+          className="ghost sm"
+          onClick={toggleHeader}
+          aria-expanded={!headerCollapsed}
+          title={headerCollapsed
+            ? 'Hiện lại phần trên (chọn repo, TẤT CẢ REPO, branch/merge…)'
+            : 'Thu gọn phần trên — nhường tối đa chỗ cho vùng diff'}
+        >
+          {headerCollapsed ? '⌄ Mở rộng' : '⌃ Thu gọn'}
+        </button>
       </div>
+
+      {/* Gập phần đầu thì lỗi/thông báo (vốn nằm trong panel repo) phải hiện ở
+          đây — pull/push lỗi mà im lặng thì tưởng đã xong. */}
+      {headerCollapsed && (error || notice) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {error && <pre className="code" style={{ color: 'var(--err)', margin: 0 }}>{error}</pre>}
+          {notice && <div className="small" style={{ color: 'var(--ok)' }}>{notice}</div>}
+        </div>
+      )}
 
       {view === 'history' ? (
         /* ── History: danh sách commit | nội dung thay đổi ───────────────── */
