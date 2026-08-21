@@ -112,6 +112,8 @@ export function zaloApiSendMessage(params: {
   text: string;
   group?: boolean;
   styles?: ZaloTextStyle[];
+  /** Tag (@) người trong tin NHÓM — server nối dòng "→ @A @B" + mentionInfo. */
+  mentions?: { uid: string; name: string }[];
 }): Promise<ZaloSendResult> {
   return call<ZaloSendResult>('send', params);
 }

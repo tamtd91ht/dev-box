@@ -270,6 +270,56 @@ export interface ZaloApiSendAction {
   threadLabel?: string;
   /** Nội dung, có template. */
   text: string;
+  /**
+   * TAG (@) người phụ trách theo BẢNG PHÂN CÔNG chung (config.mentionAssignments)
+   * — chỉ có nghĩa khi gửi NHÓM. Cờ opt-in nằm ở action để rule editor NHÌN
+   * THẤY tin này sẽ tag; còn "ai phụ trách gì" là dữ liệu miền dùng chung, sống
+   * ở bảng — đổi người trực sửa một chỗ, mọi rule tự ăn theo. Mention là mention
+   * THẬT (mentionInfo của Zalo, có ping), không phải chữ "@tên" trần.
+   */
+  tagAssignees?: boolean;
+}
+
+// ── Mention (@) khi gửi Zalo nhóm ───────────────────────────────────────────
+
+/** Một người trong danh bạ mention Zalo — Zalo cần UID thật mới ping được. */
+export interface ZaloMentionPerson {
+  /** Khoá gọi trong bảng phân công (viết ngắn, không dấu: 'userA', 'devops'). */
+  alias: string;
+  /** Tên hiển thị — thành chữ "@Tên" trong tin nhắn. */
+  name: string;
+  /** UID Zalo thật (chuỗi số) — đổ vào mentionInfo để Zalo ping đúng người. */
+  uid: string;
+}
+
+/**
+ * Một dòng bảng phân công: SỰ KIỆN NÀO → TAG NHỮNG AI.
+ *
+ * Mọi dòng khớp đều được CỘNG DỒN (khử trùng người): sự kiện dính cả topic A
+ * lẫn topic B thì một tin tag đủ người của cả hai dòng. Hai kiểu đầu là
+ * "hardcode có chủ đích" — người cấu hình chỉ gõ tên topic, KHÔNG phải biết
+ * topic nằm ở field nào của event; tri thức đó nằm trong lib/automation/mention.ts.
+ */
+export interface MentionAssignment {
+  id: string;
+  enabled: boolean;
+  /**
+   * 'topic'  — cảnh báo Kafka dính một trong các topic ở `values`
+   *            (dò trong fields.topics / fields.groups / title / text).
+   * 'infra'  — sự cố hạ tầng kiểu devops: mất kết nối, host down, đĩa/RAM/CPU/
+   *            load/heap… `values` rỗng = cả nhóm metric đó; có giá trị = giới
+   *            hạn đúng các metric key này.
+   * 'custom' — điều kiện tuỳ ý (AND toàn bộ `conditions`) — lối thoát cho case
+   *            thứ ba sau này mà không phải đục engine.
+   */
+  kind: 'topic' | 'infra' | 'custom';
+  /** kind 'topic': danh sách topic. kind 'infra': (tuỳ chọn) danh sách metric key. */
+  values?: string[];
+  /** kind 'custom': tất cả điều kiện phải đúng (AND). */
+  conditions?: AutomationCondition[];
+  /** Alias trong danh bạ mention — nhiều người một dòng. */
+  tag: string[];
+  note?: string;
 }
 
 /**
@@ -610,6 +660,10 @@ export interface AutomationConfig {
   trace: TraceConfig;
   rules: AutomationRule[];
   watches: InfraWatch[];
+  /** Danh bạ mention Zalo (alias → tên + uid) — bảo trì uid MỘT chỗ. */
+  mentionPeople: ZaloMentionPerson[];
+  /** Bảng phân công tag — dữ liệu miền "ai phụ trách gì", dùng chung mọi rule. */
+  mentionAssignments: MentionAssignment[];
 }
 
 export const DEFAULT_AUTOMATION_CONFIG: AutomationConfig = {
@@ -627,6 +681,8 @@ export const DEFAULT_AUTOMATION_CONFIG: AutomationConfig = {
   trace: DEFAULT_TRACE, // opt-in: debug volume, not something to leave on by accident
   rules: [],
   watches: [],
+  mentionPeople: [],
+  mentionAssignments: [],
 };
 
 // ── Engine output ──────────────────────────────────────────────────────────

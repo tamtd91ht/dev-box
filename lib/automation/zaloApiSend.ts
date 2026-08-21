@@ -20,6 +20,7 @@
 // (ZALOAPI_ALLOW_SEND) — hai lớp độc lập, cố ý.
 
 import { zaloApiSendMessage, type ZaloSendResult } from '@/lib/zaloapi/api';
+import type { ResolvedMention } from './mention';
 import type { ZaloApiSendAction } from './types';
 
 export interface ZaloApiSendOutcome {
@@ -59,14 +60,33 @@ function enqueue<T>(accountKey: string, job: () => Promise<T>): Promise<T> {
   return next;
 }
 
-export function sendViaZaloApi(action: ZaloApiSendAction, dryRun: boolean): Promise<ZaloApiSendOutcome> {
-  return enqueue(action.accountKey, () => runSend(action, dryRun));
+/** Người cần tag đã được bảng phân công giải ra (runtime tính, vì nó giữ event). */
+export interface MentionPayload {
+  people: ResolvedMention[];
+  /** Lý do từng dòng khớp — cho dry-run/trace nói được vì sao tag ai. */
+  why: string[];
 }
 
-async function runSend(action: ZaloApiSendAction, dryRun: boolean): Promise<ZaloApiSendOutcome> {
+export function sendViaZaloApi(
+  action: ZaloApiSendAction,
+  dryRun: boolean,
+  mentions?: MentionPayload,
+): Promise<ZaloApiSendOutcome> {
+  return enqueue(action.accountKey, () => runSend(action, dryRun, mentions));
+}
+
+async function runSend(
+  action: ZaloApiSendAction,
+  dryRun: boolean,
+  mentions?: MentionPayload,
+): Promise<ZaloApiSendOutcome> {
   const threadId = (action.threadId ?? '').trim();
   const text = action.text ?? '';
   const where = threadId ? `${action.group ? 'nhóm' : 'hội thoại'} ${threadId}` : 'chính mình (self-chat)';
+  const people = action.group ? (mentions?.people ?? []) : [];
+  const tagNote = people.length
+    ? ` · tag ${people.map((p) => `@${p.name}`).join(' ')}${mentions?.why.length ? ` (${mentions.why.join(' · ')})` : ''}`
+    : '';
 
   if (!text.trim()) {
     return { status: 'error', detail: 'nội dung rỗng — không gửi', sent: 0, result: null };
@@ -78,7 +98,7 @@ async function runSend(action: ZaloApiSendAction, dryRun: boolean): Promise<Zalo
   if (dryRun) {
     return {
       status: 'dry-run',
-      detail: `[gửi thử] tới ${where} · dài ${text.length} ký tự — CHƯA bắn đi`,
+      detail: `[gửi thử] tới ${where} · dài ${text.length} ký tự${tagNote} — CHƯA bắn đi`,
       sent: 0,
       result: null,
     };
@@ -90,9 +110,10 @@ async function runSend(action: ZaloApiSendAction, dryRun: boolean): Promise<Zalo
       threadId,
       text,
       group: !!action.group,
+      mentions: people.length ? people : undefined,
     });
     if (res.ok) {
-      return { status: 'ok', detail: res.detail || `đã gửi tới ${where}`, sent: 1, result: res };
+      return { status: 'ok', detail: (res.detail || `đã gửi tới ${where}`) + tagNote, sent: 1, result: res };
     }
     return { status: 'error', detail: res.detail || 'gửi API không thành công', sent: 0, result: res };
   } catch (e) {

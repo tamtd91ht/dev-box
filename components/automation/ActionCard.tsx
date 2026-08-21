@@ -12,6 +12,7 @@ import { listConnections, connLabel, type ConnOption } from '@/lib/automation/co
 import type { TargetGroup } from '@/lib/workspace/targets';
 import { sendToTargetGroup, type WsSendOutcome } from '@/lib/automation/wsSend';
 import { sendViaZaloApi, type ZaloApiSendOutcome } from '@/lib/automation/zaloApiSend';
+import MentionBoard from './MentionBoard';
 import { loadZaloApiAccounts, zaloApiAccountKey } from '@/lib/zaloapi/accounts';
 import { zaloApiContacts, zaloApiContactAdd, type ZaloContact } from '@/lib/zaloapi/api';
 import { useAutomation } from '@/lib/automation/useAutomation';
@@ -644,6 +645,7 @@ function ZaloApiSendFields({
 }) {
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<ZaloApiSendOutcome | null>(null);
+  const [mentionBoardOpen, setMentionBoardOpen] = useState(false);
   const { config } = useAutomation();
   const guestProblem = action.accountKey ? requireGuest(action.accountKey).error : '';
   // Danh sách tài khoản Zalo API để chọn (multi-account).
@@ -762,6 +764,29 @@ function ZaloApiSendFields({
           onChange={(v) => onChange({ ...action, text: v })}
         />
       </Field>
+
+      {/* Tag (@) người phụ trách — chỉ có nghĩa khi gửi NHÓM. Cờ nằm ở action
+          để rule editor NHÌN THẤY tin sẽ tag; còn "ai phụ trách gì" là bảng
+          phân công dùng chung (đổi người trực sửa một chỗ). */}
+      {action.group && (
+        <div className="auto-wide" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label className="auto-hint" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={!!action.tagAssignees}
+              onChange={(e) => onChange({ ...action, tagAssignees: e.target.checked })}
+            />
+            🏷 Tag (@) người phụ trách theo bảng phân công
+          </label>
+          <button type="button" className="ghost sm" onClick={() => setMentionBoardOpen(true)}>
+            ⚙ Bảng phân công…
+          </button>
+          <span className="auto-hint" style={{ margin: 0 }}>
+            {config.mentionAssignments.length} dòng · {config.mentionPeople.length} người trong danh bạ
+          </span>
+        </div>
+      )}
+      {mentionBoardOpen && <MentionBoard onClose={() => setMentionBoardOpen(false)} />}
 
       {guestProblem && <p className="auto-hint auto-wide ws-scan-bad">⚠ {guestProblem}</p>}
       {!config.allowSend && (

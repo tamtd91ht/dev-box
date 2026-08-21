@@ -317,9 +317,37 @@ export interface TextStyle {
   st: string;
 }
 
+/** Một người cần tag (@) trong tin NHÓM — cần uid thật thì Zalo mới ping. */
+export interface MentionTarget {
+  uid: string;
+  name: string;
+}
+
+/**
+ * Nối dòng tag vào cuối tin + dựng mentionInfo (port từ zca-js Mention:
+ * mảng {pos, len, uid, type:0}, pos/len tính theo đơn vị UTF-16 — chính là
+ * .length của chuỗi JS nên không phải quy đổi gì).
+ *
+ * Text và vị trí được dựng CÙNG MỘT CHỖ ở đây — nếu để tầng trên tự ghép
+ * "@Tên" vào text rồi tầng này đi dò lại vị trí thì tên người trùng với chữ
+ * trong thân tin là mention trỏ sai người.
+ */
+function withMentions(message: string, mentions: MentionTarget[]): { message: string; mentionInfo: string } {
+  if (!mentions.length) return { message, mentionInfo: '' };
+  let text = message.trimEnd() + '\n→ ';
+  const info: { pos: number; len: number; uid: string; type: 0 }[] = [];
+  mentions.forEach((m, i) => {
+    if (i > 0) text += ' ';
+    const tagText = `@${m.name || m.uid}`;
+    info.push({ pos: text.length, len: tagText.length, uid: m.uid, type: 0 });
+    text += tagText;
+  });
+  return { message: text, mentionInfo: JSON.stringify(info) };
+}
+
 export async function sendMessage(
   ctx: ZaloContext,
-  opts: { threadId: string; message: string; group: boolean; styles?: TextStyle[] },
+  opts: { threadId: string; message: string; group: boolean; styles?: TextStyle[]; mentions?: MentionTarget[] },
 ): Promise<SendResult> {
   const now = Date.now();
   const clientId = now;
@@ -332,8 +360,12 @@ export async function sendMessage(
   if (!host) return { ok: false, detail: `serviceMap thiếu host ${opts.group ? 'group' : 'chat'}` };
   const path = opts.group ? '/api/group/sendmsg' : '/api/message/sms';
 
+  // Mention chỉ có nghĩa trong nhóm — tin 1-1 bỏ qua lặng lẽ (người nhận là
+  // chính người được "tag" rồi, thêm @ chỉ gây rối).
+  const tagged = opts.group ? withMentions(opts.message, opts.mentions ?? []) : { message: opts.message, mentionInfo: '' };
+
   const payload: Record<string, unknown> = opts.group
-    ? { grid: dest, message: opts.message, clientId, mentionInfo: '', ttl: 0, visibility: 0, imei: ctx.imei }
+    ? { grid: dest, message: tagged.message, clientId, mentionInfo: tagged.mentionInfo, ttl: 0, visibility: 0, imei: ctx.imei }
     : { toid: dest, message: opts.message, clientId, ttl: 0, imei: ctx.imei };
 
   // Định dạng chữ (in đậm/nghiêng/màu…) đi kèm dưới dạng textProperties — port

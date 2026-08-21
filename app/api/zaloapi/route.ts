@@ -174,12 +174,21 @@ export async function POST(req: NextRequest) {
               .map((s: Record<string, unknown>) => ({ start: Number(s.start) || 0, len: Number(s.len) || 0, st: String(s.st || '') }))
               .filter((s: { len: number; st: string }) => s.len > 0 && s.st)
           : undefined;
+        // Tag (@) trong tin nhóm (tuỳ chọn): [{uid,name}], trần 5 — quá số đó
+        // là spam cả nhóm chứ không còn là cảnh báo.
+        const mentions = Array.isArray(body.mentions)
+          ? body.mentions
+              .filter((m: unknown) => m && typeof m === 'object')
+              .map((m: Record<string, unknown>) => ({ uid: String(m.uid || '').trim(), name: String(m.name || '').trim() }))
+              .filter((m: { uid: string }) => m.uid)
+              .slice(0, 5)
+          : undefined;
         // Ghi LẠC QUAN vào kho hội thoại NGAY để màn chat hiện bong bóng liền,
         // rồi cập nhật trạng thái theo kết quả. dest rỗng = tự gửi cho mình (uid).
         const dest = threadId || ctx.uid;
         const now = Date.now();
         const echoId = dest ? recordOutgoing(accountKey, { threadId: dest, group, text, at: now, status: 'sending' }) : '';
-        const result = await sendMessage(ctx, { threadId, message: text, group, styles });
+        const result = await sendMessage(ctx, { threadId, message: text, group, styles, mentions });
         if (dest && echoId) setMessageStatus(accountKey, dest, echoId, result.ok ? 'sent' : 'failed');
         // eslint-disable-next-line no-console
         console.log(

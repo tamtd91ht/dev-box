@@ -21,10 +21,12 @@ import {
   type InfraWatch,
   type LogStoreConfig,
   type LogTarget,
+  type MentionAssignment,
   type RuleLimits,
   type TraceConfig,
   type TriggerType,
   type WatchSeverity,
+  type ZaloMentionPerson,
 } from './types';
 
 const OPS: ConditionOp[] = [
@@ -182,6 +184,7 @@ function normAction(raw: unknown): AutomationAction | null {
         threadLabel: str(a.threadLabel),
         group: bool(a.group),
         text: str(a.text),
+        tagAssignees: bool(a.tagAssignees),
       };
     case 'reply':
       // requireApproval defaults TRUE — an omitted flag must never mean
@@ -383,6 +386,40 @@ function migrateWatchCooldown(rawWatches: unknown[], rules: AutomationRule[]): v
   }
 }
 
+/** Danh bạ mention: alias + uid là bắt buộc; dòng thiếu thì bỏ, không đoán. */
+function normMentionPerson(raw: unknown): ZaloMentionPerson | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as Record<string, unknown>;
+  const alias = str(p.alias).trim();
+  const uid = str(p.uid).trim();
+  if (!alias || !uid) return null;
+  return { alias, name: str(p.name).trim() || alias, uid };
+}
+
+const MENTION_KINDS: MentionAssignment['kind'][] = ['topic', 'infra', 'custom'];
+
+/** Một dòng bảng phân công. Dòng không tag ai thì vô nghĩa — bỏ. */
+function normMentionAssignment(raw: unknown, index: number): MentionAssignment | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const a = raw as Record<string, unknown>;
+  const tag = strArr(a.tag).map((s) => s.trim()).filter(Boolean);
+  if (!tag.length) return null;
+  const kind = MENTION_KINDS.includes(a.kind as MentionAssignment['kind'])
+    ? (a.kind as MentionAssignment['kind'])
+    : 'topic';
+  return {
+    id: str(a.id) || `mention-${index + 1}`,
+    enabled: bool(a.enabled, true),
+    kind,
+    values: strArr(a.values).map((s) => s.trim()).filter(Boolean),
+    conditions: (Array.isArray(a.conditions) ? a.conditions : [])
+      .map(normCondition)
+      .filter((c): c is AutomationCondition => !!c),
+    tag,
+    note: str(a.note),
+  };
+}
+
 /** Merge anything into a valid AutomationConfig. Never throws. */
 export function normalizeConfig(raw: unknown): AutomationConfig {
   const d = DEFAULT_AUTOMATION_CONFIG;
@@ -420,5 +457,13 @@ export function normalizeConfig(raw: unknown): AutomationConfig {
     trace: normTrace(c.trace),
     rules,
     watches,
+    mentionPeople: (Array.isArray(c.mentionPeople) ? c.mentionPeople : [])
+      .map(normMentionPerson)
+      .filter((p): p is ZaloMentionPerson => !!p),
+    mentionAssignments: dedupeIds(
+      (Array.isArray(c.mentionAssignments) ? c.mentionAssignments : [])
+        .map(normMentionAssignment)
+        .filter((a): a is MentionAssignment => !!a),
+    ),
   };
 }
