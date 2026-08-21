@@ -8,7 +8,7 @@
 // khi một action zaloApiSend có bật cờ tagAssignees thật sự bắn — tức là sau
 // khi rule đã khớp và qua hết cooldown/dedupe. Không thêm request, không I/O.
 
-import { testConditions } from './match';
+import { inWindow, testConditions } from './match';
 import type { AutomationConfig, AutomationEvent, MentionAssignment, ZaloMentionPerson } from './types';
 
 /** Người sẽ được tag trong tin nhắn (đổ vào mentionInfo của Zalo). */
@@ -151,6 +151,13 @@ export function resolveMentions(
 
   for (const a of config.mentionAssignments ?? []) {
     if (!assignmentMatches(a, event)) continue;
+    // KHUNG GIỜ được phép tag (quyền riêng tư người trực): ngoài khung thì dòng
+    // này thôi ping — cảnh báo vẫn đi, và trace nói rõ vì sao không tag để
+    // "không thấy ping" phân biệt được với "cấu hình sai".
+    if (!inWindow(a.window, new Date(event.ts))) {
+      why.push(`⏰ ${assignmentLabel(a)}: ngoài khung giờ được phép tag — không ping`);
+      continue;
+    }
     const tagged: string[] = [];
     for (const alias of a.tag) {
       const p = byAlias.get(alias.trim().toLowerCase());

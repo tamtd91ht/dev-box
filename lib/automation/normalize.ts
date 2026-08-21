@@ -407,7 +407,17 @@ function normMentionAssignment(raw: unknown, index: number): MentionAssignment |
   const kind = MENTION_KINDS.includes(a.kind as MentionAssignment['kind'])
     ? (a.kind as MentionAssignment['kind'])
     : 'topic';
+  // Khung giờ được phép tag — cùng khuôn window của rule.
+  let window: MentionAssignment['window'];
+  if (a.window && typeof a.window === 'object') {
+    const w = a.window as Record<string, unknown>;
+    const days = Array.isArray(w.days)
+      ? w.days.filter((d): d is number => typeof d === 'number' && d >= 0 && d <= 6)
+      : [];
+    window = { days, from: str(w.from), to: str(w.to) };
+  }
   return {
+    window,
     id: str(a.id) || `mention-${index + 1}`,
     enabled: bool(a.enabled, true),
     kind,

@@ -32,7 +32,16 @@ interface RowDraft {
   tagText: string;
   note: string;
   conditions: AutomationCondition[];
+  /** Khung giờ được phép tag (quyền riêng tư người trực) — tắt = tag 24/7. */
+  winOn: boolean;
+  winFrom: string;
+  winTo: string;
+  /** 0=CN … 6=T7. Rỗng = mọi ngày. */
+  winDays: number[];
 }
+
+/** Nhãn ngày cho nút bật/tắt — index khớp RuleWindow.days (0=CN). */
+const DAY_LABELS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
 
 const splitList = (s: string) => s.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
 
@@ -62,7 +71,11 @@ const kafkaTopicsCache = new Map<string, string[]>();
  * cảnh báo dính topic/consumer của cụm, khỏi check từng topic (xem mention.ts).
  * Nhập tay vẫn còn (ô text bên cạnh) cho topic chưa tồn tại/regex tương lai.
  */
-function TopicPicker({ onAdd }: { onAdd: (topic: string) => void }) {
+function TopicPicker({ onAdd, allowAll = true }: {
+  onAdd: (topic: string) => void;
+  /** false = bỏ mục "★ Tất cả" (ô LOẠI TRỪ dùng — loại trừ tất cả là vô nghĩa). */
+  allowAll?: boolean;
+}) {
   const [conns, setConns] = useState<PublicKafkaConnection[] | null>(kafkaConnsCache);
   const [connId, setConnId] = useState('');
   const [topics, setTopics] = useState<string[]>([]);
@@ -114,7 +127,7 @@ function TopicPicker({ onAdd }: { onAdd: (topic: string) => void }) {
         title="Bấm một topic là thêm vào dòng — chọn tiếp topic khác hoặc đổi cụm. '★ Tất cả' = mọi cảnh báo dính topic/consumer của cụm này, không cần liệt kê từng topic"
       >
         <option value="">{loading ? 'đang tải topic…' : `＋ chọn topic (${topics.length})`}</option>
-        {connId && <option value="__all">★ Tất cả topic của cụm này</option>}
+        {connId && allowAll && <option value="__all">★ Tất cả topic của cụm này</option>}
         {topics.map((t) => <option key={t} value={t}>{t}</option>)}
       </select>
     </span>
@@ -165,6 +178,10 @@ export default function MentionBoard({ onClose, accountKey }: {
     tagText: a.tag.join(', '),
     note: a.note ?? '',
     conditions: (a.conditions ?? []).map((c) => ({ ...c })),
+    winOn: !!a.window && !!(a.window.from || a.window.to || a.window.days.length),
+    winFrom: a.window?.from ?? '08:00',
+    winTo: a.window?.to ?? '18:00',
+    winDays: [...(a.window?.days ?? [])],
   })));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -191,6 +208,7 @@ export default function MentionBoard({ onClose, accountKey }: {
           excludes: r.kind === 'topic' && hasWildcard(r.valuesText) ? splitList(r.excludesText) : [],
           conditions: r.kind === 'custom' ? r.conditions.filter((c) => c.field.trim()) : [],
           tag: splitList(r.tagText),
+          window: r.winOn ? { days: r.winDays, from: r.winFrom, to: r.winTo } : undefined,
           note: r.note.trim(),
         })),
       });
@@ -309,13 +327,54 @@ export default function MentionBoard({ onClose, accountKey }: {
             {/* Ô loại trừ chỉ hiện khi dòng có token ★ tất-cả — với topic liệt
                 kê tường minh thì "loại trừ" vô nghĩa (đừng liệt kê là xong). */}
             {r.kind === 'topic' && hasWildcard(r.valuesText) && (
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
                 <span className="small" style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>🚫 trừ topic</span>
-                <input className="input" style={{ flex: 1, fontFamily: 'var(--mono)', fontSize: 12 }}
+                {/* Cùng bộ gợi ý cụm→topic như ô chọn phía trên — không có mục
+                    ★ (loại trừ "tất cả" là vô nghĩa). */}
+                <TopicPicker allowAll={false} onAdd={(t) => {
+                  const list = splitList(rows[i].excludesText);
+                  if (!list.includes(t)) patchRow(i, { excludesText: [...list, t].join(', ') });
+                }} />
+                <input className="input" style={{ flex: '1 1 200px', fontFamily: 'var(--mono)', fontSize: 12 }}
                   placeholder="sự kiện nhắc tới topic này thì ★ không tag — phẩy phân tách: log-spam, test-events"
                   value={r.excludesText} onChange={(e) => patchRow(i, { excludesText: e.target.value })} />
               </div>
             )}
+            {/* Khung giờ được phép tag — quyền riêng tư người trực: ngoài khung
+                dòng này KHÔNG ping ai, cảnh báo vẫn gửi vào nhóm bình thường.
+                Sự cố thật sự gấp thì đừng đặt khung giờ (tag 24/7). */}
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+              <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--muted)', whiteSpace: 'nowrap' }}
+                title="Ngoài khung giờ: cảnh báo vẫn gửi, chỉ thôi ping người — trace ghi rõ vì sao không tag">
+                <input type="checkbox" checked={r.winOn} onChange={(e) => patchRow(i, { winOn: e.target.checked })} />
+                ⏰ chỉ tag trong khung giờ
+              </label>
+              {r.winOn && (
+                <>
+                  <input type="time" className="input" style={{ width: 96, fontSize: 12, padding: '3px 6px' }}
+                    value={r.winFrom} onChange={(e) => patchRow(i, { winFrom: e.target.value })} />
+                  <span className="small" style={{ color: 'var(--muted)' }}>→</span>
+                  <input type="time" className="input" style={{ width: 96, fontSize: 12, padding: '3px 6px' }}
+                    value={r.winTo} onChange={(e) => patchRow(i, { winTo: e.target.value })} />
+                  {DAY_LABELS.map((d, di) => (
+                    <button key={d} type="button"
+                      className={r.winDays.includes(di) ? 'sm' : 'ghost sm'}
+                      style={{ padding: '2px 7px', fontSize: 11 }}
+                      title="Ngày được tag — không chọn ngày nào = mọi ngày"
+                      onClick={() => patchRow(i, {
+                        winDays: r.winDays.includes(di)
+                          ? r.winDays.filter((x) => x !== di)
+                          : [...r.winDays, di].sort(),
+                      })}>
+                      {d}
+                    </button>
+                  ))}
+                  <span className="small" style={{ color: 'var(--faint)' }}>
+                    không chọn ngày = mọi ngày · giờ đầu &gt; giờ cuối = vắt qua đêm
+                  </span>
+                </>
+              )}
+            </div>
             {r.kind === 'custom' && (
               <div style={{ marginTop: 6, display: 'grid', gap: 4 }}>
                 {r.conditions.map((c, ci) => (
@@ -349,6 +408,7 @@ export default function MentionBoard({ onClose, accountKey }: {
           onClick={() => setRows((cur) => [...cur, {
             id: `mention-${Date.now().toString(36)}`, enabled: true, kind: 'topic',
             valuesText: '', excludesText: '', tagText: '', note: '', conditions: [],
+            winOn: false, winFrom: '08:00', winTo: '18:00', winDays: [],
           }])}>
           ＋ Thêm dòng phân công
         </button>

@@ -328,6 +328,13 @@ export interface MentionAssignment {
   conditions?: AutomationCondition[];
   /** Alias trong danh bạ mention — nhiều người một dòng. */
   tag: string[];
+  /**
+   * KHUNG GIỜ được phép tag — quyền riêng tư cho người trực: ngoài khung này
+   * dòng KHÔNG tag ai (cảnh báo vẫn gửi vào nhóm bình thường, chỉ thôi ping).
+   * Dùng lại RuleWindow (days rỗng = mọi ngày; from > to vắt qua nửa đêm).
+   * Không khai = tag 24/7 — dòng cho sự cố thật sự gấp thì ĐỪNG đặt khung giờ.
+   */
+  window?: RuleWindow;
   note?: string;
 }
 
