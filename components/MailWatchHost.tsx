@@ -45,6 +45,13 @@ export const MAIL_REFRESH_EVENT = 'devbox:mail-refresh';
  *  đứng yên (phải bấm lại Inbox mới thấy thư mới) chính là lỗi từng có. */
 export const MAIL_NEW_EVENT = 'devbox:mail-new';
 
+/** Event kèm SNAPSHOT mới nhất (detail = MailWatchSnapshot). Ai cần số
+ *  per-account (chip tài khoản trong tab Mail) thì nghe đây thay vì tự poll:
+ *  tự GET khi vừa nghe MAIL_REFRESH_EVENT là dính race — GET trả về TRƯỚC khi
+ *  server đếm lại xong (POST mất ~1-3s/hòm thư), số cũ đè lên và chip trơ tới
+ *  tick sau. Snapshot phát ở đây luôn là SAU khi đếm xong. */
+export const MAIL_SNAPSHOT_EVENT = 'devbox:mail-snapshot';
+
 export default function MailWatchHost({ onUnread }: { onUnread: (n: number) => void }) {
   // Snapshot gần nhất, giữ lại để khi người dùng bật/tắt ẩn thông báo thì tính
   // lại tổng NGAY từ số liệu đang có — không phải chờ hết 60 giây tới lần poll
@@ -81,7 +88,10 @@ export default function MailWatchHost({ onUnread }: { onUnread: (n: number) => v
         if (!res.ok) return;
         const snap = (await res.json()) as MailWatchSnapshot;
         lastSnap.current = snap;
-        if (!stopped) onUnread(audibleTotal(snap));
+        if (!stopped) {
+          onUnread(audibleTotal(snap));
+          window.dispatchEvent(new CustomEvent(MAIL_SNAPSHOT_EVENT, { detail: snap }));
+        }
         announceNew(snap);
       } catch {
         /* server đang khởi động / offline — thử lại ở tick sau */
@@ -98,7 +108,10 @@ export default function MailWatchHost({ onUnread }: { onUnread: (n: number) => v
         if (!res.ok) return;
         const snap = (await res.json()) as MailWatchSnapshot;
         lastSnap.current = snap;
-        if (!stopped) onUnread(audibleTotal(snap));
+        if (!stopped) {
+          onUnread(audibleTotal(snap));
+          window.dispatchEvent(new CustomEvent(MAIL_SNAPSHOT_EVENT, { detail: snap }));
+        }
         announceNew(snap);
       } catch {
         /* thử lại ở tick định kỳ */

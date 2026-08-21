@@ -29,7 +29,7 @@ import MailCalendar from './MailCalendar';
 import GoogleAuthWindow from './GoogleAuthWindow';
 import { fmtRel } from '@/lib/google';
 import PasswordInput from './PasswordInput';
-import { MAIL_REFRESH_EVENT, MAIL_NEW_EVENT } from './MailWatchHost';
+import { MAIL_REFRESH_EVENT, MAIL_NEW_EVENT, MAIL_SNAPSHOT_EVENT } from './MailWatchHost';
 import { MAIL_MUTED_EVENT, loadMutedMail, toggleMutedMail } from '@/lib/mailMuted';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
@@ -852,9 +852,12 @@ function forwardDraft(detail: MailDetail, path: string): ComposeDraft {
   };
 }
 
-function MailboxView({ account, onCompose }: {
+function MailboxView({ account, onCompose, onReadLocal }: {
   account: MailAccountPub;
   onCompose: (draft: ComposeDraft) => void;
+  /** Báo lên cha: N thư INBOX vừa được đọc/xử lý — chip tài khoản trừ NGAY,
+   *  không chờ server đếm lại (snapshot event sẽ xác nhận sau ~1-3s). */
+  onReadLocal?: (count: number) => void;
 }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--gp-rail', min: 170, max: 520, gap: 12 });
@@ -889,6 +892,12 @@ function MailboxView({ account, onCompose }: {
   const [spamming, setSpamming] = useState<number | null>(null);
   const [markingAll, setMarkingAll] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  /** Chip tài khoản chỉ đếm INBOX (mailWatch đếm INBOX UNSEEN) — đọc thư ở
+   *  folder khác thì đừng trừ, không thì chip âm so với số thật. */
+  const reportRead = useCallback((n: number) => {
+    if (n > 0 && path.toUpperCase() === 'INBOX') onReadLocal?.(n);
+  }, [path, onReadLocal]);
 
   const loadFolders = useCallback(() => {
     mFolders(account.id).then(setFolders).catch((e) => setErr((e as Error).message));
@@ -978,6 +987,7 @@ function MailboxView({ account, onCompose }: {
         // Cập nhật luôn UI khỏi chờ reload: các hàng hết đậm + badge 🔔 giảm đủ.
         setItems((cur) => cur.map((x) => (readUids.has(x.uid) ? { ...x, seen: true } : x)));
         setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - readUids.size) } : f)));
+        reportRead(readUids.size); // chip tài khoản trừ ngay
         pingMailWatch(); // badge tab Mail giảm ngay, khỏi chờ chu kỳ 10 phút
       }
     } catch (e) {
@@ -990,10 +1000,15 @@ function MailboxView({ account, onCompose }: {
   /** Đánh dấu toàn bộ mail trong folder hiện tại là đã đọc — optimistic UI. */
   const markAllRead = async () => {
     setMarkingAll(true); setErr(null);
+    // Chụp số chưa đọc TRƯỚC khi reset — markAllSeen quét cả folder (kể cả
+    // trang chưa tải) nên số của folder là đúng nhất cho chip tài khoản.
+    const wasUnseen = folders.find((f) => f.path === path)?.unseen
+      ?? items.filter((x) => !x.seen).length;
     try {
       await mMarkAllSeen(account.id, path);
       setItems((cur) => cur.map((x) => ({ ...x, seen: true })));
       setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: 0 } : f)));
+      reportRead(wasUnseen);
       pingMailWatch();
       // Lấy lại số chưa đọc THẬT: markAllSeen chạy trên toàn folder, kể cả các
       // trang chưa tải, nên đừng để badge/nút dựa vào phỏng đoán ở client.
@@ -1063,6 +1078,7 @@ function MailboxView({ account, onCompose }: {
       setTotal((t) => Math.max(0, t - 1));
       if (!m.seen) {
         setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - 1) } : f)));
+        reportRead(1);
         pingMailWatch(); // xóa mail chưa đọc cũng phải giảm badge ngay
       }
       setDetail((d) => (d?.uid === m.uid ? null : d));
@@ -1084,6 +1100,7 @@ function MailboxView({ account, onCompose }: {
       setTotal((t) => Math.max(0, t - 1));
       if (!m.seen) {
         setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - 1) } : f)));
+        reportRead(1);
         pingMailWatch(); // mail chưa đọc rời INBOX → badge tab Mail giảm ngay
       }
       setDetail((d) => (d?.uid === m.uid ? null : d));
@@ -1517,7 +1534,12 @@ export default function MailWorkspace() {
 
   useEffect(() => {
     let stopped = false;
-    const pull = async () => {
+    // Nạp số MỘT LẦN lúc mở tab Mail (snapshot in-memory, rẻ). Sau đó không tự
+    // poll nữa: MailWatchHost là nguồn duy nhất — nó phát MAIL_SNAPSHOT_EVENT
+    // mỗi khi có số mới, kể cả SAU khi server đếm lại xong. Bản trước tự GET
+    // khi nghe MAIL_REFRESH_EVENT là dính race: GET trả về trước khi đếm xong,
+    // chip tài khoản trơ số cũ tới tick 60s sau.
+    void (async () => {
       try {
         const res = await fetch('/api/mail/watch');
         if (!res.ok) return;
@@ -1525,18 +1547,18 @@ export default function MailWorkspace() {
         if (stopped || !Array.isArray(snap.accounts)) return;
         setUnseenById(Object.fromEntries(snap.accounts.map((a) => [a.id, a.unseen || 0])));
       } catch {
-        /* server chưa sẵn sàng — thử lại ở nhịp sau */
+        /* server chưa sẵn sàng — snapshot event sẽ tới ở nhịp sau */
       }
+    })();
+    const onSnap = (e: Event) => {
+      const snap = (e as CustomEvent<{ accounts?: { id: string; unseen: number }[] }>).detail;
+      if (!Array.isArray(snap?.accounts)) return;
+      setUnseenById(Object.fromEntries(snap.accounts.map((a) => [a.id, a.unseen || 0])));
     };
-    void pull();
-    // Cùng nhịp với MailWatchHost; đọc snapshot in-memory nên rất nhẹ.
-    const timer = setInterval(() => void pull(), 60_000);
-    const onRefresh = () => void pull();
-    window.addEventListener(MAIL_REFRESH_EVENT, onRefresh);
+    window.addEventListener(MAIL_SNAPSHOT_EVENT, onSnap);
     return () => {
       stopped = true;
-      clearInterval(timer);
-      window.removeEventListener(MAIL_REFRESH_EVENT, onRefresh);
+      window.removeEventListener(MAIL_SNAPSHOT_EVENT, onSnap);
     };
   }, []);
 
@@ -1678,7 +1700,17 @@ export default function MailWorkspace() {
       <div className="office-body">
         {view === 'cal'
           ? <MailCalendar key={`cal-${active.id}`} account={active} />
-          : <MailboxView key={active.id} account={active} onCompose={setCompose} />}
+          : <MailboxView
+              key={active.id}
+              account={active}
+              onCompose={setCompose}
+              // Trừ NGAY trên chip tài khoản khi pane đánh dấu đã đọc — server
+              // đếm lại xong thì MAIL_SNAPSHOT_EVENT xác nhận số thật.
+              onReadLocal={(n) => setUnseenById((cur) => ({
+                ...cur,
+                [active.id]: Math.max(0, (cur[active.id] ?? 0) - n),
+              }))}
+            />}
       </div>
 
       {adding && (
