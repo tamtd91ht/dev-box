@@ -20,8 +20,8 @@ import { spawn, execFile, type ChildProcess } from 'child_process';
 import net from 'net';
 import fs from 'fs';
 import path from 'path';
-import { listApps, addApp, updateApp, removeApp, getApp, type AppMeta } from '@/lib/appRegistry';
-import { recordApp, forgetApp, syncAppManifest, appManifestStatus } from '@/lib/appManifest';
+import { listApps, addApp, updateApp, removeApp, getApp, type AppEntry, type AppMeta } from '@/lib/appRegistry';
+import { recordApp, forgetApp, syncAppManifest, appManifestStatus, relocateAppRoot } from '@/lib/appManifest';
 
 export const runtime = 'nodejs';
 
@@ -70,8 +70,23 @@ function spawnNpm(id: string, args: string[], cwd: string, header: string) {
   spawnNpmEnv(id, args, cwd, { ...process.env, FORCE_COLOR: '0' }, header);
 }
 
+/** `root` là đường dẫn TUYỆT ĐỐI theo máy — registry copy từ máy khác (hoặc
+ *  folder đã dời) là lệch. Spawn với cwd không tồn tại thì Windows báo
+ *  "spawn cmd.exe ENOENT" chẳng nói lên điều gì, nên phải chặn TRƯỚC khi spawn:
+ *  dò lại thư mục theo máy này (lưu luôn vào registry), trượt thì báo thẳng
+ *  thư mục nào đang sai. */
+async function ensureLocalRoot(app: AppEntry): Promise<AppEntry> {
+  if (fs.existsSync(app.root)) return app;
+  const found = await relocateAppRoot(app);
+  if (!found) {
+    throw new Error(`Thư mục "${app.root}" không tồn tại trên máy này — bấm ✏️ sửa lại "Thư mục gốc" theo đường dẫn trên máy bạn.`);
+  }
+  await updateApp(app.id, { root: found });
+  return { ...app, root: found };
+}
+
 async function install(id: string) {
-  const app = await getApp(id);
+  const app = await ensureLocalRoot(await getApp(id));
   const cur = PROCS.get(id);
   if (cur && cur.child.exitCode === null && !cur.child.killed) throw new Error('App đang có tiến trình chạy — dừng trước khi cài.');
   spawnNpm(id, ['install'], app.root, `$ npm install  (cwd: ${app.root})`);
@@ -100,7 +115,7 @@ async function resolvePort(want?: number): Promise<{ port: number; bumped: boole
 }
 
 async function start(id: string) {
-  const app = await getApp(id);
+  const app = await ensureLocalRoot(await getApp(id));
   const cur = PROCS.get(id);
   if (cur && cur.child.exitCode === null && !cur.child.killed) throw new Error('App đang chạy rồi.');
   if (!fs.existsSync(path.join(app.root, 'node_modules'))) {
