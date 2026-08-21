@@ -11,7 +11,7 @@
 // người. Ô nhập danh sách là text phân tách phẩy — gõ tự nhiên, chỉ tách khi
 // Lưu (tách theo từng phím gõ là con trỏ nhảy loạn).
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { automation, useAutomation } from '@/lib/automation/useAutomation';
 import { fetchKafkaConnections, listKafkaTopics, type PublicKafkaConnection } from '@/lib/kafka';
 import { zaloApiPeople } from '@/lib/zaloapi/api';
@@ -71,15 +71,23 @@ const kafkaTopicsCache = new Map<string, string[]>();
  * cảnh báo dính topic/consumer của cụm, khỏi check từng topic (xem mention.ts).
  * Nhập tay vẫn còn (ô text bên cạnh) cho topic chưa tồn tại/regex tương lai.
  */
-function TopicPicker({ onAdd, allowAll = true }: {
+function TopicPicker({ onAdd, allowAll = true, lockClusters }: {
   onAdd: (topic: string) => void;
   /** false = bỏ mục "★ Tất cả" (ô LOẠI TRỪ dùng — loại trừ tất cả là vô nghĩa). */
   allowAll?: boolean;
+  /**
+   * Giới hạn vào đúng các cụm này (tên hoặc id) — ô LOẠI TRỪ dùng: token
+   * '*:<cụm>' phía trên đã chốt cụm rồi, bắt chọn lại là vừa thừa vừa dễ chọn
+   * nhầm cụm khác. Đúng một cụm → tự chọn luôn, ẩn hẳn dropdown cụm.
+   */
+  lockClusters?: string[];
 }) {
   const [conns, setConns] = useState<PublicKafkaConnection[] | null>(kafkaConnsCache);
   const [connId, setConnId] = useState('');
   const [topics, setTopics] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  /** Tìm nhanh trong danh sách topic — cụm thật có hàng trăm topic. */
+  const [q, setQ] = useState('');
 
   useEffect(() => {
     if (kafkaConnsCache) return;
@@ -88,8 +96,19 @@ function TopicPicker({ onAdd, allowAll = true }: {
       .catch(() => setConns([]));
   }, []);
 
+  // Danh sách cụm được phép chọn (khoá theo lockClusters nếu có).
+  const lockKey = (lockClusters ?? []).join('|').toLowerCase();
+  const usable = useMemo(() => {
+    const all = conns ?? [];
+    if (!lockKey) return all;
+    const want = lockKey.split('|').map((s) => s.trim()).filter(Boolean);
+    return all.filter((c) => want.includes(c.name.toLowerCase()) || want.includes(c.id.toLowerCase()));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conns, lockKey]);
+
   const pickConn = (id: string) => {
     setConnId(id);
+    setQ('');
     setTopics(id ? kafkaTopicsCache.get(id) ?? [] : []);
     if (!id || kafkaTopicsCache.has(id)) return;
     setLoading(true);
@@ -103,13 +122,39 @@ function TopicPicker({ onAdd, allowAll = true }: {
       .finally(() => setLoading(false));
   };
 
+  // Khoá về đúng MỘT cụm → tự chọn, người dùng khỏi bấm thêm một lần vô nghĩa.
+  useEffect(() => {
+    if (usable.length === 1 && connId !== usable[0].id) pickConn(usable[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usable]);
+
+  const shown = q.trim()
+    ? topics.filter((t) => t.toLowerCase().includes(q.trim().toLowerCase()))
+    : topics;
+  const lockedToOne = !!lockKey && usable.length === 1;
+
   return (
-    <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-      <select value={connId} onChange={(e) => pickConn(e.target.value)} style={{ fontSize: 12, maxWidth: 150 }}
-        title="Chọn cụm Kafka để gợi ý đúng topic">
-        <option value="">— cụm Kafka —</option>
-        {(conns ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-      </select>
+    <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+      {lockedToOne ? (
+        <span className="badge" title="Cụm lấy theo token ★ phía trên — loại trừ luôn chung cụm với nó">
+          {usable[0].name}
+        </span>
+      ) : (
+        <select value={connId} onChange={(e) => pickConn(e.target.value)} style={{ fontSize: 12, maxWidth: 150 }}
+          title="Chọn cụm Kafka để gợi ý đúng topic">
+          <option value="">— cụm Kafka —</option>
+          {usable.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      )}
+      <input
+        className="input"
+        style={{ width: 110, fontSize: 12, padding: '3px 6px' }}
+        placeholder="🔎 lọc topic…"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        disabled={!connId || loading}
+        title="Gõ để lọc danh sách topic bên cạnh — cụm thật có hàng trăm topic"
+      />
       <select
         value=""
         disabled={!connId || loading}
@@ -126,9 +171,11 @@ function TopicPicker({ onAdd, allowAll = true }: {
         style={{ fontSize: 12, maxWidth: 220 }}
         title="Bấm một topic là thêm vào dòng — chọn tiếp topic khác hoặc đổi cụm. '★ Tất cả' = mọi cảnh báo dính topic/consumer của cụm này, không cần liệt kê từng topic"
       >
-        <option value="">{loading ? 'đang tải topic…' : `＋ chọn topic (${topics.length})`}</option>
-        {connId && allowAll && <option value="__all">★ Tất cả topic của cụm này</option>}
-        {topics.map((t) => <option key={t} value={t}>{t}</option>)}
+        <option value="">
+          {loading ? 'đang tải topic…' : `＋ chọn topic (${q.trim() ? `${shown.length}/${topics.length}` : topics.length})`}
+        </option>
+        {connId && allowAll && !q.trim() && <option value="__all">★ Tất cả topic của cụm này</option>}
+        {shown.map((t) => <option key={t} value={t}>{t}</option>)}
       </select>
     </span>
   );
@@ -162,10 +209,12 @@ export default function MentionBoard({ onClose, accountKey }: {
   // Người từng xuất hiện trong tin nhắn của tài khoản gửi — gợi ý uid, khỏi
   // phải đi mò fromId bằng tay. null = đang tải/không có tài khoản.
   const [zaloPeople, setZaloPeople] = useState<{ uid: string; name: string }[] | null>(null);
-  useEffect(() => {
+  const reloadZaloPeople = useCallback(() => {
     if (!accountKey) { setZaloPeople([]); return; }
+    setZaloPeople(null);
     zaloApiPeople(accountKey).then(setZaloPeople).catch(() => setZaloPeople([]));
   }, [accountKey]);
+  useEffect(reloadZaloPeople, [reloadZaloPeople]);
   const [people, setPeople] = useState<ZaloMentionPerson[]>(
     () => config.mentionPeople.map((p) => ({ ...p })),
   );
@@ -284,6 +333,10 @@ export default function MentionBoard({ onClose, accountKey }: {
               <option key={p.uid} value={p.uid}>{p.name} · {p.uid}</option>
             ))}
           </select>
+          {/* Người mới nhắn tới SAU khi mở bảng thì danh sách chưa có — nạp
+              lại tại chỗ, khỏi phải đóng mở modal. */}
+          <button className="ghost sm" onClick={reloadZaloPeople} disabled={!accountKey || zaloPeople === null}
+            title="Nạp lại danh sách người từng nhắn (vd vừa có người mới nhắn tới)">↻</button>
         </div>
 
         {/* ── Bảng phân công ──────────────────────────────────────────────── */}
@@ -330,11 +383,23 @@ export default function MentionBoard({ onClose, accountKey }: {
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
                 <span className="small" style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>🚫 trừ topic</span>
                 {/* Cùng bộ gợi ý cụm→topic như ô chọn phía trên — không có mục
-                    ★ (loại trừ "tất cả" là vô nghĩa). */}
-                <TopicPicker allowAll={false} onAdd={(t) => {
-                  const list = splitList(rows[i].excludesText);
-                  if (!list.includes(t)) patchRow(i, { excludesText: [...list, t].join(', ') });
-                }} />
+                    ★ (loại trừ "tất cả" là vô nghĩa), và CHUNG CỤM với token
+                    ★ phía trên: '*:<cụm>' đã chốt cụm rồi, một cụm thì tự
+                    chọn luôn khỏi hỏi lại. */}
+                <TopicPicker
+                  allowAll={false}
+                  lockClusters={(() => {
+                    const named = splitList(r.valuesText)
+                      .filter((v) => v.startsWith('*:'))
+                      .map((v) => v.slice(2).trim())
+                      .filter(Boolean);
+                    // '*' trần (mọi cụm) → không khoá, cho chọn tự do.
+                    return named.length ? named : undefined;
+                  })()}
+                  onAdd={(t) => {
+                    const list = splitList(rows[i].excludesText);
+                    if (!list.includes(t)) patchRow(i, { excludesText: [...list, t].join(', ') });
+                  }} />
                 <input className="input" style={{ flex: '1 1 200px', fontFamily: 'var(--mono)', fontSize: 12 }}
                   placeholder="sự kiện nhắc tới topic này thì ★ không tag — phẩy phân tách: log-spam, test-events"
                   value={r.excludesText} onChange={(e) => patchRow(i, { excludesText: e.target.value })} />
