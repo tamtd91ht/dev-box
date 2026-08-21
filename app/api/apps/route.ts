@@ -65,9 +65,23 @@ function spawnNpmEnv(id: string, args: string[], cwd: string, env: NodeJS.Proces
   child.on('error', (e) => push(p, `— spawn error: ${e.message} —`));
 }
 
+/** Env cho process con: PHẢI gỡ NODE_ENV của DevBox. Desktop chạy `next start`
+ *  nên process này mang NODE_ENV=production — npm install kế thừa nó sẽ
+ *  `omit=dev`: không cài devDependencies mà còn PRUNE cái đã cài (tsx của app
+ *  con từng bị xoá kiểu này), còn `npm run dev` của app con thì bị ép chạy
+ *  production. Gỡ luôn npm_config_* cùng tác dụng phòng DevBox được start qua
+ *  `npm run` với cờ lạ. App con tự quyết NODE_ENV của nó. */
+function childEnv(): NodeJS.ProcessEnv {
+  const env: Record<string, string | undefined> = { ...process.env, FORCE_COLOR: '0' };
+  // NODE_ENV bị Next khai readonly trong types → gỡ qua index signature.
+  for (const k of ['NODE_ENV', 'npm_config_omit', 'npm_config_production', 'npm_config_only']) delete env[k];
+  // Cast vì Next augment ProcessEnv coi NODE_ENV là bắt buộc — ở đây vắng mặt là chủ đích.
+  return env as NodeJS.ProcessEnv;
+}
+
 /** Spawn npm với env mặc định (dùng cho install). */
 function spawnNpm(id: string, args: string[], cwd: string, header: string) {
-  spawnNpmEnv(id, args, cwd, { ...process.env, FORCE_COLOR: '0' }, header);
+  spawnNpmEnv(id, args, cwd, childEnv(), header);
 }
 
 /** `root` là đường dẫn TUYỆT ĐỐI theo máy — registry copy từ máy khác (hoặc
@@ -124,7 +138,7 @@ async function start(id: string) {
 
   // Cổng: dò từ port mong muốn, nhảy sang trống kế tiếp nếu bận.
   const resolved = await resolvePort(app.port);
-  const env: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: '0' };
+  const env = childEnv();
   const args = ['run', app.cmd];
   let header = `$ npm run ${app.cmd}  (cwd: ${app.root})`;
   if (resolved) {
