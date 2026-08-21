@@ -786,7 +786,9 @@ function ZaloApiSendFields({
           </span>
         </div>
       )}
-      {mentionBoardOpen && <MentionBoard onClose={() => setMentionBoardOpen(false)} />}
+      {mentionBoardOpen && (
+        <MentionBoard onClose={() => setMentionBoardOpen(false)} accountKey={action.accountKey} />
+      )}
 
       {guestProblem && <p className="auto-hint auto-wide ws-scan-bad">⚠ {guestProblem}</p>}
       {!config.allowSend && (

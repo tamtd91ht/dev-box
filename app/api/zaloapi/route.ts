@@ -198,6 +198,30 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, result: { ...result, threadId: dest } });
       }
 
+      // NGƯỜI từng xuất hiện trong tin nhắn của tài khoản này (fromId/fromName,
+      // mới nhắn gần nhất lên đầu) — nguồn gợi ý cho danh bạ mention của bảng
+      // phân công tag. Chỉ đọc kho tin sẵn có, KHÔNG gọi Zalo.
+      case 'people': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        const ownUid = getSession(accountKey)?.uid || '';
+        const seen = new Map<string, { uid: string; name: string; lastAt: number }>();
+        for (const t of threadsFor(accountKey)) {
+          for (const m of messagesFor(accountKey, t.threadId)) {
+            const uid = (m.fromId || '').trim();
+            if (!uid || m.self || uid === ownUid) continue;
+            const cur = seen.get(uid);
+            if (!cur || m.at > cur.lastAt) {
+              seen.set(uid, { uid, name: (m.fromName || '').trim() || cur?.name || uid, lastAt: m.at });
+            }
+          }
+        }
+        const result = [...seen.values()]
+          .sort((a, b) => b.lastAt - a.lastAt)
+          .slice(0, 300)
+          .map(({ uid, name }) => ({ uid, name }));
+        return NextResponse.json({ ok: true, result });
+      }
+
       // Bật listener NHẬN tin (server-side WebSocket). Cần phiên đã login.
       case 'listen': {
         const accountKey = need(body.accountKey, 'accountKey');

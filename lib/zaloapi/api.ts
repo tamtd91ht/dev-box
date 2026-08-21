@@ -122,6 +122,12 @@ export function zaloApiLogout(accountKey: string): Promise<{ dropped: boolean }>
   return call<{ dropped: boolean }>('logout', { accountKey });
 }
 
+/** Người từng xuất hiện trong tin nhắn của tài khoản (uid + tên, mới nhắn lên
+ *  đầu) — gợi ý cho danh bạ mention của bảng phân công tag. */
+export function zaloApiPeople(accountKey: string): Promise<{ uid: string; name: string }[]> {
+  return call<{ uid: string; name: string }[]>('people', { accountKey });
+}
+
 /** Một tin listener nhận được — khớp IncomingMessage của server (đã bỏ raw). */
 export interface ZaloIncoming {
   at: number;

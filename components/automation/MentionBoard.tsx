@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 // Bảng phân công tag (@) khi gửi Zalo nhóm + danh bạ mention.
 //
@@ -11,8 +11,10 @@
 // người. Ô nhập danh sách là text phân tách phẩy — gõ tự nhiên, chỉ tách khi
 // Lưu (tách theo từng phím gõ là con trỏ nhảy loạn).
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { automation, useAutomation } from '@/lib/automation/useAutomation';
+import { fetchKafkaConnections, listKafkaTopics, type PublicKafkaConnection } from '@/lib/kafka';
+import { zaloApiPeople } from '@/lib/zaloapi/api';
 import type {
   AutomationCondition,
   MentionAssignment,
@@ -31,6 +33,75 @@ interface RowDraft {
 }
 
 const splitList = (s: string) => s.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
+
+/** alias tự sinh từ tên: bỏ dấu tiếng Việt, thường hoá, nối bằng gạch. */
+const aliasOf = (name: string) =>
+  name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/gi, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'user';
+
+// Cache trong phiên: danh sách cụm + topic theo cụm — mở đi mở lại bảng không
+// phải hỏi Kafka lần nữa (listTopics trên cụm lớn không rẻ).
+let kafkaConnsCache: PublicKafkaConnection[] | null = null;
+const kafkaTopicsCache = new Map<string, string[]>();
+
+/**
+ * Bộ chọn topic theo CỤM: chọn cụm → gợi ý đúng topic của cụm đó, bấm topic là
+ * thêm vào dòng; đổi sang cụm khác chọn tiếp — nhiều cụm gom vào một dòng.
+ * Nhập tay vẫn còn (ô text bên cạnh) cho topic chưa tồn tại/regex tương lai.
+ */
+function TopicPicker({ onAdd }: { onAdd: (topic: string) => void }) {
+  const [conns, setConns] = useState<PublicKafkaConnection[] | null>(kafkaConnsCache);
+  const [connId, setConnId] = useState('');
+  const [topics, setTopics] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (kafkaConnsCache) return;
+    fetchKafkaConnections()
+      .then((r) => { kafkaConnsCache = r.connections; setConns(r.connections); })
+      .catch(() => setConns([]));
+  }, []);
+
+  const pickConn = (id: string) => {
+    setConnId(id);
+    setTopics(id ? kafkaTopicsCache.get(id) ?? [] : []);
+    if (!id || kafkaTopicsCache.has(id)) return;
+    setLoading(true);
+    listKafkaTopics(id)
+      .then((list) => {
+        const names = list.filter((t) => !t.internal).map((t) => t.name).sort();
+        kafkaTopicsCache.set(id, names);
+        setTopics(names);
+      })
+      .catch(() => setTopics([]))
+      .finally(() => setLoading(false));
+  };
+
+  return (
+    <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+      <select value={connId} onChange={(e) => pickConn(e.target.value)} style={{ fontSize: 12, maxWidth: 150 }}
+        title="Chọn cụm Kafka để gợi ý đúng topic">
+        <option value="">— cụm Kafka —</option>
+        {(conns ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+      </select>
+      <select
+        value=""
+        disabled={!connId || loading}
+        onChange={(e) => { if (e.target.value) onAdd(e.target.value); }}
+        style={{ fontSize: 12, maxWidth: 220 }}
+        title="Bấm một topic là thêm vào dòng — chọn tiếp topic khác hoặc đổi cụm"
+      >
+        <option value="">{loading ? 'đang tải topic…' : `＋ chọn topic (${topics.length})`}</option>
+        {topics.map((t) => <option key={t} value={t}>{t}</option>)}
+      </select>
+    </span>
+  );
+}
 
 const KIND_LABEL: Record<MentionAssignment['kind'], string> = {
   topic: '📦 Topic Kafka',
@@ -51,8 +122,19 @@ const OP_CHOICES: { v: AutomationCondition['op']; label: string }[] = [
   { v: 'lt', label: '<' },
 ];
 
-export default function MentionBoard({ onClose }: { onClose: () => void }) {
+export default function MentionBoard({ onClose, accountKey }: {
+  onClose: () => void;
+  /** Tài khoản Zalo API của action đang mở bảng — nguồn gợi ý "người từng nhắn". */
+  accountKey?: string;
+}) {
   const { config } = useAutomation();
+  // Người từng xuất hiện trong tin nhắn của tài khoản gửi — gợi ý uid, khỏi
+  // phải đi mò fromId bằng tay. null = đang tải/không có tài khoản.
+  const [zaloPeople, setZaloPeople] = useState<{ uid: string; name: string }[] | null>(null);
+  useEffect(() => {
+    if (!accountKey) { setZaloPeople([]); return; }
+    zaloApiPeople(accountKey).then(setZaloPeople).catch(() => setZaloPeople([]));
+  }, [accountKey]);
   const [people, setPeople] = useState<ZaloMentionPerson[]>(
     () => config.mentionPeople.map((p) => ({ ...p })),
   );
@@ -128,9 +210,41 @@ export default function MentionBoard({ onClose }: { onClose: () => void }) {
               onClick={() => setPeople((cur) => cur.filter((_, j) => j !== i))}>✕</button>
           </div>
         ))}
-        <button className="ghost sm" onClick={() => setPeople((cur) => [...cur, { alias: '', name: '', uid: '' }])}>
-          ＋ Thêm người
-        </button>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="ghost sm" onClick={() => setPeople((cur) => [...cur, { alias: '', name: '', uid: '' }])}>
+            ＋ Thêm người (nhập tay)
+          </button>
+          {/* Gợi ý từ chính tài khoản Zalo dùng để gửi: chọn là điền sẵn cả
+              tên + uid, alias tự sinh từ tên. Người không có trong nhóm đích
+              thì lúc gửi Zalo tự bỏ qua mention — không cần lo chọn dư. */}
+          <select
+            value=""
+            onChange={(e) => {
+              const uid = e.target.value;
+              const p = (zaloPeople ?? []).find((x) => x.uid === uid);
+              if (!p) return;
+              setPeople((cur) => (cur.some((x) => x.uid === p.uid)
+                ? cur
+                : [...cur, { alias: aliasOf(p.name), name: p.name, uid: p.uid }]));
+            }}
+            style={{ fontSize: 12, maxWidth: 280 }}
+            disabled={!zaloPeople?.length}
+            title={accountKey
+              ? 'Người từng nhắn tới tài khoản Zalo đang dùng để gửi — chọn là có sẵn uid'
+              : 'Mở từ action Gửi Zalo API để có gợi ý theo tài khoản'}
+          >
+            <option value="">
+              {zaloPeople === null
+                ? '＋ từ Zalo… (đang tải)'
+                : zaloPeople.length
+                  ? `＋ từ Zalo (${zaloPeople.length} người từng nhắn)`
+                  : '＋ từ Zalo (chưa có ai nhắn tới)'}
+            </option>
+            {(zaloPeople ?? []).map((p) => (
+              <option key={p.uid} value={p.uid}>{p.name} · {p.uid}</option>
+            ))}
+          </select>
+        </div>
 
         {/* ── Bảng phân công ──────────────────────────────────────────────── */}
         <div className="group-title" style={{ margin: '14px 0 4px' }}>Phân công ({rows.length} dòng)</div>
@@ -147,10 +261,19 @@ export default function MentionBoard({ onClose }: { onClose: () => void }) {
                   <option key={k} value={k}>{KIND_LABEL[k]}</option>
                 ))}
               </select>
+              {r.kind === 'topic' && (
+                // Chọn cụm → chọn topic là THÊM vào dòng (chọn tiếp topic khác,
+                // hoặc đổi cụm rồi chọn tiếp — nhiều cụm gom một dòng). Ô text
+                // vẫn sửa/xoá tay được, phẩy phân tách.
+                <TopicPicker onAdd={(t) => {
+                  const list = splitList(rows[i].valuesText);
+                  if (!list.includes(t)) patchRow(i, { valuesText: [...list, t].join(', ') });
+                }} />
+              )}
               {r.kind !== 'custom' && (
                 <input className="input" style={{ flex: '1 1 200px', fontFamily: 'var(--mono)', fontSize: 12 }}
                   placeholder={r.kind === 'topic'
-                    ? 'topic, nhiều thì phẩy: orders, payments'
+                    ? 'topic đã chọn hiện ở đây — sửa/xoá tay được, phẩy phân tách'
                     : 'metric cụ thể (tuỳ chọn) — trống = mọi sự cố kết nối/đĩa/RAM/CPU'}
                   value={r.valuesText} onChange={(e) => patchRow(i, { valuesText: e.target.value })} />
               )}
