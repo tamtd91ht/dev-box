@@ -20,6 +20,7 @@ import BrowserExtBar from './BrowserExtBar';
 import BookmarkBar from './BookmarkBar';
 import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
+import DupTabDialog, { tabUrlKey } from './DupTabDialog';
 import { onOpenUrl } from '@/lib/openTarget';
 import PasswordInput from './PasswordInput';
 
@@ -114,15 +115,36 @@ export default function BrowserTabWorkspace() {
   const [ctx, setCtx] = useState<Ctx | null>(null); // menu chuột phải trên dấu trang
   const [pwOpen, setPwOpen] = useState(false); // modal 🔑 Mật khẩu đã lưu
   const [extOpen, setExtOpen] = useState(false); // modal 🧩 Extension (chỉ tab Browser)
-  /** Tăng lên để BUỘC remount viewer của tab đang xem (nút ↻ trên thanh
-   *  extension). Đổi `key` là React dựng <webview> mới → trang tải lại từ đầu
-   *  → content script của extension được chèn lại. Không có cách nào nhẹ hơn:
-   *  content script chỉ chèn vào lúc trang tải. */
-  const [reloadNonce, setReloadNonce] = useState(0);
+  /** Nonce tải lại THEO TỪNG TAB (nút ↻ trên thanh extension). Đổi `key` là
+   *  React dựng <webview> mới → trang tải lại từ đầu → content script của
+   *  extension được chèn lại. Không có cách nào nhẹ hơn: content script chỉ
+   *  chèn vào lúc trang tải.
+   *
+   *  PHẢI lưu theo từng tab, KHÔNG được ghép nonce vào key của riêng tab đang
+   *  active (`t.id === activeId ? id#nonce : id`): kiểu đó làm key đổi theo
+   *  MỖI LẦN chuyển tab (được chọn thì thêm hậu tố, thôi chọn thì mất) — mà
+   *  đổi key là unmount + mount lại, webview bị huỷ và tải lại từ src gốc.
+   *  Hậu quả từng có thật: điều hướng trong tab A, sang tab B rồi quay lại
+   *  thì A quay về trang mặc định ban đầu. */
+  const [reloadNonces, setReloadNonces] = useState<Record<string, number>>({});
   const rootRef = useRef<HTMLDivElement | null>(null);
-  // Id các tab đang mở — đọc đồng bộ trong openTab để biết tab đã tồn tại chưa
-  // (state `tabs` trong closure có thể cũ khi mở liên tiếp nhiều tab).
-  const existedRef = useRef<Set<string>>(new Set());
+  /** Bộ đếm cấp id tab. Id KHÔNG còn dựng từ partition|url: id theo url nghĩa
+   *  là không bao giờ mở được hai tab cùng một trang — mà so sánh hai bản ghi,
+   *  hai môi trường cùng dashboard là nhu cầu thật. Id giờ chỉ là số thứ tự;
+   *  chuyện "trang này mở chưa" do tabKeysRef trả lời. */
+  const tabSeqRef = useRef(0);
+  // Khoá trang (tabUrlKey) → id của tab ĐẦU TIÊN đang mở trang đó. Dựng lại từ
+  // `tabs` mỗi lần đổi nên đóng tab / điều hướng không phải tự tay dọn map.
+  const tabKeysRef = useRef<Map<string, string>>(new Map());
+  /** Trang vừa mở trong ~2s — OpenLinkDialog phát cùng một event HAI LẦN (lo
+   *  tab vừa mount chưa kịp nghe), không có mốc này thì cú thứ hai sẽ bật hộp
+   *  thoại "đang mở sẵn" ngay trên trang người dùng vừa mở. */
+  const recentOpenRef = useRef<{ key: string; at: number; id: string } | null>(null);
+  /** Hộp thoại "trang đang mở sẵn — chuyển tới hay mở thêm?". */
+  const [dupAsk, setDupAsk] = useState<{
+    url: string; name?: string; profile?: string; creds?: Tab['creds'];
+    existingId: string; existingName: string;
+  } | null>(null);
   // Ảnh chụp mới nhất của tabs/activeId — listener IPC (đăng ký MỘT lần) đọc ra
   // để biết tab nào đang xem, khỏi phải gỡ/gắn lại mỗi lần đổi tab.
   const tabsRef = useRef<Tab[]>([]);
@@ -132,6 +154,17 @@ export default function BrowserTabWorkspace() {
   tabsRef.current = tabs;
   activeRef.current = activeId;
   newTabOpenRef.current = newTabOpen;
+
+  // Map "trang → tab đang mở" đi theo danh sách tab, mọi đường thay đổi
+  // (mở/đóng/điều hướng qua popup extension) đều được phủ ở một chỗ.
+  useEffect(() => {
+    const m = new Map<string, string>();
+    for (const t of tabs) {
+      const k = tabUrlKey(t.partition, t.url);
+      if (!m.has(k)) m.set(k, t.id);
+    }
+    tabKeysRef.current = m;
+  }, [tabs]);
 
   // Esc thoát tràn viền (chỉ host document; phím trong guest không bubble ra).
   useEffect(() => {
@@ -158,34 +191,62 @@ export default function BrowserTabWorkspace() {
 
   const profiles = [...new Set(bookmarks.map((b) => b.profile).filter(Boolean) as string[])].sort();
 
-  /** Mở một URL thành tab (dùng lại tab nếu trùng url+profile).
-   *  background: thêm tab nhưng KHÔNG nhảy sang — như "mở trong tab mới" của
-   *  trình duyệt thật; tab đã mở sẵn thì vẫn chỉ kích hoạt lại (id = partition|url). */
-  const openTab = useCallback((rawUrl: string, opts: { name?: string; profile?: string; creds?: Tab['creds']; background?: boolean } = {}) => {
+  /**
+   * Mở một URL thành tab.
+   *
+   * TRÙNG trang (cùng partition + URL) thì KHÔNG âm thầm nhảy về tab cũ nữa:
+   *   · mở chủ động (bookmark, ô địa chỉ, popup extension) → HỎI qua hộp thoại
+   *     "chuyển tới tab đã mở hay mở thêm tab mới?" — hai tab cùng một trang
+   *     là nhu cầu thật (so hai bản ghi, hai môi trường cùng dashboard);
+   *   · background (window.open/_blank trong trang) → mở thêm tab luôn, đúng
+   *     hành vi trình duyệt thật, không hỏi;
+   *   · cùng event bị phát lặp trong ~2s (OpenLinkDialog bắn hai lần) → coi là
+   *     tiếng vọng, chỉ kích hoạt tab vừa mở.
+   *  `forceNew` = người dùng đã chọn "Mở thêm tab mới" trong hộp thoại.
+   */
+  const openTab = useCallback((rawUrl: string, opts: {
+    name?: string; profile?: string; creds?: Tab['creds']; background?: boolean; forceNew?: boolean;
+  } = {}) => {
     const url = normalizeUrl(rawUrl);
     if (!url) return;
     if (typeof window === 'undefined' || !window.workspace?.isDesktop) { window.open(url, '_blank'); return; }
     const prof = (opts.profile ?? '').trim() || undefined;
     const partition = bmPartition(prof);
-    const id = `${partition}|${url}`;
-    const existed = existedRef.current.has(id);
-    existedRef.current.add(id);
-    setTabs((cur) => (cur.some((t) => t.id === id)
-      ? cur
-      : [...cur, { id, name: opts.name || hostOf(url), url, profile: prof, partition, creds: opts.creds }]));
-    // Tab mới ở chế độ background: giữ nguyên tab đang xem. Nhưng nếu chưa có
-    // tab nào nổi, hoặc tab đó đã mở sẵn, thì đưa lên cho khỏi bấm mò.
+    const key = tabUrlKey(partition, url);
+
+    if (!opts.forceNew) {
+      const recent = recentOpenRef.current;
+      if (recent && recent.key === key && Date.now() - recent.at < 2000) {
+        if (!opts.background) { setActiveId(recent.id); setNewTabOpen(false); }
+        return;
+      }
+      const existingId = tabKeysRef.current.get(key);
+      if (existingId && !opts.background) {
+        const existing = tabsRef.current.find((t) => t.id === existingId);
+        setDupAsk({
+          url, name: opts.name, profile: prof, creds: opts.creds,
+          existingId, existingName: existing?.name ?? hostOf(url),
+        });
+        return;
+      }
+    }
+
+    const id = `tab-${++tabSeqRef.current}`;
+    recentOpenRef.current = { key, at: Date.now(), id };
+    setTabs((cur) => [...cur, { id, name: opts.name || hostOf(url), url, profile: prof, partition, creds: opts.creds }]);
+    // Tab mới ở chế độ background: giữ nguyên tab đang xem, trừ khi chưa có
+    // tab nào nổi thì đưa lên cho khỏi bấm mò.
     //
     // `newTabOpenRef`: đang ở trang new-tab thì activeId = null một cách CÓ CHỦ
     // Ý, không phải "chưa có gì để xem" — kéo tab nền lên lúc này là hất người
     // dùng khỏi ô địa chỉ họ đang gõ dở.
     if (!opts.background) { setActiveId(id); setNewTabOpen(false); }
-    else setActiveId((a) => ((a === null && !newTabOpenRef.current) || existed ? id : a));
+    else setActiveId((a) => (a === null && !newTabOpenRef.current ? id : a));
   }, []);
 
   // Link bấm trong tin nhắn Zalo/Telegram đã chọn "Mở trong Browser của app".
-  // OpenLinkDialog phát event hai lần (lo tab vừa mount chưa kịp nghe); openTab
-  // dựng id từ partition+url nên gọi trùng chỉ kích hoạt lại đúng tab đó.
+  // OpenLinkDialog phát event hai lần (lo tab vừa mount chưa kịp nghe); cú thứ
+  // hai bị openTab nhận diện là tiếng vọng (recentOpenRef) nên vô hại.
   useEffect(() => onOpenUrl('browser', (u) => openTab(u)), [openTab]);
 
   // Link target=_blank / window.open bấm TRONG một tab → tab MỚI ngay ở đây,
@@ -201,7 +262,6 @@ export default function BrowserTabWorkspace() {
   }, [openTab]);
 
   const closeTab = useCallback((id: string) => {
-    existedRef.current.delete(id);
     setTabs((cur) => {
       const idx = cur.findIndex((t) => t.id === id);
       const next = cur.filter((t) => t.id !== id);
@@ -219,9 +279,8 @@ export default function BrowserTabWorkspace() {
   /**
    * chrome.tabs.update tu popup extension → doi dia chi TAB DANG XEM.
    *
-   * Id cua tab la `${partition}|${url}` nen doi URL la doi ca id — phai doi
-   * ca activeId theo, khong thi tab vua doi khong con la tab dang xem nua va
-   * khung duoi nhay ve trang new-tab.
+   * Id tab giờ ổn định (số thứ tự) nên chỉ cần đổi `url` — LinkViewer có effect
+   * "prop url đổi → loadURL" tự đưa guest đi, KHÔNG remount nên không chớp màn.
    *
    * Chua co tab nao dang xem thi mo tab moi: popup bam "di toi" ma khong co gi
    * xay ra la kho hieu hon la mo them tab.
@@ -235,14 +294,10 @@ export default function BrowserTabWorkspace() {
       const i = list.findIndex((t) => t.id === cur);
       if (i < 0) return list;
       const t = list[i];
-      const nextId = `${t.partition}|${url}`;
       // Da o dung dia chi roi thi khong dung vao — tranh tai lai trang.
-      if (nextId === t.id) return list;
+      if (tabUrlKey(t.partition, t.url) === tabUrlKey(t.partition, url)) return list;
       const next = [...list];
-      next[i] = { ...t, id: nextId, url, name: hostOf(url) };
-      existedRef.current.delete(cur);
-      existedRef.current.add(nextId);
-      setActiveId(nextId);
+      next[i] = { ...t, url, name: hostOf(url) };
       return next;
     });
   }, [openTab]);
@@ -288,7 +343,6 @@ export default function BrowserTabWorkspace() {
   };
 
   const closeAllTabs = () => {
-    existedRef.current.clear();
     setTabs([]); setActiveId(null);
     // Cùng lý do như closeTab: hết tab mà panel new-tab còn bật là kẹt màn hình.
     setNewTabOpen(false);
@@ -392,10 +446,10 @@ export default function BrowserTabWorkspace() {
   // tượng "ngoài trang chủ có nút, vào trang thì không có".
   useEffect(() => {
     const root = document.documentElement;
-    if (folderAsk || menuOpen) root.setAttribute('data-popup-over-webview', '1');
+    if (folderAsk || menuOpen || dupAsk) root.setAttribute('data-popup-over-webview', '1');
     else root.removeAttribute('data-popup-over-webview');
     return () => root.removeAttribute('data-popup-over-webview');
-  }, [folderAsk, menuOpen]);
+  }, [folderAsk, menuOpen, dupAsk]);
 
   /** Esc đóng menu ⋯. Menu đã portal ra body nên không nhận keydown của cây
    *  con nữa — phải nghe ở window. */
@@ -550,7 +604,10 @@ export default function BrowserTabWorkspace() {
             activeUrl={tabs.find((t) => t.id === activeId)?.url ?? ''}
             onNavigate={navigateActive}
             onManage={() => setExtOpen(true)}
-            onReloadPage={() => setReloadNonce((n) => n + 1)}
+            onReloadPage={() => {
+              const cur = activeRef.current;
+              if (cur) setReloadNonces((m) => ({ ...m, [cur]: (m[cur] ?? 0) + 1 }));
+            }}
           />
           {/* Nút cấu hình ⋯ — như menu ba chấm của Chrome.
               Menu PORTAL ra <body> + position:fixed, KHÔNG để absolute trong
@@ -605,10 +662,10 @@ export default function BrowserTabWorkspace() {
           <div className="lv-body">
             {tabs.map((t) => (
               <BrowserTab
-                // Nonce CHỈ áp cho tab đang xem: đưa vào key của mọi tab thì
-                // bấm ↻ sẽ tải lại cả những tab nền, mất hết trạng thái của
-                // chúng dù người dùng không đụng tới.
-                key={t.id === activeId ? `${t.id}#${reloadNonce}` : t.id}
+                // Nonce riêng của TỪNG tab: chỉ đổi khi bấm ↻ đúng tab đó, nên
+                // chuyển tab qua lại không làm key đổi → webview không bị huỷ,
+                // trang và vị trí đang xem giữ nguyên như trình duyệt thật.
+                key={`${t.id}#${reloadNonces[t.id] ?? 0}`}
                 tab={t}
                 hidden={t.id !== activeId}
                 // Truyền các hàm ỔN ĐỊNH (useCallback ở trên) chứ không phải
@@ -750,6 +807,21 @@ export default function BrowserTabWorkspace() {
           </div>
         </>,
         document.body,
+      )}
+
+      {/* Hộp thoại "trang đang mở sẵn" — chuyển tới tab cũ hay mở thêm tab mới. */}
+      {dupAsk && (
+        <DupTabDialog
+          url={dupAsk.url}
+          existingName={dupAsk.existingName}
+          onGoExisting={() => { setActiveId(dupAsk.existingId); setNewTabOpen(false); setDupAsk(null); }}
+          onOpenNew={() => {
+            const d = dupAsk;
+            setDupAsk(null);
+            openTab(d.url, { name: d.name, profile: d.profile, creds: d.creds, forceNew: true });
+          }}
+          onCancel={() => setDupAsk(null)}
+        />
       )}
 
       {pwOpen && <PasswordManager onClose={() => setPwOpen(false)} />}

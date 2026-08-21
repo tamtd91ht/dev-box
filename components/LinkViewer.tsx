@@ -46,7 +46,7 @@ interface Props {
   /** Profile session của tab — phân biệt 2 tài khoản trên cùng một origin. */
   profile?: string;
   /** Hiện Ô ĐỊA CHỈ thật (URL hiện tại, gõ được để đi) thay cho dòng tiêu đề
-   *  chỉ-đọc. Tab Browser bật; tab Links/Google giữ tiêu đề gọn như cũ. */
+   *  chỉ-đọc. Tab Browser + tab Links bật; tab Google giữ tiêu đề gọn như cũ. */
   addressBar?: boolean;
   /** Link trong trang bấm "mở tab mới" (target=_blank / chuột giữa) → mở thành
    *  TAB MỚI trong app thay vì đẩy ra trình duyệt ngoài. */

@@ -11,7 +11,7 @@
 // cùng service = hai profile. Không gán profile = phiên chung mặc định.
 // Metadata (dự án/mô tả/tags) + lọc theo dự án/tag như trước.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { lList, lAdd, lUpdate, lRemove, partitionFor, type SavedLink, type SavedLinkMeta } from '@/lib/links';
 import { onOpenUrl } from '@/lib/openTarget';
 import { normalizeUrl } from '@/lib/bookmarks';
@@ -19,6 +19,7 @@ import { fmtRel } from '@/lib/google';
 import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
 import PasswordInput from './PasswordInput';
+import DupTabDialog, { tabUrlKey } from './DupTabDialog';
 
 /** Một TAB viewer đang mở. Kèm metadata đang gõ dở ở "＋ chi tiết" (nếu có)
  *  — để bấm 💾 TRONG viewer vẫn lưu đủ dự án/tags, không chỉ tên + profile.
@@ -83,6 +84,34 @@ export default function LinksWorkspace() {
   const [err, setErr] = useState<string | null>(null);
   const [tabs, setTabs] = useState<ViewerTab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
+  /** Id tab = số thứ tự (không dựng từ url nữa) để mở được nhiều tab cùng một
+   *  link; "link này mở chưa" do map dưới trả lời — xem DupTabDialog. */
+  const tabSeqRef = useRef(0);
+  const tabKeysRef = useRef<Map<string, string>>(new Map());
+  /** Chống event phát lặp (OpenLinkDialog bắn hai lần) — xem BrowserTabWorkspace. */
+  const recentOpenRef = useRef<{ key: string; at: number; id: string } | null>(null);
+  const [dupAsk, setDupAsk] = useState<{
+    name: string; url: string; profile?: string; meta?: SavedLinkMeta;
+    existingId: string; existingName: string;
+  } | null>(null);
+
+  // Map "link → tab đang mở" đi theo danh sách tab (mở/đóng đều được phủ).
+  useEffect(() => {
+    const m = new Map<string, string>();
+    for (const t of tabs) {
+      const k = tabUrlKey(t.partition, t.url);
+      if (!m.has(k)) m.set(k, t.id);
+    }
+    tabKeysRef.current = m;
+  }, [tabs]);
+
+  // Hộp thoại phải nổi TRÊN <webview> (guest vẽ ở tầng native, đè mọi z-index).
+  useEffect(() => {
+    const root = document.documentElement;
+    if (dupAsk) root.setAttribute('data-popup-over-webview', '1');
+    else root.removeAttribute('data-popup-over-webview');
+    return () => root.removeAttribute('data-popup-over-webview');
+  }, [dupAsk]);
 
   // Bộ lọc: 1 dự án + 1 tag (click lần nữa để bỏ).
   const [fProject, setFProject] = useState<string | null>(null);
@@ -103,23 +132,45 @@ export default function LinksWorkspace() {
 
   const nameFor = (u: string) => { try { return new URL(u).hostname; } catch { return u; } };
 
-  /** Mở trong viewer nhúng — link đã mở rồi thì kích hoạt tab cũ, chưa thì
-   *  thêm tab mới; fallback browser ngoài khi chạy web thường. */
-  const openInApp = useCallback((name: string, target: string, profile?: string, meta?: SavedLinkMeta) => {
+  /** Mở trong viewer nhúng; fallback browser ngoài khi chạy web thường.
+   *
+   *  Link ĐANG MỞ SẴN thì không âm thầm nhảy về tab cũ nữa mà HỎI (chuyển tới
+   *  hay mở thêm tab mới) — mở hai tab cùng một trang là nhu cầu thật.
+   *  `forceNew` = người dùng đã chọn "Mở thêm tab mới" trong hộp thoại. */
+  const openInApp = useCallback((name: string, target: string, profile?: string, meta?: SavedLinkMeta, forceNew = false) => {
     if (typeof window === 'undefined' || !window.workspace?.isDesktop) {
       window.open(target, '_blank'); // plain browser — <webview> không tồn tại
       return;
     }
     const partition = partitionFor(profile);
-    const id = `${partition}|${target}`;
-    setTabs((cur) => (cur.some((t) => t.id === id) ? cur : [...cur, { id, name, url: target, partition, meta }]));
+    const key = tabUrlKey(partition, target);
+
+    if (!forceNew) {
+      // Cùng event bị phát lặp trong ~2s (OpenLinkDialog bắn hai lần) → tiếng
+      // vọng, kích hoạt tab vừa mở chứ đừng bật hộp thoại lên trước mặt.
+      const recent = recentOpenRef.current;
+      if (recent && recent.key === key && Date.now() - recent.at < 2000) {
+        setActiveTab(recent.id);
+        return;
+      }
+      const existingId = tabKeysRef.current.get(key);
+      if (existingId) {
+        const existing = tabs.find((t) => t.id === existingId);
+        setDupAsk({ name, url: target, profile, meta, existingId, existingName: existing?.name ?? name });
+        return;
+      }
+    }
+
+    const id = `tab-${++tabSeqRef.current}`;
+    recentOpenRef.current = { key, at: Date.now(), id };
+    setTabs((cur) => [...cur, { id, name, url: target, partition, meta }]);
     setActiveTab(id);
-  }, []);
+  }, [tabs]);
 
   // Link bấm trong tin nhắn Zalo/Telegram đã chọn "Mở trong tab Links".
   // Không profile: link lạ chưa thuộc nhóm đăng nhập nào → phiên chung.
-  // OpenLinkDialog phát event hai lần (lo tab vừa mount chưa kịp nghe) nên
-  // openInApp phải chịu được gọi trùng — nó dùng lại tab cùng id nên đã an toàn.
+  // OpenLinkDialog phát event hai lần (lo tab vừa mount chưa kịp nghe); cú thứ
+  // hai bị openInApp nhận diện là tiếng vọng (recentOpenRef) nên vô hại.
   useEffect(() => onOpenUrl('links', (u) => openInApp(nameFor(u), u)), [openInApp]);
 
   /** Đóng một tab; đang đóng tab nổi thì chuyển sang tab kề. */
@@ -420,6 +471,7 @@ export default function LinksWorkspace() {
                 creds={{ username: t.meta?.username, password: t.meta?.password }}
                 profile={t.meta?.profile}
                 passwordManager
+                addressBar
                 onClose={() => closeTab(t.id)}
                 onSaveLink={async (name, target) => {
                   // Lưu kèm profile của phiên tab này + metadata gõ dở ở "＋ chi tiết".
@@ -436,6 +488,21 @@ export default function LinksWorkspace() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Hộp thoại "link đang mở sẵn" — chuyển tới tab cũ hay mở thêm tab mới. */}
+      {dupAsk && (
+        <DupTabDialog
+          url={dupAsk.url}
+          existingName={dupAsk.existingName}
+          onGoExisting={() => { setActiveTab(dupAsk.existingId); setDupAsk(null); }}
+          onOpenNew={() => {
+            const d = dupAsk;
+            setDupAsk(null);
+            openInApp(d.name, d.url, d.profile, d.meta, true);
+          }}
+          onCancel={() => setDupAsk(null)}
+        />
       )}
 
       {pwOpen && <PasswordManager onClose={() => setPwOpen(false)} />}
