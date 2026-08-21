@@ -22,6 +22,7 @@
 // JSON / XML / HTML (xem components/ToolsWorkspace.tsx).
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { registerUnloadBlocker } from '@/lib/unloadGuard';
 import SheetWorkspace from './SheetWorkspace';
 import WordWorkspace from './WordWorkspace';
 
@@ -229,7 +230,17 @@ export default function OfficeWorkspace({ onReady }: OfficeWorkspaceProps = {}) 
     if (dirtyTotal === 0) return;
     const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
     window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
+    // Báo vào sổ chặn unload cùng lúc với beforeunload: trong Electron, handler
+    // này làm mọi điều hướng/thoát app bị huỷ IM LẶNG (main không xử lý
+    // will-prevent-unload), nên các nút "Nạp lại sạch"/"Khởi động lại" phải
+    // tra sổ này để dừng sớm và nói rõ lý do thay vì treo.
+    const unregister = registerUnloadBlocker(
+      `tài liệu Office chưa lưu (${dirtyTotal} thay đổi)`,
+    );
+    return () => {
+      window.removeEventListener('beforeunload', warn);
+      unregister();
+    };
   }, [dirtyTotal]);
 
   return (

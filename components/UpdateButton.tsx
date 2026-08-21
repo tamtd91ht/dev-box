@@ -18,13 +18,19 @@
 // footer, trông khác nhau thì vô lý. Chỉ thêm .upd-* cho danh sách commit.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getUnloadBlockers } from '@/lib/unloadGuard';
 
 /** Cầu nối desktop cho việc khởi động lại — electron/preload.cjs. Vắng mặt
  *  khi chạy trên trình duyệt thường. */
 interface DesktopUpdateBridge {
   relaunch: () => Promise<{ ok: boolean; error?: string }>;
-  /** Dọn cache rồi nạp lại. `wipeBuild` xoá luôn `.next` phía server. */
-  hardReload?: (opts?: { wipeBuild?: boolean }) => Promise<{
+  /**
+   * Dọn cache rồi nạp lại. `wipeBuild` xoá luôn `.next` phía server.
+   * `presets` là dữ liệu nút tìm nhanh gom từ localStorage để MAIN sao lưu hộ —
+   * renderer không tự POST được khi 6 socket tới localhost:3000 bị SSE
+   * terminal + automation chiếm hết (fetch xếp hàng vô hạn).
+   */
+  hardReload?: (opts?: { wipeBuild?: boolean; presets?: { kind: string; list: unknown[] }[] }) => Promise<{
     ok: boolean; error?: string; cleared?: string[]; needsRelaunch?: boolean;
   }>;
 }
@@ -230,6 +236,18 @@ export default function UpdateButton() {
    * động lại — bảo người dùng tự mở lại app desktop.
    */
   const doRelaunch = async () => {
+    // beforeunload (tài liệu Office chưa lưu) làm app.quit() bị huỷ IM LẶNG
+    // trong Electron — main không xử lý will-prevent-unload nên không có hộp
+    // thoại nào, app cứ đứng đó như chưa bấm gì. Tra sổ unloadGuard trước để
+    // nói rõ lý do thay vì để nút chết lặng.
+    const blockers = getUnloadBlockers();
+    if (blockers.length > 0) {
+      setMsg({
+        kind: 'err',
+        text: `Chưa khởi động lại được: đang có ${blockers.join('; ')}. Lưu lại rồi bấm lại.`,
+      });
+      return;
+    }
     const bridge = window.desktopUpdate;
     if (!bridge?.relaunch) {
       setMsg({
@@ -245,7 +263,16 @@ export default function UpdateButton() {
         kind: 'err',
         text: `Không khởi động lại được: ${r?.error || 'lỗi không rõ'}. Hãy đóng và mở lại app.`,
       });
+      return;
     }
+    // IPC trả ok nhưng tiến trình chưa chết: quit vẫn có thể bị blocker đăng ký
+    // sau lượt kiểm tra trên chặn im lặng. Còn sống sau 3s thì nói thật.
+    window.setTimeout(() => {
+      setMsg({
+        kind: 'err',
+        text: 'App không tự thoát được (có thứ chặn unload). Hãy đóng và mở lại app thủ công.',
+      });
+    }, 3000);
   };
 
   // Badge trên nút — thứ khiến nút có ích khi không bấm vào.
@@ -409,7 +436,19 @@ export default function UpdateButton() {
                 <>
                   <div className="cfgsync-row small">{done.followUpReason}</div>
                   {done.followUp === 'reload' && (
-                    <button className="cfgsync-go" onClick={() => window.location.reload()}>
+                    <button
+                      className="cfgsync-go"
+                      onClick={() => {
+                        // reload() cũng đi qua beforeunload → cùng kiểu bị huỷ
+                        // im lặng khi còn tài liệu chưa lưu. Nói lý do ra.
+                        const blocking = getUnloadBlockers();
+                        if (blocking.length > 0) {
+                          setMsg({ kind: 'err', text: `Chưa tải lại được: đang có ${blocking.join('; ')}. Lưu lại rồi bấm lại.` });
+                          return;
+                        }
+                        window.location.reload();
+                      }}
+                    >
                       ⟳ Tải lại giao diện
                     </button>
                   )}

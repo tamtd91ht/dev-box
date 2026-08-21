@@ -16,6 +16,7 @@
 // hơn mọi lần reload. Tầng 3 thì renderer không có quyền, phải nhờ main process.
 
 import { useCallback, useState } from 'react';
+import { getUnloadBlockers } from '@/lib/unloadGuard';
 
 /**
  * DANH SÁCH ĐEN: đúng những khoá localStorage được phép xoá.
@@ -38,21 +39,38 @@ const PRESET_KEYS = [
   'pg.quickfinds',
 ] as const;
 
+/** Gom preset từ localStorage để gửi đi sao lưu. Chỉ lấy nhóm có dữ liệu. */
+function collectPresets(): { kind: string; list: unknown[] }[] {
+  const out: { kind: string; list: unknown[] }[] = [];
+  for (const kind of PRESET_KEYS) {
+    try {
+      const raw = localStorage.getItem(`devbox.${kind}`) ?? localStorage.getItem(`omicx.${kind}`);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed) && parsed.length > 0) out.push({ kind, list: parsed });
+    } catch { /* nhóm hỏng thì bỏ qua, các nhóm khác vẫn cứu */ }
+  }
+  return out;
+}
+
 /**
- * Đẩy preset đang có trong localStorage lên configs/presets.json và CHỜ xong.
+ * Đẩy preset lên configs/presets.json và CHỜ xong — đường DỰ PHÒNG khi chạy
+ * trên trình duyệt thường (không có cầu nối desktop).
+ *
+ * Trong app desktop thì KHÔNG dùng đường này: fetch của renderer chỉ có 6
+ * socket HTTP/1.1 tới mỗi host, mà SSE terminal + automation watch chiếm sạch
+ * cả 6 — request xếp hàng VÔ HẠN và nút đứng ở "Đang dọn…" mãi (đã xảy ra
+ * thật, xác minh bằng CDP: POST phát đi không bao giờ có response trong khi
+ * curl từ ngoài trả 200 sau 11ms). App desktop gửi preset kèm IPC để main
+ * process POST bằng Node HTTP — pool riêng, không dính giới hạn đó.
+ *
+ * Timeout 8s cho từng nhóm: trình duyệt thường cũng có thể nghẽn pool y hệt,
+ * thà báo "chưa sao lưu được" còn hơn treo không lời giải thích.
  *
  * Trả về false nếu có dữ liệu cần cứu mà không gửi được — lúc đó phải huỷ việc
  * dọn, vì xoá đi là không lấy lại được từ đâu.
  */
-async function backupPresetsToServer(): Promise<boolean> {
-  for (const kind of PRESET_KEYS) {
-    let list: unknown[] = [];
-    try {
-      const raw = localStorage.getItem(`devbox.${kind}`) ?? localStorage.getItem(`omicx.${kind}`);
-      const parsed = raw ? JSON.parse(raw) : null;
-      if (Array.isArray(parsed)) list = parsed;
-    } catch { continue; }
-    if (list.length === 0) continue;
+async function backupPresetsToServer(presets: { kind: string; list: unknown[] }[]): Promise<boolean> {
+  for (const { kind, list } of presets) {
     try {
       // POST = seed: server chỉ ghi khi nhóm đó còn trống, nên máy này không
       // ghi đè preset mà máy khác đã đồng bộ lên trước.
@@ -60,6 +78,7 @@ async function backupPresetsToServer(): Promise<boolean> {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ kind, list }),
+        signal: AbortSignal.timeout(8000),
       });
       if (!r.ok) return false;
     } catch { return false; }
@@ -78,10 +97,57 @@ export default function HardReloadButton() {
    * phải mặc định.
    */
   const run = useCallback(async (wipeBuild: boolean) => {
+    // Còn ai chặn unload (tài liệu Office chưa lưu) thì DỪNG TRƯỚC KHI LÀM GÌ:
+    // beforeunload trong Electron huỷ im lặng cả location.replace lẫn
+    // app.quit() — main không xử lý will-prevent-unload nên không có hộp thoại
+    // nào hiện ra. Không kiểm tra ở đây thì nhánh nhẹ treo ở "Đang dọn…" mãi,
+    // còn nhánh xoá .next tệ hơn: server đã chết, .next đã mất, mà app không
+    // thoát được — lúc đó muốn LƯU tài liệu cũng không còn backend để lưu.
+    const blockers = getUnloadBlockers();
+    if (blockers.length > 0) {
+      setNote(`Đang có ${blockers.join('; ')} — lưu hoặc đóng lại rồi hãy nạp lại sạch.`);
+      return;
+    }
+
     setBusy(true);
     setNote(null);
     try {
-      // ── Tầng 2: localStorage ──
+      // SAO LƯU preset TRƯỚC, chờ xác nhận, rồi mới được xoá bất cứ gì.
+      //
+      // Trong app desktop, việc POST do MAIN PROCESS làm (gửi dữ liệu kèm IPC):
+      // fetch của renderer chỉ có 6 socket tới localhost:3000 mà SSE terminal +
+      // automation chiếm sạch, POST xếp hàng vô hạn — chính là vụ nút này treo
+      // ở "Đang dọn…" không lời giải thích. Xem backupPresetsToServer.
+      const presets = collectPresets();
+
+      // Tầng 1 + 3 (+ sao lưu) — chỉ main process làm được.
+      const bridge = window.desktopUpdate;
+      let needsRelaunch = false;
+      if (bridge?.hardReload) {
+        const r = await bridge.hardReload({ wipeBuild, presets });
+        if (!r.ok) {
+          setNote(r.error || 'Không dọn được cache.');
+          setBusy(false);
+          return;
+        }
+        needsRelaunch = !!r.needsRelaunch;
+      } else {
+        // Trình duyệt thường: tự POST (có timeout), không gửi được thì HUỶ —
+        // xoá đi là không lấy lại được từ đâu.
+        const ok = await backupPresetsToServer(presets);
+        if (!ok) {
+          setNote('Chưa sao lưu được nút tìm nhanh lên configs/ — huỷ dọn để không mất dữ liệu. Thử lại sau.');
+          setBusy(false);
+          return;
+        }
+        if (wipeBuild) {
+          // Không có cầu nối thì không xoá được .next. Nói thẳng thay vì
+          // reload rồi để người dùng tưởng đã dọn.
+          setNote('Chạy ngoài app desktop nên không xoá được .next. Đã dọn cache trình duyệt.');
+        }
+      }
+
+      // ── Tầng 2: localStorage — CHỈ SAU khi sao lưu đã được xác nhận ──
       //
       // CHỈ xoá đúng những khoá có trong DROP_EXACT. Bản trước làm ngược lại —
       // xoá tất cả TRỪ danh sách trắng — và đó là một sai lầm về nguyên tắc:
@@ -90,20 +156,10 @@ export default function HardReloadButton() {
       // Danh sách đen thì sót chỉ có nghĩa là "dọn chưa hết" — hậu quả nhẹ hơn
       // hẳn. Preset tìm nhanh của Redis/Kafka/Mongo/ES/PG đã bị xoá đúng vì lỗi
       // này.
-      //
-      // Trước khi xoá, ĐẨY preset lên server và CHỜ xác nhận. Không chờ thì gặp
-      // đúng ca đã xảy ra: máy đang chạy bản cũ chưa có hydratePresets, server
-      // chưa có gì, xoá xong là mất sạch không còn bản nào.
       try {
-        const ok = await backupPresetsToServer();
-        if (!ok) {
-          setNote('Chưa sao lưu được nút tìm nhanh lên configs/ — huỷ dọn để không mất dữ liệu. Thử lại sau.');
-          setBusy(false);
-          return;
-        }
         for (const k of DROP_EXACT) localStorage.removeItem(k);
         sessionStorage.clear();
-      } catch { /* bị chặn thì bỏ qua, còn hai tầng kia */ }
+      } catch { /* bị chặn thì bỏ qua, còn các tầng kia */ }
 
       // Service worker + Cache Storage: nếu có bản cũ đăng ký thì nó chặn trước
       // cả HTTP cache, dọn hai tầng kia mà bỏ cái này là vẫn ra nội dung cũ.
@@ -114,26 +170,20 @@ export default function HardReloadButton() {
         await Promise.all(keys.map((k) => caches.delete(k)));
       } catch { /* không có SW — bình thường */ }
 
-      // Tầng 1 + 3 — chỉ main process làm được.
-      const bridge = window.desktopUpdate;
-      if (bridge?.hardReload) {
-        const r = await bridge.hardReload({ wipeBuild });
-        if (!r.ok) {
-          setNote(r.error || 'Không dọn được cache.');
+      // Đã xoá `.next` thì `next dev` cũng đã bị giết để nhả file. Reload
+      // trang lúc này là nạp vào một server không còn sống → trang lỗi. Phải
+      // khởi động lại cả app; relaunch() không bao giờ trả về khi thành công.
+      if (needsRelaunch && bridge) {
+        await bridge.relaunch();
+        // Tới được đây nghĩa là IPC đã trả lời mà tiến trình chưa chết.
+        // app.quit() vẫn có thể bị một beforeunload đăng ký SAU lượt kiểm tra
+        // đầu hàm chặn im lặng — chờ một nhịp, còn sống thì nói thật tình
+        // trạng thay vì treo: .next đã mất nên phải tự khởi động lại app.
+        window.setTimeout(() => {
+          setNote('App không tự thoát được (có thứ chặn unload). .next đã xoá — hãy đóng và mở lại app thủ công.');
           setBusy(false);
-          return;
-        }
-        // Đã xoá `.next` thì `next dev` cũng đã bị giết để nhả file. Reload
-        // trang lúc này là nạp vào một server không còn sống → trang lỗi. Phải
-        // khởi động lại cả app; relaunch() không bao giờ trả về khi thành công.
-        if (r.needsRelaunch) {
-          await bridge.relaunch();
-          return;
-        }
-      } else if (wipeBuild) {
-        // Chạy trên trình duyệt thường: không có cầu nối, không xoá được .next.
-        // Nói thẳng thay vì reload rồi để người dùng tưởng đã dọn.
-        setNote('Chạy ngoài app desktop nên không xoá được .next. Đã dọn cache trình duyệt.');
+        }, 3000);
+        return;
       }
 
       // `location.reload()` của Chromium KHÔNG bỏ qua cache. Thêm tham số dùng
@@ -141,6 +191,14 @@ export default function HardReloadButton() {
       const u = new URL(window.location.href);
       u.searchParams.set('__fresh', String(Date.now()));
       window.location.replace(u.toString());
+      // replace() có thể bị huỷ im lặng (blocker đăng ký sau lượt kiểm tra đầu
+      // hàm, hoặc thứ gì đó ngoài sổ unloadGuard). Trang rời đi thì timer này
+      // chết theo document; còn chạy tức là vẫn đứng yên — báo ra thay vì để
+      // "Đang dọn…" treo vô hạn. Server còn sống nên bấm lại là được.
+      window.setTimeout(() => {
+        setNote('Trang không rời đi được — có thứ chặn unload (thường là tài liệu chưa lưu). Xử lý xong bấm lại.');
+        setBusy(false);
+      }, 2500);
     } catch (e) {
       setNote((e as Error).message);
       setBusy(false);
