@@ -6508,6 +6508,24 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .nav-pos-btn:hover { color: var(--accent); border-color: var(--accent); }
 
+/* ── Ẩn cả thanh menu chính: dải mỏng ☰ thế chỗ, bấm để mở lại ────────────
+   Dải là grid item ở đúng ô của appbar (hàng đầu khi menu trên, cột nav khi
+   menu dọc) nên không đè lên nội dung và không bị <webview> che. */
+.appbar-restore {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--glass); border: 1px solid var(--glass-brd);
+  color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1;
+  padding: 0; border-radius: 0;
+}
+.appbar-restore:hover { color: var(--text); background: var(--glass-2); }
+.shell[data-nav='top'] .appbar-restore { height: 18px; border-top: none; border-radius: 0 0 10px 10px; }
+.shell[data-nav='left'] .appbar-restore,
+.shell[data-nav='right'] .appbar-restore { grid-area: nav; width: 20px; height: 100vh; flex-direction: column; }
+.shell[data-nav='left'] .appbar-restore .appbar-restore-label,
+.shell[data-nav='right'] .appbar-restore .appbar-restore-label {
+  writing-mode: vertical-rl; letter-spacing: .5px;
+}
+
 /* MENU DỌC (data-nav=left | right): appbar thành CỘT bên cạnh body, không còn
    thanh ngang trên → trả toàn bộ chiều cao ngang cho vùng làm việc. */
 .shell[data-nav='left'],
@@ -6534,7 +6552,19 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 
 /* Brand xuống dòng gọn; nút đổi vị trí đẩy sang phải trong hàng brand. */
 .shell[data-nav='left'] .brand,
-.shell[data-nav='right'] .brand { flex: none; }
+.shell[data-nav='right'] .brand { flex: none; gap: 8px; }
+
+/* Sidebar chỉ rộng 216px mà hàng brand có CHỮ KHÔNG CO (white-space:nowrap,
+   không min-width:0): thêm nút thứ hai (ẩn menu) là nó tràn khỏi mép phải và
+   bị overflow-x:hidden của appbar CẮT MẤT — nút tồn tại nhưng vô hình, trông
+   như "tính năng không chạy". Chữ phải nhường chỗ: tên co được + cắt bằng
+   ellipsis, dòng phụ ẩn hẳn; các nút flex:none nên luôn còn nguyên. */
+.shell[data-nav='left'] .brand-text,
+.shell[data-nav='right'] .brand-text { min-width: 0; }
+.shell[data-nav='left'] .brand-text h1,
+.shell[data-nav='right'] .brand-text h1 { display: block; overflow: hidden; text-overflow: ellipsis; }
+.shell[data-nav='left'] .brand-text .sub,
+.shell[data-nav='right'] .brand-text .sub { display: none; }
 
 /* modeswitch xếp DỌC, mỗi tab một hàng đầy chiều rộng sidebar. */
 .shell[data-nav='left'] .modeswitch,

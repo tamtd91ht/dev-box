@@ -216,6 +216,23 @@ export default function Home() {
     });
   };
 
+  // Ẩn HẲN thanh menu (mọi vị trí trên/trái/phải) để nhường chỗ cho vùng làm
+  // việc. Khi ẩn, một dải mỏng thế chỗ đúng cạnh đó (nằm trong ô lưới của
+  // appbar) — luôn có lối mở lại, và không bị <webview> che vì nó không nằm
+  // đè lên vùng nội dung. Lưu localStorage.
+  const [navHidden, setNavHidden] = useState(false);
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.localStorage.getItem('devbox.navHidden') === '1') {
+      setNavHidden(true);
+    }
+  }, []);
+  const toggleNavHidden = () => {
+    setNavHidden((v) => {
+      if (typeof window !== 'undefined') window.localStorage.setItem('devbox.navHidden', v ? '0' : '1');
+      return !v;
+    });
+  };
+
   // ── Tiếp cận nhanh các tab đang làm (Ctrl+`) ────────────────────────────────
   // Ghi nhận tab vừa dùng để nhảy qua nhảy lại: đang ở Kafka, có mail thì qua
   // Mail đọc, xong Ctrl+` (hoặc Ctrl+Tab) là về thẳng Kafka.
@@ -522,7 +539,21 @@ export default function Home() {
 
   return (
     <div className="shell" data-nav={navPos}>
+      {/* Menu đang ẩn: dải mỏng thế chỗ — bấm là menu về. Nằm đúng ô lưới của
+          appbar nên chế độ trên/trái/phải đều tự dính đúng cạnh. */}
+      {navHidden && (
+        <button
+          className="appbar-restore"
+          onClick={toggleNavHidden}
+          title="Hiện lại thanh menu (đang ẩn để nhường chỗ cho vùng làm việc)"
+        >
+          <span aria-hidden>☰</span>
+          <span className="appbar-restore-label">menu</span>
+        </button>
+      )}
+
       {/* ── Header / top bar ─────────────────────────────────────────── */}
+      {!navHidden && (
       <header className="appbar">
         <div className="brand">
           <div className="brand-mark">V</div>
@@ -533,6 +564,11 @@ export default function Home() {
           {/* Nút đổi vị trí menu: ngang trên → dọc trái → dọc phải → … */}
           <button className="nav-pos-btn" onClick={cycleNav} title={`Menu đang ${navPos === 'top' ? 'ngang trên' : navPos === 'left' ? 'dọc trái' : 'dọc phải'} — bấm để đổi (menu dọc cho thêm chiều cao)`}>
             {navPos === 'top' ? '⬍' : navPos === 'left' ? '⬅' : '➡'}
+          </button>
+          {/* Ẩn hẳn menu — dải mỏng ☰ ở đúng cạnh này để mở lại. */}
+          <button className="nav-pos-btn" onClick={toggleNavHidden}
+            title="Ẩn thanh menu — nhường chỗ cho vùng làm việc; dải mỏng ☰ ở cạnh này để mở lại">
+            {navPos === 'top' ? '⌃' : navPos === 'left' ? '«' : '»'}
           </button>
         </div>
 
@@ -675,6 +711,7 @@ export default function Home() {
           <ThemeToggle />
         </div>
       </header>
+      )}
 
       {/* Màn hình tiếp cận nhanh (Ctrl+`) — nổi trên mọi workspace. */}
       <QuickTabs
