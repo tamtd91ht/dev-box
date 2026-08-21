@@ -28,6 +28,7 @@ import {
   type MongoMonitorResult,
 } from '@/lib/mongo';
 import ConnRail from './mongo/ConnRail';
+import { useConnRailCollapse, CollapsedConnRail } from './ConnRailCollapse';
 import OverviewView from './mongo/OverviewView';
 import BrowserView from './mongo/BrowserView';
 import QuickFindView from './mongo/QuickFindView';
@@ -52,6 +53,8 @@ export default function MongoWorkspace() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [allowWrite, setAllowWrite] = useState(false);
   const [connections, setConnections] = useState<PublicMongoConnection[]>([]);
+  // Gập cột kết nối để nhường chỗ cho vùng làm việc (components/ConnRailCollapse).
+  const railCollapse = useConnRailCollapse('mongo', connections.length);
   const [activeId, setActiveId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
   const [editConn, setEditConn] = useState<PublicMongoConnection | null>(null);
@@ -195,8 +198,12 @@ export default function MongoWorkspace() {
   }
 
   return (
-    <div className="mongo-layout" ref={rail.ref} style={rail.style}>
+    <div className={`mongo-layout${railCollapse.collapsed ? ' rail-collapsed' : ''}`} ref={rail.ref} style={rail.style}>
+      {railCollapse.collapsed ? (
+        <CollapsedConnRail label="MongoDB" count={connections.length} onShow={railCollapse.show} />
+      ) : (
       <ConnRail
+        onHide={connections.length > 0 ? railCollapse.hide : undefined}
         connections={connections}
         activeId={activeId}
         pings={pings}
@@ -222,6 +229,7 @@ export default function MongoWorkspace() {
         onImported={(summary) => { void loadConnections(); flash(summary); }}
         onError={setError}
       />
+      )}
 
       <main className="panel mongo-workspace-main">
         {!active ? (
@@ -282,7 +290,8 @@ export default function MongoWorkspace() {
           </>
         )}
       </main>
-      <Splitter {...rail.grip} />
+      {/* Đã gập thì không còn gì để kéo — dải 34px là cố định. */}
+      {!railCollapse.collapsed && <Splitter {...rail.grip} />}
     </div>
   );
 }

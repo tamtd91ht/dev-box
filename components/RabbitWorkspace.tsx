@@ -58,6 +58,7 @@ import {
   type BindingDeclarationInput,
 } from '@/lib/rabbit';
 import BrokerRail from './rabbit/BrokerRail';
+import { useConnRailCollapse, CollapsedConnRail } from './ConnRailCollapse';
 import OverviewView from './rabbit/OverviewView';
 import QueuesView from './rabbit/QueuesView';
 import ExchangesView from './rabbit/ExchangesView';
@@ -89,6 +90,8 @@ export default function RabbitWorkspace() {
   const railSplit = useSplit({ varName: '--rabbit-rail', min: 180, max: 560, gap: 14 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [connections, setConnections] = useState<PublicRabbitConnection[]>([]);
+  // Gập cột kết nối để nhường chỗ cho vùng làm việc (components/ConnRailCollapse).
+  const railCollapse = useConnRailCollapse('rabbit', connections.length);
   const [activeId, setActiveId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
   const [editConn, setEditConn] = useState<PublicRabbitConnection | null>(null);
@@ -446,8 +449,12 @@ export default function RabbitWorkspace() {
   }
 
   return (
-    <div className="rabbit-layout" ref={railSplit.ref} style={railSplit.style}>
+    <div className={`rabbit-layout${railCollapse.collapsed ? ' rail-collapsed' : ''}`} ref={railSplit.ref} style={railSplit.style}>
+      {railCollapse.collapsed ? (
+        <CollapsedConnRail label="RabbitMQ" count={connections.length} onShow={railCollapse.show} />
+      ) : (
       <BrokerRail
+        onHide={connections.length > 0 ? railCollapse.hide : undefined}
         connections={connections}
         activeId={activeId}
         pings={pings}
@@ -473,6 +480,7 @@ export default function RabbitWorkspace() {
         onImported={(summary) => { void loadConnections(); flash(summary); }}
         onError={setError}
       />
+      )}
 
       <main className="panel rabbit-browser">
         {!active ? (
@@ -589,7 +597,8 @@ export default function RabbitWorkspace() {
           onPublish={(payload) => publishRabbitMessage(activeId, payload)}
         />
       )}
-      <Splitter {...railSplit.grip} />
+      {/* Đã gập thì không còn gì để kéo — dải 34px là cố định. */}
+      {!railCollapse.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

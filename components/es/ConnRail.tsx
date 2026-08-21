@@ -6,6 +6,7 @@
 import { useEffect } from 'react';
 import { mutateEsConnection, type PublicEsConnection } from '@/lib/es';
 import ConnTransferButton from '../ConnTransferButton';
+import { RailHideButton } from '../ConnRailCollapse';
 import ConnectionForm from './ConnectionForm';
 
 export interface ConnRailProps {
@@ -26,12 +27,15 @@ export interface ConnRailProps {
   /** Sau khi import từ file: nạp lại danh sách từ server rồi báo cho người dùng. */
   onImported: (summary: string) => void;
   onError: (msg: string) => void;
+  /** Ẩn cả cột kết nối (ConnRailCollapse) — không truyền khi chưa có kết nối nào. */
+  onHide?: () => void;
 }
 
 export default function ConnRail(props: ConnRailProps) {
   const {
     connections, activeId, pings, manageOpen, editConn, menuId,
     onActivate, onPing, onMenu, onEdit, onToggleManage, onCloseForm, onSaved, onDeleted, onImported, onError,
+    onHide,
   } = props;
 
   useEffect(() => {
@@ -52,6 +56,7 @@ export default function ConnRail(props: ConnRailProps) {
         <span style={{ display: 'flex', gap: 6 }}>
           <ConnTransferButton kind="es" connections={connections} onImported={onImported} onError={onError} />
           <button className="chip-btn" onClick={onToggleManage}>{manageOpen ? '✕ Đóng' : '+ Thêm'}</button>
+          {onHide && <RailHideButton onHide={onHide} />}
         </span>
       </div>
 

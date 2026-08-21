@@ -1497,6 +1497,33 @@ audio { width: 100%; margin-top: 12px; }
   display: grid; grid-template-columns: var(--redis-rail, 320px) minmax(0, 1fr); gap: 18px;
   flex: 1; min-height: 0; align-items: stretch;
 }
+
+/* ── Cột kết nối gập được (Redis/Kafka/Rabbit/Mongo/Elastic) ──────────────
+   Ẩn cột kết nối để nhường chỗ cho vùng làm việc chính; một dải dọc 34px thế
+   chỗ nên luôn có đường mở lại (components/ConnRailCollapse.tsx). Chỉ thu cột
+   đầu của grid — cột sau vẫn minmax(0,1fr) nên vùng chính tự nở hết phần dư. */
+.redis-layout.rail-collapsed, .kafka-layout.rail-collapsed, .rabbit-layout.rail-collapsed,
+.mongo-layout.rail-collapsed, .es-layout.rail-collapsed {
+  grid-template-columns: 34px minmax(0, 1fr);
+}
+.connrail-strip {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 10px 0; cursor: pointer;
+  background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 14px;
+  color: var(--muted); font-size: 13px; line-height: 1;
+  /* rabbit/mongo/es layout đặt align-items:start — dải vẫn phải cao hết cột. */
+  align-self: stretch; height: 100%; min-height: 0;
+}
+.connrail-strip:hover { color: inherit; border-color: var(--glass-brd-hover); background: var(--glass-2); }
+.connrail-strip-label { writing-mode: vertical-rl; letter-spacing: .5px; white-space: nowrap; }
+/* Màn hẹp: layout về một cột (media query sẵn có của từng workspace), nên
+   trạng thái gập cũng về một cột và dải dọc thành thanh ngang mỏng. */
+@media (max-width: 1100px) {
+  .redis-layout.rail-collapsed, .kafka-layout.rail-collapsed, .rabbit-layout.rail-collapsed,
+  .mongo-layout.rail-collapsed, .es-layout.rail-collapsed { grid-template-columns: 1fr; }
+  .connrail-strip { flex-direction: row; height: auto; padding: 6px 10px; }
+  .connrail-strip-label { writing-mode: horizontal-tb; }
+}
 .redis-layout > .panel { height: 100%; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
 .redis-layout > .panel::-webkit-scrollbar { width: 8px; }
 .redis-layout > .panel::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 8px; }
@@ -6652,6 +6679,16 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   background: color-mix(in srgb, var(--err) 10%, transparent);
 }
 .mail-del-btn:hover:not(:disabled) { color: var(--err); border-color: color-mix(in srgb, var(--err) 55%, transparent); }
+
+/* Nút 🚫 đánh dấu spam — cùng khuôn nút 🗑 nhưng hover màu cảnh báo (cam) để
+   không lẫn với xóa. */
+.mail-row-spam:hover:not(:disabled) {
+  color: var(--warn, #d98a00); border-color: color-mix(in srgb, var(--warn, #d98a00) 55%, transparent);
+  background: color-mix(in srgb, var(--warn, #d98a00) 10%, transparent);
+}
+.mail-spam-btn:hover:not(:disabled) {
+  color: var(--warn, #d98a00); border-color: color-mix(in srgb, var(--warn, #d98a00) 55%, transparent);
+}
 
 /* ── Mail → Lịch (CalDAV) ────────────────────────────────────────────────── */
 

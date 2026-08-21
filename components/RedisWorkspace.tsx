@@ -32,6 +32,7 @@ import { recordSession, short, type RedisSession } from '@/lib/sessionHistory';
 import { readLocal, writeLocal } from '@/lib/localKeys';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useConnRailCollapse, CollapsedConnRail, RailHideButton } from './ConnRailCollapse';
 
 const LAST_CONN_KEY = 'redis.lastConn';
 /** Keys fetched per SCAN round. */
@@ -146,6 +147,8 @@ export default function RedisWorkspace() {
   const railSplit = useSplit({ varName: '--redis-rail', min: 180, max: 560, gap: 18 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [connections, setConnections] = useState<PublicRedisConnection[]>([]);
+  // Gập cột kết nối để nhường chỗ cho vùng làm việc (components/ConnRailCollapse).
+  const railCollapse = useConnRailCollapse('redis', connections.length);
   const [activeId, setActiveId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
   /** When set, a compact edit modal is open for this connection. */
@@ -663,8 +666,11 @@ export default function RedisWorkspace() {
   }
 
   return (
-    <div className="redis-layout" ref={railSplit.ref} style={railSplit.style}>
-      {/* ── Left: connections grouped by project ─────────────────────────────── */}
+    <div className={`redis-layout${railCollapse.collapsed ? ' rail-collapsed' : ''}`} ref={railSplit.ref} style={railSplit.style}>
+      {/* ── Left: connections grouped by project (gập được — ConnRailCollapse) ── */}
+      {railCollapse.collapsed ? (
+        <CollapsedConnRail label="Redis" count={connections.length} onShow={railCollapse.show} />
+      ) : (
       <div className="panel redis-conn-rail">
         <div className="status-line">
           <h3 style={{ margin: 0, flex: 1 }}>Redis</h3>
@@ -681,6 +687,7 @@ export default function RedisWorkspace() {
           >
             {manageOpen ? '✕ Đóng' : '+ Thêm'}
           </button>
+          {connections.length > 0 && <RailHideButton onHide={railCollapse.hide} className="ghost sm" />}
         </div>
 
         {connections.length === 0 && !manageOpen && (
@@ -765,6 +772,7 @@ export default function RedisWorkspace() {
           />
         )}
       </div>
+      )}
 
       {/* ── Right: key browser ───────────────────────────────────────────────── */}
       <div className="panel redis-browser">
@@ -1043,7 +1051,8 @@ export default function RedisWorkspace() {
           onSaved={(next) => { applyChanged(next, editConn.id); setEditConn(null); }}
         />
       )}
-      <Splitter {...railSplit.grip} />
+      {/* Đã gập thì không còn gì để kéo — dải 34px là cố định. */}
+      {!railCollapse.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

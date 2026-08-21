@@ -47,6 +47,7 @@ import SessionHistory from './SessionHistory';
 import { recordSession, type KafkaSession } from '@/lib/sessionHistory';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useConnRailCollapse, CollapsedConnRail, RailHideButton } from './ConnRailCollapse';
 
 const LAST_CONN_KEY = 'kafka.lastConn';
 /** Default number of messages a "peek" pulls. */
@@ -152,6 +153,8 @@ export default function KafkaWorkspace() {
   const railSplit = useSplit({ varName: '--kafka-rail', min: 180, max: 560, gap: 18 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [connections, setConnections] = useState<PublicKafkaConnection[]>([]);
+  // Gập cột kết nối để nhường chỗ cho vùng làm việc (components/ConnRailCollapse).
+  const railCollapse = useConnRailCollapse('kafka', connections.length);
   const [activeId, setActiveId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
   const [editConn, setEditConn] = useState<PublicKafkaConnection | null>(null);
@@ -640,8 +643,11 @@ export default function KafkaWorkspace() {
   const grouped = groupByProject(connections);
 
   return (
-    <div className="kafka-layout" ref={railSplit.ref} style={railSplit.style}>
-      {/* ── Left rail: connections ─────────────────────────────────────── */}
+    <div className={`kafka-layout${railCollapse.collapsed ? ' rail-collapsed' : ''}`} ref={railSplit.ref} style={railSplit.style}>
+      {/* ── Left rail: connections (gập được — ConnRailCollapse) ────────── */}
+      {railCollapse.collapsed ? (
+        <CollapsedConnRail label="Kafka" count={connections.length} onShow={railCollapse.show} />
+      ) : (
       <aside className="panel">
         <div className="status-line" style={{ justifyContent: 'space-between' }}>
           <strong>Kafka clusters</strong>
@@ -655,6 +661,7 @@ export default function KafkaWorkspace() {
             <button className="chip-btn" onClick={() => { setManageOpen((v) => !v); setEditConn(null); }}>
               {manageOpen ? '✕ Đóng' : '+ Thêm'}
             </button>
+            {connections.length > 0 && <RailHideButton onHide={railCollapse.hide} />}
           </span>
         </div>
 
@@ -728,6 +735,7 @@ export default function KafkaWorkspace() {
           />
         )}
       </aside>
+      )}
 
       {/* ── Right pane ──────────────────────────────────────────────────── */}
       <main className="panel kafka-browser">
@@ -1219,7 +1227,8 @@ export default function KafkaWorkspace() {
           }}
         />
       )}
-      <Splitter {...railSplit.grip} />
+      {/* Đã gập thì không còn gì để kéo — dải 34px là cố định. */}
+      {!railCollapse.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

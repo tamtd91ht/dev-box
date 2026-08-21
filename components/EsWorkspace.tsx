@@ -21,6 +21,7 @@ import {
   type EsNodeInfo,
 } from '@/lib/es';
 import ConnRail from './es/ConnRail';
+import { useConnRailCollapse, CollapsedConnRail } from './ConnRailCollapse';
 import OverviewView from './es/OverviewView';
 import BrowserView from './es/BrowserView';
 import QuickFindView from './es/QuickFindView';
@@ -46,6 +47,8 @@ export default function EsWorkspace() {
   const rail = useSplit({ varName: '--es-rail', min: 180, max: 560, gap: 14 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [connections, setConnections] = useState<PublicEsConnection[]>([]);
+  // Gập cột kết nối để nhường chỗ cho vùng làm việc (components/ConnRailCollapse).
+  const railCollapse = useConnRailCollapse('es', connections.length);
   const [activeId, setActiveId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
   const [editConn, setEditConn] = useState<PublicEsConnection | null>(null);
@@ -161,8 +164,12 @@ export default function EsWorkspace() {
   }
 
   return (
-    <div className="es-layout" ref={rail.ref} style={rail.style}>
+    <div className={`es-layout${railCollapse.collapsed ? ' rail-collapsed' : ''}`} ref={rail.ref} style={rail.style}>
+      {railCollapse.collapsed ? (
+        <CollapsedConnRail label="Elastic" count={connections.length} onShow={railCollapse.show} />
+      ) : (
       <ConnRail
+        onHide={connections.length > 0 ? railCollapse.hide : undefined}
         connections={connections}
         activeId={activeId}
         pings={pings}
@@ -188,6 +195,7 @@ export default function EsWorkspace() {
         onImported={(summary) => { void loadConnections(); flash(summary); }}
         onError={setError}
       />
+      )}
 
       <main className="panel es-workspace-main">
         {!active ? (
@@ -242,7 +250,8 @@ export default function EsWorkspace() {
           </>
         )}
       </main>
-      <Splitter {...rail.grip} />
+      {/* Đã gập thì không còn gì để kéo — dải 34px là cố định. */}
+      {!railCollapse.collapsed && <Splitter {...rail.grip} />}
     </div>
   );
 }
