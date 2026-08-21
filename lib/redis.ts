@@ -3,6 +3,8 @@
 // browser never connects to Redis directly). This file is browser-safe: NO `fs`,
 // NO `ioredis`, no server-only imports.
 
+import { apiFetch } from './apiFetch';
+
 export type RedisKeyType = 'string' | 'list' | 'set' | 'zset' | 'hash' | 'stream' | 'none';
 
 /** TTL ceiling mirrored from the server (redis-ttl-mandatory) so the UI can block early. */
@@ -79,7 +81,7 @@ export interface DeleteResult {
 /** GET the connection list — never throws; returns disabled on any error. */
 export async function fetchRedisConnections(): Promise<RedisConnectionsResponse> {
   try {
-    const r = await fetch('/api/redis-connections');
+    const r = await apiFetch('/api/redis-connections', { timeoutMs: 15000 });
     if (!r.ok) return { enabled: false, connections: [] };
     return (await r.json()) as RedisConnectionsResponse;
   } catch {
@@ -92,10 +94,10 @@ export async function mutateRedisConnection(
   method: 'POST' | 'PUT' | 'DELETE',
   body: Record<string, unknown>,
 ): Promise<PublicRedisConnection[]> {
-  const r = await fetch('/api/redis-connections', {
+  const r = await apiFetch('/api/redis-connections', {
     method,
-    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    timeoutMs: 15000,
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
@@ -106,10 +108,10 @@ export async function mutateRedisConnection(
 
 /** POST one Redis action. Throws Error(message) on a non-2xx (surfaces Redis error). */
 async function redisAction<T>(action: string, params: Record<string, unknown>): Promise<T> {
-  const r = await fetch('/api/redis', {
+  const r = await apiFetch('/api/redis', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ action, ...params }),
+    timeoutMs: 60000, // thao tác dữ liệu (scan keyspace lớn…) được phép lâu hơn CRUD config
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok || (data as { ok?: boolean }).ok === false) {

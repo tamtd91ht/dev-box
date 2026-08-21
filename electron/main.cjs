@@ -2307,10 +2307,97 @@ ipcMain.handle('desktop:getLogs', () => logBuffer);
  * Phai dung server truoc, xoa, roi de lan reload sau spawn lai — dung duong ma
  * desktop:relaunch da di.
  */
+/**
+ * POST JSON toi Next server bang HTTP cua NODE — khong phai fetch cua renderer.
+ *
+ * BAT BUOC di duong nay cho buoc sao luu preset: renderer chi co 6 socket
+ * HTTP/1.1 toi moi host (gioi han cua Chromium), va o may dung nhieu terminal
+ * thi SSE /api/term/:id + automation watch chiem SACH 6 slot do. fetch tu
+ * renderer khi ay XEP HANG VO HAN — do la ly do nut "Nap lai sach" tung treo
+ * o "Đang dọn…" mai mai du server van tra loi curl trong 11ms. Node http o
+ * main process co pool rieng, khong dinh gioi han cua renderer.
+ */
+function requestViaNode(method, url, body, timeoutMs) {
+  return new Promise((resolve) => {
+    const u = new URL(url);
+    const headers = {};
+    let payload;
+    if (body !== undefined && body !== null) {
+      payload = typeof body === 'string' ? body : JSON.stringify(body);
+      headers['content-type'] = 'application/json';
+      headers['content-length'] = Buffer.byteLength(payload);
+    }
+    const req = require('http').request(
+      {
+        hostname: u.hostname,
+        port: u.port,
+        path: u.pathname + u.search,
+        method,
+        headers,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () =>
+          resolve({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            status: res.statusCode,
+            body: Buffer.concat(chunks).toString('utf8'),
+          }),
+        );
+      },
+    );
+    req.on('timeout', () => { req.destroy(new Error(`không phản hồi sau ${timeoutMs}ms`)); });
+    req.on('error', (err) => resolve({ ok: false, error: err.message }));
+    req.end(payload);
+  });
+}
+
+function postJsonViaNode(url, body, timeoutMs) {
+  return requestViaNode('POST', url, body, timeoutMs);
+}
+
+// Cầu fetch tổng quát cho các panel dữ liệu (Redis/Kafka/…): renderer gọi API
+// qua ĐÂY thay vì fetch trực tiếp, để không xếp hàng sau SSE terminal +
+// automation trong pool 6 socket (xem postJsonViaNode). Khoá chặt: chỉ nhận
+// đường dẫn /api/* trên chính APP_URL — renderer không sai khiến main process
+// gọi host tuỳ ý được.
+const API_FETCH_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE']);
+ipcMain.handle('desktop:apiFetch', (_evt, opts) => {
+  const p = opts && typeof opts.path === 'string' ? opts.path : '';
+  const method = opts && typeof opts.method === 'string' ? opts.method.toUpperCase() : 'GET';
+  if (!p.startsWith('/api/')) return { ok: false, error: 'chỉ nhận đường dẫn /api/*' };
+  if (!API_FETCH_METHODS.has(method)) return { ok: false, error: `method ${method} không được phép` };
+  const timeoutMs = Math.min(Math.max(Number(opts && opts.timeoutMs) || 30000, 1000), 120000);
+  const body = opts && typeof opts.body === 'string' ? opts.body : undefined;
+  return requestViaNode(method, `${APP_URL}${p}`, body, timeoutMs);
+});
+
 ipcMain.handle('desktop:hardReload', async (_evt, opts) => {
   const wipeBuild = !!(opts && opts.wipeBuild);
   const cleared = [];
   try {
+    // 0. SAO LUU preset truoc khi renderer don dep — du lieu do renderer gom
+    //    tu localStorage va gui kem, vi chinh no thi khong the tu POST: pool
+    //    6 ket noi cua no dang bi SSE terminal + automation chiem het (xem
+    //    postJsonViaNode). Gui khong duoc thi HUY toan bo — thu tu uu tien
+    //    giong /api/presets: khong bao gio don khi chua chac du lieu an toan.
+    const presets = Array.isArray(opts && opts.presets) ? opts.presets : [];
+    for (const p of presets) {
+      if (!p || typeof p.kind !== 'string' || !Array.isArray(p.list) || p.list.length === 0) continue;
+      const r = await postJsonViaNode(`${APP_URL}/api/presets`, { kind: p.kind, list: p.list }, 8000);
+      if (!r.ok) {
+        log('HardReloadError', `sao luu preset ${p.kind} that bai: ${r.error || 'HTTP ' + r.status}`);
+        return {
+          ok: false,
+          error: `Chưa sao lưu được nút tìm nhanh (${p.kind}) — huỷ dọn để không mất dữ liệu. Thử lại sau.`,
+          cleared,
+        };
+      }
+    }
+    if (presets.length > 0) cleared.push('presets-backed-up');
+
     // 1. Cache cua session UI chinh.
     const ses = session.defaultSession;
     await ses.clearCache();

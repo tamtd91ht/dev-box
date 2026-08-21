@@ -122,6 +122,16 @@ contextBridge.exposeInMainWorld('workspace', {
   readZaloCookies: (partition, names) => ipcRenderer.invoke('zaloapi:readCookies', partition, names),
 });
 
+// Cầu gọi API của chính app (/api/*) qua main process. Renderer chỉ có 6 socket
+// HTTP/1.1 tới mỗi host (giới hạn Chromium); máy mở nhiều terminal thì SSE
+// /api/term/:id + automation chiếm sạch — fetch từ renderer khi ấy XẾP HÀNG VÔ
+// HẠN dù server vẫn trả lời curl trong 11ms. Node http ở main process có pool
+// riêng nên không dính. lib/apiFetch.ts tự chọn cầu này khi chạy desktop.
+contextBridge.exposeInMainWorld('desktopApi', {
+  /** → { ok, status?, body? } | { ok:false, error } */
+  fetch: (opts) => ipcRenderer.invoke('desktop:apiFetch', opts),
+});
+
 // In-app console: the shell + `next dev` log stream the main process buffers
 // (see pushLog in electron/main.cjs). Rendered by components/DesktopConsole.tsx.
 contextBridge.exposeInMainWorld('desktopConsole', {
@@ -146,6 +156,9 @@ contextBridge.exposeInMainWorld('desktopUpdate', {
    * Dọn cache rồi nạp lại — để loại bỏ giả thuyết "đang ăn chunk cũ".
    * `{ wipeBuild: true }` xoá luôn `.next` (cache build phía server), tốn thêm
    * ~10-30s biên dịch lại ở lần nạp đầu nên phải chọn có ý thức.
+   * `{ presets: [...] }` — dữ liệu nút tìm nhanh để main SAO LƯU HỘ trước khi
+   * dọn: renderer không tự POST được khi 6 socket tới localhost:3000 đã bị SSE
+   * terminal + automation chiếm hết.
    */
   hardReload: (opts) => ipcRenderer.invoke('desktop:hardReload', opts || {}),
 });

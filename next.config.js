@@ -6,8 +6,11 @@ const HOME_GLOB = os.homedir().replace(/\\/g, '/') + '/**';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // Standalone output makes the "deploy later" path (Docker/k8s) trivial.
-  output: 'standalone',
+  // Standalone output CHỈ bật khi build cho Docker/k8s (NEXT_STANDALONE=1).
+  // Desktop shell chạy `next start`, mà Next 15.5 tuyên bố `next start` không
+  // được hỗ trợ cùng `output: standalone` — để cả hai là chạy trên đường
+  // nửa vời, không ai cam kết API route/SSE hoạt động đúng.
+  ...(process.env.NEXT_STANDALONE ? { output: 'standalone' } : {}),
 
   // VÌ SAO PHẢI LOẠI HOME KHỎI TRACE: @vercel/nft (chạy trong `next build` để
   // gom file cho server) tính tĩnh được `os.homedir()` + `path.join`, nên các

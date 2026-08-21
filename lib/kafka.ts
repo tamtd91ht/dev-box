@@ -3,6 +3,8 @@
 // the browser never talks to Kafka directly). This file is browser-safe: NO `fs`,
 // NO `kafkajs`, no server-only imports.
 
+import { apiFetch } from './apiFetch';
+
 /** A Kafka connection as returned to the browser. */
 export interface PublicKafkaConnection {
   id: string;
@@ -114,7 +116,7 @@ export interface TestResult {
 /** GET the connection list — never throws; returns disabled on any error. */
 export async function fetchKafkaConnections(): Promise<KafkaConnectionsResponse> {
   try {
-    const r = await fetch('/api/kafka-connections');
+    const r = await apiFetch('/api/kafka-connections', { timeoutMs: 15000 });
     if (!r.ok) return { enabled: false, connections: [] };
     return (await r.json()) as KafkaConnectionsResponse;
   } catch {
@@ -127,10 +129,10 @@ export async function mutateKafkaConnection(
   method: 'POST' | 'PUT' | 'DELETE',
   body: Record<string, unknown>,
 ): Promise<PublicKafkaConnection[]> {
-  const r = await fetch('/api/kafka-connections', {
+  const r = await apiFetch('/api/kafka-connections', {
     method,
-    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    timeoutMs: 15000,
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
@@ -141,10 +143,10 @@ export async function mutateKafkaConnection(
 
 /** POST one Kafka action. Throws Error(message) on failure (surfaces Kafka error). */
 async function kafkaAction<T>(action: string, params: Record<string, unknown>): Promise<T> {
-  const r = await fetch('/api/kafka', {
+  const r = await apiFetch('/api/kafka', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ action, ...params }),
+    timeoutMs: 60000, // đọc message/offset trên topic lớn được phép lâu hơn CRUD config
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok || (data as { ok?: boolean }).ok === false) {
