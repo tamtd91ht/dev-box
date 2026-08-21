@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   mAccounts, mAccountAdd, mAccountAddOAuth, mGoogleAuthUrl, mAccountRemove, mAccountRename,
-  mFolders, mList, mMessage, mNestedMessage, mSend, mDelete, mMarkAllSeen, mContacts, mContactAdd,
+  mFolders, mList, mMessage, mNestedMessage, mSend, mDelete, mSpam, mMarkSeen, mMarkAllSeen, mContacts, mContactAdd,
   mSignatureSet, mSignatureFetch,
   attachmentUrl, folderIcon, fmtAddr, fmtSize, accTitle, groupThreads,
   type MailAccountPub, type MailFolder, type MailListItem, type MailDetail, type AccountAddInput,
@@ -29,7 +29,7 @@ import MailCalendar from './MailCalendar';
 import GoogleAuthWindow from './GoogleAuthWindow';
 import { fmtRel } from '@/lib/google';
 import PasswordInput from './PasswordInput';
-import { MAIL_REFRESH_EVENT } from './MailWatchHost';
+import { MAIL_REFRESH_EVENT, MAIL_NEW_EVENT } from './MailWatchHost';
 import { MAIL_MUTED_EVENT, loadMutedMail, toggleMutedMail } from '@/lib/mailMuted';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
@@ -604,6 +604,7 @@ function Composer({ account, draft, onClose, onSent }: {
 
 function DetailView({
   accountId, path, detail, onBack, onReply, onForward, onDelete, deleting,
+  onSpam, spamming = false,
   trail = [], onOpenNested, onBackNested, nestedBusy = false,
 }: {
   accountId: string;
@@ -614,6 +615,9 @@ function DetailView({
   onForward: () => void;
   onDelete: () => void;
   deleting: boolean;
+  /** Đánh dấu spam (move vào \Junk). Không truyền = đang ở chính folder Spam. */
+  onSpam?: () => void;
+  spamming?: boolean;
   /** Đường đi tới mail LỒNG đang xem ([] = mail gốc trên server). */
   trail?: number[];
   /** Mở một đính kèm message/rfc822 thành mail để đọc. */
@@ -701,7 +705,13 @@ function DetailView({
         )}
         <span style={{ flex: 1 }} />
         {/* Thư lồng nằm bên trong thư khác — không có UID riêng trên server nên
-            không xoá riêng được. Muốn xoá thì xoá thư chứa nó. */}
+            không xoá/đánh dấu spam riêng được. Muốn thì thao tác thư chứa nó. */}
+        {!nestedView && onSpam && (
+          <button className="ghost sm mail-spam-btn" onClick={onSpam} disabled={spamming}
+            title="Đánh dấu spam — chuyển vào thư mục Spam/Junk">
+            {spamming ? <span className="spinner" aria-hidden /> : '🚫'} Spam
+          </button>
+        )}
         {!nestedView && (
           <button className="ghost sm mail-del-btn" onClick={onDelete} disabled={deleting}
             title="Xóa mail này (chuyển vào Thùng rác; đang ở Thùng rác thì xóa vĩnh viễn)">
@@ -868,11 +878,15 @@ function MailboxView({ account, onCompose }: {
   /** Gom mail cùng chuỗi hội thoại thành một dòng (như Gmail). Tắt được vì
    *  folder kiểu Sent/Archive nhiều khi muốn xem phẳng theo thời gian. */
   const [threaded, setThreaded] = useState(true);
+  /** Chỉ hiện thư chưa đọc (lọc client trên các trang ĐÃ TẢI — thư chưa đọc
+   *  nằm sâu hơn thì bấm "Tải thêm mail cũ hơn" như thường). */
+  const [unreadOnly, setUnreadOnly] = useState(false);
   /** Chuỗi đang bung ra xem hết (theo khoá chuỗi). */
   const [openThreads, setOpenThreads] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState<number | null>(null);
   const [deleting, setDeleting] = useState<number | null>(null);
+  const [spamming, setSpamming] = useState<number | null>(null);
   const [markingAll, setMarkingAll] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -896,6 +910,22 @@ function MailboxView({ account, onCompose }: {
   }, [account.id]);
 
   useEffect(() => { void loadList('INBOX'); }, [loadList]);
+
+  // Mail mới tới (MailWatchHost thấy số chưa đọc TĂNG) → tự tải lại, khỏi phải
+  // bấm ↻ hay thoát ra vào lại mới thấy thư mới. Watch chỉ đếm INBOX nên chỉ
+  // reload danh sách khi đang đứng ở INBOX; badge 🔔 thư mục thì luôn cập nhật.
+  // Đánh đổi biết trước: reload về trang đầu, các trang "tải thêm mail cũ hơn"
+  // đang mở sẽ gập lại — chấp nhận, vì thư mới quan trọng hơn vị trí cuộn.
+  useEffect(() => {
+    const onNew = (e: Event) => {
+      const ids = (e as CustomEvent<{ ids?: string[] }>).detail?.ids;
+      if (Array.isArray(ids) && !ids.includes(account.id)) return;
+      loadFolders();
+      if (path.toUpperCase() === 'INBOX') void loadList(path);
+    };
+    window.addEventListener(MAIL_NEW_EVENT, onNew);
+    return () => window.removeEventListener(MAIL_NEW_EVENT, onNew);
+  }, [account.id, path, loadFolders, loadList]);
 
   const openFolder = (p: string) => {
     setPath(p); setDetail(null); setItems([]); setOldestSeq(null);
@@ -924,16 +954,30 @@ function MailboxView({ account, onCompose }: {
     }
   };
 
-  const openMessage = async (m: MailListItem) => {
+  /**
+   * Mở một mail. `thread` = chuỗi hội thoại chứa nó (nếu đang gom chuỗi):
+   * mở chuỗi là ĐỌC CẢ CHUỖI kiểu Gmail — các thư chưa đọc còn lại trong
+   * chuỗi cũng được gắn \Seen. Không thế thì gặp cảnh: dòng chuỗi in đậm vì
+   * một thư CŨ chưa đọc, bấm vào mở thư mới nhất (vốn đã đọc) → bộ đếm không
+   * giảm, lọc "Chưa đọc" vẫn dính, mở kiểu gì cũng không hết đậm.
+   */
+  const openMessage = async (m: MailListItem, thread?: MailThread) => {
     setOpening(m.uid); setErr(null);
     setNested([]); // mail khác → bỏ ngăn xếp mail lồng của mail cũ
     try {
       setDetail(await mMessage(account.id, path, m.uid));
-      // Đã đọc server-side (\Seen) — cập nhật luôn UI khỏi chờ reload:
-      // hàng trong danh sách hết đậm + badge 🔔 của folder giảm 1.
-      if (!m.seen) {
-        setItems((cur) => cur.map((x) => (x.uid === m.uid ? { ...x, seen: true } : x)));
-        setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - 1) } : f)));
+      // Thư m: server đã gắn \Seen khi tải. Các thư chưa đọc KHÁC trong chuỗi:
+      // gắn qua markSeen, không chờ — lỗi thì lần reload sau lộ ra, không chặn
+      // việc đọc.
+      const others = (thread?.items ?? []).filter((x) => !x.seen && x.uid !== m.uid);
+      if (others.length > 0) {
+        void mMarkSeen(account.id, path, others.map((x) => x.uid)).catch(() => {});
+      }
+      const readUids = new Set([...(m.seen ? [] : [m.uid]), ...others.map((x) => x.uid)]);
+      if (readUids.size > 0) {
+        // Cập nhật luôn UI khỏi chờ reload: các hàng hết đậm + badge 🔔 giảm đủ.
+        setItems((cur) => cur.map((x) => (readUids.has(x.uid) ? { ...x, seen: true } : x)));
+        setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - readUids.size) } : f)));
         pingMailWatch(); // badge tab Mail giảm ngay, khỏi chờ chu kỳ 10 phút
       }
     } catch (e) {
@@ -969,6 +1013,8 @@ function MailboxView({ account, onCompose }: {
   const hasUnread = items.length === 0 ? true : items.some((m) => !m.seen) || (curFolder?.unseen ?? 0) > 0;
   // Đang đứng trong Thùng rác → xóa là VĨNH VIỄN (server sẽ expunge).
   const inTrash = curFolder?.specialUse === '\\Trash' || /^trash$/i.test(curFolder?.name ?? '');
+  // Đang đứng trong Spam → ẩn nút 🚫 (đánh dấu spam một mail đã ở Spam là vô nghĩa).
+  const inJunk = curFolder?.specialUse === '\\Junk' || /^(junk|spam)$/i.test(curFolder?.name ?? '');
 
   const threads = useMemo(() => groupThreads(items), [items]);
 
@@ -984,18 +1030,23 @@ function MailboxView({ account, onCompose }: {
     const out: { thread: MailThread; item: MailListItem; depth: number }[] = [];
     if (!threaded) {
       for (const m of items) {
+        if (unreadOnly && m.seen) continue;
         out.push({ thread: { key: `uid:${m.uid}`, items: [m], unseen: !m.seen }, item: m, depth: 0 });
       }
       return out;
     }
     for (const t of threads) {
+      // Lọc chưa đọc theo CHUỖI: chuỗi còn thư chưa đọc thì giữ nguyên cả
+      // chuỗi (kể cả các thư đã đọc trong đó) — cắt rời từng thư khỏi chuỗi
+      // thì mất ngữ cảnh hội thoại, đọc không hiểu gì.
+      if (unreadOnly && !t.unseen) continue;
       out.push({ thread: t, item: t.items[0], depth: 0 });
       if (openThreads.has(t.key)) {
         for (const m of t.items.slice(1)) out.push({ thread: t, item: m, depth: 1 });
       }
     }
     return out;
-  }, [threaded, threads, items, openThreads]);
+  }, [threaded, threads, items, openThreads, unreadOnly]);
 
   /** Xóa 1 mail theo UID — không mở/không đọc nội dung (an toàn với mail lừa
    *  đảo). Optimistic: rút khỏi danh sách ngay, trừ badge chưa đọc nếu cần. */
@@ -1019,6 +1070,27 @@ function MailboxView({ account, onCompose }: {
       setErr((e as Error).message);
     } finally {
       setDeleting(null);
+    }
+  };
+
+  /** Đánh dấu spam — move vào folder \Junk, không mở/không đọc nội dung.
+   *  KHÔNG hỏi confirm như xóa: mail vẫn nằm nguyên trong thư mục Spam, bấm
+   *  nhầm thì vào đó kéo lại được. Optimistic UI giống removeMail. */
+  const markSpamMail = async (m: Pick<MailListItem, 'uid' | 'seen'>) => {
+    setSpamming(m.uid); setErr(null);
+    try {
+      await mSpam(account.id, path, m.uid);
+      setItems((cur) => cur.filter((x) => x.uid !== m.uid));
+      setTotal((t) => Math.max(0, t - 1));
+      if (!m.seen) {
+        setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - 1) } : f)));
+        pingMailWatch(); // mail chưa đọc rời INBOX → badge tab Mail giảm ngay
+      }
+      setDetail((d) => (d?.uid === m.uid ? null : d));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setSpamming(null);
     }
   };
 
@@ -1066,6 +1138,8 @@ function MailboxView({ account, onCompose }: {
                 onForward={() => onCompose(forwardDraft(detail, path))}
                 onDelete={() => void removeMail({ uid: detail.uid, seen: true, subject: detail.subject })}
                 deleting={deleting === detail.uid}
+                onSpam={inJunk ? undefined : () => void markSpamMail({ uid: detail.uid, seen: true })}
+                spamming={spamming === detail.uid}
                 nestedBusy={nestedBusy}
               />
             );
@@ -1087,6 +1161,18 @@ function MailboxView({ account, onCompose }: {
                   ? 'Đánh dấu tất cả mail trong thư mục này là đã đọc'
                   : 'Thư mục này không còn mail chưa đọc'}>
                 {markingAll ? <span className="spinner" aria-hidden /> : '✓ Đánh dấu tất cả đã đọc'}
+              </button>
+              {/* Lọc chưa đọc — kiểu toggle như nút 🧵. Chỉ lọc trong các trang
+                  đã tải; số 🔔 trên rail vẫn là tổng thật của cả folder. */}
+              <button
+                className="ghost sm"
+                aria-pressed={unreadOnly}
+                onClick={() => setUnreadOnly((v) => !v)}
+                title={unreadOnly
+                  ? 'Đang lọc: chỉ thư chưa đọc — bấm để xem tất cả'
+                  : 'Chỉ hiện thư chưa đọc'}
+              >
+                {unreadOnly ? '◉ Chưa đọc' : '○ Chưa đọc'}
               </button>
               <button
                 className="ghost sm"
@@ -1113,8 +1199,8 @@ function MailboxView({ account, onCompose }: {
                    — button lồng button là HTML sai và click sẽ loạn. */
                 <div key={m.uid} role="button" tabIndex={0}
                   className={`g-row mail-row${m.seen ? '' : ' unread'}${depth > 0 ? ' mail-row-child' : ''}`}
-                  onClick={() => void openMessage(m)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void openMessage(m); } }}
+                  onClick={() => void openMessage(m, threaded ? thread : undefined)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void openMessage(m, threaded ? thread : undefined); } }}
                   title={m.subject}>
                   <span className={`mail-dot${m.seen ? ' off' : ''}`} aria-hidden
                     title={m.seen ? undefined : 'Chưa đọc'} />
@@ -1146,6 +1232,14 @@ function MailboxView({ account, onCompose }: {
                     </button>
                   )}
                   <span className="mail-date">{opening === m.uid ? <span className="spinner" aria-hidden /> : fmtRel(m.date ?? undefined)}</span>
+                  {/* Đánh dấu spam KHÔNG cần mở — cùng lý do với nút xóa. */}
+                  {!inJunk && (
+                    <button className="mail-row-del mail-row-spam" disabled={spamming === m.uid}
+                      onClick={(e) => { e.stopPropagation(); void markSpamMail(m); }}
+                      title="Đánh dấu spam — chuyển vào thư mục Spam/Junk (không cần mở mail)">
+                      {spamming === m.uid ? <span className="spinner" aria-hidden /> : '🚫'}
+                    </button>
+                  )}
                   {/* Xóa KHÔNG cần mở — cho mail nghi lừa đảo/độc hại. */}
                   <button className="mail-row-del" disabled={deleting === m.uid}
                     onClick={(e) => { e.stopPropagation(); void removeMail(m); }}
@@ -1157,6 +1251,14 @@ function MailboxView({ account, onCompose }: {
               })}
               {!loading && items.length === 0 && !err && (
                 <div className="empty" style={{ padding: '24px 8px' }}><p className="small">Thư mục trống.</p></div>
+              )}
+              {!loading && items.length > 0 && rows.length === 0 && unreadOnly && (
+                <div className="empty" style={{ padding: '24px 8px' }}>
+                  <p className="small">
+                    Không có thư chưa đọc trong số đã tải.
+                    {oldestSeq !== null && oldestSeq > 1 && ' Thử "Tải thêm mail cũ hơn" bên dưới.'}
+                  </p>
+                </div>
               )}
             </div>
             {oldestSeq !== null && oldestSeq > 1 && (

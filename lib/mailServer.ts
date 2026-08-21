@@ -483,6 +483,26 @@ export async function listMessages(account: MailAccount, path: string, beforeSeq
   });
 }
 
+/** Đánh dấu đã đọc MỘT DANH SÁCH UID cụ thể. Dùng khi mở một CHUỖI hội thoại:
+ *  các thư chưa đọc còn lại trong chuỗi cũng được coi là đã đọc (kiểu Gmail) —
+ *  không thì chuỗi kẹt mãi ở "chưa đọc" khi thư mới nhất đã đọc mà thư cũ
+ *  trong chuỗi thì chưa, mở kiểu gì cũng không hết. */
+export async function markSeen(
+  account: MailAccount,
+  path: string,
+  uids: number[],
+): Promise<{ marked: number }> {
+  return withImap(account, async (client) => {
+    const lock = await client.getMailboxLock(path);
+    try {
+      await client.messageFlagsAdd(uids.join(','), ['\\Seen'], { uid: true });
+      return { marked: uids.length };
+    } finally {
+      lock.release();
+    }
+  });
+}
+
 /** Đánh dấu TOÀN BỘ mail trong folder là đã đọc (\Seen) — nút "Đánh dấu tất cả đã đọc". */
 export async function markAllSeen(account: MailAccount, path: string): Promise<{ marked: number }> {
   return withImap(account, async (client) => {
@@ -570,7 +590,11 @@ export async function getMessage(account: MailAccount, path: string, uid: number
       for await (const c of dl.content) chunks.push(c as Buffer);
       const parsed = await simpleParser(Buffer.concat(chunks));
 
-      await client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true }).catch(() => {});
+      // Nuốt lỗi nhưng phải NÓI: gắn cờ hỏng mà im lặng thì "đọc rồi vẫn chưa
+      // đọc" không có lấy một dấu vết để lần (log này hiện ở Console trong app).
+      await client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true }).catch((e) => {
+        console.error(`[mail] không gắn được \\Seen cho uid ${uid} @ ${path}:`, (e as Error).message);
+      });
 
       return toDetail(parsed, uid);
     } finally {
@@ -664,6 +688,42 @@ export async function deleteMessage(
       }
       await client.messageDelete(String(uid), { uid: true });
       return { mode: 'purged' as const };
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+/** Tìm folder Spam của hộp thư: ưu tiên special-use \Junk, fallback theo tên. */
+async function findJunkPath(client: ImapFlow): Promise<string | null> {
+  const boxes = (await client.list()) as ListResponse[];
+  const byUse = boxes.find((b) => b.specialUse === '\\Junk');
+  if (byUse) return byUse.path;
+  const NAMES = ['junk', 'spam', 'junk e-mail', 'junk email', 'bulk mail', 'thư rác'];
+  const byName = boxes.find((b) => NAMES.includes(b.name.toLowerCase()) || NAMES.includes(b.path.toLowerCase()));
+  return byName?.path ?? null;
+}
+
+/**
+ * Đánh dấu spam — MOVE vào folder Junk/Spam, cùng triết lý deleteMessage: chỉ
+ * thao tác UID, KHÔNG đọc/parse nội dung nên an toàn với chính loại mail mà
+ * người ta muốn đánh dấu. Move (thay vì chỉ gắn cờ) để filter phía server học
+ * và mail biến khỏi INBOX trên mọi client. Không có folder Junk thì nói rõ —
+ * đừng im lặng không làm gì.
+ */
+export async function markSpam(
+  account: MailAccount,
+  path: string,
+  uid: number,
+): Promise<{ junkPath: string }> {
+  return withImap(account, async (client) => {
+    const junk = await findJunkPath(client);
+    if (!junk) throw new Error('Hộp thư này không có thư mục Spam/Junk — không đánh dấu được.');
+    if (junk === path) throw new Error('Mail đã nằm trong thư mục Spam.');
+    const lock = await client.getMailboxLock(path);
+    try {
+      await client.messageMove(String(uid), junk, { uid: true });
+      return { junkPath: junk };
     } finally {
       lock.release();
     }

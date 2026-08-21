@@ -27,8 +27,12 @@
 //                     (chữ ký HTML riêng từng tài khoản; server lọc script trước khi lưu)
 //     'markAllSeen'   { accountId, path }              → { ok, result: { marked } }
 //                     (đánh dấu TOÀN BỘ mail trong folder là đã đọc)
+//     'markSeen'      { accountId, path, uids }        → { ok, result: { marked } }
+//                     (đánh dấu đã đọc các UID cụ thể — mở chuỗi hội thoại)
 //     'delete'        { accountId, path, uid }        → { ok, result: { mode: 'trash'|'purged' } }
 //                     (move vào Trash; đang ở Trash → xóa vĩnh viễn — không đọc nội dung)
+//     'spam'          { accountId, path, uid }        → { ok, result: { junkPath } }
+//                     (đánh dấu spam = move vào folder \Junk — không đọc nội dung)
 //     'send'          { accountId, to, cc?, bcc?, subject, text, inReplyTo?, references? }
 //                     → { ok, result: { messageId } }         (best-effort copy vào Sent)
 //
@@ -42,7 +46,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { listAccounts, getAccount, addAccount, removeAccount, renameAccount, setSignature, toPublic } from '@/lib/mailAccounts';
 import {
   verifyImap, listFolders, listMessages, getMessage, getAttachment, sendMail, deleteMessage,
-  markAllSeen, getNestedMessage, getNestedAttachment, ImapVerifyError,
+  markSpam, markSeen, markAllSeen, getNestedMessage, getNestedAttachment, ImapVerifyError,
 } from '@/lib/mailServer';
 import { fetchZimbraSignatures } from '@/lib/zimbraSignature';
 import { listContacts, recordAddresses, removeContact, domainOf } from '@/lib/mailContacts';
@@ -210,9 +214,26 @@ export async function POST(req: NextRequest) {
       case 'markAllSeen':
         result = await markAllSeen(await needAccount(), String(body.path ?? 'INBOX'));
         break;
+      case 'markSeen': {
+        const uids: number[] = (Array.isArray(body.uids) ? body.uids : [])
+          .map(Number)
+          .filter((n: number) => Number.isInteger(n) && n > 0)
+          .slice(0, 500); // một chuỗi hội thoại không bao giờ dài đến mức này
+        if (uids.length === 0) throw new Error('Thiếu danh sách UID.');
+        result = await markSeen(await needAccount(), String(body.path ?? 'INBOX'), uids);
+        break;
+      }
       case 'delete':
         // Xóa theo UID — không tải/parse nội dung nên an toàn với mail lừa đảo.
         result = await deleteMessage(
+          await needAccount(),
+          String(body.path ?? 'INBOX'),
+          Number(body.uid),
+        );
+        break;
+      case 'spam':
+        // Đánh dấu spam = move vào \Junk — cũng chỉ theo UID, không đọc nội dung.
+        result = await markSpam(
           await needAccount(),
           String(body.path ?? 'INBOX'),
           Number(body.uid),

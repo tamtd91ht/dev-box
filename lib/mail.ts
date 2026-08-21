@@ -259,6 +259,12 @@ export const mSend = (input: SendInput) => mailAction<{ messageId: string }>('se
 /** Xóa mail theo UID (move Trash; đang ở Trash → xóa vĩnh viễn) — không đọc nội dung. */
 export const mDelete = (accountId: string, path: string, uid: number) =>
   mailAction<{ mode: 'trash' | 'purged'; trashPath?: string }>('delete', { accountId, path, uid });
+/** Đánh dấu spam theo UID (move vào folder \Junk) — không đọc nội dung. */
+export const mSpam = (accountId: string, path: string, uid: number) =>
+  mailAction<{ junkPath: string }>('spam', { accountId, path, uid });
+/** Đánh dấu đã đọc các UID cụ thể (mở chuỗi hội thoại → đọc cả chuỗi). */
+export const mMarkSeen = (accountId: string, path: string, uids: number[]) =>
+  mailAction<{ marked: number }>('markSeen', { accountId, path, uids });
 /** Đánh dấu toàn bộ mail trong folder là đã đọc. */
 export const mMarkAllSeen = (accountId: string, path: string) =>
   mailAction<{ marked: number }>('markAllSeen', { accountId, path });
