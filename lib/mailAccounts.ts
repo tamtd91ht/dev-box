@@ -115,6 +115,17 @@ export async function addAccount(input: Omit<MailAccount, 'id'>): Promise<MailAc
   return accounts;
 }
 
+/** auth='oauth': trỏ hòm thư sang bản ghi Google khác (sau khi LIÊN KẾT LẠI —
+ *  token cũ chết, consent lại xong phải nối về đúng bản ghi mới). */
+export async function relinkGoogle(id: string, googleAccountId: string): Promise<MailAccount[]> {
+  const accounts = await readAll();
+  const a = accounts.find((x) => x.id === id);
+  if (!a) throw new Error('Không tìm thấy hòm thư để liên kết lại.');
+  a.googleAccountId = googleAccountId;
+  await writeAll(accounts);
+  return accounts;
+}
+
 export async function removeAccount(id: string): Promise<MailAccount[]> {
   const accounts = (await readAll()).filter((a) => a.id !== id);
   await writeAll(accounts);

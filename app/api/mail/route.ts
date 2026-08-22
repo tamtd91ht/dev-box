@@ -43,7 +43,7 @@
 //       để tải ngay trong app thay vì văng ra trình duyệt ngoài.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { listAccounts, getAccount, addAccount, removeAccount, renameAccount, setSignature, toPublic } from '@/lib/mailAccounts';
+import { listAccounts, getAccount, addAccount, removeAccount, renameAccount, relinkGoogle, setSignature, toPublic } from '@/lib/mailAccounts';
 import {
   verifyImap, listFolders, listMessages, getMessage, getAttachment, sendMail, deleteMessage,
   markSpam, markSeen, markAllSeen, getNestedMessage, getNestedAttachment, ImapVerifyError,
@@ -148,6 +148,20 @@ export async function POST(req: NextRequest) {
         }
         if (!(await hasMailScope(g.id))) {
           throw new Error(`Tài khoản ${email} chưa cấp quyền mail — bấm "Kết nối bằng Google" để cấp quyền IMAP/SMTP.`);
+        }
+        // Hòm thư OAuth này ĐÃ TỒN TẠI → đây là LIÊN KẾT LẠI (token cũ chết),
+        // không phải thêm trùng: trỏ về bản ghi Google vừa consent rồi login
+        // thử. Trước đây nhánh này rơi xuống addAccount và ăn "Tài khoản này đã
+        // được thêm rồi" — bế tắc đúng lúc token hết hạn cần cứu.
+        {
+          const existing = (await listAccounts()).find(
+            (x) => x.auth === 'oauth' && x.email.toLowerCase() === email.toLowerCase(),
+          );
+          if (existing) {
+            await verifyImap({ ...existing, googleAccountId: g.id });
+            result = (await relinkGoogle(existing.id, g.id)).map(toPublic);
+            break;
+          }
         }
         const acc = {
           label: String(body.label ?? '').trim() || email,

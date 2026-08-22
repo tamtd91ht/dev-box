@@ -892,6 +892,25 @@ function MailboxView({ account, onCompose, onReadLocal }: {
   const [spamming, setSpamming] = useState<number | null>(null);
   const [markingAll, setMarkingAll] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /** Consent Google mở trong app để XÁC THỰC LẠI hòm thư OAuth hết hạn. */
+  const [reauthUrl, setReauthUrl] = useState<string | null>(null);
+
+  /** Token Google chết (app Testing hết hạn 7 ngày / bị thu hồi / đổi mật khẩu)
+   *  → mở consent lại NGAY TẠI ĐÂY. Consent cùng email upsert vào đúng bản ghi
+   *  Google cũ nên hòm thư sống lại tức thì, không phải gỡ/thêm lại. */
+  const startReauth = async () => {
+    setErr(null);
+    try {
+      const { url } = await mGoogleAuthUrl(account.email);
+      if (typeof window !== 'undefined' && window.workspace?.isDesktop) setReauthUrl(url);
+      else {
+        window.open(url, '_blank', 'noopener');
+        setErr('Hoàn tất đăng nhập ở tab vừa mở, rồi bấm ↻ tải lại danh sách.');
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
 
   /** Chip tài khoản chỉ đếm INBOX (mailWatch đếm INBOX UNSEEN) — đọc thư ở
    *  folder khác thì đừng trừ, không thì chip âm so với số thật. */
@@ -1136,6 +1155,26 @@ function MailboxView({ account, onCompose, onReadLocal }: {
 
       <div className="g-main">
         {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
+        {/* Hòm thư OAuth mà lỗi thì 9/10 là token Google hết hạn — đưa lối
+            xác thực lại NGAY ĐÂY thay vì bắt người dùng mò sang tab Google
+            (hoặc tệ hơn: gỡ tài khoản rồi thêm lại). */}
+        {err && account.auth === 'oauth' && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: '4px 0 8px' }}>
+            <button className="sm" onClick={() => void startReauth()}>
+              Ⓖ Xác thực lại Google
+            </button>
+            <span className="small" style={{ color: 'var(--muted)' }}>
+              Token Google có hạn dùng — xác thực lại là hòm thư sống lại, giữ nguyên cấu hình.
+            </span>
+          </div>
+        )}
+        {reauthUrl && (
+          <GoogleAuthWindow
+            url={reauthUrl}
+            onDone={() => { setReauthUrl(null); setErr(null); loadFolders(); void loadList(path); }}
+            onCancel={() => setReauthUrl(null)}
+          />
+        )}
         {detail ? (
           // Đang mở mail lồng thì hiện nó; ngăn xếp rỗng thì hiện mail gốc.
           (() => {
