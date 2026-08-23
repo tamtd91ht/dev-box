@@ -44,10 +44,10 @@ function isInfraMetric(metric: string): boolean {
   return INFRA_EXACT.has(metric) || INFRA_RESOURCE_RE.test(metric);
 }
 
-/** Chuỗi gộp những chỗ tên topic có thể xuất hiện trong một event Kafka. */
+/** Chuỗi gộp những chỗ tên topic/consumer có thể xuất hiện trong một event Kafka. */
 function topicHaystack(event: AutomationEvent): string {
   const f = event.fields ?? {};
-  return [f.topics, f.groups, event.title, event.text]
+  return [f.topics, f.groups, f.consumers, event.title, event.text]
     .map((x) => String(x ?? ''))
     .join('\n')
     .toLowerCase();
@@ -63,10 +63,19 @@ function topicHaystack(event: AutomationEvent): string {
 export const ALL_TOPICS = '*';
 const isWildcard = (v: string) => v === ALL_TOPICS || v.startsWith(`${ALL_TOPICS}:`);
 
-/** Sự kiện có "dính topic" không — có nêu topic hoặc consumer group cụ thể. */
+/**
+ * Sự kiện có "dính topic" không — có nêu topic hoặc consumer group cụ thể.
+ * Nguồn Kafka phát group dưới `consumers` (consumerFields, sources/infra.ts) chứ
+ * KHÔNG có field `groups` — thiếu nó thì mọi cảnh báo consumer (stalledGroups,
+ * maxStalledSec…) lọt qua wildcard '*:<cụm>' dù group được nêu đích danh.
+ */
 function isTopicEvent(event: AutomationEvent): boolean {
   const f = event.fields ?? {};
-  return Boolean(String(f.topics ?? '').trim() || String(f.groups ?? '').trim());
+  return Boolean(
+    String(f.topics ?? '').trim() ||
+      String(f.groups ?? '').trim() ||
+      String(f.consumers ?? '').trim(),
+  );
 }
 
 function wildcardMatches(token: string, event: AutomationEvent, excludes: string[]): boolean {
