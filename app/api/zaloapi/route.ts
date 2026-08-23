@@ -145,7 +145,19 @@ export async function POST(req: NextRequest) {
       case 'send': {
         const accountKey = need(body.accountKey, 'accountKey');
         const text = typeof body.text === 'string' ? body.text : '';
-        if (!text.trim()) {
+        // Tag (@) trong tin nhóm (tuỳ chọn): [{uid,name}], trần 5 — quá số đó
+        // là spam cả nhóm chứ không còn là cảnh báo.
+        const mentions = Array.isArray(body.mentions)
+          ? body.mentions
+              .filter((m: unknown) => m && typeof m === 'object')
+              .map((m: Record<string, unknown>) => ({ uid: String(m.uid || '').trim(), name: String(m.name || '').trim() }))
+              .filter((m: { uid: string }) => m.uid)
+              .slice(0, 5)
+          : undefined;
+        // Text rỗng vẫn hợp lệ KHI có mention: đó là tin "chỉ để tag" mà
+        // automation gửi riêng sau tin cảnh báo — thân tin sẽ là chuỗi "@A @B"
+        // do sendMessage tự dựng (cùng chỗ với mentionInfo, khỏi lệch vị trí).
+        if (!text.trim() && !mentions?.length) {
           return NextResponse.json({ ok: false, error: 'nội dung rỗng — không gửi' }, { status: 400 });
         }
         if (!ZALOAPI_ALLOW_SEND) {
@@ -174,20 +186,15 @@ export async function POST(req: NextRequest) {
               .map((s: Record<string, unknown>) => ({ start: Number(s.start) || 0, len: Number(s.len) || 0, st: String(s.st || '') }))
               .filter((s: { len: number; st: string }) => s.len > 0 && s.st)
           : undefined;
-        // Tag (@) trong tin nhóm (tuỳ chọn): [{uid,name}], trần 5 — quá số đó
-        // là spam cả nhóm chứ không còn là cảnh báo.
-        const mentions = Array.isArray(body.mentions)
-          ? body.mentions
-              .filter((m: unknown) => m && typeof m === 'object')
-              .map((m: Record<string, unknown>) => ({ uid: String(m.uid || '').trim(), name: String(m.name || '').trim() }))
-              .filter((m: { uid: string }) => m.uid)
-              .slice(0, 5)
-          : undefined;
         // Ghi LẠC QUAN vào kho hội thoại NGAY để màn chat hiện bong bóng liền,
         // rồi cập nhật trạng thái theo kết quả. dest rỗng = tự gửi cho mình (uid).
+        // Tin chỉ-để-tag có text rỗng — bong bóng hiện chuỗi "@Tên" thay vì trống.
+        const echoText = text.trim()
+          ? text
+          : (mentions ?? []).map((m: { uid: string; name: string }) => `@${m.name || m.uid}`).join(' ');
         const dest = threadId || ctx.uid;
         const now = Date.now();
-        const echoId = dest ? recordOutgoing(accountKey, { threadId: dest, group, text, at: now, status: 'sending' }) : '';
+        const echoId = dest ? recordOutgoing(accountKey, { threadId: dest, group, text: echoText, at: now, status: 'sending' }) : '';
         const result = await sendMessage(ctx, { threadId, message: text, group, styles, mentions });
         if (dest && echoId) setMessageStatus(accountKey, dest, echoId, result.ok ? 'sent' : 'failed');
         // eslint-disable-next-line no-console

@@ -98,24 +98,46 @@ async function runSend(
   if (dryRun) {
     return {
       status: 'dry-run',
-      detail: `[gửi thử] tới ${where} · dài ${text.length} ký tự${tagNote} — CHƯA bắn đi`,
+      detail: `[gửi thử] tới ${where} · dài ${text.length} ký tự${tagNote}${people.length ? ' · tag đi TIN RIÊNG ngay sau' : ''} — CHƯA bắn đi`,
       sent: 0,
       result: null,
     };
   }
 
   try {
+    // Tin cảnh báo đi TRƯỚC và sạch — tag đi tin riêng ngay sau. Hai lượt cùng
+    // nằm trong một job của queue tài khoản nên không tin nào chen vào giữa.
     const res = await zaloApiSendMessage({
       accountKey: action.accountKey,
       threadId,
       text,
       group: !!action.group,
-      mentions: people.length ? people : undefined,
     });
-    if (res.ok) {
-      return { status: 'ok', detail: (res.detail || `đã gửi tới ${where}`) + tagNote, sent: 1, result: res };
+    if (!res.ok) {
+      return { status: 'error', detail: res.detail || 'gửi API không thành công', sent: 0, result: res };
     }
-    return { status: 'error', detail: res.detail || 'gửi API không thành công', sent: 0, result: res };
+    if (!people.length) {
+      return { status: 'ok', detail: res.detail || `đã gửi tới ${where}`, sent: 1, result: res };
+    }
+    // Tin tag: text rỗng, server tự dựng "@A @B" + mentionInfo cùng chỗ.
+    const tagRes = await zaloApiSendMessage({
+      accountKey: action.accountKey,
+      threadId,
+      text: '',
+      group: true,
+      mentions: people,
+    });
+    if (tagRes.ok) {
+      return { status: 'ok', detail: (res.detail || `đã gửi tới ${where}`) + tagNote, sent: 2, result: tagRes };
+    }
+    // Cảnh báo ĐÃ tới nhóm — chỉ tin tag hỏng. Báo error để activity lộ ra,
+    // nhưng detail nói rõ nửa nào đã đi để không ai gửi lại tin cảnh báo.
+    return {
+      status: 'error',
+      detail: `cảnh báo ĐÃ gửi tới ${where}, nhưng tin tag lỗi: ${tagRes.detail || 'gửi API không thành công'}`,
+      sent: 1,
+      result: tagRes,
+    };
   } catch (e) {
     // Lỗi cổng/chưa đăng nhập/hết hạn đều tới đây với thông điệp đã rõ nghĩa.
     return { status: 'error', detail: (e as Error).message, sent: 0, result: null };

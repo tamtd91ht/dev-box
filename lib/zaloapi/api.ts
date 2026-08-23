@@ -112,7 +112,8 @@ export function zaloApiSendMessage(params: {
   text: string;
   group?: boolean;
   styles?: ZaloTextStyle[];
-  /** Tag (@) người trong tin NHÓM — server nối dòng "→ @A @B" + mentionInfo. */
+  /** Tag (@) người trong tin NHÓM — server nối dòng "→ @A @B" + mentionInfo;
+   *  text rỗng + mentions = tin CHỈ ĐỂ TAG (thân tin là chuỗi "@A @B"). */
   mentions?: { uid: string; name: string }[];
 }): Promise<ZaloSendResult> {
   return call<ZaloSendResult>('send', params);

@@ -336,7 +336,10 @@ export interface MentionTarget {
  */
 function withMentions(message: string, mentions: MentionTarget[]): { message: string; mentionInfo: string } {
   if (!mentions.length) return { message, mentionInfo: '' };
-  let text = message.trimEnd() + '\n→ ';
+  // Thân tin rỗng = tin CHỈ ĐỂ TAG (automation gửi cảnh báo xong mới tag riêng
+  // một tin) — khi đó tin chính là chuỗi "@A @B", không có mũi tên dẫn.
+  const base = message.trimEnd();
+  let text = base ? base + '\n→ ' : '';
   const info: { pos: number; len: number; uid: string; type: 0 }[] = [];
   mentions.forEach((m, i) => {
     if (i > 0) text += ' ';
@@ -360,11 +363,14 @@ export async function sendMessage(
 
   const host = opts.group ? ctx.serviceMap.group?.[0] : ctx.serviceMap.chat?.[0];
   if (!host) return { ok: false, detail: `serviceMap thiếu host ${opts.group ? 'group' : 'chat'}` };
-  const path = opts.group ? '/api/group/sendmsg' : '/api/message/sms';
 
   // Mention chỉ có nghĩa trong nhóm — tin 1-1 bỏ qua lặng lẽ (người nhận là
   // chính người được "tag" rồi, thêm @ chỉ gây rối).
   const tagged = opts.group ? withMentions(opts.message, opts.mentions ?? []) : { message: opts.message, mentionInfo: '' };
+
+  // Tin nhóm có mention phải đi endpoint /mention (zca-js làm y hệt) —
+  // /sendmsg lặng lẽ BỎ mentionInfo, tag rớt thành text trần, không ping ai.
+  const path = opts.group ? (tagged.mentionInfo ? '/api/group/mention' : '/api/group/sendmsg') : '/api/message/sms';
 
   const payload: Record<string, unknown> = opts.group
     ? { grid: dest, message: tagged.message, clientId, mentionInfo: tagged.mentionInfo, ttl: 0, visibility: 0, imei: ctx.imei }
