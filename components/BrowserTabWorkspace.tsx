@@ -23,6 +23,7 @@ import PasswordManager from './PasswordManager';
 import DupTabDialog, { tabUrlKey } from './DupTabDialog';
 import { onOpenUrl } from '@/lib/openTarget';
 import PasswordInput from './PasswordInput';
+import { usePopupOverWebview } from '@/lib/useOverWebview';
 
 interface Tab { id: string; name: string; url: string; profile?: string; partition: string; creds?: { username?: string; password?: string } }
 
@@ -433,28 +434,16 @@ export default function BrowserTabWorkspace() {
     return pid;
   }, []);
 
-  /** Hộp thoại phải nổi TRÊN <webview>: guest của Electron vẽ ở tầng native, đè
-   *  mọi phần tử HTML bất kể z-index.
-   *
-   *  Dùng cờ `popup` (ẩn riêng <webview>) chứ không phải `modal` (đẩy cả pane ra
-   *  -200vw): hộp thoại này nhỏ, giữ được thanh tab và thanh dấu trang phía sau
-   *  thì người dùng còn thấy mình đang ở tab nào. */
+  // Dùng cờ `popup` chứ không phải `modal`: mấy hộp thoại này nhỏ, giữ được
+  // thanh tab và thanh dấu trang phía sau thì người dùng còn thấy mình đang ở
+  // tab nào (xem lib/useOverWebview.ts để biết khác biệt hai cờ).
   //
-  // Menu ⋯ cũng nằm trong danh sách: nó là <div> trong luồng tài liệu với
-  // z-index 21, mà guest <webview> vẽ ở tầng native nên đè lên bất kể z-index.
-  // Menu vẫn mở, chỉ là KHÔNG THẤY GÌ khi đang ở trong một trang — đúng hiện
-  // tượng "ngoài trang chủ có nút, vào trang thì không có".
-  //
-  // `edit` (modal thêm/sửa dấu trang) PHẢI có trong danh sách này. Thiếu nó thì
-  // <webview> vẫn nằm nguyên tầng native, che kín modal — và vì guest là process
-  // riêng, mọi cú bấm lẫn phím gõ đi vào TRANG WEB chứ không vào ô nhập. Triệu
-  // chứng nhìn thấy là "sửa tên dấu trang không được, bàn phím như bị chặn".
-  useEffect(() => {
-    const root = document.documentElement;
-    if (folderAsk || menuOpen || dupAsk || edit) root.setAttribute('data-popup-over-webview', '1');
-    else root.removeAttribute('data-popup-over-webview');
-    return () => root.removeAttribute('data-popup-over-webview');
-  }, [folderAsk, menuOpen, dupAsk, edit]);
+  // MỌI overlay của file này phải có mặt trong biểu thức dưới đây. Thiếu một cái
+  // là nó bị <webview> che kín, và vì guest là process riêng nên cú bấm lẫn phím
+  // gõ đi vào TRANG WEB chứ không vào ô nhập — `edit` từng bị sót, triệu chứng
+  // là "sửa tên dấu trang không được, bàn phím như bị chặn". Menu ⋯ cũng vậy:
+  // z-index 21 không cứu được gì trước tầng native.
+  usePopupOverWebview(!!folderAsk || menuOpen || !!dupAsk || !!edit);
 
   /** Esc đóng menu ⋯. Menu đã portal ra body nên không nhận keydown của cây
    *  con nữa — phải nghe ở window. */

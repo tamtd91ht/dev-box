@@ -24,6 +24,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useModalOverWebview, withoutOverWebview } from '@/lib/useOverWebview';
 
 interface ExtItem {
   path: string;
@@ -137,12 +138,7 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
   // CỜ NÀY ĐẨY *MỌI* PANE CÓ WEBVIEW, KHÔNG RIÊNG TAB BROWSER — nên nó phải
   // được gỡ chắc chắn khi modal đóng. Quên gỡ là Workspace/Links/Google/Zalo
   // API cũng bị đẩy ra ngoài màn hình theo, dù chẳng liên quan gì.
-  useEffect(() => {
-    const root = document.documentElement;
-    root.setAttribute('data-modal-over-webview', '1');
-    void window.workspace?.focusHost?.().catch(() => {});
-    return () => root.removeAttribute('data-modal-over-webview');
-  }, []);
+  useModalOverWebview(true, { focusHost: true });
 
   /** Bọc một thao tác: khoá nút, xoá thông báo cũ, refresh lại sau khi xong. */
   const run = useCallback(async (fn: () => Promise<Res | void>, okMsg?: string) => {
@@ -167,14 +163,7 @@ export default function BrowserExtensions({ onClose }: { onClose: () => void }) 
     // Nhả webview TRƯỚC khi mở hộp thoại native. Guest của Electron vẽ ở tầng
     // native và giữ input; mở dialog trong lúc cờ này còn bật thì hộp thoại
     // hiện lên nhưng không bấm được gì. Gắn lại ngay sau khi dialog đóng.
-    const root = document.documentElement;
-    root.removeAttribute('data-modal-over-webview');
-    let picked;
-    try {
-      picked = await api.pickDir();
-    } finally {
-      root.setAttribute('data-modal-over-webview', '1');
-    }
+    const picked = await withoutOverWebview('modal', () => api.pickDir());
     if (picked.canceled) return;                     // người dùng bấm Cancel — im lặng
     if (!picked.ok || !picked.path) {
       // Hộp thoại native lỗi/không mở được: nói rõ và chỉ sang ô dán đường dẫn

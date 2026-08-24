@@ -15,6 +15,7 @@ import { createPortal } from 'react-dom';
 import * as hiddenTabs from '@/lib/hiddenTabs';
 import DownloadPrefs from './DownloadPrefs';
 import type { TabInfo } from './QuickTabs';
+import { useModalOverWebview } from '@/lib/useOverWebview';
 
 export interface TabVisibilityBarProps {
   /** Khoá các tab đang bị ẩn. */
@@ -61,13 +62,7 @@ export default function TabVisibilityBar({
   // <webview> của Electron vẽ ở TẦNG NATIVE, nằm trên mọi phần tử HTML bất kể
   // z-index — pane Links/Browser/Workspace sẽ che bảng. Cùng cách xử lý như
   // UltraBar: đặt cờ trên <html>, CSS tạm đẩy webview ra khỏi màn hình.
-  const overlayOn = open || !!pending;
-  useEffect(() => {
-    const root = document.documentElement;
-    if (overlayOn) root.setAttribute('data-modal-over-webview', '1');
-    else root.removeAttribute('data-modal-over-webview');
-    return () => root.removeAttribute('data-modal-over-webview');
-  }, [overlayOn]);
+  useModalOverWebview(open || !!pending);
 
   const nHidden = hidden.length;
   const pendingInfo = pending ? info(pending) : undefined;

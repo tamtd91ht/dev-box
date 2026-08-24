@@ -12,6 +12,7 @@ import {
   pwList, pwRemove, pwSave, pwUpdate, pwReveal, canEncrypt, hostOfOrigin, type Credential,
 } from '@/lib/passwords';
 import PasswordInput from './PasswordInput';
+import { useModalOverWebview } from '@/lib/useOverWebview';
 
 /** Form thêm/sửa. id rỗng = thêm mới. */
 interface Draft { id: string; origin: string; username: string; password: string; profile: string; label: string }
@@ -36,11 +37,11 @@ export default function PasswordManager({ onClose }: { onClose: () => void }) {
   // <webview> của Electron vẽ ở tầng native, đè lên mọi phần tử HTML bất kể
   // z-index. Cả hai chỗ dùng PasswordManager (tab Browser và tab Links) đều là
   // pane có webview, nên không đặt cờ này thì modal bị guest che mất.
+  useModalOverWebview(true);
+  // Nhả focus khỏi guest MỘT LẦN lúc mở: webview giữ input ở tầng native, không
+  // gọi thì ô nhập đầu tiên của modal không nhận được phím.
   useEffect(() => {
-    const root = document.documentElement;
-    root.setAttribute('data-modal-over-webview', '1');
     void window.workspace?.focusHost?.().catch(() => {});
-    return () => root.removeAttribute('data-modal-over-webview');
   }, []);
 
   // TỰ ĐÓNG khi người dùng rời tab đang mở modal này.

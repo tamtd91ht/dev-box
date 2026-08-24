@@ -27,6 +27,7 @@
 // nút ⬇ ở footer.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useModalOverWebview } from '@/lib/useOverWebview';
 
 interface PendingCommit {
   hash: string;
@@ -229,16 +230,7 @@ export default function UpdatePrompt() {
   // z-index — ở tab Links/Browser nó che mất hộp thoại này. Cờ trên <html> đẩy
   // tạm các pane webview ra ngoài màn hình (CSS lo phần còn lại); guest vẫn
   // sống, vẫn giữ phiên. Cùng cách UpdateButton/ConfigSyncButton đang dùng.
-  useEffect(() => {
-    const root = document.documentElement;
-    if (open) {
-      root.setAttribute('data-modal-over-webview', '1');
-      void window.workspace?.focusHost?.().catch(() => {});
-    } else {
-      root.removeAttribute('data-modal-over-webview');
-    }
-    return () => root.removeAttribute('data-modal-over-webview');
-  }, [open]);
+  useModalOverWebview(open, { focusHost: true });
 
   if (!open || !st) return null;
 

@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getUnloadBlockers } from '@/lib/unloadGuard';
+import { useModalOverWebview } from '@/lib/useOverWebview';
 
 /** Cầu nối desktop cho việc khởi động lại — electron/preload.cjs. Vắng mặt
  *  khi chạy trên trình duyệt thường. */
@@ -169,16 +170,7 @@ export default function UpdateButton() {
   // native nằm trên mọi phần tử HTML bất kể z-index — ở tab Links/Browser nó
   // che mất panel. Cờ trên <html> đẩy tạm các pane webview ra ngoài màn hình
   // (CSS lo phần còn lại); guest vẫn sống, vẫn giữ phiên. Giống ConfigSyncButton.
-  useEffect(() => {
-    const root = document.documentElement;
-    if (open) {
-      root.setAttribute('data-modal-over-webview', '1');
-      void window.workspace?.focusHost?.().catch(() => {});
-    } else {
-      root.removeAttribute('data-modal-over-webview');
-    }
-    return () => root.removeAttribute('data-modal-over-webview');
-  }, [open]);
+  useModalOverWebview(open, { focusHost: true });
 
   /** @param stash người dùng đã chủ động đồng ý cất tạm thay đổi đang dở. */
   const doUpdate = async (stash = false) => {

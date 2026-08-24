@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { bmTree, type Bookmark, type BmNode } from '@/lib/bookmarks';
+import { usePopupOverWebview } from '@/lib/useOverWebview';
 
 /** Kiểu dữ liệu đặt vào dataTransfer khi kéo một mục sẵn có. */
 const MIME = 'application/x-devbox-bookmark';
@@ -130,12 +131,7 @@ export default function BookmarkBar(props: BookmarkBarProps) {
   // thoại phủ kín màn hình; đem dùng cho một menu bé thì thanh tab, thanh dấu
   // trang và cả trang web cùng bay theo — bấm chuột phải xong màn hình trắng
   // trơn, mất hết ngữ cảnh phía sau.
-  useEffect(() => {
-    const root = document.documentElement;
-    if (open) root.setAttribute('data-popup-over-webview', '1');
-    else root.removeAttribute('data-popup-over-webview');
-    return () => root.removeAttribute('data-popup-over-webview');
-  }, [open]);
+  usePopupOverWebview(open);
 
   /* ── Kéo ───────────────────────────────────────────────────────────────── */
 

@@ -16,6 +16,7 @@
 // `data-modal-over-webview` bên dưới.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useModalOverWebview } from '@/lib/useOverWebview';
 
 interface GitInfo { ahead: number; behind: number; dirty: boolean; lastCommit?: string }
 interface SyncStatus {
@@ -138,16 +139,7 @@ export default function ConfigSyncButton() {
   // workspace:focusHost trong electron/main.cjs). Ô passphrase bên dưới dính
   // đúng ca này: đang ở tab Zalo/Links, bấm sang tab khác rồi mở Sync — guest đã
   // đi offscreen nhưng vẫn cầm focus, gõ vào ô không ra chữ nào.
-  useEffect(() => {
-    const root = document.documentElement;
-    if (open) {
-      root.setAttribute('data-modal-over-webview', '1');
-      void window.workspace?.focusHost?.().catch(() => {});
-    } else {
-      root.removeAttribute('data-modal-over-webview');
-    }
-    return () => root.removeAttribute('data-modal-over-webview');
-  }, [open]);
+  useModalOverWebview(open, { focusHost: true });
 
   // Đòi focus về host TRƯỚC rồi mới focus ô: nếu guest còn cầm focus thì
   // .focus() ở đây chỉ đặt được :focus trên DOM, phím gõ vẫn rơi vào guest.

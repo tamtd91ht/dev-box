@@ -20,6 +20,7 @@ import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
 import PasswordInput from './PasswordInput';
 import DupTabDialog, { tabUrlKey } from './DupTabDialog';
+import { usePopupOverWebview } from '@/lib/useOverWebview';
 
 /** Một TAB viewer đang mở. Kèm metadata đang gõ dở ở "＋ chi tiết" (nếu có)
  *  — để bấm 💾 TRONG viewer vẫn lưu đủ dự án/tags, không chỉ tên + profile.
@@ -122,12 +123,7 @@ export default function LinksWorkspace() {
   }, [tabCtx]);
 
   // Hộp thoại/menu phải nổi TRÊN <webview> (guest vẽ ở tầng native, đè mọi z-index).
-  useEffect(() => {
-    const root = document.documentElement;
-    if (dupAsk || tabCtx) root.setAttribute('data-popup-over-webview', '1');
-    else root.removeAttribute('data-popup-over-webview');
-    return () => root.removeAttribute('data-popup-over-webview');
-  }, [dupAsk, tabCtx]);
+  usePopupOverWebview(!!dupAsk || !!tabCtx);
 
   // Bộ lọc: 1 dự án + 1 tag (click lần nữa để bỏ).
   const [fProject, setFProject] = useState<string | null>(null);
