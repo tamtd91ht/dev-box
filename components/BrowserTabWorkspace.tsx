@@ -444,12 +444,17 @@ export default function BrowserTabWorkspace() {
   // z-index 21, mà guest <webview> vẽ ở tầng native nên đè lên bất kể z-index.
   // Menu vẫn mở, chỉ là KHÔNG THẤY GÌ khi đang ở trong một trang — đúng hiện
   // tượng "ngoài trang chủ có nút, vào trang thì không có".
+  //
+  // `edit` (modal thêm/sửa dấu trang) PHẢI có trong danh sách này. Thiếu nó thì
+  // <webview> vẫn nằm nguyên tầng native, che kín modal — và vì guest là process
+  // riêng, mọi cú bấm lẫn phím gõ đi vào TRANG WEB chứ không vào ô nhập. Triệu
+  // chứng nhìn thấy là "sửa tên dấu trang không được, bàn phím như bị chặn".
   useEffect(() => {
     const root = document.documentElement;
-    if (folderAsk || menuOpen || dupAsk) root.setAttribute('data-popup-over-webview', '1');
+    if (folderAsk || menuOpen || dupAsk || edit) root.setAttribute('data-popup-over-webview', '1');
     else root.removeAttribute('data-popup-over-webview');
     return () => root.removeAttribute('data-popup-over-webview');
-  }, [folderAsk, menuOpen, dupAsk]);
+  }, [folderAsk, menuOpen, dupAsk, edit]);
 
   /** Esc đóng menu ⋯. Menu đã portal ra body nên không nhận keydown của cây
    *  con nữa — phải nghe ở window. */
