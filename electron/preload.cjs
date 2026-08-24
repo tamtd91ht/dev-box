@@ -204,6 +204,21 @@ contextBridge.exposeInMainWorld('browserExt', {
   },
 });
 
+// Cài đặt tải file — bảng ⚙ trên thanh tiêu đề (components/TabVisibilityBar.tsx).
+// Đứng riêng khỏi `workspace.config` vì config đó là ẢNH CHỤP lúc dựng cửa sổ
+// (`--ws-config`), không đổi khi người dùng bấm lưu; mấy hàm này hỏi main
+// process giá trị ĐANG hiệu lực.
+contextBridge.exposeInMainWorld('downloadPrefs', {
+  /** → { ok, mode:'ask'|'auto', dir, effectiveDir, defaultDir } */
+  get: () => ipcRenderer.invoke('downloadPrefs:get'),
+  /** { mode?, dir? } → { ok, mode, dir, effectiveDir } | { ok:false, error } */
+  set: (payload) => ipcRenderer.invoke('downloadPrefs:set', payload || {}),
+  /** Hộp thoại chọn thư mục → { ok, path } | { ok:false, canceled } */
+  pickDir: () => ipcRenderer.invoke('downloadPrefs:pickDir'),
+  /** Mở thư mục đang dùng trong Explorer → { ok, path } */
+  openDir: () => ipcRenderer.invoke('downloadPrefs:openDir'),
+});
+
 // Cầu cookie cho extension: thay `chrome.cookies.getAll` mà Electron không cấp
 // cho extension chạy trong <webview>. Khoá theo partition browser-* + bắt buộc
 // nêu domain — xem handler trong main.cjs.

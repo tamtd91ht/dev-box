@@ -122,6 +122,10 @@ export interface WorkspaceConfig {
   allowDownload: boolean;
   /** Allow opening DevTools on a workspace guest. */
   enableDevTools: boolean;
+  /** `ask` = hiện hộp thoại chọn nơi lưu mọi lần tải (như Chrome); `auto` = tự lưu. */
+  downloadMode: 'ask' | 'auto';
+  /** Thư mục cố định cho download; '' = Downloads của máy / chỗ lưu lần trước. */
+  downloadDir: string;
 }
 
 /** The `window.workspace` bridge injected by electron/preload.cjs. */

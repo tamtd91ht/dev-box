@@ -771,6 +771,46 @@ html[data-modal-over-webview] .workspace[data-webview] {
   color: var(--muted); font-weight: 700; margin-top: 2px;
 }
 
+/* Cài đặt tải file trong bảng ⚙ (components/DownloadPrefs.tsx). Hai lựa chọn
+   xếp DỌC chứ không dùng .tvis-list hai cột: mỗi dòng có câu giải thích bên
+   dưới nhãn, nhồi hai cột thì chữ vỡ vụn. */
+.dlp-modes { display: flex; flex-direction: column; gap: 4px; }
+.dlp-mode {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 9px; border-radius: 9px; cursor: pointer;
+  border: 1px solid var(--glass-brd); background: var(--glass);
+}
+.dlp-mode:hover { border-color: var(--glass-brd-hover); }
+.dlp-mode.is-on {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.dlp-mode input { flex: none; margin: 2px 0 0; cursor: pointer; }
+.dlp-mode-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dlp-mode-text b { font-size: 12px; }
+.dlp-mode-text span { font-size: 11px; color: var(--muted); line-height: 1.45; }
+
+.dlp-dir {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px;
+  padding: 8px 9px; border-radius: 9px;
+  border: 1px solid var(--glass-brd); background: var(--glass);
+}
+.dlp-dir-label { font-size: 11px; color: var(--muted); flex: none; }
+/* Đường dẫn dài phải co lại chứ không được đẩy nút "Chọn…" ra ngoài bảng —
+   min-width:0 cho phép flex item thu nhỏ dưới kích thước nội dung. */
+.dlp-dir-path {
+  flex: 1 1 140px; min-width: 0;
+  font-family: var(--mono); font-size: 10.5px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dlp-dir-acts { display: flex; gap: 5px; flex: none; }
+.dlp-hint { font-size: 11px; color: var(--muted); line-height: 1.45; padding: 0 2px; }
+.dlp-err {
+  font-size: 11px; padding: 6px 9px; border-radius: 8px;
+  color: var(--err); background: var(--err-bg);
+  border: 1px solid color-mix(in srgb, var(--err) 30%, transparent);
+}
+
 /* Hộp xác nhận trước khi ẩn — cùng tầng portal với bảng ⚙ nên cũng nổi trên
    mọi pane. Hẹp hơn bảng vì chỉ có một câu hỏi. */
 .tvis-confirm {

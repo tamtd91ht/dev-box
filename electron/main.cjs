@@ -155,6 +155,10 @@ const DEFAULT_CONFIG = {
   keepAlive: true,
   allowDownload: true,
   enableDevTools: true,
+  // 'ask' = hỏi nơi lưu mỗi lần tải (như Chrome) · 'auto' = tự lưu, không hỏi.
+  downloadMode: 'ask',
+  // Thư mục cố định cho download; '' = Downloads của máy / chỗ lưu lần trước.
+  downloadDir: '',
 };
 
 // Web APIs a workspace guest is allowed to request. Everything else is denied.
@@ -260,10 +264,13 @@ function askOpenTarget(url) {
   log('OpenRequest', url);
 }
 
+/** Duong dan file cau hinh — dung chung boi loadConfig va IPC downloadPrefs:set. */
+const configFile = () => path.join(app.getPath('userData'), 'workspace.config.json');
+
 /** Merge userData/workspace.config.json over the defaults. Missing file = defaults. */
 function loadConfig() {
   try {
-    const file = path.join(app.getPath('userData'), 'workspace.config.json');
+    const file = configFile();
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     const cfg = raw && typeof raw === 'object' && raw.workspace ? raw.workspace : raw;
     log('ConfigLoaded', file);
@@ -686,13 +693,67 @@ function configurePartition(part) {
 }
 
 /**
+ * Nhớ thư mục tải về giữa các lần chọn — userData/download-state.json.
+ *
+ * Chỉ một trường `lastDir`: lần sau hộp thoại Save mở đúng chỗ vừa lưu,
+ * không bắt người dùng lần mò lại cây thư mục. Lỗi ghi thì bỏ qua — không để việc
+ * lưu state làm chệch luồng tải file.
+ */
+const downloadStateFile = () => path.join(app.getPath('userData'), 'download-state.json');
+
+function readLastDownloadDir() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(downloadStateFile(), 'utf8'));
+    const dir = raw && typeof raw.lastDir === 'string' ? raw.lastDir : '';
+    if (dir && fs.existsSync(dir)) return dir;
+  } catch {
+    /* chưa có state / file hỏng — dùng mặc định */
+  }
+  return '';
+}
+
+function writeLastDownloadDir(dir) {
+  try {
+    fs.writeFileSync(downloadStateFile(), JSON.stringify({ lastDir: dir }, null, 2), 'utf8');
+  } catch (err) {
+    log('DownloadStateError', err && err.message);
+  }
+}
+
+/**
+ * Thư mục mặc định khi tải: `downloadDir` trong config → chỗ vừa lưu lần trước
+ * → Downloads của máy.
+ */
+function defaultDownloadDir() {
+  const configured = typeof CONFIG.downloadDir === 'string' ? CONFIG.downloadDir.trim() : '';
+  if (configured && fs.existsSync(configured)) return configured;
+  return readLastDownloadDir() || app.getPath('downloads');
+}
+
+/** Tên file không đạp file cũ: trùng thì đánh số " (n)". */
+function uniquePath(dir, file) {
+  const ext = path.extname(file);
+  const base = path.basename(file, ext);
+  let target = path.join(dir, file);
+  for (let i = 1; fs.existsSync(target); i++) target = path.join(dir, `${base} (${i})${ext}`);
+  return target;
+}
+
+/**
  * Download policy for ONE session — dùng chung cho session mặc định (UI DevBox,
  * vd nút ⬇ tab Google) lẫn partition của từng webview guest.
  *
- * LUÔN đặt savePath tường minh (tự lưu vào Downloads của máy, tên trùng thì
- * đánh số " (n)"): không đặt thì Electron bật hộp thoại Save native — download
- * không có handler/savePath từng làm app crash văng ra ngoài. Lưu xong mở
- * Explorer trỏ đúng file để người dùng biết nó nằm đâu.
+ * Mặc định HỎI NƠI LƯU như Chrome: mở `dialog.showSaveDialog` của app rồi
+ * mới `setSavePath`. Khác với hộp thoại Save MẶC ĐỊNH của Electron (bật
+ * lên khi KHÔNG ai đặt savePath) — cái đó từng làm app crash văng ra ngoài.
+ * Ở đây luồng luôn kết thúc tường minh: có đường dẫn → `setSavePath`,
+ * bấm Cancel → `item.cancel()`.
+ *
+ * `item.pause()` ngay khi vào handler vì `will-download` là đồng bộ: không
+ * pause thì byte đầu tiên có thể tới trước khi người dùng chọn xong chỗ lưu.
+ *
+ * Đặt `downloadMode: "auto"` trong userData/workspace.config.json để quay về
+ * nếp cũ (tự lưu, không hỏi); `downloadDir` để chỉ định thư mục cố định.
  */
 const wiredDownloadSessions = new WeakSet();
 function wireDownloadPolicy(ses, label) {
@@ -704,23 +765,64 @@ function wireDownloadPolicy(ses, label) {
       item.cancel();
       return;
     }
-    try {
-      const dir = app.getPath('downloads');
-      const file = item.getFilename() || 'download';
-      const ext = path.extname(file);
-      const base = path.basename(file, ext);
-      let target = path.join(dir, file);
-      for (let i = 1; fs.existsSync(target); i++) target = path.join(dir, `${base} (${i})${ext}`);
-      item.setSavePath(target);
-      log('DownloadStarted', `${label || 'default'} · ${target}`);
-      item.once('done', (_e, state) => {
-        log('DownloadDone', `${path.basename(target)} · ${state}`);
-        if (state === 'completed') shell.showItemInFolder(target);
-      });
-    } catch (err) {
+    const file = item.getFilename() || 'download';
+    const dir = defaultDownloadDir();
+
+    if (CONFIG.downloadMode === 'auto') {
+      try {
+        finishDownload(item, uniquePath(dir, file), label);
+      } catch (err) {
+        log('DownloadError', err && err.message);
+        item.cancel();
+      }
+      return;
+    }
+
+    // Tạm dừng rồi hỏi. Phải pause TRONG handler — sau await là muộn.
+    item.pause();
+
+    // KHONG truyen cua so cha — cung ly do nhu browserExt:pickDir: hop thoai
+    // modal gan vao cua so bi <webview> native (Zalo/Telegram/Links) giu input
+    // che mat, ket phia sau va khong bam duoc gi. Ma tai file thi gan nhu LUC
+    // NAO cung dang o trong mot webview. Dialog dung mot minh thi noi len tren.
+    dialog.showSaveDialog(saveDialogOptions(dir, file)).then(({ canceled, filePath }) => {
+      if (canceled || !filePath) {
+        log('DownloadCanceled', file);
+        item.cancel();
+        return;
+      }
+      writeLastDownloadDir(path.dirname(filePath));
+      finishDownload(item, filePath, label);
+      item.resume();
+    }).catch((err) => {
       log('DownloadError', err && err.message);
       item.cancel();
-    }
+    });
+  });
+}
+
+/** Options của hộp thoại Save — lọc theo đuôi file đang tải cho dễ nhìn. */
+function saveDialogOptions(dir, file) {
+  const ext = path.extname(file).replace(/^\./, '');
+  const filters = ext
+    ? [{ name: `${ext.toUpperCase()} file`, extensions: [ext] }, { name: 'Tất cả file', extensions: ['*'] }]
+    : [{ name: 'Tất cả file', extensions: ['*'] }];
+  return {
+    title: 'Lưu file tải về',
+    defaultPath: path.join(dir, file),
+    buttonLabel: 'Lưu',
+    filters,
+    properties: ['createDirectory', 'showOverwriteConfirmation'],
+  };
+}
+
+/** Gắn savePath + log/mở Explorer khi xong. */
+function finishDownload(item, target, label) {
+  item.setSavePath(target);
+  log('DownloadStarted', `${label || 'default'} · ${target}`);
+  item.once('done', (_e, state) => {
+    log('DownloadDone', `${path.basename(target)} · ${state}`);
+    if (state === 'completed') shell.showItemInFolder(target);
   });
 }
 
@@ -2331,6 +2433,96 @@ ipcMain.handle('browserExt:openDir', () => {
     fs.mkdirSync(extDir(), { recursive: true });
     void shell.openPath(extDir());
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+// ── Cai dat tai file (nut ⚙ tren thanh tieu de) ───────────────────────────
+//
+// Doc/ghi hai khoa `downloadMode` + `downloadDir` cua
+// userData/workspace.config.json. Ghi xong CAP NHAT LUON bien CONFIG trong bo
+// nho, nen lan tai ke tiep an ngay — khong phai mo lai app. (`--ws-config` chi
+// duoc bom luc dung cua so, vi vay renderer doc qua IPC nay chu khong dua vao
+// anh chup `window.workspace.config`.)
+//
+// Chi ghi DUNG hai khoa nay va giu nguyen phan con lai cua file: nguoi dung co
+// the da tu sua tay `maxActiveWorkspace`, `allowDownload`… — UI khong duoc phep
+// dap mat nhung gia tri do.
+
+ipcMain.handle('downloadPrefs:get', () => ({
+  ok: true,
+  mode: CONFIG.downloadMode === 'auto' ? 'auto' : 'ask',
+  dir: typeof CONFIG.downloadDir === 'string' ? CONFIG.downloadDir : '',
+  /** Thu muc thuc te se dung khi `dir` de trong — de UI hien cho de hieu. */
+  effectiveDir: defaultDownloadDir(),
+  defaultDir: app.getPath('downloads'),
+}));
+
+ipcMain.handle('downloadPrefs:set', (_evt, payload) => {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const next = {};
+  if (p.mode === 'ask' || p.mode === 'auto') next.downloadMode = p.mode;
+  if (typeof p.dir === 'string') {
+    const dir = p.dir.trim();
+    // Thu muc khong ton tai thi tu choi thay vi luu mot duong dan chet roi de
+    // hop thoai Save mo vao cho khong co.
+    if (dir && !fs.existsSync(dir)) return { ok: false, error: 'thư mục không tồn tại' };
+    next.downloadDir = dir;
+  }
+  if (!Object.keys(next).length) return { ok: false, error: 'không có gì để lưu' };
+
+  try {
+    const file = configFile();
+    let raw = {};
+    try {
+      raw = JSON.parse(fs.readFileSync(file, 'utf8')) || {};
+    } catch {
+      /* chua co file / file hong — ghi moi */
+    }
+    // File co the o dang { workspace: {...} } hoac phang — giu dung dang cu.
+    const nested = raw && typeof raw === 'object' && raw.workspace && typeof raw.workspace === 'object';
+    if (nested) raw.workspace = { ...raw.workspace, ...next };
+    else raw = { ...raw, ...next };
+    fs.writeFileSync(file, JSON.stringify(raw, null, 2), 'utf8');
+
+    CONFIG = { ...CONFIG, ...next };
+    log('DownloadPrefsSaved', `${CONFIG.downloadMode} · ${CONFIG.downloadDir || '(Downloads)'}`);
+    return {
+      ok: true,
+      mode: CONFIG.downloadMode,
+      dir: CONFIG.downloadDir,
+      effectiveDir: defaultDownloadDir(),
+    };
+  } catch (err) {
+    log('DownloadPrefsError', err && err.message);
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('downloadPrefs:pickDir', async () => {
+  try {
+    // Khong truyen cua so cha — cung ly do nhu browserExt:pickDir (bang cai dat
+    // mo tren <webview> native thi hop thoai modal bi ket phia sau).
+    const r = await dialog.showOpenDialog({
+      title: 'Chọn thư mục lưu file tải về',
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: defaultDownloadDir(),
+    });
+    if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+    return { ok: true, path: r.filePaths[0] };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+/** Mo thu muc dang duoc dung de tai file. */
+ipcMain.handle('downloadPrefs:openDir', () => {
+  try {
+    const dir = defaultDownloadDir();
+    fs.mkdirSync(dir, { recursive: true });
+    void shell.openPath(dir);
+    return { ok: true, path: dir };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }

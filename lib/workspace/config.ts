@@ -12,6 +12,8 @@ export const DEFAULT_WORKSPACE_CONFIG: WorkspaceConfig = {
   maxActiveWorkspace: 3,
   keepAlive: true,
   allowDownload: true,
+  downloadMode: 'ask',
+  downloadDir: '',
   enableDevTools: true, // ⚙ on the toolbar — handy for inspecting a guest (e.g. unread detection)
 };
 

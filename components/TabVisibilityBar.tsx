@@ -1,6 +1,6 @@
 'use client';
 
-// HIỆN/ẨN TÍNH NĂNG — nút ⚙ trên thanh tiêu đề + bảng bật lại tab đã ẩn.
+// CÀI ĐẶT — nút ⚙ trên thanh tiêu đề: hiện/ẩn tính năng + tải file về.
 //
 // DevBox có hơn 20 tab, mỗi người chỉ dùng vài cái. Hover lên một tab trên menu
 // rồi bấm ✕ là ẩn nó đi (có bước xác nhận); đây là NƠI DUY NHẤT bật lại — nên
@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as hiddenTabs from '@/lib/hiddenTabs';
+import DownloadPrefs from './DownloadPrefs';
 import type { TabInfo } from './QuickTabs';
 
 export interface TabVisibilityBarProps {
@@ -100,10 +101,10 @@ export default function TabVisibilityBar({
         title={
           nHidden > 0
             ? `Đang ẩn ${nHidden} tính năng khỏi menu — bấm để bật lại`
-            : 'Hiện/ẩn tính năng trên menu'
+            : 'Cài đặt — hiện/ẩn tính năng, nơi lưu file tải về'
         }
         aria-pressed={open}
-        aria-label="Hiện/ẩn tính năng"
+        aria-label="Cài đặt"
       >
         <span className="tvis-ico" aria-hidden>⚙</span>
         {nHidden > 0 && <span className="tvis-count">{nHidden}</span>}
@@ -119,16 +120,21 @@ export default function TabVisibilityBar({
       {mounted && open && createPortal(
         <>
           <div className="tvis-scrim" onClick={() => setOpen(false)} aria-hidden />
-          <div className="tvis-pop" role="dialog" aria-label="Hiện/ẩn tính năng" ref={popRef}>
+          <div className="tvis-pop" role="dialog" aria-label="Cài đặt" ref={popRef}>
             <div className="tvis-pop-head">
               <div>
-                <b>Hiện/ẩn tính năng</b>
+                <b>Cài đặt</b>
                 <span className="tvis-pop-sub">
-                  bỏ tick để ẩn khỏi menu — hover lên tab rồi bấm ✕ cũng được
+                  hiện/ẩn tính năng trên menu · nơi lưu file tải về
                 </span>
               </div>
               <button className="tvis-pop-x" onClick={() => setOpen(false)} aria-label="Đóng">×</button>
             </div>
+
+            {/* Tải file — chỉ hiện trên bản desktop (xem DownloadPrefs). */}
+            <DownloadPrefs />
+
+            <div className="tvis-group">Hiện/ẩn tính năng</div>
 
             <div className="tvis-note">
               Ẩn chỉ giấu tab khỏi thanh menu. <b>Automation, watcher và thông báo
