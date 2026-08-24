@@ -666,7 +666,18 @@ export default function ZaloApiWorkspace({
   const removeAccount = useCallback(async (id: string) => {
     const acc = accounts.find((a) => a.instanceId === id);
     if (!acc) return;
-    if (!window.confirm(`Xoá "${acc.label}" và đăng xuất phiên này?`)) return;
+    // Gỡ cái CUỐI thì rail trống trơn — nói thẳng kèm đường về, để không ai bấm
+    // xong tưởng mất luôn không thêm lại được.
+    const last = accounts.length <= 1;
+    if (!window.confirm(
+      last
+        ? `Xoá "${acc.label}" và đăng xuất phiên này?
+
+`
+          + 'Đây là tài khoản cuối — gỡ xong danh sách Zalo API sẽ trống. '
+          + 'Bấm "＋ Thêm tài khoản" là tạo lại được (phải quét QR đăng nhập lại).'
+        : `Xoá "${acc.label}" và đăng xuất phiên này?`,
+    )) return;
     // Xoá phiên server + xoá session webview trên máy.
     try { await zaloApiLogout(zaloApiAccountKey(id)); } catch { /* ignore */ }
     try { await window.workspace?.clearSession?.(zaloApiPartition(id)); } catch { /* ignore */ }
@@ -737,9 +748,15 @@ export default function ZaloApiWorkspace({
                   <span className="za-rail-unread">{unread[a.instanceId] > 99 ? '99+' : unread[a.instanceId]}</span>
                 )}
                 <button className="za-rail-btn" title="Đổi tên" onClick={(e) => { e.stopPropagation(); setEditingId(a.instanceId); }}>✎</button>
-                {accounts.length > 1 && (
-                  <button className="za-rail-btn danger" title="Xoá" onClick={(e) => { e.stopPropagation(); void removeAccount(a.instanceId); }}>×</button>
-                )}
+                {/* Gỡ được cả tài khoản CUỐI: một phiên thử không dùng nữa thì
+                    phải bỏ hẳn được, không thì "sửa được mà không xoá được".
+                    Gỡ hết thì khung giữa hiện màn hình rỗng, thêm lại ở nút
+                    "＋ Thêm tài khoản" ngay dưới rail. */}
+                <button
+                  className="za-rail-btn danger"
+                  title={accounts.length > 1 ? 'Xoá' : 'Xoá — gỡ tài khoản cuối, danh sách sẽ trống'}
+                  onClick={(e) => { e.stopPropagation(); void removeAccount(a.instanceId); }}
+                >×</button>
               </div>
             )
           ))}
