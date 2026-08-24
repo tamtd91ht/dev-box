@@ -1042,15 +1042,12 @@ export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerL
   }
 
   // High-watermark cache, shared across every group in THIS sweep.
+  // Đọc ở READ_COMMITTED — xem ghi chú ở topicHighWatermarks.
   const highs = new Map<string, Promise<Map<number, number>>>();
   const topicHighs = (topic: string): Promise<Map<number, number>> => {
     let p = highs.get(topic);
     if (!p) {
-      p = admin.fetchTopicOffsets(topic).then((offsets) => {
-        const m = new Map<number, number>();
-        for (const o of offsets) m.set(o.partition, Number(o.high ?? o.offset ?? 0));
-        return m;
-      });
+      p = topicHighWatermarks(conn, topic);
       highs.set(topic, p);
     }
     return p;
@@ -1141,6 +1138,49 @@ export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerL
   return { at, groups, skippedGroups };
 }
 
+/**
+ * High-watermark mỗi partition của một topic, đọc ở mức READ_COMMITTED.
+ *
+ * VÌ SAO KHÔNG DÙNG admin.fetchTopicOffsets: nó đi qua cluster của `kafka.admin()`,
+ * mà kafkajs KHÔNG cho truyền isolationLevel vào admin() — trường này để undefined
+ * và encoder ghi INT8 undefined thành 0, tức READ_UNCOMMITTED.
+ *
+ * Trên TOPIC GIAO DỊCH (transactional), log-end ở mức READ_UNCOMMITTED tính CẢ
+ * control record (commit marker) mà consumer không bao giờ nhận được. Consumer
+ * bắt kịp hoàn toàn vẫn bị tính lag = 1 VĨNH VIỄN, và vì offset không nhích nữa
+ * nên stallSec cứ tăng — watch "group đứng im" báo động vô căn cứ, trong khi
+ * kafka-consumer-groups.sh (mặc định READ_COMMITTED) báo lag 0.
+ *
+ * Đọc ở READ_COMMITTED thì log-end lùi về LSO (last stable offset), khớp đúng
+ * cái consumer thấy. Cụm không dùng transaction thì hai mức bằng nhau — đổi sang
+ * đây không làm sai lệch gì.
+ */
+async function topicHighWatermarks(
+  conn: KafkaConnection,
+  topic: string,
+): Promise<Map<number, number>> {
+  const cluster = await getRawCluster(conn);
+  await cluster.addTargetTopic(topic);
+  await cluster.refreshMetadataIfNecessary();
+  const meta = cluster.findTopicPartitionMetadata(topic);
+  // fromBeginning: false = timestamp -1 = LATEST. Cluster tự kèm isolationLevel
+  // READ_COMMITTED của nó vào ListOffsets (xem getRawCluster).
+  const res = await cluster.fetchTopicsOffset([
+    {
+      topic,
+      fromBeginning: false,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      partitions: meta.map((p: any) => ({ partition: p.partitionId })),
+    },
+  ]);
+  const m = new Map<number, number>();
+  for (const entry of res) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const p of entry.partitions as any[]) m.set(p.partition, Number(p.offset));
+  }
+  return m;
+}
+
 /** Per-group lag: committed offset vs log-end per topic/partition. */
 export async function describeGroup(conn: KafkaConnection, groupId: string): Promise<GroupDetail> {
   if (!groupId) throw new Error('groupId is required');
@@ -1150,11 +1190,12 @@ export async function describeGroup(conn: KafkaConnection, groupId: string): Pro
 
   const topics: GroupTopicLag[] = [];
   for (const t of committed) {
-    const topicOffsets = await admin.fetchTopicOffsets(t.topic);
+    // READ_COMMITTED, giống đường sweep — nếu không thì topic giao dịch luôn
+    // hiện lag 1 dù consumer đã bắt kịp (xem topicHighWatermarks).
+    const highs = await topicHighWatermarks(conn, t.topic);
     const partitions: GroupPartitionLag[] = t.partitions
       .map((p) => {
-        const hwEntry = topicOffsets.find((x) => x.partition === p.partition);
-        const logEnd = Number(hwEntry?.high ?? hwEntry?.offset ?? 0);
+        const logEnd = highs.get(p.partition) ?? 0;
         const cur = Number(p.offset);
         const committedOffset = cur < 0 ? null : cur;
         const lag = committedOffset == null ? null : Math.max(0, logEnd - committedOffset);
@@ -1189,14 +1230,13 @@ export async function listTopicGroups(conn: KafkaConnection, topic: string): Pro
   if (!topic) throw new Error('topic is required');
   const admin = await getAdmin(conn);
 
-  const [{ groups }, topicOffsets] = await Promise.all([
+  // High-watermark ở READ_COMMITTED, giống hai đường lag kia — bảng này chính là
+  // chỗ người dùng mở ra để đối chiếu khi có cảnh báo, lệch mức đọc là lệch số.
+  const [{ groups }, highByPartition] = await Promise.all([
     admin.listGroups(),
-    admin.fetchTopicOffsets(topic),
+    topicHighWatermarks(conn, topic),
   ]);
   if (groups.length === 0) return [];
-
-  const highByPartition = new Map<number, number>();
-  for (const o of topicOffsets) highByPartition.set(o.partition, Number(o.high ?? o.offset ?? 0));
 
   // Committed offsets for each group, scoped to this topic. A group is "on" the
   // topic only if it has at least one partition with a real (>=0) committed offset.
