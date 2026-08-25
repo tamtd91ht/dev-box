@@ -401,8 +401,10 @@ function scanOpen(src: string): { need: string; inString: boolean } {
 /**
  * Enter trong ô query JSON: ĐÓNG NGOẶC CÒN HỞ rồi format lại.
  *
- * Gõ `{` rồi Enter thì mong đợi ra `{}` đã format, chứ không phải một dấu `{`
- * lẻ cộng một dòng trống — người dùng dùng Enter như "hoàn tất khối này".
+ * Gõ `{` rồi Enter thì ra thẳng khung nhiều dòng có sẵn cặp `"": ""` (con trỏ
+ * nằm trong nháy, gõ tên field là xong); `[` rồi Enter ra khung mảng trống —
+ * chứ không phải một dấu `{` lẻ cộng một dòng trống, vì người dùng dùng Enter
+ * như "hoàn tất khối này".
  * Chỉ can thiệp khi đoạn đang gõ THẬT SỰ còn ngoặc hở và con trỏ ở cuối; mọi
  * trường hợp khác trả null để Enter xuống dòng như bình thường (còn cần xuống
  * dòng thủ công khi soạn pipeline nhiều tầng).
@@ -424,7 +426,7 @@ export function closeAndFormatOnEnter(text: string, caret: number): EnterFixResu
     // Không hở gì: chỉ format lại cho gọn nếu parse được.
     const f = formatJsonInput(head.trim());
     if (f.error) return null;
-    return { text: f.text, caret: f.text.length };
+    return skeletonIfEmpty(f.text) ?? { text: f.text, caret: f.text.length };
   }
 
   const closed = head.trim() + need;
@@ -432,8 +434,16 @@ export function closeAndFormatOnEnter(text: string, caret: number): EnterFixResu
   // Đóng ngoặc mà vẫn không parse được (vd `{"a"` thiếu value) → để nguyên.
   if (f.error) return null;
 
-  // Con trỏ về giữa khối rỗng nếu kết quả là khung trống, để gõ tiếp ngay.
-  // `{}` → giữa hai ngoặc · `{\n  "a": 1\n}` → cuối text.
-  const caretAt = /^[{[]\s*[}\]]$/.test(f.text) ? 1 : f.text.length;
-  return { text: f.text, caret: caretAt };
+  return skeletonIfEmpty(f.text) ?? { text: f.text, caret: f.text.length };
+}
+
+/**
+ * Kết quả là khối RỖNG → bung thành khung nhiều dòng để gõ tiếp ngay:
+ * `{}` → `{\n  "": ""\n}` (con trỏ trong nháy đầu — gõ tên field là xong),
+ * `[]` → `[\n  \n]` (con trỏ ở dòng giữa). Không rỗng → null (giữ format thường).
+ */
+function skeletonIfEmpty(text: string): EnterFixResult | null {
+  if (/^\{\s*\}$/.test(text)) return { text: '{\n  "": ""\n}', caret: 4 };
+  if (/^\[\s*\]$/.test(text)) return { text: '[\n  \n]', caret: 4 };
+  return null;
 }
