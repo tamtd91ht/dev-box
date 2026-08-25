@@ -94,40 +94,6 @@ export default function StockTickerHost() {
     return () => window.removeEventListener(OPEN_EVENT, open);
   }, []);
 
-  // ── Neo widget theo RECT CỦA VÙNG NỘI DUNG (.body) ────────────────────────
-  // Không đoán chrome của app bằng toạ độ cứng: app này menu là SIDEBAR DỌC
-  // bên trái (header.appbar cao cả màn hình), footer mang dãy nút cấu hình —
-  // đều đổi kích thước theo màn/chế độ. Đo thẳng .body (lưới workspace): 4 mép
-  // của nó chính là ranh giới an toàn, widget đặt ngay trong góc vùng nội dung
-  // là không đè menu/chuông/footer ở mọi layout. ResizeObserver theo .body +
-  // interval thưa bọc ca .body remount (đổi chế độ) vốn không có event.
-  const [inset, setInset] = useState({ top: 72, right: 14, bottom: 62, left: 14 });
-  useEffect(() => {
-    const measure = () => {
-      const el = document.querySelector<HTMLElement>('.shell > .body') ?? document.querySelector<HTMLElement>('.body');
-      const b = el?.getBoundingClientRect();
-      const next = b && b.width > 0
-        ? {
-            top: Math.max(8, Math.round(b.top) + 6),
-            left: Math.max(8, Math.round(b.left) + 6),
-            right: Math.max(8, Math.round(window.innerWidth - b.right) + 6),
-            bottom: Math.max(8, Math.round(window.innerHeight - b.bottom) + 6),
-          }
-        : { top: 72, right: 14, bottom: 62, left: 14 };
-      setInset((p) =>
-        p.top === next.top && p.right === next.right && p.bottom === next.bottom && p.left === next.left ? p : next,
-      );
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    const el = document.querySelector('.shell > .body') ?? document.querySelector('.body');
-    if (el) ro.observe(el);
-    ro.observe(document.documentElement);
-    window.addEventListener('resize', measure);
-    const timer = setInterval(measure, 2000);
-    return () => { ro.disconnect(); window.removeEventListener('resize', measure); clearInterval(timer); };
-  }, []);
-
   const symbolCfg = useCallback(
     (sym: string): StockSymbolCfg | undefined => cfg?.symbols.find((s) => s.symbol === sym),
     [cfg],
@@ -216,16 +182,12 @@ export default function StockTickerHost() {
   const corner: StockCorner = cfg?.position ?? 'bl';
   /** rt/rb: xếp DỌC dọc cạnh phải — mỗi mã một dòng. */
   const vertical = corner === 'rt' || corner === 'rb';
-  /** Toạ độ neo — CSS chỉ là fallback khung hình đầu.
-   *  4 góc ngang: theo 4 mép vùng nội dung ĐÃ ĐO (né sidebar/footer).
-   *  Dọc cạnh phải: DÁN SÁT mép màn hình trên cùng/dưới cùng — nó là thanh
-   *  ticker mỏng ốp cạnh, không phải hộp nổi trong nội dung. */
-  const anchorStyle: { top?: number; bottom?: number; left?: number; right?: number } = vertical
+  /** Toạ độ neo. 4 góc ngang: toạ độ CỐ ĐỊNH trong CSS (bản đầu — người dùng
+   *  chọn sau khi thử bản neo theo vùng nội dung). Dọc cạnh phải: inline, DÁN
+   *  SÁT mép màn hình trên cùng/dưới cùng — thanh ticker mỏng ốp cạnh. */
+  const anchorStyle: { top?: number; bottom?: number; right?: number } | undefined = vertical
     ? (corner === 'rt' ? { top: 6, right: 6 } : { bottom: 6, right: 6 })
-    : {
-        ...(corner === 'tl' || corner === 'tr' ? { top: inset.top } : { bottom: inset.bottom }),
-        ...(corner === 'bl' || corner === 'tl' ? { left: inset.left } : { right: inset.right }),
-      };
+    : undefined;
 
   return (
     <>

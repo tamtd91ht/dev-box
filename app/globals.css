@@ -8801,15 +8801,13 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   --stk-ceil: #c084fc; --stk-floor: #38bdf8;
   position: fixed; z-index: 85;
 }
-/* Toạ độ DỌC do JS đặt (inline style): host đo chiều cao THẬT của header/footer
-   — menu tab wrap 2–3 hàng, footer mang dãy nút cấu hình, đều cao thay đổi —
-   rồi neo widget sát mép VÙNG NỘI DUNG: góc dưới nổi TRÊN footer, góc trên nằm
-   DƯỚI trọn bộ menu. Giá trị ở đây chỉ là fallback cho khung hình đầu tiên
-   trước khi đo xong. */
-.stk-bl { left: 14px; bottom: 62px; }
-.stk-br { right: 14px; bottom: 62px; }
-.stk-tl { left: 14px; top: 72px; }
-.stk-tr { right: 14px; top: 72px; }
+/* 4 góc ngang: toạ độ CỐ ĐỊNH (bản đầu tiên — người dùng đã thử bản neo theo
+   vùng nội dung và chọn quay lại bản này). Dọc cạnh phải thì toạ độ inline
+   từ host, xem .stk-rt/.stk-rb. */
+.stk-bl { left: 14px; bottom: 14px; }
+.stk-br { right: 14px; bottom: 14px; }
+.stk-tl { left: 14px; top: 48px; }
+.stk-tr { right: 14px; top: 48px; }
 /* Cạnh phải trên/dưới — thanh ticker MỎNG dựng đứng: đúng strip ngang xoay
    90°, dán sát mép màn hình (toạ độ inline từ host: top/bottom 6px). */
 .stk-rt { right: 6px; top: 6px; }
