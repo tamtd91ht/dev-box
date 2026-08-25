@@ -72,6 +72,18 @@ function normalizeConfig(raw: unknown): StocksConfig {
   };
 }
 
+/**
+ * STOCKS_ENABLED trong .env.local — cờ BẬT/TẮT RIÊNG MÁY NÀY, thắng config.
+ * Vì sao cần: configs/stocks.json đi theo config-sync sang mọi máy, còn "máy
+ * nào nhìn bảng giá" là chuyện từng máy (cùng lý do *_TOOL_ENABLED nằm ở env).
+ */
+function envLock(): 'on' | 'off' | null {
+  const v = String(process.env.STOCKS_ENABLED ?? '').trim().toLowerCase();
+  if (v === 'true' || v === '1' || v === 'on') return 'on';
+  if (v === 'false' || v === '0' || v === 'off') return 'off';
+  return null;
+}
+
 async function readConfig(): Promise<StocksConfig> {
   try {
     return normalizeConfig(JSON.parse(await fs.readFile(CONFIG_FILE, 'utf8')));
@@ -154,11 +166,13 @@ export async function POST(req: NextRequest) {
   try {
     switch (action) {
       case 'config':
-        return NextResponse.json({ ok: true, result: await readConfig() });
+        return NextResponse.json({ ok: true, result: { ...(await readConfig()), envLock: envLock() } });
       case 'save': {
+        // normalizeConfig dựng object mới từ khoá được biết → envLock client
+        // gửi kèm (nếu có) không bao giờ lọt vào file.
         const cfg = normalizeConfig(body?.config);
         await writeConfig(cfg);
-        return NextResponse.json({ ok: true, result: cfg });
+        return NextResponse.json({ ok: true, result: { ...cfg, envLock: envLock() } });
       }
       case 'quotes': {
         const cfg = await readConfig();

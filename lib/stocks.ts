@@ -31,6 +31,21 @@ export interface StocksConfig {
   /** Góc màn hình neo widget. */
   position: StockCorner;
   symbols: StockSymbolCfg[];
+  /**
+   * CHỈ ĐỌC — server đính kèm khi trả config, KHÔNG lưu vào file:
+   * STOCKS_ENABLED trong .env.local đang ép bật ('on') / tắt ('off') RIÊNG MÁY
+   * NÀY. configs/stocks.json được config-sync mang đi mọi máy, nên cờ bật/tắt
+   * per-device phải sống ở env như mọi *_TOOL_ENABLED khác; không đặt biến thì
+   * theo `enabled` trong config như thường.
+   */
+  envLock?: 'on' | 'off' | null;
+}
+
+/** Widget có hiện trên MÁY NÀY không — env thắng, config chỉ quyết khi env im. */
+export function effectiveEnabled(cfg: StocksConfig): boolean {
+  if (cfg.envLock === 'on') return true;
+  if (cfg.envLock === 'off') return false;
+  return cfg.enabled;
 }
 
 export const DEFAULT_STOCKS_CONFIG: StocksConfig = {

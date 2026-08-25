@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { notices } from '@/lib/noticeStore';
 import {
   DEFAULT_STOCKS_CONFIG,
+  effectiveEnabled,
   fetchStockQuotes,
   fetchStocksConfig,
   marketOpen,
@@ -101,7 +102,7 @@ export default function StockTickerHost() {
   // ── Vòng poll giá ──────────────────────────────────────────────────────────
   const symsKey = cfg?.symbols.map((s) => s.symbol).join(',') ?? '';
   useEffect(() => {
-    if (!cfg?.enabled || !symsKey) return;
+    if (!cfg || !effectiveEnabled(cfg) || !symsKey) return;
     let dead = false;
     let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -182,7 +183,7 @@ export default function StockTickerHost() {
 
   return (
     <>
-      {cfg?.enabled && (
+      {cfg && effectiveEnabled(cfg) && (
         collapsed ? (
           <button
             className={`stk-bubble stk-${corner}`}
@@ -337,6 +338,14 @@ function StockSettingsModal({
             <span>{enabled ? 'Đang BẬT — widget hiện ở góc màn hình' : 'Đang TẮT (mặc định)'}</span>
           </label>
         </div>
+        {initial.envLock && (
+          <p className="stk-envnote">
+            ⚡ Máy này đang bị <code>STOCKS_ENABLED={initial.envLock === 'on' ? 'true' : 'false'}</code> trong{' '}
+            <code>.env.local</code> ép {initial.envLock === 'on' ? 'BẬT' : 'TẮT'} — công tắc ở trên chỉ đổi
+            config dùng chung (theo config-sync đi các máy), không đổi được máy này. Muốn máy này theo config
+            thì xoá dòng đó rồi mở lại app.
+          </p>
+        )}
 
         <div className="stk-form-row">
           <label className="stk-field">
