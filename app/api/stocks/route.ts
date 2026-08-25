@@ -32,7 +32,7 @@ const QUOTE_TIMEOUT_MS = 8_000;
 
 // ── Config I/O ────────────────────────────────────────────────────────────────
 
-const CORNERS = new Set(['bl', 'br', 'tl', 'tr']);
+const CORNERS = new Set(['bl', 'br', 'tl', 'tr', 'rt', 'rb']);
 const SYMBOL_RE = /^[A-Z0-9]{1,12}$/;
 /** Trần số mã theo dõi — nhiều hơn là bảng giá chứ không còn là widget góc. */
 const MAX_SYMBOLS = 30;
@@ -86,7 +86,11 @@ function envLock(): 'on' | 'off' | null {
 
 async function readConfig(): Promise<StocksConfig> {
   try {
-    return normalizeConfig(JSON.parse(await fs.readFile(CONFIG_FILE, 'utf8')));
+    // Gột BOM: file sửa tay bằng PowerShell (Set-Content -Encoding utf8 trên
+    // PS 5.1) mang BOM và JSON.parse chết — âm thầm mất sạch mã đã cấu hình.
+    let raw = await fs.readFile(CONFIG_FILE, 'utf8');
+    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+    return normalizeConfig(JSON.parse(raw));
   } catch {
     return { ...DEFAULT_STOCKS_CONFIG, symbols: [] };
   }

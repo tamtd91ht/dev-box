@@ -10,7 +10,13 @@
 // *connections.json) chứ không phải localStorage: bảng mã + ngưỡng cảnh báo là
 // thứ muốn giữ qua dọn cache và sync được giữa máy.
 
-export type StockCorner = 'bl' | 'br' | 'tl' | 'tr';
+/**
+ * Vị trí neo widget:
+ *   bl/br/tl/tr  4 góc — strip NGANG (mỗi mã một pill nối tiếp)
+ *   rt/rb        cạnh phải trên / cạnh phải dưới — xếp DỌC (mỗi mã một dòng)
+ * Toạ độ dọc do host đo header/footer thật rồi đặt inline — xem StockTickerHost.
+ */
+export type StockCorner = 'bl' | 'br' | 'tl' | 'tr' | 'rt' | 'rb';
 
 export interface StockSymbolCfg {
   /** Mã CK, vd "FPT", "HPG" — HOSE/HNX/UPCOM đều qua cùng nguồn. */

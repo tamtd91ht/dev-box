@@ -94,6 +94,40 @@ export default function StockTickerHost() {
     return () => window.removeEventListener(OPEN_EVENT, open);
   }, []);
 
+  // ── Neo widget theo RECT CỦA VÙNG NỘI DUNG (.body) ────────────────────────
+  // Không đoán chrome của app bằng toạ độ cứng: app này menu là SIDEBAR DỌC
+  // bên trái (header.appbar cao cả màn hình), footer mang dãy nút cấu hình —
+  // đều đổi kích thước theo màn/chế độ. Đo thẳng .body (lưới workspace): 4 mép
+  // của nó chính là ranh giới an toàn, widget đặt ngay trong góc vùng nội dung
+  // là không đè menu/chuông/footer ở mọi layout. ResizeObserver theo .body +
+  // interval thưa bọc ca .body remount (đổi chế độ) vốn không có event.
+  const [inset, setInset] = useState({ top: 72, right: 14, bottom: 62, left: 14 });
+  useEffect(() => {
+    const measure = () => {
+      const el = document.querySelector<HTMLElement>('.shell > .body') ?? document.querySelector<HTMLElement>('.body');
+      const b = el?.getBoundingClientRect();
+      const next = b && b.width > 0
+        ? {
+            top: Math.max(8, Math.round(b.top) + 6),
+            left: Math.max(8, Math.round(b.left) + 6),
+            right: Math.max(8, Math.round(window.innerWidth - b.right) + 6),
+            bottom: Math.max(8, Math.round(window.innerHeight - b.bottom) + 6),
+          }
+        : { top: 72, right: 14, bottom: 62, left: 14 };
+      setInset((p) =>
+        p.top === next.top && p.right === next.right && p.bottom === next.bottom && p.left === next.left ? p : next,
+      );
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    const el = document.querySelector('.shell > .body') ?? document.querySelector('.body');
+    if (el) ro.observe(el);
+    ro.observe(document.documentElement);
+    window.addEventListener('resize', measure);
+    const timer = setInterval(measure, 2000);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); clearInterval(timer); };
+  }, []);
+
   const symbolCfg = useCallback(
     (sym: string): StockSymbolCfg | undefined => cfg?.symbols.find((s) => s.symbol === sym),
     [cfg],
@@ -180,6 +214,13 @@ export default function StockTickerHost() {
   const detail = detailSym ? quotes[detailSym] : undefined;
   const detailCfg = detailSym ? symbolCfg(detailSym) : undefined;
   const corner: StockCorner = cfg?.position ?? 'bl';
+  /** rt/rb: xếp DỌC dọc cạnh phải — mỗi mã một dòng. */
+  const vertical = corner === 'rt' || corner === 'rb';
+  /** Toạ độ theo 4 mép vùng nội dung ĐÃ ĐO — CSS chỉ là fallback khung hình đầu. */
+  const anchorStyle: { top?: number; bottom?: number; left?: number; right?: number } = {
+    ...(corner === 'tl' || corner === 'tr' || corner === 'rt' ? { top: inset.top } : { bottom: inset.bottom }),
+    ...(corner === 'bl' || corner === 'tl' ? { left: inset.left } : { right: inset.right }),
+  };
 
   return (
     <>
@@ -187,17 +228,42 @@ export default function StockTickerHost() {
         collapsed ? (
           <button
             className={`stk-bubble stk-${corner}`}
+            style={anchorStyle}
             title="Giá cổ phiếu — bấm để mở lại"
             onClick={toggleCollapsed}
           >📈</button>
         ) : (
-          <div className={`stk-strip stk-${corner}`} role="status" aria-label="Giá cổ phiếu">
-            <span
-              className={`stk-dot${err ? ' err' : ''}`}
-              title={err
-                ? `Lỗi lấy giá: ${err}`
-                : `${lastAt ? `Cập nhật ${fmtClock(lastAt)}` : 'Đang lấy giá…'}${open ? '' : ' · NGOÀI GIỜ GD — poll 5 phút/lần'}`}
-            />
+          <div
+            className={`stk-strip stk-${corner}${vertical ? ' stk-vert' : ''}`}
+            style={anchorStyle}
+            role="status"
+            aria-label="Giá cổ phiếu"
+          >
+            {/* Chế độ dọc: hàng đầu gom chấm trạng thái + nút, pills xuống dưới
+                mỗi mã một dòng. Chế độ ngang: mọi thứ một hàng như bảng điện. */}
+            {vertical ? (
+              <div className="stk-vhead">
+                <span
+                  className={`stk-dot${err ? ' err' : ''}`}
+                  title={err
+                    ? `Lỗi lấy giá: ${err}`
+                    : `${lastAt ? `Cập nhật ${fmtClock(lastAt)}` : 'Đang lấy giá…'}${open ? '' : ' · NGOÀI GIỜ GD — poll 5 phút/lần'}`}
+                />
+                <button className="stk-ctl" title="Cấu hình mã & ngưỡng cảnh báo" onClick={() => setSettingsOpen(true)}>⚙</button>
+                <button className="stk-ctl" title="Thu gọn thành bong bóng" onClick={toggleCollapsed}>▁</button>
+              </div>
+            ) : (
+              <span
+                className={`stk-dot${err ? ' err' : ''}`}
+                title={err
+                  ? `Lỗi lấy giá: ${err}`
+                  : `${lastAt ? `Cập nhật ${fmtClock(lastAt)}` : 'Đang lấy giá…'}${open ? '' : ' · NGOÀI GIỜ GD — poll 5 phút/lần'}`}
+              />
+            )}
+            {/* stk-hwrap là display:contents — chế độ ngang pills vẫn là con
+                trực tiếp của flex strip; stk-vlist mới là cột cuộn thật, tách
+                riêng để overflow không cắt card chi tiết (absolute trên strip). */}
+            <div className={vertical ? 'stk-vlist' : 'stk-hwrap'}>
             {(cfg.symbols.length === 0) && (
               <button className="stk-pill stk-empty" onClick={() => setSettingsOpen(true)}>
                 chưa có mã — bấm để cấu hình
@@ -229,8 +295,13 @@ export default function StockTickerHost() {
                 </button>
               );
             })}
-            <button className="stk-ctl" title="Cấu hình mã & ngưỡng cảnh báo" onClick={() => setSettingsOpen(true)}>⚙</button>
-            <button className="stk-ctl" title="Thu gọn thành bong bóng" onClick={toggleCollapsed}>▁</button>
+            </div>
+            {!vertical && (
+              <>
+                <button className="stk-ctl" title="Cấu hình mã & ngưỡng cảnh báo" onClick={() => setSettingsOpen(true)}>⚙</button>
+                <button className="stk-ctl" title="Thu gọn thành bong bóng" onClick={toggleCollapsed}>▁</button>
+              </>
+            )}
 
             {/* Card chi tiết một mã — neo vào strip, mở về phía trong màn hình. */}
             {detail && (
@@ -358,10 +429,12 @@ function StockSettingsModal({
           <label className="stk-field">
             <span>Vị trí</span>
             <select className="input" value={position} onChange={(e) => setPosition(e.target.value as StockCorner)}>
-              <option value="bl">Góc trái dưới</option>
-              <option value="br">Góc phải dưới</option>
-              <option value="tl">Góc trái trên</option>
-              <option value="tr">Góc phải trên</option>
+              <option value="bl">Góc trái dưới — ngang</option>
+              <option value="br">Góc phải dưới — ngang</option>
+              <option value="tl">Góc trái trên — ngang</option>
+              <option value="tr">Góc phải trên — ngang</option>
+              <option value="rt">Cạnh phải trên — xếp dọc</option>
+              <option value="rb">Cạnh phải dưới — xếp dọc</option>
             </select>
           </label>
         </div>
