@@ -8810,29 +8810,35 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .stk-br { right: 14px; bottom: 62px; }
 .stk-tl { left: 14px; top: 72px; }
 .stk-tr { right: 14px; top: 72px; }
-/* Cạnh phải trên/dưới — biến thể XẾP DỌC (mỗi mã một dòng), xem .stk-vert. */
-.stk-rt { right: 14px; top: 72px; }
-.stk-rb { right: 14px; bottom: 62px; }
+/* Cạnh phải trên/dưới — thanh ticker MỎNG dựng đứng: đúng strip ngang xoay
+   90°, dán sát mép màn hình (toạ độ inline từ host: top/bottom 6px). */
+.stk-rt { right: 6px; top: 6px; }
+.stk-rb { right: 6px; bottom: 6px; }
 
-/* Biến thể dọc: cột hẹp áp cạnh phải. Danh sách mã tự cuộn khi dài hơn màn
-   hình (trừ chỗ header/footer + hàng nút), pill giãn hết bề ngang cột. */
+/* Biến thể dọc: một CỘT MỎNG (~36px) chạy dài theo chiều dọc. Chữ trong pill
+   xoay 90° bằng writing-mode — không dựng bảng nhiều cột thành khối vuông. */
 .stk-vert {
-  flex-direction: column; align-items: stretch; flex-wrap: nowrap;
-  gap: 3px; min-width: 168px; max-width: 220px;
-  max-height: calc(100vh - 170px);
+  flex-direction: column; align-items: center; flex-wrap: nowrap;
+  gap: 4px; padding: 6px 4px;
+  max-height: calc(100vh - 12px);
 }
-.stk-vhead { display: flex; align-items: center; gap: 2px; padding-bottom: 2px; }
-.stk-vhead .stk-dot { margin: 0 auto 0 3px; }
+/* Hàng đầu dọc: chấm trạng thái + ⚙ + ▁ xếp chồng cho vừa bề ngang cột. */
+.stk-vert .stk-vhead { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 /* Chế độ ngang: wrapper tan vào flex của strip — pills vẫn là item trực tiếp. */
 .stk-hwrap { display: contents; }
 /* Chế độ dọc: CỘT CUỘN nằm riêng, để overflow không cắt card chi tiết
    (absolute, con của strip chứ không phải của cột này). */
 .stk-vlist {
-  display: flex; flex-direction: column; align-items: stretch; gap: 3px;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
   overflow-y: auto; min-height: 0;
 }
-.stk-vert .stk-pill { display: flex; width: 100%; }
-.stk-vert .stk-pill b { margin-right: auto; }
+/* Pill xoay dọc: writing-mode quay cả cụm "MÃ giá ±%" 90° theo chiều kim đồng
+   hồ — đọc từ trên xuống, bề ngang pill chỉ còn một dòng chữ (~24px). */
+.stk-vert .stk-pill {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  padding: 7px 3px;
+}
 /* Card chi tiết mở sang TRÁI (phía trong màn hình) khi neo cạnh phải. */
 .stk-rt .stk-detail, .stk-rb .stk-detail { right: calc(100% + 8px); left: auto; }
 .stk-rt .stk-detail { top: 0; bottom: auto; }

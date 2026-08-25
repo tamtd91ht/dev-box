@@ -216,11 +216,16 @@ export default function StockTickerHost() {
   const corner: StockCorner = cfg?.position ?? 'bl';
   /** rt/rb: xếp DỌC dọc cạnh phải — mỗi mã một dòng. */
   const vertical = corner === 'rt' || corner === 'rb';
-  /** Toạ độ theo 4 mép vùng nội dung ĐÃ ĐO — CSS chỉ là fallback khung hình đầu. */
-  const anchorStyle: { top?: number; bottom?: number; left?: number; right?: number } = {
-    ...(corner === 'tl' || corner === 'tr' || corner === 'rt' ? { top: inset.top } : { bottom: inset.bottom }),
-    ...(corner === 'bl' || corner === 'tl' ? { left: inset.left } : { right: inset.right }),
-  };
+  /** Toạ độ neo — CSS chỉ là fallback khung hình đầu.
+   *  4 góc ngang: theo 4 mép vùng nội dung ĐÃ ĐO (né sidebar/footer).
+   *  Dọc cạnh phải: DÁN SÁT mép màn hình trên cùng/dưới cùng — nó là thanh
+   *  ticker mỏng ốp cạnh, không phải hộp nổi trong nội dung. */
+  const anchorStyle: { top?: number; bottom?: number; left?: number; right?: number } = vertical
+    ? (corner === 'rt' ? { top: 6, right: 6 } : { bottom: 6, right: 6 })
+    : {
+        ...(corner === 'tl' || corner === 'tr' ? { top: inset.top } : { bottom: inset.bottom }),
+        ...(corner === 'bl' || corner === 'tl' ? { left: inset.left } : { right: inset.right }),
+      };
 
   return (
     <>
