@@ -8789,3 +8789,120 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
    Ẩn bằng opacity (chứ không display:none) để nút vẫn nằm trong luồng tab. */
 .gf-acts:has(button:focus-visible) { opacity: 1; }
 .gf-acts .gf-danger { color: var(--err, #f85149); }
+
+/* ══ Bảng giá cổ phiếu thu nhỏ (components/StockTickerHost.tsx) ══════════════
+   Widget nổi cố định ở một góc, sống ngoài mọi pane. Màu pill theo QUY ƯỚC
+   BẢNG GIÁ VN — tím trần · xanh tăng · vàng tham chiếu · đỏ giảm · lơ sàn —
+   GIỮ NGUYÊN ở cả hai theme: dân trade đọc màu theo phản xạ, đảo theo theme
+   là đọc sai chiều. z-index 85: trên activity-badge (80), dưới toast (9000)
+   và mọi modal. */
+.stk-strip, .stk-bubble {
+  --stk-up: #22c55e; --stk-down: #f43f5e; --stk-ref: #eab308;
+  --stk-ceil: #c084fc; --stk-floor: #38bdf8;
+  position: fixed; z-index: 85;
+}
+.stk-bl { left: 14px; bottom: 14px; }
+.stk-br { right: 14px; bottom: 14px; }
+.stk-tl { left: 14px; top: 48px; }   /* né header */
+.stk-tr { right: 14px; top: 48px; }
+
+.stk-strip {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  max-width: min(760px, calc(100vw - 28px));
+  padding: 5px 7px; border-radius: 12px;
+  background: var(--qt-surface, var(--bg-1));
+  border: 1px solid var(--glass-brd);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
+  font-size: 12px; color: var(--text);
+}
+
+/* Chấm trạng thái: xanh = poll ok, đỏ = lỗi lấy giá (tooltip nói lý do). */
+.stk-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.stk-dot.err { background: var(--err); animation: stk-blink 1s infinite; }
+
+/* Pill một mã: MÃ giá ±% — chữ số mono cho cột giá đứng yên khi số đổi. */
+.stk-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 7px; border-radius: 8px; border: 1px solid transparent;
+  background: var(--glass); color: var(--muted);
+  font: inherit; cursor: pointer; line-height: 1.5; white-space: nowrap;
+}
+.stk-pill b { font-weight: 700; letter-spacing: 0.02em; }
+.stk-pill .stk-price, .stk-pill .stk-pct { font-variant-numeric: tabular-nums; }
+.stk-pill .stk-pct { font-size: 11px; opacity: 0.85; }
+.stk-pill:hover, .stk-pill.on { border-color: var(--glass-brd-hover); background: var(--glass-2); }
+
+/* Màu theo trạng thái so tham chiếu — tô CẢ CỤM chữ, nền để yên cho dễ đọc. */
+.stk-up,    .stk-t-up    { color: var(--stk-up); }
+.stk-down,  .stk-t-down  { color: var(--stk-down); }
+.stk-ref,   .stk-t-ref   { color: var(--stk-ref); }
+.stk-ceil,  .stk-t-ceil  { color: var(--stk-ceil); }
+.stk-floor, .stk-t-floor { color: var(--stk-floor); }
+.stk-wait { color: var(--faint); cursor: default; }
+.stk-empty { color: var(--muted); font-style: italic; }
+
+/* Nháy khi giá đổi tick — nền loé đúng màu chiều biến động rồi tắt (bảng giá
+   nào cũng nhấp nháy kiểu này; keyframes để re-render giữa chừng không kẹt nền). */
+.stk-flash-u { animation: stk-flash-up 0.9s ease-out; }
+.stk-flash-d { animation: stk-flash-down 0.9s ease-out; }
+@keyframes stk-flash-up   { 0% { background: rgba(34, 197, 94, 0.35); } 100% { background: var(--glass); } }
+@keyframes stk-flash-down { 0% { background: rgba(244, 63, 94, 0.35); } 100% { background: var(--glass); } }
+
+/* Chạm ngưỡng cấu hình: viền cảnh báo thở đều + ⚠ — phải thấy được từ khoé mắt. */
+.stk-alert { border-color: var(--warn); animation: stk-breathe 1.6s ease-in-out infinite; }
+.stk-warnmark { font-size: 10px; }
+@keyframes stk-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+  50% { box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.35); }
+}
+@keyframes stk-blink { 50% { opacity: 0.3; } }
+
+/* Nút ⚙ / ▁ / ✕ trong widget — nhỏ và chìm, widget là để nhìn giá. */
+.stk-ctl {
+  flex: none; padding: 1px 5px; border: none; border-radius: 6px;
+  background: transparent; color: var(--faint); cursor: pointer; font-size: 11px;
+}
+.stk-ctl:hover { color: var(--text); background: var(--glass-2); }
+
+/* Thu gọn: bong bóng tròn 📈, bấm mở lại. */
+.stk-bubble {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 1px solid var(--glass-brd); background: var(--qt-surface, var(--bg-1));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
+  font-size: 15px; cursor: pointer; opacity: 0.75;
+}
+.stk-bubble:hover { opacity: 1; }
+
+/* Card chi tiết một mã — neo theo strip, mở về PHÍA TRONG màn hình theo góc. */
+.stk-detail {
+  position: absolute; min-width: 250px; max-width: 320px;
+  padding: 8px 10px; border-radius: 10px;
+  background: var(--qt-surface, var(--bg-1));
+  border: 1px solid var(--glass-brd); box-shadow: 0 10px 32px rgba(0, 0, 0, 0.3);
+}
+.stk-bl .stk-detail, .stk-br .stk-detail { bottom: calc(100% + 8px); }
+.stk-tl .stk-detail, .stk-tr .stk-detail { top: calc(100% + 8px); }
+.stk-bl .stk-detail, .stk-tl .stk-detail { left: 0; }
+.stk-br .stk-detail, .stk-tr .stk-detail { right: 0; }
+.stk-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.stk-detail-head b { font-size: 14px; }
+.stk-detail-head span { margin-left: auto; font-variant-numeric: tabular-nums; }
+.stk-detail-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px 10px;
+  font-size: 11px; color: var(--muted);
+}
+.stk-detail-grid b { display: block; color: var(--text); font-variant-numeric: tabular-nums; }
+.stk-detail-note { margin-top: 6px; font-size: 11px; color: var(--faint); font-style: italic; }
+
+/* ── Modal cấu hình ── */
+.stk-modal { width: min(680px, 94vw); }
+.stk-form-row { display: flex; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.stk-field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 160px; }
+.stk-field > span { font-size: 12px; color: var(--muted); }
+.stk-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.stk-rows-head, .stk-row {
+  display: grid; grid-template-columns: 90px 110px 110px 1fr 28px;
+  gap: 6px; align-items: center; margin-top: 6px;
+}
+.stk-rows-head { margin-top: 8px; }
+.stk-rows-head i { font-size: 11px; color: var(--faint); font-style: normal; }

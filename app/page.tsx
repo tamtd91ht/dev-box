@@ -37,6 +37,7 @@ import MailWatchHost from '@/components/MailWatchHost';
 import WorkWorkspace from '@/components/WorkWorkspace';
 import WorkAlertHost from '@/components/WorkAlertHost';
 import ConvertHost from '@/components/ConvertHost';
+import StockTickerHost, { StockHeaderButton } from '@/components/StockTickerHost';
 import OpenLinkDialog from '@/components/OpenLinkDialog';
 import NotificationCenter from '@/components/NotificationCenter';
 import QuickTabs, { type TabInfo } from '@/components/QuickTabs';
@@ -706,6 +707,9 @@ export default function Home() {
               setPendingHide(null);
             }}
           />
+          {/* Giá cổ phiếu: mở cấu hình widget góc màn hình — lối vào duy nhất
+              khi widget đang tắt (mặc định tắt). */}
+          <StockHeaderButton />
           {/* Hòm thông báo: xem lại lịch sử (local, 2 ngày) + xóa tất cả. */}
           <NotificationCenter />
           <ThemeToggle />
@@ -901,6 +905,10 @@ export default function Home() {
 
       {/* Cảnh báo Công việc (ngày bắt đầu + gần deadline) → toast + hòm thông báo. */}
       <WorkAlertHost />
+
+      {/* Bảng giá cổ phiếu thu nhỏ ở góc màn hình — MẶC ĐỊNH TẮT, bật ở nút 📈
+          trên header. Sống ngoài mọi pane nên đổi tab vẫn thấy giá. */}
+      <StockTickerHost />
 
       {/* Bấm link trong tin nhắn Zalo/Telegram → hỏi mở ở tab Links hay tab
           Browser. Cửa sổ Zalo không bị đụng tới, vẫn nguyên khung chat. setMode
