@@ -6884,6 +6884,27 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* Ô NEO trong vùng vẫn giữ viền ô hiện hành của nó — đặt sau và đủ đặc hiệu
    để thắng mọi tổ hợp .rng-* ở trên (Excel cũng vẽ ô neo nổi hơn phần còn lại). */
 .sheet-cell.selc.selc { box-shadow: inset 0 0 0 2px var(--accent); }
+
+/* ── Fill handle: ô vuông góc dưới-phải vùng chọn — kéo để tự điền dãy ────
+   Đậu trên ô góc (td đã position:relative), lấn ra ngoài 1px như Excel.
+   Preview vùng sẽ fill (.frng) là nền nhạt + viền đứt TỪNG Ô (outline không
+   đụng layout, không cần bộ tổ hợp cạnh như .rng-*). */
+.sheet-cell .sheet-fill-handle {
+  position: absolute; right: -1px; bottom: -1px;
+  width: 9px; height: 9px; box-sizing: border-box;
+  background: var(--accent); border: 1px solid #fff; border-radius: 1px;
+  cursor: crosshair; z-index: 3;
+}
+.sheet-cell .sheet-fill-handle:hover { transform: scale(1.25); }
+/* Đang kéo fill: cả lưới đổi cursor, và handle không che mouseenter của ô. */
+.sheet-scroll.filling, .sheet-scroll.filling .sheet-cell { cursor: crosshair; }
+.sheet-scroll.filling .sheet-fill-handle { pointer-events: none; }
+.sheet-cell.frng {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: 1px dashed var(--accent); outline-offset: -2px;
+}
+.sheet-grid.paper td.frng { background: color-mix(in srgb, var(--accent) 12%, #fff); }
+
 /* Status bar Sum/Avg/Count như Excel. */
 .sheet-statusbar {
   flex: none; display: flex; align-items: center; gap: 16px;

@@ -25,6 +25,12 @@
 // đoán phím trong onKeyDown — đó là lý do bản trước Ctrl+C không ăn. Nút ⧉ Copy
 // / ⎘ Dán ở status bar và menu chuột phải đi qua Clipboard API (cần quyền).
 //
+// FILL HANDLE: ô vuông nhỏ góc dưới-phải vùng chọn — kéo dọc/ngang để LẶP LẠI
+// hay TỊNH TIẾN dãy như Excel: 1,2 kéo xuống → 3,4…; một số đơn kéo → lặp lại
+// (giữ Ctrl khi thả = +1); "Mục 1" → "Mục 2","Mục 3"; công thức dịch tham chiếu
+// tương đối theo khoảng kéo ($ đứng yên). Kéo được cả 4 hướng, mỗi ô fill là
+// một op 'set' như gõ tay. Toàn bộ luật series nằm ở lib/sheetFill.ts.
+//
 // HOÀN TÁC: Ctrl+Z / Ctrl+Y (hoặc nút ↶ ↷ trên thanh công cụ), tối đa 50 bước.
 // Mỗi thao tác sửa chụp NGUYÊN state tài liệu trước khi đổi (grids + op log +
 // merge + kích thước + bảng style) — rẻ ở quy mô lưới đang xem và tránh phải
@@ -46,6 +52,7 @@ import FolderPicker from './FolderPicker';
 import OfficeNewFileModal from './OfficeNewFileModal';
 import SheetFormatBar from './SheetFormatBar';
 import { evaluateGrid } from '@/lib/formulaEval';
+import { fillSeries, shiftFormulaRefs } from '@/lib/sheetFill';
 import { formatNumFmt } from '@/lib/numFmt';
 import {
   fetchSheetFlags,
@@ -254,6 +261,13 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const selDragRef = useRef<Pos | null>(null);
   /** Đang kéo chuột trên DÃY ĐẦU CỘT / ĐẦU DÒNG để chọn nhiều cột/dòng liền nhau. */
   const headDragRef = useRef<{ kind: 'col' | 'row'; anchor: number } | null>(null);
+  /** Kéo fill handle: vùng NGUỒN lúc bấm xuống; hướng + độ dài cập nhật theo
+   *  ô chuột đang phủ (ref vì mouseup đọc giá trị mới nhất, không chờ render). */
+  const fillDragRef = useRef<SelRange | null>(null);
+  const fillPrevRef = useRef<{ axis: 'row' | 'col'; dir: 1 | -1; count: number } | null>(null);
+  /** Preview vùng SẼ được fill (không gồm vùng nguồn) — vẽ nền + viền đứt. */
+  const [fillRange, setFillRange] = useState<SelRange | null>(null);
+  const [filling, setFilling] = useState(false);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [rowLimit, setRowLimit] = useState(RENDER_STEP);
   /** Lưới nở thêm khi đi tới mép (giữ cảm giác "vô tận" của Excel). */
@@ -1246,6 +1260,107 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     pasteTable(parseClipTable(raw));
   }, [editing, sel, parseClipTable, pasteTable, flash]);
 
+  // ── Fill handle (kéo góc dưới-phải vùng chọn — lặp lại / tịnh tiến dãy) ────
+  // Luật series ở lib/sheetFill.ts; ở đây chỉ lo kéo-thả và ghi op. Mỗi ô fill
+  // là một op 'set' như gõ tay nên đi đúng đường lưu + undo được cả cụm.
+
+  const applyFill = useCallback((src: SelRange, axis: 'row' | 'col', dir: 1 | -1, count: number, ctrl: boolean) => {
+    pushHistory();
+    // Mỗi "line" chạy dọc trục kéo: kéo dọc = mỗi CỘT một dãy riêng, kéo
+    // ngang = mỗi DÒNG. Kéo ngược (lên/trái) thì đảo nguồn để series chạy lùi.
+    const sets: { r: number; c: number; value: string }[] = [];
+    if (axis === 'row') {
+      for (let c = src.c1; c <= src.c2; c++) {
+        let texts: string[] = [];
+        for (let r = src.r1; r <= src.r2; r++) texts.push(editText(r, c));
+        if (dir === -1) texts = texts.reverse();
+        const vals = fillSeries(texts, count, ctrl, (f, off) => shiftFormulaRefs(f, dir * off, 0));
+        vals.forEach((value, i) => sets.push({ r: (dir === 1 ? src.r2 : src.r1) + dir * (i + 1), c, value }));
+      }
+    } else {
+      for (let r = src.r1; r <= src.r2; r++) {
+        let texts: string[] = [];
+        for (let c = src.c1; c <= src.c2; c++) texts.push(editText(r, c));
+        if (dir === -1) texts = texts.reverse();
+        const vals = fillSeries(texts, count, ctrl, (f, off) => shiftFormulaRefs(f, 0, dir * off));
+        vals.forEach((value, i) => sets.push({ r, c: (dir === 1 ? src.c2 : src.c1) + dir * (i + 1), value }));
+      }
+    }
+    if (sets.length === 0) return;
+    const maxR = sets.reduce((m, s) => Math.max(m, s.r), src.r2);
+    const maxC = sets.reduce((m, s) => Math.max(m, s.c), src.c2);
+    setGrids((gs) => gs.map((g, i) => {
+      if (i !== active) return g;
+      const ng = g.slice();
+      while (ng.length < maxR) ng.push([]);
+      // Copy mỗi dòng đúng một lần dù nhận nhiều ô (kéo ngang qua nhiều cột).
+      const touched = new Map<number, WireCell[]>();
+      for (const s of sets) {
+        let row = touched.get(s.r);
+        if (!row) { row = ng[s.r - 1].slice(); touched.set(s.r, row); }
+        while (row.length < s.c) row.push({ ...EMPTY_CELL });
+        const cur = row[s.c - 1];
+        const keepS = cur?.s !== undefined ? { s: cur.s } : {};
+        const isFormula = s.value.startsWith('=') && s.value.trim().length > 1;
+        row[s.c - 1] = isFormula
+          ? { v: '', t: 'f', f: s.value.slice(1).trim(), d: true, ...keepS }
+          : { v: s.value, t: 's', d: true, ...keepS };
+      }
+      for (const [r, row] of touched) ng[r - 1] = row;
+      return ng;
+    }));
+    setOps((os) => os.map((o, i) => {
+      if (i !== active) return o;
+      const add = sets.map((s): SheetOp => {
+        // hadFormula: fill đè công thức CŨ bằng giá trị thường → cảnh báo lúc lưu.
+        const cur = grid[s.r - 1]?.[s.c - 1];
+        const isFormula = s.value.startsWith('=') && s.value.trim().length > 1;
+        return { op: 'set', r: s.r, c: s.c, value: s.value, ...(cur?.t === 'f' && !isFormula ? { hadFormula: true } : {}) };
+      });
+      return [...o, ...add];
+    }));
+    // Chọn cả nguồn + vùng vừa fill, như Excel.
+    const union: SelRange = axis === 'row'
+      ? { r1: dir === 1 ? src.r1 : src.r1 - count, c1: src.c1, r2: dir === 1 ? src.r2 + count : src.r2, c2: src.c2 }
+      : { r1: src.r1, c1: dir === 1 ? src.c1 : src.c1 - count, r2: src.r2, c2: dir === 1 ? src.c2 + count : src.c2 };
+    selExtentRef.current = null;
+    setSelRange(union);
+    setSelKind('cells');
+    setPadR((p) => Math.max(p, union.r2 + PAD_ROWS));
+    setPadC((p) => Math.max(p, union.c2 + PAD_COLS));
+    setRowLimit((l) => Math.max(l, union.r2 + 5));
+    flash(`Đã fill ${sets.length} ô${ctrl ? ' (Ctrl: đảo lặp↔tăng)' : ''} — Ctrl+Z để hoàn tác`);
+  }, [active, grid, editText, flash, pushHistory]);
+
+  /** mousedown trên fill handle → kéo tới khi thả (mouseup đọc Ctrl để đảo
+   *  lặp↔tăng, như Excel). Listener gắn ngay trong hàm, kiểu startResize. */
+  const startFill = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();  // không bôi đen text khi quét
+    e.stopPropagation(); // không để td bên dưới bắt đầu drag-select
+    const s = liveRef.current;
+    const src = s.selRange ?? (s.sel ? { r1: s.sel.r, c1: s.sel.c, r2: s.sel.r, c2: s.sel.c } : null);
+    if (!src) return;
+    fillDragRef.current = { ...src };
+    fillPrevRef.current = null;
+    setFilling(true);
+    const up = (ev: MouseEvent) => {
+      window.removeEventListener('mouseup', up);
+      const from = fillDragRef.current;
+      const prev = fillPrevRef.current;
+      fillDragRef.current = null;
+      fillPrevRef.current = null;
+      setFilling(false);
+      setFillRange(null);
+      // Nuốt đúng MỘT sự kiện click theo sau mouseup — không thì click rơi vào
+      // ô dưới con trỏ và phá vùng vừa chọn. Click (nếu có) chạy TRƯỚC timeout.
+      pointGuardRef.current = true;
+      setTimeout(() => { pointGuardRef.current = false; }, 0);
+      if (from && prev && prev.count > 0) applyFill(from, prev.axis, prev.dir, prev.count, ev.ctrlKey || ev.metaKey);
+    };
+    window.addEventListener('mouseup', up);
+  }, [applyFill]);
+
   const onGridKeyDown = useCallback((e: React.KeyboardEvent) => {
     const k = e.key;
     // Undo/redo đứng TRƯỚC guard `!sel`: hoàn tác phải dùng được cả khi chưa
@@ -1371,9 +1486,32 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFormulaInput, placeRef, refText, clearRange]);
 
-  /** Quét chuột (giữ phím trái) qua các ô: point mode → nới ref công thức;
-   *  bình thường → nới vùng chọn (Sum/Avg/Count). */
+  /** Quét chuột (giữ phím trái) qua các ô: kéo fill handle → cập nhật preview;
+   *  point mode → nới ref công thức; bình thường → nới vùng chọn (Sum/Avg/Count). */
   const onCellMouseEnter = useCallback((r: number, c: number) => {
+    const fs = fillDragRef.current;
+    if (fs) {
+      // Khoá theo trục vượt XA hơn (như Excel): quá mép dưới/trên là kéo dọc,
+      // quá mép phải/trái là kéo ngang; chuột còn trong vùng nguồn = chưa fill.
+      const dR = r > fs.r2 ? r - fs.r2 : r < fs.r1 ? r - fs.r1 : 0;
+      const dC = c > fs.c2 ? c - fs.c2 : c < fs.c1 ? c - fs.c1 : 0;
+      let prev: { axis: 'row' | 'col'; dir: 1 | -1; count: number } | null = null;
+      if (dR !== 0 && Math.abs(dR) >= Math.abs(dC)) prev = { axis: 'row', dir: dR > 0 ? 1 : -1, count: Math.abs(dR) };
+      else if (dC !== 0) prev = { axis: 'col', dir: dC > 0 ? 1 : -1, count: Math.abs(dC) };
+      fillPrevRef.current = prev;
+      setFillRange(!prev ? null : prev.axis === 'row'
+        ? (prev.dir === 1
+          ? { r1: fs.r2 + 1, c1: fs.c1, r2: fs.r2 + prev.count, c2: fs.c2 }
+          : { r1: fs.r1 - prev.count, c1: fs.c1, r2: fs.r1 - 1, c2: fs.c2 })
+        : (prev.dir === 1
+          ? { r1: fs.r1, c1: fs.c2 + 1, r2: fs.r2, c2: fs.c2 + prev.count }
+          : { r1: fs.r1, c1: fs.c1 - prev.count, r2: fs.r2, c2: fs.c1 - 1 }));
+      // Kéo tới mép → lưới nở thêm, như moveSel.
+      if (r >= dispRows - 1) setPadR(r + PAD_ROWS);
+      if (c >= dispCols - 1) setPadC(c + PAD_COLS);
+      if (r > rowLimit - 3) setRowLimit(r + RENDER_STEP);
+      return;
+    }
     const d = pointDragRef.current;
     if (d) {
       const r1 = Math.min(d.anchor.r, r); const r2 = Math.max(d.anchor.r, r);
@@ -1388,7 +1526,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       setSelRange(normRange(anchor, { r, c }));
       setSelKind('cells');
     }
-  }, [placeRef, refText]);
+  }, [placeRef, refText, dispRows, dispCols, rowLimit]);
 
   useEffect(() => {
     const up = () => { pointDragRef.current = null; selDragRef.current = null; headDragRef.current = null; };
@@ -1519,6 +1657,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   )).length;
   const totalFormulaHits = ops.flat().filter((o) => o.op === 'set' && o.hadFormula).length;
   const selCell = sel ? cellAt(sel.r, sel.c) : null;
+  /** Ô mang fill handle: góc dưới-phải của vùng chọn (hoặc của ô đang chọn). */
+  const fillAnchor = !editing && ioRange ? { r: ioRange.r2, c: ioRange.c2 } : null;
 
   // ── Ribbon: style hiệu dụng của ô đang chọn + phạm vi áp dụng ──────────────
   const selStyleIdx = sel ? grid[sel.r - 1]?.[sel.c - 1]?.s : undefined;
@@ -1739,7 +1879,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '6px 0' }}>{notice}</div>}
 
       <div
-        className={`sheet-scroll${resizing ? ' resizing' : ''}`}
+        className={`sheet-scroll${resizing ? ' resizing' : ''}${filling ? ' filling' : ''}`}
         ref={gridRef}
         tabIndex={0}
         onKeyDown={onGridKeyDown}
@@ -1864,6 +2004,12 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                     // Ô merge trải rộng → cạnh phải/dưới tính theo mép XA của nó.
                     const rEnd = r + (span ? span.rs - 1 : 0);
                     const cEnd = c + (span ? span.cs - 1 : 0);
+                    // Ô nằm trong preview fill (kéo fill handle) — nền + viền đứt.
+                    const inFill = !!fillRange
+                      && r >= fillRange.r1 && r <= fillRange.r2
+                      && c >= fillRange.c1 && c <= fillRange.c2;
+                    // Fill handle đậu ở ô mà mép dưới-phải trùng góc vùng chọn.
+                    const hasHandle = !!fillAnchor && rEnd === fillAnchor.r && cEnd === fillAnchor.c && !isEditing;
                     return (
                       <td
                         key={c}
@@ -1883,6 +2029,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                           inRange && rEnd === selRange.r2 ? 'rng-b' : '',
                           inRange && c === selRange.c1 ? 'rng-l' : '',
                           inRange && cEnd === selRange.c2 ? 'rng-r' : '',
+                          inFill ? 'frng' : '',
                         ].filter(Boolean).join(' ')}
                         onMouseDown={(e) => { if (!isEditing) onCellMouseDown(r, c, e); }}
                         onMouseEnter={() => onCellMouseEnter(r, c)}
@@ -1938,6 +2085,18 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                             {/* Ô công thức: chỉ một tam giác bé ở góc, hover mới hiện ƒ
                                 (nội dung là KẾT QUẢ, không phải cái badge). */}
                             {cell.t === 'f' && <span className="sheet-fx-mark" aria-hidden />}
+                            {/* Fill handle: kéo để lặp lại / tịnh tiến dãy như Excel. */}
+                            {hasHandle && (
+                              <span
+                                className="sheet-fill-handle"
+                                role="button"
+                                aria-label="Kéo để tự điền dãy"
+                                onMouseDown={startFill}
+                                onClick={(e) => e.stopPropagation()}
+                                onDoubleClick={(e) => e.stopPropagation()}
+                                title="Kéo để tự điền: 1,2 → 3,4… · text lặp lại · 'Mục 1' → 'Mục 2' · giữ Ctrl khi thả để đổi lặp↔tăng"
+                              />
+                            )}
                           </>
                         )}
                       </td>
