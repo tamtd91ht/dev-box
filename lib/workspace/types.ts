@@ -140,6 +140,12 @@ export interface WorkspaceBridge {
   /** Kéo focus về host page sau khi hủy <webview> giữ focus (fix input "chết").
    *  Optional: preload cũ (trước khi có handler này) chưa expose. */
   focusHost?(): Promise<{ ok: boolean; error?: string }>;
+  /** 🔕: báo main danh sách partition Workspace đang ẨN THÔNG BÁO (dạng
+   *  'ws-<plugin>-<instance>', không kèm 'persist:') + cờ tắt toàn cục. Main
+   *  chặn quyền `notifications` của đúng guest đó — notification Windows từ
+   *  chính trang (chat.zalo.me…) im theo, không chỉ im chuông trong app.
+   *  Optional: preload cũ chưa expose. */
+  setNotifMuted?(partitions: string[], allMuted: boolean): Promise<{ ok: boolean }>;
   /** Tải ảnh bằng phiên của partition → data URL. Dùng cho ảnh đại diện tài
    *  khoản: avatar ở CDN khác gốc không kèm CORS nên trong guest fetch() và
    *  canvas đều chết; main process tải ở tầng mạng, không vướng CORS.

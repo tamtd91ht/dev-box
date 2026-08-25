@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld('workspace', {
   /** Kéo focus về host page sau khi hủy <webview> (fix input "chết"). */
   focusHost: () => ipcRenderer.invoke('workspace:focusHost'),
   /**
+   * 🔕: báo main danh sách partition Workspace đang ẨN THÔNG BÁO + cờ toàn cục.
+   * Main chặn quyền `notifications` của guest tương ứng — xem main.cjs.
+   */
+  setNotifMuted: (partitions, allMuted) =>
+    ipcRenderer.invoke('workspace:setNotifMuted', partitions, allMuted),
+  /**
    * Tải một ảnh bằng phiên của partition, trả về data URL.
    *
    * Dùng cho ảnh đại diện tài khoản: avatar nằm ở CDN khác gốc không kèm CORS,

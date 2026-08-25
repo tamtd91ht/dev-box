@@ -163,6 +163,19 @@ const DEFAULT_CONFIG = {
 
 // Web APIs a workspace guest is allowed to request. Everything else is denied.
 // (Screen capture, geolocation, HID/serial/USB, MIDI are NOT granted.)
+// Guest bị ẨN THÔNG BÁO theo cấu hình Workspace (🔕 toàn cục / từng tài khoản).
+// Renderer đẩy trạng thái xuống qua workspace:setNotifMuted; hai handler quyền
+// trong configurePartition hỏi lại MỖI LẦN trang xin/hiện notification — nên
+// bật/tắt ăn ngay, không cần nạp lại guest. Chỉ quản partition Workspace
+// (ws-*): browser/links/google không có nút 🔕, không bị đụng.
+const notifMuted = { all: false, parts: new Set() };
+const notifPartKey = (part) => String(part || '').replace(/^persist:/, '');
+function notifAllowed(part) {
+  const key = notifPartKey(part);
+  if (!key.startsWith('ws-')) return true;
+  return !notifMuted.all && !notifMuted.parts.has(key);
+}
+
 const ALLOWED_PERMISSIONS = new Set([
   'notifications',
   'media', // mic + camera for voice/video calls
@@ -670,8 +683,12 @@ function configurePartition(part) {
     callback({ requestHeaders: details.requestHeaders });
   });
 
+  // `notifications` hỏi thêm notifAllowed(part): tài khoản đang 🔕 thì trang
+  // đọc được "denied" và Windows không hiện toast — đánh giá mỗi lần gọi nên
+  // đổi cờ là ăn ngay.
   ses.setPermissionRequestHandler((_wc, permission, callback) => {
-    const ok = ALLOWED_PERMISSIONS.has(permission);
+    const ok = ALLOWED_PERMISSIONS.has(permission)
+      && (permission !== 'notifications' || notifAllowed(part));
     if (!ok) log('PermissionDenied', `${part} · ${permission}`);
     callback(ok);
   });
@@ -679,7 +696,9 @@ function configurePartition(part) {
   // Synchronous permission CHECKS (e.g. Notification.permission, navigator
   // .storage.persisted()) must agree with the request handler, otherwise apps
   // read "denied" and never show notifications.
-  ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
+  ses.setPermissionCheckHandler((_wc, permission) =>
+    ALLOWED_PERMISSIONS.has(permission)
+      && (permission !== 'notifications' || notifAllowed(part)));
 
   wireDownloadPolicy(ses, part);
   wireSessionCookiePersistence(ses, part);
@@ -1724,6 +1743,20 @@ function createWindow() {
   void loadAppWithRetry(win);
   return win;
 }
+
+// 🔕 Workspace: renderer báo tài khoản nào đang ẩn thông báo. Main chặn quyền
+// notifications của đúng partition đó (xem notifAllowed) — notification
+// Windows từ chính trang (chat.zalo.me…) im theo, không chỉ im chuông trong app.
+ipcMain.handle('workspace:setNotifMuted', (_evt, partitions, allMuted) => {
+  notifMuted.all = !!allMuted;
+  notifMuted.parts = new Set(
+    (Array.isArray(partitions) ? partitions : [])
+      .filter((p) => typeof p === 'string')
+      .map(notifPartKey),
+  );
+  log('NotifMuted', `all=${notifMuted.all} · ${[...notifMuted.parts].join(', ') || '(khong co)'}`);
+  return { ok: true };
+});
 
 // Wipe a workspace session (the "Logout" button in the UI).
 ipcMain.handle('workspace:clearSession', async (_evt, partition) => {

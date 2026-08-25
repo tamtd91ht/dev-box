@@ -171,6 +171,19 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
     onUnread?.(total);
   }, [total, muted, chime, onUnread, mutedSig]);
 
+  // Đẩy trạng thái ẨN THÔNG BÁO xuống main process: main chặn quyền
+  // `notifications` của guest theo partition — nhờ vậy 🔕 không chỉ im chuông
+  // trong app mà notification WINDOWS từ chính trang (chat.zalo.me…) cũng im.
+  // Không có cầu (chạy web thuần / preload cũ) thì thôi, không có gì để chặn.
+  useEffect(() => {
+    const bridge = window.workspace;
+    if (!bridge?.setNotifMuted) return;
+    const parts = allAccounts
+      .filter((a) => a.muted)
+      .map((a) => `ws-${a.pluginId}-${a.instanceId}`);
+    void bridge.setNotifMuted(parts, muted).catch(() => {});
+  }, [allAccounts, muted, mutedSig]);
+
   // Automation: message capture is opt-in and off by default, so the guests
   // count unread and store nothing until the Automation tab enables it.
   const { config: autoCfg } = useAutomation();
