@@ -44,6 +44,7 @@ import {
 import {
   parseConsoleRequests,
   requestAtLine,
+  formatConsoleCommand,
   classifyConsoleCommand,
   consoleTarget,
   loadEsConsoleHistoryFor,
@@ -396,6 +397,32 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
   }, [current, risk, execute]);
   runRef.current = requestRun;
 
+  /**
+   * ⤸ Format MỘT lệnh — lệnh đang đặt con trỏ: tách `METHOD path` lên dòng
+   * riêng (kể cả khi paste bị dính body vào dòng lệnh) + pretty-print body.
+   * Các lệnh khác trong editor không bị đụng. Thay text qua executeEdits để
+   * Ctrl+Z còn hoàn tác được.
+   */
+  const formatCurrent = useCallback(() => {
+    const ed = editorRef.current;
+    const model = ed?.getModel();
+    const r = formatConsoleCommand(ed?.getValue() ?? text, cursorLine);
+    if (!r.ok) { setError(r.error); return; }
+    setError(null);
+    if (ed && model) {
+      ed.pushUndoStop();
+      ed.executeEdits('es-format', [{ range: model.getFullModelRange(), text: r.text, forceMoveMarkers: true }]);
+      ed.pushUndoStop();
+      ed.setPosition({ lineNumber: r.caretLine, column: 1 });
+      ed.revealLineInCenterIfOutsideViewport(r.caretLine);
+      ed.focus();
+    } else {
+      setText(r.text);
+    }
+  }, [text, cursorLine]);
+  const formatRef = useRef(formatCurrent);
+  formatRef.current = formatCurrent;
+
   const asCurl = useCallback(() => {
     if (!current) return '';
     const scheme = connection.tls ? 'https' : 'http';
@@ -453,6 +480,9 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
               {risk === 'destructive' ? '⚠ XOÁ' : '✎ GHI'}
             </span>
           )}
+          <button className="chip-btn" disabled={!text.trim()}
+            title="Format lệnh đang đặt con trỏ (Ctrl+Shift+F) — tách API lên dòng riêng + làm đẹp body JSON, các lệnh khác giữ nguyên"
+            onClick={formatCurrent}>⤸ Format</button>
           <button className="chip-btn" disabled={!current} title="Copy lệnh dạng cURL"
             onClick={() => {
               void navigator.clipboard?.writeText(asCurl()).then(() => {
@@ -477,6 +507,7 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
               if (model) ctxByModel.set(model, () => ctxRef.current);
               editor.onDidChangeCursorPosition((e) => setCursorLine(e.position.lineNumber));
               editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runRef.current());
+              editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, () => formatRef.current());
             }}
             loading={<span className="spinner" aria-hidden />}
             options={{
