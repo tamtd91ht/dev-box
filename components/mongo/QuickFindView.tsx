@@ -51,10 +51,12 @@ import {
   updateQuickFind,
   removeQuickFind,
   buildQuickFilter,
+  buildQuickSort,
   QUICK_FIELD_TYPES,
   type MongoQuickFind,
   type QuickFindField,
   type QuickFieldType,
+  type QuickSortDir,
 } from '@/lib/mongoQuickFinds';
 import ExportModal from './ExportModal';
 import TargetPicker from '../TargetPicker';
@@ -187,7 +189,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
         runFields.filter((f) => f.checked).map((f) => ({ path: f.path, type: f.type, value: f.value, list: f.list })),
       );
       const r = await findMongo(run.connectionId, runDb, runColl, {
-        filter, projection: buildProjection(), sort: '', limit: run.limit, skip: effSkip,
+        filter, projection: buildProjection(), sort: buildQuickSort(run.sort), limit: run.limit, skip: effSkip,
       });
       setResult(r);
       setSkip(r.skip);
@@ -299,6 +301,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
             <strong>🔎 {run.name}</strong>
             <span className="badge">
               {connName(run.connectionId) ?? '⚠ connection đã xoá'} · limit {run.limit}
+              {run.sort && ` · sort ${run.sort.path} ${run.sort.dir === 'desc' ? '↓' : '↑'}`}
             </span>
           </div>
 
@@ -545,6 +548,9 @@ function QuickFindForm({
   const [database, setDatabase] = useState(initial?.database ?? '');
   const [collection, setCollection] = useState(initial?.collection ?? '');
   const [limit, setLimit] = useState(initial?.limit ?? 50);
+  // Sort là TUỲ CHỌN — path trống nghĩa là không sort, giữ thứ tự tự nhiên.
+  const [sortPath, setSortPath] = useState(initial?.sort?.path ?? '');
+  const [sortDir, setSortDir] = useState<QuickSortDir>(initial?.sort?.dir ?? 'desc');
   const [fields, setFields] = useState<QuickFindField[]>(
     initial?.fields?.length ? initial.fields : [{ label: 'ID', path: '_id', type: 'objectId' }],
   );
@@ -592,6 +598,9 @@ function QuickFindForm({
     collection: collection.trim(),
     fields: validFields.map((f) => ({ label: f.label.trim(), path: f.path.trim(), type: f.type })),
     limit: Math.min(Math.max(Number(limit) || 50, 1), 200),
+    // Luôn có mặt trong patch (kể cả undefined) — updateQuickFind merge nông,
+    // thiếu khoá là sort cũ sống lại sau khi người dùng đã xoá.
+    sort: sortPath.trim() ? { path: sortPath.trim(), dir: sortDir } : undefined,
   });
 
   return (
@@ -644,6 +653,35 @@ function QuickFindForm({
           <span>Limit ≤200</span>
           <input className="input" type="number" min={1} max={200} value={limit}
             onChange={(e) => setLimit(Math.min(Math.max(Number(e.target.value) || 50, 1), 200))} />
+        </label>
+      </div>
+
+      <div className="mongo-form-row">
+        <label className="mongo-field" style={{ flex: 1 }}>
+          <span>Sắp xếp theo field <i style={{ color: 'var(--faint)', fontStyle: 'normal' }}>(không bắt buộc — trống = thứ tự tự nhiên)</i></span>
+          <input
+            className="input mono"
+            value={sortPath}
+            onChange={(e) => setSortPath(e.target.value)}
+            placeholder="vd. created_at — hỗ trợ nested path (profile.updated_at)"
+            list="mongo-qf-sort-paths"
+          />
+          <datalist id="mongo-qf-sort-paths">
+            {[...new Set(fields.map((f) => f.path.trim()).filter(Boolean))].map((p) => <option key={p} value={p} />)}
+          </datalist>
+        </label>
+        <label className="mongo-field" style={{ flex: '0 0 160px' }}>
+          <span>Chiều</span>
+          <select
+            className="input"
+            value={sortDir}
+            disabled={!sortPath.trim()}
+            title={sortPath.trim() ? 'Chiều sắp xếp' : 'Điền field sort trước'}
+            onChange={(e) => setSortDir(e.target.value as QuickSortDir)}
+          >
+            <option value="desc">↓ giảm dần (mới nhất trước)</option>
+            <option value="asc">↑ tăng dần</option>
+          </select>
         </label>
       </div>
 

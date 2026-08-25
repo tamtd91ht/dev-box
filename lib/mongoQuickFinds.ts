@@ -41,6 +41,15 @@ export interface QuickFindField {
   type: QuickFieldType;
 }
 
+export type QuickSortDir = 'asc' | 'desc';
+
+/** Sắp xếp kết quả — TUỲ CHỌN. Không khai = giữ thứ tự tự nhiên của Mongo. */
+export interface QuickFindSort {
+  /** Field path để sort, e.g. "created_at". */
+  path: string;
+  dir: QuickSortDir;
+}
+
 export interface MongoQuickFind {
   id: string;
   /** Friendly button name, e.g. "Tìm tenant". */
@@ -52,6 +61,8 @@ export interface MongoQuickFind {
   fields: QuickFindField[];
   /** Page size when running (server clamps to ≤200). */
   limit: number;
+  /** Optional — sort kết quả theo một field. */
+  sort?: QuickFindSort;
 }
 
 function isField(v: unknown): v is QuickFindField {
@@ -73,6 +84,15 @@ function isQuickFind(v: unknown): v is MongoQuickFind {
   );
 }
 
+/** Sort hợp lệ thì giữ, còn lại (thiếu path, dir lạ, tay sửa file hỏng) coi như không sort. */
+function sanitizeSort(v: unknown): QuickFindSort | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const s = v as Record<string, unknown>;
+  const path = typeof s.path === 'string' ? s.path.trim() : '';
+  if (!path || (s.dir !== 'asc' && s.dir !== 'desc')) return undefined;
+  return { path, dir: s.dir };
+}
+
 /** Read all presets (never throws — returns [] on any parse/storage error). */
 export function loadQuickFinds(): MongoQuickFind[] {
   if (typeof window === 'undefined') return [];
@@ -81,7 +101,11 @@ export function loadQuickFinds(): MongoQuickFind[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed)
-      ? parsed.filter(isQuickFind).map((p) => ({ ...p, limit: Number.isInteger(p.limit) && p.limit > 0 ? Math.min(p.limit, 200) : 50 }))
+      ? parsed.filter(isQuickFind).map((p) => ({
+          ...p,
+          limit: Number.isInteger(p.limit) && p.limit > 0 ? Math.min(p.limit, 200) : 50,
+          sort: sanitizeSort(p.sort),
+        }))
       : [];
   } catch {
     return [];
@@ -122,6 +146,12 @@ export function removeQuickFind(id: string): MongoQuickFind[] {
   const list = loadQuickFinds().filter((p) => p.id !== id);
   save(list);
   return list;
+}
+
+/** Sort EJSON cho find — '' khi preset không khai sort (giữ thứ tự tự nhiên). */
+export function buildQuickSort(sort?: QuickFindSort): string {
+  if (!sort?.path?.trim()) return '';
+  return JSON.stringify({ [sort.path.trim()]: sort.dir === 'desc' ? -1 : 1 });
 }
 
 // ── Run-time filter builder ────────────────────────────────────────────────
