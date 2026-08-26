@@ -589,6 +589,184 @@ export default function LinkViewer({
     };
   }, [onOpenNewTab, armNewTab]);
 
+  // ── DevTools dock trong khung, như Chrome ────────────────────────────────
+  // `<webview>.openDevTools()` LUÔN bung cửa sổ rời (Electron ép 'detach' cho
+  // guest webview) — xem rất bất tiện. Frontend DevTools cũng chỉ là một trang
+  // web nên dock được — nhưng chỗ ở của nó KHÔNG thể là một <webview> khác
+  // (Chromium cấm guest view làm devtools, electron#14095): main process nuôi
+  // frontend trong một WebContentsView đặt ĐÈ lên cửa sổ, còn component này chỉ
+  // vẽ pane (nền + thanh kéo + nút ✕) rồi báo rect của nó cho main
+  // ('devtools:open' / 'devtools:bounds'). F12 / chuột phải → Inspect bấm TRONG
+  // guest đi đường main → 'devtools:request' → đúng viewer này claim rồi mở
+  // pane (xem requestEmbeddedDevTools trong electron/main.cjs).
+  const devtoolsBodyRef = useRef<HTMLDivElement | null>(null);
+  const [devtools, setDevtools] = useState(false);
+  const [devtoolsH, setDevtoolsH] = useState(340); // chiều cao khi neo ĐÁY
+  const [devtoolsW, setDevtoolsW] = useState(460); // bề rộng khi neo TRÁI/PHẢI
+  /** Vị trí neo DevTools như Chrome: đáy | trái | phải. Nhớ qua localStorage —
+   *  đây là sở thích cá nhân lặp lại mỗi lần mở, không phải trạng thái tạm. */
+  const [devtoolsDock, setDevtoolsDock] = useState<'bottom' | 'left' | 'right'>('bottom');
+  const [devtoolsDrag, setDevtoolsDrag] = useState(false);
+  const DEFAULT_H = 340;
+  const DEFAULT_W = 460;
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem('devbox.devtools.dock');
+      if (v === 'bottom' || v === 'left' || v === 'right') setDevtoolsDock(v);
+    } catch { /* localStorage bị chặn — giữ mặc định 'bottom' */ }
+  }, []);
+
+  const setDock = useCallback((d: 'bottom' | 'left' | 'right') => {
+    setDevtoolsDock(d);
+    try { localStorage.setItem('devbox.devtools.dock', d); } catch { /* bỏ qua */ }
+  }, []);
+  /** Bản sao dạng ref cho devtoolsDrag — devtoolsRect đọc nó để khỏi đổi danh
+   *  tính callback (interval trong effect giữ closure cũ). */
+  const devtoolsDragRef = useRef(false);
+  /** Toạ độ "Inspect element" chờ pane mount + frontend nối xong mới dùng được. */
+  const inspectAt = useRef<{ x: number; y: number } | null>(null);
+  // Preload cũ chưa có cầu devtools → giữ nguyên hành vi cửa sổ rời như trước.
+  // typeof-guard vì Next vẫn prerender component 'use client' trên server.
+  const canDock = typeof window !== 'undefined' && Boolean(window.workspace?.devtoolsOpen);
+
+  /** Id webContents của guest; -1 khi chưa attach (getWebContentsId ném lỗi). */
+  const guestId = useCallback(() => {
+    try { return ref.current?.getWebContentsId() ?? -1; } catch { return -1; }
+  }, []);
+
+  /** Rect chỗ ở DevTools trong toạ độ cửa sổ; null = view phải ẨN: tab nền bị
+   *  đẩy offscreen (left âm), popup/modal đang cần nổi trên vùng webview (view
+   *  là native layer, DOM không che nổi — cùng lý do với data-popup-over-webview
+   *  của .ws-webview), hoặc đang kéo chiều cao (view nuốt mất pointermove). */
+  const devtoolsRect = useCallback(() => {
+    const el = devtoolsBodyRef.current;
+    if (!el || devtoolsDragRef.current) return null;
+    const r = el.getBoundingClientRect();
+    if (r.width < 40 || r.height < 40 || r.left < 0 || r.top < 0) return null;
+    const html = document.documentElement;
+    if (html.hasAttribute('data-popup-over-webview') || html.hasAttribute('data-modal-over-webview')) return null;
+    return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
+  }, []);
+
+  const openDevtools = useCallback((point?: { x: number; y: number }) => {
+    if (!canDock) {
+      try { ref.current?.openDevTools(); } catch { /* guest chưa sẵn sàng */ }
+      return;
+    }
+    inspectAt.current = point ?? null;
+    setDevtools(true);
+  }, [canDock]);
+
+  /** Đóng = chỉ hạ cờ; effect dưới lo gọi devtoolsClose khi cờ tắt/unmount. */
+  const closeDevtools = useCallback(() => setDevtools(false), []);
+
+  // Pane vừa mount → nhờ main dựng WebContentsView tại rect của pane, rồi BÁM
+  // THEO layout: kéo chiều cao, resize cửa sổ, ẩn tab (đẩy offscreen), popup
+  // cần nổi lên… không có một sự kiện nào gộp đủ các trường hợp đó, nên poll
+  // rect — một lần đọc getBoundingClientRect mỗi nhịp, chỉ gửi IPC khi đổi.
+  useEffect(() => {
+    if (!devtools) return;
+    const id = guestId();
+    if (id < 0) { setDevtools(false); return; }
+    const point = inspectAt.current;
+    inspectAt.current = null;
+    void window.workspace?.devtoolsOpen?.(id, devtoolsRect(), point);
+    let last = '';
+    const timer = setInterval(() => {
+      const rect = devtoolsRect();
+      const key = JSON.stringify(rect);
+      if (key === last) return;
+      last = key;
+      window.workspace?.devtoolsBounds?.(id, rect);
+    }, 250);
+    return () => {
+      clearInterval(timer);
+      // Chạy cả khi cờ tắt lẫn khi unmount cả viewer (đóng tab) — main đã dọn
+      // rồi thì gọi lần nữa vô hại.
+      void window.workspace?.devtoolsClose?.(id);
+    };
+  }, [devtools, guestId, devtoolsRect]);
+
+  // Đổi vị trí neo → gửi rect mới NGAY, không chờ vòng poll 250ms (đổi dock mà
+  // view nhảy trễ nửa giây nhìn rất khựng). Không đụng lúc kéo — kéo tự quản.
+  useEffect(() => {
+    if (!devtools || devtoolsDragRef.current) return;
+    const id = guestId();
+    if (id >= 0) window.workspace?.devtoolsBounds?.(id, devtoolsRect());
+  }, [devtoolsDock, devtools, guestId, devtoolsRect]);
+
+  // Yêu cầu mở từ main (F12/Inspect trong guest) + tin DevTools đã đóng (nút ✕
+  // của chính frontend, hoặc guest chết) — chỉ nhận đúng guest của viewer này.
+  useEffect(() => {
+    const ws = window.workspace;
+    if (!ws?.onDevToolsRequest) return;
+    const offReq = ws.onDevToolsRequest((req) => {
+      if (req.id < 0 || req.id !== guestId()) return;
+      ws.devtoolsClaim?.(req.id);
+      openDevtools(
+        typeof req.x === 'number' && typeof req.y === 'number'
+          ? { x: req.x, y: req.y }
+          : undefined,
+      );
+    });
+    const offClosed = ws.onDevToolsClosed?.((id) => {
+      if (id >= 0 && id === guestId()) setDevtools(false);
+    });
+    return () => { offReq(); offClosed?.(); };
+  }, [guestId, openDevtools]);
+
+  /** Kéo mép trong của pane để đổi kích thước — có tấm phủ trong suốt lúc kéo,
+   *  không thì con trỏ rơi vào <webview> là chuột "mất tích" (xem Splitter).
+   *  View DevTools cũng phải ẨN suốt lúc kéo: nó là native layer, tấm phủ DOM
+   *  không chặn được chuột đi vào nó (devtoolsRect trả null khi dragRef bật;
+   *  gửi ngay một nhịp null để không phải đợi vòng poll).
+   *
+   *  Neo ĐÁY: kéo mép TRÊN đổi chiều cao. Neo TRÁI: kéo mép PHẢI đổi bề rộng.
+   *  Neo PHẢI: kéo mép TRÁI đổi bề rộng (chiều tăng ngược lại). */
+  const startDevtoolsDrag = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const dock = devtoolsDock;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startH = devtoolsH;
+    const startW = devtoolsW;
+    setDevtoolsDrag(true);
+    devtoolsDragRef.current = true;
+    const id = guestId();
+    if (id >= 0) window.workspace?.devtoolsBounds?.(id, null);
+    const move = (ev: PointerEvent) => {
+      if (dock === 'bottom') {
+        const max = Math.max(160, window.innerHeight - 220);
+        setDevtoolsH(Math.min(max, Math.max(120, startH + (startY - ev.clientY))));
+      } else {
+        const max = Math.max(280, window.innerWidth - 260);
+        const delta = dock === 'left' ? ev.clientX - startX : startX - ev.clientX;
+        setDevtoolsW(Math.min(max, Math.max(240, startW + delta)));
+      }
+    };
+    const up = () => {
+      setDevtoolsDrag(false);
+      devtoolsDragRef.current = false; // vòng poll kế tiếp tự hiện view ở rect mới
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, [devtoolsDock, devtoolsH, devtoolsW, guestId]);
+
+  // Guest nhường chỗ cho pane theo hướng neo: đáy → thụt `bottom`, trái → thụt
+  // `left`, phải → thụt `right`. (.ws-webview vốn inset:0, chỉ cần đè một cạnh.)
+  const dtInset = !devtools
+    ? undefined
+    : devtoolsDock === 'bottom'
+      ? { bottom: devtoolsH }
+      : devtoolsDock === 'left'
+        ? { left: devtoolsW }
+        : { right: devtoolsW };
+  const dtPaneStyle = devtoolsDock === 'bottom' ? { height: devtoolsH } : { width: devtoolsW };
+  const dtCursor = devtoolsDock === 'bottom' ? 'row-resize' : 'col-resize';
+
   const webviewAttrs: Record<string, string> = { allowpopups: 'true' };
   if (CHROME_UA) webviewAttrs.useragent = CHROME_UA;
 
@@ -686,8 +864,8 @@ export default function LinkViewer({
               </button>
             )}
             <button
-              onClick={() => { try { ref.current?.openDevTools(); } catch { /* guest chưa sẵn sàng */ } }}
-              title="DevTools của trang đang xem (Network/Console/Elements) — hoặc F12 / chuột phải → Inspect ngay trong trang"
+              onClick={() => { if (devtools) closeDevtools(); else openDevtools(); }}
+              title="DevTools của trang đang xem, dock trong khung — hoặc F12 / chuột phải → Inspect ngay trong trang"
             >
               🔧
             </button>
@@ -720,27 +898,58 @@ export default function LinkViewer({
         <div className="ws-canvas">
           {/* partition MUST be an initial attribute — it cannot change after
               attach; caller remounts (key) khi đổi profile. */}
+          {/* DevTools mở → guest nhường một cạnh khung cho pane (dtInset đè lên
+              inset:0 của .ws-webview theo hướng neo). Overlay tải trang cũng
+              dừng ở mép pane — điều hướng khi đang soi không che mất DevTools. */}
           <webview
             ref={ref as unknown as React.Ref<HTMLElement>}
             className="ws-webview"
             src={url}
             partition={partition}
+            style={dtInset}
             {...webviewAttrs}
           />
           {status === 'loading' && (
-            <div className="ws-overlay">
+            <div className="ws-overlay" style={dtInset}>
               <div className="ws-spinner" />
               <p>Đang tải {name}…</p>
             </div>
           )}
           {status === 'failed' && (
-            <div className="ws-overlay">
+            <div className="ws-overlay" style={dtInset}>
               <div className="ws-overlay-ico">🔌</div>
               <h3>Không tải được</h3>
               <p className="ws-muted">{failInfo}</p>
               <button className="ws-retry" onClick={retry}>Thử lại</button>
             </div>
           )}
+          {devtools && (
+            <div className="ws-devtools" data-dock={devtoolsDock} style={dtPaneStyle}>
+              <div
+                className="ws-devtools-grip"
+                onPointerDown={startDevtoolsDrag}
+                onDoubleClick={() => (devtoolsDock === 'bottom' ? setDevtoolsH(DEFAULT_H) : setDevtoolsW(DEFAULT_W))}
+                title="Kéo để đổi kích thước · đúp chuột về mặc định"
+              />
+              <div className="ws-devtools-bar">
+                <span className="ws-devtools-title" title={liveUrl}>
+                  DevTools · {hostOf(liveUrl)}
+                </span>
+                {/* Chọn vị trí neo, như menu ⋮ của Chrome (Dock side). */}
+                <span className="ws-devtools-dock" role="group" aria-label="Vị trí neo DevTools">
+                  <button className={devtoolsDock === 'left' ? 'on' : ''} onClick={() => setDock('left')} title="Neo bên trái">◧</button>
+                  <button className={devtoolsDock === 'bottom' ? 'on' : ''} onClick={() => setDock('bottom')} title="Neo bên dưới">⬓</button>
+                  <button className={devtoolsDock === 'right' ? 'on' : ''} onClick={() => setDock('right')} title="Neo bên phải">◨</button>
+                </span>
+                <button className="ws-devtools-x" onClick={closeDevtools} title="Đóng DevTools (F12)">✕</button>
+              </div>
+              {/* Chỗ ở của frontend: main process đặt một WebContentsView đè
+                  đúng rect của div này (đo + gửi ở effect devtools phía trên).
+                  Div chỉ là nền lót — thấy nó tức là view đang ẩn/chưa nối. */}
+              <div ref={devtoolsBodyRef} className="ws-devtools-body" />
+            </div>
+          )}
+          {devtoolsDrag && <div className="ws-devtools-veil" aria-hidden style={{ cursor: dtCursor }} />}
         </div>
       </div>
     </div>

@@ -17,7 +17,7 @@
 // It knows NOTHING about Zalo specifically — plugins are declared in the
 // renderer (lib/workspace/plugins.ts). Nothing here is hardcoded per website.
 
-const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard, net, dialog } = require('electron');
+const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard, net, dialog, webContents, WebContentsView } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -1115,7 +1115,9 @@ function wireWebviewHardening(win) {
     });
 
     // DevTools cho guest — debug trang đang xem (Network/Console/Elements):
-    //   · F12 (hoặc Ctrl+Shift+I) NGAY TRONG webview → toggle DevTools của guest
+    //   · F12 (hoặc Ctrl+Shift+I) NGAY TRONG webview → DevTools của guest, DOCK
+    //     đáy khung như Chrome khi host có pane (LinkViewer); fallback cửa sổ
+    //     rời cho guest không có pane — xem requestEmbeddedDevTools.
     //     (phím trong guest không bubble ra host nên phải bắt ở before-input-event).
     //   · Chuột phải → menu Cut/Copy/Paste + "Inspect element" đúng vị trí click
     //     (webview mặc định không có context menu nào).
@@ -1128,7 +1130,12 @@ function wireWebviewHardening(win) {
     guest.on('before-input-event', (event, input) => {
       if (input.type !== 'keyDown') return;
       if (input.key === 'F12' || (input.control && input.shift && (input.key === 'I' || input.key === 'i'))) {
-        guest.toggleDevTools();
+        // (F12 bấm khi con trỏ Ở TRONG frontend DevTools được bắt riêng trên
+        // webContents của view — xem 'devtools:open'; frontend không phải
+        // webview nên không đi qua handler này.)
+        if (closeDockedDevTools(guest)) return; // đang dock → F12 là đóng
+        if (guest.isDevToolsOpened()) guest.closeDevTools(); // đang mở RỜI (fallback cũ)
+        else requestEmbeddedDevTools(win, guest);
         return;
       }
       const shortcut = appShortcutOf(input);
@@ -1155,7 +1162,16 @@ function wireWebviewHardening(win) {
         }, { type: 'separator' }] : []),
         {
           label: '🔍 Inspect element (DevTools)',
-          click: () => { guest.inspectElement(params.x, params.y); },
+          click: () => {
+            // DevTools đang mở (dock hay rời) → nhảy thẳng tới element; chưa mở
+            // → nhờ host dock trong khung, toạ độ đi kèm để inspect sau khi attach.
+            // isDevToolsOpened() mù với frontend ngoài — dock phải tra map riêng.
+            if (dockedDevTools.has(guest.id) || guest.isDevToolsOpened()) {
+              try { guest.inspectElement(params.x, params.y); } catch { /* guest vừa chết */ }
+              return;
+            }
+            requestEmbeddedDevTools(win, guest, { x: params.x, y: params.y });
+          },
         },
       ]);
       menu.popup();
@@ -1896,6 +1912,152 @@ ipcMain.handle('workspace:focusHost', (evt) => {
     const win = BrowserWindow.fromWebContents(evt.sender);
     if (win) win.focus();
     evt.sender.focus();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
+// ── DevTools dock TRONG khung, như Chrome ──────────────────────────────────
+//
+// `openDevTools()` trên guest <webview> LUÔN bung CỬA SỔ RỜI: Electron ép dock
+// state 'detach' cho type webview, tham số mode vô dụng. Muốn dock đáy khung
+// thì tự nuôi frontend qua setDevToolsWebContents — nhưng chỗ ở KHÔNG THỂ là
+// một <webview> khác: Chromium cấm guest view làm devtools (electron#14095;
+// đã đo — frontend tải ra vỏ, không bao giờ nối target, devtools-opened không
+// bắn). Chỗ ở phải là WebContentsView do main process đặt ĐÈ lên cửa sổ, tại
+// đúng rect của pane mà renderer vẽ; renderer chỉ vẽ khung + thanh kéo + gửi
+// rect, main lo view + nối frontend (đã xác minh bằng harness: Elements/
+// inspectElement chạy đủ).
+//
+// Luồng F12 / chuột phải → Inspect trong guest:
+//   main KHÔNG mở ngay → gửi 'devtools:request' cho host page → LinkViewer nào
+//   nhận ra đúng webContentsId của mình thì 'devtools:claim' rồi dựng pane và
+//   gọi 'devtools:open' kèm rect. Không ai claim trong 400ms (guest thuộc
+//   WorkspaceView — Zalo/Telegram… không có pane dock) → fallback cửa sổ rời.
+//
+// LƯU Ý isDevToolsOpened(): với frontend NGOÀI (setDevToolsWebContents) nó trả
+// false vĩnh viễn (đã đo) — trạng thái dock phải tự theo dõi (dockedDevTools).
+const pendingDevToolsReq = new Map(); // guest webContents.id → timer fallback
+const dockedDevTools = new Map(); // guest webContents.id → { view, host, win, undock }
+
+/** Ép rect từ renderer về số nguyên an toàn rồi đặt cho view; null = ẩn
+ *  (tab nền, popup/modal cần nổi trên vùng webview, hoặc đang kéo chiều cao —
+ *  view là native layer nên DOM không che nó được, chỉ có ẩn đi). */
+function applyDevToolsBounds(view, rect) {
+  if (!rect) { view.setVisible(false); return; }
+  const n = (v, lo) => Math.max(lo, Math.round(Number(v) || 0));
+  view.setBounds({ x: n(rect.x, 0), y: n(rect.y, 0), width: n(rect.width, 1), height: n(rect.height, 1) });
+  view.setVisible(true);
+}
+
+/** Đóng DevTools đang DOCK của guest. Đường đóng thật là huỷ webContents của
+ *  view chỗ ở (frontend chết là phiên devtools chết theo) — closeDevTools()
+ *  của Electron không đụng được frontend ngoài. Trả false nếu không dock. */
+function closeDockedDevTools(guest) {
+  const dock = dockedDevTools.get(guest.id);
+  if (!dock) return false;
+  dockedDevTools.delete(guest.id);
+  guest.removeListener('devtools-closed', dock.undock);
+  guest.removeListener('destroyed', dock.undock);
+  try { if (!guest.isDestroyed()) guest.closeDevTools(); } catch { /* đã đóng */ }
+  try { if (!dock.win.isDestroyed()) dock.win.contentView.removeChildView(dock.view); } catch { /* cửa sổ đang đóng */ }
+  try { dock.view.webContents.close(); } catch { /* đã huỷ */ }
+  if (!dock.host.isDestroyed()) dock.host.send('devtools:closed', guest.id);
+  log('DevTools', `undock · wc#${guest.id}`);
+  return true;
+}
+
+function requestEmbeddedDevTools(win, guest, point) {
+  if (guest.isDestroyed()) return;
+  const fallback = () => {
+    try {
+      if (guest.isDestroyed()) return;
+      if (point) guest.inspectElement(point.x, point.y);
+      else guest.openDevTools();
+      log('DevTools', `detach fallback · wc#${guest.id}`);
+    } catch { /* guest vừa chết */ }
+  };
+  if (win.isDestroyed()) { fallback(); return; }
+  const id = guest.id;
+  clearTimeout(pendingDevToolsReq.get(id));
+  win.webContents.send('devtools:request', { id, ...(point || {}) });
+  pendingDevToolsReq.set(id, setTimeout(() => {
+    pendingDevToolsReq.delete(id);
+    fallback();
+  }, 400));
+}
+
+ipcMain.on('devtools:claim', (_evt, id) => {
+  clearTimeout(pendingDevToolsReq.get(id));
+  pendingDevToolsReq.delete(id);
+});
+
+ipcMain.handle('devtools:open', (evt, targetId, rect, point) => {
+  try {
+    const target = webContents.fromId(Number(targetId));
+    if (!target || target.isDestroyed()) return { ok: false, error: 'gone' };
+    // Chỉ nhận guest thuộc ĐÚNG trang đang gọi — renderer không được trỏ vào
+    // webContents tùy ý (cửa sổ khác, main window…).
+    if (target.hostWebContents !== evt.sender) return { ok: false, error: 'not your guest' };
+    const win = BrowserWindow.fromWebContents(evt.sender);
+    if (!win || win.isDestroyed()) return { ok: false, error: 'no window' };
+
+    const existing = dockedDevTools.get(target.id);
+    if (existing) { applyDevToolsBounds(existing.view, rect); return { ok: true } }
+
+    if (target.isDevToolsOpened()) target.closeDevTools(); // đang mở rời từ trước → dọn
+    const view = new WebContentsView({
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    });
+    win.contentView.addChildView(view);
+    applyDevToolsBounds(view, rect);
+
+    const undock = () => closeDockedDevTools(target);
+    dockedDevTools.set(target.id, { view, host: evt.sender, win, undock });
+    target.once('devtools-closed', undock); // nút ✕ của chính frontend DevTools
+    target.once('destroyed', undock); // đóng tab → dọn view mồ côi
+
+    // F12 / Ctrl+Shift+I bấm khi con trỏ đang Ở TRONG frontend = đóng DevTools
+    // của trang đang soi — đúng thói quen Chrome, và tránh devtools-của-devtools.
+    view.webContents.on('before-input-event', (e, input) => {
+      if (input.type !== 'keyDown') return;
+      if (input.key === 'F12' || (input.control && input.shift && (input.key === 'I' || input.key === 'i'))) {
+        e.preventDefault();
+        closeDockedDevTools(target);
+      }
+    });
+
+    // Inspect element: phải đợi frontend sẵn sàng — gọi ngay sau openDevTools
+    // thì lệnh rơi vào khoảng trống lúc devtools:// còn đang tải.
+    if (point && typeof point.x === 'number' && typeof point.y === 'number') {
+      target.once('devtools-opened', () => {
+        try { target.inspectElement(point.x, point.y); } catch { /* đóng ngay sau khi mở */ }
+      });
+    }
+    target.setDevToolsWebContents(view.webContents);
+    target.openDevTools();
+    log('DevTools', `dock · wc#${target.id} → view#${view.webContents.id}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
+// Pane đổi chỗ/chiều cao (kéo grip, resize cửa sổ, chuyển tab, popup cần nổi
+// lên) → renderer gửi rect mới; null = ẩn view. Không cần trả lời.
+ipcMain.on('devtools:bounds', (evt, targetId, rect) => {
+  const dock = dockedDevTools.get(Number(targetId));
+  if (!dock || dock.host !== evt.sender) return;
+  applyDevToolsBounds(dock.view, rect || null);
+});
+
+ipcMain.handle('devtools:close', (evt, targetId) => {
+  try {
+    const target = webContents.fromId(Number(targetId));
+    if (!target || target.isDestroyed()) return { ok: true };
+    if (target.hostWebContents !== evt.sender) return { ok: false, error: 'not your guest' };
+    if (!closeDockedDevTools(target)) target.closeDevTools();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err && err.message };

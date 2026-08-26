@@ -127,6 +127,30 @@ contextBridge.exposeInMainWorld('workspace', {
    *  focus cửa sổ đang có.
    *  → { ok: true, focused? } | { ok: false, error } */
   openTerminalWindow: (payload) => ipcRenderer.invoke('workspace:openTerminalWindow', payload),
+  /** DevTools dock trong khung (như Chrome) — xem cụm 'devtools:*' trong
+   *  main.cjs. Main hỏi host khi F12/Inspect bấm trong guest; LinkViewer đúng
+   *  guest claim rồi vẽ pane và gọi devtoolsOpen kèm rect — frontend sống trong
+   *  WebContentsView do main đặt đè đúng rect đó. */
+  onDevToolsRequest: (cb) => {
+    const handler = (_evt, req) => cb(req);
+    ipcRenderer.on('devtools:request', handler);
+    return () => ipcRenderer.removeListener('devtools:request', handler);
+  },
+  /** DevTools vừa đóng (nút ✕ của frontend, F12, guest chết) → host giấu pane. */
+  onDevToolsClosed: (cb) => {
+    const handler = (_evt, id) => cb(id);
+    ipcRenderer.on('devtools:closed', handler);
+    return () => ipcRenderer.removeListener('devtools:closed', handler);
+  },
+  /** Nhận yêu cầu 'devtools:request' về mình — hủy fallback cửa sổ rời 400ms. */
+  devtoolsClaim: (id) => ipcRenderer.send('devtools:claim', id),
+  /** Mở DevTools dock cho guest tại rect (toạ độ cửa sổ); point là toạ độ
+   *  "Inspect element" nếu đi từ menu chuột phải. → { ok } | { ok:false, error } */
+  devtoolsOpen: (targetId, rect, point) =>
+    ipcRenderer.invoke('devtools:open', targetId, rect, point || null),
+  /** Pane dời chỗ/đổi cỡ → rect mới; null = ẩn view (tab nền, popup nổi lên). */
+  devtoolsBounds: (targetId, rect) => ipcRenderer.send('devtools:bounds', targetId, rect),
+  devtoolsClose: (targetId) => ipcRenderer.invoke('devtools:close', targetId),
   /** Zalo API (thử nghiệm): đọc cookie HttpOnly (zpsid/zpw_sek/…) của một phiên
    *  zaloapi-*. Renderer không đọc được cookie HttpOnly qua document.cookie, nên
    *  main process đọc hộ qua session.cookies.get.

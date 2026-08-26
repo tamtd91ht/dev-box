@@ -204,6 +204,26 @@ export interface WorkspaceBridge {
    *  (`focused: true`). Optional: preload cũ chưa expose. */
   openTerminalWindow?(payload: { id: string; title?: string }):
     Promise<{ ok: boolean; focused?: boolean; error?: string }>;
+  /** DevTools dock đáy khung LinkViewer như Chrome, thay cho cửa sổ rời mà
+   *  Electron ép cho guest <webview>. Main gửi yêu cầu khi F12/Inspect bấm
+   *  trong guest; LinkViewer đúng webContentsId claim (hủy fallback cửa sổ rời)
+   *  rồi vẽ pane và gọi devtoolsOpen kèm rect của pane — frontend sống trong
+   *  một WebContentsView do main đặt đè đúng rect đó (chỗ ở KHÔNG thể là
+   *  <webview>: Chromium cấm guest view làm devtools, electron#14095).
+   *  Optional: preload cũ chưa expose → giữ hành vi openDevTools() rời. */
+  onDevToolsRequest?(cb: (req: { id: number; x?: number; y?: number }) => void): () => void;
+  onDevToolsClosed?(cb: (id: number) => void): () => void;
+  devtoolsClaim?(id: number): void;
+  devtoolsOpen?(
+    targetId: number,
+    rect: { x: number; y: number; width: number; height: number } | null,
+    point?: { x: number; y: number } | null,
+  ): Promise<{ ok: boolean; error?: string }>;
+  devtoolsBounds?(
+    targetId: number,
+    rect: { x: number; y: number; width: number; height: number } | null,
+  ): void;
+  devtoolsClose?(targetId: number): Promise<{ ok: boolean; error?: string }>;
   /** Zalo API (thử nghiệm): đọc cookie HttpOnly của một phiên `zaloapi-*` —
    *  zpsid/zpw_sek/… mà renderer không thấy qua document.cookie. Optional:
    *  preload cũ chưa expose. */
@@ -235,6 +255,9 @@ export interface WebviewElement extends HTMLElement {
   loadURL(url: string): Promise<void>;
   openDevTools(): void;
   closeDevTools(): void;
+  /** Id webContents của guest — chìa khoá ghép cặp với các kênh devtools:*.
+   *  Ném lỗi khi guest chưa attach — caller phải try/catch. */
+  getWebContentsId(): number;
   /** Run code in the guest page and resolve with its result. */
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
   /** Zoom của guest (1 = 100%). Là thuộc tính của guest → set lại sau mỗi lần

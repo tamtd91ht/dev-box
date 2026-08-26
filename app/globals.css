@@ -3780,6 +3780,52 @@ html[data-popup-over-webview] .ws-webview {
    không lộ ra một ô đen thô. */
 html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
 
+/* DevTools dock TRONG khung (LinkViewer) — thay cho cửa sổ rời mà Electron mặc
+   định bung ra với guest <webview>. Neo được ba hướng như Chrome: đáy | trái |
+   phải (data-dock). Frontend sống trong một WebContentsView do main đặt đè lên
+   rect của .ws-devtools-body. */
+.ws-devtools {
+  position: absolute; z-index: 5;
+  display: flex; flex-direction: column;
+  background: var(--bg-1);
+}
+.ws-devtools[data-dock="bottom"] { left: 0; right: 0; bottom: 0; border-top: 1px solid var(--glass-brd); }
+.ws-devtools[data-dock="left"]   { left: 0; top: 0; bottom: 0; border-right: 1px solid var(--glass-brd); }
+.ws-devtools[data-dock="right"]  { right: 0; top: 0; bottom: 0; border-left: 1px solid var(--glass-brd); }
+
+/* Tay kéo đổi kích thước — cưỡi lên mép TRONG (giáp phần webview) để vùng bấm
+   đủ rộng mà không tốn thêm một dải layout. Hướng tuỳ vị trí neo. */
+.ws-devtools-grip { position: absolute; z-index: 7; }
+.ws-devtools[data-dock="bottom"] .ws-devtools-grip { top: -4px; left: 0; right: 0; height: 9px; cursor: row-resize; }
+.ws-devtools[data-dock="left"]   .ws-devtools-grip { right: -4px; top: 0; bottom: 0; width: 9px; cursor: col-resize; }
+.ws-devtools[data-dock="right"]  .ws-devtools-grip { left: -4px; top: 0; bottom: 0; width: 9px; cursor: col-resize; }
+.ws-devtools-grip:hover { background: var(--glass-brd); }
+
+.ws-devtools-bar {
+  display: flex; align-items: center; gap: 6px; flex: none;
+  padding: 3px 6px 3px 8px; font-size: 11px; color: var(--muted);
+  border-bottom: 1px solid var(--glass-brd);
+}
+.ws-devtools-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Đè hẳn nút gradient toàn cục: nút trên thanh DevTools phải phẳng, không glow,
+   không nhún — nếu không chúng nổi lên như nút hành động chính. */
+.ws-devtools-bar button {
+  flex: none; border: 0; background: none; color: var(--muted);
+  cursor: pointer; font-size: 13px; padding: 2px 5px; line-height: 1;
+  border-radius: 6px; box-shadow: none;
+}
+.ws-devtools-bar button:hover { color: var(--ink, currentColor); background: var(--glass-2); transform: none; box-shadow: none; }
+.ws-devtools-dock { display: inline-flex; gap: 1px; }
+.ws-devtools-dock button.on { color: var(--accent); background: var(--glass-2); }
+.ws-devtools-x { font-size: 12px !important; }
+/* Nền lót dưới WebContentsView của frontend — lộ ra lúc view đang ẩn (đang kéo,
+   popup nổi lên) để không hở một ô đen. */
+.ws-devtools-body { position: relative; flex: 1; min-height: 0; min-width: 0; background: var(--bg-1); }
+/* Tấm phủ lúc kéo: không có nó thì con trỏ đi qua <webview> là chuột rơi vào
+   trang khách, thanh kéo đứng chết tại chỗ (cùng lý do với .split-veil). Con trỏ
+   (row/col-resize) đặt inline theo hướng neo. */
+.ws-devtools-veil { position: fixed; inset: 0; z-index: 9999; }
+
 /* Quét danh sách hội thoại (components/WorkspaceScan.tsx) — modal thường, nên
    nó nổi trên <webview> giống hộp thoại "Mở link ở đâu?". */
 .ws-scan { width: min(880px, 94vw); gap: 10px; }
