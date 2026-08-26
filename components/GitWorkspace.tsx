@@ -124,6 +124,10 @@ export default function GitWorkspace() {
   // diff rộng) nên dùng BIẾN RIÊNG — dùng chung '--split-rail' thì kéo bên này
   // lại đổi luôn bên kia, và biến CSS di truyền xuống con nên rất khó lần ra.
   const historySplit = useSplit({ varName: '--split-log', min: 220, max: 620, gap: 18 });
+  /** Split TRONG panel chi tiết commit: cột file (trái) | diff (phải). Tách
+   *  var riêng với hai split ngoài — biến CSS di truyền, trùng tên là cấp
+   *  trong ăn nhầm số của cấp ngoài (xem chú thích useSplit). */
+  const commitSplit = useSplit({ varName: '--split-cfiles', min: 200, max: 640, gap: 14 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   // ── Projects (named root folders) ───────────────────────────────────────────
   const [projects, setProjects] = useState<GitProject[]>([]);
@@ -191,6 +195,10 @@ export default function GitWorkspace() {
   const [commitFile, setCommitFile] = useState<string>('');
   const [commitDiff, setCommitDiff] = useState<string>('');
   const [commitDiffLoading, setCommitDiffLoading] = useState(false);
+  /** Hiện phần mô tả (body) của commit message. Một cờ chung cho cả phiên chứ
+   *  không theo từng commit: ai đã gập là đang muốn dồn chỗ cho diff, mở commit
+   *  khác cũng vẫn muốn thế. */
+  const [commitBodyOpen, setCommitBodyOpen] = useState(true);
   // Per-repo overview (state/ahead/behind) shared by the repo dropdown and the
   // all-repos panel. Keyed by repo path. Populated lazily on dropdown open / check.
   const [overview, setOverview] = useState<Record<string, RepoOverview>>({});
@@ -1159,8 +1167,13 @@ export default function GitWorkspace() {
             )}
           </div>
 
-          {/* Phải: file của commit + patch của file đang chọn */}
-          <div className="panel">
+          {/* Phải: chi tiết commit. Bố cục CHIA CỘT chứ không xếp chồng —
+              bản cũ xếp dọc (message → danh sách file → diff) nên diff luôn bị
+              đẩy xuống đáy, còn chưa đến 1/4 màn hình khi commit đụng ~10 file.
+              Giờ: header + mô tả (gập được) chiếm dải mỏng trên cùng, phần còn
+              lại là file (trái) | diff (phải) — diff ăn gần trọn chiều cao,
+              đúng bố cục GitHub Desktop/Fork. */}
+          <div className="panel commit-pane">
             {commitLoading ? (
               <div className="empty" style={{ padding: '24px 8px' }}>
                 <div className="empty-ico">⌛</div>
@@ -1184,27 +1197,34 @@ export default function GitWorkspace() {
                     {openCommit.shortHash}
                   </code>
                 </div>
-                <div className="small" style={{ color: 'var(--muted)', marginTop: 2 }}>
-                  {openCommit.author} · {openCommit.relDate} · {fmtCommitDate(openCommit.date)}
+                <div
+                  className="small"
+                  style={{ color: 'var(--muted)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 8 }}
+                >
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    {openCommit.author} · {openCommit.relDate} · {fmtCommitDate(openCommit.date)}
+                  </span>
+                  {openCommit.body && (
+                    <button
+                      className={`ghost sm${commitBodyOpen ? ' on' : ''}`}
+                      onClick={() => setCommitBodyOpen((v) => !v)}
+                      title={commitBodyOpen
+                        ? 'Gập mô tả commit — nhường chỗ cho diff'
+                        : 'Hiện mô tả đầy đủ của commit'}
+                    >
+                      {commitBodyOpen ? '⌃' : '⌄'} Mô tả
+                    </button>
+                  )}
                 </div>
 
-                {openCommit.body && (
+                {openCommit.body && commitBodyOpen && (
                   <pre
                     className="code"
-                    style={{ marginTop: 10, maxHeight: '22vh', overflow: 'auto', whiteSpace: 'pre-wrap' }}
+                    style={{ marginTop: 8, maxHeight: '16vh', overflow: 'auto', whiteSpace: 'pre-wrap', flex: 'none' }}
                   >
                     {openCommit.body}
                   </pre>
                 )}
-
-                <div className="status-line" style={{ marginTop: 12 }}>
-                  <h3 style={{ margin: 0, flex: 1, fontSize: 13 }}>
-                    {openCommit.files.length} file thay đổi
-                  </h3>
-                  <span className="small" style={{ color: 'var(--muted)' }}>
-                    {churnSummary(openCommit.files)}
-                  </span>
-                </div>
 
                 {openCommit.files.length === 0 ? (
                   <div className="empty" style={{ padding: '18px 8px' }}>
@@ -1215,38 +1235,55 @@ export default function GitWorkspace() {
                     </p>
                   </div>
                 ) : (
-                  <div className="commit-files">
-                    {openCommit.files.map((f) => (
-                      <button
-                        key={f.path}
-                        type="button"
-                        className={`commit-file${commitFile === f.path ? ' active' : ''}`}
-                        onClick={() => setCommitFile(f.path)}
-                        title={f.oldPath ? `${f.oldPath}  →  ${f.path}` : f.path}
-                      >
-                        <span className={`cf-badge st-${f.status}`}>{f.status}</span>
-                        <span className="cf-path">
-                          {f.oldPath && <span className="cf-old">{f.oldPath} → </span>}
-                          {f.path}
+                  <div className="commit-detail" ref={commitSplit.ref} style={commitSplit.style}>
+                    <div className="commit-detail-files">
+                      <div className="status-line">
+                        <h3 style={{ margin: 0, flex: 1, fontSize: 13 }}>
+                          {openCommit.files.length} file thay đổi
+                        </h3>
+                        <span className="small" style={{ color: 'var(--muted)' }}>
+                          {churnSummary(openCommit.files)}
                         </span>
-                        <span className="cf-churn small">{churnLabel(f)}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {commitFile && (
-                  <>
-                    {commitDiffLoading ? (
-                      <div className="status-line" style={{ marginTop: 12 }}>
-                        <span className="small" style={{ color: 'var(--muted)' }}>đang tải diff…</span>
                       </div>
-                    ) : (
-                      /* Tên file do DiffView hiện — bỏ <h3> ở đây, nếu không cùng
-                         một đường dẫn hiện hai lần liền nhau. */
-                      <DiffView patch={commitDiff} path={commitFile} />
-                    )}
-                  </>
+                      <div className="commit-files">
+                        {openCommit.files.map((f) => (
+                          <button
+                            key={f.path}
+                            type="button"
+                            className={`commit-file${commitFile === f.path ? ' active' : ''}`}
+                            onClick={() => setCommitFile(f.path)}
+                            title={f.oldPath ? `${f.oldPath}  →  ${f.path}` : f.path}
+                          >
+                            <span className={`cf-badge st-${f.status}`}>{f.status}</span>
+                            <span className="cf-path">
+                              {f.oldPath && <span className="cf-old">{f.oldPath} → </span>}
+                              {f.path}
+                            </span>
+                            <span className="cf-churn small">{churnLabel(f)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="commit-detail-diff">
+                      {!commitFile ? (
+                        <div className="empty" style={{ padding: '24px 8px' }}>
+                          <div className="empty-ico">≡</div>
+                          <p className="small">Chọn một file bên trái để xem diff.</p>
+                        </div>
+                      ) : commitDiffLoading ? (
+                        <div className="empty" style={{ padding: '24px 8px' }}>
+                          <div className="empty-ico">⌛</div>
+                          <p className="small">đang tải diff…</p>
+                        </div>
+                      ) : (
+                        /* Tên file do DiffView hiện — bỏ <h3> ở đây, nếu không
+                           cùng một đường dẫn hiện hai lần liền nhau. */
+                        <DiffView patch={commitDiff} path={commitFile} />
+                      )}
+                    </div>
+                    <Splitter {...commitSplit.grip} />
+                  </div>
                 )}
               </>
             )}

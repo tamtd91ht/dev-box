@@ -983,9 +983,24 @@ label {
    còn lại nhường cho diff. Biến riêng để kéo bên này không đụng bên kia. */
 .layout-log { grid-template-columns: var(--split-log, 340px) minmax(0, 1fr); }
 
+/* ── Git · chi tiết commit (History) ──
+   Panel phải chia CỘT: file (trái) | diff (phải) — kiểu GitHub Desktop/Fork.
+   Bản cũ xếp dọc nên diff bị message + danh sách file đè xuống đáy, chỉ còn
+   chưa đến 1/4 màn hình.
+   flex:1 để ăn trọn chỗ trống khi panel cao (header đã thu gọn), nhưng PHẢI có
+   sàn min-height: khi header phía trên chưa gập, panel chỉ còn hơn trăm px —
+   min-height:0 đơn thuần làm cả vùng file|diff sập về 0 (đã đo). Có sàn thì
+   panel (overflow:auto sẵn từ .layout > .panel) tự cuộn, diff vẫn đọc được. */
+.commit-detail {
+  display: grid; grid-template-columns: var(--split-cfiles, 300px) minmax(0, 1fr);
+  gap: 14px; flex: 1; min-height: clamp(320px, 50vh, 680px); margin-top: 12px;
+}
+.commit-detail-files { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.commit-detail-diff { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
 .commit-files {
   display: flex; flex-direction: column; gap: 2px;
-  margin-top: 8px; max-height: 30vh; overflow: auto; padding-right: 4px;
+  margin-top: 6px; flex: 1; min-height: 0; overflow: auto; padding-right: 4px;
 }
 .commit-files::-webkit-scrollbar { width: 8px; }
 .commit-files::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 8px; }
@@ -1309,6 +1324,9 @@ audio { width: 100%; margin-top: 12px; }
 }
 @media (max-width: 860px) {
   .layout { grid-template-columns: 1fr; }
+  /* Hẹp quá thì hai cột file|diff xếp chồng: file thành dải mỏng trên, diff
+     vẫn giữ phần lớn chiều cao ở dưới. */
+  .commit-detail { grid-template-columns: 1fr; grid-template-rows: minmax(90px, 30%) minmax(0, 1fr); }
   .brand-text .sub { display: none; }
   .crumbs { display: none; }
   .kdot-host { display: none; }
