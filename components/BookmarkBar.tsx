@@ -423,6 +423,12 @@ export default function BookmarkBar(props: BookmarkBarProps) {
       onDrop={(e) => handleDrop(e, { at: 'end', id: null }, tree)}
       onContextMenu={(e) => { e.preventDefault(); setLevels([]); setCtx({ node: null, x: e.clientX, y: e.clientY }); }}
     >
+      {/* Nhãn nhận diện đứng đầu thanh: thanh này nằm ngay dưới hàng tab và
+          từng bị nhầm là hàng tab thứ hai — một nhãn nhỏ + vạch ngăn nói thẳng
+          "đây là dấu trang" trước khi mắt kịp đoán. Không bấm được, chỉ để đọc. */}
+      <span className="bmk-bar-tag" title="Thanh dấu trang — ẩn/hiện bằng Ctrl+Shift+B (hoặc menu ⋯)">
+        <span aria-hidden>🔖</span> Dấu trang
+      </span>
       {tree.map(chip)}
       {tree.length === 0 && (
         <span className="bmk-hint">

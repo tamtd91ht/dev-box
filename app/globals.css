@@ -8605,6 +8605,20 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
      một pixel, tránh cảm giác giật lúc kéo ngang qua. */
   border-top: 2px dashed transparent;
   transition: background .12s;
+  /* DẢI CHÌM — thanh này nằm sát dưới hàng tab và chip của nó cũng là chữ +
+     icon, nên từng bị đọc nhầm thành hàng tab thứ hai. Nền lõm + bóng inset
+     hai mép làm nó thành một "rãnh" khác hẳn mặt phẳng của thanh tab; chip
+     bên trong bo tròn hẳn (pill) để tương phản với tab bo góc vuông có nút ✕. */
+  background: color-mix(in srgb, var(--bg-1) 60%, transparent);
+  box-shadow: inset 0 6px 6px -6px rgba(0, 0, 0, .45), inset 0 -6px 6px -6px rgba(0, 0, 0, .3);
+}
+/* Nhãn nhận diện ở đầu thanh — chỉ để đọc, không bấm được. */
+.bmk-bar-tag {
+  flex: none; display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--faint); padding: 2px 9px 2px 4px; margin-right: 5px;
+  border-right: 1px solid var(--glass-brd);
+  user-select: none; cursor: default; white-space: nowrap;
 }
 /* Rê tới khoảng trống của thanh = thả về gốc cây. Phải thấy RÕ, vì đây là đích
    thả chính khi kéo địa chỉ xuống. */
@@ -8616,8 +8630,9 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .bmk-hint { font-size: 11.5px; color: var(--faint); padding: 2px 4px; }
 .bmk-hint b { color: var(--muted); font-weight: 600; }
 
-/* position:relative để vẽ VẠCH CHÈN bằng ::before/::after ngay cạnh chip. */
-.bmk-chip { position: relative; display: inline-flex; border-radius: 7px; }
+/* position:relative để vẽ VẠCH CHÈN bằng ::before/::after ngay cạnh chip.
+   Bo tròn hẳn (pill) — xem chú thích "DẢI CHÌM" ở .bmk-bar. */
+.bmk-chip { position: relative; display: inline-flex; border-radius: 999px; }
 
 /* Folder đang bung menu — nền sáng để biết menu trên màn hình thuộc chip nào. */
 .bmk-chip.open > .bmk-chip-btn { background: var(--glass-2); }
@@ -8638,7 +8653,7 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .bmk-chip.drop-before::before { left: -2px; }
 .bmk-chip.drop-after::after { right: -2px; }
-.bmk-chip.drop-into { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 7px; }
+.bmk-chip.drop-into { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 999px; }
 
 .bmk-menu-row.drop-before::before,
 .bmk-menu-row.drop-after::after {
@@ -8653,11 +8668,14 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .bmk-menu.drop-end { outline: 2px solid var(--accent); outline-offset: -1px; }
 .bmk-chip-btn {
   display: inline-flex; align-items: center; gap: 5px;
-  max-width: 210px; padding: 3px 8px;
-  border: none; border-radius: 7px; background: transparent;
-  color: var(--text); font-size: 12px; cursor: pointer;
+  max-width: 210px; padding: 2px 9px;
+  border: none; border-radius: 999px; background: transparent;
+  color: var(--text); font-size: 11.5px; cursor: pointer;
+  /* Đè quầng + cú nhún của button global: chip dấu trang phải PHẲNG — chính
+     cái glow quanh từng chip là thứ làm cả hàng trông như hàng tab thứ hai. */
+  box-shadow: none;
 }
-.bmk-chip-btn:hover { background: var(--glass-2); }
+.bmk-chip-btn:hover { background: var(--glass-2); transform: none; box-shadow: none; }
 .bmk-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bmk-prof {
   font-size: 10px; padding: 0 5px; border-radius: 999px;
