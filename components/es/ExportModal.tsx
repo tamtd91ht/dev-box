@@ -33,6 +33,12 @@ export interface ExportModalProps {
    */
   query?: string;
   /**
+   * Sort JSON kèm theo `query` (tab Tìm nhanh) — rỗng = không sort. File xuất
+   * ra phải cùng thứ tự với bảng người dùng đang nhìn, nên chỗ gọi truyền sort
+   * của LẦN CHẠY vừa rồi. Bỏ qua khi dùng `body` (sort đã nằm trong body).
+   */
+  sort?: string;
+  /**
    * NGUYÊN body _search kiểu Dev Tools (tab Dữ liệu). Có `body` thì server bỏ
    * qua mọi field rời — nên `_source` và `size` phải chèn thẳng vào body, xem
    * buildBodyPage() bên dưới.
@@ -85,7 +91,7 @@ function prettyHeader(path: string): string {
 }
 
 export default function ExportModal(props: ExportModalProps) {
-  const { connectionId, index, query, body, querySummary, fieldSuggestions, initialPaths, defaultTitle, onClose, onDone } = props;
+  const { connectionId, index, query, sort, body, querySummary, fieldSuggestions, initialPaths, defaultTitle, onClose, onDone } = props;
 
   const [title, setTitle] = useState(defaultTitle);
   let seq = 0;
@@ -122,7 +128,7 @@ export default function ExportModal(props: ExportModalProps) {
         // viết lại body; query rời (tab Tìm nhanh) thì truyền field rời như cũ.
         const page = body !== undefined
           ? await searchEs(connectionId, index, { body: buildBodyPage(body, tops, PAGE, from) })
-          : await searchEs(connectionId, index, { query, sort: '', source, size: PAGE, from });
+          : await searchEs(connectionId, index, { query, sort: sort ?? '', source, size: PAGE, from });
         for (const d of page.docs) {
           try { docs.push(JSON.parse(d.json) as Record<string, unknown>); } catch { /* truncated — skip row */ }
         }

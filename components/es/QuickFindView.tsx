@@ -71,7 +71,38 @@ interface RunField extends EsQuickFindField {
   list: boolean;
 }
 
-type RunTab = 'conditions' | 'source';
+type RunTab = 'conditions' | 'source' | 'sort';
+
+/**
+ * Một khoá sắp xếp. Nhiều khoá xếp theo THỨ TỰ trong mảng — ES ưu tiên khoá
+ * đầu, bằng nhau mới xét khoá sau, y như `ORDER BY a, b`.
+ *
+ * `path` rỗng = dòng chưa điền, bị bỏ khi ráp query (không phải lỗi) — để người
+ * dùng thêm sẵn ô trống mà không chặn nút Chạy.
+ */
+interface SortKey {
+  path: string;
+  dir: 'asc' | 'desc';
+  /** Doc thiếu field: dồn cuối (_last) hay đầu (_first). */
+  missing: '_last' | '_first';
+}
+
+/**
+ * Sort → JSON cho `body.sort`. KHÔNG có khoá nào → chuỗi rỗng, và server hiểu
+ * đó là "đừng gửi sort" (parseSort ở lib/esClient trả undefined) — giữ đúng
+ * mặc định cũ: ES tự xếp theo _score.
+ *
+ * Dạng đầy đủ `{ path: { order, missing } }` chứ không phải `{ path: "asc" }`
+ * vì index thật hay có doc thiếu field; không nói rõ thì ES đẩy chúng lên đầu
+ * khi asc, làm trang đầu toàn doc rỗng.
+ */
+function buildSortJson(keys: SortKey[]): string {
+  const used = keys.filter((k) => k.path.trim());
+  if (used.length === 0) return '';
+  return JSON.stringify(
+    used.map((k) => ({ [k.path.trim()]: { order: k.dir, missing: k.missing } })),
+  );
+}
 
 export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [quickFinds, setQuickFinds] = useState<EsQuickFind[]>([]);
@@ -94,6 +125,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [srcCustom, setSrcCustom] = useState('');
   const [srcLoading, setSrcLoading] = useState(false);
 
+  /** Sort (run-time only, KHÔNG lưu vào preset) — rỗng = không gửi sort. */
+  const [sortKeys, setSortKeys] = useState<SortKey[]>([]);
+
   const [result, setResult] = useState<EsSearchResult | null>(null);
   const [from, setFrom] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -101,6 +135,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [selectedDoc, setSelectedDoc] = useState<WireDoc | null>(null);
 
   const [lastQuery, setLastQuery] = useState('');
+  /** Sort của LẦN CHẠY vừa rồi — export phải xuất đúng thứ tự đang nhìn, nên
+   *  không lấy `sortKeys` hiện thời (người dùng có thể vừa sửa mà chưa chạy). */
+  const [lastSort, setLastSort] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -119,6 +156,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
     setRunIndices(p.indices);
     setPanelOpen(true); setRunTab('conditions');
     setSrcSuggestions([]); setSrcSelected([]); setSrcCustom('');
+    setSortKeys([]);
     setResult(null); setFrom(0); setError(null); setSelectedDoc(null);
   }, []);
 
@@ -141,19 +179,22 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
       const query = buildEsQuickQuery(
         runFields.filter((f) => f.checked).map((f) => ({ path: f.path, type: f.type, value: f.value, list: f.list })),
       );
+      const sort = buildSortJson(sortKeys);
       const r = await searchEs(run.connectionId, indexArg, {
-        query, sort: '', source: buildSource(), size: run.limit, from: effFrom,
+        query, sort, source: buildSource(), size: run.limit, from: effFrom,
       });
       setResult(r);
       setFrom(r.from);
       setLastQuery(query);
+      setLastSort(sort);
       setPanelOpen(false);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [run, runFields, buildSource, runIndices, indexArg]);
+  }, [run, runFields, buildSource, runIndices, indexArg, sortKeys]);
 
-  const openSourceTab = useCallback(async () => {
-    setRunTab('source');
+  /** Nạp gợi ý tên field từ document thật — dùng chung cho tab Trường trả về
+   *  và tab Sắp xếp, nên chỉ lấy mẫu một lần cho mỗi lần đổi index. */
+  const ensureFieldSuggestions = useCallback(async () => {
     if (!run || srcSuggestions.length > 0 || runIndices.length === 0) return;
     const have = result?.docs?.length ? result.docs : null;
     if (have) { setSrcSuggestions(deriveEsFieldNames(have)); return; }
@@ -165,7 +206,27 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
     finally { setSrcLoading(false); }
   }, [run, result, srcSuggestions.length, runIndices.length, indexArg]);
 
+  const openSourceTab = useCallback(async () => {
+    setRunTab('source');
+    await ensureFieldSuggestions();
+  }, [ensureFieldSuggestions]);
+
+  const openSortTab = useCallback(async () => {
+    setRunTab('sort');
+    await ensureFieldSuggestions();
+  }, [ensureFieldSuggestions]);
+
   const enabledCount = runFields.filter((f) => f.checked).length;
+
+  /** Chỉ đếm khoá ĐÃ điền path — ô trống không tính là đang sort. */
+  const sortCount = useMemo(() => sortKeys.filter((k) => k.path.trim()).length, [sortKeys]);
+
+  const sortSummary = useMemo(
+    () => sortKeys.filter((k) => k.path.trim())
+      .map((k) => `${k.path.trim()} ${k.dir}`)
+      .join(', '),
+    [sortKeys],
+  );
 
   const querySummary = useMemo(() => {
     const parts = runFields
@@ -272,6 +333,10 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
               <button className="chip-btn" title="Chọn field trả về" onClick={() => { setPanelOpen(true); void openSourceTab(); }}>
                 ⚙ Trường trả về{srcSelected.length > 0 ? ` (${srcSelected.length})` : ''}
               </button>
+              <button className="chip-btn" title={sortCount > 0 ? `Sắp xếp theo ${sortSummary}` : 'Chưa sắp xếp — ES tự xếp theo _score'}
+                onClick={() => { setPanelOpen(true); void openSortTab(); }}>
+                ↕ Sắp xếp{sortCount > 0 ? ` (${sortCount})` : ''}
+              </button>
             </div>
           )}
 
@@ -283,6 +348,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                 </button>
                 <button className={runTab === 'source' ? 'on' : ''} onClick={() => void openSourceTab()}>
                   Trường trả về{srcSelected.length > 0 ? ` (${srcSelected.length})` : ''}
+                </button>
+                <button className={runTab === 'sort' ? 'on' : ''} onClick={() => void openSortTab()}>
+                  Sắp xếp{sortCount > 0 ? ` (${sortCount})` : ''}
                 </button>
               </div>
 
@@ -386,6 +454,99 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                   </div>
                 </div>
               )}
+
+              {runTab === 'sort' && (
+                <div className="es-qf-sort">
+                  <p className="es-hint">
+                    Không bắt buộc — để trống thì ES tự xếp theo <code>_score</code> như trước.
+                    Thêm nhiều khoá thì xếp theo THỨ TỰ từ trên xuống: khoá đầu bằng nhau mới xét khoá sau.
+                    Sort chỉ chạy trên field <code>keyword</code>/số/ngày; field <code>text</code> analyzed
+                    thì ES báo lỗi — dùng dạng <code>tên.keyword</code>.
+                  </p>
+                  {srcLoading && <p className="empty"><span className="spinner" /> Đang lấy mẫu field…</p>}
+
+                  {sortKeys.length === 0 && (
+                    <p className="empty">Chưa có khoá sắp xếp nào.</p>
+                  )}
+
+                  {sortKeys.map((k, i) => (
+                    <div key={i} className="es-qf-sortrow">
+                      <span className="badge" title="Thứ tự ưu tiên">{i + 1}</span>
+                      <input
+                        className="input mono"
+                        list="es-qf-sortfields"
+                        value={k.path}
+                        placeholder="tên field — vd. createdAt, status.keyword"
+                        onChange={(e) => setSortKeys((ks) => ks.map((x, j) => (j === i ? { ...x, path: e.target.value } : x)))}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && !busy && enabledCount > 0) void doRun(); }}
+                      />
+                      <select
+                        className="input"
+                        value={k.dir}
+                        onChange={(e) => setSortKeys((ks) => ks.map((x, j) => (j === i ? { ...x, dir: e.target.value as 'asc' | 'desc' } : x)))}
+                      >
+                        <option value="desc">↓ desc (giảm dần)</option>
+                        <option value="asc">↑ asc (tăng dần)</option>
+                      </select>
+                      <select
+                        className="input"
+                        title="Document KHÔNG có field này thì xếp vào đâu"
+                        value={k.missing}
+                        onChange={(e) => setSortKeys((ks) => ks.map((x, j) => (j === i ? { ...x, missing: e.target.value as '_last' | '_first' } : x)))}
+                      >
+                        <option value="_last">thiếu field → cuối</option>
+                        <option value="_first">thiếu field → đầu</option>
+                      </select>
+                      <button
+                        className="chip-btn"
+                        title="Đẩy lên một bậc ưu tiên"
+                        disabled={i === 0}
+                        onClick={() => setSortKeys((ks) => {
+                          const n = [...ks];
+                          [n[i - 1], n[i]] = [n[i], n[i - 1]];
+                          return n;
+                        })}
+                      >↑</button>
+                      <button
+                        className="chip-btn"
+                        title="Hạ xuống một bậc ưu tiên"
+                        disabled={i === sortKeys.length - 1}
+                        onClick={() => setSortKeys((ks) => {
+                          const n = [...ks];
+                          [n[i], n[i + 1]] = [n[i + 1], n[i]];
+                          return n;
+                        })}
+                      >↓</button>
+                      <button
+                        className="chip-btn"
+                        title="Bỏ khoá này"
+                        onClick={() => setSortKeys((ks) => ks.filter((_, j) => j !== i))}
+                      >✕</button>
+                    </div>
+                  ))}
+
+                  <datalist id="es-qf-sortfields">
+                    {[...new Set([...srcSuggestions, ...(run?.fields ?? []).map((f) => f.path)])].map((f) => (
+                      <option key={f} value={f} />
+                    ))}
+                  </datalist>
+
+                  <div className="status-line" style={{ gap: 8 }}>
+                    <button
+                      className="chip-btn"
+                      onClick={() => setSortKeys((ks) => [...ks, { path: '', dir: 'desc', missing: '_last' }])}
+                    >+ Thêm khoá sắp xếp</button>
+                    {sortKeys.length > 0 && (
+                      <button className="ghost sm" onClick={() => setSortKeys([])}>Bỏ sắp xếp</button>
+                    )}
+                    {sortCount > 0 && (
+                      <code className="small" style={{ color: 'var(--faint)' }} title="JSON gửi cho ES">
+                        {buildSortJson(sortKeys)}
+                      </code>
+                    )}
+                  </div>
+                </div>
+              )}
             </>
           )}
 
@@ -439,6 +600,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           connectionId={run.connectionId}
           index={indexArg}
           query={lastQuery}
+          sort={lastSort}
           querySummary={querySummary}
           fieldSuggestions={[...new Set(['_id', ...srcSuggestions, ...srcSelected, ...run.fields.map((f) => f.path), ...deriveEsFieldNames(result.docs)])]}
           initialPaths={srcSelected.length ? ['_id', ...srcSelected] : ['_id', ...deriveEsFieldNames(result.docs)].slice(0, 8)}

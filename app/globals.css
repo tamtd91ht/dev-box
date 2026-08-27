@@ -3233,6 +3233,20 @@ pre.kafka-drawer-body {
 .es-qf-projchip.on { color: var(--text); border-color: var(--accent); background: var(--glass-bg); font-weight: 600; }
 .es-qf-projchip.special { border-style: dashed; }
 
+/* Sắp xếp (tuỳ chọn) — mỗi dòng là một khoá, thứ tự dòng = thứ tự ưu tiên.
+   Ba nút cuối (↑ ↓ ✕) cố định bề rộng để cột giữa co giãn theo khung. */
+.es-qf-sort { display: flex; flex-direction: column; gap: 8px; }
+.es-qf-sortrow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 150px 160px auto auto auto;
+  align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px;
+  background: var(--glass-bg); border: 1px solid var(--glass-brd);
+}
+@media (max-width: 900px) {
+  .es-qf-sortrow { grid-template-columns: auto minmax(0, 1fr) auto auto auto; }
+  .es-qf-sortrow select { grid-column: 2 / -1; }
+}
+
 /* ── ES-only additions ─────────────────────────────────────────────────── */
 .es-scroll { overflow: auto; min-height: 0; max-height: 60vh; }
 .es-hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 0; }
