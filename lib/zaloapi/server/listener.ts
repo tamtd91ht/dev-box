@@ -254,6 +254,36 @@ export function extractMessages(groupHint: boolean, decoded: unknown, at: number
 }
 
 /**
+ * Mô tả HÌNH DẠNG một payload đã giải mã, để chẩn đoán khung chưa đọc được.
+ *
+ * Bóc qua lớp bọc {error_code,error_message,data} rồi mô tả phần lõi: khoá gì,
+ * mảng hay object, và một mẫu khoá của phần tử đầu. Không ghi NỘI DUNG tin —
+ * trace nằm trên đĩa và tin nhắn là dữ liệu riêng tư của người dùng.
+ */
+function probeShape(decoded: unknown): Record<string, unknown> {
+  const outer = decoded && typeof decoded === 'object' ? (decoded as Record<string, unknown>) : null;
+  if (!outer) return { type: typeof decoded };
+  const inner = outer['data'];
+  const describe = (v: unknown): Record<string, unknown> => {
+    if (Array.isArray(v)) {
+      const first = v[0];
+      return {
+        kind: 'array',
+        len: v.length,
+        itemKeys: first && typeof first === 'object' ? Object.keys(first as object).slice(0, 20) : typeof first,
+      };
+    }
+    if (v && typeof v === 'object') return { kind: 'object', keys: Object.keys(v as object).slice(0, 20) };
+    return { kind: typeof v };
+  };
+  return {
+    outerKeys: Object.keys(outer).slice(0, 8),
+    errorCode: outer['error_code'],
+    data: describe(inner),
+  };
+}
+
+/**
  * Gộp THÔNG BÁO HỆ THỐNG bị Zalo phát tán ra nhiều hội thoại trong CÙNG một khung.
  *
  * Ca thật: bạn bấm đồng ý kết bạn → Zalo gửi MỘT khung chứa BA object tin cùng
@@ -607,10 +637,14 @@ export class ZaloListener {
           }
           trace('msg', `RÚT ${msgs.length} tin cmd=${cmd}`, { group: last.group, threadId: last.threadId, from: last.fromName || last.fromId, self: last.isSelf, text: last.text.slice(0, 40) });
         } else if (this.stats.decoded <= 20) {
-          // Giải mã được nhưng KHÔNG có chữ → có thể là seen/typing, hoặc schema
-          // lạ. Ghi hình dạng (chỉ 20 lần đầu) để chẩn đoán nếu vẫn thiếu tin.
-          const shape = decoded && typeof decoded === 'object' ? Object.keys(decoded as object).slice(0, 10) : typeof decoded;
-          trace('msg', `giải mã OK nhưng KHÔNG có chữ cmd=${cmd}`, { shape });
+          // Giải mã được nhưng KHÔNG rút ra tin nào → có thể là seen/typing, hoặc
+          // một loại sự kiện ta chưa đọc được (reaction, tin từ mobile, tin nhóm).
+          //
+          // Ghi tới BÊN TRONG `data`, không chỉ lớp ngoài: mọi khung đều bọc
+          // {error_code,error_message,data} nên chỉ ghi lớp ngoài thì mọi cmd
+          // trông giống hệt nhau và chẩn đoán được đúng con số 0. Phần lõi mới
+          // nói được đây là loại sự kiện gì.
+          trace('msg', `giải mã OK nhưng KHÔNG rút được tin cmd=${cmd}`, probeShape(decoded));
         }
       } catch (e) {
         this.stats.decodeErr += 1;
