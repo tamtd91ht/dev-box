@@ -22,6 +22,7 @@ import { pingPg } from '@/lib/pg';
 import { listRabbitNodes, rabbitOverview } from '@/lib/rabbit';
 import { redisStats } from '@/lib/redis';
 import type { AutomationEvent, InfraStack, InfraWatch, WatchSeverity } from '../types';
+import type { RateOutcome, WindowOutcome } from '../rate';
 import { metricDef, metricLabel, stackDef } from '../catalog';
 import { alertTypeOf, buildDescription, humanizeSec, OP_TEXT } from '../meta';
 
@@ -577,6 +578,15 @@ export function breaches(value: number, op: InfraWatch['op'], threshold: number)
  */
 export interface InfraEventExtras {
   address?: string;
+  /**
+   * CHỈ rate watch: kết quả tính trên mọi cửa sổ.
+   *
+   * Cảnh báo tốc độ mà chỉ nói "vượt ngưỡng" thì vô dụng — người trực cần
+   * biết cửa sổ nào, từ bao nhiêu lên bao nhiêu, và (quan trọng nhất) còn bao
+   * lâu nữa thì cạn. Watcher là chỗ duy nhất có buffer để tính, nên nó truyền
+   * vào đây.
+   */
+  rate?: RateOutcome;
   /** Toàn bộ chỉ số của CÙNG lần đo — nguồn của absUsed/absTotal (catalog.absolute). */
   metrics?: MetricMap;
   /**
@@ -1001,6 +1011,105 @@ function absoluteFields(watch: InfraWatch, extras?: InfraEventExtras): Record<st
   };
 }
 
+/** Cửa sổ đọc thành lời: 300 → "5 phút", 43200 → "12 giờ". */
+function fmtWindow(sec: number): string {
+  if (sec % 3600 === 0) return `${sec / 3600} giờ`;
+  if (sec % 60 === 0) return `${sec / 60} phút`;
+  return `${sec} giây`;
+}
+
+/** Đơn vị của con số delta, theo chế độ đo. */
+function rateUnit(watch: InfraWatch): string {
+  const u = metricDef(watch.stack, watch.metric)?.unit ?? '';
+  switch (watch.rate?.mode) {
+    case 'points': return 'điểm';
+    case 'relative': return '%';
+    case 'eta': return 'giờ';
+    default: return u;
+  }
+}
+
+const signed = (n: number): string => (n > 0 ? `+${round(n)}` : `${round(n)}`);
+
+/**
+ * Câu mô tả MỘT cửa sổ — đây là thứ người trực thật sự đọc.
+ *
+ * Luôn nêu HAI ĐẦU MÚT chứ không chỉ con số chênh lệch: "78% → 90%" nói được
+ * cả mức độ lẫn hướng đi, còn "+12" thì phải tự tra mới biết đang ở đâu.
+ */
+function windowText(watch: InfraWatch, w: WindowOutcome): string {
+  const unit = metricDef(watch.stack, watch.metric)?.unit ?? '';
+  const span = fmtWindow(w.windowSec);
+  if (watch.rate?.mode === 'eta') {
+    const eta = w.etaSec === null ? 'không xác định' : humanizeSec(w.etaSec);
+    return `trong ${span}: ${fmtAbs(w.from, unit)} → ${fmtAbs(w.to, unit)} · sẽ cạn sau ~${eta}`;
+  }
+  return `trong ${span}: ${fmtAbs(w.from, unit)} → ${fmtAbs(w.to, unit)} (${signed(w.delta)} ${rateUnit(watch)})`;
+}
+
+/**
+ * Fields của một cảnh báo TỐC ĐỘ.
+ *
+ * Cùng giao kèo với absText/ladderText: `rateText` MANG SẴN dấu phân cách và
+ * rỗng khi không có gì để nói, nên template cũ nhét thêm `{{rateText}}` vào
+ * đâu cũng tự gọn.
+ *
+ * `etaSec`/`etaText` là phần đáng giá nhất: "đĩa mongo1 sẽ đầy sau ~9 giờ" là
+ * câu trả lời cho đúng câu hỏi mà người trực đêm đang hỏi, và nó gộp cả tốc độ
+ * lẫn phần còn trống — thứ mà một ngưỡng tĩnh không bao giờ nói được.
+ */
+function rateFields(watch: InfraWatch, extras?: InfraEventExtras): Record<string, string | number> {
+  const out = extras?.rate;
+  // Watch thường vẫn phát ĐỦ mọi key, chỉ là rỗng — cùng giao kèo với absText:
+  // template tham chiếu {{etaText}} không bao giờ gặp undefined, và catalog chỉ
+  // phải kể một câu chuyện duy nhất (script check:automation soát điều này).
+  if (!out || !isRate(watch)) {
+    return {
+      rateMode: '', rateWindow: '', rateWindowSec: '', rateFrom: '', rateTo: '',
+      rateDelta: '', ratePerHour: '', rateUnit: '', rateSamples: '',
+      etaSec: '', etaText: '', rateWindows: '', rateText: '', rateWindowsJson: '',
+    };
+  }
+  const lead = out.lead;
+  const hot = out.windows.filter((w) => w.breaching);
+  // Liệt kê MỌI cửa sổ đang vượt, không chỉ cái đại diện: ba cửa sổ cùng kêu
+  // là tín hiệu khác hẳn một cửa sổ kêu, và người đọc cần thấy điều đó.
+  const list = (hot.length ? hot : lead ? [lead] : []).map((w) => windowText(watch, w)).join('; ');
+  const eta = lead?.etaSec ?? null;
+  return {
+    rateMode: watch.rate?.mode ?? '',
+    rateWindow: lead ? fmtWindow(lead.windowSec) : '',
+    rateWindowSec: lead?.windowSec ?? '',
+    rateFrom: lead?.from ?? '',
+    rateTo: lead?.to ?? '',
+    rateDelta: lead ? round(lead.delta) : '',
+    ratePerHour: lead ? round(lead.perHour) : '',
+    rateUnit: rateUnit(watch),
+    rateSamples: out.samples,
+    etaSec: eta ?? '',
+    etaText: eta === null ? '' : humanizeSec(eta),
+    rateWindows: list,
+    rateText: list ? `
+${list}` : '',
+    // MỌI cửa sổ dưới dạng JSON gọn — `fields` là phẳng (string|number) nên đây
+    // là cách duy nhất để AlertMeta dựng lại được toàn cảnh xu hướng cho bot
+    // ngoài. Người dùng không đọc field này; nó tồn tại cho máy.
+    rateWindowsJson: JSON.stringify(
+      out.windows.map((w) => ({
+        windowSec: w.windowSec,
+        from: w.from,
+        to: w.to,
+        delta: Number.isFinite(w.delta) ? w.delta : 0,
+        threshold: w.threshold,
+        breaching: w.breaching,
+        ...(w.etaSec === null ? {} : { etaSec: w.etaSec }),
+      })),
+    ),
+  };
+}
+
+const isRate = (w: InfraWatch): boolean => w.kind === 'rate';
+
 /**
  * Vì sao cảnh báo này là bậc THẤP, khi nhóm còn có bậc cao hơn.
  *
@@ -1069,6 +1178,7 @@ function baseEvent(
       note: watch.note ?? '',
       description: buildDescription(watch),
       ...absoluteFields(watch, extras),
+      ...rateFields(watch, extras),
       ...ladderFields(extras),
       ...consumerFields(extras),
       ...topicFields(extras),
@@ -1127,16 +1237,32 @@ export function infraBreachEvent(
 ): AutomationEvent {
   const label = metricLabel(watch.stack, watch.metric);
   const base = baseEvent(watch, value, at, extras);
+  const rate = isRate(watch);
+  // Cảnh báo TỐC ĐỘ mở đầu bằng chuyện đang xảy ra (đang tăng nhanh / sắp cạn),
+  // không phải bằng con số hiện tại — vì con số hiện tại có thể còn rất bình
+  // thường, và đó chính là lý do watch này tồn tại.
+  const headline = !rate
+    ? `${label} = ${value}`
+    : watch.rate?.mode === 'eta'
+      ? `${label} sẽ cạn sau ~${base.fields.etaText || '?'}`
+      : `${label} tăng ${base.fields.rateDelta} ${base.fields.rateUnit}/${base.fields.rateWindow}`;
+  const eta = watch.rate?.mode === 'eta';
+  const cond = rate
+    ? `${eta ? 'còn lại' : 'tốc độ'} ${OP_TEXT[watch.op]} ${watch.threshold}${eta ? ' giờ' : ''}`
+    : `ngưỡng ${OP_TEXT[watch.op]} ${watch.threshold}`;
   return {
     ...base,
     id: `watch:${watch.id}:breach:${at}`,
     type: 'infra.metric',
-    title: `${watch.name} — ${label} = ${value}`,
-    // absText mang sẵn " · " đầu chuỗi khi có, rỗng khi không — text tự gọn.
+    title: `${watch.name} — ${headline}`,
+    // absText/rateText mang sẵn dấu phân cách khi có, rỗng khi không — tự gọn.
     // consumers/topics (nếu có) nêu đích danh group/topic ngay trong tin mặc định.
     text:
-      `${where(watch)}: ${label} = ${value} (ngưỡng ${OP_TEXT[watch.op]} ${watch.threshold})` +
-      `${base.fields.absText}${base.fields.ladderText}` +
+      `${where(watch)}: ${headline} (${cond})` +
+      // Với rate, giá trị HIỆN TẠI vẫn phải có mặt: "sẽ đầy sau 6 giờ" mà không
+      // nói đang ở 78% thì người đọc không tự đánh giá được mức khẩn cấp.
+      (rate ? ` · hiện ${fmtAbs(value, metricDef(watch.stack, watch.metric)?.unit ?? '')}` : '') +
+      `${base.fields.absText}${base.fields.rateText}${base.fields.ladderText}` +
       (base.fields.consumers ? `\n${consumersLead(watch.metric)}: ${base.fields.consumers}` : '') +
       (base.fields.topics ? `\nTopic ảnh hưởng: ${base.fields.topics}` : '') +
       (base.fields.hosts ? `\n${hostsLead(watch.metric)}: ${base.fields.hosts}` : ''),
@@ -1157,8 +1283,79 @@ export function infraRecoveredEvent(
     ...base,
     id: `watch:${watch.id}:ok:${at}`,
     type: 'infra.recovered',
-    title: `${watch.name} — đã hồi phục`,
-    text: `${where(watch)}: ${label} = ${value}${base.fields.absText}, bình thường trở lại sau ${downSec}s`,
+    // NGỮ NGHĨA KHÁC HẲN với rate: "hồi phục" ở đây nghĩa là TỐC ĐỘ đã chậm
+    // lại, KHÔNG phải chỉ số đã về mức an toàn. Đĩa vẫn 94% mà thôi tăng thì
+    // rate watch recover — viết "đã bình thường" vào đó là nói dối người trực,
+    // và là đường dẫn thẳng tới bỏ lọt. Nên câu này nêu luôn giá trị hiện tại.
+    title: isRate(watch) ? `${watch.name} — tốc độ đã chậm lại` : `${watch.name} — đã hồi phục`,
+    text: isRate(watch)
+      ? `${where(watch)}: tốc độ thay đổi của ${label} đã về dưới ngưỡng sau ${downSec}s.` +
+        ` Chỉ số HIỆN VẪN ở ${fmtAbs(value, metricDef(watch.stack, watch.metric)?.unit ?? '')}${base.fields.absText}`
+      : `${where(watch)}: ${label} = ${value}${base.fields.absText}, bình thường trở lại sau ${downSec}s`,
     fields: { ...base.fields, downSec },
+  };
+}
+
+/**
+ * Rate watch bị đặt lại mốc đo vì chỉ số tụt sâu (restart, xoay log, dọn đĩa).
+ *
+ * Không phải cảnh báo sự cố, nhưng KHÔNG được im: watch vừa mất toàn bộ lịch
+ * sử và sẽ nằm "đang gom dữ liệu" một lúc — không nói ra thì đó là một quãng
+ * mù không ai giải thích được. Và bản thân "Redis vừa restart lúc 3h sáng"
+ * cũng đã là tin đáng biết.
+ */
+export function infraResetEvent(
+  watch: InfraWatch,
+  value: number,
+  at: number,
+  extras?: InfraEventExtras,
+): AutomationEvent {
+  const label = metricLabel(watch.stack, watch.metric);
+  const base = baseEvent(watch, value, at, extras);
+  return {
+    ...base,
+    id: `watch:${watch.id}:reset:${at}`,
+    type: 'infra.metric',
+    title: `${watch.name} — đã đặt lại mốc đo`,
+    text:
+      `${where(watch)}: ${label} tụt sâu xuống ${value} (restart / dọn dữ liệu?).` +
+      ` Mốc đo tốc độ đã được đặt lại — watch sẽ gom đủ mẫu rồi canh tiếp.`,
+    fields: { ...base.fields, alertType: `${watch.stack}.rate.reset`, rateReset: 1 },
+  };
+}
+
+/**
+ * Rate watch nằm "chưa đủ mẫu" quá lâu — tức là đang MÙ.
+ *
+ * Watchdog cho watchdog, và là cảnh báo phục vụ trực tiếp mục tiêu "không bỏ
+ * lọt": một watch không kết luận được thì nhìn từ UI y hệt một watch khoẻ.
+ * Nếu chính nó không kêu lên thì không có gì kêu thay nó.
+ */
+export function infraRateStuckEvent(
+  watch: InfraWatch,
+  at: number,
+  blindSec: number,
+  samples: number,
+  extras?: InfraEventExtras,
+): AutomationEvent {
+  const label = metricLabel(watch.stack, watch.metric);
+  const base = baseEvent(watch, 0, at, extras);
+  return {
+    ...base,
+    id: `watch:${watch.id}:stuck:${at}`,
+    type: 'infra.metric',
+    title: `${watch.name} — KHÔNG đo được tốc độ`,
+    text:
+      `${where(watch)}: watch tốc độ trên ${label} đã ${humanizeSec(blindSec)} không đủ dữ liệu để kết luận` +
+      ` (${samples} mẫu). Chỉ số này đang KHÔNG được canh — kiểm tra kết nối hoặc probe.`,
+    fields: {
+      ...base.fields,
+      alertType: `${watch.stack}.rate.stuck`,
+      // Mù = không biết gì cả, và "không biết" luôn phải xếp nặng hơn "có vẻ ổn".
+      severity: 'critical',
+      severityLabel: SEVERITY_LABEL.critical,
+      blindSec,
+      rateSamples: samples,
+    },
   };
 }

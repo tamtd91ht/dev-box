@@ -19,7 +19,8 @@
     "bot": "tsx bot/index.ts",
     "bot:status": "tsx bot/status-cli.ts",
     "bot:test": "tsx bot/smoke.test.ts",
-    "check:automation": "tsx scripts/check-automation-meta.ts"
+    "check:automation": "tsx scripts/check-automation-meta.ts",
+    "check:rate": "tsx scripts/check-rate-math.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

@@ -483,6 +483,81 @@ export type WatchSeverity = 'critical' | 'warning' | 'info';
  * RuleLimits. A watch therefore emits on EVERY poll while breaching, and a rule
  * that pays attention to a chatty watch must set its own limits.
  */
+/**
+ * Watch đo CÁI GÌ.
+ *
+ *   'level' (mặc định) — giá trị hiện tại so với ngưỡng. Hành vi từ trước tới
+ *                        nay; watch cũ không khai trường này nên vẫn là level.
+ *   'rate'             — TỐC ĐỘ THAY ĐỔI, hoặc thời gian còn lại đến khi cạn.
+ *                        Xem WatchRate và lib/automation/rate.ts.
+ *
+ * Hai loại này KHÔNG BAO GIỜ che nhau ở tầng bậc ngưỡng (ladderKey có kèm
+ * kind): "đĩa > 90%" và "đĩa sẽ đầy trong 6 giờ" là hai câu hỏi khác nhau, và
+ * để cái trước bịt miệng cái sau là bịt đúng cảnh báo SỚM — thứ có giá trị
+ * nhất trong cả tính năng này.
+ */
+export type WatchKind = 'level' | 'rate';
+
+/**
+ * Chênh lệch được ĐỌC theo nghĩa nào.
+ *
+ *   'points'   hiệu số trên chỉ số vốn là %      "78% → 90% = +12 ĐIỂM"
+ *   'absolute' hiệu số trên chỉ số có đơn vị     "tăng thêm 12 GB"
+ *   'relative' phần trăm so với chính nó         "tăng 15,4% so với đầu cửa sổ"
+ *   'eta'      thời gian còn lại đến khi CẠN     "sẽ đầy sau ~9 giờ"
+ *
+ * `points` và `relative` cực dễ nhầm trên chỉ số %: 78→90 là +12 điểm nhưng
+ * chỉ +15,4% tương đối — sai chỗ này là ngưỡng lệch nhiều lần. Editor phải
+ * hiện ví dụ sống chứ không chỉ tên chế độ.
+ *
+ * `eta` là chế độ ĐƯỢC KHUYẾN NGHỊ cho mọi chỉ số có trần (metric khai
+ * `absolute` trong catalog): tốc độ tự nó không nguy hiểm, CẠN mới nguy hiểm.
+ * Ngưỡng của eta tính bằng GIỜ.
+ */
+export type RateMode = 'points' | 'absolute' | 'relative' | 'eta';
+
+/** Một cửa sổ so sánh + ngưỡng riêng của nó. */
+export interface RateWindow {
+  /** Độ dài cửa sổ (giây). Trần 24h; phải chứa ít nhất 3 nhịp poll. */
+  sec: number;
+  /** Ngưỡng cho RIÊNG cửa sổ này — đơn vị theo `mode` (eta: giờ). */
+  threshold: number;
+}
+
+/**
+ * Cấu hình đo tốc độ. Chỉ có nghĩa khi `kind === 'rate'`.
+ *
+ * NHIỀU CỬA SỔ, báo khi BẤT KỲ cái nào vượt. Một cửa sổ cố định luôn mù với
+ * một lớp sự cố: 60 phút pha loãng cú tăng dốc 5 phút; 5 phút không bao giờ
+ * thấy đà rò rỉ 12 tiếng. Ba cửa sổ trong một watch bắt cả ba dạng — đột
+ * biến, đà bất thường, rò rỉ chậm — mà không tốn thêm probe call nào.
+ */
+export interface WatchRate {
+  mode: RateMode;
+  /** Rỗng → lấy DEFAULT_RATE.windows. Vượt ở cửa sổ nào thì cảnh báo nêu tên cửa sổ đó. */
+  windows: RateWindow[];
+  /** Số mẫu tối thiểu trong cửa sổ mới dám kết luận. Trống → 3. */
+  minSamples?: number;
+  /** Lấy trung bình 3 mẫu ở mỗi đầu mút — khử nhiễu đo mà không làm phẳng đột biến. Trống → bật. */
+  smooth?: boolean;
+  /** Giá trị tụt sâu (restart, xoay log) → xoá mốc cũ thay vì tính ra "tăng 400%". Trống → bật. */
+  resetOnDrop?: boolean;
+}
+
+export const DEFAULT_MIN_SAMPLES = 3;
+/** Trần cửa sổ. Cửa sổ dài hơn một ngày là đồ thị, không còn là cảnh báo. */
+export const MAX_WINDOW_SEC = 24 * 3600;
+/** Cửa sổ phải chứa ít nhất ngần này nhịp poll, nếu không phép đo vô nghĩa. */
+export const MIN_POLLS_PER_WINDOW = 3;
+
+export const DEFAULT_RATE: WatchRate = {
+  mode: 'points',
+  windows: [{ sec: 300, threshold: 5 }],
+  minSamples: DEFAULT_MIN_SAMPLES,
+  smooth: true,
+  resetOnDrop: true,
+};
+
 export interface InfraWatch {
   id: string;
   name: string;
@@ -515,6 +590,10 @@ export interface InfraWatch {
   tags?: string[];
   /** Also emit infra.recovered when the metric returns to normal. */
   notifyRecovery?: boolean;
+  /** Đo giá trị hay đo TỐC ĐỘ. Vắng = 'level' = hành vi cũ, watch cũ không phải sửa gì. */
+  kind?: WatchKind;
+  /** Chỉ khi kind === 'rate'. Vắng khi là rate → normalize điền DEFAULT_RATE. */
+  rate?: WatchRate;
   /**
    * Ghi chú nghiệp vụ tự do ("Redis này cấp session cho tổng đài…"). Được NỐI
    * vào description tự sinh của mọi cảnh báo — là phần ngữ cảnh mà catalog

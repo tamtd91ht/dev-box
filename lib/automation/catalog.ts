@@ -101,6 +101,103 @@ const INFRA_FIELDS: FieldDef[] = [
     hint: 'mang sẵn " · " đầu chuỗi, rỗng khi metric không có cặp used/total — đặt ngay sau {{value}} là tự gọn',
     sample: ' · 3.8 GB / 4.0 GB · còn 197 MB',
   },
+  // ── Rate watch (kind: 'rate') — rỗng hết với watch thường ──────────────
+  {
+    name: 'rateMode',
+    label: 'Chế độ đo tốc độ',
+    kind: 'text',
+    hint: "points (điểm %) · absolute (đơn vị) · relative (% so với chính nó) · eta (giờ đến khi cạn) — rỗng với watch thường",
+    sample: 'eta',
+  },
+  {
+    name: 'rateWindow',
+    label: 'Cửa sổ đã kích hoạt',
+    kind: 'text',
+    hint: 'cửa sổ VƯỢT NẶNG NHẤT trong các cửa sổ đã khai — một watch có thể canh 5 phút / 1 giờ / 12 giờ cùng lúc',
+    sample: '1 giờ',
+  },
+  {
+    name: 'rateWindowSec',
+    label: 'Cửa sổ đã kích hoạt (giây)',
+    kind: 'number',
+    sample: 3600,
+  },
+  {
+    name: 'rateFrom',
+    label: 'Giá trị đầu cửa sổ',
+    kind: 'number',
+    hint: 'đã làm mượt (trung bình 3 mẫu đầu) khi bật smooth',
+    sample: 78.4,
+  },
+  {
+    name: 'rateTo',
+    label: 'Giá trị cuối cửa sổ',
+    kind: 'number',
+    sample: 90.1,
+  },
+  {
+    name: 'rateDelta',
+    label: 'Mức thay đổi',
+    kind: 'number',
+    hint: 'đơn vị theo rateMode — điểm % · đơn vị gốc · % tương đối',
+    sample: 11.7,
+  },
+  {
+    name: 'ratePerHour',
+    label: 'Tốc độ quy về 1 giờ',
+    kind: 'number',
+    hint: 'so sánh được giữa các cửa sổ khác độ dài',
+    sample: 11.7,
+  },
+  {
+    name: 'rateUnit',
+    label: 'Đơn vị tốc độ',
+    kind: 'text',
+    hint: 'điểm · % · giờ · đơn vị gốc của chỉ số',
+    sample: 'điểm',
+  },
+  {
+    name: 'rateSamples',
+    label: 'Số mẫu đang giữ',
+    kind: 'number',
+    hint: 'ít mẫu = kết luận mỏng; watch chưa đủ mẫu thì KHÔNG phát cảnh báo mà báo "đang gom dữ liệu"',
+    sample: 60,
+  },
+  {
+    name: 'etaSec',
+    label: 'Còn bao lâu thì cạn (giây)',
+    kind: 'number',
+    hint: 'CHỈ mode eta: (tổng − đã dùng) ÷ tốc độ tăng. Rỗng khi không tăng, hoặc chỉ số không có trần',
+    sample: 21600,
+  },
+  {
+    name: 'etaText',
+    label: 'Còn bao lâu thì cạn (đọc được)',
+    kind: 'text',
+    hint: 'câu trả lời cho đúng câu hỏi người trực đêm đang hỏi — rỗng khi không tính được',
+    sample: '6 giờ',
+  },
+  {
+    name: 'rateWindows',
+    label: 'Mọi cửa sổ đang vượt',
+    kind: 'text',
+    hint: 'liệt kê TẤT CẢ cửa sổ đang vượt, không chỉ cái đại diện — ba cửa sổ cùng kêu là tín hiệu khác hẳn một cửa sổ kêu',
+    sample: 'trong 1 giờ: 78.4 % → 90.1 % (+11.7 điểm); trong 12 giờ: 61 % → 90.1 % (+29.1 điểm)',
+  },
+  {
+    name: 'rateWindowsJson',
+    label: 'Mọi cửa sổ (JSON)',
+    kind: 'text',
+    hint: 'dành cho MÁY: toàn bộ cửa sổ kèm from/to/delta/etaSec — AlertMeta dựng rate.windows từ đây. Người dùng dùng {{rateWindows}}',
+    sample: '[{"windowSec":3600,"from":78.4,"to":90.1,"delta":11.7,"threshold":10,"breaching":true}]',
+  },
+  {
+    name: 'rateText',
+    label: 'Tốc độ (chuỗi đọc được)',
+    kind: 'text',
+    hint: 'mang sẵn xuống dòng đầu chuỗi, rỗng với watch thường — nhét vào template ở đâu cũng tự gọn',
+    sample: '\ntrong 1 giờ: 78.4 % → 90.1 % (+11.7 điểm)',
+  },
   {
     name: 'ladderAbove',
     label: 'Bậc nặng hơn đang yên',
@@ -440,6 +537,35 @@ export interface MetricDef {
   /** Cách gộp nhiều node. Trống = số liệu vốn là một con số duy nhất. */
   agg?: MetricAgg;
   /**
+   * Đo TỐC ĐỘ trên chỉ số này có nghĩa không.
+   *
+   *   'level'   (mặc định) — giá trị TÍCH LUỸ: đĩa, RAM, lag, số hàng đợi.
+   *                          Đạo hàm của nó là "đang đầy nhanh cỡ nào" — đúng
+   *                          thứ rate watch sinh ra để đo.
+   *   'derived'            — chỉ số VỐN ĐÃ LÀ tốc độ (opsPerSec, publishRate)
+   *                          hoặc gauge tức thời (cpuPct, latencyMs, load1m).
+   *                          Lấy đạo hàm ra GIA TỐC: dao động dữ dội, báo giả
+   *                          liên tục. Không chặn — chỉ cảnh báo trong editor,
+   *                          vì đôi khi người ta thật sự muốn thế.
+   *   'none'               — boolean/hằng số (up, memAlarm, diskTotalGb). Đo
+   *                          tốc độ là vô nghĩa; editor ẩn khỏi danh sách.
+   *
+   * Phân loại này tồn tại để editor không mời người dùng cấu hình một phép đo
+   * không bao giờ cho ra cảnh báo dùng được.
+   */
+  rate?: 'level' | 'derived' | 'none';
+  /**
+   * Ngưỡng gợi ý cho rate watch, theo từng cửa sổ — 5 phút / 1 giờ / 12 giờ.
+   *
+   * Bộ ba cửa sổ bắt ba dạng sự cố khác nhau (đột biến · đà bất thường · rò rỉ
+   * chậm), nên ngưỡng của chúng không suy ra được từ nhau. Vắng cửa sổ nào thì
+   * editor bỏ qua cửa sổ đó.
+   *
+   * Đơn vị theo chế độ mặc định của metric: chỉ số % → điểm phần trăm, chỉ số
+   * đếm → % tương đối, `eta` → giờ.
+   */
+  rateSuggest?: { mode: 'points' | 'absolute' | 'relative' | 'eta'; windows: { sec: number; threshold: number }[] };
+  /**
    * Cặp chỉ số TUYỆT ĐỐI đi kèm khi metric (thường là %) này cảnh báo — vì 90%
    * của 1GB nguy hiểm khác hẳn 90% của 20GB. `used`/`total` là key metric khác
    * trong CÙNG lần đo (watcher đưa cả MetricMap vào event), nên hai con số luôn
@@ -506,6 +632,7 @@ const PG_PROBE = 'truy vấn ping (SELECT 1)';
 /** `up` exists for every stack: 1 = probe succeeded, 0 = unreachable. */
 const UP: MetricDef = {
   key: 'up',
+  rate: 'none',
   label: 'Kết nối được',
   unit: '0/1',
   suggest: { op: 'lt', threshold: 1 },
@@ -516,6 +643,7 @@ const UP: MetricDef = {
 };
 const LATENCY: MetricDef = {
   key: 'latencyMs',
+  rate: 'derived',
   label: 'Độ trễ probe',
   unit: 'ms',
   suggest: { op: 'gt', threshold: 1000 },
@@ -532,6 +660,8 @@ export const STACKS: StackDef[] = [
       { ...UP, probe: REDIS_PROBE },
       {
         key: 'memUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'RAM đã dùng',
         unit: '%',
         suggest: { op: 'gt', threshold: 80 },
@@ -544,6 +674,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memUsedMb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 512 }, { sec: 3600, threshold: 2048 }] },
         label: 'RAM đã dùng',
         unit: 'MB',
         alertCode: 'ram',
@@ -553,6 +685,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memTotalMb',
+        rate: 'none',
         label: 'RAM giới hạn',
         unit: 'MB',
         alertCode: 'ram',
@@ -562,6 +695,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'clients',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Client đang kết nối',
         suggest: { op: 'gt', threshold: 5000 },
         alertCode: 'conn',
@@ -571,6 +706,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'opsPerSec',
+        rate: 'derived',
         label: 'Ops/giây',
         suggest: { op: 'gt', threshold: 50000 },
         alertCode: 'ops',
@@ -580,6 +716,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'hitRatePct',
+        rate: 'derived',
         label: 'Tỉ lệ cache hit',
         unit: '%',
         hint: '⚠ Chỉ có nghĩa với instance dùng làm CACHE. Redis làm queue/lock/session thì hit-rate thấp là bình thường — đặt ngưỡng ở đây sẽ báo sai liên tục.',
@@ -590,6 +727,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'fragmentation',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 3600, threshold: 0.5 }, { sec: 43200, threshold: 1 }] },
         label: 'Tỉ lệ phân mảnh',
         suggest: { op: 'gt', threshold: 1.6 },
         alertCode: 'frag',
@@ -599,6 +738,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'nodes',
+        rate: 'none',
         label: 'Số node đọc được',
         alertCode: 'nodes',
         probe: REDIS_PROBE,
@@ -615,6 +755,8 @@ export const STACKS: StackDef[] = [
       { ...UP, probe: MONGO_PROBE },
       {
         key: 'connectionsUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'Connection pool đã dùng',
         unit: '%',
         suggest: { op: 'gt', threshold: 80 },
@@ -625,6 +767,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'connections',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Connection hiện tại',
         alertCode: 'conn',
         probe: MONGO_PROBE,
@@ -632,6 +776,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'connectionsTotal',
+        rate: 'none',
         label: 'Connection tối đa',
         alertCode: 'conn',
         probe: MONGO_PROBE,
@@ -639,6 +784,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'cacheUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 600, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'WiredTiger cache',
         unit: '%',
         hint: '⚠ WiredTiger được thiết kế để giữ cache ~80–95% — đây là hành vi BÌNH THƯỜNG, không phải sự cố. Đừng đặt ngưỡng ở đây.',
@@ -649,6 +796,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'cacheUsedMb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 600, threshold: 512 }, { sec: 3600, threshold: 2048 }] },
         label: 'WiredTiger cache đã dùng',
         unit: 'MB',
         alertCode: 'cache',
@@ -657,6 +806,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'cacheTotalMb',
+        rate: 'none',
         label: 'WiredTiger cache tối đa',
         unit: 'MB',
         alertCode: 'cache',
@@ -667,6 +817,8 @@ export const STACKS: StackDef[] = [
       // number of collections.
       {
         key: 'diskUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 1800, threshold: 72 }, { sec: 21600, threshold: 24 }, { sec: 43200, threshold: 6 }] },
         label: 'Đĩa đã dùng',
         unit: '%',
         suggest: { op: 'gt', threshold: 85 },
@@ -680,6 +832,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskUsedGb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 3600, threshold: 5 }, { sec: 43200, threshold: 30 }] },
         label: 'Đĩa đã dùng',
         unit: 'GB',
         cost: 'medium',
@@ -691,6 +845,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskTotalGb',
+        rate: 'none',
         label: 'Dung lượng đĩa',
         unit: 'GB',
         cost: 'medium',
@@ -702,6 +857,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memResidentMb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 512 }, { sec: 3600, threshold: 2048 }] },
         label: 'RAM resident',
         unit: 'MB',
         alertCode: 'ram',
@@ -710,6 +867,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'replLagSec',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 30 }, { sec: 3600, threshold: 120 }] },
         label: 'Replication lag',
         unit: 's',
         suggest: { op: 'gt', threshold: 10 },
@@ -720,6 +879,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'membersUnhealthy',
+        rate: 'none',
         label: 'Member lỗi',
         suggest: { op: 'gt', threshold: 0 },
         alertCode: 'members',
@@ -737,6 +897,7 @@ export const STACKS: StackDef[] = [
       { ...UP, probe: ES_HEALTH_PROBE },
       {
         key: 'statusLevel',
+        rate: 'none',
         label: 'Trạng thái cluster',
         unit: '0=green 1=yellow 2=red',
         suggest: { op: 'gte', threshold: 1 },
@@ -746,6 +907,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'unassignedShards',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 5 }, { sec: 3600, threshold: 10 }] },
         label: 'Shard chưa gán',
         suggest: { op: 'gt', threshold: 0 },
         alertCode: 'shards',
@@ -754,6 +917,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'relocatingShards',
+        rate: 'none',
         label: 'Shard đang di chuyển',
         alertCode: 'shards',
         probe: ES_HEALTH_PROBE,
@@ -761,6 +925,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'pendingTasks',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 50 }, { sec: 3600, threshold: 100 }] },
         label: 'Pending tasks',
         suggest: { op: 'gt', threshold: 10 },
         alertCode: 'tasks',
@@ -770,6 +936,8 @@ export const STACKS: StackDef[] = [
       // These four come from the second call, /_cat/nodes.
       {
         key: 'heapPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'Heap cao nhất',
         unit: '%',
         suggest: { op: 'gt', threshold: 85 },
@@ -783,6 +951,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'cpuPct',
+        rate: 'derived',
         label: 'CPU cao nhất',
         unit: '%',
         suggest: { op: 'gt', threshold: 90 },
@@ -796,6 +965,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 1800, threshold: 72 }, { sec: 21600, threshold: 24 }, { sec: 43200, threshold: 6 }] },
         label: 'Đĩa cao nhất',
         unit: '%',
         suggest: { op: 'gt', threshold: 85 },
@@ -810,6 +981,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskUsedGb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 3600, threshold: 5 }, { sec: 43200, threshold: 30 }] },
         label: 'Đĩa đã dùng (node đầy nhất)',
         unit: 'GB',
         cost: 'medium',
@@ -821,6 +994,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskTotalGb',
+        rate: 'none',
         label: 'Dung lượng đĩa (node đầy nhất)',
         unit: 'GB',
         cost: 'medium',
@@ -832,6 +1006,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'load1m',
+        rate: 'derived',
         label: 'Load 1m cao nhất',
         cost: 'medium',
         costNote: ES_NODES_NOTE,
@@ -843,6 +1018,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'nodes',
+        rate: 'none',
         label: 'Số node',
         suggest: { op: 'lt', threshold: 3 },
         alertCode: 'nodes',
@@ -880,6 +1056,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'underReplicated',
+        rate: 'none',
         label: 'Partition under-replicated',
         suggest: { op: 'gt', threshold: 0 },
         cost: 'heavy',
@@ -891,6 +1068,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'offline',
+        rate: 'none',
         label: 'Partition offline',
         suggest: { op: 'gt', threshold: 0 },
         cost: 'heavy',
@@ -902,6 +1080,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'brokers',
+        rate: 'none',
         label: 'Số broker',
         suggest: { op: 'lt', threshold: 3 },
         cost: 'heavy',
@@ -914,6 +1093,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'noController',
+        rate: 'none',
         label: 'Mất controller',
         unit: '0/1',
         suggest: { op: 'gte', threshold: 1 },
@@ -926,6 +1106,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'maxConsumerLag',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Consumer lag cao nhất',
         unit: 'message',
         suggest: { op: 'gt', threshold: 10000 },
@@ -940,6 +1122,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'stalledGroups',
+        rate: 'none',
         label: 'Group đứng im',
         suggest: { op: 'gt', threshold: 0 },
         hint: 'Còn lag nhưng offset KHÔNG nhích qua ≥30s — consumer chết dù vẫn kết nối',
@@ -953,6 +1136,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'maxStalledSec',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 120 }, { sec: 3600, threshold: 600 }] },
         label: 'Đứng im lâu nhất',
         unit: 's',
         suggest: { op: 'gt', threshold: 600 },
@@ -967,6 +1152,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'deadLagGroups',
+        rate: 'none',
         label: 'Group có lag nhưng không consumer (AKHQ vàng)',
         suggest: { op: 'gt', threshold: 0 },
         hint: 'Có message chờ nhưng 0 consumer đang tiêu thụ — "lag vàng", kẹt thật dù nhỏ. Ít báo nhầm hơn "đứng im" (không dính control-record của consumer còn sống)',
@@ -980,6 +1166,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'emptyGroups',
+        rate: 'none',
         label: 'Group không còn member',
         suggest: { op: 'gt', threshold: 0 },
         hint: 'Có commit offset nhưng 0 consumer đang chạy (kể cả khi đã hết lag)',
@@ -993,6 +1180,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'rebalancingGroups',
+        rate: 'none',
         label: 'Group đang rebalance',
         suggest: { op: 'gt', threshold: 0 },
         hint: 'Kéo dài = consumer flapping (chết/sống liên tục)',
@@ -1006,6 +1194,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'totalConsumerLag',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Tổng lag toàn cluster',
         unit: 'message',
         cost: 'heavy',
@@ -1018,6 +1208,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'lagGroupsUnknown',
+        rate: 'none',
         label: 'Group không đọc được lag',
         suggest: { op: 'gt', threshold: 0 },
         hint: 'Lag KHÔNG xác định (không phải 0) — thường do group đang rebalance',
@@ -1031,6 +1222,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'undescribedGroups',
+        rate: 'none',
         label: 'Group không đọc được trạng thái',
         hint: 'describeGroups lỗi → số member/state không xác định; các chỉ số member bỏ qua group này',
         cost: 'heavy',
@@ -1043,6 +1235,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'groups',
+        rate: 'none',
         label: 'Số consumer group',
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
@@ -1054,6 +1247,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'topics',
+        rate: 'none',
         label: 'Số topic',
         cost: 'heavy',
         costNote: KAFKA_META_NOTE,
@@ -1065,6 +1259,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'partitions',
+        rate: 'none',
         label: 'Số partition',
         cost: 'heavy',
         costNote: KAFKA_META_NOTE,
@@ -1083,6 +1278,8 @@ export const STACKS: StackDef[] = [
       // bao giờ khớp (metric vắng mặt không được đánh giá).
       {
         key: 'hostDiskUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 1800, threshold: 72 }, { sec: 21600, threshold: 24 }, { sec: 43200, threshold: 6 }] },
         label: 'Đĩa broker đã dùng',
         unit: '%',
         suggest: { op: 'gt', threshold: 85 },
@@ -1097,6 +1294,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'hostDiskFreeGb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: -3 }, { sec: 3600, threshold: -10 }, { sec: 43200, threshold: -30 }] },
         label: 'Đĩa broker còn trống',
         unit: 'GB',
         suggest: { op: 'lt', threshold: 20 },
@@ -1111,6 +1310,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'hostMemUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'RAM broker đã dùng',
         unit: '%',
         suggest: { op: 'gt', threshold: 90 },
@@ -1125,6 +1326,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'hostCpuPct',
+        rate: 'derived',
         label: 'CPU broker',
         unit: '%',
         suggest: { op: 'gt', threshold: 90 },
@@ -1139,6 +1341,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'hostLoad1PerCore',
+        rate: 'derived',
         label: 'Load broker (mỗi core)',
         suggest: { op: 'gt', threshold: 1.5 },
         hint: 'load1 chia số core — ngưỡng dùng chung được cho broker khác cấu hình. >1 = có tiến trình phải xếp hàng',
@@ -1152,6 +1355,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'hostsDown',
+        rate: 'none',
         label: 'Host broker không lấy được số liệu',
         suggest: { op: 'gt', threshold: 0 },
         hint: 'node_exporter tắt / firewall / máy chết — KHÔNG chắc broker đã chết, dùng kèm chỉ số brokers',
@@ -1165,6 +1369,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'hostsTotal',
+        rate: 'none',
         label: 'Số host broker đang giám sát',
         cost: 'cheap',
         costNote: KAFKA_HOST_NOTE,
@@ -1184,6 +1389,8 @@ export const STACKS: StackDef[] = [
       { ...UP, probe: RABBIT_OVERVIEW_PROBE },
       {
         key: 'messagesReady',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Message tồn (ready)',
         suggest: { op: 'gt', threshold: 10000 },
         alertCode: 'queue',
@@ -1193,6 +1400,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'messagesUnacked',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Message chưa ack',
         suggest: { op: 'gt', threshold: 5000 },
         alertCode: 'queue',
@@ -1202,6 +1411,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'consumers',
+        rate: 'none',
         label: 'Số consumer',
         suggest: { op: 'lt', threshold: 1 },
         alertCode: 'consumers',
@@ -1212,6 +1422,7 @@ export const STACKS: StackDef[] = [
       // Everything below needs the second call, /api/nodes.
       {
         key: 'memAlarm',
+        rate: 'none',
         label: 'Cảnh báo RAM',
         unit: '0/1',
         suggest: { op: 'gte', threshold: 1 },
@@ -1224,6 +1435,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskAlarm',
+        rate: 'none',
         label: 'Cảnh báo đĩa',
         unit: '0/1',
         suggest: { op: 'gte', threshold: 1 },
@@ -1236,6 +1448,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'nodesDown',
+        rate: 'none',
         label: 'Node chết',
         suggest: { op: 'gt', threshold: 0 },
         cost: 'medium',
@@ -1248,6 +1461,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'RAM node cao nhất',
         unit: '%',
         suggest: { op: 'gt', threshold: 80 },
@@ -1262,6 +1477,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memUsedMb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 512 }, { sec: 3600, threshold: 2048 }] },
         label: 'RAM đã dùng (node cao nhất)',
         unit: 'MB',
         cost: 'medium',
@@ -1273,6 +1490,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memLimitMb',
+        rate: 'none',
         label: 'RAM watermark (node cao nhất)',
         unit: 'MB',
         cost: 'medium',
@@ -1284,6 +1502,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'fdUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'File descriptor',
         unit: '%',
         suggest: { op: 'gt', threshold: 80 },
@@ -1298,6 +1518,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'fdUsed',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'File descriptor đã dùng (node cao nhất)',
         cost: 'medium',
         costNote: RABBIT_NODES_NOTE,
@@ -1308,6 +1530,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'fdTotal',
+        rate: 'none',
         label: 'File descriptor tối đa (node cao nhất)',
         cost: 'medium',
         costNote: RABBIT_NODES_NOTE,
@@ -1318,6 +1541,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'queues',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 3600, threshold: 100 }, { sec: 43200, threshold: 200 }] },
         label: 'Số queue',
         alertCode: 'queue',
         probe: RABBIT_OVERVIEW_PROBE,
@@ -1326,6 +1551,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'publishRate',
+        rate: 'derived',
         label: 'Publish/giây',
         alertCode: 'ops',
         probe: RABBIT_OVERVIEW_PROBE,

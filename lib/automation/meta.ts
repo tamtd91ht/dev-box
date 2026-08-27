@@ -27,6 +27,12 @@ import { AGG_LABEL, metricDef, metricLabel, type FieldDef } from './catalog';
  *     NỐI: bắt tay TCP tới TỪNG seed broker, nên cảnh báo nói được node nào
  *     chết thay vì chỉ "0/1", kèm một câu kết luận hướng xử lý (bổ sung, tương
  *     thích ngược).
+ * v6: thêm `rate?: AlertMetaRate` — cảnh báo TỐC ĐỘ TĂNG TRƯỞNG. Bot PHẢI kiểm
+ *     `rate` trước khi diễn giải `current`/`threshold`: với cảnh báo tốc độ,
+ *     `threshold` là ngưỡng đặt trên MỨC THAY ĐỔI (hoặc số GIỜ còn lại khi
+ *     `rate.mode === 'eta'`), KHÔNG phải trên giá trị chỉ số — đọc nhầm sẽ ra
+ *     kết luận ngược hẳn ("đĩa mới 6" trong khi thực ra đĩa 92% và cạn sau 6
+ *     giờ). Vắng `rate` = cảnh báo ngưỡng tĩnh như mọi phiên bản trước.
  * v5: thêm `dns?: AlertMetaDns` — Kafka MẤT KẾT NỐI với địa chỉ dạng hostname:
  *     DevBox phân giải tên bằng NAMESERVER NÀO và ra IP gì. Cần vì trên
  *     container/VPN resolver của DevBox thường khác máy người đọc cảnh báo, nên
@@ -39,7 +45,7 @@ import { AGG_LABEL, metricDef, metricLabel, type FieldDef } from './catalog';
  *     là chưa đo. v5 chưa từng phát ra bản không có `noNames` nên không bot nào
  *     phải sửa.
  */
-export const META_SCHEMA_VERSION = 5;
+export const META_SCHEMA_VERSION = 6;
 
 /** Ký hiệu người đọc của phép so sánh — dùng chung cho description, text và meta. */
 export const OP_TEXT: Record<InfraWatch['op'], string> = {
@@ -88,6 +94,9 @@ export interface DescriptionInput {
   groupFilter?: string[];
   /** Ghi chú nghiệp vụ của watch — phần ngữ cảnh catalog không thể biết. */
   note?: string;
+  /** 'rate' đổi hẳn câu mô tả: cảnh báo nói về XU HƯỚNG, không phải mức hiện tại. */
+  kind?: InfraWatch['kind'];
+  rate?: InfraWatch['rate'];
 }
 
 /**
@@ -111,13 +120,82 @@ export function buildDescription(w: DescriptionInput): string {
   const scope = gf.length
     ? ` Chỉ xét ${gf.length} consumer group: ${gf.slice(0, 8).join(', ')}${gf.length > 8 ? `… (+${gf.length - 8})` : ''}.`
     : '';
+  // Watch TỐC ĐỘ đo một thứ khác hẳn, nên câu mô tả cũng phải khác — nếu vẫn
+  // viết "phát khi giá trị > 10" thì một con bot AI đọc mô tả sẽ hiểu sai hoàn
+  // toàn bản chất cảnh báo (tưởng đĩa mới 10% trong khi thực ra đang 92% và
+  // sắp đầy).
+  const rateText = describeRate(w);
   return (
     `${label} — ${meaning} ` +
     `DevBox đo bằng ${probe} mỗi ${w.everySec}s${agg}. ` +
-    `Cảnh báo phát khi giá trị ${OP_TEXT[w.op] ?? w.op} ${w.threshold}${hold}.` +
+    (rateText || `Cảnh báo phát khi giá trị ${OP_TEXT[w.op] ?? w.op} ${w.threshold}${hold}.`) +
     scope +
     (note ? ` Ghi chú: ${note}` : '')
   );
+}
+
+/** Cửa sổ đọc thành lời — giữ chung một cách nói với UI và với text cảnh báo. */
+const fmtWindow = (sec: number): string =>
+  sec % 3600 === 0 ? `${sec / 3600} giờ` : sec % 60 === 0 ? `${sec / 60} phút` : `${sec} giây`;
+
+/**
+ * Mô tả cơ chế của một watch TỐC ĐỘ. Rỗng khi đây là watch thường.
+ *
+ * Nói đủ ba thứ mà người đọc (hoặc bot) cần để đánh giá đúng: đo theo cách
+ * nào, trên những cửa sổ nào, và — quan trọng nhất — rằng cảnh báo này nói về
+ * XU HƯỚNG chứ không phải mức hiện tại.
+ */
+function describeRate(w: DescriptionInput): string {
+  if (w.kind !== 'rate' || !w.rate) return '';
+  const op = OP_TEXT[w.op] ?? w.op;
+  const wins = w.rate.windows.map((x) => `${op} ${x.threshold} trong ${fmtWindow(x.sec)}`).join(', hoặc ');
+  if (w.rate.mode === 'eta') {
+    return (
+      `Đây là cảnh báo DỰ BÁO CẠN, không phải ngưỡng tĩnh: DevBox lấy tốc độ tăng gần đây` +
+      ` chia cho phần dung lượng còn trống để ước tính còn bao lâu thì hết, rồi báo khi ${wins}.` +
+      ` Giá trị hiện tại có thể vẫn dưới mọi ngưỡng thông thường — điều đáng lo là ĐÀ đi tới.`
+    );
+  }
+  const how =
+    w.rate.mode === 'points'
+      ? 'chênh lệch tính bằng ĐIỂM phần trăm'
+      : w.rate.mode === 'relative'
+        ? 'chênh lệch tính bằng % so với chính giá trị đầu cửa sổ'
+        : 'chênh lệch tính theo đơn vị gốc của chỉ số';
+  return (
+    `Đây là cảnh báo TỐC ĐỘ THAY ĐỔI, không phải ngưỡng tĩnh: DevBox so giá trị đầu và cuối` +
+    ` mỗi cửa sổ (${how}) và báo khi ${wins}.` +
+    ` Vượt ở BẤT KỲ cửa sổ nào cũng phát — cửa sổ ngắn bắt đột biến, cửa sổ dài bắt rò rỉ chậm.`
+  );
+}
+
+/**
+ * Dựng khối `rate` của AlertMeta từ fields phẳng.
+ *
+ * `windows` đi qua event dưới dạng JSON (fields chỉ chứa string|number), nên
+ * chỗ này parse lại. JSON hỏng → mảng rỗng chứ không ném: một cảnh báo thiếu
+ * phần toàn cảnh vẫn tốt hơn một cảnh báo không gửi được.
+ */
+function buildRate(f: Record<string, string | number>): AlertMetaRate {
+  let windows: AlertMetaRateWindow[] = [];
+  try {
+    const parsed = JSON.parse(String(f.rateWindowsJson || '[]')) as unknown;
+    if (Array.isArray(parsed)) windows = parsed as AlertMetaRateWindow[];
+  } catch {
+    /* xem docstring */
+  }
+  const eta = f.etaSec;
+  return {
+    mode: String(f.rateMode ?? ''),
+    windowSec: Number(f.rateWindowSec) || 0,
+    from: Number(f.rateFrom) || 0,
+    to: Number(f.rateTo) || 0,
+    delta: Number(f.rateDelta) || 0,
+    perHour: Number(f.ratePerHour) || 0,
+    ...(typeof eta === 'number' && Number.isFinite(eta) ? { etaSec: eta } : {}),
+    samples: Number(f.rateSamples) || 0,
+    windows,
+  };
 }
 
 /** "340" → "5 phút 40 giây" — cho recovery.downText. */
@@ -163,6 +241,40 @@ export interface AlertMetaDetection {
   holdSec: number;
   /** Cách gộp nhiều node, khi metric có. */
   aggregation?: string;
+}
+
+/** Một cửa sổ so sánh của cảnh báo tốc độ. */
+export interface AlertMetaRateWindow {
+  windowSec: number;
+  from: number;
+  to: number;
+  delta: number;
+  threshold: number;
+  breaching: boolean;
+  /** Chỉ mode 'eta': số giây còn lại đến khi cạn theo đà hiện tại. */
+  etaSec?: number;
+}
+
+/**
+ * Cảnh báo TỐC ĐỘ. Có mặt = cảnh báo này nói về XU HƯỚNG, không phải mức hiện
+ * tại — xem ghi chú v6 ở META_SCHEMA_VERSION trước khi diễn giải.
+ */
+export interface AlertMetaRate {
+  /** points (điểm %) · absolute (đơn vị gốc) · relative (% so với chính nó) · eta (giờ đến khi cạn). */
+  mode: string;
+  /** Cửa sổ đã kích hoạt cảnh báo (vượt nặng nhất). */
+  windowSec: number;
+  from: number;
+  to: number;
+  delta: number;
+  /** Tốc độ quy về một giờ — so sánh được giữa các cửa sổ khác độ dài. */
+  perHour: number;
+  /** Còn bao lâu thì cạn (giây). Vắng = không tăng, hoặc chỉ số không có trần. */
+  etaSec?: number;
+  /** Số mẫu đang giữ — ít mẫu nghĩa là kết luận mỏng. */
+  samples: number;
+  /** MỌI cửa sổ đã khai, kể cả cái không vượt — bot thấy được toàn cảnh xu hướng. */
+  windows: AlertMetaRateWindow[];
 }
 
 export interface AlertMetaRecovery {
@@ -298,6 +410,8 @@ export interface AlertMeta {
   metric?: AlertMetaMetric;
   threshold?: AlertMetaThreshold;
   current?: number;
+  /** Có mặt = cảnh báo TỐC ĐỘ; đổi hẳn cách đọc `threshold`. Xem v6. */
+  rate?: AlertMetaRate;
   absolute?: AlertMetaAbsolute;
   watch?: AlertMetaWatch;
   detection?: AlertMetaDetection;
@@ -503,6 +617,9 @@ export function buildAlertMeta(event: AutomationEvent): AlertMeta {
         value: n(f.threshold),
       },
       current: n(f.value),
+      // Cảnh báo TỐC ĐỘ: có mặt thì bot phải đọc threshold theo nghĩa khác hẳn
+      // (ngưỡng trên mức THAY ĐỔI, hoặc số GIỜ còn lại). Xem ghi chú v6.
+      ...(s(f.rateMode) ? { rate: buildRate(f) } : {}),
       // absText mang sẵn " · " đầu chuỗi (cho template) — bản trong meta bỏ đi.
       ...(typeof f.absTotal === 'number' && f.absTotal > 0
         ? {

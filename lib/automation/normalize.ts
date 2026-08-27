@@ -8,7 +8,11 @@
 import {
   DEFAULT_AUTOMATION_CONFIG,
   DEFAULT_LOG_STORE,
+  DEFAULT_MIN_SAMPLES,
+  DEFAULT_RATE,
   DEFAULT_TRACE,
+  MAX_WINDOW_SEC,
+  MIN_POLLS_PER_WINDOW,
   type ActionType,
   type AutomationAction,
   type AutomationCondition,
@@ -19,6 +23,10 @@ import {
   type HttpMethod,
   type InfraStack,
   type InfraWatch,
+  type RateMode,
+  type RateWindow,
+  type WatchKind,
+  type WatchRate,
   type LogStoreConfig,
   type LogTarget,
   type MentionAssignment,
@@ -267,6 +275,51 @@ function normRule(raw: unknown, index: number): AutomationRule | null {
 /** Never poll faster than this — the probes hit real infrastructure. */
 export const MIN_WATCH_INTERVAL_SEC = 15;
 
+const RATE_MODES: RateMode[] = ['points', 'absolute', 'relative', 'eta'];
+const WATCH_KINDS: WatchKind[] = ['level', 'rate'];
+
+/**
+ * Làm sạch cấu hình đo tốc độ.
+ *
+ * Hai ràng buộc ở đây không phải để chiều lòng kiểu dữ liệu, mà để chặn hai
+ * cách cấu hình làm watch IM LẶNG mà người dùng tưởng nó đang canh:
+ *
+ *   · cửa sổ ngắn hơn 3 nhịp poll  → không bao giờ đủ mẫu, watch nằm pending
+ *                                    vĩnh viễn. Nới cửa sổ ra thay vì bỏ đi.
+ *   · cửa sổ dài quá một ngày      → cắt về trần; dài hơn thì là đồ thị, và
+ *                                    buffer phình ra vô ích.
+ *
+ * Cửa sổ rỗng thì lấy mặc định chứ KHÔNG bỏ trống — một rate watch không có
+ * cửa sổ nào là một watch không bao giờ kêu.
+ */
+function normRate(raw: unknown, everySec: number): WatchRate {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const mode = RATE_MODES.includes(r.mode as RateMode) ? (r.mode as RateMode) : DEFAULT_RATE.mode;
+
+  const floor = Math.max(MIN_WATCH_INTERVAL_SEC, everySec) * MIN_POLLS_PER_WINDOW;
+  const seen = new Set<number>();
+  const windows: RateWindow[] = (Array.isArray(r.windows) ? r.windows : [])
+    .map((w) => {
+      const o = (w && typeof w === 'object' ? w : {}) as Record<string, unknown>;
+      const sec = Math.min(MAX_WINDOW_SEC, Math.max(floor, posInt(o.sec) ?? floor));
+      return { sec, threshold: num(o.threshold) };
+    })
+    // Hai cửa sổ cùng độ dài là một cửa sổ — giữ cái đầu, tránh báo trùng.
+    .filter((w) => (seen.has(w.sec) ? false : (seen.add(w.sec), true)))
+    .sort((a, b) => a.sec - b.sec)
+    .slice(0, 6);
+
+  return {
+    mode,
+    windows: windows.length
+      ? windows
+      : DEFAULT_RATE.windows.map((w) => ({ ...w, sec: Math.min(MAX_WINDOW_SEC, Math.max(floor, w.sec)) })),
+    minSamples: Math.min(50, Math.max(2, posInt(r.minSamples) ?? DEFAULT_MIN_SAMPLES)),
+    smooth: bool(r.smooth, true),
+    resetOnDrop: bool(r.resetOnDrop, true),
+  };
+}
+
 function normWatch(raw: unknown, index: number): InfraWatch | null {
   if (!raw || typeof raw !== 'object') return null;
   const w = raw as Record<string, unknown>;
@@ -300,6 +353,14 @@ function normWatch(raw: unknown, index: number): InfraWatch | null {
     notifyRecovery: bool(w.notifyRecovery, true),
     // Clamped: description tự sinh phải giữ được dưới độ dài một tin nhắn Zalo.
     note: str(w.note).slice(0, 280),
+    // Watch cũ không khai `kind` → 'level', và không mang theo khối `rate` nào
+    // cả: cấu hình đã lưu từ trước giữ nguyên byte-for-byte.
+    ...(() => {
+      const kind = WATCH_KINDS.includes(w.kind as WatchKind) ? (w.kind as WatchKind) : 'level';
+      if (kind !== 'rate') return {};
+      const every = Math.max(MIN_WATCH_INTERVAL_SEC, posInt(w.everySec) ?? 60);
+      return { kind, rate: normRate(w.rate, every) };
+    })(),
   };
 }
 
