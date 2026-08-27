@@ -39,6 +39,14 @@ export interface StoredMessage {
   zMsgId?: string;
   /** cliMsgId của Zalo (cMsgID khi thả cảm xúc). */
   zCliMsgId?: string;
+  /**
+   * Tin GỐC mà tin này trả lời — để màn chat vẽ khối trích dẫn phía trên.
+   *
+   * Lưu bản SAO nội dung chứ không chỉ id: tin gốc có thể chưa từng qua phiên
+   * này (trả lời một tin cũ hơn cửa sổ đang giữ), hoặc đã bị thu hồi. Trỏ id
+   * rồi tra ngược thì đúng những ca đó lại hiện khối trích dẫn trống.
+   */
+  quote?: { msgId: string; fromName: string; text: string };
   /** 'sending' | 'sent' | 'failed' cho tin gửi lạc quan; để trống với tin đến. */
   status?: 'sending' | 'sent' | 'failed';
   /**
@@ -171,6 +179,7 @@ export function recordIncoming(accountKey: string, m: IncomingMessage): void {
     fromId: m.fromId,
     fromName: m.fromName,
     text: m.text,
+    ...(m.quote ? { quote: m.quote } : {}),
     status: m.isSelf ? 'sent' : undefined,
     // Cất id THẬT để thả cảm xúc được (xem zMsgId trong StoredMessage).
     ...(m.zMsgId ? { zMsgId: m.zMsgId } : {}),
@@ -265,13 +274,21 @@ export function recordOwnReaction(
  */
 export function recordOutgoing(
   accountKey: string,
-  p: { threadId: string; group: boolean; text: string; at: number; status?: StoredMessage['status']; imageUrl?: string },
+  p: {
+    threadId: string; group: boolean; text: string; at: number;
+    status?: StoredMessage['status']; imageUrl?: string;
+    quote?: StoredMessage['quote'];
+  },
 ): string {
   const t = getThread(accountKey, p.threadId, p.group);
   if (p.group) t.group = true;
   const id = `out-${p.at}-${hash(p.text + '|' + (p.imageUrl ?? ''))}`;
   if (!t.messages.some((x) => x.id === id)) {
-    const msg: StoredMessage = { id, at: p.at, self: true, fromId: '', fromName: '', text: p.text, imageUrl: p.imageUrl, status: p.status ?? 'sending' };
+    const msg: StoredMessage = {
+      id, at: p.at, self: true, fromId: '', fromName: '', text: p.text,
+      imageUrl: p.imageUrl, status: p.status ?? 'sending',
+      ...(p.quote ? { quote: p.quote } : {}),
+    };
     push(t, msg);
     // Ghi luôn cả tin đang 'sending': nếu app tắt giữa lúc gửi, tin vẫn còn dấu
     // vết. archiveMessage bỏ trạng thái tạm, setMessageStatus vá lại sau.

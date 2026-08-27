@@ -440,7 +440,7 @@ export default function ZaloChatPanel({
           accountKey, threadId: activeThread, text, group,
           styles: styles.length ? styles : undefined,
           ...(mentions.length && group ? { mentions } : {}),
-          ...(quote ? { quote } : {}),
+          ...(quote ? { quote, quoteFrom: replyTo?.self ? 'Bạn' : (replyTo?.fromName || replyTo?.fromId || '') } : {}),
         });
         if (!res.ok) setErr(res.detail || 'gửi không thành công');
         dest = res.threadId || dest;
@@ -736,6 +736,15 @@ export default function ZaloChatPanel({
                         )}
                         <div className="zc-row-main">
                           {!m.self && group && startGroup && m.fromName && <span className="zc-msg-from">{m.fromName}</span>}
+                          {/* Khối TRÍCH DẪN của tin đang trả lời. Nằm trong
+                              cùng bong bóng, phía trên nội dung — giống Zalo
+                              thật, để đọc là biết ngay đang nói về tin nào. */}
+                          {m.quote && (
+                            <span className="zc-quote">
+                              <b className="zc-quote-from">{m.quote.fromName || 'Tin gốc'}</b>
+                              <span className="zc-quote-text">{m.quote.text || '[tin]'}</span>
+                            </span>
+                          )}
                           {m.imageUrl ? (
                             <a className="zc-msg-img" href={m.imageUrl} target="_blank" rel="noreferrer">
                               {/* eslint-disable-next-line @next/next/no-img-element */}

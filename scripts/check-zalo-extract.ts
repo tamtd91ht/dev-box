@@ -153,6 +153,46 @@ const msg = (o: Record<string, unknown> = {}): Record<string, unknown> => ({
   check(out.length === 1, 'tin có field `data` riêng không bị bóc nhầm');
 }
 
+// ── 11. TRẢ LỜI — khối trích dẫn phải theo tin về ──────────────────────────
+//
+// Thiếu phần này thì tin người khác trả lời ta hiện ra như một câu rời khỏi
+// ngữ cảnh: đọc "ok em làm rồi" mà không biết đang nói về việc gì.
+{
+  const out = extractMessages(false, wrap({
+    msgs: [msg({
+      content: JSON.stringify({
+        title: 'ok em làm rồi',
+        quote: { globalMsgId: '1001', ownerName: 'Sếp', qmsg: 'em check giúp cái deploy' },
+      }),
+    })],
+  }), AT, SELF);
+  check(out.length === 1, `quote: rút được tin (thực tế ${out.length})`);
+  check(out[0]?.text === 'ok em làm rồi', 'quote: nội dung mới đúng');
+  check(out[0]?.quote?.msgId === '1001', 'quote: giữ id tin gốc');
+  check(out[0]?.quote?.text === 'em check giúp cái deploy', 'quote: giữ nội dung tin gốc');
+  check(out[0]?.quote?.fromName === 'Sếp', 'quote: giữ tên người gửi tin gốc');
+}
+
+// ── 12. Khung cảm xúc KHÔNG bị đọc nhầm thành quote ────────────────────────
+//
+// Cảm xúc cũng dùng `content` cho payload riêng của nó; đọc bừa là mỗi lần ai
+// thả tim lại sinh một khối trích dẫn rỗng.
+{
+  const out = extractMessages(false, wrap({
+    reacts: [{
+      msgId: '1001', uidFrom: '999', dName: 'Khách A', ts: AT,
+      content: { rMsg: [{ gMsgID: '1001' }], rIcon: '/-heart', rType: 5 },
+    }],
+  }), AT, SELF);
+  check(!out[0]?.quote, 'cảm xúc KHÔNG bị dựng thành khối trích dẫn');
+}
+
+// ── 13. Tin thường không có quote → không dựng khối rỗng ───────────────────
+{
+  const out = extractMessages(false, wrap({ msgs: [msg()] }), AT, SELF);
+  check(!out[0]?.quote, 'tin thường không có khối trích dẫn thừa');
+}
+
 // ── Kết ────────────────────────────────────────────────────────────────────
 
 if (failures) {

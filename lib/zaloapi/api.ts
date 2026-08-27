@@ -63,6 +63,8 @@ export interface ZaloStoredMessage {
    * tin rời không có khối trích dẫn.
    */
   zCliMsgId?: string;
+  /** Tin GỐC mà tin này trả lời — để vẽ khối trích dẫn phía trên bong bóng. */
+  quote?: { msgId: string; fromName: string; text: string };
 }
 
 export interface ZaloApiFlags {
@@ -129,6 +131,8 @@ export function zaloApiSendMessage(params: {
    * lạc quan chưa có id thật thì chưa trả lời được.
    */
   quote?: { msgId: string; cliMsgId?: string; ownerId?: string; ts?: number; text?: string };
+  /** Tên người gửi tin gốc — chỉ để VẼ khối trích dẫn trong màn chat của ta. */
+  quoteFrom?: string;
 }): Promise<ZaloSendResult> {
   return call<ZaloSendResult>('send', params);
 }

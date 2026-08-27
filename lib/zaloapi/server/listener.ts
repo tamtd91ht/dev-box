@@ -51,6 +51,13 @@ export interface IncomingMessage {
   zCliMsgId: string;
   /** Tên hiển thị người gửi (nếu payload có). */
   fromName: string;
+  /**
+   * Tin GỐC mà tin này TRẢ LỜI (khối trích dẫn), nếu có.
+   *
+   * Không có phần này thì tin người khác trả lời ta hiện ra như một câu rời
+   * khỏi ngữ cảnh — đọc "ok em làm rồi" mà không biết đang nói về việc gì.
+   */
+  quote?: { msgId: string; fromName: string; text: string };
   /** Nội dung văn bản. */
   text: string;
   /**
@@ -186,6 +193,39 @@ function pickReaction(m: Record<string, unknown>): { targetMsgId: string; icon: 
 }
 
 /**
+ * Rút khối TRÍCH DẪN của một tin trả lời.
+ *
+ * Zalo để nó trong `content` dưới nhiều tên tuỳ bản build — `qmsg` (payload gửi
+ * đi) hoặc `quote`/`quotedMsg` (payload nhận về), và phần chữ có khi nằm ở
+ * `qmsg`, có khi ở `msg`/`title`. Nhận hết thay vì bám một tên: sai tên thì
+ * khối trích dẫn im lặng biến mất, y như lỗi từng gặp với `groupMsgs`.
+ */
+function pickQuote(m: Record<string, unknown>): { msgId: string; fromName: string; text: string } | undefined {
+  let c: unknown = m['content'];
+  if (typeof c === 'string') {
+    const t = c.trim();
+    if (!t.startsWith('{')) return undefined;
+    try { c = JSON.parse(t); } catch { return undefined; }
+  }
+  if (!c || typeof c !== 'object') return undefined;
+  const obj = c as Record<string, unknown>;
+
+  // Khối quote có thể nằm lồng (content.quote) hoặc phẳng (content.qmsgId…).
+  const nested = obj['quote'] ?? obj['quotedMsg'];
+  const q = nested && typeof nested === 'object' ? (nested as Record<string, unknown>) : obj;
+
+  const msgId = pickStr(q, 'globalMsgId', 'qmsgId', 'gMsgID', 'msgId', 'cliMsgId');
+  const text = pickStr(q, 'qmsg', 'msg', 'title', 'text', 'content');
+  // Không có id LẪN chữ thì không phải khối trích dẫn — đừng dựng khối rỗng.
+  if (!msgId && !text) return undefined;
+  return {
+    msgId,
+    fromName: pickStr(q, 'ownerName', 'qmsgOwnerName', 'dName', 'fromName'),
+    text: text.slice(0, 300),
+  };
+}
+
+/**
  * Lôi TẤT CẢ tin văn bản ra khỏi payload đã giải mã, chịu được nhiều schema.
  *
  * Trước đây chỉ lấy tin CUỐI của khung và quyết group bằng số cmd (501/521).
@@ -285,6 +325,12 @@ export function extractMessages(groupHint: boolean, decoded: unknown, at: number
       fromName: pickStr(m, 'dName', 'fromName', 'senderName'),
       // Cảm xúc không có nội dung → dựng một dòng mô tả để Console đọc được.
       text: text || (react ? (react.icon ? `đã thả ${react.icon}` : 'đã bỏ cảm xúc') : ''),
+      ...(() => {
+        // Chỉ tin THẬT mới có trích dẫn; khung cảm xúc dùng chung `content` cho
+        // payload riêng của nó nên đừng đọc nhầm thành quote.
+        const q = react ? undefined : pickQuote(m);
+        return q ? { quote: q } : {};
+      })(),
       ...(react ? { reaction: { ...react, isSelf } } : {}),
       raw: m,
     });

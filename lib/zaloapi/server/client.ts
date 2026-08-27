@@ -106,9 +106,26 @@ async function fetchZalo(url: string, init: RequestInit, what: string): Promise<
     return JSON.parse(text) as ZaloEnvelope;
   } catch {
     const head = text.slice(0, 120).replace(/\s+/g, ' ');
+    // 404 KHÔNG phải chuyện cookie. Cookie hỏng thì Zalo trả 401/403 hoặc đẩy
+    // về trang login — còn 404 từ nginx nghĩa là ĐƯỜNG DẪN không tồn tại trên
+    // host đó (endpoint đổi theo bản build, hoặc ta gọi nhầm host). Gộp cả hai
+    // vào một câu "thường là cookie hết hạn" khiến người dùng đi kiểm cookie
+    // trong khi lỗi nằm ở URL — đúng ca đã gặp với lịch sử nhóm.
+    if (res.status === 404) {
+      // Ghi cả URL (đã bỏ phần params mã hoá — nó dài và không giúp gì) để biết
+      // chính xác đường dẫn nào không còn.
+      const bare = url.split('?')[0];
+      trace('http404', `${what}: endpoint không tồn tại`, { url: bare, status: 404 });
+      throw new Error(
+        `${what}: Zalo trả 404 cho ${bare} — endpoint này không còn trên bản build hiện tại `
+        + `(KHÔNG phải lỗi cookie; cookie hỏng sẽ ra 401/403 hoặc trang login).`,
+      );
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`${what}: Zalo từ chối (HTTP ${res.status}) — cookie hết hạn, cần Kết nối lại.`);
+    }
     throw new Error(
-      `${what}: Zalo trả về không phải JSON (HTTP ${res.status}) — thường là cookie hết hạn `
-      + `hoặc bị chặn. Đoạn đầu: ${head}`,
+      `${what}: Zalo trả về không phải JSON (HTTP ${res.status}). Đoạn đầu: ${head}`,
     );
   }
 }
@@ -829,16 +846,58 @@ export async function getGroupHistory(ctx: ZaloContext, groupId: string, count =
   if (!host) throw new Error('serviceMap thiếu host group');
   const encrypted = encodeAES(ctx.secretKey, JSON.stringify({ grid: groupId, count }));
   if (!encrypted) throw new Error('mã hoá params lịch sử thất bại');
-  const url = makeURL(`${host}/api/group/history`, { params: encrypted });
 
-  const raw = await fetchZalo(url, { method: 'GET', headers: headers(ctx) }, 'lịch sử nhóm');
+  // Đường dẫn lịch sử ĐỔI theo bản build Zalo, và sai đường thì nginx trả 404
+  // (không phải lỗi cookie — xem fetchZalo). Thử lần lượt các đường đã biết
+  // thay vì chết ở cái đầu tiên: một cái 404 không nói gì về những cái còn lại.
+  //
+  // Thứ tự theo độ phổ biến. `/api/group/getmsgs` là đường bản web hiện dùng
+  // (cùng họ với /api/group/sendmsg đang chạy tốt), `/api/group/history` là
+  // đường zca-js port từ bản cũ.
+  const paths = ['/api/group/getmsgs', '/api/group/history', '/api/group/msgs'];
+  const tried: string[] = [];
+  let raw: ZaloEnvelope | null = null;
+  let lastErr: Error | null = null;
+  for (const path of paths) {
+    const url = makeURL(`${host}${path}`, { params: encrypted });
+    try {
+      raw = await fetchZalo(url, { method: 'GET', headers: headers(ctx) }, 'lịch sử nhóm');
+      trace('history', `lịch sử nhóm OK qua ${path}`, { host, path });
+      break;
+    } catch (e) {
+      const err = e as Error;
+      tried.push(path);
+      lastErr = err;
+      // Chỉ 404 mới đáng thử đường khác. Lỗi khác (cookie, mạng, timeout) thì
+      // thử tiếp cũng hỏng y hệt, chỉ tổ chậm gấp ba.
+      if (!/404/.test(err.message)) throw err;
+    }
+  }
+  if (!raw) {
+    throw new Error(
+      `lịch sử nhóm: không đường dẫn nào còn dùng được trên ${host} `
+      + `(đã thử ${tried.join(', ')}). Bản build Zalo có thể đã đổi endpoint. `
+      + `Chi tiết lần cuối: ${lastErr?.message ?? '—'}`,
+    );
+  }
   if (raw.error_code && raw.error_code !== 0) {
     throw new Error(`lịch sử nhóm lỗi ${raw.error_code}: ${raw.error_message ?? ''}`);
   }
   const decoded = raw.data ? decryptRespSecret(ctx.secretKey, raw.data) : null;
   const inner = unwrap(decoded);
-  const listRaw = inner?.['groupMsgs'];
-  const list = Array.isArray(listRaw) ? listRaw : [];
+  // Nhận MỌI tên kho đã biết: mỗi endpoint trả một tên khác, và đọc thiếu thì
+  // kết quả là "tải xong, 0 tin" — im lặng y hệt lúc lịch sử thật sự trống.
+  // Đúng bài học từ listener: bám một tên field là bỏ lọt cả một đường dữ liệu.
+  const list =
+    (['groupMsgs', 'msgs', 'messages', 'items'] as const)
+      .map((k) => inner?.[k])
+      .find((v): v is unknown[] => Array.isArray(v) && v.length > 0)
+    ?? [];
+  if (!list.length) {
+    trace('history', 'lịch sử nhóm: không thấy kho tin nào trong response', {
+      keys: inner ? Object.keys(inner).slice(0, 15) : null,
+    });
+  }
 
   const out: HistoryMessage[] = [];
   for (const item of list) {

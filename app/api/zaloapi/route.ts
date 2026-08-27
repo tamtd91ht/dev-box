@@ -208,7 +208,15 @@ export async function POST(req: NextRequest) {
           : (mentions ?? []).map((m: { uid: string; name: string }) => `@${m.name || m.uid}`).join(' ');
         const dest = threadId || ctx.uid;
         const now = Date.now();
-        const echoId = dest ? recordOutgoing(accountKey, { threadId: dest, group, text: echoText, at: now, status: 'sending' }) : '';
+        const echoId = dest
+          ? recordOutgoing(accountKey, {
+              threadId: dest, group, text: echoText, at: now, status: 'sending',
+              // Bong bóng phải mang theo khối trích dẫn NGAY, không đợi Zalo dội
+              // về: tin gửi lạc quan hiện tức thì, mà bản dội về lại được GỘP vào
+              // chính nó (xem recordIncoming) nên không có lần thứ hai để bổ sung.
+              ...(quote ? { quote: { msgId: quote.msgId, fromName: String(body.quoteFrom || ''), text: quote.text } } : {}),
+            })
+          : '';
         const result = await sendMessage(ctx, { threadId, message: text, group, styles, mentions, quote });
         if (dest && echoId) setMessageStatus(accountKey, dest, echoId, result.ok ? 'sent' : 'failed');
         // eslint-disable-next-line no-console
