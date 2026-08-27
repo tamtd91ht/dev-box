@@ -173,6 +173,45 @@ const msg = (o: Record<string, unknown> = {}): Record<string, unknown> => ({
   check(out[0]?.quote?.fromName === 'Sếp', 'quote: giữ tên người gửi tin gốc');
 }
 
+// ── 11b. Quote khi `content` là CHUỖI THUẦN (tin trả lời vẫn là tin text) ──
+//
+// Đây là ca đã bỏ lọt thật: bản trước thoát ngay khi content không bắt đầu bằng
+// '{', nên "gửi thì có quote, nhận thì không".
+{
+  const out = extractMessages(false, wrap({
+    msgs: [msg({
+      content: 'ok em làm rồi',
+      quote: { globalMsgId: '1001', ownerName: 'Sếp', qmsg: 'em check giúp cái deploy' },
+    })],
+  }), AT, SELF);
+  check(out[0]?.text === 'ok em làm rồi', 'quote/content-chuỗi: nội dung mới đúng');
+  check(out[0]?.quote?.msgId === '1001', 'quote/content-chuỗi: vẫn rút được khối trích dẫn');
+  check(out[0]?.quote?.text === 'em check giúp cái deploy', 'quote/content-chuỗi: giữ nội dung gốc');
+}
+
+// ── 11c. Quote dạng PHẲNG ngay trên tin (qmsgId/qmsgOwner cạnh msgId) ──────
+{
+  const out = extractMessages(false, wrap({
+    msgs: [msg({
+      content: 'vâng anh', qmsgId: '1001', qmsgOwner: '999',
+      qmsg: 'gửi lại giúp anh cái link', ownerName: 'Sếp',
+    })],
+  }), AT, SELF);
+  check(out[0]?.quote?.msgId === '1001', 'quote phẳng: rút được từ cấp tin');
+  check(out[0]?.quote?.text === 'gửi lại giúp anh cái link', 'quote phẳng: giữ nội dung gốc');
+}
+
+// ── 11d. Chỉ có CHỮ mà không có id → KHÔNG dựng khối trích dẫn ─────────────
+//
+// Không có id thì không phân biệt được với chính nội dung tin, và dựng khối từ
+// đó là bịa ra một tin gốc không tồn tại.
+{
+  const out = extractMessages(false, wrap({
+    msgs: [msg({ content: JSON.stringify({ title: 'chỉ là tin thường', text: 'không phải quote' }) })],
+  }), AT, SELF);
+  check(!out[0]?.quote, 'chỉ có chữ, không id → không bịa khối trích dẫn');
+}
+
 // ── 12. Khung cảm xúc KHÔNG bị đọc nhầm thành quote ────────────────────────
 //
 // Cảm xúc cũng dùng `content` cho payload riêng của nó; đọc bừa là mỗi lần ai

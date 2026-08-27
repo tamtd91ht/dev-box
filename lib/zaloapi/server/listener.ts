@@ -201,28 +201,60 @@ function pickReaction(m: Record<string, unknown>): { targetMsgId: string; icon: 
  * khối trích dẫn im lặng biến mất, y như lỗi từng gặp với `groupMsgs`.
  */
 function pickQuote(m: Record<string, unknown>): { msgId: string; fromName: string; text: string } | undefined {
+  // Khối quote có thể ở CẤP TIN (m.quote) hoặc trong `content`. Bản build hiện
+  // tại đặt ở đâu thì chưa chắc — nhận cả hai thay vì bám một chỗ.
+  //
+  // Quan trọng: tin trả lời vẫn là tin VĂN BẢN, nên `content` thường là CHUỖI
+  // thuần chứ không phải JSON. Bản trước thoát ngay khi content không bắt đầu
+  // bằng '{' và bỏ lọt toàn bộ ca đó — đúng triệu chứng "gửi thì có quote, nhận
+  // thì không".
+  const roots: Record<string, unknown>[] = [];
+
+  const atMsg = m['quote'] ?? m['quotedMsg'] ?? m['qmsg'];
+  if (atMsg && typeof atMsg === 'object') roots.push(atMsg as Record<string, unknown>);
+  // Dạng phẳng ngay trên tin: qmsgId/qmsgOwner… nằm cạnh msgId.
+  if ('qmsgId' in m || 'qmsgOwner' in m) roots.push(m);
+
   let c: unknown = m['content'];
-  if (typeof c === 'string') {
-    const t = c.trim();
-    if (!t.startsWith('{')) return undefined;
-    try { c = JSON.parse(t); } catch { return undefined; }
+  if (typeof c === 'string' && c.trim().startsWith('{')) {
+    try { c = JSON.parse(c.trim()); } catch { c = null; }
   }
-  if (!c || typeof c !== 'object') return undefined;
-  const obj = c as Record<string, unknown>;
+  if (c && typeof c === 'object') {
+    const obj = c as Record<string, unknown>;
+    const nested = obj['quote'] ?? obj['quotedMsg'];
+    if (nested && typeof nested === 'object') roots.push(nested as Record<string, unknown>);
+    roots.push(obj);
+  }
 
-  // Khối quote có thể nằm lồng (content.quote) hoặc phẳng (content.qmsgId…).
-  const nested = obj['quote'] ?? obj['quotedMsg'];
-  const q = nested && typeof nested === 'object' ? (nested as Record<string, unknown>) : obj;
+  for (const q of roots) {
+    const msgId = pickStr(q, 'globalMsgId', 'qmsgId', 'gMsgID', 'gMsgId', 'msgId', 'cMsgID', 'cliMsgId');
+    const text = pickStr(q, 'qmsg', 'msg', 'title', 'text', 'content', 'qmsgContent');
+    // Cần ÍT NHẤT id — chỉ có chữ thì không phân biệt được với chính nội dung
+    // tin, và dựng khối trích dẫn từ đó là bịa ra một tin gốc không tồn tại.
+    if (!msgId) continue;
+    return {
+      msgId,
+      fromName: pickStr(q, 'ownerName', 'qmsgOwnerName', 'dName', 'fromName'),
+      text: text.slice(0, 300),
+    };
+  }
+  return undefined;
+}
 
-  const msgId = pickStr(q, 'globalMsgId', 'qmsgId', 'gMsgID', 'msgId', 'cliMsgId');
-  const text = pickStr(q, 'qmsg', 'msg', 'title', 'text', 'content');
-  // Không có id LẪN chữ thì không phải khối trích dẫn — đừng dựng khối rỗng.
-  if (!msgId && !text) return undefined;
-  return {
-    msgId,
-    fromName: pickStr(q, 'ownerName', 'qmsgOwnerName', 'dName', 'fromName'),
-    text: text.slice(0, 300),
-  };
+/**
+ * Ghi hình dạng một tin CHƯA rút được quote, để dò tiếp khi bản build đổi tên
+ * field. Chỉ ghi TÊN KHOÁ, không ghi giá trị — trace nằm trên đĩa và nội dung
+ * tin là dữ liệu riêng tư của người dùng.
+ */
+function quoteShape(m: Record<string, unknown>): Record<string, unknown> {
+  const c = m['content'];
+  let contentKeys: unknown = typeof c;
+  if (typeof c === 'string') {
+    contentKeys = c.trim().startsWith('{') ? 'json-string' : 'plain-string';
+  } else if (c && typeof c === 'object') {
+    contentKeys = Object.keys(c as object).slice(0, 20);
+  }
+  return { msgKeys: Object.keys(m).slice(0, 25), contentKeys };
 }
 
 /**
@@ -721,6 +753,16 @@ export class ZaloListener {
             });
           }
           trace('msg', `RÚT ${msgs.length} tin cmd=${cmd}`, { group: last.group, threadId: last.threadId, from: last.fromName || last.fromId, self: last.isSelf, text: last.text.slice(0, 40) });
+          // Tin ĐẾN mà không rút được khối trích dẫn: có thể vốn không phải tin
+          // trả lời, cũng có thể bản build đổi tên field. Ghi hình dạng (chỉ TÊN
+          // khoá) để phân biệt được hai ca đó mà không lộ nội dung tin.
+          if (this.stats.extracted <= 40) {
+            for (const msg of msgs) {
+              if (msg.reaction || msg.quote || msg.isSelf) continue;
+              const src = msg.raw as Record<string, unknown> | undefined;
+              if (src) trace('msg', 'tin đến KHÔNG có khối trích dẫn — hình dạng để dò', quoteShape(src));
+            }
+          }
         } else if (this.stats.decoded <= 20) {
           // Giải mã được nhưng KHÔNG rút ra tin nào → có thể là seen/typing, hoặc
           // một loại sự kiện ta chưa đọc được (reaction, tin từ mobile, tin nhóm).
