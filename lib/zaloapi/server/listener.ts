@@ -156,6 +156,10 @@ function pickReaction(m: Record<string, unknown>): { targetMsgId: string; icon: 
     if (!s.startsWith('{')) return null;
     try { c = JSON.parse(s); } catch { return null; }
   }
+  // Phần tử lấy từ kho `reacts`/`reactGroups` (cmd 612) mang rIcon/rType NGAY Ở
+  // CẤP GỐC, không gói trong `content` như khung tin. Cùng một sự kiện, hai
+  // đường vận chuyển — nhận cả hai thay vì bỏ mất một nửa số cảm xúc.
+  if ((!c || typeof c !== 'object') && ('rIcon' in m || 'rType' in m)) c = m;
   if (!c || typeof c !== 'object') return null;
   const obj = c as Record<string, unknown>;
   const hasIcon = 'rIcon' in obj;
@@ -166,8 +170,11 @@ function pickReaction(m: Record<string, unknown>): { targetMsgId: string; icon: 
   const first = Array.isArray(rMsg) && rMsg.length && rMsg[0] && typeof rMsg[0] === 'object'
     ? (rMsg[0] as Record<string, unknown>)
     : null;
-  // Tin đích: ưu tiên id server (gMsgID), rơi về id client.
-  const targetMsgId = first ? pickStr(first, 'gMsgID', 'gMsgId', 'cMsgID', 'cMsgId') : '';
+  // Tin đích: ưu tiên id server (gMsgID), rơi về id client. Không có `rMsg` thì
+  // tìm ngay trên chính object — dạng đến từ kho `reacts` để id đích ở cấp gốc.
+  const targetMsgId = first
+    ? pickStr(first, 'gMsgID', 'gMsgId', 'cMsgID', 'cMsgId')
+    : pickStr(obj, 'gMsgID', 'gMsgId', 'cMsgID', 'cMsgId', 'msgId', 'globalMsgId');
   if (!targetMsgId) return null; // không biết thả vào tin nào → vô dụng, bỏ
 
   const rTypeRaw = Number(obj['rType']);
@@ -194,17 +201,46 @@ function pickReaction(m: Record<string, unknown>): { targetMsgId: string; icon: 
 export function extractMessages(groupHint: boolean, decoded: unknown, at: number, selfUid: string): IncomingMessage[] {
   const root = decoded as Record<string, unknown> | null;
   if (!root) return [];
-  // Payload có nhiều dạng bọc tuỳ cmd: { msgs:[…] }, { data:[…] },
-  // { data:{ msgs:[…] } }, { data:{…tin…} }, hoặc chính là object tin. Gom hết
-  // về một mảng để quét — đoán sai lớp bọc là "rút 0" dù đã giải mã được.
-  const dataField = root['data'];
-  const dataObj = dataField && typeof dataField === 'object' ? (dataField as Record<string, unknown>) : null;
+
+  // Bóc lớp bọc {error_code, error_message, data} cho tới khi hết. Zalo lồng
+  // MỘT tầng ở hầu hết cmd, nhưng cmd 621 lồng HAI — đi đúng một tầng thì payload
+  // thật vẫn nằm sâu bên trong và mọi thứ rơi vào nhánh "không phải tin".
+  let core: Record<string, unknown> = root;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const inner = core['data'];
+    if (!inner || typeof inner !== 'object' || Array.isArray(inner)) break;
+    const obj = inner as Record<string, unknown>;
+    // Chỉ bóc tiếp khi tầng này ĐÚNG LÀ lớp bọc (có error_code/error_message).
+    // Bóc bừa sẽ ăn mất một object tin thật có field `data` của riêng nó.
+    if (!('error_code' in obj) && !('error_message' in obj)) { core = obj; break; }
+    core = obj;
+  }
+
+  // Gom MỌI kho tin trong payload. Đây là chỗ từng bỏ lọt cả ba thứ:
+  //
+  //   msgs        tin 1-1                      (cmd 501, và 502 khi đồng bộ)
+  //   groupMsgs   tin NHÓM                     (cmd 521, 502)  ← từng bỏ lọt
+  //   pageMsgs    tin từ Official Account
+  //   reacts      CẢM XÚC 1-1                  (cmd 612)       ← từng bỏ lọt
+  //   reactGroups CẢM XÚC trong nhóm           (cmd 612)       ← từng bỏ lọt
+  //
+  // Trước đây chỉ đọc `msgs`; với cmd 502/521 thì `msgs` là mảng RỖNG còn tin
+  // thật nằm ở `groupMsgs`, nên hàm rơi xuống nhánh "coi cả object là một tin"
+  // và bỏ đi — đúng triệu chứng "tin nhóm và tin từ mobile không hiện".
+  const bucket = (key: string): unknown[] => {
+    const v = core[key];
+    return Array.isArray(v) ? v : [];
+  };
+  const plain = [...bucket('msgs'), ...bucket('groupMsgs'), ...bucket('pageMsgs')];
+  // Cảm xúc đi kho RIÊNG, và mỗi phần tử ở đây LUÔN là reaction — không phải
+  // tin có kèm reaction. Đánh dấu để vòng dưới không đòi hỏi nội dung chữ.
+  const reactItems = [...bucket('reacts'), ...bucket('reactGroups')];
+  const fromGroupBucket = new Set<unknown>([...bucket('groupMsgs'), ...bucket('reactGroups')]);
+
   let list: unknown[];
-  if (Array.isArray(root['msgs'])) list = root['msgs'] as unknown[];
-  else if (Array.isArray(dataField)) list = dataField as unknown[];
-  else if (dataObj && Array.isArray(dataObj['msgs'])) list = dataObj['msgs'] as unknown[];
-  else if (dataObj) list = [dataObj];
-  else list = [root];
+  if (plain.length || reactItems.length) list = [...plain, ...reactItems];
+  else if (Array.isArray(core['data'])) list = core['data'] as unknown[];
+  else list = [core];
 
   const out: IncomingMessage[] = [];
   for (const item of list) {
@@ -216,8 +252,11 @@ export function extractMessages(groupHint: boolean, decoded: unknown, at: number
     // Trước đây chỉ xét chữ, nên mọi khung cảm xúc bị rơi ở đúng dòng này.
     if (!text && !react) continue;
 
+    // Tin nằm trong kho groupMsgs/reactGroups thì CHẮC CHẮN là nhóm, kể cả khi
+    // payload không mang groupId (khung reaction nhóm thường không có). Dựa mỗi
+    // groupId là tin nhóm bị xếp nhầm thành 1-1 và tạo hội thoại rác.
     const groupId = pickStr(m, 'groupId', 'gid');
-    const group = groupHint || !!groupId;
+    const group = groupHint || !!groupId || fromGroupBucket.has(item);
     const fromId = pickStr(m, 'uidFrom', 'fromId');
     const toId = pickStr(m, 'idTo', 'toId', 'toUid', 'dId');
     // Zalo đánh dấu tin do CHÍNH mình gửi (đồng bộ từ thiết bị khác) bằng
