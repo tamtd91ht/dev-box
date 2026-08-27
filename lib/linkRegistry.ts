@@ -47,6 +47,13 @@ export interface SavedLinkMeta {
   password?: string;
 }
 
+/** Patch cho updateLink — như metadata, thêm `url` để sửa được cả địa chỉ
+ *  (link đổi domain / đổi port / copy nhầm là chuyện thường, trước đây phải
+ *  xóa rồi lưu lại, mất luôn tags + profile + ngày lưu). */
+export interface SavedLinkPatch extends SavedLinkMeta {
+  url?: string;
+}
+
 /** Chuẩn hóa tags: trim, bỏ rỗng, dedupe không phân biệt hoa thường. */
 /** Thêm scheme khi thiếu — giữ nguyên nếu đã có, hoặc nếu trông không ra host
  *  (để addLink vẫn từ chối được rác thay vì biến nó thành URL). */
@@ -139,11 +146,23 @@ export async function addLink(input: { url: string } & SavedLinkMeta): Promise<S
   return links;
 }
 
-/** Sửa metadata một link đã lưu — mọi field optional; url không đổi. */
-export async function updateLink(id: string, patch: SavedLinkMeta): Promise<SavedLink[]> {
+/** Sửa một link đã lưu — mọi field optional. Sửa `url` giữ nguyên id, tags,
+ *  profile và addedAt (khác hẳn xóa-rồi-lưu-lại). Bỏ trống url = giữ nguyên. */
+export async function updateLink(id: string, patch: SavedLinkPatch): Promise<SavedLink[]> {
   const links = await readAll();
   const l = links.find((x) => x.id === id);
   if (!l) throw new Error('Không tìm thấy link đã lưu.');
+  if (patch.url !== undefined) {
+    const raw = patch.url.trim();
+    // Trống = không đổi, để lỡ tay xóa sạch ô không làm hỏng link đang có.
+    if (raw) {
+      const url = addScheme(raw);
+      if (!/^https?:\/\//i.test(url)) throw new Error('Link không hợp lệ — cần bắt đầu bằng http(s)://');
+      // Trùng với link KHÁC thì chặn, cùng quy tắc như khi thêm mới.
+      if (links.some((x) => x.id !== id && x.url === url)) throw new Error('Đã có link khác dùng đúng địa chỉ này.');
+      l.url = url;
+    }
+  }
   if (patch.name !== undefined) l.name = patch.name.trim() || l.name;
   if (patch.project !== undefined) l.project = patch.project.trim() || undefined;
   if (patch.description !== undefined) l.description = patch.description.trim() || undefined;

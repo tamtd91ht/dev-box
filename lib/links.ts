@@ -39,9 +39,14 @@ async function linksAction<T>(action: string, params: Record<string, unknown> = 
   return (data as { result: T }).result;
 }
 
+/** Patch khi sửa — metadata + `url` (bỏ trống/không gửi = giữ địa chỉ cũ). */
+export interface SavedLinkPatch extends SavedLinkMeta {
+  url?: string;
+}
+
 export const lList = () => linksAction<SavedLink[]>('list');
 export const lAdd = (url: string, meta: SavedLinkMeta = {}) => linksAction<SavedLink[]>('add', { url, ...meta });
-export const lUpdate = (id: string, patch: SavedLinkMeta) => linksAction<SavedLink[]>('update', { id, ...patch });
+export const lUpdate = (id: string, patch: SavedLinkPatch) => linksAction<SavedLink[]>('update', { id, ...patch });
 export const lRemove = (id: string) => linksAction<SavedLink[]>('remove', { id });
 
 /** Partition <webview> cho một profile — cùng profile là cùng phiên đăng

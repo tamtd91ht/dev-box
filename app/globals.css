@@ -4999,7 +4999,7 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
 .auto-rule-sub .bad { color: var(--bad, #f85149); }
 .auto-rule-ops { display: flex; align-items: center; gap: 3px; flex: none; }
 .auto-rule-ops button { padding: 2px 7px; font-size: 11px; }
-.auto-dry, .auto-stop, .auto-firing, .auto-suppressed {
+.auto-dry, .auto-stop, .auto-firing, .auto-suppressed, .auto-pending {
   margin-left: 7px; font-style: normal; font-size: 9.5px; font-weight: 700;
   text-transform: uppercase; letter-spacing: .04em; border-radius: 4px; padding: 1px 5px;
 }
@@ -5012,6 +5012,18 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
 .auto-dry { color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); }
 .auto-stop { color: var(--muted); border: 1px solid var(--glass-brd); }
 .auto-firing { color: var(--bad, #f85149); border: 1px solid color-mix(in srgb, var(--bad, #f85149) 55%, transparent); }
+/* Watch tốc độ CHƯA đủ mẫu để kết luận. Tông cảnh báo nhẹ (warn) chứ không
+   phải muted: đây KHÔNG phải trạng thái bình thường — trong lúc này chỉ số
+   không được canh, và người dùng cần thấy điều đó chứ không phải lướt qua. */
+.auto-pending {
+  color: var(--warn, #d29922); border: 1px solid color-mix(in srgb, var(--warn, #d29922) 50%, transparent);
+  text-transform: none; letter-spacing: 0;
+}
+
+/* Một dòng cửa sổ trong ô "Cửa sổ so sánh + ngưỡng". */
+.auto-ratewin { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
+.auto-ratewin input { width: 72px; }
+.auto-ratewin-lbl { font-size: 11px; color: var(--muted); white-space: nowrap; }
 
 /* Watch id, shown in the list because rules point at it. Dimmer than the
    metric line so it reads as a reference, not as content. */
@@ -5901,6 +5913,12 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
 .glink-edit { margin: 2px 0 8px 30px; }
 .glink-meta-pair { display: flex; gap: 6px; }
 .glink-meta-pair .input { flex: 1; }
+/* Ô địa chỉ trong form sửa — mono + nổi hơn các ô metadata vì đây là thứ
+   quyết định link mở đi đâu, sửa nhầm là mở sai chỗ. */
+.glink-url-edit {
+  font-family: var(--mono); font-size: 12px;
+  border-color: var(--accent); color: var(--text);
+}
 .glink-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
 .glink-filter-sep { width: 1px; height: 18px; background: var(--glass-brd); }
 .glink-badge {

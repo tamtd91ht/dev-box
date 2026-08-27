@@ -12,7 +12,7 @@
 // Metadata (dự án/mô tả/tags) + lọc theo dự án/tag như trước.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { lList, lAdd, lUpdate, lRemove, partitionFor, type SavedLink, type SavedLinkMeta } from '@/lib/links';
+import { lList, lAdd, lUpdate, lRemove, partitionFor, type SavedLink, type SavedLinkMeta, type SavedLinkPatch } from '@/lib/links';
 import { onOpenUrl } from '@/lib/openTarget';
 import { normalizeUrl } from '@/lib/bookmarks';
 import { fmtRel } from '@/lib/google';
@@ -27,14 +27,30 @@ import { usePopupOverWebview } from '@/lib/useOverWebview';
  *  Mở được nhiều tab song song; webview tab nền vẫn sống (offscreen). */
 interface ViewerTab { id: string; name: string; url: string; partition: string; meta?: SavedLinkMeta }
 
-type MetaDraft = SavedLinkMeta & { tagsText?: string };
+type MetaDraft = SavedLinkPatch & { tagsText?: string };
 
 const splitTags = (s?: string) => (s ?? '').split(',').map((t) => t.trim()).filter(Boolean);
 
-/** Form metadata — dùng cho "＋ chi tiết" khi lưu mới và khi sửa (✎). */
-function MetaFields({ meta, onChange }: { meta: MetaDraft; onChange: (m: MetaDraft) => void }) {
+/** Form metadata — dùng cho "＋ chi tiết" khi lưu mới và khi sửa (✎).
+ *  `showUrl` chỉ bật ở form sửa: lúc thêm mới địa chỉ đã nằm ở ô trên cùng,
+ *  hiện thêm một ô url nữa chỉ tổ rối. */
+function MetaFields({ meta, onChange, showUrl = false }: {
+  meta: MetaDraft;
+  onChange: (m: MetaDraft) => void;
+  showUrl?: boolean;
+}) {
   return (
     <>
+      {showUrl && (
+        <input
+          className="input glink-url-edit"
+          placeholder="Địa chỉ link — vd https://jenkins.noi.bo/job/abc"
+          value={meta.url ?? ''}
+          onChange={(e) => onChange({ ...meta, url: e.target.value })}
+          spellCheck={false}
+          title="Sửa được cả địa chỉ: đổi domain/port, sửa link copy nhầm… mà vẫn giữ nguyên tags, profile phiên đăng nhập và ngày lưu. Bỏ trống = giữ địa chỉ cũ."
+        />
+      )}
       <div className="glink-meta-pair">
         <input className="input" placeholder="Tên hiển thị (optional)" value={meta.name ?? ''}
           onChange={(e) => onChange({ ...meta, name: e.target.value })} />
@@ -253,6 +269,7 @@ export default function LinksWorkspace() {
   const startEdit = (l: SavedLink) => {
     setEditId(l.id);
     setEditMeta({
+      url: l.url,
       name: l.name, project: l.project ?? '', description: l.description ?? '',
       profile: l.profile ?? '', tagsText: (l.tags ?? []).join(', '),
       username: l.username ?? '', password: l.password ?? '',
@@ -264,6 +281,7 @@ export default function LinksWorkspace() {
     setSaving(true); setErr(null);
     try {
       setLinks(await lUpdate(editId, {
+        url: editMeta.url ?? '',
         name: editMeta.name ?? '',
         project: editMeta.project ?? '',
         description: editMeta.description ?? '',
@@ -413,7 +431,7 @@ export default function LinksWorkspace() {
                 </span>
                 <span
                   className="g-open"
-                  title="Sửa tên / dự án / profile / mô tả / tags"
+                  title="Sửa link / tên / dự án / profile / mô tả / tags"
                   onClick={(e) => {
                     e.preventDefault(); e.stopPropagation();
                     if (editId === l.id) setEditId(null); else startEdit(l);
@@ -438,7 +456,7 @@ export default function LinksWorkspace() {
               </a>
               {editId === l.id && (
                 <div className="glink-meta-form glink-edit">
-                  <MetaFields meta={editMeta} onChange={setEditMeta} />
+                  <MetaFields meta={editMeta} onChange={setEditMeta} showUrl />
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button className="sm" onClick={() => void saveEdit()} disabled={saving}>
                       {saving ? <span className="spinner" aria-hidden /> : '💾'} Lưu thay đổi

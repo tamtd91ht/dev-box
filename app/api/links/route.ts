@@ -5,11 +5,11 @@
 //   POST { action, ... }  where action is one of:
 //     'list'   {}                                              → { ok, result: SavedLink[] }
 //     'add'    { url, name?, project?, description?, tags?, profile? } → { ok, result: SavedLink[] }
-//     'update' { id, name?, project?, description?, tags?, profile? }  → { ok, result: SavedLink[] }
+//     'update' { id, url?, name?, project?, description?, tags?, profile? } → { ok, result: SavedLink[] }
 //     'remove' { id }                                          → { ok, result: SavedLink[] }
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { listLinks, addLink, updateLink, removeLink, type SavedLinkMeta } from '@/lib/linkRegistry';
+import { listLinks, addLink, updateLink, removeLink, type SavedLinkMeta, type SavedLinkPatch } from '@/lib/linkRegistry';
 
 export const runtime = 'nodejs';
 
@@ -23,6 +23,14 @@ function metaFrom(body: Record<string, unknown>): SavedLinkMeta {
   if (typeof body.password === 'string') meta.password = body.password;
   if (Array.isArray(body.tags)) meta.tags = body.tags.map(String);
   return meta;
+}
+
+/** Như metaFrom nhưng nhận thêm `url` — chỉ 'update' dùng ('add' đã đọc url
+ *  riêng và bắt buộc, nên không đi qua đây). */
+function patchFrom(body: Record<string, unknown>): SavedLinkPatch {
+  const patch: SavedLinkPatch = metaFrom(body);
+  if (typeof body.url === 'string') patch.url = body.url;
+  return patch;
 }
 
 export async function POST(req: NextRequest) {
@@ -42,7 +50,7 @@ export async function POST(req: NextRequest) {
         result = await addLink({ url: String(body.url ?? ''), ...metaFrom(body) });
         break;
       case 'update':
-        result = await updateLink(String(body.id ?? ''), metaFrom(body));
+        result = await updateLink(String(body.id ?? ''), patchFrom(body));
         break;
       case 'remove':
         result = await removeLink(String(body.id ?? ''));
