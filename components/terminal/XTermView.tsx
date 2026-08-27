@@ -16,7 +16,7 @@
 //  3. Fit lại sau khi font load xong. Metric đổi → cols tính sai lúc đầu, PTY
 //     wrap lệch, chữ đè nhau.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -92,6 +92,9 @@ export default function XTermView({
   const fitRef = useRef<FitAddon | null>(null);
   const onDeadRef = useRef(onDead);
   onDeadRef.current = onDead;
+  // Đang xem lịch sử (không dính đáy) → hiện nút "về cuối". Chỉ là trạng thái
+  // hiển thị phía client, KHÔNG đụng gì tới PTY/stream nên lệnh đang chạy vẫn yên.
+  const [scrolledUp, setScrolledUp] = useState(false);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -110,6 +113,15 @@ export default function XTermView({
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
+
+    // Theo dõi vị trí cuộn để bật/tắt nút "về cuối". term.buffer.active.viewportY
+    // là dòng trên cùng đang hiển thị; baseY là viewportY khi dính đáy.
+    const syncScroll = () => {
+      const b = term.buffer.active;
+      setScrolledUp(b.viewportY < b.baseY);
+    };
+    const scrollSub = term.onScroll(syncScroll);
+    const wroteSub = term.onWriteParsed(syncScroll);
 
     const doFit = () => {
       try {
@@ -191,6 +203,8 @@ export default function XTermView({
       ro.disconnect();
       dataSub.dispose();
       resizeSub.dispose();
+      scrollSub.dispose();
+      wroteSub.dispose();
       es.close();
       term.dispose();
     };
@@ -208,12 +222,54 @@ export default function XTermView({
     return () => clearTimeout(t);
   }, [active, visible]);
 
+  /** Cuộn xem lịch sử. Chỉ đổi viewport của xterm phía client — không gửi gì
+   *  lên server, nên lệnh đang chạy trong shell không bị ảnh hưởng. */
+  const scrollPage = (dir: -1 | 1) => {
+    termRef.current?.scrollLines(dir * Math.max(1, (termRef.current?.rows ?? 10) - 1));
+  };
+  const scrollBottom = () => {
+    termRef.current?.scrollToBottom();
+    termRef.current?.focus();
+  };
+
   return (
-    <div
-      className="tw-xterm"
-      ref={hostRef}
-      style={{ display: active ? 'block' : 'none' }}
-      onClick={() => termRef.current?.focus()}
-    />
+    <div className="tw-xterm-wrap" style={{ display: active ? 'block' : 'none' }}>
+      <div
+        className="tw-xterm"
+        ref={hostRef}
+        onClick={() => termRef.current?.focus()}
+      />
+      <div className="tw-scrollbtns" role="group" aria-label="Cuộn terminal">
+        <button
+          type="button"
+          className="tw-scrollbtn"
+          title="Cuộn lên một trang (Shift+PageUp)"
+          aria-label="Cuộn lên"
+          onClick={() => scrollPage(-1)}
+        >
+          ▲
+        </button>
+        <button
+          type="button"
+          className="tw-scrollbtn"
+          title="Cuộn xuống một trang (Shift+PageDown)"
+          aria-label="Cuộn xuống"
+          onClick={() => scrollPage(1)}
+        >
+          ▼
+        </button>
+        {scrolledUp && (
+          <button
+            type="button"
+            className="tw-scrollbtn now"
+            title="Về dòng mới nhất"
+            aria-label="Về cuối"
+            onClick={scrollBottom}
+          >
+            ⤓
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
