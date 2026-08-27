@@ -233,6 +233,17 @@ export default function ZaloChatPanel({
 
   // CẢM XÚC: id tin đang mở bảng chọn, và có đang mở bảng ĐẦY ĐỦ (54 mặt) hay
   // chỉ hàng nhanh 6 mặt. Lưu theo id tin để bảng đóng khi cuộn sang tin khác.
+  /**
+   * Tin đang được TRẢ LỜI (khối trích dẫn trên ô soạn). null = gửi tin thường.
+   *
+   * Giữ cả object chứ không chỉ id: lúc gửi cần zMsgId/zCliMsgId/fromId/at của
+   * tin gốc, mà `messages` có thể đã đổi (tải tin cũ, poll về tin mới) giữa lúc
+   * chọn và lúc bấm Gửi.
+   */
+  const [replyTo, setReplyTo] = useState<ZaloStoredMessage | null>(null);
+  /** Người được tag (@) trong tin nhóm sắp gửi. */
+  const [mentions, setMentions] = useState<{ uid: string; name: string }[]>([]);
+  const [mentionOpen, setMentionOpen] = useState(false);
   const [reactFor, setReactFor] = useState<string>('');
   const [reactAll, setReactAll] = useState(false);
   const [reactBusy, setReactBusy] = useState('');
@@ -294,6 +305,11 @@ export default function ZaloChatPanel({
     if (editorRef.current) editorRef.current.innerHTML = '';
     setEditorEmpty(true);
     setPending((p) => { p.forEach((x) => URL.revokeObjectURL(x.url)); return []; });
+    // Trả lời + tag thuộc về ĐÚNG hội thoại đang mở: giữ lại khi đổi hội thoại
+    // là gửi trích dẫn của cuộc trò chuyện khác sang đây.
+    setReplyTo(null);
+    setMentions([]);
+    setMentionOpen(false);
   }, []);
 
   const openCompose = useCallback(() => {
@@ -402,12 +418,37 @@ export default function ZaloChatPanel({
           dest = res.threadId || dest;
         }
       } else {
-        const res = await zaloApiSendMessage({ accountKey, threadId: activeThread, text, group, styles: styles.length ? styles : undefined });
+        // Trả lời cần id THẬT của tin gốc. Tin gửi lạc quan (chưa có phản hồi
+        // Zalo) và tin cũ lưu trước khi có field này đều thiếu — báo thẳng thay
+        // vì gửi thành tin rời, vì "bấm trả lời mà ra tin thường" rất khó lần.
+        let quote;
+        if (replyTo) {
+          if (!replyTo.zMsgId) {
+            setErr('Tin này chưa có ID thật từ Zalo nên không trả lời được (thử tin mới hơn).');
+            setSending(false);
+            return;
+          }
+          quote = {
+            msgId: replyTo.zMsgId,
+            cliMsgId: replyTo.zCliMsgId || '',
+            ownerId: replyTo.self ? '0' : replyTo.fromId,
+            ts: replyTo.at,
+            text: replyTo.text || '',
+          };
+        }
+        const res = await zaloApiSendMessage({
+          accountKey, threadId: activeThread, text, group,
+          styles: styles.length ? styles : undefined,
+          ...(mentions.length && group ? { mentions } : {}),
+          ...(quote ? { quote } : {}),
+        });
         if (!res.ok) setErr(res.detail || 'gửi không thành công');
         dest = res.threadId || dest;
       }
       pending.forEach((p) => URL.revokeObjectURL(p.url));
       setPending([]);
+      setReplyTo(null);
+      setMentions([]);
       if (el) { el.innerHTML = ''; setEditorEmpty(true); }
       refreshAfterSend(dest);
     } catch (e) {
@@ -415,7 +456,7 @@ export default function ZaloChatPanel({
     } finally {
       setSending(false);
     }
-  }, [accountKey, activeThread, group, sending, canSend, pending, refreshAfterSend]);
+  }, [accountKey, activeThread, group, sending, canSend, pending, refreshAfterSend, replyTo, mentions]);
 
   // Áp định dạng cho vùng đang chọn trong editor (giữ focus bằng preventDefault).
   const applyFmt = useCallback((cmd: string, value?: string) => {
@@ -722,6 +763,18 @@ export default function ZaloChatPanel({
                             >☺</button>
                           )}
 
+                          {/* TRẢ LỜI tin này. Chỉ hiện khi tin có id THẬT của
+                              Zalo — khác với nút cảm xúc (cứ cho bấm rồi server
+                              báo lỗi): ở đây thiếu id thì Zalo im lặng gửi thành
+                              tin RỜI, không báo gì, nên chặn từ đầu rõ hơn. */}
+                          {canSend && !!m.zMsgId && (
+                            <button
+                              className="zc-reply-open"
+                              title="Trả lời tin này"
+                              onClick={() => { setReplyTo(m); editorRef.current?.focus(); }}
+                            >↩</button>
+                          )}
+
                           {reactFor === m.id && (
                             <div className="zc-react-pop" role="menu">
                               {(reactAll ? REACTIONS : REACTIONS.filter((r) => QUICK_REACTION_KEYS.includes(r.key)))
@@ -846,6 +899,76 @@ export default function ZaloChatPanel({
                   <span className="zc-attach-hint">Enter hoặc bấm Gửi để gửi {pending.length} đính kèm</span>
                 </div>
               )}
+              {/* Đang TRẢ LỜI tin nào — hiện ngay trên ô soạn để không gửi
+                  nhầm trích dẫn sau khi đã cuộn đi chỗ khác. */}
+              {replyTo && (
+                <div className="zc-reply-bar">
+                  <span className="zc-reply-ico" aria-hidden>↩</span>
+                  <span className="zc-reply-body">
+                    <b>{replyTo.self ? 'Bạn' : (replyTo.fromName || replyTo.fromId || 'ẩn danh')}</b>
+                    <span className="zc-reply-text">{replyTo.text || (replyTo.imageUrl ? '[ảnh]' : '[tin]')}</span>
+                  </span>
+                  <button className="zc-reply-x" title="Bỏ trả lời" onClick={() => setReplyTo(null)}>✕</button>
+                </div>
+              )}
+
+              {/* TAG người trong nhóm. Chỉ hiện với hội thoại NHÓM: tin 1-1 thì
+                  người nhận đã là chính người đó, thêm @ chỉ gây rối (server
+                  cũng bỏ qua mentions của tin 1-1). */}
+              {group && canSend && (
+                <div className="zc-mention-bar">
+                  <button
+                    className="zc-mention-open"
+                    title="Tag (@) người trong nhóm — Zalo sẽ báo riêng cho họ"
+                    onClick={() => {
+                      setMentionOpen((v) => !v);
+                      // Danh bạ nạp lười: chỉ tốn một request khi thật sự mở.
+                      if (!contacts.length) zaloApiContacts(accountKey).then(setContacts).catch(() => {});
+                    }}
+                  >@ Tag</button>
+                  {mentions.map((p) => (
+                    <span key={p.uid} className="zc-mention-chip" title={p.uid}>
+                      @{p.name || p.uid}
+                      <button onClick={() => setMentions((v) => v.filter((x) => x.uid !== p.uid))} title="Bỏ tag">✕</button>
+                    </span>
+                  ))}
+                  {mentionOpen && (
+                    <div className="zc-mention-pop" role="menu">
+                      {/* Gợi ý từ CHÍNH những người đã nhắn trong nhóm này —
+                          danh bạ Zalo không cho biết thành viên nhóm, nên đây là
+                          nguồn uid thật đáng tin nhất đang có. */}
+                      {[...new Map(
+                        messages
+                          .filter((x) => !x.self && x.fromId)
+                          .map((x) => [x.fromId, { uid: x.fromId, name: x.fromName || x.fromId }]),
+                      ).values()]
+                        .filter((p) => !mentions.some((x) => x.uid === p.uid))
+                        .slice(0, 30)
+                        .map((p) => (
+                          <button
+                            key={p.uid}
+                            className="zc-mention-item"
+                            onClick={() => {
+                              // Trần 5 người: hơn nữa là ping cả nhóm, phiền hơn
+                              // là hữu ích (server cũng cắt ở 5).
+                              setMentions((v) => (v.length >= 5 ? v : [...v, p]));
+                              setMentionOpen(false);
+                              editorRef.current?.focus();
+                            }}
+                          >
+                            @{p.name}
+                          </button>
+                        ))}
+                      {!messages.some((x) => !x.self && x.fromId) && (
+                        <span className="zc-mention-empty">
+                          Chưa ai nhắn trong nhóm này ở phiên hiện tại — chưa có uid để tag.
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="zc-composer">
                 <input ref={fileRef} type="file" multiple hidden onChange={(e) => void onPickImage(e)} />
                 <button

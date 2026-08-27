@@ -57,6 +57,12 @@ export interface ZaloStoredMessage {
    * dùng bấm vào chỗ chắc chắn thất bại.
    */
   zMsgId?: string;
+  /**
+   * cliMsgId của Zalo. Đi CẶP với zMsgId khi TRẢ LỜI: Zalo cần cả id server lẫn
+   * id client của tin gốc, thiếu một cái thì nhận request rồi im lặng gửi thành
+   * tin rời không có khối trích dẫn.
+   */
+  zCliMsgId?: string;
 }
 
 export interface ZaloApiFlags {
@@ -115,6 +121,14 @@ export function zaloApiSendMessage(params: {
   /** Tag (@) người trong tin NHÓM — server nối dòng "→ @A @B" + mentionInfo;
    *  text rỗng + mentions = tin CHỈ ĐỂ TAG (thân tin là chuỗi "@A @B"). */
   mentions?: { uid: string; name: string }[];
+  /**
+   * TRẢ LỜI một tin đã có (khối trích dẫn hiện phía trên tin mới).
+   *
+   * Cần hai id THẬT của Zalo — lấy từ `zMsgId`/`zCliMsgId` của tin gốc, KHÔNG
+   * phải `id` nội bộ (id đó có thể do ta tự sinh và Zalo tra không ra). Tin gửi
+   * lạc quan chưa có id thật thì chưa trả lời được.
+   */
+  quote?: { msgId: string; cliMsgId?: string; ownerId?: string; ts?: number; text?: string };
 }): Promise<ZaloSendResult> {
   return call<ZaloSendResult>('send', params);
 }

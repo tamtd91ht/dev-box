@@ -326,6 +326,27 @@ export interface MentionTarget {
 }
 
 /**
+ * Tin được TRÍCH DẪN khi trả lời (port từ zca-js apis/sendMessage.ts · quote).
+ *
+ * Zalo cần ĐỦ cả bốn: hai id THẬT của tin gốc (id server + id client), uid người
+ * gửi nó, và thời điểm gửi. Thiếu hoặc sai một cái thì Zalo nhận request nhưng
+ * tin hiện ra KHÔNG có khối trích dẫn — im lặng, không báo lỗi. Đó là lý do
+ * threadStore phải cất riêng zMsgId/zCliMsgId thay vì dùng `id` nội bộ.
+ */
+export interface QuoteTarget {
+  /** gMsgID — id server của tin gốc (dạng số trong chuỗi). */
+  msgId: string;
+  /** cMsgID — id client của tin gốc. */
+  cliMsgId: string;
+  /** uid người gửi tin gốc ('0' nếu chính mình gửi — Zalo tự hiểu). */
+  ownerId: string;
+  /** Epoch ms lúc tin gốc được gửi. */
+  ts: number;
+  /** Nội dung tin gốc, để Zalo vẽ khối trích dẫn. Cắt bớt cho gọn payload. */
+  text: string;
+}
+
+/**
  * Nối dòng tag vào cuối tin + dựng mentionInfo (port từ zca-js Mention:
  * mảng {pos, len, uid, type:0}, pos/len tính theo đơn vị UTF-16 — chính là
  * .length của chuỗi JS nên không phải quy đổi gì).
@@ -352,7 +373,14 @@ function withMentions(message: string, mentions: MentionTarget[]): { message: st
 
 export async function sendMessage(
   ctx: ZaloContext,
-  opts: { threadId: string; message: string; group: boolean; styles?: TextStyle[]; mentions?: MentionTarget[] },
+  opts: {
+    threadId: string;
+    message: string;
+    group: boolean;
+    styles?: TextStyle[];
+    mentions?: MentionTarget[];
+    quote?: QuoteTarget;
+  },
 ): Promise<SendResult> {
   const now = Date.now();
   const clientId = now;
@@ -368,13 +396,42 @@ export async function sendMessage(
   // chính người được "tag" rồi, thêm @ chỉ gây rối).
   const tagged = opts.group ? withMentions(opts.message, opts.mentions ?? []) : { message: opts.message, mentionInfo: '' };
 
-  // Tin nhóm có mention phải đi endpoint /mention (zca-js làm y hệt) —
-  // /sendmsg lặng lẽ BỎ mentionInfo, tag rớt thành text trần, không ping ai.
-  const path = opts.group ? (tagged.mentionInfo ? '/api/group/mention' : '/api/group/sendmsg') : '/api/message/sms';
+  // TRẢ LỜI (quote) đi endpoint RIÊNG, khác cả /sendmsg lẫn /mention:
+  //   nhóm    → group[0]/api/group/quote
+  //   cá nhân → chat[0]/api/message/quote
+  // Gửi quote qua /sendmsg thì Zalo nhận nhưng BỎ khối trích dẫn — tin hiện ra
+  // như tin thường, im lặng, không báo lỗi.
+  //
+  // Quote và mention loại trừ nhau ở tầng endpoint: khi cả hai cùng có, ưu tiên
+  // QUOTE (người dùng chủ động chọn tin để trả lời) và mention rớt về dòng "@A"
+  // trong thân tin — vẫn đọc được tên, chỉ là không ping. Ghép cả hai cần một
+  // endpoint Zalo không có.
+  const quoting = !!opts.quote?.msgId;
+  const path = quoting
+    ? (opts.group ? '/api/group/quote' : '/api/message/quote')
+    : opts.group
+      ? (tagged.mentionInfo ? '/api/group/mention' : '/api/group/sendmsg')
+      : '/api/message/sms';
 
   const payload: Record<string, unknown> = opts.group
     ? { grid: dest, message: tagged.message, clientId, mentionInfo: tagged.mentionInfo, ttl: 0, visibility: 0, imei: ctx.imei }
     : { toid: dest, message: opts.message, clientId, ttl: 0, imei: ctx.imei };
+
+  // Khối trích dẫn — port từ zca-js: qmsgId/qmsgCliId là hai id THẬT của tin
+  // gốc, qmsgOwner là người gửi nó, qmsg là nội dung để Zalo vẽ lại. `qmsgTs`
+  // phải là thời điểm tin GỐC, không phải bây giờ.
+  if (opts.quote && quoting) {
+    const q = opts.quote;
+    payload.qmsgId = q.msgId;
+    payload.qmsgCliId = q.cliMsgId || q.msgId;
+    payload.qmsgOwner = q.ownerId;
+    payload.qmsgTs = q.ts;
+    // Zalo hiện lại nội dung gốc trong khối trích dẫn; tin dài thì cắt để
+    // payload không phình (khối trích dẫn vốn chỉ hiện vài dòng).
+    payload.qmsg = q.text.slice(0, 500);
+    // Tin gốc là văn bản thuần. Ảnh/file dùng mã khác, chưa port.
+    payload.qmsgType = 1;
+  }
 
   // Định dạng chữ (in đậm/nghiêng/màu…) đi kèm dưới dạng textProperties — port
   // đúng zca-js: { styles:[{start,len,st}], ver:0 }.

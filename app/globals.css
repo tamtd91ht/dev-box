@@ -7950,6 +7950,77 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .zc-row:hover .zc-react-open { opacity: 1; pointer-events: auto; }
 .zc-react-open:hover { color: var(--text); border-color: var(--glass-brd-hover); }
 
+/* Nút TRẢ LỜI — cùng hình dạng và cùng cách hiện (hover cả dòng) với nút cảm
+   xúc, chỉ lùi ra thêm một nấc để hai nút không đè nhau. */
+.zc-reply-open {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  opacity: 0; pointer-events: none; transition: opacity 0.12s;
+  width: 24px; height: 24px; padding: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; line-height: 1; cursor: pointer;
+  background: var(--glass); border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.zc-row:not(.zc-row--me) .zc-reply-open { right: -58px; }
+.zc-row--me .zc-reply-open { left: -58px; }
+.zc-row:hover .zc-reply-open { opacity: 1; pointer-events: auto; }
+.zc-reply-open:hover { color: var(--text); border-color: var(--glass-brd-hover); }
+
+/* ── Thanh "đang trả lời" trên ô soạn ─────────────────────────────────── */
+.zc-reply-bar {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 10px 6px; padding: 6px 10px; border-radius: 8px;
+  background: color-mix(in srgb, var(--accent, #3993D4) 12%, transparent);
+  border-left: 3px solid var(--accent, #3993D4);
+  font-size: 12px;
+}
+.zc-reply-ico { color: var(--accent, #3993D4); flex: none; }
+.zc-reply-body { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 1px; }
+.zc-reply-body b { font-size: 11.5px; color: var(--accent, #3993D4); }
+/* Trích dẫn dài không được đẩy ô soạn xuống — một dòng, cắt bằng ellipsis. */
+.zc-reply-text {
+  color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zc-reply-x {
+  flex: none; width: 20px; height: 20px; padding: 0; border-radius: 50%; cursor: pointer;
+  background: transparent; border: none; color: var(--muted); font-size: 11px;
+}
+.zc-reply-x:hover { color: var(--err, #f85149); }
+
+/* ── Tag (@) người trong nhóm ─────────────────────────────────────────── */
+.zc-mention-bar {
+  position: relative; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin: 0 10px 6px;
+}
+.zc-mention-open {
+  padding: 3px 9px; border-radius: 999px; cursor: pointer; font-size: 11.5px;
+  background: var(--glass); border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.zc-mention-open:hover { color: var(--text); border-color: var(--glass-brd-hover); }
+.zc-mention-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 3px 5px 3px 9px; border-radius: 999px; font-size: 11.5px;
+  background: color-mix(in srgb, var(--accent, #3993D4) 16%, transparent);
+  color: var(--accent, #3993D4);
+}
+.zc-mention-chip button {
+  width: 16px; height: 16px; padding: 0; border: none; border-radius: 50%; cursor: pointer;
+  background: transparent; color: inherit; font-size: 10px; opacity: 0.7;
+}
+.zc-mention-chip button:hover { opacity: 1; }
+.zc-mention-pop {
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 20;
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  max-height: 240px; overflow-y: auto; min-width: 200px;
+  border-radius: 10px; background: var(--bg-1);
+  border: 1px solid var(--glass-brd-hover); box-shadow: var(--shadow);
+}
+.zc-mention-item {
+  padding: 5px 9px; border-radius: 6px; cursor: pointer; text-align: left;
+  background: transparent; border: none; color: var(--text); font-size: 12px;
+}
+.zc-mention-item:hover { background: var(--glass); }
+.zc-mention-empty { padding: 6px 9px; font-size: 11.5px; color: var(--muted); max-width: 240px; }
+
 .zc-react-pop {
   position: absolute; bottom: calc(100% + 6px); z-index: 20;
   display: flex; flex-wrap: wrap; gap: 2px; padding: 4px;

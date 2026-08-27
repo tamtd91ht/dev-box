@@ -186,6 +186,20 @@ export async function POST(req: NextRequest) {
               .map((s: Record<string, unknown>) => ({ start: Number(s.start) || 0, len: Number(s.len) || 0, st: String(s.st || '') }))
               .filter((s: { len: number; st: string }) => s.len > 0 && s.st)
           : undefined;
+        // TRẢ LỜI một tin (tuỳ chọn): cần ĐỦ hai id THẬT + người gửi + thời điểm
+        // của tin gốc. Thiếu msgId thì bỏ hẳn khối quote thay vì gửi nửa vời —
+        // Zalo nhận payload quote thiếu field rồi im lặng hiện tin thường, và
+        // "bấm trả lời mà ra tin rời" khó lần hơn hẳn một lỗi rõ ràng.
+        const q = body.quote && typeof body.quote === 'object' ? (body.quote as Record<string, unknown>) : null;
+        const quote = q && String(q.msgId || '').trim()
+          ? {
+              msgId: String(q.msgId).trim(),
+              cliMsgId: String(q.cliMsgId || '').trim(),
+              ownerId: String(q.ownerId || '').trim(),
+              ts: Number(q.ts) || Date.now(),
+              text: String(q.text || ''),
+            }
+          : undefined;
         // Ghi LẠC QUAN vào kho hội thoại NGAY để màn chat hiện bong bóng liền,
         // rồi cập nhật trạng thái theo kết quả. dest rỗng = tự gửi cho mình (uid).
         // Tin chỉ-để-tag có text rỗng — bong bóng hiện chuỗi "@Tên" thay vì trống.
@@ -195,7 +209,7 @@ export async function POST(req: NextRequest) {
         const dest = threadId || ctx.uid;
         const now = Date.now();
         const echoId = dest ? recordOutgoing(accountKey, { threadId: dest, group, text: echoText, at: now, status: 'sending' }) : '';
-        const result = await sendMessage(ctx, { threadId, message: text, group, styles, mentions });
+        const result = await sendMessage(ctx, { threadId, message: text, group, styles, mentions, quote });
         if (dest && echoId) setMessageStatus(accountKey, dest, echoId, result.ok ? 'sent' : 'failed');
         // eslint-disable-next-line no-console
         console.log(
