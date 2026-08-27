@@ -762,14 +762,16 @@ function uniquePath(dir, file) {
  * Download policy for ONE session — dùng chung cho session mặc định (UI DevBox,
  * vd nút ⬇ tab Google) lẫn partition của từng webview guest.
  *
- * Mặc định HỎI NƠI LƯU như Chrome: mở `dialog.showSaveDialog` của app rồi
- * mới `setSavePath`. Khác với hộp thoại Save MẶC ĐỊNH của Electron (bật
- * lên khi KHÔNG ai đặt savePath) — cái đó từng làm app crash văng ra ngoài.
- * Ở đây luồng luôn kết thúc tường minh: có đường dẫn → `setSavePath`,
- * bấm Cancel → `item.cancel()`.
+ * Mặc định HỎI NƠI LƯU như Chrome, bằng `dialog.showSaveDialog` của app. Khác
+ * với hộp thoại Save MẶC ĐỊNH của Electron (bật lên khi KHÔNG ai đặt savePath)
+ * — cái đó từng làm app crash văng ra ngoài.
  *
- * `item.pause()` ngay khi vào handler vì `will-download` là đồng bộ: không
- * pause thì byte đầu tiên có thể tới trước khi người dùng chọn xong chỗ lưu.
+ * Lưu ý then chốt: `will-download` là ĐỒNG BỘ. Handler trả về mà chưa gọi
+ * `setSavePath` thì Electron đã tự chốt đường dẫn (Downloads) và bật hộp thoại
+ * Save riêng của nó — gọi `setSavePath` sau `await` là vô hiệu, `item.pause()`
+ * cũng không hoãn được quyết định đó. Nên luồng ở đây là: chốt ngay một file
+ * tạm trong userData/downloads-tmp, hỏi nơi lưu song song, rồi CHUYỂN file sang
+ * chỗ người dùng chọn khi tải xong. Bấm Cancel → `item.cancel()` + dọn file tạm.
  *
  * Đặt `downloadMode: "auto"` trong userData/workspace.config.json để quay về
  * nếp cũ (tự lưu, không hỏi); `downloadDir` để chỉ định thư mục cố định.
@@ -797,27 +799,97 @@ function wireDownloadPolicy(ses, label) {
       return;
     }
 
-    // Tạm dừng rồi hỏi. Phải pause TRONG handler — sau await là muộn.
-    item.pause();
+    // `will-download` la DONG BO: khi handler return ma chua goi setSavePath thi
+    // Electron da chot xong duong dan cua no (Downloads) va bat hop thoai Save
+    // mac dinh. `item.pause()` KHONG hoan quyet dinh do — setSavePath sau await
+    // la vo hieu. Vi vay: chot ngay mot file tam trong userData/downloads-tmp,
+    // hoi noi luu song song, roi CHUYEN file sang cho nguoi dung chon khi tai xong.
+    const stagePath = stageDownloadPath(file);
+    try {
+      item.setSavePath(stagePath);
+    } catch (err) {
+      log('DownloadError', err && err.message);
+      item.cancel();
+      return;
+    }
+    log('DownloadStaged', `${label || 'default'} · ${file}`);
+
+    // Cho ca hai: nguoi dung chon cho luu, va file tai xong. Ai xong truoc cung duoc.
+    const asked = dialog.showSaveDialog(saveDialogOptions(dir, file));
+    const finished = new Promise((resolve) => item.once('done', (_e, state) => resolve(state)));
 
     // KHONG truyen cua so cha — cung ly do nhu browserExt:pickDir: hop thoai
     // modal gan vao cua so bi <webview> native (Zalo/Telegram/Links) giu input
     // che mat, ket phia sau va khong bam duoc gi. Ma tai file thi gan nhu LUC
     // NAO cung dang o trong mot webview. Dialog dung mot minh thi noi len tren.
-    dialog.showSaveDialog(saveDialogOptions(dir, file)).then(({ canceled, filePath }) => {
+    asked.then(async ({ canceled, filePath }) => {
       if (canceled || !filePath) {
         log('DownloadCanceled', file);
         item.cancel();
+        // Da tai xong roi thi khong huy duoc nua — don file tam cho sach.
+        await finished.catch(() => {});
+        removeQuietly(stagePath);
         return;
       }
       writeLastDownloadDir(path.dirname(filePath));
-      finishDownload(item, filePath, label);
-      item.resume();
-    }).catch((err) => {
+      const state = await finished;
+      if (state !== 'completed') {
+        log('DownloadDone', `${file} · ${state}`);
+        removeQuietly(stagePath);
+        return;
+      }
+      try {
+        moveFile(stagePath, filePath);
+        log('DownloadDone', `${path.basename(filePath)} · completed`);
+        shell.showItemInFolder(filePath);
+      } catch (err) {
+        log('DownloadError', `${file} · ${err && err.message}`);
+      }
+    }).catch(async (err) => {
       log('DownloadError', err && err.message);
       item.cancel();
+      await finished.catch(() => {});
+      removeQuietly(stagePath);
     });
   });
+}
+
+/** File tam khi dang cho nguoi dung chon noi luu — userData/downloads-tmp. */
+let stageSeq = 0;
+function stageDownloadPath(file) {
+  const dir = path.join(app.getPath('userData'), 'downloads-tmp');
+  fs.mkdirSync(dir, { recursive: true });
+  stageSeq += 1;
+  return path.join(dir, `${process.pid}-${stageSeq}-${path.basename(file)}`);
+}
+
+function removeQuietly(target) {
+  try {
+    if (target && fs.existsSync(target)) fs.rmSync(target, { force: true });
+  } catch {
+    /* file tam — xoa khong duoc thi thoi */
+  }
+}
+
+/** Don file tam sot lai tu lan chay truoc (app bi kill giua chung khi dang tai). */
+function purgeDownloadStage() {
+  try {
+    fs.rmSync(path.join(app.getPath('userData'), 'downloads-tmp'), { recursive: true, force: true });
+  } catch {
+    /* khong don duoc thi thoi — file tam khong chan luong nao */
+  }
+}
+
+/** rename() truoc; khac o dia thi copy roi xoa. */
+function moveFile(from, to) {
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  try {
+    fs.renameSync(from, to);
+  } catch (err) {
+    if (err && err.code !== 'EXDEV') throw err;
+    fs.copyFileSync(from, to);
+    fs.rmSync(from, { force: true });
+  }
 }
 
 /** Options của hộp thoại Save — lọc theo đuôi file đang tải cho dễ nhìn. */
@@ -3013,6 +3085,7 @@ if (!app.requestSingleInstanceLock()) {
     // Cửa sổ chính (UI DevBox) chạy trên session mặc định — download từ đó
     // (vd nút ⬇ tab Google) cũng phải đi qua policy tự-lưu, không dialog native.
     wireDownloadPolicy(session.defaultSession, 'default');
+    purgeDownloadStage();
     // Nhặt file NGAY từ argv gốc: khởi động nguội bằng cách bấm vào file thì
     // đường dẫn nằm ở đây, và phải giữ trước khi ensureDevServer() ngốn mất
     // vài chục giây. createWindow() sẽ bắn nó đi lúc trang nạp xong.
