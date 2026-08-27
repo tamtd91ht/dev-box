@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { automation, useAutomation } from '@/lib/automation/useAutomation';
 import { fetchKafkaConnections, listKafkaTopics, type PublicKafkaConnection } from '@/lib/kafka';
 import { zaloApiPeople } from '@/lib/zaloapi/api';
+import { MAX_MENTIONS } from '@/lib/automation/mention';
 import type {
   AutomationCondition,
   MentionAssignment,
@@ -44,6 +45,9 @@ interface RowDraft {
 const DAY_LABELS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
 
 const splitList = (s: string) => s.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
+
+/** Số người dòng này đang tag — hiện ngay cạnh nhãn để nhìn là biết. */
+const tagCount = (r: { tagText: string }) => splitList(r.tagText).length;
 
 /** Dòng có token "tất cả" ('*' / '*:<cụm>') không — quyết định hiện ô loại trừ. */
 const hasWildcard = (valuesText: string) =>
@@ -200,6 +204,63 @@ const OP_CHOICES: { v: AutomationCondition['op']; label: string }[] = [
   { v: 'lt', label: '<' },
 ];
 
+/**
+ * Chọn NGƯỜI ĐỂ TAG cho một dòng — checkbox chip, không phải ô gõ tay.
+ *
+ * Vì sao đổi khỏi ô text phẩy-phân-tách: alias là tiếng Việt có dấu ("Thức"),
+ * gõ tay thì sai một dấu là dòng đó IM LẶNG không tag ai — lỗi chỉ lộ ra ở
+ * dòng "⚠ alias chưa có trong danh bạ" trong trace, lúc sự cố đã trôi qua.
+ * Bấm chọn từ danh bạ thì alias luôn đúng, và nhìn là biết dòng đang tag mấy
+ * người — đó mới là chỗ khiến người ta thực sự tag nhiều người.
+ *
+ * Alias lạ (danh bạ vừa xoá, hoặc config sửa tay) vẫn hiện thành chip ⚠ để
+ * người dùng thấy mà bỏ, thay vì bị nuốt mất khi lưu lại.
+ */
+function TagPicker({ selected, people, onChange }: {
+  selected: string[];
+  people: ZaloMentionPerson[];
+  onChange: (next: string[]) => void;
+}) {
+  const known = people.filter((p) => p.alias.trim());
+  const lower = new Set(known.map((p) => p.alias.trim().toLowerCase()));
+  const unknown = selected.filter((a) => !lower.has(a.trim().toLowerCase()));
+  const has = (alias: string) => selected.some((a) => a.trim().toLowerCase() === alias.trim().toLowerCase());
+  const toggle = (alias: string) => {
+    onChange(has(alias)
+      ? selected.filter((a) => a.trim().toLowerCase() !== alias.trim().toLowerCase())
+      : [...selected, alias]);
+  };
+
+  if (known.length === 0 && unknown.length === 0) {
+    return <span className="small" style={{ color: 'var(--faint)' }}>— chưa có ai trong danh bạ —</span>;
+  }
+  return (
+    <div className="mention-tagpick">
+      {known.map((p) => (
+        <button
+          key={p.alias}
+          type="button"
+          className={`mention-tagchip${has(p.alias) ? ' on' : ''}`}
+          title={p.uid.trim() ? `${p.name || p.alias} · uid ${p.uid}` : '⚠ người này chưa có UID — tag sẽ không ping được'}
+          onClick={() => toggle(p.alias)}
+        >
+          {has(p.alias) ? '☑' : '☐'} {p.name.trim() || p.alias}
+          {!p.uid.trim() && ' ⚠'}
+        </button>
+      ))}
+      {unknown.map((a) => (
+        <button
+          key={`x-${a}`}
+          type="button"
+          className="mention-tagchip on unknown"
+          title="Alias không có trong danh bạ — bấm để bỏ khỏi dòng này"
+          onClick={() => toggle(a)}
+        >⚠ {a} ✕</button>
+      ))}
+    </div>
+  );
+}
+
 export default function MentionBoard({ onClose, accountKey }: {
   onClose: () => void;
   /** Tài khoản Zalo API của action đang mở bảng — nguồn gợi ý "người từng nhắn". */
@@ -279,7 +340,9 @@ export default function MentionBoard({ onClose, accountKey }: {
 
         <p className="small" style={{ color: 'var(--muted)', margin: '2px 0 8px' }}>
           Cảnh báo gửi vào nhóm Zalo (action có bật 🏷) sẽ được nối dòng <code>→ @A @B</code> ping thật.
-          Mọi dòng khớp đều <b>cộng dồn</b>: sự kiện dính topic A + B là một tin tag đủ người của cả hai dòng (trần 5 người/tin).
+          Mỗi dòng <b>tag được nhiều người</b> — bấm chọn trong danh bạ, không phải gõ alias.
+          Mọi dòng khớp đều <b>cộng dồn</b>: sự kiện dính topic A + B là một tin tag đủ người của cả hai dòng
+          (trần {MAX_MENTIONS} người/tin, quá số đó thì trace ghi rõ ai bị bỏ).
         </p>
 
         {/* ── Danh bạ: alias → tên + UID Zalo ─────────────────────────────── */}
@@ -370,12 +433,26 @@ export default function MentionBoard({ onClose, accountKey }: {
                     : 'metric cụ thể (tuỳ chọn) — trống = mọi sự cố kết nối/đĩa/RAM/CPU'}
                   value={r.valuesText} onChange={(e) => patchRow(i, { valuesText: e.target.value })} />
               )}
-              <span aria-hidden style={{ color: 'var(--muted)' }}>→ tag</span>
-              <input className="input" style={{ flex: '1 1 160px', fontSize: 12 }} list="mention-aliases"
-                placeholder="alias, nhiều thì phẩy: userA, devops"
-                value={r.tagText} onChange={(e) => patchRow(i, { tagText: e.target.value })} />
-              <button className="ghost sm" title="Xoá dòng"
+              <button className="ghost sm" title="Xoá dòng" style={{ marginLeft: 'auto' }}
                 onClick={() => setRows((cur) => cur.filter((_, j) => j !== i))}>✕</button>
+            </div>
+
+            {/* Người được tag: CHỌN NHIỀU từ danh bạ. Xuống dòng riêng vì đây
+                là thứ hay phải sửa nhất và cần đủ chỗ cho nhiều chip. */}
+            <div className="mention-tagrow">
+              <span className="small" style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                → tag{tagCount(r) > 0 ? ` (${tagCount(r)})` : ''}
+              </span>
+              <TagPicker
+                selected={splitList(r.tagText)}
+                people={people}
+                onChange={(next) => patchRow(i, { tagText: next.join(', ') })}
+              />
+              {tagCount(r) === 0 && (
+                <span className="small" style={{ color: 'var(--warn)' }}>
+                  chưa chọn ai — dòng này sẽ không tag
+                </span>
+              )}
             </div>
             {/* Ô loại trừ chỉ hiện khi dòng có token ★ tất-cả — với topic liệt
                 kê tường minh thì "loại trừ" vô nghĩa (đừng liệt kê là xong). */}

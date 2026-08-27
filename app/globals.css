@@ -9067,3 +9067,24 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   background: var(--warn-bg); border: 1px solid var(--warn);
 }
 .stk-envnote code { font-size: 11px; }
+
+/* ── Bảng phân công tag (@) Zalo — chọn NHIỀU người cho một dòng ────────────
+   Chip checkbox thay ô gõ alias bằng tay: alias tiếng Việt có dấu ("Thức")
+   gõ sai một dấu là dòng đó im lặng không tag ai, lỗi chỉ lộ trong trace. */
+.mention-tagrow {
+  display: flex; align-items: flex-start; gap: 8px;
+  flex-wrap: wrap; margin-top: 6px;
+}
+.mention-tagpick { display: flex; gap: 6px; flex-wrap: wrap; flex: 1 1 auto; }
+.mention-tagchip {
+  background: none; border: 1px solid var(--glass-brd); border-radius: 999px;
+  color: var(--muted); font-size: 12px; padding: 3px 10px;
+  cursor: pointer; white-space: nowrap;
+}
+.mention-tagchip:hover { color: var(--text); background: var(--glass-bg); }
+.mention-tagchip.on {
+  color: var(--text); border-color: var(--accent);
+  background: var(--glass-bg); font-weight: 600;
+}
+/* Alias không còn trong danh bạ — giữ lại cho thấy mà bỏ, không nuốt im lặng. */
+.mention-tagchip.unknown { border-color: var(--err); color: var(--err); border-style: dashed; }

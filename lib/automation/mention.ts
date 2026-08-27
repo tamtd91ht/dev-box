@@ -157,6 +157,8 @@ export function resolveMentions(
   const seen = new Set<string>();
   const why: string[] = [];
   const missing = new Set<string>();
+  /** Người khớp nhưng bị trần MAX_MENTIONS gạt ra — phải nói, không nuốt im. */
+  const overflow = new Set<string>();
 
   for (const a of config.mentionAssignments ?? []) {
     if (!assignmentMatches(a, event)) continue;
@@ -172,7 +174,11 @@ export function resolveMentions(
       const p = byAlias.get(alias.trim().toLowerCase());
       if (!p || !p.uid.trim()) { missing.add(alias); continue; }
       if (seen.has(p.uid)) continue;
-      if (people.length >= MAX_MENTIONS) break;
+      // Chạm trần: ghi tên người bị bỏ rồi mới dừng. Trước đây chỉ `break` nên
+      // dòng vẫn đẩy một câu why như thể đã tag đủ, người thứ 6 trở đi biến mất
+      // không dấu vết — với bảng phân công tag nhiều người thì đây là chuyện
+      // xảy ra thật, không phải góc hiếm.
+      if (people.length >= MAX_MENTIONS) { overflow.add(p.name.trim() || p.alias); continue; }
       seen.add(p.uid);
       people.push({ uid: p.uid.trim(), name: p.name.trim() || p.alias });
       tagged.push(`@${p.name || p.alias}`);
@@ -180,5 +186,8 @@ export function resolveMentions(
     if (tagged.length) why.push(`${assignmentLabel(a)} → ${tagged.join(' ')}`);
   }
   if (missing.size) why.push(`⚠ alias chưa có trong danh bạ: ${[...missing].join(', ')}`);
+  if (overflow.size) {
+    why.push(`⚠ quá trần ${MAX_MENTIONS} người/tin — KHÔNG tag: ${[...overflow].join(', ')}`);
+  }
   return { people, why };
 }
