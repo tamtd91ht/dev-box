@@ -42,8 +42,10 @@ export interface KafkaGroupDetail {
   members: number;
   described: boolean;
   partitions: number;
-  /** Số giây offset đứng im (còn lag mà không nhích); null = đang chạy/không lag. */
+  /** Số giây message đã CHỜ mà chưa được commit; null = không có gì chờ / đang tiến triển. */
   stalledSec: number | null;
+  /** Partition treo lâu nhất ("topic:partition") — cảnh báo nêu đích danh chỗ tắc. */
+  stalledAt?: string;
   /** true = lag KHÔNG đọc được (fetchOffsets lỗi) — khác với lag = 0. */
   error: boolean;
 }
@@ -398,15 +400,20 @@ async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promis
         described: g.described,
         partitions: g.partitions,
         stalledSec: g.stalledSec,
+        ...(g.stalledAt ? { stalledAt: g.stalledAt } : {}),
         error: !!g.error,
       }));
       put(m, 'groups', scoped.length);
       put(m, 'lagGroupsUnknown', scoped.length - ok.length);
       put(m, 'maxConsumerLag', maxOf(ok.map((g) => g.totalLag)) ?? 0);
       put(m, 'totalConsumerLag', sumOf(ok.map((g) => g.totalLag)));
-      // Stuck = behind AND not moving. Lag alone is not a fault; a group that is
-      // catching up is healthy, one frozen at 40k is a dead consumer.
-      const stuck = ok.filter((g) => g.totalLag > 0 && g.stalledSec !== null);
+      // Stuck = message ĐÃ CHỜ mà vẫn chưa được commit. `stalledSec` đã tự mang
+      // nghĩa đó (xem kafkaClient.consumerLag): mốc chỉ chạy khi partition vừa
+      // có lag vừa không tiến triển. Nên KHÔNG kiểm `totalLag > 0` ở đây nữa —
+      // kiểm thêm là quay lại đúng lỗi cũ: lag đo LÚC NÀY ghép với stalledSec đo
+      // từ TRƯỚC ĐÓ, làm 3 message vừa đến trên một topic ít traffic cũng thành
+      // "consumer treo 20 phút".
+      const stuck = ok.filter((g) => g.stalledSec !== null);
       put(m, 'stalledGroups', stuck.length);
       put(m, 'maxStalledSec', maxOf(stuck.map((g) => g.stalledSec)) ?? 0);
       // A group with committed offsets but zero members has no consumer running.
@@ -641,6 +648,8 @@ export interface BreachingConsumer {
   topic?: string;
   topicLag?: number;
   stalledSec?: number;
+  /** Partition đang tắc ("topic:partition") — chỉ có ở ca đứng im. */
+  stalledAt?: string;
   /** AKHQ vàng/xanh: true = còn consumer đang tiêu thụ (Stable + member). */
   active?: boolean;
   state?: string;
@@ -682,7 +691,13 @@ function renderConsumer(c: BreachingConsumer): string {
   const lag = c.lag ? ` · lag ${c.lag.toLocaleString('vi-VN')}` : '';
   const topic = c.topic ? ` (${c.topic})` : '';
   const act = activityTag(c);
-  if (c.stalledSec !== undefined) return `${c.group}=đứng im ${humanizeSec(c.stalledSec)}${lag}${topic}${act}`;
+  // Ca đứng im nêu đích danh PARTITION đang tắc thay vì chỉ topic tệ nhất: đó là
+  // chỗ người trực phải nhìn vào đầu tiên, và "topic X" không đủ khi topic có
+  // vài chục partition mà chỉ một cái tắc.
+  if (c.stalledSec !== undefined) {
+    const at = c.stalledAt ? ` tại ${c.stalledAt}` : topic;
+    return `${c.group}=đứng im ${humanizeSec(c.stalledSec)}${at}${lag}${act}`;
+  }
   if (c.members !== undefined && c.active === undefined) return `${c.group} (${c.members} member${c.state ? `, ${c.state.toLowerCase()}` : ''})`;
   if (c.state !== undefined && c.active === undefined) return `${c.group} (${c.state})`;
   return `${c.group}=${c.lag.toLocaleString('vi-VN')}${topic}${act}`;
@@ -696,16 +711,23 @@ function renderConsumer(c: BreachingConsumer): string {
  * `consumers` là bản người đọc, `consumersJson` là bản máy đọc (buildAlertMeta
  * parse thành AlertMeta.consumers), `consumerCount` là TỔNG số thật.
  */
-function consumerFields(extras?: InfraEventExtras): Record<string, string | number> {
+function consumerFields(watch: InfraWatch, extras?: InfraEventExtras): Record<string, string | number> {
   const list = extras?.breachingConsumers ?? [];
-  if (!list.length) return { consumers: '', consumerCount: 0, consumersJson: '' };
+  if (!list.length) return { consumers: '', consumerCount: 0, consumersJson: '', consumersText: '' };
   const shown = list.slice(0, MAX_ITEMS_IN_ALERT);
   const human = shown.map(renderConsumer).join(', ');
   const more = list.length > shown.length ? ` … (+${list.length - shown.length})` : '';
+  const text = human + more;
   return {
-    consumers: human + more,
+    consumers: text,
     consumerCount: list.length,
     consumersJson: JSON.stringify(shown),
+    // Cùng giao kèo với absText/ladderText: MANG SẴN xuống dòng + nhãn dẫn, và
+    // RỖNG khi chỉ số không theo group. Nhờ vậy một template Kafka dùng chung
+    // cho mọi chỉ số nhét `{{consumersText}}` vào là xong — không phải chọn
+    // giữa "bỏ mất đích danh group" và "để lại một nhãn trống lơ lửng khi cảnh
+    // báo là về broker/đĩa".
+    consumersText: `\n${consumersLead(watch.metric)}: ${text}`,
   };
 }
 
@@ -730,15 +752,18 @@ function renderHost(h: BreachingHost): string {
  * — cùng lý do với consumerFields: emission phải ≡ catalog ở mọi stack để
  * check:automation không báo lệch.
  */
-function hostFields(extras?: InfraEventExtras): Record<string, string | number> {
+function hostFields(watch: InfraWatch, extras?: InfraEventExtras): Record<string, string | number> {
   const list = extras?.breachingHosts ?? [];
-  if (!list.length) return { hosts: '', hostCount: 0, hostsJson: '' };
+  if (!list.length) return { hosts: '', hostCount: 0, hostsJson: '', hostsText: '' };
   const shown = list.slice(0, MAX_ITEMS_IN_ALERT);
   const more = list.length > shown.length ? ` … (+${list.length - shown.length})` : '';
+  const text = shown.map(renderHost).join(', ') + more;
   return {
-    hosts: shown.map(renderHost).join(', ') + more,
+    hosts: text,
     hostCount: list.length,
     hostsJson: JSON.stringify(shown),
+    // Mang sẵn xuống dòng + nhãn — xem ghi chú ở consumerFields.
+    hostsText: `\n${hostsLead(watch.metric)}: ${text}`,
   };
 }
 
@@ -972,10 +997,12 @@ const DNS_NO_NAMES = 'Phân giải tên: KHÔNG CẦN — mọi địa chỉ đ�
  */
 function topicFields(extras?: InfraEventExtras): Record<string, string | number> {
   const list = (extras?.affectedTopics ?? []).filter(Boolean);
-  if (!list.length) return { topics: '', topicCount: 0 };
+  if (!list.length) return { topics: '', topicCount: 0, topicsText: '' };
   const shown = list.slice(0, MAX_ITEMS_IN_ALERT);
   const more = list.length > shown.length ? ` … (+${list.length - shown.length})` : '';
-  return { topics: shown.join(', ') + more, topicCount: list.length };
+  const text = shown.join(', ') + more;
+  // `topicsText` mang sẵn xuống dòng + nhãn — xem ghi chú ở consumerFields.
+  return { topics: text, topicCount: list.length, topicsText: `\nTopic ảnh hưởng: ${text}` };
 }
 
 /** "3899 MB" → "3.8 GB" khi đáng đọc; số đếm thì thêm dấu phân tách nghìn. */
@@ -1180,9 +1207,9 @@ function baseEvent(
       ...absoluteFields(watch, extras),
       ...rateFields(watch, extras),
       ...ladderFields(extras),
-      ...consumerFields(extras),
+      ...consumerFields(watch, extras),
       ...topicFields(extras),
-      ...hostFields(extras),
+      ...hostFields(watch, extras),
       ...brokerReachFields(extras),
     },
   };

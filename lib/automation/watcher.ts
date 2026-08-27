@@ -216,8 +216,14 @@ const KAFKA_GROUP_ALERT_METRICS = new Set([
 /** Chỉ số Kafka cảnh báo THEO TOPIC → cần liệt kê topic bị ảnh hưởng. */
 const KAFKA_TOPIC_ALERT_METRICS = new Set(['underReplicated', 'offline']);
 
-const isStalled = (g: { lag: number; stalledSec: number | null }): boolean =>
-  g.lag > 0 && g.stalledSec !== null;
+/**
+ * Group này có đang ĐỨNG IM không.
+ *
+ * Chỉ cần `stalledSec !== null`: chính nó đã có nghĩa "có message chờ mà chưa
+ * commit được" (xem kafkaClient.consumerLag). Ghép thêm `lag > 0` đo tại thời
+ * điểm KHÁC là cách cũ, và nó biến 3 message vừa đến thành cảnh báo treo.
+ */
+const isStalled = (g: { stalledSec: number | null }): boolean => g.stalledSec !== null;
 const isRebalancing = (state: string): boolean => /rebalanc|preparing/i.test(state);
 
 /**
@@ -248,7 +254,13 @@ function offendingConsumers(watch: InfraWatch, res: ProbeResult): BreachingConsu
     return { active, members: g.members, ...(active ? {} : { state: g.state }) };
   };
   const lagItem = (g: KafkaGroupDetail): BreachingConsumer => ({ group: g.groupId, lag: g.lag, ...withTopic(g), ...act(g) });
-  const stalledItem = (g: KafkaGroupDetail): BreachingConsumer => ({ group: g.groupId, lag: g.lag, stalledSec: g.stalledSec ?? 0, ...withTopic(g), ...act(g) });
+  // Ca đứng im: kèm ĐÍCH DANH partition đang tắc — "group treo 20 phút" mà không
+  // nói tắc ở đâu thì người trực vẫn phải đi dò từng partition.
+  const stalledItem = (g: KafkaGroupDetail): BreachingConsumer => ({
+    group: g.groupId, lag: g.lag, stalledSec: g.stalledSec ?? 0,
+    ...(g.stalledAt ? { stalledAt: g.stalledAt } : {}),
+    ...withTopic(g), ...act(g),
+  });
 
   switch (watch.metric) {
     case 'maxConsumerLag':

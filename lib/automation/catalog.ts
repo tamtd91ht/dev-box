@@ -185,6 +185,27 @@ const INFRA_FIELDS: FieldDef[] = [
     sample: 'trong 1 giờ: 78.4 % → 90.1 % (+11.7 điểm); trong 12 giờ: 61 % → 90.1 % (+29.1 điểm)',
   },
   {
+    name: 'consumersText',
+    label: 'Consumer liên quan (chuỗi có nhãn)',
+    kind: 'text',
+    hint: 'như consumers nhưng MANG SẴN xuống dòng + nhãn dẫn hợp với chỉ số ("Group đứng im:", "Consumer vượt ngưỡng:"…), rỗng với chỉ số không theo group — nhét vào template dùng chung là tự gọn',
+    sample: '\nGroup đứng im: auto_call_group=đứng im 20 phút tại jobs.auto_call:3 · lag 3 · 🟢 đang tiêu thụ',
+  },
+  {
+    name: 'topicsText',
+    label: 'Topic ảnh hưởng (chuỗi có nhãn)',
+    kind: 'text',
+    hint: 'mang sẵn xuống dòng + nhãn, rỗng khi chỉ số không theo topic',
+    sample: '\nTopic ảnh hưởng: omicrm.events, omicrm.jobs',
+  },
+  {
+    name: 'hostsText',
+    label: 'Host broker (chuỗi có nhãn)',
+    kind: 'text',
+    hint: 'mang sẵn xuống dòng + nhãn hợp với chỉ số ("Broker sắp đầy đĩa:"…), rỗng khi chỉ số không theo host',
+    sample: '\nBroker sắp đầy đĩa: 192.168.2.94=đĩa 91% /var/lib/kafka, còn 18.4 GB',
+  },
+  {
     name: 'rateWindowsJson',
     label: 'Mọi cửa sổ (JSON)',
     kind: 'text',

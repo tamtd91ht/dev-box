@@ -317,8 +317,10 @@ export interface GroupLagSummary {
   worstTopic: string | null;
   worstTopicLag: number;
   partitions: number;
-  /** Seconds the group's committed offsets have not moved; null = moving / first sight. */
+  /** Số giây message đã CHỜ mà chưa được commit; null = không có gì chờ / đang tiến triển. */
   stalledSec: number | null;
+  /** Partition treo lâu nhất ("topic:partition") — để cảnh báo nêu đích danh. */
+  stalledAt?: string;
   /** This group alone failed — its lag is UNKNOWN, not zero. */
   error?: string;
 }

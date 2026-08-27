@@ -916,6 +916,16 @@ export async function listGroups(conn: KafkaConnection): Promise<GroupSummary[]>
 // reloads. `stalledSec` answers the question a lag number cannot: "is this group
 // still moving?". A group with 2M lag that is catching up is healthy; a group
 // with 40k lag whose offsets have not moved in 10 minutes is dead.
+//
+// ĐO CHÍNH XÁC LÀ GÌ: "message đã nằm chờ bao lâu mà chưa được commit" — theo
+// TỪNG PARTITION, lấy cái tệ nhất. Không phải "offset không nhích": một topic ít
+// traffic có offset đứng im hàng giờ mà hoàn toàn khoẻ, vì chẳng có gì để
+// commit. Mốc chỉ chạy khi partition VỪA có lag VỪA không tiến triển, nên:
+//   · message vừa đến  → không tính giờ ngay (chờ vòng quét sau mới có mốc)
+//   · commit đều đặn   → mốc reset mỗi lần offset nhích
+//   · hết lag          → mốc xoá hẳn
+// Theo partition chứ không gộp group vì group đọc 5 partition mà 1 cái treo thì
+// một dấu vân tay gộp vẫn đổi mỗi vòng (4 cái kia nhích) và che mất cái treo.
 
 /** Groups whose offsets are fetched concurrently. Keeps the admin API sane. */
 const LAG_GROUP_CONCURRENCY = 8;
@@ -952,11 +962,17 @@ export interface GroupLagSummary {
   /** Partitions with a committed offset (nulls excluded). */
   partitions: number;
   /**
-   * Seconds since ANY committed offset of this group last moved, or null when
-   * this is the first sighting (no baseline yet) or the group is progressing.
-   * Non-null + lag > 0 = the consumer is stuck, not merely behind.
+   * Số giây partition tệ nhất của group ĐÃ CÓ MESSAGE CHỜ mà vẫn chưa commit.
+   * null = không partition nào đang chờ đủ lâu (hoặc chưa quá STALL_MIN_MS).
+   *
+   * KHÁC "offset không nhích": topic ít traffic thì offset đứng im hàng giờ là
+   * bình thường — không có gì để commit. Ở đây mốc chỉ chạy khi partition VỪA
+   * có lag VỪA không tiến triển, nên non-null nghĩa là consumer thật sự đang ôm
+   * việc mà không làm. Vì thế nó KHÔNG cần kiểm `totalLag > 0` ở phía gọi nữa.
    */
   stalledSec: number | null;
+  /** Partition treo lâu nhất ("topic:partition") — để cảnh báo nêu đích danh. */
+  stalledAt?: string;
   /** Set when this group alone failed; its lag is unknown, not zero. */
   error?: string;
 }
@@ -968,21 +984,30 @@ export interface KafkaConsumerLag {
   skippedGroups: number;
 }
 
-/** Per-connection stall baseline: `groupId` → {offset fingerprint, since when}. */
-interface StallEntry {
+/**
+ * Mốc đo "đứng im" của MỘT partition.
+ *
+ * ĐO THEO PARTITION, không gộp cả group. Group đọc 5 partition, 4 cái chạy tốt
+ * và 1 cái treo: một fingerprint gộp cả group vẫn ĐỔI mỗi vòng (vì 4 cái kia
+ * nhích) → group được coi là đang chạy, và partition treo bị che hoàn toàn.
+ * Đó chính là ca mà cảnh báo này sinh ra để bắt.
+ */
+interface PartitionStall {
+  /** Committed offset lần gần nhất. */
+  offset: number;
   /**
-   * Fingerprint of every committed offset. NOT a sum: two partitions moving by
-   * the same amount in opposite directions (an operator resetting offsets) would
-   * leave a sum unchanged and be misreported as stalled. Positional digest keeps
-   * each partition's contribution distinct.
+   * Từ lúc nào partition này VỪA có message chờ VỪA không commit được.
+   *
+   * null = không tính giờ (đang hết lag, hoặc offset vừa nhích) — mốc chỉ bắt
+   * đầu chạy khi đã có message nằm chờ THẬT.
    */
-  fingerprint: string;
-  /** When the fingerprint was last observed to CHANGE. */
-  movedAt: number;
+  waitingSince: number | null;
 }
-const stallState = new Map<string, Map<string, StallEntry>>();
 
-function stallMapFor(connectionId: string): Map<string, StallEntry> {
+/** Per-connection stall baseline: `groupId` → `topic:partition` → mốc. */
+const stallState = new Map<string, Map<string, Map<string, PartitionStall>>>();
+
+function stallMapFor(connectionId: string): Map<string, Map<string, PartitionStall>> {
   let m = stallState.get(connectionId);
   if (!m) {
     m = new Map();
@@ -1074,11 +1099,21 @@ export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerL
       return { ...base, error: (e as Error).message || 'fetchOffsets thất bại' };
     }
 
-    const marks: string[] = [];
     let partitions = 0;
     let totalLag = 0;
     let worstTopic: string | null = null;
     let worstTopicLag = 0;
+    // Mốc đo đứng im của group này, theo từng partition.
+    let pstalls = stalls.get(g.groupId);
+    if (!pstalls) {
+      pstalls = new Map();
+      stalls.set(g.groupId, pstalls);
+    }
+    /** Partition còn tồn tại trong vòng quét này — cái biến mất thì bỏ mốc. */
+    const seen = new Set<string>();
+    /** Partition treo lâu nhất: bao nhiêu giây, và là partition nào. */
+    let worstWaitMs = 0;
+    let worstStallAt: string | null = null;
 
     const dropped: string[] = [];
     for (const t of committed) {
@@ -1097,8 +1132,44 @@ export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerL
         const cur = Number(p.offset);
         if (!Number.isFinite(cur) || cur < 0) continue; // never committed
         partitions += 1;
-        marks.push(`${t.topic}:${p.partition}:${cur}`);
-        topicLag += Math.max(0, (high.get(p.partition) ?? 0) - cur);
+        const hw = high.get(p.partition) ?? 0;
+        const lag = Math.max(0, hw - cur);
+        topicLag += lag;
+
+        // ── "Đứng im" = message ĐÃ CHỜ mà vẫn chưa được commit ─────────────
+        //
+        // Trước đây chỗ này chỉ nhìn committed offset, nên "consumer không
+        // commit gì" bị đánh đồng với "có việc mà không làm". Hai thứ khác hẳn:
+        // topic ít traffic thì offset đứng im hàng giờ là BÌNH THƯỜNG — không
+        // có message nào để commit cả.
+        //
+        // Mốc giờ chỉ chạy khi CẢ HAI cùng đúng và cùng liên tục:
+        //   · partition có lag (hw > cur)  → thật sự có message đang chờ
+        //   · offset không nhích           → mà vẫn chưa xử lý xong
+        //
+        // Nhờ vậy message VỪA đến không tính giờ ngay (mốc bắt đầu từ vòng quét
+        // thấy nó lần đầu), và consumer commit đều thì mốc reset mỗi lần commit.
+        const key = `${t.topic}:${p.partition}`;
+        seen.add(key);
+        const prev = pstalls.get(key);
+        if (lag <= 0) {
+          // Hết lag = không có gì chờ. Không phải đứng im, dù offset có đứng yên
+          // bao lâu đi nữa — đây là ca topic ít traffic.
+          pstalls.set(key, { offset: cur, waitingSince: null });
+        } else if (!prev || prev.offset !== cur) {
+          // Offset vừa nhích (hoặc lần đầu thấy) → consumer CÓ tiến triển.
+          // Bắt đầu tính lại từ đây: phần lag còn lại mới chỉ vừa được nhìn thấy.
+          pstalls.set(key, { offset: cur, waitingSince: at });
+        } else {
+          // Có lag, offset y nguyên → đang chờ thật. Giữ mốc cũ và cộng dồn.
+          const since = prev.waitingSince ?? at;
+          pstalls.set(key, { offset: cur, waitingSince: since });
+          const waited = at - since;
+          if (waited > worstWaitMs) {
+            worstWaitMs = waited;
+            worstStallAt = key;
+          }
+        }
       }
       totalLag += topicLag;
       if (topicLag > worstTopicLag) {
@@ -1107,19 +1178,14 @@ export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerL
       }
     }
 
-    // Stall: the offset fingerprint has not changed since a previous sweep.
-    // marks is built in fetchOffsets order, which kafkajs returns consistently
-    // per group; sorting keeps the digest stable even if that ever changes.
-    const fingerprint = marks.sort().join('|');
-    let stalledSec: number | null = null;
-    const prev = stalls.get(g.groupId);
-    if (!prev || prev.fingerprint !== fingerprint) {
-      stalls.set(g.groupId, { fingerprint, movedAt: at });
-    } else {
-      // Only call it stalled once it has held long enough — see STALL_MIN_MS.
-      const heldMs = at - prev.movedAt;
-      if (heldMs >= STALL_MIN_MS) stalledSec = Math.round(heldMs / 1000);
-    }
+    // Partition đã biến mất (topic xoá, group thôi đọc) thì bỏ mốc — giữ lại
+    // là để một partition không còn tồn tại tiếp tục báo treo mãi mãi.
+    for (const k of [...pstalls.keys()]) if (!seen.has(k)) pstalls.delete(k);
+
+    // Group treo bao lâu = partition treo LÂU NHẤT của nó. Chỉ tính khi đã giữ
+    // đủ STALL_MIN_MS: consumer commit theo lô vài phút một lần trông như treo
+    // ở gần mọi vòng quét, và sẽ báo động mỗi lần.
+    const stalledSec = worstWaitMs >= STALL_MIN_MS ? Math.round(worstWaitMs / 1000) : null;
 
     return {
       ...base,
@@ -1128,6 +1194,7 @@ export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerL
       worstTopicLag,
       partitions,
       stalledSec,
+      ...(stalledSec !== null && worstStallAt ? { stalledAt: worstStallAt } : {}),
       ...(dropped.length
         ? { error: `không đọc được high-watermark của: ${dropped.slice(0, 5).join(', ')}` }
         : {}),
