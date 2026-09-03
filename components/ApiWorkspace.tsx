@@ -6,7 +6,13 @@
 // resolveVars). Collection + environment lưu per-machine (/api/api-collections).
 //
 // Bố cục: rail trái = request đã lưu (gom theo folder) + environment picker;
-// giữa = builder (method/url + tabs Params/Headers/Body) và response.
+// giữa = thanh tab request đang mở + builder (method/url + Params/Headers/Body)
+// và response.
+//
+// NHIỀU REQUEST MỞ CÙNG LÚC (như Postman): mỗi tab là một Session độc lập —
+// draft riêng, response riêng, đang-gửi riêng. Mở request từ rail không đè lên
+// thứ đang dở nữa. Danh sách tab (chỉ phần draft, không kèm response) nhớ qua
+// localStorage nên đóng app mở lại vẫn còn nguyên bàn làm việc.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -24,7 +30,11 @@ import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
-const BLANK: Draft = { name: '', method: 'GET', url: '', headers: [{ key: '', value: '' }], body: '', bodyType: 'none' };
+/** Draft rỗng — hàm chứ không phải hằng dùng chung: mỗi tab phải có mảng
+ *  headers của riêng nó, không thì hai tab sửa chung một chỗ. */
+const blankDraft = (): Draft => ({
+  name: '', method: 'GET', url: '', headers: [{ key: '', value: '' }], body: '', bodyType: 'none',
+});
 
 interface Draft {
   id?: string;
@@ -37,30 +47,149 @@ interface Draft {
   bodyType: 'none' | 'raw' | 'form';
 }
 
+/** Một tab request đang mở — mọi thứ thuộc về nó nằm gọn ở đây. */
+interface Session {
+  key: string;
+  draft: Draft;
+  tab: 'params' | 'headers' | 'body';
+  res: HttpResult | null;
+  err: string | null;
+  sending: boolean;
+  resTab: 'body' | 'headers';
+  resPretty: boolean;
+}
+
+const TABS_KEY = 'devbox.api.tabs';
+let seq = 0;
+const newKey = (): string => `t${Date.now().toString(36)}${(seq += 1).toString(36)}`;
+
+function blankSession(draft: Draft = blankDraft()): Session {
+  return {
+    key: newKey(), draft, tab: draft.bodyType === 'none' ? 'headers' : 'body',
+    res: null, err: null, sending: false, resTab: 'body', resPretty: true,
+  };
+}
+
 function methodClass(m: string): string {
   return `api-m api-m--${m.toLowerCase()}`;
+}
+
+/** Tab còn trắng tinh? (chưa gõ gì, chưa gửi gì) — để tái dùng thay vì đẻ thêm. */
+function isPristine(s: Session): boolean {
+  const d = s.draft;
+  return !d.id && !d.url.trim() && !d.body.trim() && !d.name.trim() && !s.res
+    && d.headers.every((h) => !h.key.trim() && !h.value.trim());
+}
+
+/** Nhãn hiển thị trên tab: tên đã lưu, hoặc method + path cho dễ nhận ra. */
+function tabLabel(d: Draft): string {
+  if (d.name.trim()) return d.name;
+  try { return new URL(d.url).pathname || new URL(d.url).hostname; } catch { /* URL còn dở */ }
+  return d.url.trim() ? d.url.replace(/^https?:\/\//, '').slice(0, 28) : 'Request mới';
 }
 
 export default function ApiWorkspace() {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--api-rail', min: 160, max: 480, gap: 12 });
   const [data, setData] = useState<ApiData>({ requests: [], environments: [] });
-  const [draft, setDraft] = useState<Draft>(BLANK);
-  const [tab, setTab] = useState<'params' | 'headers' | 'body'>('headers');
-  const [res, setRes] = useState<HttpResult | null>(null);
-  const [sending, setSending] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<Session[]>(() => [blankSession()]);
+  const [activeKey, setActiveKey] = useState<string>(() => '');
   const [importOpen, setImportOpen] = useState(false);
   const [curlText, setCurlText] = useState('');
   const [envEdit, setEnvEdit] = useState<ApiEnvironment | null>(null);
-  const [resTab, setResTab] = useState<'body' | 'headers'>('body');
-  const [resPretty, setResPretty] = useState(true);
   const [autoFmt, setAutoFmt] = useState(true);
+
+  // Tab đang xem. Fallback về tab đầu để không bao giờ có màn hình trống khi
+  // key lạc (khôi phục từ localStorage, tab vừa bị đóng…).
+  const cur = sessions.find((s) => s.key === activeKey) ?? sessions[0];
+
+  /** Sửa MỘT tab theo key — dùng cho việc chạy nền (send) vì lúc trả kết quả
+   *  người dùng có thể đã chuyển sang tab khác. */
+  const patch = useCallback((key: string, up: Partial<Session> | ((s: Session) => Partial<Session>)) => {
+    setSessions((ss) => ss.map((s) => (s.key === key ? { ...s, ...(typeof up === 'function' ? up(s) : up) } : s)));
+  }, []);
+  /**
+   * Sửa tab ĐANG xem — chỗ mọi thao tác tay đi qua.
+   *
+   * Đọc key qua ref để hàm này (và cả họ setDraft/setErr/… dựng trên nó) có
+   * danh tính CỐ ĐỊNH: nếu nó đổi mỗi lần sang tab khác thì `reload` cũng đổi
+   * theo, và effect gắn với reload sẽ nã lại collection sau mỗi cú bấm tab.
+   */
+  const activeRef = useRef('');
+  activeRef.current = cur?.key ?? '';
+  const setCur = useCallback((up: Partial<Session> | ((s: Session) => Partial<Session>)) => {
+    setSessions((ss) => {
+      const key = ss.some((s) => s.key === activeRef.current) ? activeRef.current : ss[0]?.key;
+      return ss.map((s) => (s.key === key ? { ...s, ...(typeof up === 'function' ? up(s) : up) } : s));
+    });
+  }, []);
+
+  // Bí danh giữ nguyên tên cũ: phần còn lại của component viết như thời một
+  // request, chỉ khác là mọi setter giờ rơi vào tab đang xem.
+  const { draft, tab, res, err, sending, resTab, resPretty } = cur;
+  const setDraft = useCallback((up: Draft | ((d: Draft) => Draft)) =>
+    setCur((s) => ({ draft: typeof up === 'function' ? up(s.draft) : up })), [setCur]);
+  const setTab = useCallback((v: Session['tab']) => setCur({ tab: v }), [setCur]);
+  const setRes = useCallback((v: HttpResult | null) => setCur({ res: v }), [setCur]);
+  const setErr = useCallback((v: string | null) => setCur({ err: v }), [setCur]);
+  const setResTab = useCallback((v: Session['resTab']) => setCur({ resTab: v }), [setCur]);
+  const setResPretty = useCallback((up: boolean | ((p: boolean) => boolean)) =>
+    setCur((s) => ({ resPretty: typeof up === 'function' ? up(s.resPretty) : up })), [setCur]);
+
+  // ── Mở / đóng tab ──────────────────────────────────────────────────────────
+  const openSession = useCallback((draftNew: Draft) => {
+    const s = blankSession(draftNew);
+    setSessions((ss) => [...ss, s]);
+    setActiveKey(s.key);
+    return s.key;
+  }, []);
+
+  const closeSession = useCallback((key: string) => {
+    const i = sessions.findIndex((s) => s.key === key);
+    if (i < 0) return;
+    const left = sessions.filter((s) => s.key !== key);
+    // Đóng tab cuối cùng = dọn bàn, không phải để trống màn hình.
+    const next = left.length ? left : [blankSession()];
+    setSessions(next);
+    // Đóng tab đang xem → nhảy sang tab kế bên (Postman/Chrome đều vậy).
+    if (cur?.key === key) setActiveKey(next[Math.min(i, next.length - 1)].key);
+  }, [sessions, cur]);
 
   const reload = useCallback(async () => {
     try { setData(await apiGet()); } catch (e) { setErr((e as Error).message); }
-  }, []);
+  }, [setErr]);
   useEffect(() => { void reload(); }, [reload]);
+
+  // ── Nhớ bàn làm việc qua localStorage ──────────────────────────────────────
+  //
+  // Chỉ cất phần DRAFT: response có thể vài MB, mà mở lại app thì nó cũng cũ
+  // rồi. Nạp trong effect (không phải initialState) để server-render và client
+  // khớp nhau — Next sẽ chửi hydration mismatch nếu đọc localStorage lúc render.
+  // Cờ hydrated là STATE chứ không phải ref, và effect ghi phải chờ nó: nếu
+  // đánh dấu bằng ref thì ngay trong cùng lượt commit, effect ghi chạy sau
+  // effect nạp nhưng vẫn còn nắm sessions CŨ (bàn trắng) — nó sẽ đè trắng lên
+  // đúng thứ vừa khôi phục.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(TABS_KEY);
+      const saved = raw ? (JSON.parse(raw) as { drafts?: Draft[]; active?: number }) : null;
+      if (saved?.drafts?.length) {
+        const ss = saved.drafts.map((d) => blankSession({ ...blankDraft(), ...d }));
+        setSessions(ss);
+        setActiveKey(ss[Math.min(saved.active ?? 0, ss.length - 1)].key);
+      }
+    } catch { /* localStorage hỏng/đầy — mở bàn trắng, không phải lỗi đáng kêu */ }
+    setHydrated(true);
+  }, []);
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      const drafts = sessions.map((s) => s.draft);
+      const active = Math.max(0, sessions.findIndex((s) => s.key === cur?.key));
+      localStorage.setItem(TABS_KEY, JSON.stringify({ drafts, active }));
+    } catch { /* đầy thì thôi */ }
+  }, [hydrated, sessions, cur]);
 
   const activeEnv = data.environments.find((e) => e.id === data.activeEnvId);
   const envMap = useMemo(() => {
@@ -70,49 +199,66 @@ export default function ApiWorkspace() {
   }, [activeEnv]);
 
   // ── Gửi request ────────────────────────────────────────────────────────────
+  //
+  // Kết quả trả về ĐÚNG tab đã bấm Send (patch theo key, không phải setCur):
+  // gửi ở tab A rồi nhảy sang tab B đọc tạm cái khác là chuyện thường, response
+  // không được phép rơi nhầm chỗ.
   const send = async () => {
-    const url = resolveVars(draft.url, envMap).trim();
-    if (!url) { setErr('Nhập URL trước.'); return; }
-    setSending(true); setErr(null); setRes(null);
+    const key = cur.key;
+    const d = cur.draft;
+    const url = resolveVars(d.url, envMap).trim();
+    if (!url) { patch(key, { err: 'Nhập URL trước.' }); return; }
+    patch(key, { sending: true, err: null, res: null });
     try {
-      const headers = draft.headers
+      const headers = d.headers
         .filter((h) => h.key.trim() && h.on !== false)
         .map((h) => ({ key: resolveVars(h.key, envMap), value: resolveVars(h.value, envMap) }));
       const r = await apiSend({
-        method: draft.method, url, headers,
-        body: draft.bodyType === 'none' ? undefined : resolveVars(draft.body, envMap),
+        method: d.method, url, headers,
+        body: d.bodyType === 'none' ? undefined : resolveVars(d.body, envMap),
       });
-      setRes(r); setResTab('body'); setResPretty(true);
+      patch(key, { res: r, resTab: 'body', resPretty: true });
     } catch (e) {
-      setErr((e as Error).message);
+      patch(key, { err: (e as Error).message });
     } finally {
-      setSending(false);
+      patch(key, { sending: false });
     }
   };
 
   // ── Import curl ──────────────────────────────────────────────────────────────
 
-  /** curl → draft. Dùng chung cho modal "Dán curl" lẫn dán thẳng vào ô URL. */
-  const applyCurl = useCallback((raw: string): boolean => {
+  /** curl → Draft. Trả null và báo lỗi lên tab hiện tại nếu không đọc được. */
+  const curlToDraft = useCallback((raw: string): Draft | null => {
     try {
       const p = parseCurl(raw);
-      if (!p.url) { setErr('Không tìm thấy URL trong lệnh curl.'); return false; }
-      setDraft({
+      if (!p.url) { setErr('Không tìm thấy URL trong lệnh curl.'); return null; }
+      return {
         name: '', method: p.method, url: p.url,
         headers: p.headers.length ? p.headers.map((h) => ({ ...h, on: true })) : [{ key: '', value: '' }],
         body: p.body, bodyType: p.bodyType,
-      });
-      setTab(p.bodyType === 'none' ? 'headers' : 'body');
-      setErr(null); setRes(null);
-      return true;
+      };
     } catch (e) {
       setErr('Không phân tích được curl: ' + (e as Error).message);
-      return false;
+      return null;
     }
-  }, []);
+  }, [setErr]);
 
+  /** Đổ curl vào TAB ĐANG XEM (dán thẳng vào ô URL = ý muốn sửa tại chỗ). */
+  const applyCurl = useCallback((raw: string): boolean => {
+    const d = curlToDraft(raw);
+    if (!d) return false;
+    setCur({ draft: d, tab: d.bodyType === 'none' ? 'headers' : 'body', err: null, res: null });
+    return true;
+  }, [curlToDraft, setCur]);
+
+  /** Modal "Dán curl" = mang một request MỚI vào bàn → tab mới, trừ khi tab
+   *  đang xem còn trắng tinh thì dùng luôn cho đỡ thừa. */
   const doImport = () => {
-    if (applyCurl(curlText)) { setImportOpen(false); setCurlText(''); }
+    const d = curlToDraft(curlText);
+    if (!d) return;
+    if (isPristine(cur)) setCur({ draft: d, tab: d.bodyType === 'none' ? 'headers' : 'body', err: null, res: null });
+    else openSession(d);
+    setImportOpen(false); setCurlText('');
   };
 
   /**
@@ -161,13 +307,21 @@ export default function ApiWorkspace() {
   }, [draft, envMap]);
 
   // ── Collection ───────────────────────────────────────────────────────────────
+  /**
+   * Bấm một request ở rail: đang mở sẵn thì nhảy tới tab đó (không mở trùng,
+   * không mất response đang xem); chưa mở thì thêm tab mới — tab trắng tinh
+   * đang xem thì dùng lại chỗ đó.
+   */
   const openRequest = (r: ApiRequest) => {
-    setDraft({
+    const already = sessions.find((s) => s.draft.id === r.id);
+    if (already) { setActiveKey(already.key); return; }
+    const d: Draft = {
       id: r.id, name: r.name, folder: r.folder, method: r.method, url: r.url,
       headers: r.headers.length ? r.headers : [{ key: '', value: '' }],
       body: r.body, bodyType: r.bodyType,
-    });
-    setTab(r.bodyType === 'none' ? 'headers' : 'body'); setRes(null); setErr(null);
+    };
+    if (isPristine(cur)) setCur({ draft: d, tab: d.bodyType === 'none' ? 'headers' : 'body', res: null, err: null });
+    else openSession(d);
   };
 
   const [saveOpen, setSaveOpen] = useState(false);
@@ -188,15 +342,22 @@ export default function ApiWorkspace() {
       setData(d); setSaveOpen(false);
       if (!draft.id) {
         const fresh = d.requests.find((x) => !before.has(x.id));
-        if (fresh) setDraft((cur) => ({ ...cur, id: fresh.id, name: fresh.name, folder: fresh.folder }));
+        if (fresh) setDraft((d0) => ({ ...d0, id: fresh.id, name: fresh.name, folder: fresh.folder }));
       }
     } catch (e) { setErr((e as Error).message); }
   };
 
+  /** Xóa khỏi collection: tab nào đang mở request đó thì GIỮ NGUYÊN nội dung,
+   *  chỉ bỏ id — thứ đang gõ dở không việc gì phải biến mất theo, 💾 sẽ hỏi
+   *  tên lại như một request mới. */
   const removeRequest = async (r: ApiRequest) => {
     if (!window.confirm(`Xóa request "${r.name}"?`)) return;
-    try { const d = await apiRemoveRequest(r.id); setData(d); if (draft.id === r.id) setDraft(BLANK); }
-    catch (e) { setErr((e as Error).message); }
+    try {
+      const d = await apiRemoveRequest(r.id);
+      setData(d);
+      setSessions((ss) => ss.map((s) => (s.draft.id === r.id
+        ? { ...s, draft: { ...s.draft, id: undefined } } : s)));
+    } catch (e) { setErr((e as Error).message); }
   };
 
   // ── Environment ────────────────────────────────────────────────────────────
@@ -248,7 +409,7 @@ export default function ApiWorkspace() {
   const applyEdit = useCallback((r: EditResult) => {
     caretRef.current = r.caret;
     setDraft((d) => ({ ...d, body: r.text }));
-  }, []);
+  }, [setDraft]);
 
   /** Format body về JSON 2-space, giữ con trỏ ở đúng chỗ đang gõ. */
   const formatBody = useCallback(() => {
@@ -259,7 +420,7 @@ export default function ApiWorkspace() {
       caretRef.current = el ? remapCaret(d.body, el.selectionStart, f.text) : f.text.length;
       return { ...d, body: f.text };
     });
-  }, []);
+  }, [setDraft]);
 
   // Tự format khi ngơi tay ~700ms và body đang là JSON hợp lệ. Lúc còn dở dang
   // (gõ nửa chừng cái key) thì JSON.parse fail nên không ai đụng vào text cả.
@@ -327,7 +488,7 @@ export default function ApiWorkspace() {
         <aside className="g-rail api-rail">
           <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', gap: 6 }}>
             <span style={{ flex: 1 }}>Collection</span>
-            <button className="ghost sm" onClick={() => { setDraft(BLANK); setRes(null); }} title="Request mới">＋</button>
+            <button className="ghost sm" onClick={() => openSession(blankDraft())} title="Request mới (tab mới)">＋</button>
             <button className="ghost sm" onClick={() => void reload()} title="Tải lại">↻</button>
           </div>
           {grouped.map(([folder, reqs]) => (
@@ -335,7 +496,8 @@ export default function ApiWorkspace() {
               {folder && <div className="api-folder">📁 {folder}</div>}
               {reqs.map((r) => (
                 <div key={r.id} className={`g-root${draft.id === r.id ? ' on' : ''}`}>
-                  <button className="g-root-btn" onClick={() => openRequest(r)} title={r.url}>
+                  <button className="g-root-btn" onClick={() => openRequest(r)}
+                    title={sessions.some((s) => s.draft.id === r.id) ? `${r.url}\n(đang mở — bấm để nhảy tới tab)` : r.url}>
                     <span className={methodClass(r.method)}>{r.method}</span>
                     <span className="g-root-name">{r.name}</span>
                   </button>
@@ -367,6 +529,26 @@ export default function ApiWorkspace() {
 
         {/* ── Builder + response ── */}
         <div className="api-main">
+          {/* Thanh tab request đang mở — chuột giữa để đóng, như trình duyệt. */}
+          <div className="api-wintabs">
+            {sessions.map((s) => (
+              <div key={s.key} className={`api-wintab${s.key === cur.key ? ' on' : ''}`}
+                onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeSession(s.key); } }}>
+                <button className="api-wintab-btn" onClick={() => setActiveKey(s.key)}
+                  title={s.draft.url || 'Request mới'}>
+                  <span className={methodClass(s.draft.method)}>{s.draft.method}</span>
+                  <span className="api-wintab-name">{tabLabel(s.draft)}</span>
+                  {s.sending && <span className="small" aria-label="đang gửi">…</span>}
+                  {!s.sending && s.res && (
+                    <span className={`api-dot api-status--${Math.floor(s.res.status / 100)}`} aria-hidden>●</span>
+                  )}
+                </button>
+                <button className="api-wintab-x" onClick={() => closeSession(s.key)} title="Đóng tab">✕</button>
+              </div>
+            ))}
+            <button className="ghost sm" onClick={() => openSession(blankDraft())} title="Tab request mới">＋</button>
+          </div>
+
           <div className="api-urlbar">
             <select className={`input ${methodClass(draft.method)}`} style={{ width: 100 }} value={draft.method}
               onChange={(e) => setDraft({ ...draft, method: e.target.value })}>
