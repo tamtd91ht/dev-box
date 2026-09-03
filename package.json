@@ -21,7 +21,8 @@
     "bot:test": "tsx bot/smoke.test.ts",
     "check:automation": "tsx scripts/check-automation-meta.ts",
     "check:rate": "tsx scripts/check-rate-math.ts",
-    "check:zalo": "tsx scripts/check-zalo-extract.ts"
+    "check:zalo": "tsx scripts/check-zalo-extract.ts",
+    "check:json-edit": "tsx scripts/check-json-edit.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

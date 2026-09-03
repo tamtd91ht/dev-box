@@ -8,13 +8,17 @@
 // Bố cục: rail trái = request đã lưu (gom theo folder) + environment picker;
 // giữa = builder (method/url + tabs Params/Headers/Body) và response.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   apiGet, apiSaveRequest, apiRemoveRequest, apiSaveEnv, apiRemoveEnv, apiSetActiveEnv, apiSend,
   type ApiData, type ApiRequest, type ApiHeader, type ApiEnvironment, type HttpResult,
 } from '@/lib/api';
 import { parseCurl, resolveVars, looksLikeCurl, buildCurl } from '@/lib/curlParse';
-import { formatText } from '@/lib/format';
+import { formatText, type FormatKind } from '@/lib/format';
+import {
+  backspace as jsonBackspace, closeBracket as jsonCloseBracket, enter as jsonEnter,
+  looksLikeJson, openBrace, openBracket, quote as jsonQuote, remapCaret, type EditResult,
+} from '@/lib/jsonEdit';
 import { fmtRel } from '@/lib/google';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
@@ -50,6 +54,8 @@ export default function ApiWorkspace() {
   const [curlText, setCurlText] = useState('');
   const [envEdit, setEnvEdit] = useState<ApiEnvironment | null>(null);
   const [resTab, setResTab] = useState<'body' | 'headers'>('body');
+  const [resPretty, setResPretty] = useState(true);
+  const [autoFmt, setAutoFmt] = useState(true);
 
   const reload = useCallback(async () => {
     try { setData(await apiGet()); } catch (e) { setErr((e as Error).message); }
@@ -76,7 +82,7 @@ export default function ApiWorkspace() {
         method: draft.method, url, headers,
         body: draft.bodyType === 'none' ? undefined : resolveVars(draft.body, envMap),
       });
-      setRes(r); setResTab('body');
+      setRes(r); setResTab('body'); setResPretty(true);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -223,14 +229,96 @@ export default function ApiWorkspace() {
   const addHeaderRow = () => setDraft((d) => ({ ...d, headers: [...d.headers, { key: '', value: '' }] }));
   const rmHeader = (i: number) => setDraft((d) => ({ ...d, headers: d.headers.filter((_, j) => j !== i) }));
 
-  const prettyBody = () => {
-    if (!res) return;
-    const ct = res.headers['content-type'] ?? '';
-    const kind = /json/i.test(ct) ? 'json' : /html/i.test(ct) ? 'html' : /xml/i.test(ct) ? 'xml' : null;
-    if (!kind) return;
-    const f = formatText(kind, res.body);
-    if (f.ok) setRes({ ...res, body: f.text });
+  // ── Ô body raw: gõ JSON có trợ lý + tự format ──────────────────────────────
+  //
+  // textarea là controlled component nên sau mỗi lần tự chèn phải TỰ đặt lại
+  // con trỏ: React vẽ lại xong là selection nhảy về cuối. caretRef giữ chỗ cần
+  // đặt, useLayoutEffect đặt trước khi trình duyệt vẽ khung hình (dùng
+  // useEffect thì thấy con trỏ giật một nhịp).
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
+  const caretRef = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (el && caretRef.current !== null) {
+      el.setSelectionRange(caretRef.current, caretRef.current);
+      caretRef.current = null;
+    }
+  });
+
+  const applyEdit = useCallback((r: EditResult) => {
+    caretRef.current = r.caret;
+    setDraft((d) => ({ ...d, body: r.text }));
+  }, []);
+
+  /** Format body về JSON 2-space, giữ con trỏ ở đúng chỗ đang gõ. */
+  const formatBody = useCallback(() => {
+    setDraft((d) => {
+      const f = formatText('json', d.body);
+      if (!f.ok || f.text === d.body) return d;
+      const el = bodyRef.current;
+      caretRef.current = el ? remapCaret(d.body, el.selectionStart, f.text) : f.text.length;
+      return { ...d, body: f.text };
+    });
+  }, []);
+
+  // Tự format khi ngơi tay ~700ms và body đang là JSON hợp lệ. Lúc còn dở dang
+  // (gõ nửa chừng cái key) thì JSON.parse fail nên không ai đụng vào text cả.
+  useEffect(() => {
+    if (!autoFmt || draft.bodyType !== 'raw' || !looksLikeJson(draft.body)) return;
+    const t = setTimeout(formatBody, 700);
+    return () => clearTimeout(t);
+  }, [autoFmt, draft.body, draft.bodyType, formatBody]);
+
+  /** Phím trong ô body: đóng cặp ngoặc, khung object, field mới, Ctrl+Shift+F. */
+  const onBodyKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (draft.bodyType !== 'raw') return;
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
+      e.preventDefault(); formatBody(); return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.nativeEvent.isComposing) return; // đang gõ tiếng Việt — đừng chen ngang
+    const el = e.currentTarget;
+    const [v, from, to] = [el.value, el.selectionStart, el.selectionEnd];
+    const r =
+      e.key === '{' ? openBrace(v, from, to)
+        : e.key === '[' ? openBracket(v, from, to)
+          : e.key === '"' ? jsonQuote(v, from, to)
+            : e.key === '}' || e.key === ']' ? jsonCloseBracket(v, from, to, e.key)
+              : e.key === 'Enter' ? jsonEnter(v, from, to)
+                : e.key === 'Backspace' ? jsonBackspace(v, from, to)
+                  : null;
+    if (!r) return;
+    e.preventDefault();
+    applyEdit(r);
   };
+
+  // Báo JSON hỏng ngay dưới ô — biết sai trước khi bấm Send.
+  const bodyErr = useMemo(() => {
+    if (draft.bodyType !== 'raw' || !looksLikeJson(draft.body)) return null;
+    const f = formatText('json', draft.body);
+    return f.ok ? null : f.error ?? 'JSON không hợp lệ';
+  }, [draft.body, draft.bodyType]);
+
+  // ── Response: format để đọc, KHÔNG đụng vào text gốc ───────────────────────
+  //
+  // Đây là chỗ khác bản cũ: trước kia nút ✨ ghi đè res.body nên bấm rồi là mất
+  // nguyên văn (mà nguyên văn mới là thứ để đối chiếu khi nghi server trả lạ).
+  // Giờ nó chỉ là công tắc Pretty/Raw.
+  const resKind = useMemo<FormatKind | null>(() => {
+    if (!res) return null;
+    const ct = res.headers['content-type'] ?? '';
+    if (/json/i.test(ct)) return 'json';
+    if (/html/i.test(ct)) return 'html';
+    if (/xml/i.test(ct)) return 'xml';
+    return looksLikeJson(res.body) ? 'json' : null; // server trả text/plain mà ruột là JSON
+  }, [res]);
+
+  const resShown = useMemo(() => {
+    if (!res) return '';
+    if (!resPretty || !resKind) return res.body;
+    const f = formatText(resKind, res.body);
+    return f.ok ? f.text : res.body;
+  }, [res, resKind, resPretty]);
 
   return (
     <div className="panel sheet-panel">
@@ -335,14 +423,26 @@ export default function ApiWorkspace() {
                       onChange={() => setDraft({ ...draft, bodyType: bt })} /> {bt}</label>
                   ))}
                   {draft.bodyType === 'raw' && (
-                    <button className="ghost sm" onClick={() => { const f = formatText('json', draft.body); if (f.ok) setDraft({ ...draft, body: f.text }); }}>
-                      ✨ Format JSON
-                    </button>
+                    <>
+                      <button className="ghost sm" onClick={formatBody} title="Format JSON (Ctrl+Shift+F)">
+                        ✨ Format JSON
+                      </button>
+                      <label title="Tự format lại khi ngơi tay, miễn là JSON đang hợp lệ">
+                        <input type="checkbox" checked={autoFmt} onChange={(e) => setAutoFmt(e.target.checked)} /> auto
+                      </label>
+                      <span style={{ flex: 1 }} />
+                      {bodyErr
+                        ? <span className="small" style={{ color: 'var(--err)' }}>⚠ {bodyErr}</span>
+                        : looksLikeJson(draft.body) && <span className="small" style={{ color: 'var(--muted)' }}>✓ JSON hợp lệ</span>}
+                    </>
                   )}
                 </div>
                 {draft.bodyType !== 'none' && (
-                  <textarea className="input api-bodytext" value={draft.body}
-                    placeholder={draft.bodyType === 'raw' ? '{ "key": "{{value}}" }' : 'key=value&key2=value2'}
+                  <textarea className="input api-bodytext" value={draft.body} ref={bodyRef}
+                    spellCheck={false}
+                    placeholder={draft.bodyType === 'raw' ? '{ "key": "{{value}}" }  — gõ { để ra sẵn khung, Enter để thêm field' : 'key=value&key2=value2'}
+                    onKeyDown={onBodyKeyDown}
+                    onBlur={() => { if (autoFmt && draft.bodyType === 'raw' && looksLikeJson(draft.body)) formatBody(); }}
                     onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
                 )}
               </div>
@@ -359,10 +459,15 @@ export default function ApiWorkspace() {
                 <span style={{ flex: 1 }} />
                 <button className={`api-tab${resTab === 'body' ? ' on' : ''}`} onClick={() => setResTab('body')}>Body</button>
                 <button className={`api-tab${resTab === 'headers' ? ' on' : ''}`} onClick={() => setResTab('headers')}>Headers</button>
-                {resTab === 'body' && <button className="ghost sm" onClick={prettyBody} title="Format JSON/XML/HTML">✨</button>}
+                {resTab === 'body' && resKind && (
+                  <button className="ghost sm" onClick={() => setResPretty((p) => !p)}
+                    title={resPretty ? 'Xem nguyên văn server trả về' : `Format ${resKind.toUpperCase()} cho dễ đọc`}>
+                    {resPretty ? '↩ Raw' : `✨ Format ${resKind.toUpperCase()}`}
+                  </button>
+                )}
               </div>
               {resTab === 'body' ? (
-                <pre className="api-res-body">{res.body}</pre>
+                <pre className="api-res-body">{resShown}</pre>
               ) : (
                 <pre className="api-res-body">{Object.entries(res.headers).map(([k, v]) => `${k}: ${v}`).join('\n')}</pre>
               )}
