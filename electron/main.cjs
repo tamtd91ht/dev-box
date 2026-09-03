@@ -2013,6 +2013,38 @@ ipcMain.handle('workspace:focusHost', (evt) => {
 const pendingDevToolsReq = new Map(); // guest webContents.id → timer fallback
 const dockedDevTools = new Map(); // guest webContents.id → { view, host, win, undock }
 
+/**
+ * Bật MENU CHUỘT PHẢI cho frontend DevTools đang dock.
+ *
+ * Mặc định DevTools nhờ chỗ ở dựng menu native: nó gọi
+ * `InspectorFrontendHost.showContextMenuAtPoint(x, y, items, doc)`. Với cửa sổ
+ * DevTools do chính Electron mở thì Electron lo phần này; còn frontend NGOÀI
+ * (WebContentsView của mình) chỉ nhận được một sự kiện 'context-menu' TRỐNG —
+ * đã đo: params không kèm mục nào của DevTools — nên không ai dựng nổi menu.
+ * Kết quả: chuột phải trong DevTools dock câm lặng, mất sạch Copy as cURL /
+ * Copy payload / Copy response / Copy các dòng header.
+ *
+ * Cách chữa là bảo DevTools TỰ vẽ menu bằng HTML (soft menu) —
+ * `DevToolsAPI.setUseSoftMenu(true)` là công tắc chính thức của frontend. Menu
+ * do frontend vẽ nên đủ mọi mục của từng panel, và các lệnh Copy đi qua
+ * `InspectorFrontendHost.copyText` → clipboard thật (đã đo trên Electron 43).
+ *
+ * Phải đợi frontend đăng ký `window.InspectorFrontendAPI` mới gọi được, mà
+ * không có sự kiện nào báo đúng mốc đó (dom-ready còn sớm hơn một nhịp) → poll
+ * ngắn ngay trong trang. Đo thực tế: ăn ở lần thử thứ hai, ~300ms sau dom-ready.
+ */
+const SOFT_MENU_SCRIPT = `(() => {
+  let left = 25;
+  const tick = () => {
+    const api = globalThis.InspectorFrontendAPI;
+    if (api && typeof api.setUseSoftMenu === 'function') {
+      try { DevToolsAPI.setUseSoftMenu(true); return; } catch { /* chưa dựng xong, thử lại */ }
+    }
+    if (left-- > 0) setTimeout(tick, 300);
+  };
+  tick();
+})()`;
+
 /** Ép rect từ renderer về số nguyên an toàn rồi đặt cho view; null = ẩn
  *  (tab nền, popup/modal cần nổi trên vùng webview, hoặc đang kéo chiều cao —
  *  view là native layer nên DOM không che nó được, chỉ có ẩn đi). */
@@ -2084,6 +2116,11 @@ ipcMain.handle('devtools:open', (evt, targetId, rect, point) => {
     });
     win.contentView.addChildView(view);
     applyDevToolsBounds(view, rect);
+
+    // Chuột phải trong frontend phải ra menu — xem SOFT_MENU_SCRIPT.
+    view.webContents.on('dom-ready', () => {
+      view.webContents.executeJavaScript(SOFT_MENU_SCRIPT, true).catch(() => { /* frontend vừa đóng */ });
+    });
 
     const undock = () => closeDockedDevTools(target);
     dockedDevTools.set(target.id, { view, host: evt.sender, win, undock });
