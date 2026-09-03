@@ -38,6 +38,7 @@ import {
 } from '@/lib/zaloapi/reactions';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
 const POLL_MS = 2000;
 
@@ -253,6 +254,8 @@ export default function ZaloChatPanel({
   // MIN_HIT để vẫn trúng chuột. Tạm thời trong phiên, không nhớ qua lần mở sau
   // (xem lib/useSplit.ts).
   const rail = useSplit({ varName: '--zc-rail', min: 180, max: 560, gap: 0 });
+  // Thu gọn cột hội thoại — nhường chỗ cho khung chat.
+  const railHide = useRailCollapse('zaloapi', '--zc-rail');
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const activeThreadRef = useRef(activeThread);
@@ -572,12 +575,17 @@ export default function ZaloChatPanel({
   const removeTag = (t: string) => void saveTags(activeTags.filter((x) => x !== t));
 
   return (
-    <div className="zc-wrap" data-active={active ? '1' : '0'} ref={rail.ref} style={rail.style}>
-      {/* Cột trái — danh sách hội thoại */}
+    <div className="zc-wrap" data-active={active ? '1' : '0'} ref={rail.ref} style={{ ...rail.style, ...railHide.style }}>
+      {/* Cột trái — danh sách hội thoại (thu gọn được) */}
+      {railHide.collapsed ? (
+        <CollapsedRail label="Hội thoại" onShow={railHide.show} />
+      ) : (
       <aside className="zc-list">
         <div className="zc-list-head">
           <span>Hội thoại</span>
           <span className="zc-list-headbtns">
+            <RailHideButton onHide={railHide.hide} className="zc-new"
+              title="Thu gọn danh sách hội thoại — nhường chỗ cho khung chat" />
             <button className="zc-new" title="Quét nhóm + khách từ Zalo về" onClick={() => void scan()} disabled={scanning}>
               {scanning ? '…' : '⟲'}
             </button>
@@ -668,6 +676,7 @@ export default function ZaloChatPanel({
           )}
         </div>
       </aside>
+      )}
 
       {/* Cột phải — khung tin + ô soạn */}
       <section className="zc-thread">
@@ -1053,7 +1062,7 @@ export default function ZaloChatPanel({
 
       {/* Thanh kéo giữa danh sách hội thoại và khung chat. Con CUỐI của .zc-wrap
           (nó position:absolute nên không đẻ thêm ô cho grid). */}
-      <Splitter {...rail.grip} />
+      {!railHide.collapsed && <Splitter {...rail.grip} />}
     </div>
   );
 }

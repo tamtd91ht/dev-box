@@ -30,6 +30,7 @@ import { automation, useAutomation } from '@/lib/automation/useAutomation';
 import { socialEvent } from '@/lib/automation/sources/social';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
 interface Props {
   /** Report the total unread across all workspaces (for the header tab badge). */
@@ -99,6 +100,9 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
     return map;
   });
   const allAccounts = useMemo(() => plugins.flatMap((p) => accounts[p.id] ?? []), [plugins, accounts]);
+  // Thu gọn cột danh sách workspace để nhường chỗ cho khung đang xem. Chưa có
+  // tài khoản nào thì buộc hiện — nút ＋ thêm app nằm trong chính cột đó.
+  const rail = useRailCollapse('workspace', '--ws-rail', allAccounts.length === 0);
   /** App đã bị gỡ sạch tài khoản — hiện ở cụm "Đã gỡ" cuối rail để thêm lại. */
   const removed = useMemo(
     () => plugins.filter((p) => !(accounts[p.id] ?? []).length),
@@ -406,10 +410,15 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
   }
 
   return (
-    <div className="ws-shell" ref={railSplit.ref} style={railSplit.style}>
+    <div className="ws-shell" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+      {rail.collapsed ? (
+        <CollapsedRail label="Workspaces" count={allAccounts.length} onShow={rail.show} />
+      ) : (
       <aside className="ws-rail">
         <div className="ws-rail-head">
           <span className="ws-rail-head-t">Workspaces</span>
+          <RailHideButton onHide={rail.hide} className="ws-icon-btn"
+            title="Thu gọn danh sách workspace — nhường chỗ cho khung đang xem" />
           <button
             className="ws-icon-btn"
             onClick={toggleMute}
@@ -594,6 +603,7 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
           </div>
         )}
       </aside>
+      )}
 
       <div className="ws-stage">
         {openKeys.length === 0 && (
@@ -624,7 +634,7 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
           );
         })}
       </div>
-      <Splitter {...railSplit.grip} />
+      {!rail.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

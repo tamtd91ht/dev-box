@@ -34,6 +34,7 @@ import GoogleFilePreview from './GoogleFilePreview';
 import GoogleAuthWindow from './GoogleAuthWindow';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
 /**
  * Liên kết Google chết được PHÁT HIỆN ở tầng sâu (một lệnh browse/list bất kỳ
@@ -284,6 +285,8 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
 }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--gp-rail', min: 170, max: 520, gap: 12 });
+  // Thu gọn cột Drive/dự án — nhường chỗ cho danh sách file + xem trước.
+  const rail = useRailCollapse('google', '--gp-rail');
   const [drives, setDrives] = useState<GDriveRoot[]>([]);
   const [roots, setRoots] = useState<GRoot[]>([]);
   /** Gốc đang duyệt — một Drive, hoặc một lối tắt đã đăng ký. */
@@ -430,11 +433,15 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
   const files = listing?.files.filter((f) => f.mimeType !== G_MIME.folder) ?? [];
 
   return (
-    <div className="g-projects" ref={railSplit.ref} style={railSplit.style}>
+    <div className="g-projects" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+      {rail.collapsed ? (
+        <CollapsedRail label="Drive" count={drives.length} onShow={rail.show} />
+      ) : (
       <aside className="g-rail">
         {/* Cụm 1: cây thật của tài khoản. Không cần đăng ký gì cũng có. */}
         <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ flex: 1 }}>Drive của tài khoản</span>
+          <RailHideButton onHide={rail.hide} className="ghost sm" />
         </div>
         {drives.map((d) => {
           const key = `drive:${d.id}`;
@@ -504,6 +511,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
           </div>
         )}
       </aside>
+      )}
 
       <div className="g-main">
         {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
@@ -605,7 +613,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
           </>
         )}
       </div>
-      <Splitter {...railSplit.grip} />
+      {!rail.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

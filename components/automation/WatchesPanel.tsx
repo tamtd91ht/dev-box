@@ -26,6 +26,7 @@ import { listKafkaGroups, type GroupSummary } from '@/lib/kafka';
 import { Empty, Field, Num, Toggle } from './parts';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from '../RailCollapse';
 
 /** Nhãn + cách ĐỌC của từng chế độ đo tốc độ. */
 const RATE_MODES: { mode: RateMode; label: string; unit: string; tip: string }[] = [
@@ -604,6 +605,8 @@ export default function WatchesPanel({
 }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--auto-list', min: 200, max: 640, gap: 12 });
+  // Thu gọn cột danh sách watch — nhường chỗ cho trình sửa watch.
+  const rail = useRailCollapse('auto-watches', '--auto-list');
   const [selected, setSelected] = useState<string | null>(null);
   /** Dòng đang chọn, để cuộn tới khi được mở từ tab Quy tắc. */
   const selectedRow = useRef<HTMLDivElement | null>(null);
@@ -718,9 +721,14 @@ export default function WatchesPanel({
   };
 
   return (
-    <div className="auto-split" ref={railSplit.ref} style={railSplit.style}>
+    <div className="auto-split" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+      {rail.collapsed ? (
+        <CollapsedRail label="Theo dõi" count={watches.length} onShow={rail.show} />
+      ) : (
       <div className="auto-list panel">
         <div className="auto-list-head">
+          <RailHideButton onHide={rail.hide} className="ghost sm"
+            title="Thu gọn danh sách theo dõi — nhường chỗ cho khung sửa" />
           <span
             className={`auto-runstate${running && leader ? ' on' : ''}`}
             title={
@@ -906,6 +914,8 @@ export default function WatchesPanel({
         )}
       </div>
 
+      )}
+
       <div className="auto-detail panel">
         {current ? (
           <WatchEditor
@@ -916,7 +926,7 @@ export default function WatchesPanel({
           <Empty icon="👈" text="Chọn một mục theo dõi, hoặc tạo mới." />
         )}
       </div>
-      <Splitter {...railSplit.grip} />
+      {!rail.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

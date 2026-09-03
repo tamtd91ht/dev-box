@@ -33,6 +33,7 @@ import { MAIL_REFRESH_EVENT, MAIL_NEW_EVENT, MAIL_SNAPSHOT_EVENT } from './MailW
 import { MAIL_MUTED_EVENT, loadMutedMail, toggleMutedMail } from '@/lib/mailMuted';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
 /** Báo cho MailWatchHost đếm lại số mail chưa đọc NGAY (badge tab Mail). */
 function pingMailWatch() {
@@ -861,6 +862,8 @@ function MailboxView({ account, onCompose, onReadLocal }: {
 }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--gp-rail', min: 170, max: 520, gap: 12 });
+  // Thu gọn cột thư mục — nhường chỗ cho danh sách thư + nội dung thư.
+  const rail = useRailCollapse('mail', '--gp-rail');
   const [folders, setFolders] = useState<MailFolder[]>([]);
   const [path, setPath] = useState('INBOX');
   const [items, setItems] = useState<MailListItem[]>([]);
@@ -1131,11 +1134,15 @@ function MailboxView({ account, onCompose, onReadLocal }: {
   };
 
   return (
-    <div className="g-projects" ref={railSplit.ref} style={railSplit.style}>
+    <div className="g-projects" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+      {rail.collapsed ? (
+        <CollapsedRail label="Thư mục" count={folders.length} onShow={rail.show} />
+      ) : (
       <aside className="g-rail">
         <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ flex: 1 }}>Thư mục</span>
           <button className="ghost sm" onClick={loadFolders} title="Tải lại danh sách thư mục">↻</button>
+          <RailHideButton onHide={rail.hide} className="ghost sm" />
         </div>
         {folders.map((f) => (
           <div key={f.path} className={`g-root${f.path === path ? ' on' : ''}`}>
@@ -1152,6 +1159,7 @@ function MailboxView({ account, onCompose, onReadLocal }: {
         ))}
         {folders.length === 0 && !err && <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px' }}>Đang tải thư mục…</p>}
       </aside>
+      )}
 
       <div className="g-main">
         {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
@@ -1327,7 +1335,7 @@ function MailboxView({ account, onCompose, onReadLocal }: {
           </>
         )}
       </div>
-      <Splitter {...railSplit.grip} />
+      {!rail.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

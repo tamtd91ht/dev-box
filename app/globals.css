@@ -1564,7 +1564,7 @@ audio { width: 100%; margin-top: 12px; }
 .mongo-layout.rail-collapsed, .es-layout.rail-collapsed {
   grid-template-columns: 34px minmax(0, 1fr);
 }
-.connrail-strip {
+.connrail-strip, .rail-strip {
   display: flex; flex-direction: column; align-items: center; gap: 8px;
   padding: 10px 0; cursor: pointer;
   background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 14px;
@@ -1572,8 +1572,8 @@ audio { width: 100%; margin-top: 12px; }
   /* rabbit/mongo/es layout đặt align-items:start — dải vẫn phải cao hết cột. */
   align-self: stretch; height: 100%; min-height: 0;
 }
-.connrail-strip:hover { color: inherit; border-color: var(--glass-brd-hover); background: var(--glass-2); }
-.connrail-strip-label { writing-mode: vertical-rl; letter-spacing: .5px; white-space: nowrap; }
+.connrail-strip:hover, .rail-strip:hover { color: inherit; border-color: var(--glass-brd-hover); background: var(--glass-2); }
+.connrail-strip-label, .rail-strip-label { writing-mode: vertical-rl; letter-spacing: .5px; white-space: nowrap; }
 /* Màn hẹp: layout về một cột (media query sẵn có của từng workspace), nên
    trạng thái gập cũng về một cột và dải dọc thành thanh ngang mỏng. */
 @media (max-width: 1100px) {
@@ -9237,3 +9237,10 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 /* Alias không còn trong danh bạ — giữ lại cho thấy mà bỏ, không nuốt im lặng. */
 .mention-tagchip.unknown { border-color: var(--err); color: var(--err); border-style: dashed; }
+
+/* ── Cột 2 gập được — dùng chung cho MỌI view (components/RailCollapse.tsx) ──
+   Bề rộng cột KHÔNG chốt ở đây: hook trả về một style đặt chính BIẾN CSS của
+   view (--ws-rail, --api-rail…) về 34px, nên luật này không cần biết view nào
+   dựng bằng grid, view nào bằng flex — và không phải liệt kê từng layout.
+   Dải dọc bên dưới chỉ lo phần hình hài. */
+.rail-strip { width: 34px; flex: none; }

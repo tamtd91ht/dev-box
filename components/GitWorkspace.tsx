@@ -40,6 +40,7 @@ import FolderPicker from './FolderPicker';
 import { readLocal, writeLocal } from '@/lib/localKeys';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 import DiffView from './git/DiffView';
 
 const LAST_REPO_KEY = 'git.lastRepo';
@@ -128,6 +129,8 @@ export default function GitWorkspace() {
    *  var riêng với hai split ngoài — biến CSS di truyền, trùng tên là cấp
    *  trong ăn nhầm số của cấp ngoài (xem chú thích useSplit). */
   const commitSplit = useSplit({ varName: '--split-cfiles', min: 200, max: 640, gap: 14 });
+  // Thu gọn cột danh sách file (tab Thay đổi) — nhường chỗ cho khung diff.
+  const rail = useRailCollapse('git-changes', '--split-rail');
   const [enabled, setEnabled] = useState<boolean | null>(null);
   // ── Projects (named root folders) ───────────────────────────────────────────
   const [projects, setProjects] = useState<GitProject[]>([]);
@@ -1292,11 +1295,16 @@ export default function GitWorkspace() {
         </div>
       ) : (
       /* ── Changes + diff ─────────────────────────────────────────────────── */
-      <div className="layout" ref={listSplit.ref} style={listSplit.style}>
-        {/* Left: file groups */}
+      <div className="layout" ref={listSplit.ref} style={{ ...listSplit.style, ...rail.style }}>
+        {/* Left: file groups (thu gọn được) */}
+        {rail.collapsed ? (
+          <CollapsedRail label="Thay đổi" count={status?.files.length ?? 0} onShow={rail.show} />
+        ) : (
         <div className="panel">
           <div className="status-line">
             <h3 style={{ margin: 0, flex: 1 }}>Thay đổi</h3>
+            <RailHideButton onHide={rail.hide} className="ghost sm"
+              title="Thu gọn danh sách file — nhường chỗ cho khung diff" />
             {status && <span className="small" style={{ color: 'var(--muted)' }}>{status.files.length} file</span>}
             {status && status.files.length > 0 && (
               <button
@@ -1395,6 +1403,8 @@ export default function GitWorkspace() {
           </div>
         </div>
 
+        )}
+
         {/* Right: diff view */}
         <div className="panel">
           {selected ? (
@@ -1416,7 +1426,7 @@ export default function GitWorkspace() {
             </div>
           )}
         </div>
-        <Splitter {...listSplit.grip} />
+        {!rail.collapsed && <Splitter {...listSplit.grip} />}
       </div>
       )}
         </>

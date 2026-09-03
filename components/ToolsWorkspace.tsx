@@ -50,6 +50,7 @@ import EpochPanel from './EpochPanel';
 import ReplacePanel from './ReplacePanel';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
 const KINDS: { key: FormatKind; label: string }[] = [
   { key: 'json', label: 'JSON' },
@@ -114,6 +115,8 @@ interface ToolsWorkspaceProps {
 export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--tools-rail', min: 150, max: 460, gap: 12 });
+  // Thu gọn cột snippet đã lưu — nhường chỗ cho khung soạn/kết quả.
+  const rail = useRailCollapse('tools', '--tools-rail');
   const [kind, setKind] = useState<FormatKind>('json');
   /**
    * Công cụ RIÊNG đang mở, hay '' = đang ở editor.
@@ -542,12 +545,16 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
       {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '4px 0' }}>{notice}</div>}
 
       {tool === 'epoch' ? <EpochPanel /> : tool === 'replace' ? <ReplacePanel /> : (
-      <div className="tools-body" ref={railSplit.ref} style={railSplit.style}>
-        {/* Rail trái: snippet đã lưu */}
+      <div className="tools-body" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+        {/* Rail trái: snippet đã lưu (thu gọn được) */}
+        {rail.collapsed ? (
+          <CollapsedRail label="Đã lưu" count={docs.length} onShow={rail.show} />
+        ) : (
         <aside className="g-rail tools-rail">
           <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', gap: 6 }}>
             <span style={{ flex: 1 }}>Đã lưu</span>
             <button className="ghost sm" onClick={reloadDocs} title="Tải lại">↻</button>
+            <RailHideButton onHide={rail.hide} className="ghost sm" />
           </div>
           {docs.map((d) => (
             <div key={d.id} className={`g-root${openId === d.id ? ' on' : ''}`}>
@@ -564,6 +571,7 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
               máy), job chạy ngầm — xem components/ConvertPanel.tsx. */}
           <ConvertPanel />
         </aside>
+        )}
 
         {/* Editor + ô xem — hoặc player khi mở file media */}
         <div
@@ -679,7 +687,7 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
           </>
           )}
         </div>
-        <Splitter {...railSplit.grip} />
+        {!rail.collapsed && <Splitter {...railSplit.grip} />}
       </div>
       )}
       {!inTool && dirty && openId && <span className="small" style={{ color: 'var(--muted)', padding: '2px 6px' }}>• có thay đổi chưa lưu</span>}

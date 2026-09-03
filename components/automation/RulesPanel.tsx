@@ -11,6 +11,7 @@ import { Empty } from './parts';
 import RuleEditor from './RuleEditor';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from '../RailCollapse';
 
 const actionSummary = (r: AutomationRule): string =>
   r.actions.length ? r.actions.map((a) => a.type).join(' · ') : 'chưa có hành động';
@@ -27,6 +28,8 @@ export default function RulesPanel({
 }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--auto-list', min: 200, max: 640, gap: 12 });
+  // Thu gọn cột danh sách rule — nhường chỗ cho trình sửa rule.
+  const rail = useRailCollapse('auto-rules', '--auto-list');
   const [filter, setFilter] = useState<EventCategory | 'all'>('all');
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -67,9 +70,14 @@ export default function RulesPanel({
   };
 
   return (
-    <div className="auto-split" ref={railSplit.ref} style={railSplit.style}>
+    <div className="auto-split" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+      {rail.collapsed ? (
+        <CollapsedRail label="Rule" count={rules.length} onShow={rail.show} />
+      ) : (
       <div className="auto-list panel">
         <div className="auto-list-head">
+          <RailHideButton onHide={rail.hide} className="ghost sm"
+            title="Thu gọn danh sách rule — nhường chỗ cho khung sửa" />
           <div className="auto-checks">
             <button
               type="button"
@@ -136,6 +144,8 @@ export default function RulesPanel({
         )}
       </div>
 
+      )}
+
       <div className="auto-detail panel">
         {/* `key` on RuleEditor: it holds per-rule local state (which sections are
             folded, the watch-search box). Without a remount, selecting a rule
@@ -153,7 +163,7 @@ export default function RulesPanel({
           <Empty icon="👈" text="Chọn một quy tắc để sửa, hoặc tạo quy tắc mới." />
         )}
       </div>
-      <Splitter {...railSplit.grip} />
+      {!rail.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

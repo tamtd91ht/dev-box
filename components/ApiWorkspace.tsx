@@ -28,6 +28,7 @@ import {
 import { fmtRel } from '@/lib/google';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 /** Draft rỗng — hàm chứ không phải hằng dùng chung: mỗi tab phải có mảng
@@ -98,6 +99,10 @@ export default function ApiWorkspace() {
   const [curlText, setCurlText] = useState('');
   const [envEdit, setEnvEdit] = useState<ApiEnvironment | null>(null);
   const [autoFmt, setAutoFmt] = useState(true);
+  // Thu gọn cột collection để nhường chỗ cho builder + response. Rail còn rỗng
+  // trơn (chưa request, chưa environment) thì buộc hiện — mấy nút ＋ ở trong đó.
+  const rail = useRailCollapse('api', '--api-rail',
+    data.requests.length === 0 && data.environments.length === 0);
 
   // Tab đang xem. Fallback về tab đầu để không bao giờ có màn hình trống khi
   // key lạc (khôi phục từ localStorage, tab vừa bị đóng…).
@@ -483,13 +488,18 @@ export default function ApiWorkspace() {
 
   return (
     <div className="panel sheet-panel">
-      <div className="api-root" ref={railSplit.ref} style={railSplit.style}>
-        {/* ── Rail: collection + environment ── */}
+      <div className="api-root" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+        {/* ── Rail: collection + environment (thu gọn được) ── */}
+        {rail.collapsed ? (
+          <CollapsedRail label="Collection" count={data.requests.length} onShow={rail.show} />
+        ) : (
         <aside className="g-rail api-rail">
           <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', gap: 6 }}>
             <span style={{ flex: 1 }}>Collection</span>
             <button className="ghost sm" onClick={() => openSession(blankDraft())} title="Request mới (tab mới)">＋</button>
             <button className="ghost sm" onClick={() => void reload()} title="Tải lại">↻</button>
+            <RailHideButton onHide={rail.hide} className="ghost sm"
+              title="Thu gọn cột collection — nhường chỗ cho request đang dựng" />
           </div>
           {grouped.map(([folder, reqs]) => (
             <div key={folder || '_'}>
@@ -526,6 +536,7 @@ export default function ApiWorkspace() {
             </div>
           ))}
         </aside>
+        )}
 
         {/* ── Builder + response ── */}
         <div className="api-main">
@@ -656,7 +667,7 @@ export default function ApiWorkspace() {
             </div>
           )}
         </div>
-        <Splitter {...railSplit.grip} />
+        {!rail.collapsed && <Splitter {...railSplit.grip} />}
       </div>
 
       {/* Modal lưu request (đặt tên + folder) */}

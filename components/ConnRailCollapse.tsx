@@ -1,7 +1,7 @@
 'use client';
 
 // Gập/mở CỘT KẾT NỐI (danh sách + form cấu hình — "cột 2") của các tab dữ liệu
-// Redis / Kafka / RabbitMQ / MongoDB / Elastic.
+// Redis / Kafka / RabbitMQ / MongoDB / PostgreSQL / Elastic.
 //
 // Vì sao tồn tại: cấu hình kết nối là việc làm MỘT LẦN, còn vùng làm việc bên
 // phải là nơi ngồi cả ngày — cột kết nối chiếm ~300px chỉ để nhắc lại thứ đã
@@ -9,10 +9,15 @@
 //   1. Chưa có kết nối nào → BUỘC hiện (nút "+ Thêm" nằm ở đó, ẩn là bí đường).
 //   2. Đã ẩn → luôn có dải dọc ở mép trái để mở lại, không bao giờ mất lối về.
 //
-// Lựa chọn nhớ theo TỪNG TOOL qua localStorage (devbox.connrail.<tool>).
+// Đây chỉ là lớp mỏng bọc RailCollapse — cơ chế chung cho cột 2 của MỌI view.
+// Giữ file này vì hai lý do: khoá localStorage cũ (devbox.connrail.<tool>) đã
+// nằm trên máy người dùng, và nhãn dải dọc ở đây luôn kèm số kết nối.
 
 import { useCallback, useEffect, useState } from 'react';
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { CollapsedRail } from './RailCollapse';
+
+export { RailHideButton } from './RailCollapse';
 
 export function useConnRailCollapse(tool: string, connCount: number) {
   const storageKey = `connrail.${tool}`;
@@ -35,31 +40,11 @@ export function useConnRailCollapse(tool: string, connCount: number) {
   return { collapsed: wantHidden && connCount > 0, hide, show };
 }
 
-/** Nút « đặt cạnh "+ Thêm" ở header cột kết nối — chỉ render khi ≥1 kết nối
- *  (luật 1 ở trên). `className` cho khớp bộ nút sẵn có của từng workspace. */
-export function RailHideButton({ onHide, className = 'chip-btn' }: {
-  onHide: () => void;
-  className?: string;
-}) {
-  return (
-    <button className={className} onClick={onHide}
-      title="Ẩn cột kết nối — nhường chỗ cho vùng làm việc. Mở lại bằng dải dọc ở mép trái.">
-      «
-    </button>
-  );
-}
-
-/** Dải dọc thế chỗ cột khi đã ẩn — bấm bất kỳ đâu trên dải để mở lại. */
+/** Dải dọc thế chỗ cột kết nối khi đã ẩn — bấm bất kỳ đâu trên dải để mở lại. */
 export function CollapsedConnRail({ label, count, onShow }: {
   label: string;
   count: number;
   onShow: () => void;
 }) {
-  return (
-    <button className="connrail-strip" onClick={onShow}
-      title={`Hiện cột kết nối (${count} kết nối)`}>
-      <span aria-hidden>»</span>
-      <span className="connrail-strip-label">{label} · {count}</span>
-    </button>
-  );
+  return <CollapsedRail label={label} count={count} onShow={onShow} />;
 }

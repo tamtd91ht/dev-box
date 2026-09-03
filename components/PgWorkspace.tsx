@@ -27,6 +27,7 @@ import QuickFindView from './pg/QuickFindView';
 import { readLocal, writeLocal } from '@/lib/localKeys';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useConnRailCollapse, CollapsedConnRail } from './ConnRailCollapse';
 
 const LAST_CONN_KEY = 'pg.lastConn';
 
@@ -44,6 +45,10 @@ export default function PgWorkspace() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [allowWrite, setAllowWrite] = useState(false);
   const [connections, setConnections] = useState<PublicPgConnection[]>([]);
+  // Thu gọn cột server — cấu hình kết nối là việc làm một lần, vùng làm việc
+  // mới là chỗ ngồi cả ngày (xem ConnRailCollapse).
+  const railHide = useConnRailCollapse('pg', connections.length);
+
   const [activeId, setActiveId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
   const [editConn, setEditConn] = useState<PublicPgConnection | null>(null);
@@ -137,8 +142,12 @@ export default function PgWorkspace() {
   }
 
   return (
-    <div className="pg-layout" ref={rail.ref} style={rail.style}>
+    <div className="pg-layout" ref={rail.ref} style={{ ...rail.style, ...(railHide.collapsed ? { '--pg-rail': '34px' } : null) }}>
+      {railHide.collapsed ? (
+        <CollapsedConnRail label="PostgreSQL" count={connections.length} onShow={railHide.show} />
+      ) : (
       <ConnRail
+        onHide={railHide.hide}
         connections={connections}
         activeId={activeId}
         pings={pings}
@@ -164,6 +173,7 @@ export default function PgWorkspace() {
         onImported={(summary) => { void loadConnections(); flash(summary); }}
         onError={setError}
       />
+      )}
 
       <main className="panel pg-workspace-main">
         {!active ? (
@@ -217,7 +227,7 @@ export default function PgWorkspace() {
           </>
         )}
       </main>
-      <Splitter {...rail.grip} />
+      {!railHide.collapsed && <Splitter {...rail.grip} />}
     </div>
   );
 }
