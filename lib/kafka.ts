@@ -317,10 +317,14 @@ export interface GroupLagSummary {
   worstTopic: string | null;
   worstTopicLag: number;
   partitions: number;
-  /** Số giây message đã CHỜ mà chưa được commit; null = không có gì chờ / đang tiến triển. */
+  /** Tuổi thật (giây) của message chờ lâu nhất chưa commit; null = không có gì chờ đủ lâu. */
   stalledSec: number | null;
   /** Partition treo lâu nhất ("topic:partition") — để cảnh báo nêu đích danh. */
   stalledAt?: string;
+  /** Lag của RIÊNG partition đang tắc (khác `totalLag` của cả group). */
+  stalledLag?: number;
+  /** Thời điểm message đang tắc được ghi vào log (epoch ms). */
+  stalledSince?: number;
   /** This group alone failed — its lag is UNKNOWN, not zero. */
   error?: string;
 }

@@ -259,6 +259,10 @@ function offendingConsumers(watch: InfraWatch, res: ProbeResult): BreachingConsu
   const stalledItem = (g: KafkaGroupDetail): BreachingConsumer => ({
     group: g.groupId, lag: g.lag, stalledSec: g.stalledSec ?? 0,
     ...(g.stalledAt ? { stalledAt: g.stalledAt } : {}),
+    // Lag của riêng partition tắc + lúc message đó được ghi: hai dữ kiện phân
+    // biệt "một message kẹt cứng" với "cả group đang tụt hậu".
+    ...(g.stalledLag !== undefined ? { stalledLag: g.stalledLag } : {}),
+    ...(g.stalledSince !== undefined ? { stalledSince: g.stalledSince } : {}),
     ...withTopic(g), ...act(g),
   });
 

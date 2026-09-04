@@ -42,10 +42,14 @@ export interface KafkaGroupDetail {
   members: number;
   described: boolean;
   partitions: number;
-  /** Số giây message đã CHỜ mà chưa được commit; null = không có gì chờ / đang tiến triển. */
+  /** Tuổi thật (giây) của message chờ lâu nhất chưa commit; null = không có gì chờ đủ lâu. */
   stalledSec: number | null;
   /** Partition treo lâu nhất ("topic:partition") — cảnh báo nêu đích danh chỗ tắc. */
   stalledAt?: string;
+  /** Lag của RIÊNG partition đang tắc — số phải nêu trong cảnh báo, không phải `lag` của group. */
+  stalledLag?: number;
+  /** Thời điểm message đang tắc được ghi vào log (epoch ms). */
+  stalledSince?: number;
   /** true = lag KHÔNG đọc được (fetchOffsets lỗi) — khác với lag = 0. */
   error: boolean;
 }
@@ -401,18 +405,20 @@ async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promis
         partitions: g.partitions,
         stalledSec: g.stalledSec,
         ...(g.stalledAt ? { stalledAt: g.stalledAt } : {}),
+        ...(g.stalledLag !== undefined ? { stalledLag: g.stalledLag } : {}),
+        ...(g.stalledSince !== undefined ? { stalledSince: g.stalledSince } : {}),
         error: !!g.error,
       }));
       put(m, 'groups', scoped.length);
       put(m, 'lagGroupsUnknown', scoped.length - ok.length);
       put(m, 'maxConsumerLag', maxOf(ok.map((g) => g.totalLag)) ?? 0);
       put(m, 'totalConsumerLag', sumOf(ok.map((g) => g.totalLag)));
-      // Stuck = message ĐÃ CHỜ mà vẫn chưa được commit. `stalledSec` đã tự mang
-      // nghĩa đó (xem kafkaClient.consumerLag): mốc chỉ chạy khi partition vừa
-      // có lag vừa không tiến triển. Nên KHÔNG kiểm `totalLag > 0` ở đây nữa —
-      // kiểm thêm là quay lại đúng lỗi cũ: lag đo LÚC NÀY ghép với stalledSec đo
-      // từ TRƯỚC ĐÓ, làm 3 message vừa đến trên một topic ít traffic cũng thành
-      // "consumer treo 20 phút".
+      // Stuck = có message THẬT nằm chờ quá lâu mà chưa được commit. `stalledSec`
+      // đã tự mang nghĩa đó (xem kafkaClient.consumerLag): nó là tuổi đọc thẳng
+      // từ record đang tắc, đã loại control record. Nên KHÔNG kiểm `totalLag > 0`
+      // ở đây nữa — kiểm thêm là quay lại đúng lỗi cũ: lag đo LÚC NÀY ghép với
+      // stalledSec đo từ TRƯỚC ĐÓ, làm 3 message vừa đến trên một topic ít
+      // traffic cũng thành "consumer treo 20 phút".
       const stuck = ok.filter((g) => g.stalledSec !== null);
       put(m, 'stalledGroups', stuck.length);
       put(m, 'maxStalledSec', maxOf(stuck.map((g) => g.stalledSec)) ?? 0);
@@ -650,6 +656,10 @@ export interface BreachingConsumer {
   stalledSec?: number;
   /** Partition đang tắc ("topic:partition") — chỉ có ở ca đứng im. */
   stalledAt?: string;
+  /** Lag của RIÊNG partition đang tắc — khác `lag` (tổng cả group). */
+  stalledLag?: number;
+  /** Message đang tắc được ghi lúc nào (epoch ms) — mốc thời gian đi tra log. */
+  stalledSince?: number;
   /** AKHQ vàng/xanh: true = còn consumer đang tiêu thụ (Stable + member). */
   active?: boolean;
   state?: string;
@@ -696,7 +706,18 @@ function renderConsumer(c: BreachingConsumer): string {
   // vài chục partition mà chỉ một cái tắc.
   if (c.stalledSec !== undefined) {
     const at = c.stalledAt ? ` tại ${c.stalledAt}` : topic;
-    return `${c.group}=đứng im ${humanizeSec(c.stalledSec)}${at}${lag}${act}`;
+    // Lag phải là của ĐÚNG partition đang tắc. Nêu tổng của group ở đây đọc
+    // thành "18 message cùng kẹt một chỗ", trong khi thật ra chỗ tắc chỉ có 1
+    // và 17 cái kia nằm rải ở các partition vẫn đang chạy bình thường.
+    const stuckLag =
+      c.stalledLag === undefined
+        ? lag
+        : c.stalledLag === c.lag
+          ? ` · lag ${c.stalledLag.toLocaleString('vi-VN')}`
+          : ` · lag ${c.stalledLag.toLocaleString('vi-VN')} tại đó (cả group ${c.lag.toLocaleString('vi-VN')})`;
+    // Message nằm đó từ bao giờ — người trực đối chiếu thẳng với log ứng dụng.
+    const since = c.stalledSince ? `, từ ${new Date(c.stalledSince).toLocaleString('vi-VN')}` : '';
+    return `${c.group}=đứng im ${humanizeSec(c.stalledSec)}${at}${stuckLag}${since}${act}`;
   }
   if (c.members !== undefined && c.active === undefined) return `${c.group} (${c.members} member${c.state ? `, ${c.state.toLowerCase()}` : ''})`;
   if (c.state !== undefined && c.active === undefined) return `${c.group} (${c.state})`;

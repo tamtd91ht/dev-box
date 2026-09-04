@@ -198,12 +198,23 @@ function buildRate(f: Record<string, string | number>): AlertMetaRate {
   };
 }
 
-/** "340" → "5 phút 40 giây" — cho recovery.downText. */
+/**
+ * "340" → "5 phút 40 giây" — cho recovery.downText và tuổi message đang tắc.
+ *
+ * Có bậc NGÀY vì cảnh báo đứng im nay đọc tuổi thật từ log: một message kẹt cả
+ * tuần hiện thành "6 ngày 20 giờ", chứ "164 giờ" thì người đọc phải tự chia.
+ * Cắt ở hai đơn vị lớn nhất — "6 ngày 20 giờ" đủ để quyết định, thêm phút giây
+ * vào chỉ làm loãng.
+ */
 export function humanizeSec(total: number): string {
   const s = Number.isFinite(total) ? Math.max(0, Math.round(total)) : 0;
-  const h = Math.floor(s / 3600);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const r = s % 60;
+  // Từ một ngày trở lên thì cắt ở "ngày + giờ" — phút giây ở thang đó là nhiễu.
+  // Dưới một ngày giữ nguyên cách đọc cũ, để mọi chỗ đang dùng không đổi chữ.
+  if (d) return h ? `${d} ngày ${h} giờ` : `${d} ngày`;
   const parts: string[] = [];
   if (h) parts.push(`${h} giờ`);
   if (m) parts.push(`${m} phút`);
@@ -372,8 +383,14 @@ export interface AlertMetaConsumer {
   /** Topic lag nặng nhất của group (nếu probe đọc được). */
   topic?: string;
   topicLag?: number;
-  /** Ca đứng im: số giây offset không nhích. */
+  /** Ca đứng im: tuổi thật (giây) của message đang tắc. */
   stalledSec?: number;
+  /** Ca đứng im: partition đang tắc ("topic:partition"). */
+  stalledAt?: string;
+  /** Ca đứng im: lag của RIÊNG partition đó — khác `lag` (tổng cả group). */
+  stalledLag?: number;
+  /** Ca đứng im: message đang tắc được ghi lúc nào (epoch ms). */
+  stalledSince?: number;
   /** AKHQ vàng/xanh: true = còn consumer đang tiêu thụ (Stable + member). */
   active?: boolean;
   /** Ca rebalance / lag unknown / không active: trạng thái group. */
@@ -482,6 +499,9 @@ function parseConsumers(raw: string | number | undefined): AlertMetaConsumer[] {
         lag: Number(c.lag) || 0,
         ...(c.topic ? { topic: String(c.topic), topicLag: Number(c.topicLag) || 0 } : {}),
         ...(c.stalledSec !== undefined ? { stalledSec: Number(c.stalledSec) || 0 } : {}),
+        ...(c.stalledAt !== undefined ? { stalledAt: String(c.stalledAt) } : {}),
+        ...(c.stalledLag !== undefined ? { stalledLag: Number(c.stalledLag) || 0 } : {}),
+        ...(c.stalledSince !== undefined ? { stalledSince: Number(c.stalledSince) || 0 } : {}),
         ...(typeof c.active === 'boolean' ? { active: c.active } : {}),
         ...(c.state !== undefined ? { state: String(c.state) } : {}),
         ...(c.members !== undefined ? { members: Number(c.members) || 0 } : {}),
