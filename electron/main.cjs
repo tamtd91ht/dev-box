@@ -21,6 +21,8 @@ const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboar
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
+// `net` của Electron đã chiếm tên ở dòng trên — module net của Node vào tên khác.
+const nodeNet = require('net');
 const os = require('os');
 const path = require('path');
 
@@ -1274,6 +1276,39 @@ function wireWebviewHardening(win) {
 // `npm run dev` trước rồi mở app (probe :3000 sẽ dùng lại server đó).
 let devServer = null;
 
+/** Cổng của APP_URL — cần để hỏi "cổng có trống không", việc mà probe HTTP không trả lời được. */
+function appPort() {
+  try {
+    const u = new URL(APP_URL);
+    return Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
+  } catch {
+    return 3000;
+  }
+}
+
+/**
+ * Cổng này có THẬT SỰ trống không.
+ *
+ * Khác hẳn probe(): probe hỏi "có ai trả lời HTTP không", còn đây hỏi "có ai
+ * đang giữ cổng không". Hai câu trả lời có thể ngược nhau, và đúng cái kẽ đó
+ * là chỗ app chết: một server cũ treo vẫn GIỮ cổng nhưng KHÔNG trả lời — probe
+ * bảo "trống, cứ dựng đi", rồi `next start` chết vì EADDRINUSE.
+ */
+function portFree(port) {
+  return new Promise((resolve) => {
+    const srv = nodeNet.createServer();
+    srv.once('error', () => resolve(false));
+    srv.once('listening', () => srv.close(() => resolve(true)));
+    try {
+      srv.listen(port, '0.0.0.0');
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
 /** Resolve true if something answers an HTTP GET on url within 1s. */
 function probe(url) {
   return new Promise((resolve) => {
@@ -1361,6 +1396,94 @@ function forgetDevServerPid() {
 
 /** PID của server mà lần chạy TRƯỚC để lại và lần này dùng lại. */
 let adoptedPid = 0;
+
+/**
+ * Dọn XÁC server DevBox để lại: cái còn giữ cổng nhưng đã thôi trả lời.
+ *
+ * Ca có thật, và là ca app không mở được: `next start` của lần chạy trước còn
+ * sống, socket vẫn LISTENING, nhưng tiến trình đã treo nên mọi request đều
+ * timeout. probe() thấy không ai trả lời → tưởng cổng trống → dựng server mới →
+ * EADDRINUSE → app mở ra mà không có backend, và lần nào bật cũng vậy.
+ *
+ * CHỈ giết tiến trình DevBox tự khởi động (pid nằm trong devserver.pid, đã
+ * kiểm còn sống và ghi sau lần boot gần nhất). Server `npm run dev` người dùng
+ * tự chạy trong terminal thì KHÔNG đụng tới — nó chỉ đang biên dịch lâu, giết
+ * đi là phá đúng thứ người ta đang chờ.
+ */
+async function reclaimStaleServer() {
+  const pid = adoptedDevServerPid();
+  if (!pid) return false;
+  log('DevServerStale', `cổng ${appPort()} không trả lời nhưng server lần trước (pid ${pid}) vẫn sống → dọn để lấy lại cổng`);
+  killDevServerTree(pid, null);
+  // taskkill / SIGTERM là bất đồng bộ: cổng chỉ trống sau khi tiến trình chết
+  // hẳn. Chờ tới 10s rồi mới chịu thua — dựng server mới lúc cổng chưa trống
+  // là quay lại đúng EADDRINUSE vừa gỡ.
+  for (let i = 0; i < 40; i++) {
+    if (await portFree(appPort())) return true;
+    await delay(250);
+  }
+  log('DevServerStaleStuck', `pid ${pid} không chết hẳn, cổng ${appPort()} vẫn bị giữ`);
+  return false;
+}
+
+// ── Log của Next server: ghi ra FILE, không qua ống ────────────────────────
+//
+// Trước đây stdout/stderr của server là hai `pipe` do Electron đọc. Server lại
+// được cố ý để sống lâu hơn app (còn phiên terminal thì không giết — xem
+// stopDevServer), nên có lúc nó chạy mà KHÔNG còn ai đọc ống. Ống đầy (~64KB
+// trên Windows) là lần ghi log tiếp theo của server block vĩnh viễn: tiến
+// trình đứng hình, cổng vẫn giữ, HTTP câm — đúng cái xác mà reclaimStaleServer
+// phải đi dọn.
+//
+// Ghi thẳng ra file thì server không bao giờ phụ thuộc vào việc có ai đọc hay
+// không. App còn sống thì tail file này vào Console trong app; app chết thì
+// server cứ ghi tiếp, và lần sau mở lên vẫn đọc lại được nó đã nói gì.
+
+const devServerLogFile = () => path.join(app.getPath('userData'), 'devserver.log');
+
+let tailTimer = null;
+let tailPos = 0;
+let tailAcc = '';
+
+/** Đọc phần mới của devserver.log rồi đẩy vào Console trong app, theo dòng. */
+function readServerLogChunk() {
+  let fd;
+  try {
+    const size = fs.statSync(devServerLogFile()).size;
+    // File nhỏ đi = server mới spawn đã ghi đè → đọc lại từ đầu.
+    if (size < tailPos) { tailPos = 0; tailAcc = ''; }
+    if (size === tailPos) return;
+    const len = size - tailPos;
+    const buf = Buffer.alloc(len);
+    fd = fs.openSync(devServerLogFile(), 'r');
+    const read = fs.readSync(fd, buf, 0, len, tailPos);
+    tailPos += read;
+    tailAcc += buf.subarray(0, read).toString('utf8');
+    let nl;
+    while ((nl = tailAcc.indexOf('\n')) !== -1) {
+      const line = tailAcc.slice(0, nl).replace(/\r$/, '');
+      tailAcc = tailAcc.slice(nl + 1);
+      if (line.trim()) pushLog('next', line);
+    }
+  } catch {
+    /* chưa có file, hoặc đang bị ghi dở — vòng sau đọc lại */
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* kệ */ } }
+  }
+}
+
+/** Bắt đầu theo dõi log server. `fromStart` = đọc cả phần server cũ đã ghi. */
+function startServerLogTail(fromStart) {
+  stopServerLogTail();
+  if (fromStart) { tailPos = 0; tailAcc = ''; }
+  readServerLogChunk();
+  tailTimer = setInterval(readServerLogChunk, 500);
+  if (tailTimer.unref) tailTimer.unref();
+}
+
+function stopServerLogTail() {
+  if (tailTimer) { clearInterval(tailTimer); tailTimer = null; }
+}
 
 /** Đổ một stream (stdout/stderr của tiến trình con) vào Console trong app, theo dòng. */
 function forwardStream(stream, source) {
@@ -1558,8 +1681,26 @@ async function ensureServer() {
         ? `${APP_URL} là server DevBox để lại lần trước (pid ${adoptedPid}) — dùng lại, vẫn giữ quyền dọn`
         : `${APP_URL} đã chạy sẵn — dùng lại, không tự khởi động`,
     );
+    // Server cũ vẫn ghi vào devserver.log — nối Console trong app vào đó.
+    if (adoptedPid) startServerLogTail(false);
     return;
   }
+
+  // Không ai TRẢ LỜI, nhưng chưa chắc cổng đã TRỐNG. Phải hỏi riêng câu đó
+  // trước khi spawn: nếu cứ dựng bừa thì `next start` chết vì EADDRINUSE và
+  // app mở ra không có backend — mà lỗi ấy chỉ nằm trong log, người dùng chỉ
+  // thấy màn hình chờ mãi không xong.
+  if (!(await portFree(appPort()))) {
+    if (!(await reclaimStaleServer())) {
+      log(
+        'PortBusy',
+        `cổng ${appPort()} đang bị một tiến trình KHÔNG phải của DevBox giữ (hoặc server cũ không chịu chết) và nó không trả lời HTTP. ` +
+          'DevBox chỉ tự dọn server do chính nó khởi động — hãy tắt tiến trình đang giữ cổng rồi mở lại app.',
+      );
+      return;
+    }
+  }
+
   const appPath = app.getAppPath();
   // Next's JS CLI entry — run it with Electron's bundled Node (no next.cmd /
   // PATH / path-with-spaces pitfalls).
@@ -1591,10 +1732,21 @@ function spawnNextServer(appPath, nextBin, mode) {
       ? 'next dev — lần đầu biên dịch có thể mất ~10-30s'
       : 'next start — production, nhẹ RAM hơn hẳn dev',
   );
+  // stdout/stderr ra FILE chứ không ra ống: server sống lâu hơn app là chuyện
+  // bình thường ở đây, mà ống không có ai đọc thì server treo cứng (xem khối
+  // ghi chú ở devServerLogFile). 'w' = mỗi lần dựng server là một log mới, khỏi
+  // phình vô hạn.
+  let outFd = 'ignore';
+  try {
+    fs.mkdirSync(path.dirname(devServerLogFile()), { recursive: true });
+    outFd = fs.openSync(devServerLogFile(), 'w');
+  } catch (err) {
+    log('DevServerLogOpenError', err && err.message);
+  }
   devServer = spawn(process.execPath, [nextBin, mode], {
     cwd: appPath,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-    stdio: ['ignore', 'pipe', 'pipe'], // captured → in-app Console drawer
+    stdio: ['ignore', outFd, outFd], // → devserver.log, tail vào Console trong app
     // detached ở CẢ HAI nền tảng — không chỉ để có process group riêng trên
     // POSIX, mà còn để server SỐNG SÓT khi app thoát trong lúc còn phiên
     // terminal (xem stopDevServer). Trên Windows, con không detached nằm cùng
@@ -1603,8 +1755,10 @@ function spawnNextServer(appPath, nextBin, mode) {
     detached: true,
     windowsHide: true,
   });
-  forwardStream(devServer.stdout, 'next');
-  forwardStream(devServer.stderr, 'next');
+  // Con đã giữ bản sao fd của nó rồi — cha đóng bản của mình, nếu không file
+  // vẫn bị Electron neo và không giải phóng được khi app thoát.
+  if (typeof outFd === 'number') { try { fs.closeSync(outFd); } catch { /* kệ */ } }
+  startServerLogTail(true);
   rememberDevServerPid(devServer.pid);
   devServer.on('exit', (code) => {
     log('DevServerExited', String(code));
@@ -1699,6 +1853,9 @@ function killDevServerTree(pid, child) {
  * nếu không tiến trình mồ côi sẽ tồn tại mãi.
  */
 function stopDevServer() {
+  // Dừng đọc log trước mọi nhánh: app đang thoát thì không còn Console nào để
+  // đổ vào nữa. Server (nếu được giữ lại) vẫn ghi tiếp vào file như thường.
+  stopServerLogTail();
   const pid = devServer && !devServer.killed ? devServer.pid : adoptedPid;
   if (!pid) return;
 
@@ -1707,12 +1864,11 @@ function stopDevServer() {
       'DevServerKept',
       `còn ${liveTerminals} phiên terminal đang chạy → giữ next dev (pid ${pid}) sống để không mất phiên`,
     );
-    // Cắt mọi thứ đang neo server vào tiến trình Electron: hai ống stdio đang
-    // được đọc (forwardStream) cũng giữ ref, không chỉ mình child handle.
+    // Cắt thứ duy nhất còn neo server vào tiến trình Electron: child handle.
+    // stdio giờ là file nên không còn ống nào để phải destroy — mà cũng chính
+    // vì thế server không thể treo khi không còn ai đọc.
     if (devServer) {
       try {
-        devServer.stdout?.destroy();
-        devServer.stderr?.destroy();
         devServer.unref();
       } catch { /* đang thoát — kệ */ }
     }
