@@ -291,18 +291,42 @@ export default function LinkViewer({
   // và giữ giá trị bắt được trong ref của host (pendingRef) để sống sót qua
   // điều hướng, chỉ đem ra hỏi sau khi trang mới tải xong.
 
-  /** Đoạn JS tìm ô user/pass — dùng lại cho cả điền và bắt submit. */
+  /** Đoạn JS tìm ô user/pass — dùng lại cho cả điền và bắt submit.
+   *
+   *  QUÉT CẢ SHADOW DOM, không chỉ document.querySelectorAll: khá nhiều trang
+   *  quản trị (web component, Lightning, Ionic…) đặt form login trong shadow
+   *  root, và ở đó querySelectorAll của document trả về RỖNG. Đó là một trong
+   *  những lý do thanh "Lưu mật khẩu?" có trang hiện có trang không.
+   *
+   *  GIỚI HẠN còn lại — form login nằm trong <iframe> (SSO nhúng kiểu Keycloak
+   *  trong khung con): executeJavaScript của <webview> chỉ chạy ở main frame
+   *  nên không với tới được, và iframe khác origin thì script cũng bị chặn.
+   *  Những trang đó vẫn phải lưu tay qua 🔑. */
   const FIELD_JS = `
     const vis = (el) => el && el.offsetParent !== null && !el.disabled && !el.readOnly;
-    const pwEl = () => [...document.querySelectorAll('input[type=password]')].find(vis);
+    // Mọi <input> trong document VÀ trong mọi shadow root lồng nhau, giữ đúng
+    // thứ tự xuất hiện (userEl dựa vào thứ tự để đoán ô user trước ô password).
+    const allInputs = () => {
+      const out = [];
+      const walk = (root) => {
+        for (const el of root.querySelectorAll('*')) {
+          if (el.tagName === 'INPUT') out.push(el);
+          if (el.shadowRoot) walk(el.shadowRoot);
+        }
+      };
+      walk(document);
+      return out;
+    };
+    const pwEl = () => allInputs().find((i) => (i.type||'').toLowerCase() === 'password' && vis(i));
     const userEl = (pw) => {
-      const texts = [...document.querySelectorAll('input')].filter((i) =>
+      const all = allInputs();
+      const texts = all.filter((i) =>
         ['text','email','tel','','username'].includes((i.type||'').toLowerCase()) && vis(i));
       const named = texts.find((i) => /user|email|login|account|phone|tel|name/i.test(
         (i.name||'')+(i.id||'')+(i.placeholder||'')+(i.autocomplete||'')));
       if (named) return named;
       // Không có tên gợi ý → ô text NGAY TRƯỚC ô password trong DOM.
-      if (pw) { const all = [...document.querySelectorAll('input')]; const i = all.indexOf(pw);
+      if (pw) { const i = all.indexOf(pw);
         for (let k = i - 1; k >= 0; k--) if (texts.includes(all[k])) return all[k]; }
       return texts[0];
     };`;
@@ -337,8 +361,14 @@ export default function LinkViewer({
    *  host đọc ra. Idempotent — gọi lại sau mỗi lần điều hướng là vô hại. */
   const armCapture = useCallback(async () => {
     const code = `(() => {
-      if (window.__dbxPwdArmed) return 'already';
-      window.__dbxPwdArmed = true;
+      // Bẫy gắn vào document. Điều hướng in-page giữ nguyên window NHƯNG một
+      // số SPA thay hẳn document (hoặc trang gỡ listener của mình), lúc đó cờ
+      // cũ vẫn true và ta sẽ không bao giờ cắm lại — thanh "Lưu mật khẩu?" im
+      // luôn cho tới khi F5. Neo cờ vào chính document đang sống, không phải
+      // window: document mới là document chưa có cờ, tự động cắm lại.
+      if (document.__dbxPwdArmed) return 'already';
+      document.__dbxPwdArmed = true;
+      window.__dbxPwdArmed = true; // giữ cho tương thích, không còn dùng để gác
       ${FIELD_JS}
       // Giá trị gõ gần nhất, ghi lại NGAY khi người dùng gõ. Đây là bản sao
       // sống sót: lúc submit thì SPA (Rancher, Argo…) đã kịp xóa/unmount form,
@@ -353,9 +383,12 @@ export default function LinkViewer({
         last.url = location.href;
       };
       // 'input' bắn SAU khi React commit value → đây là nguồn đáng tin nhất.
-      document.addEventListener('input', (e) => {
-        if (e.target instanceof HTMLInputElement) remember();
-      }, true);
+      // KHÔNG lọc theo e.target instanceof HTMLInputElement: event từ trong
+      // shadow root bị "retarget", e.target thành phần tử host (một web
+      // component, không phải INPUT) nên điều kiện đó loại sạch — và ta mất
+      // đúng những trang đặt form trong shadow DOM. remember() tự đi tìm ô
+      // password nên gọi thừa cũng chỉ tốn một lượt querySelector.
+      document.addEventListener('input', remember, true);
 
       const publish = () => {
         if (!last.password) return;
@@ -369,8 +402,16 @@ export default function LinkViewer({
       // rồi xóa form ngay), và pointerdown để bắt cả nút không nằm trong <form>.
       document.addEventListener('submit', grab, true);
       document.addEventListener('pointerdown', (e) => {
-        const t = e.target instanceof Element ? e.target.closest('button,input[type=submit],a') : null;
-        if (t) grab();
+        // Đi theo composedPath() chứ không phải e.target.closest(): với event
+        // phát từ trong shadow root, e.target đã bị retarget thành host nên
+        // closest() không bao giờ thấy cái <button> thật vừa bị bấm.
+        const path = typeof e.composedPath === 'function' ? e.composedPath() : [e.target];
+        const hit = path.some((n) => {
+          if (!(n instanceof Element)) return false;
+          if (n.tagName === 'BUTTON' || n.tagName === 'A') return true;
+          return n.tagName === 'INPUT' && (n.type || '').toLowerCase() === 'submit';
+        });
+        if (hit) grab();
       }, true);
       document.addEventListener('keydown', (e) => { if (e.key === 'Enter') grab(); }, true);
       return 'armed';
@@ -487,14 +528,41 @@ export default function LinkViewer({
       })();
     };
 
+    // BẪY PHẢI CẮM TRƯỚC MỌI THỨ KHÁC, và cắm sớm nhất có thể.
+    //
+    // Vì sao tách khỏi cycle(): cycle là một chuỗi await dài (readCaptured →
+    // considerSave → resolveCreds → vòng injectFill thưa dần tới 1.5s). Người
+    // dùng gõ nhanh rồi Enter trong khoảng đó là bẫy chưa kịp có mặt — mất
+    // trắng cặp user/pass, và thanh "Lưu mật khẩu?" không hiện. Đó chính là
+    // triệu chứng "có lúc hiện có lúc không": nó phụ thuộc vào việc người dùng
+    // gõ nhanh hay chậm hơn cái chuỗi await kia.
+    //
+    // `dom-ready` là mốc sớm nhất mà executeJavaScript chạy được — sớm hơn
+    // did-stop-loading (cái đó còn chờ ảnh/script/iframe tải xong, trên trang
+    // login nặng có thể là vài giây sau khi ô nhập đã bấm được).
+    const arm = () => { void armCapture(); };
+
+    el.addEventListener('dom-ready', arm);
     el.addEventListener('did-start-loading', onStart);
     el.addEventListener('did-stop-loading', cycle);
+    // Redirect SSO toàn trang bắn did-navigate; document mới nên phải cắm lại
+    // ngay, không đợi did-stop-loading.
+    el.addEventListener('did-navigate', arm);
     // Login SPA đổi URL mà không tải lại trang → cũng phải xét lưu + tra lại.
     el.addEventListener('did-navigate-in-page', cycle);
+
+    // Lần tải ĐẦU của tab: webview có thể đã bắn dom-ready TRƯỚC khi effect này
+    // kịp gắn listener (nhất là tab mở nền rồi mới chuyển sang). Cắm luôn một
+    // lần ở đây — armCapture idempotent nên trùng cũng vô hại, còn thiếu thì
+    // mất cả lần đăng nhập đầu tiên, đúng lúc người dùng cần nó nhất.
+    arm();
+
     return () => {
       alive = false;
+      el.removeEventListener('dom-ready', arm);
       el.removeEventListener('did-start-loading', onStart);
       el.removeEventListener('did-stop-loading', cycle);
+      el.removeEventListener('did-navigate', arm);
       el.removeEventListener('did-navigate-in-page', cycle);
     };
   }, [passwordManager, profile, armCapture, readCaptured, injectFill, resolveCreds]);
