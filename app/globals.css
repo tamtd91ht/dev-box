@@ -4108,12 +4108,35 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
   position: absolute; inset: 0; z-index: 6;
   display: flex; background: var(--bg-1);
 }
+/* display:flex ở trên thắng thuộc tính `hidden`, nên tab tài liệu không được
+   xem sẽ vẫn hiện (đè lên tab đang xem). Nói rõ lại ở đây. */
+.g-viewer[hidden] { display: none; }
 .g-viewer .ws-view { border-radius: 0; border: 0; }
 .g-viewer-hint {
   flex: none; padding: 6px 12px; font-size: 12px;
   color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--warn) 25%, transparent);
 }
+/* Mỗi tab section một pane, xếp chồng trong cùng ô grid của .office-body: tab
+   không xem chỉ `hidden` (không unmount) nên state của nó — thư mục đang đứng,
+   từ khoá tìm, trang đã tải — còn nguyên khi quay lại. */
+.g-secpane {
+  grid-area: 1 / 1; display: flex; flex-direction: column;
+  min-width: 0; min-height: 0; overflow: hidden;
+}
+.g-secpane[hidden] { display: none; }
+
+/* Lớp "tài liệu đang mở" — phủ kín panel tab Google như .g-viewer trước đây,
+   nhưng chia hai tầng: thanh tab ở trên, các panel tài liệu bên dưới. */
+.g-docs {
+  position: absolute; inset: 0; z-index: 6;
+  display: flex; flex-direction: column; background: var(--bg-1);
+}
+.g-doctabs { flex: none; padding: 6px 8px; border-bottom: 1px solid var(--glass-brd); }
+/* Các panel tài liệu xếp chồng: .g-viewer bên trong dùng position:absolute nên
+   cần một ô định vị riêng, và chỉ panel đang xem là không `hidden`. */
+.g-docpanes { position: relative; flex: 1; min-height: 0; }
+
 /* Shared Office empty state — hero card + recent files (Sheet + Word) */
 /* Panel chào phải TỰ CUỘN. Danh sách "Mở gần đây" dài ra theo số file đã mở,
    panel thì `margin:auto` nên vượt chiều cao khung là bị cắt cụt ở cả hai đầu —
@@ -4363,6 +4386,12 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .office-subnav-btn.on .office-subnav-ico { color: var(--accent); }
+/* Section ĐÃ MỞ thành tab nhưng đang xem tab khác — dấu mờ hơn `.on`, để nhìn
+   subnav là biết mình đang có những view nào mà không lẫn với view đang xem. */
+.office-subnav-btn.open {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--glass-brd));
+}
 .office-subnav-ico { font-size: 16px; }
 .office-subnav-text { display: flex; flex-direction: column; gap: 1px; font-size: 13px; line-height: 1.15; }
 .office-subnav-hint { font-size: 10px; font-weight: 400; color: var(--faint); letter-spacing: .02em; }

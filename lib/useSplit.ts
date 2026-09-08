@@ -80,6 +80,11 @@ export function useSplit({ varName, min, max, gap, step = 16 }: SplitOptions) {
     const box = boxRef.current;
     const first = box?.firstElementChild as HTMLElement | null;
     if (!box || !first) return;
+    // View đang bị ẨN (display:none — tab không được xem) đo ra 0 hết. Số 0 đó
+    // không phải kích thước thật: nhận nó vào là `stacked` bật (tưởng màn hẹp,
+    // giấu luôn thanh kéo) và `clamp` bên dưới bóp bề rộng đã kéo về `min`.
+    // Bỏ qua; ResizeObserver báo lại ngay khi view hiện trở lại.
+    if (box.clientWidth === 0) return;
     setRail(first.offsetWidth);
     // Gập 1 cột thì cột trái rộng bằng cả khung — lúc đó khe hở không còn.
     setStacked(first.offsetWidth >= box.clientWidth - gap);
@@ -104,7 +109,9 @@ export function useSplit({ varName, min, max, gap, step = 16 }: SplitOptions) {
    *  ai kéo cho nó biến mất, và giá trị cũ không bao giờ vượt khung hiện tại. */
   const clamp = useCallback((w: number) => {
     const box = boxRef.current;
-    const room = box ? box.clientWidth - gap - min : max;
+    // clientWidth 0 = view đang ẩn (xem measure): không có khung thật để kẹp
+    // theo, nên xử như chưa biết khung — giữ nguyên bề rộng người dùng đã kéo.
+    const room = box && box.clientWidth > 0 ? box.clientWidth - gap - min : max;
     return Math.max(min, Math.min(Math.min(max, room), w));
   }, [min, max, gap]);
 
