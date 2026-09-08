@@ -54,6 +54,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Tab Browser: nhân đôi tab, và chuột phải trên liên kết trong trang để mở ở tab mới — hai thao
+  tác quen tay của trình duyệt thật mà app còn thiếu.**
+  *Nhân đôi tab*: chuột phải lên một tab trên dải tab → **⧉ Nhân đôi tab** (cũng có trong menu ⋯
+  cho tab đang xem). Bản sao dùng CÙNG profile nên vẫn nguyên phiên đăng nhập, mở ra ngay **cạnh
+  tab gốc** (nhân đôi là để so hai bên — đặt ở cuối dải thì lại phải đi tìm), và nhân ra đúng
+  **trang đang xem** chứ không phải trang lúc mở tab: `LinkViewer` giờ báo mọi lần điều hướng lên
+  chủ khung (`onUrlChange`) để `tab.url` luôn mới — trước đó nó đứng ở địa chỉ khởi đầu, nên dò
+  "trang này đang mở sẵn chưa" cũng so với một địa chỉ đã cũ. Nhân đôi KHÔNG hỏi lại "trang đang
+  mở sẵn, chuyển tới hay mở thêm?" (trùng URL ở đây chính là mục đích), và KHÔNG chép `creds` của
+  dấu trang gốc sang bản sao — mật khẩu tự điền đã đi theo origin trong 🔑 Mật khẩu đã lưu, còn
+  chép `creds` thì một tab đã điều hướng sang site khác sẽ mang user/pass của dấu trang cũ đi theo.
+  Menu chuột phải trên tab có sẵn luôn **↻ Tải lại · ⧉ Copy địa chỉ · ☆ Lưu vào dấu trang ·
+  ✕ Đóng tab · ✕ Đóng các tab khác**.
+  *Chuột phải trên liên kết*: menu ngữ cảnh trong `<webview>` (menu native ở `electron/main.cjs`,
+  chỗ đang có Cắt/Sao chép/Dán/Inspect) thêm **⊞ Mở liên kết trong tab mới** và **↗ Mở liên kết
+  bằng trình duyệt ngoài**. Mục "tab mới" chỉ hiện ở tab **Browser** — đó là nơi duy nhất có dải
+  tab để mở thêm vào, hứa nó ở tab Links hay viewer Google là trỏ vào một chỗ không tồn tại. Đi
+  đúng kênh `workspace:openInBrowserTab` mà `target=_blank`/`window.open` đang dùng, nên mở thành
+  **tab nền**: trang đang đọc giữ nguyên. Trước đây muốn mở link ra tab khác phải Ctrl+click hoặc
+  chuột giữa — biết thì tiện, không biết thì không có đường nào khác.
+
 - **Nút ⬇ Cập nhật ở footer — app tự kéo bản mới của chính nó từ Git về.** Trước đây muốn có bản
   mới phải mở terminal, `cd` vào thư mục app, `git pull`, rồi tự đoán xem có phải chạy
   `npm install` hay khởi động lại app không.

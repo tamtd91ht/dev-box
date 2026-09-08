@@ -1230,7 +1230,29 @@ function wireWebviewHardening(win) {
         { label: 'Sao chép', role: 'copy', enabled: params.editFlags.canCopy },
         { label: 'Dán', role: 'paste', enabled: params.editFlags.canPaste },
         { type: 'separator' },
+        // CHUỘT PHẢI TRÊN MỘT LIÊN KẾT — như trình duyệt thật.
+        //
+        // "Mở trong tab mới" chỉ có ở tab BROWSER: đó là nơi duy nhất có dải
+        // tab để mở thêm vào. Tab Links / viewer Google không có dải tab riêng
+        // nên bỏ mục này đi, khỏi hứa một chỗ mở không tồn tại (Ctrl+click ở
+        // đó vẫn đi đường 'workspace:openInLinksTab' như cũ).
+        //
+        // Gửi thẳng 'workspace:openInBrowserTab' — cùng kênh mà
+        // target=_blank/window.open đang dùng (xem setWindowOpenHandler), nên
+        // renderer không phải học thêm đường nào: BrowserTabWorkspace mở tab
+        // NỀN, giữ nguyên trang đang đọc, đúng thói quen "mở ngầm đọc sau".
+        ...(params.linkURL && BROWSER_PARTITION.test(partition) ? [{
+          label: '⊞ Mở liên kết trong tab mới',
+          click: () => {
+            if (win.isDestroyed()) { shell.openExternal(params.linkURL); return; }
+            win.webContents.send('workspace:openInBrowserTab', params.linkURL);
+            log('OpenInBrowserTab', params.linkURL);
+          },
+        }] : []),
         ...(params.linkURL ? [{
+          label: '↗ Mở liên kết bằng trình duyệt ngoài',
+          click: () => { shell.openExternal(params.linkURL); },
+        }, {
           label: 'Sao chép địa chỉ liên kết',
           click: () => { require('electron').clipboard.writeText(params.linkURL); },
         }, { type: 'separator' }] : []),

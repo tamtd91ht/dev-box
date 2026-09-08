@@ -114,6 +114,10 @@ export default function BrowserTabWorkspace() {
   const [menuOpen, setMenuOpen] = useState(false); // menu ⋯ (lưu/dấu trang/tràn viền)
   const [newTabOpen, setNewTabOpen] = useState(false); // panel nhập URL khi đã có tab
   const [ctx, setCtx] = useState<Ctx | null>(null); // menu chuột phải trên dấu trang
+  /** Menu chuột phải trên MỘT TAB của dải tab (nhân đôi / đóng…). Giữ id chứ
+   *  không giữ cả object Tab: tab có thể điều hướng trong lúc menu đang mở,
+   *  tra lại theo id thì luôn nhân đôi ĐÚNG trang đang xem. */
+  const [tabCtx, setTabCtx] = useState<{ x: number; y: number; id: string } | null>(null);
   const [pwOpen, setPwOpen] = useState(false); // modal 🔑 Mật khẩu đã lưu
   const [extOpen, setExtOpen] = useState(false); // modal 🧩 Extension (chỉ tab Browser)
   /** Nonce tải lại THEO TỪNG TAB (nút ↻ trên thanh extension). Đổi `key` là
@@ -177,15 +181,15 @@ export default function BrowserTabWorkspace() {
 
   // Click bất kỳ đâu (hoặc chuột phải chỗ khác) → đóng menu ngữ cảnh.
   useEffect(() => {
-    if (!ctx) return;
-    const close = () => setCtx(null);
+    if (!ctx && !tabCtx) return;
+    const close = () => { setCtx(null); setTabCtx(null); };
     window.addEventListener('click', close);
     window.addEventListener('contextmenu', close, true);
     return () => {
       window.removeEventListener('click', close);
       window.removeEventListener('contextmenu', close, true);
     };
-  }, [ctx]);
+  }, [ctx, tabCtx]);
 
   const reload = useCallback(() => { bmList().then(setBookmarks).catch((e) => setErr((e as Error).message)); }, []);
   useEffect(() => { reload(); }, [reload]);
@@ -278,6 +282,72 @@ export default function BrowserTabWorkspace() {
   }, []);
 
   /**
+   * NHÂN ĐÔI TAB — như "Duplicate tab" của Chrome.
+   *
+   * Mở thêm một tab CÙNG PROFILE, cùng địa chỉ ĐANG XEM (không phải địa chỉ
+   * lúc mở tab — `t.url` được onUrlChange giữ cho luôn mới), và ngay CẠNH tab
+   * gốc thay vì cuối dải: nhân đôi là để so hai bên, đặt xa nhau thì phải kéo
+   * lại. Đưa lên xem luôn (không background) — người dùng vừa chủ ý bấm.
+   *
+   * KHÔNG đi qua openTab: đây chính là ca trùng URL mà openTab sẽ chặn để hỏi
+   * "trang này đang mở sẵn, chuyển tới hay mở thêm?" — với nhân đôi thì trùng
+   * là ĐÚNG Ý, hỏi lại là vô nghĩa. Chèn thẳng vào danh sách cũng là cách duy
+   * nhất đặt được bản sao ngay cạnh tab gốc (openTab chỉ thêm vào cuối).
+   *
+   * KHÔNG chép `creds`: mật khẩu đã lưu đi theo origin trong PasswordManager
+   * (tab Browser bật `passwordManager`), nên bản nhân đôi vẫn tự điền được.
+   * Còn `creds` là tài khoản gắn với DẤU TRANG — nhân đôi một tab đã điều
+   * hướng đi nơi khác mà vẫn mang theo user/pass của dấu trang gốc là mang
+   * mật khẩu sang một site khác.
+   */
+  const duplicateTab = useCallback((id: string) => {
+    const src = tabsRef.current.find((t) => t.id === id);
+    if (!src) return;
+    const copy: Tab = {
+      ...src,
+      id: `tab-${++tabSeqRef.current}`,
+      creds: undefined,
+    };
+    // Mốc "vừa mở" cho khoá của bản sao: openTab dùng recentOpenRef để nhận ra
+    // event phát lặp — không đặt thì một cú openTab cùng URL ngay sau đó lại
+    // bật hộp thoại "đang mở sẵn".
+    recentOpenRef.current = { key: tabUrlKey(copy.partition, copy.url), at: Date.now(), id: copy.id };
+    setTabs((cur) => {
+      const i = cur.findIndex((t) => t.id === id);
+      if (i < 0) return cur;
+      return [...cur.slice(0, i + 1), copy, ...cur.slice(i + 1)];
+    });
+    setActiveId(copy.id);
+    setNewTabOpen(false);
+  }, []);
+
+  /**
+   * Guest trong tab tự điều hướng → cập nhật `url` của tab.
+   *
+   * Nhờ đó "nhân đôi tab" nhân ra ĐÚNG trang đang xem, và dò tab trùng
+   * (tabKeysRef) so với địa chỉ thật chứ không phải trang khởi đầu.
+   *
+   * `sameUrl`-hoá bằng tabUrlKey trước khi ghi: did-navigate-in-page bắn rất
+   * dày trên SPA, ghi state mỗi lần là render lại cả cây tab vô ích. Ghi vào
+   * đây KHÔNG làm webview tải lại — effect prop→guest của LinkViewer có chốt
+   * so với `el.getURL()`, mà giá trị này đến TỪ chính guest.
+   */
+  const trackUrl = useCallback((id: string, url: string) => {
+    setTabs((cur) => {
+      const i = cur.findIndex((t) => t.id === id);
+      if (i < 0) return cur;
+      const t = cur[i];
+      if (tabUrlKey(t.partition, t.url) === tabUrlKey(t.partition, url)) return cur;
+      const next = [...cur];
+      // Tên tab bám host như trình duyệt — nhưng CHỈ khi đã sang host khác:
+      // tab mở từ dấu trang có tên riêng ("Kafka UI"), đi vòng trong chính
+      // site đó mà đổi thành hostname là mất cái tên người dùng đặt.
+      next[i] = { ...t, url, name: hostOf(t.url) === hostOf(url) ? t.name : hostOf(url) };
+      return next;
+    });
+  }, []);
+
+  /**
    * chrome.tabs.update tu popup extension → doi dia chi TAB DANG XEM.
    *
    * Id tab giờ ổn định (số thứ tự) nên chỉ cần đổi `url` — LinkViewer có effect
@@ -315,6 +385,10 @@ export default function BrowserTabWorkspace() {
   const openTabBackground = useCallback((url: string, tab: Tab) => {
     openTab(url, { profile: tab.profile, background: true });
   }, [openTab]);
+
+  const trackUrlFromTab = useCallback((url: string, tab: Tab) => {
+    trackUrl(tab.id, url);
+  }, [trackUrl]);
 
   const saveBookmarkFromTab = useCallback(async (name: string, url: string, tab: Tab) => {
     await bmAdd(url, { name, profile: tab.profile, ...tab.creds });
@@ -443,7 +517,7 @@ export default function BrowserTabWorkspace() {
   // gõ đi vào TRANG WEB chứ không vào ô nhập — `edit` từng bị sót, triệu chứng
   // là "sửa tên dấu trang không được, bàn phím như bị chặn". Menu ⋯ cũng vậy:
   // z-index 21 không cứu được gì trước tầng native.
-  usePopupOverWebview(!!folderAsk || menuOpen || !!dupAsk || !!edit);
+  usePopupOverWebview(!!folderAsk || menuOpen || !!dupAsk || !!edit || !!tabCtx);
 
   /** Esc đóng menu ⋯. Menu đã portal ra body nên không nhận keydown của cây
    *  con nữa — phải nghe ở window. */
@@ -581,7 +655,25 @@ export default function BrowserTabWorkspace() {
       {hasTabs && (
         <div className="lv-tabbar bt-tabbar" role="tablist">
           {tabs.map((t) => (
-            <span key={t.id} className={`lv-tab${t.id === activeId ? ' on' : ''}`} title={t.url}>
+            <span
+              key={t.id}
+              className={`lv-tab${t.id === activeId ? ' on' : ''}`}
+              title={t.url}
+              // Chuột phải TRÊN TAB → menu "Nhân đôi / Đóng…", như trình duyệt.
+              // Toạ độ quy về gốc .bt-root (menu position:absolute trong đó),
+              // giống openCtx của dấu trang.
+              onContextMenu={(ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const host = rootRef.current?.getBoundingClientRect();
+                const MW = 230, MH = 200;
+                setTabCtx({
+                  x: Math.min(ev.clientX - (host?.left ?? 0), Math.max(0, (host?.width ?? MW) - MW)),
+                  y: Math.min(ev.clientY - (host?.top ?? 0), Math.max(0, (host?.height ?? MH) - MH)),
+                  id: t.id,
+                });
+              }}
+            >
               <button className="lv-tab-btn" onClick={() => { setActiveId(t.id); setNewTabOpen(false); }}>
                 {t.name}{t.profile && <span className="bt-mark-prof">{t.profile}</span>}
               </button>
@@ -670,6 +762,7 @@ export default function BrowserTabWorkspace() {
                 onClose={closeTab}
                 onOpenNewTab={openTabBackground}
                 onSaveBookmark={saveBookmarkFromTab}
+                onUrlChange={trackUrlFromTab}
               />
             ))}
           </div>
@@ -773,6 +866,13 @@ export default function BrowserTabWorkspace() {
               <span className="bt-menu-key">Ctrl+Shift+B</span>
             </button>
             <div className="bt-menu-sep" />
+            {/* Nhân đôi tab ĐANG XEM. Chỉ bấm được khi thật có tab đang xem:
+                ở trang new-tab (activeId = null) thì chẳng có gì để nhân. */}
+            <button disabled={!activeId}
+              onClick={() => { const cur = activeId; setMenuOpen(false); if (cur) duplicateTab(cur); }}>
+              <span className="bt-menu-check" />⧉ Nhân đôi tab
+            </button>
+            <div className="bt-menu-sep" />
             <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t?.profile ?? '', kind: 'link', order: 0, addedAt: '' }); setMenuOpen(false); }}>
               <span className="bt-menu-check" />☆ Lưu trang hiện tại…
             </button>
@@ -820,6 +920,52 @@ export default function BrowserTabWorkspace() {
 
       {pwOpen && <PasswordManager onClose={() => setPwOpen(false)} />}
       {extOpen && <BrowserExtensions onClose={() => setExtOpen(false)} />}
+
+      {/* Menu chuột phải TRÊN MỘT TAB của dải tab — như trình duyệt thật. */}
+      {tabCtx && (() => {
+        const t = tabs.find((x) => x.id === tabCtx.id);
+        if (!t) return null;
+        return (
+          <div className="bt-ctx" style={{ left: tabCtx.x, top: tabCtx.y }} onClick={(e) => e.stopPropagation()}>
+            <div className="bt-ctx-head" title={t.url}>{t.name}</div>
+            <button onClick={() => { duplicateTab(t.id); setTabCtx(null); }}>
+              ⧉ Nhân đôi tab
+            </button>
+            <button onClick={() => {
+              setTabCtx(null);
+              setReloadNonces((m) => ({ ...m, [t.id]: (m[t.id] ?? 0) + 1 }));
+            }}>
+              ↻ Tải lại
+            </button>
+            <div className="bt-menu-sep" />
+            <button onClick={() => { void navigator.clipboard?.writeText(t.url); setTabCtx(null); }}>
+              ⧉ Copy địa chỉ
+            </button>
+            <button onClick={() => {
+              setTabCtx(null);
+              setEdit({ id: '', name: t.name, url: t.url, profile: t.profile ?? '', kind: 'link', order: 0, addedAt: '' });
+            }}>
+              ☆ Lưu vào dấu trang…
+            </button>
+            <div className="bt-menu-sep" />
+            <button className="danger" onClick={() => { const id = t.id; setTabCtx(null); closeTab(id); }}>
+              ✕ Đóng tab
+            </button>
+            {/* "Đóng các tab khác" chỉ có nghĩa khi thật có tab khác. */}
+            {tabs.length > 1 && (
+              <button className="danger" onClick={() => {
+                const keep = t.id;
+                setTabCtx(null);
+                setTabs((cur) => cur.filter((x) => x.id === keep));
+                setActiveId(keep);
+                setNewTabOpen(false);
+              }}>
+                ✕ Đóng các tab khác
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Menu chuột phải trên dấu trang — như trình duyệt thật */}
       {ctx && (
@@ -886,15 +1032,19 @@ export default function BrowserTabWorkspace() {
  * cha tạo closure `() => closeTab(t.id)` thì tham chiếu đổi mỗi lần render và
  * memo vô hiệu — memo chỉ so sánh prop theo tham chiếu.
  */
-const BrowserTab = memo(function BrowserTab({ tab, hidden, onClose, onSaveBookmark, onOpenNewTab }: {
+const BrowserTab = memo(function BrowserTab({ tab, hidden, onClose, onSaveBookmark, onOpenNewTab, onUrlChange }: {
   tab: Tab; hidden: boolean;
   onClose: (id: string) => void;
   onSaveBookmark: (name: string, url: string, tab: Tab) => Promise<void>;
   onOpenNewTab: (url: string, tab: Tab) => void;
+  /** Guest điều hướng → báo lên để cha giữ `tab.url` luôn là trang ĐANG xem
+   *  ("nhân đôi tab" cần đúng trang đó, không phải trang lúc mở tab). */
+  onUrlChange: (url: string, tab: Tab) => void;
 }) {
   const close = useCallback(() => onClose(tab.id), [onClose, tab.id]);
   const openNew = useCallback((u: string) => onOpenNewTab(u, tab), [onOpenNewTab, tab]);
   const save = useCallback((name: string, url: string) => onSaveBookmark(name, url, tab), [onSaveBookmark, tab]);
+  const track = useCallback((u: string) => onUrlChange(u, tab), [onUrlChange, tab]);
 
   return (
     <LinkViewer
@@ -907,6 +1057,7 @@ const BrowserTab = memo(function BrowserTab({ tab, hidden, onClose, onSaveBookma
       passwordManager
       addressBar
       onOpenNewTab={openNew}
+      onUrlChange={track}
       onClose={close}
       onSaveLink={save}
     />

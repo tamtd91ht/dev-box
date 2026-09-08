@@ -51,6 +51,17 @@ interface Props {
   /** Link trong trang bấm "mở tab mới" (target=_blank / chuột giữa) → mở thành
    *  TAB MỚI trong app thay vì đẩy ra trình duyệt ngoài. */
   onOpenNewTab?: (url: string) => void;
+  /** Guest ĐÃ ĐIỀU HƯỚNG sang trang khác (bấm link trong trang, redirect SSO,
+   *  đổi route SPA) → báo URL mới về chủ khung.
+   *
+   *  Chủ khung cần biết vì prop `url` chỉ là trang KHỞI ĐẦU: không có kênh này
+   *  thì "nhân đôi tab" nhân ra trang lúc mở tab chứ không phải trang đang
+   *  xem, và dò tab trùng cũng so với một địa chỉ đã cũ.
+   *
+   *  Chủ khung ghi thẳng giá trị này trở lại prop `url` được: effect đồng bộ
+   *  prop→guest ở dưới có chốt `sameUrl(el.getURL(), url)` nên vòng "báo lên
+   *  rồi bị tải lại" không xảy ra. */
+  onUrlChange?: (url: string) => void;
 }
 
 /** Thanh "Lưu mật khẩu?" — user/pass vừa bắt được ở form submit. */
@@ -63,9 +74,13 @@ const NEWTAB_PREFIX = '[dbx-newtab] ';
 
 export default function LinkViewer({
   name, url, partition, onClose, onSaveLink, hidden, creds, passwordManager, profile,
-  addressBar, onOpenNewTab,
+  addressBar, onOpenNewTab, onUrlChange,
 }: Props) {
   const ref = useRef<WebviewElement | null>(null);
+  /** Callback báo URL mới — đọc qua ref vì effect gắn listener chạy MỘT lần
+   *  (deps []) nên closure sẽ giữ mãi bản đầu tiên. */
+  const onUrlChangeRef = useRef(onUrlChange);
+  onUrlChangeRef.current = onUrlChange;
   const [status, setStatus] = useState<Status>('loading');
   const [failInfo, setFailInfo] = useState('');
   const [canBack, setCanBack] = useState(false);
@@ -91,7 +106,10 @@ export default function LinkViewer({
         // Ô địa chỉ bám URL THẬT của guest (sau redirect SSO / đổi trang trong
         // SPA). Đang gõ dở thì thôi — không giật chữ khỏi tay người dùng.
         const cur = el.getURL();
-        if (cur) setLiveUrl(cur);
+        if (cur) {
+          setLiveUrl(cur);
+          onUrlChangeRef.current?.(cur);
+        }
       } catch {
         /* not attached yet */
       }

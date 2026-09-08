@@ -6449,6 +6449,11 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 13px;
 }
 .bt-menu button:hover { background: var(--glass-2); }
+/* Mục bị vô hiệu (vd "Nhân đôi tab" khi đang ở trang new-tab): phải NHÌN ra là
+   không bấm được — không có luật này thì nó y hệt mục bình thường, bấm không
+   ăn mà chẳng hiểu vì sao. */
+.bt-menu button:disabled { opacity: .42; cursor: default; }
+.bt-menu button:disabled:hover { background: transparent; }
 .bt-menu-sep { height: 1px; background: var(--glass-brd); margin: 4px 2px; }
 /* Phím tắt canh phải trong hàng menu, như menu của Chrome. */
 .bt-menu button:has(.bt-menu-key) { display: flex; align-items: center; gap: 12px; }
