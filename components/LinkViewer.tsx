@@ -15,6 +15,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WebviewElement } from '@/lib/workspace/types';
 import { pwMatch, pwSave, pwTouch, canEncrypt, type CredentialOpen } from '@/lib/passwords';
 import { normalizeUrl } from '@/lib/bookmarks';
+import { historyVisit, historyTitle } from '@/lib/browserHistory';
+import AddressSuggest, { useAddressSuggest } from './AddressSuggest';
 
 // Nhiều trang (Google sign-in, một số SSO) chặn "embedded browser" bằng cách
 // sniff UA có token Electron/app-name — trình mình đúng là Chrome bên dưới.
@@ -48,6 +50,11 @@ interface Props {
   /** Hiện Ô ĐỊA CHỈ thật (URL hiện tại, gõ được để đi) thay cho dòng tiêu đề
    *  chỉ-đọc. Tab Browser + tab Links bật; tab Google giữ tiêu đề gọn như cũ. */
   addressBar?: boolean;
+  /** GHI LỊCH SỬ trang đã xem + GỢI Ý theo lịch sử trong ô địa chỉ (như trình
+   *  duyệt thật). Tab Browser bật; tab Links/Google KHÔNG — ở đó địa chỉ đến từ
+   *  danh sách link có tổ chức sẵn, đổ thêm lịch sử vào chỉ làm rối, và những
+   *  khung đó cũng không phải nơi người dùng gõ địa chỉ tự do. */
+  history?: boolean;
   /** Link trong trang bấm "mở tab mới" (target=_blank / chuột giữa) → mở thành
    *  TAB MỚI trong app thay vì đẩy ra trình duyệt ngoài. */
   onOpenNewTab?: (url: string) => void;
@@ -74,13 +81,20 @@ const NEWTAB_PREFIX = '[dbx-newtab] ';
 
 export default function LinkViewer({
   name, url, partition, onClose, onSaveLink, hidden, creds, passwordManager, profile,
-  addressBar, onOpenNewTab, onUrlChange,
+  addressBar, history: trackHistory, onOpenNewTab, onUrlChange,
 }: Props) {
   const ref = useRef<WebviewElement | null>(null);
   /** Callback báo URL mới — đọc qua ref vì effect gắn listener chạy MỘT lần
    *  (deps []) nên closure sẽ giữ mãi bản đầu tiên. */
   const onUrlChangeRef = useRef(onUrlChange);
   onUrlChangeRef.current = onUrlChange;
+  /** Cùng lý do: effect gắn listener chạy một lần nên đọc cờ qua ref. */
+  const histRef = useRef(!!trackHistory);
+  histRef.current = !!trackHistory;
+  /** URL đã ghi vào lịch sử gần nhất — did-navigate-in-page bắn RẤT DÀY trên
+   *  SPA, không chốt lại thì một trang bị đếm thành hàng chục lần vào và nó
+   *  chiếm sạch đầu danh sách gợi ý. */
+  const loggedRef = useRef('');
   const [status, setStatus] = useState<Status>('loading');
   const [failInfo, setFailInfo] = useState('');
   const [canBack, setCanBack] = useState(false);
@@ -109,6 +123,16 @@ export default function LinkViewer({
         if (cur) {
           setLiveUrl(cur);
           onUrlChangeRef.current?.(cur);
+          // Ghi lịch sử ngay khi biết URL thật (sau mọi redirect SSO). Tiêu đề
+          // lúc này thường chưa có — page-title-updated ở dưới bù sau.
+          if (histRef.current && cur !== loggedRef.current) {
+            loggedRef.current = cur;
+            let title = '';
+            try { title = el.getTitle?.() ?? ''; } catch { /* chưa attach */ }
+            // getTitle() trước khi có <title> trả về chính URL — ghi vào thì
+            // dòng gợi ý có "tiêu đề" là một URL dài, vô nghĩa.
+            historyVisit(cur, title && title !== cur ? title : '');
+          }
         }
       } catch {
         /* not attached yet */
@@ -147,6 +171,17 @@ export default function LinkViewer({
     // effect này gắn listener → không có gì tắt overlay. Hẹn giờ ngay từ mount.
     stuckTimer = setTimeout(done, 12_000);
 
+    // Tiêu đề đến SAU URL (trang phải parse xong <head>) → cập nhật riêng, để
+    // dòng gợi ý hiện "Kibana — Discover" chứ không phải một URL trần.
+    const onTitle = (e: Event) => {
+      if (!histRef.current) return;
+      const t = (e as unknown as { title?: string }).title ?? '';
+      let cur = '';
+      try { cur = el.getURL(); } catch { /* chưa attach */ }
+      if (cur && t && t !== cur) historyTitle(cur, t);
+    };
+
+    el.addEventListener('page-title-updated', onTitle as EventListener);
     el.addEventListener('did-start-loading', onStart);
     el.addEventListener('did-stop-loading', onStop);
     el.addEventListener('dom-ready', onDomReady);
@@ -155,6 +190,7 @@ export default function LinkViewer({
     el.addEventListener('did-fail-load', onFail as EventListener);
     return () => {
       clearStuck();
+      el.removeEventListener('page-title-updated', onTitle as EventListener);
       el.removeEventListener('did-start-loading', onStart);
       el.removeEventListener('did-stop-loading', onStop);
       el.removeEventListener('dom-ready', onDomReady);
@@ -244,6 +280,19 @@ export default function LinkViewer({
     setFailInfo('');
     try { void ref.current?.loadURL(target); } catch { /* guest chưa attach */ }
   }, []);
+
+  /** Gợi ý theo lịch sử — chỉ khi ô địa chỉ ĐANG GÕ (có draft) và đang focus.
+   *
+   *  Không bật khi draft === null: lúc đó ô hiện URL của trang đang xem, mà
+   *  người dùng chỉ vừa bấm vào ô cho sáng lên — đổ ngay một danh sách gợi ý
+   *  khớp với chính URL đó là che mất trang mà chẳng để làm gì. Bấm ↓ vẫn mở
+   *  được danh sách "gần đây" (onKeyDown của hook lo). */
+  const [omniFocus, setOmniFocus] = useState(false);
+  const sug = useAddressSuggest({
+    query: draft ?? '',
+    onPick: (u) => navigate(u),
+    enabled: !!trackHistory && omniFocus && draft !== null,
+  });
 
   /** Chép URL đang xem — thao tác quen tay khi đã có thanh địa chỉ. */
   const [copied, setCopied] = useState(false);
@@ -973,18 +1022,28 @@ export default function LinkViewer({
               )}
               <input
                 className="ws-omni-input"
-                value={draft ?? liveUrl}
+                // Đang chọn một dòng gợi ý (↑↓) thì ô hiện URL của dòng đó, như
+                // trình duyệt — thấy trước mình sẽ đi đâu rồi mới Enter.
+                value={sug.preview ?? draft ?? liveUrl}
                 spellCheck={false}
                 placeholder="Gõ địa chỉ hoặc từ khóa tìm Google…"
                 title={liveUrl}
                 onChange={(e) => setDraft(e.target.value)}
-                onFocus={(e) => e.currentTarget.select()}
+                onFocus={(e) => { setOmniFocus(true); e.currentTarget.select(); }}
+                // Không đóng gợi ý ở onBlur: bấm vào một dòng cũng làm ô mất
+                // focus, đóng ở đây thì dòng biến mất trước khi cú bấm tới nó.
+                // AddressSuggest tự đóng khi bấm ra ngoài (mousedown ở document).
+                onBlur={() => setOmniFocus(false)}
                 onKeyDown={(e) => {
+                  // Gợi ý xử lý trước: ↑↓ chọn dòng, Enter đi tới dòng đang
+                  // chọn, Esc đóng danh sách. Trả false thì mới đến phím của ô.
+                  if (sug.onKeyDown(e)) return;
                   if (e.key === 'Enter') navigate(e.currentTarget.value);
                   else if (e.key === 'Escape') { e.stopPropagation(); setDraft(null); e.currentTarget.blur(); }
                 }}
               />
               <button className="ws-omni-copy" onClick={copyUrl} title="Chép địa chỉ">{copied ? '✓' : '⧉'}</button>
+              <AddressSuggest {...sug.listProps} overWebview />
             </div>
           ) : (
             <div className="ws-title">

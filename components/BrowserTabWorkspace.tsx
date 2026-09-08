@@ -23,6 +23,8 @@ import PasswordManager from './PasswordManager';
 import DupTabDialog, { tabUrlKey } from './DupTabDialog';
 import { onOpenUrl } from '@/lib/openTarget';
 import PasswordInput from './PasswordInput';
+import AddressSuggest, { useAddressSuggest } from './AddressSuggest';
+import BrowserHistory from './BrowserHistory';
 import { usePopupOverWebview } from '@/lib/useOverWebview';
 
 interface Tab { id: string; name: string; url: string; profile?: string; partition: string; creds?: { username?: string; password?: string } }
@@ -95,6 +97,8 @@ export default function BrowserTabWorkspace() {
    *  hành động ẨN — dùng setMarks(false) cho rõ ý, không dựa vào toggle. */
   const hideMarks = useCallback(() => setMarks(false), [setMarks]);
 
+  const [histOpen, setHistOpen] = useState(false); // modal 🕘 Lịch sử (Ctrl+H)
+
   /** Ctrl/Cmd+Shift+B ẩn/hiện thanh dấu trang — đúng phím của Chrome.
    *
    *  Bắt ở `document` chứ không phải trên .bt-root: focus hầu như luôn nằm
@@ -103,9 +107,20 @@ export default function BrowserTabWorkspace() {
    *  app (thanh tab, ô địa chỉ, thanh dấu trang) phím đều ăn. */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'B' || e.key === 'b')) {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.shiftKey && (e.key === 'B' || e.key === 'b')) {
         e.preventDefault();
         toggleMarks();
+        return;
+      }
+      // Ctrl+H mở Lịch sử — đúng phím của Chrome. KHÔNG kèm Shift (Ctrl+Shift+H
+      // là phím khác hẳn), và bỏ qua khi con trỏ đang ở một ô nhập của app:
+      // vài ô dùng Ctrl+H làm xoá lùi, cướp mất thì gõ rất khó chịu.
+      if (!e.shiftKey && (e.key === 'H' || e.key === 'h')) {
+        const t = e.target as HTMLElement | null;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        e.preventDefault();
+        setHistOpen(true);
       }
     };
     document.addEventListener('keydown', onKey);
@@ -401,6 +416,24 @@ export default function BrowserTabWorkspace() {
     setAddr(''); setNewTabOpen(false);
   };
 
+  /** Mở một địa chỉ CHỌN TỪ GỢI Ý — đi luôn, không đợi bấm "▶ Mở".
+   *
+   *  Không dùng `go()` được: go() đọc `addr` từ state, mà chọn gợi ý thì URL
+   *  đến từ dòng vừa bấm và state chưa kịp cập nhật (setState là async) — sẽ
+   *  mở đúng thứ người dùng gõ dở thay vì gợi ý họ chọn. */
+  const goSuggest = useCallback((url: string) => {
+    openTab(url, { profile });
+    setAddr(''); setNewTabOpen(false);
+  }, [openTab, profile]);
+
+  /** Ô địa chỉ trang new-tab: gợi ý theo lịch sử đã xem.
+   *
+   *  Cho phép cả khi ô còn TRỐNG (khác ô trong tab): trang new-tab đang trống
+   *  trơn, hiện ngay các trang vào gần đây là đúng thứ người dùng cần — chẳng
+   *  che mất gì cả. */
+  const [addrFocus, setAddrFocus] = useState(false);
+  const addrSug = useAddressSuggest({ query: addr, onPick: goSuggest, enabled: addrFocus });
+
   /** Mở dấu trang. background = chuột phải → "Mở trong tab mới": thêm tab
    *  nhưng giữ nguyên trang đang xem.
    *
@@ -635,14 +668,36 @@ export default function BrowserTabWorkspace() {
   /** Ô nhập URL + profile — dùng cho cả trang new-tab lẫn panel ＋. */
   const addressForm = (
     <div className="bt-addr">
-      <input className="input bt-addr-input" placeholder="Gõ địa chỉ web hoặc từ khóa tìm Google rồi Enter…"
-        value={addr} autoFocus onChange={(e) => setAddr(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape' && hasTabs) cancelNewTab(); }} />
+      {/* Khung neo cho danh sách gợi ý (position:absolute). Phải bọc RIÊNG ô
+          URL, không dùng cả .bt-addr: danh sách sẽ rộng bằng cả hàng, trùm qua
+          ô Profile và hai cái nút. */}
+      <div className="bt-addr-wrap">
+        <input className="input bt-addr-input" placeholder="Gõ địa chỉ web hoặc từ khóa tìm Google rồi Enter…"
+          value={addrSug.preview ?? addr} autoFocus onChange={(e) => setAddr(e.target.value)}
+          onFocus={() => setAddrFocus(true)}
+          // Xem ghi chú ở ô địa chỉ của LinkViewer: KHÔNG đóng danh sách tại
+          // onBlur, vì bấm vào một dòng cũng làm ô mất focus.
+          onBlur={() => setAddrFocus(false)}
+          onKeyDown={(e) => {
+            if (addrSug.onKeyDown(e)) return;
+            if (e.key === 'Enter') go();
+            if (e.key === 'Escape' && hasTabs) cancelNewTab();
+          }} />
+        <AddressSuggest {...addrSug.listProps} />
+      </div>
       <input className="input" style={{ width: 130 }} list="bt-profiles" placeholder="Profile"
         value={profile} onChange={(e) => setProfile(e.target.value)}
         title="Cùng profile = chung phiên đăng nhập. Hai tài khoản SSO khác nhau → hai profile." />
       <datalist id="bt-profiles">{profiles.map((p) => <option key={p} value={p} />)}</datalist>
-      <button onClick={go} disabled={!addr.trim()}>▶ Mở</button>
+      {/* Bấm "▶ Mở" phải mở ĐÚNG thứ đang hiện trong ô. Đang chọn một dòng gợi
+          ý bằng ↑↓ thì ô hiện URL của dòng đó nhưng `addr` vẫn là chữ gõ dở
+          (có thể rỗng) — dựa vào `addr` thì nút xám đi hoặc mở sai trang. */}
+      <button
+        onClick={() => { if (addrSug.preview) goSuggest(addrSug.preview); else go(); }}
+        disabled={!addrSug.preview && !addr.trim()}
+      >
+        ▶ Mở
+      </button>
       {hasTabs && <button className="ghost sm" onClick={cancelNewTab}>Hủy</button>}
     </div>
   );
@@ -883,6 +938,10 @@ export default function BrowserTabWorkspace() {
               <span className="bt-menu-check" />📁 Thư mục mới…
             </button>
             <div className="bt-menu-sep" />
+            <button onClick={() => { setHistOpen(true); setMenuOpen(false); }}>
+              <span className="bt-menu-check" />🕘 Lịch sử
+              <span className="bt-menu-key">Ctrl+H</span>
+            </button>
             <button onClick={() => { setPwOpen(true); setMenuOpen(false); }}>
               <span className="bt-menu-check" />🔑 Mật khẩu đã lưu
             </button>
@@ -918,6 +977,14 @@ export default function BrowserTabWorkspace() {
         />
       )}
 
+      {/* Lịch sử — bấm một dòng là mở lại trang đó trong TAB MỚI (openTab tự
+          hỏi nếu trang đang mở sẵn), giống bấm một mục lịch sử của trình duyệt. */}
+      {histOpen && (
+        <BrowserHistory
+          onOpen={(u) => openTab(u, { profile })}
+          onClose={() => setHistOpen(false)}
+        />
+      )}
       {pwOpen && <PasswordManager onClose={() => setPwOpen(false)} />}
       {extOpen && <BrowserExtensions onClose={() => setExtOpen(false)} />}
 
@@ -1056,6 +1123,7 @@ const BrowserTab = memo(function BrowserTab({ tab, hidden, onClose, onSaveBookma
       profile={tab.profile}
       passwordManager
       addressBar
+      history
       onOpenNewTab={openNew}
       onUrlChange={track}
       onClose={close}

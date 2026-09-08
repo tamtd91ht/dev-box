@@ -3772,6 +3772,10 @@ pre.kafka-drawer-body {
 /* Ô địa chỉ kiểu trình duyệt (tab Browser) — thay cho .ws-title chỉ-đọc: hiện
    URL thật của trang đang xem, gõ được để đi tới. */
 .ws-omni {
+  /* relative = gốc toạ độ cho danh sách gợi ý (.addr-sug) thả xuống dưới ô.
+     Giống .ws-menu ở trên: popup phải nằm trong .ws-toolbar (ngoài .ws-canvas)
+     và toolbar không overflow:hidden, nên nó tràn xuống đè vùng webview được. */
+  position: relative;
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
   padding: 0 4px 0 10px; height: 30px;
   background: var(--glass-2); border: 1px solid var(--glass-brd); border-radius: 999px;
@@ -9278,3 +9282,83 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
    dựng bằng grid, view nào bằng flex — và không phải liệt kê từng layout.
    Dải dọc bên dưới chỉ lo phần hình hài. */
 .rail-strip { width: 34px; flex: none; }
+
+/* ── Gợi ý ô địa chỉ theo lịch sử đã xem (components/AddressSuggest.tsx) ──
+   Danh sách thả xuống dưới ô nhập, kiểu thanh địa chỉ trình duyệt: gõ vài chữ
+   là hiện lại trang đã vào, ↑↓ chọn, Enter đi tới.
+
+   z-index cao hơn .bt-ctx (60): trong tab, danh sách này nằm trên thanh công
+   cụ của khung xem, và thanh đó cùng lớp xếp với menu chuột phải. */
+.bt-addr-wrap { position: relative; flex: 1; min-width: 120px; display: flex; }
+.bt-addr-wrap .bt-addr-input { width: 100%; }
+
+.addr-sug {
+  position: absolute; z-index: 70; top: calc(100% + 4px); left: 0; right: 0;
+  min-width: 260px; max-height: 320px; overflow-y: auto;
+  display: flex; flex-direction: column; padding: 4px;
+  background: var(--bg-1); border: 1px solid var(--glass-brd); border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0,0,0,.45);
+}
+/* Ô nằm sát đáy khung → mở LÊN, không thì danh sách bị cắt mất nửa dưới. */
+.addr-sug--above { top: auto; bottom: calc(100% + 4px); }
+
+.addr-sug-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 7px; cursor: pointer;
+  /* Dòng gợi ý dài không được đẩy rộng cả danh sách — mỗi phần tự co (min-width
+     :0 ở .addr-sug-text) và URL bị cắt bằng ellipsis. */
+  min-width: 0;
+}
+/* Chọn bằng chuột và bằng ↑↓ dùng CÙNG một lớp `.on`: hover không tự đổi màu
+   riêng, nếu không thì khi vừa di chuột vừa bấm ↓ sẽ có HAI dòng cùng sáng và
+   không biết Enter sẽ đi tới dòng nào. (onMouseEnter đặt luôn sel.) */
+.addr-sug-row.on { background: var(--glass-2); }
+
+.addr-sug-ico { flex: none; font-size: 12px; opacity: .7; }
+.addr-sug-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.addr-sug-title {
+  font-size: 12.5px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.addr-sug-url {
+  font-size: 11px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Số lần đã vào — chỉ hiện khi > 1, để biết đâu là trang quen tay. */
+.addr-sug-n {
+  flex: none; font-size: 10.5px; color: var(--faint);
+  background: var(--glass); border-radius: 999px; padding: 1px 6px;
+}
+.addr-sug-x {
+  flex: none; border: none; background: transparent; color: var(--faint);
+  cursor: pointer; font-size: 11px; width: 20px; height: 20px; border-radius: 5px;
+  opacity: 0; /* chỉ hiện ở dòng đang trỏ — bình thường đừng làm rối danh sách */
+}
+.addr-sug-row:hover .addr-sug-x, .addr-sug-row.on .addr-sug-x { opacity: 1; }
+.addr-sug-x:hover { background: var(--err-bg); color: var(--err); }
+
+/* ── Bảng Lịch sử (components/BrowserHistory.tsx) ──
+   Cùng khung modal với trình quản lý mật khẩu (.mail-compose + .pw-list), chỉ
+   khác hình hài từng dòng: gom theo ngày, giờ ở đầu dòng. */
+.hist-day {
+  position: sticky; top: 0; z-index: 1;
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  background: var(--bg-1); padding: 6px 4px 4px;
+  border-bottom: 1px solid var(--glass-brd);
+}
+.hist-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 4px; font-size: 12px;
+  border-bottom: 1px solid var(--glass-brd);
+}
+.hist-time { flex: none; width: 42px; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* Cả dòng là một <button> để mở lại trang — bấm đâu cũng được, không phải nhắm
+   vào riêng chữ tiêu đề. */
+.hist-open {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px;
+  text-align: left; background: transparent; border: none; padding: 2px 4px;
+  border-radius: 6px; cursor: pointer; color: var(--text);
+}
+.hist-open:hover { background: var(--glass-2); }
+.hist-title { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist-url { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
