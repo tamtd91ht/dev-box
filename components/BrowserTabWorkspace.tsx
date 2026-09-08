@@ -25,6 +25,9 @@ import { onOpenUrl } from '@/lib/openTarget';
 import PasswordInput from './PasswordInput';
 import AddressSuggest, { useAddressSuggest } from './AddressSuggest';
 import BrowserHistory from './BrowserHistory';
+import {
+  TABS_KEY, serialize as serializeSession, restore as restoreSession,
+} from '@/lib/browserSession';
 import { usePopupOverWebview } from '@/lib/useOverWebview';
 
 interface Tab { id: string; name: string; url: string; profile?: string; partition: string; creds?: { username?: string; password?: string } }
@@ -160,6 +163,37 @@ export default function BrowserTabWorkspace() {
    *  tab vừa mount chưa kịp nghe), không có mốc này thì cú thứ hai sẽ bật hộp
    *  thoại "đang mở sẵn" ngay trên trang người dùng vừa mở. */
   const recentOpenRef = useRef<{ key: string; at: number; id: string } | null>(null);
+  /* ── Nhớ các tab đang mở qua localStorage ────────────────────────────────
+     Đóng app rồi mở lại thì những trang CHƯA đóng hiện lại y như cũ, còn tab
+     đã tự tay đóng thì thôi — như "restore session" của trình duyệt.
+
+     Phần rút gọn/dựng lại nằm ở lib/browserSession.ts (kiểm bằng
+     scripts/check-browser-session.ts): ở đó mới thấy rõ những gì KHÔNG được
+     cất — nhất là `creds`, vì localStorage là plaintext. */
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    try {
+      const { tabs: restored, active } = restoreSession(
+        localStorage.getItem(TABS_KEY),
+        () => `tab-${++tabSeqRef.current}`,
+        hostOf,
+      );
+      if (restored.length) { setTabs(restored); setActiveId(active); }
+    } catch { /* localStorage bị chặn — mở bàn trắng, không phải lỗi đáng kêu */ }
+    setHydrated(true);
+  }, []);
+
+  /* Cờ `hydrated` là STATE chứ không phải ref, và effect ghi phải chờ nó —
+     cùng lý do đã ghi ở ApiWorkspace: đánh dấu bằng ref thì ngay trong lượt
+     commit đó, effect ghi chạy sau effect nạp nhưng vẫn nắm `tabs` CŨ (rỗng)
+     và sẽ đè rỗng lên đúng thứ vừa khôi phục. */
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      localStorage.setItem(TABS_KEY, JSON.stringify(serializeSession(tabs, activeId)));
+    } catch { /* đầy thì thôi */ }
+  }, [hydrated, tabs, activeId]);
+
   /** Hộp thoại "trang đang mở sẵn — chuyển tới hay mở thêm?". */
   const [dupAsk, setDupAsk] = useState<{
     url: string; name?: string; profile?: string; creds?: Tab['creds'];

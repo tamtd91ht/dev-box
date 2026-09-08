@@ -23,7 +23,8 @@
     "check:rate": "tsx scripts/check-rate-math.ts",
     "check:zalo": "tsx scripts/check-zalo-extract.ts",
     "check:json-edit": "tsx scripts/check-json-edit.ts",
-    "check:history": "tsx scripts/check-browser-history.ts"
+    "check:history": "tsx scripts/check-browser-history.ts",
+    "check:session": "tsx scripts/check-browser-session.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
