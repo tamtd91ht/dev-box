@@ -2146,6 +2146,63 @@ ipcMain.handle('workspace:focusHost', (evt) => {
   }
 });
 
+// Chay mot doan JS trong MOI FRAME cua guest, khong chi main frame.
+//
+// Vi sao can: webview.executeJavaScript() chi cham tới main frame. Rat nhieu
+// trang dat form login trong <iframe> (Keycloak/SSO nhung khung con), nen bay
+// bat mat khau va autofill khong bao gio thay o password — thanh "Luu mat
+// khau?" im lang tren dung nhung trang can no nhat. webFrameMain thi khong bi
+// gioi han do: chay duoc trong ca frame khac origin.
+//
+// Tra ve mang ket qua cua tung frame (frame nao nem loi thi bo qua, khong lam
+// chet ca luot) kem url cua frame — caller tu chon cai nao dung.
+ipcMain.handle('workspace:execInFrames', (evt, targetId, code) => {
+  try {
+    const target = webContents.fromId(Number(targetId));
+    if (!target || target.isDestroyed()) return { ok: false, error: 'gone' };
+    // Chi nhan guest thuoc DUNG trang dang goi — renderer khong duoc tro vao
+    // webContents tuy y (cua so khac, main window…). Cung mot phep gac nhu
+    // devtools:open ben duoi.
+    if (target.hostWebContents !== evt.sender) return { ok: false, error: 'not your guest' };
+    if (typeof code !== 'string') return { ok: false, error: 'bad code' };
+
+    const main = target.mainFrame;
+    if (!main) return { ok: false, error: 'no frame' };
+    // framesInSubtree gom ca main frame lan moi frame con long nhau.
+    //
+    // LOC va CHAN SO LUONG: trang tin/quang cao co the co vai chuc iframe
+    // (ads, tracker, pixel) va ham nay bi goi lai sau MOI lan dieu huong. Chi
+    // giu frame http(s) — form login khong bao gio nam trong about:blank hay
+    // data: — va cat o 12 frame: chua thay trang login nao can hon the, con
+    // trang ads thi khong co ly gi phai chay script vao tung o quang cao.
+    const all = main.framesInSubtree || [main];
+    const frames = all
+      .filter((f) => {
+        if (!f) return false;
+        if (typeof f.isDestroyed === 'function' && f.isDestroyed()) return false;
+        try { return /^https?:$/.test(new URL(f.url).protocol); } catch { return false; }
+      })
+      .slice(0, 12);
+    // Loc sach tay (vd main frame la about:blank luc vua mo tab) → van chay
+    // main frame, khong tra ve rong.
+    if (frames.length === 0) frames.push(main);
+    const jobs = frames.map((f) => {
+      let url = '';
+      try { url = f.url || ''; } catch { /* frame vua bi huy */ }
+      return Promise.resolve()
+        .then(() => f.executeJavaScript(code, true))
+        .then((value) => ({ url, value }))
+        // Frame cross-origin bi chan, hoac frame bi huy giua duong: bo qua
+        // rieng frame do. Mot frame chet khong duoc lam mat ket qua cua ca
+        // trang — day chinh la truong hop pho bien nhat (iframe quang cao).
+        .catch(() => null);
+    });
+    return Promise.all(jobs).then((out) => ({ ok: true, frames: out.filter(Boolean) }));
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
 // ── DevTools dock TRONG khung, như Chrome ──────────────────────────────────
 //
 // `openDevTools()` trên guest <webview> LUÔN bung CỬA SỔ RỜI: Electron ép dock

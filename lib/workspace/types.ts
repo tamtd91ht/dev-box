@@ -140,6 +140,17 @@ export interface WorkspaceBridge {
   /** Kéo focus về host page sau khi hủy <webview> giữ focus (fix input "chết").
    *  Optional: preload cũ (trước khi có handler này) chưa expose. */
   focusHost?(): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Chạy `code` trong MỌI frame của guest `targetId` (từ getWebContentsId),
+   * kể cả iframe khác origin — webview.executeJavaScript chỉ với tới main
+   * frame. Mỗi phần tử `frames` là kết quả của một frame đọc được; frame bị
+   * chặn hoặc vừa bị hủy được bỏ qua chứ không làm cả lượt thất bại.
+   */
+  execInFrames?(targetId: number, code: string): Promise<{
+    ok: boolean;
+    error?: string;
+    frames?: { url: string; value: unknown }[];
+  }>;
   /** 🔕: báo main danh sách partition Workspace đang ẨN THÔNG BÁO (dạng
    *  'ws-<plugin>-<instance>', không kèm 'persist:') + cờ tắt toàn cục. Main
    *  chặn quyền `notifications` của đúng guest đó — notification Windows từ

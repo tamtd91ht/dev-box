@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld('workspace', {
   /** Kéo focus về host page sau khi hủy <webview> (fix input "chết"). */
   focusHost: () => ipcRenderer.invoke('workspace:focusHost'),
   /**
+   * Chạy JS trong MỌI frame của một guest (theo webContentsId), không chỉ main
+   * frame như webview.executeJavaScript. Cần cho form login nằm trong <iframe>
+   * — xem workspace:execInFrames trong main.cjs.
+   */
+  execInFrames: (targetId, code) => ipcRenderer.invoke('workspace:execInFrames', targetId, code),
+  /**
    * 🔕: báo main danh sách partition Workspace đang ẨN THÔNG BÁO + cờ toàn cục.
    * Main chặn quyền `notifications` của guest tương ứng — xem main.cjs.
    */

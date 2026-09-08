@@ -291,6 +291,40 @@ export default function LinkViewer({
   // và giữ giá trị bắt được trong ref của host (pendingRef) để sống sót qua
   // điều hướng, chỉ đem ra hỏi sau khi trang mới tải xong.
 
+  /**
+   * Chạy `code` trong MỌI frame của guest và trả kết quả từng frame.
+   *
+   * webview.executeJavaScript() chỉ với tới MAIN FRAME. Rất nhiều trang đặt
+   * form login trong <iframe> (Keycloak/SSO nhúng khung con) — với những trang
+   * đó thì bẫy bắt mật khẩu và autofill không bao giờ thấy ô password, nên
+   * thanh "Lưu mật khẩu?" im lặng đúng ở chỗ cần nó nhất. Cầu execInFrames
+   * (main process, webFrameMain) chạy được cả trong frame khác origin.
+   *
+   * Thứ tự trả về: main frame trước, rồi các frame con — caller lấy kết quả
+   * "có nghĩa" đầu tiên, nên main frame vẫn được ưu tiên như trước.
+   *
+   * Preload cũ chưa có cầu này → tự lùi về executeJavaScript (main frame),
+   * tức đúng hành vi trước đây, không tệ hơn.
+   */
+  const execFrames = useCallback(async (code: string): Promise<unknown[]> => {
+    const bridge = typeof window !== 'undefined' ? window.workspace?.execInFrames : undefined;
+    // getWebContentsId ném lỗi khi guest chưa attach — đọc thẳng ở đây thay vì
+    // qua guestId() (khai báo ở dưới, dùng cho DevTools) để khỏi phải xáo thứ
+    // tự khai báo của cả component.
+    let id = -1;
+    try { id = ref.current?.getWebContentsId() ?? -1; } catch { /* chưa attach */ }
+    if (bridge && id > 0) {
+      try {
+        const res = await bridge(id, code);
+        if (res?.ok && res.frames) return res.frames.map((f) => f.value);
+      } catch { /* cầu lỗi → lùi về main frame bên dưới */ }
+    }
+    try {
+      const v = await ref.current?.executeJavaScript(code, true);
+      return [v];
+    } catch { return []; }
+  }, []);
+
   /** Đoạn JS tìm ô user/pass — dùng lại cho cả điền và bắt submit.
    *
    *  QUÉT CẢ SHADOW DOM, không chỉ document.querySelectorAll: khá nhiều trang
@@ -353,9 +387,15 @@ export default function LinkViewer({
       setVal(pw, ${JSON.stringify(password)});
       return 'ok';
     })()`;
-    try { return (await ref.current?.executeJavaScript(code, true)) as string; }
-    catch { return 'no-form'; }
-  }, [FIELD_JS]);
+    // Điền vào frame NÀO CÓ form. Frame không có ô password trả 'no-form' —
+    // vô hại, ta chỉ quan tâm frame nào làm được việc. Ưu tiên 'ok' (đã điền),
+    // rồi 'kept' (người dùng đang gõ dở → dừng, không đạp lên), cuối cùng mới
+    // là 'no-form' nghĩa là cả trang không có form nào.
+    const rs = (await execFrames(code)) as string[];
+    if (rs.includes('ok')) return 'ok';
+    if (rs.includes('kept')) return 'kept';
+    return 'no-form';
+  }, [FIELD_JS, execFrames]);
 
   /** Gắn bẫy submit trong guest: lưu user/pass vừa gõ vào window.__dbxPwd để
    *  host đọc ra. Idempotent — gọi lại sau mỗi lần điều hướng là vô hại. */
@@ -416,17 +456,27 @@ export default function LinkViewer({
       document.addEventListener('keydown', (e) => { if (e.key === 'Enter') grab(); }, true);
       return 'armed';
     })()`;
-    try { await ref.current?.executeJavaScript(code, true); } catch { /* guest chưa sẵn */ }
-  }, [FIELD_JS]);
+    // Cắm vào MỌI frame: form login có thể ở main frame hay trong iframe SSO,
+    // và cờ armed neo theo từng document nên frame nào cắm rồi thì tự bỏ qua.
+    await execFrames(code);
+  }, [FIELD_JS, execFrames]);
 
   /** Đọc user/pass guest vừa bắt được; xóa khỏi guest sau khi lấy. */
   const readCaptured = useCallback(async (): Promise<{ username: string; password: string; url: string } | null> => {
     const code = `(() => { const v = window.__dbxPwd; window.__dbxPwd = null; return v ? JSON.stringify(v) : null; })()`;
-    try {
-      const raw = (await ref.current?.executeJavaScript(code, true)) as string | null;
-      return raw ? JSON.parse(raw) : null;
-    } catch { return null; }
-  }, []);
+    // Mỗi frame có window riêng, nên thứ bắt được nằm ở frame CHỨA FORM — với
+    // SSO nhúng thì đó là iframe, không phải main frame. Lấy frame đầu tiên có
+    // mật khẩu (main frame vẫn được xét trước, đúng như cũ).
+    const raws = (await execFrames(code)) as (string | null)[];
+    for (const raw of raws) {
+      if (!raw) continue;
+      try {
+        const got = JSON.parse(raw) as { username: string; password: string; url: string };
+        if (got?.password) return got;
+      } catch { /* frame trả rác → thử frame sau */ }
+    }
+    return null;
+  }, [execFrames]);
 
   /** URL thật của guest (sau redirect SSO) — origin để tra mật khẩu. */
   const currentUrl = useCallback(() => {
@@ -446,8 +496,26 @@ export default function LinkViewer({
    *  niêm phong bằng safeStorage — âm thầm bơm plaintext sang sẽ làm nhãn
    *  `cipher` nói dối. Muốn nâng cấp thì bấm "Lưu" ở thanh hỏi mật khẩu. */
   const resolveCreds = useCallback(async (): Promise<CredentialOpen[]> => {
+    // Tra theo CẢ url main frame LẪN url của frame đang chứa ô password.
+    //
+    // Với SSO nhúng (form login trong iframe Keycloak), mật khẩu được lưu theo
+    // origin của FRAME — đó là origin thật của trang đăng nhập, và lần sau
+    // chính frame đó lại hiện ra. Nếu chỉ tra bằng url main frame thì bản ghi
+    // vừa lưu ở lượt trước không bao giờ khớp lại: lưu được mà không điền được.
+    const urls = [currentUrl()];
+    if (passwordManager) {
+      const found = (await execFrames(
+        `(() => { const vis = (el) => el && el.offsetParent !== null && !el.disabled && !el.readOnly;
+          const pw = [...document.querySelectorAll('input[type=password]')].find(vis);
+          return pw ? location.href : null; })()`,
+      )) as (string | null)[];
+      for (const u of found) if (u && !urls.includes(u)) urls.push(u);
+    }
     const hits = passwordManager
-      ? await pwMatch(currentUrl(), profile).catch(() => [])
+      ? (await Promise.all(urls.map((u) => pwMatch(u, profile).catch(() => []))))
+          .flat()
+          // Cùng một bản ghi có thể khớp cả hai url → giữ một bản.
+          .filter((c, i, all) => all.findIndex((o) => o.id === c.id && o.username === c.username) === i)
       : [];
     const linkCred = creds?.password || creds?.username
       ? [{ id: '', username: creds.username ?? '', password: creds.password ?? '', profile }]
@@ -455,7 +523,7 @@ export default function LinkViewer({
     // Vault đã có tài khoản CÙNG username → bỏ bản của link (vault mới hơn).
     const dup = new Set(hits.map((h) => h.username));
     return [...hits, ...linkCred.filter((c) => !dup.has(c.username))];
-  }, [passwordManager, profile, currentUrl, creds]);
+  }, [passwordManager, profile, currentUrl, creds, execFrames]);
 
   /** user/pass bắt được, chờ trang mới tải xong mới đem ra hỏi. Ref (không phải
    *  state) để sống sót qua điều hướng mà không kéo theo re-render. */
