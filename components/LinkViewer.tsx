@@ -69,6 +69,32 @@ interface Props {
    *  prop→guest ở dưới có chốt `sameUrl(el.getURL(), url)` nên vòng "báo lên
    *  rồi bị tải lại" không xảy ra. */
   onUrlChange?: (url: string) => void;
+  /** TAB NÀY MỞ TỪ MỘT LIÊN KẾT TRONG TAB KHÁC — ngữ cảnh của tab cha, để dựng
+   *  lại thứ mà một tab mới toanh vốn không có.
+   *
+   *  Trình duyệt thật mở tab từ `window.open`/`target=_blank` thì tab con kế
+   *  thừa cả `window.opener`, `Referer`, và `sessionStorage` của tab cha. Ở đây
+   *  mỗi tab là một `<webview>` riêng nên tab con sinh ra TRỐNG RỖNG: trang
+   *  giữ bộ lọc/phân trang trong sessionStorage sẽ đọc ra `null` và trả kết quả
+   *  rỗng, hoặc coi là truy cập trực tiếp rồi đá về trang mặc định.
+   *
+   *  Hai thứ lấy lại được — và đã đo là đủ cho ca phân trang:
+   *    · `url`  → gửi làm `httpReferrer` của lần tải đầu;
+   *    · `session` → chép nguyên sessionStorage của tab cha.
+   *
+   *  `window.opener` thì KHÔNG: Electron 43 không cho gắn webContents của cửa
+   *  sổ con vào khung tab (`already attached to a window`), nên tab con buộc
+   *  phải là một guest độc lập. Trang nào thật sự cần opener (thường là popup
+   *  OAuth) vẫn phải mở bằng cửa sổ ngoài. */
+  opener?: TabOpener;
+}
+
+/** Ngữ cảnh tab cha truyền cho tab con — xem prop `opener`. */
+export interface TabOpener {
+  /** URL tab cha lúc bấm link → Referer của lần tải đầu. */
+  url: string;
+  /** sessionStorage của tab cha, dạng cặp [key, value]. */
+  session: [string, string][];
 }
 
 /** Thanh "Lưu mật khẩu?" — user/pass vừa bắt được ở form submit. */
@@ -81,7 +107,7 @@ const NEWTAB_PREFIX = '[dbx-newtab] ';
 
 export default function LinkViewer({
   name, url, partition, onClose, onSaveLink, hidden, creds, passwordManager, profile,
-  addressBar, history: trackHistory, onOpenNewTab, onUrlChange,
+  addressBar, history: trackHistory, onOpenNewTab, onUrlChange, opener,
 }: Props) {
   const ref = useRef<WebviewElement | null>(null);
   /** Callback báo URL mới — đọc qua ref vì effect gắn listener chạy MỘT lần
@@ -95,6 +121,15 @@ export default function LinkViewer({
    *  SPA, không chốt lại thì một trang bị đếm thành hàng chục lần vào và nó
    *  chiếm sạch đầu danh sách gợi ý. */
   const loggedRef = useRef('');
+  /** ĐANG Ở BƯỚC WARM-UP của tab mở-từ-liên-kết: guest tạm đứng ở TRANG CHA để
+   *  bơm sessionStorage, chưa phải trang người dùng bấm (xem effect `opener`).
+   *
+   *  Phải bịt các kênh "báo trang đang xem" trong lúc đó, nếu không:
+   *    · lịch sử ghi thêm một lượt vào trang cha mà người dùng không hề mở;
+   *    · `onUrlChange` đẩy URL trang cha lên `tab.url` — "nhân đôi tab" sẽ nhân
+   *      ra trang cha, và dò tab trùng so nhầm địa chỉ.
+   *  Khởi tạo = có `opener`: bước warm-up bắt đầu ngay từ `<webview src>`. */
+  const warmingRef = useRef(false);
   const [status, setStatus] = useState<Status>('loading');
   const [failInfo, setFailInfo] = useState('');
   const [canBack, setCanBack] = useState(false);
@@ -120,7 +155,9 @@ export default function LinkViewer({
         // Ô địa chỉ bám URL THẬT của guest (sau redirect SSO / đổi trang trong
         // SPA). Đang gõ dở thì thôi — không giật chữ khỏi tay người dùng.
         const cur = el.getURL();
-        if (cur) {
+        // Warm-up (đang ở trang cha để bơm sessionStorage): chưa phải trang
+        // người dùng bấm — không ghi lịch sử, không báo lên chủ khung.
+        if (cur && !warmingRef.current) {
           setLiveUrl(cur);
           onUrlChangeRef.current?.(cur);
           // Ghi lịch sử ngay khi biết URL thật (sau mọi redirect SSO). Tiêu đề
@@ -198,6 +235,102 @@ export default function LinkViewer({
       el.removeEventListener('did-navigate-in-page', syncNav);
       el.removeEventListener('did-fail-load', onFail as EventListener);
     };
+  }, []);
+
+  /**
+   * TAB MỞ TỪ LIÊN KẾT: dựng lại ngữ cảnh tab cha rồi mới đi tới trang đích.
+   *
+   * Ba bước, đúng thứ tự — thứ tự là toàn bộ vấn đề:
+   *   1. `src` đã tải TRANG CHA (xem <webview src>) → guest đang đứng đúng
+   *      origin, `sessionStorage` ghi được;
+   *   2. chép sessionStorage của tab cha vào;
+   *   3. `loadURL(url, { httpReferrer })` sang trang đích.
+   *
+   * Vì sao không bơm thẳng ở trang đích cho gọn: đã đo bằng harness Electron —
+   * bơm ở `did-start-loading` của trang đích thì script của trang đã chạy
+   * trước, `sessionStorage.getItem` trả `null`, tức đúng cái lỗi cần sửa. Phải
+   * bơm khi guest CÒN ở trang cha.
+   *
+   * Chạy đúng một lần: sau bước 3 người dùng tự do điều hướng, bơm lại là ghi
+   * đè lên sessionStorage mà chính trang đó vừa dựng.
+   *
+   * Hỏng ở bất kỳ bước nào cũng vẫn phải tới được trang đích — thà mất bộ lọc
+   * còn hơn kẹt ở trang cha, vì lúc đó người dùng nhìn thấy MỘT TRANG KHÁC hẳn
+   * trang họ vừa bấm.
+   */
+  const openerDoneRef = useRef(false);
+  // Bật cờ warm-up NGAY khi dựng component (không đợi effect chạy): `<webview
+  // src>` đã bắt đầu tải trang cha từ lần render đầu, và `dom-ready` của nó có
+  // thể tới trước cả effect — lúc đó syncNav sẽ kịp ghi nhầm trang cha.
+  if (opener && !openerDoneRef.current) warmingRef.current = true;
+
+  useEffect(() => {
+    if (!opener || openerDoneRef.current) return;
+    openerDoneRef.current = true;
+    const el = ref.current;
+    // Không có guest thì không bao giờ có bước warm-up — gỡ cờ, nếu không
+    // lịch sử của tab này im lặng vĩnh viễn.
+    if (!el) { warmingRef.current = false; return; }
+    // Trang cha CHÍNH LÀ trang đích (bấm link tự trỏ về mình): `src` đã tải
+    // đúng chỗ rồi, chỉ cần bơm, không điều hướng thêm.
+    const same = sameUrl(opener.url, url);
+
+    const go = () => {
+      // Tắt cờ TRƯỚC khi điều hướng: từ đây trở đi mọi sự kiện đều thuộc về
+      // trang đích, phải được ghi lịch sử và báo lên chủ khung như thường.
+      warmingRef.current = false;
+      try {
+        void el.loadURL(url, { httpReferrer: opener.url }).catch(() => {});
+      } catch { /* guest vừa bị huỷ */ }
+    };
+
+    const onReady = () => {
+      el.removeEventListener('dom-ready', onReady);
+      const restore = async () => {
+        if (opener.session.length) {
+          try {
+            await el.executeJavaScript(
+              `(() => { try { for (const [k, v] of ${JSON.stringify(opener.session)}) `
+              + `sessionStorage.setItem(k, v); } catch { /* origin chặn storage */ } })()`,
+              false,
+            );
+          } catch { /* guest chưa sẵn sàng — vẫn phải đi tiếp */ }
+        }
+        // Cha ≡ đích: không điều hướng nữa, nhưng vẫn phải rời trạng thái
+        // warm-up — trang đang hiện CHÍNH LÀ trang người dùng bấm.
+        if (same) {
+          warmingRef.current = false;
+          // Không còn điều hướng nào nữa nên `syncNav` sẽ không tự bắn lại —
+          // tự báo một lần, nếu không tab này vắng mặt trong lịch sử.
+          try {
+            const cur = el.getURL();
+            if (cur) {
+              setLiveUrl(cur);
+              onUrlChangeRef.current?.(cur);
+              if (histRef.current && cur !== loggedRef.current) {
+                loggedRef.current = cur;
+                let t = '';
+                try { t = el.getTitle?.() ?? ''; } catch { /* chưa attach */ }
+                historyVisit(cur, t && t !== cur ? t : '');
+              }
+            }
+          } catch { /* guest vừa bị huỷ */ }
+        }
+        else go();
+      };
+      void restore();
+    };
+
+    // dom-ready của TRANG CHA. Có thể đã bắn trước khi effect kịp gắn listener
+    // (guest attach và tải rất nhanh với trang đã cache) → dò trạng thái hiện
+    // tại trước, đúng cách mà effect nav ở trên phòng cùng tình huống.
+    let already = false;
+    try { already = !!el.getURL() && !el.isLoading?.(); } catch { /* chưa attach */ }
+    if (already) onReady();
+    else el.addEventListener('dom-ready', onReady);
+    return () => el.removeEventListener('dom-ready', onReady);
+    // Chỉ mount: `url`/`opener` của một tab không đổi trong đời tab.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Electron bug: hủy <webview> đang giữ focus xong host vẫn tưởng guest giữ
@@ -1117,7 +1250,14 @@ export default function LinkViewer({
           <webview
             ref={ref as unknown as React.Ref<HTMLElement>}
             className="ws-webview"
-            src={url}
+            /* Có tab cha → tải trang CHA trước, không phải `url` đích.
+               sessionStorage chỉ ghi được khi guest đã ở ĐÚNG origin, mà
+               `src` là thứ chạy sớm nhất (attach là tải ngay, không kịp chen
+               vào). Nên lần đầu ta cố ý ghé qua trang cha để giành lấy origin,
+               bơm xong mới đi tiếp — xem effect `opener` ở trên. Đã đo: bơm ở
+               did-start-loading của chính trang đích là MUỘN, trang đọc
+               sessionStorage ra null. */
+            src={opener?.url || url}
             partition={partition}
             style={dtInset}
             {...webviewAttrs}

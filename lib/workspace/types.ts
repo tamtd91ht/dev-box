@@ -177,8 +177,14 @@ export interface WorkspaceBridge {
    *  do defaultTargetFor() quyết định. Optional: preload cũ chưa expose. */
   onOpenInApp?(cb: (url: string) => void): () => void;
   /** Link target=_blank bấm TRONG tab Browser → mở thành tab mới ngay trong tab
-   *  Browser (giữ phiên của profile). Optional: preload cũ chưa expose. */
-  onOpenInBrowserTab?(cb: (url: string) => void): () => void;
+   *  Browser (giữ phiên của profile). Optional: preload cũ chưa expose.
+   *
+   *  `opener` = URL của TAB CHA và `session` = sessionStorage của nó (rỗng nếu
+   *  main cũ hơn không gửi, hoặc origin chặn storage): tab mới dùng để dựng lại
+   *  Referer + sessionStorage — xem `TabOpener` trong LinkViewer. */
+  onOpenInBrowserTab?(
+    cb: (p: { url: string; opener: string; session: [string, string][] }) => void,
+  ): () => void;
   /** Ctrl+click / chuột giữa trong tab Links hay viewer Google → mở thành tab
    *  mới (chạy nền) trong tab Links. Optional: preload cũ chưa expose. */
   onOpenInLinksTab?(cb: (url: string) => void): () => void;
@@ -263,7 +269,12 @@ export interface WebviewElement extends HTMLElement {
   canGoForward(): boolean;
   getURL(): string;
   getTitle(): string;
-  loadURL(url: string): Promise<void>;
+  /** Guest còn đang tải trang không. */
+  isLoading(): boolean;
+  /** `options.httpReferrer` đặt header Referer cho request — tab mở từ link
+   *  trong trang phải mang Referer của trang cha, nếu không nhiều trang coi là
+   *  truy cập trực tiếp và đá về trang mặc định. */
+  loadURL(url: string, options?: { httpReferrer?: string }): Promise<void>;
   openDevTools(): void;
   closeDevTools(): void;
   /** Id webContents của guest — chìa khoá ghép cặp với các kênh devtools:*.

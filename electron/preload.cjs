@@ -83,9 +83,19 @@ contextBridge.exposeInMainWorld('workspace', {
   },
   /** Link target=_blank / window.open bấm TRONG một tab của tab Browser → mở
    *  thành tab mới ngay trong tab Browser (giữ phiên đăng nhập của profile).
+   *
+   *  Payload là `{ url, opener, session }` — `opener` là URL của TAB CHA và
+   *  `session` là sessionStorage của nó, để tab mới dựng lại Referer +
+   *  sessionStorage (xem prop `opener` của LinkViewer). Vẫn nhận dạng chuỗi
+   *  trần để không vỡ nếu main cũ hơn.
+   *
    *  Trả về hàm hủy đăng ký. */
   onOpenInBrowserTab: (cb) => {
-    const handler = (_evt, url) => cb(url);
+    const handler = (_evt, payload) => cb(
+      typeof payload === 'string'
+        ? { url: payload, opener: '', session: [] }
+        : { url: '', opener: '', session: [], ...(payload || {}) },
+    );
     ipcRenderer.on('workspace:openInBrowserTab', handler);
     return () => ipcRenderer.removeListener('workspace:openInBrowserTab', handler);
   },

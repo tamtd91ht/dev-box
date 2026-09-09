@@ -18,7 +18,7 @@ import {
 import BrowserExtensions from './BrowserExtensions';
 import BrowserExtBar from './BrowserExtBar';
 import BookmarkBar from './BookmarkBar';
-import LinkViewer from './LinkViewer';
+import LinkViewer, { type TabOpener } from './LinkViewer';
 import PasswordManager from './PasswordManager';
 import DupTabDialog, { tabUrlKey } from './DupTabDialog';
 import { onOpenUrl } from '@/lib/openTarget';
@@ -30,7 +30,14 @@ import {
 } from '@/lib/browserSession';
 import { usePopupOverWebview } from '@/lib/useOverWebview';
 
-interface Tab { id: string; name: string; url: string; profile?: string; partition: string; creds?: { username?: string; password?: string } }
+interface Tab {
+  id: string; name: string; url: string; profile?: string; partition: string;
+  creds?: { username?: string; password?: string };
+  /** Tab này mở từ liên kết trong tab khác → ngữ cảnh tab cha (Referer +
+   *  sessionStorage) để trang đích không mất bộ lọc/phân trang. Xem `TabOpener`
+   *  trong LinkViewer. Chỉ dùng cho lần tải đầu của tab. */
+  opener?: TabOpener;
+}
 
 /** Chuột phải trên một dấu trang → menu ngữ cảnh tại toạ độ con trỏ. */
 interface Ctx { x: number; y: number; bm: Bookmark }
@@ -260,6 +267,7 @@ export default function BrowserTabWorkspace() {
    */
   const openTab = useCallback((rawUrl: string, opts: {
     name?: string; profile?: string; creds?: Tab['creds']; background?: boolean; forceNew?: boolean;
+    opener?: TabOpener;
   } = {}) => {
     const url = normalizeUrl(rawUrl);
     if (!url) return;
@@ -287,7 +295,10 @@ export default function BrowserTabWorkspace() {
 
     const id = `tab-${++tabSeqRef.current}`;
     recentOpenRef.current = { key, at: Date.now(), id };
-    setTabs((cur) => [...cur, { id, name: opts.name || hostOf(url), url, profile: prof, partition, creds: opts.creds }]);
+    setTabs((cur) => [...cur, {
+      id, name: opts.name || hostOf(url), url, profile: prof, partition, creds: opts.creds,
+      opener: opts.opener,
+    }]);
     // Tab mới ở chế độ background: giữ nguyên tab đang xem, trừ khi chưa có
     // tab nào nổi thì đưa lên cho khỏi bấm mò.
     //
@@ -309,9 +320,16 @@ export default function BrowserTabWorkspace() {
   // Profile lấy theo tab đang hoạt động để tab con dùng chung phiên đăng nhập.
   useEffect(() => {
     if (!window.workspace?.onOpenInBrowserTab) return;
-    return window.workspace.onOpenInBrowserTab((u) => {
+    return window.workspace.onOpenInBrowserTab(({ url, opener, session }) => {
       const from = tabsRef.current.find((t) => t.id === activeRef.current);
-      openTab(u, { profile: from?.profile, background: true });
+      // Ngữ cảnh tab cha (main.cjs đọc sẵn): tab con dựng lại Referer +
+      // sessionStorage, nếu không thì trang phân trang/bộ lọc mở ra rỗng.
+      // Không có `opener` (main cũ) → mở như trước, chỉ mất phần khôi phục.
+      openTab(url, {
+        profile: from?.profile,
+        background: true,
+        opener: opener ? { url: opener, session: session ?? [] } : undefined,
+      });
     });
   }, [openTab]);
 
@@ -356,6 +374,11 @@ export default function BrowserTabWorkspace() {
       ...src,
       id: `tab-${++tabSeqRef.current}`,
       creds: undefined,
+      // KHÔNG chép `opener`: đó là ngữ cảnh của lần mở ĐẦU tiên (ghé trang cha
+      // để lấy sessionStorage rồi mới sang trang đích). Nhân đôi là "mở lại
+      // đúng trang đang xem" — mang theo opener thì bản sao lại vòng qua trang
+      // cha một lần nữa, và bơm đè sessionStorage cũ lên trang hiện tại.
+      opener: undefined,
     };
     // Mốc "vừa mở" cho khoá của bản sao: openTab dùng recentOpenRef để nhận ra
     // event phát lặp — không đặt thì một cú openTab cùng URL ngay sau đó lại
@@ -1158,6 +1181,7 @@ const BrowserTab = memo(function BrowserTab({ tab, hidden, onClose, onSaveBookma
       passwordManager
       addressBar
       history
+      opener={tab.opener}
       onOpenNewTab={openNew}
       onUrlChange={track}
       onClose={close}

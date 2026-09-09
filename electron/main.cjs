@@ -241,6 +241,47 @@ const CONTROLLABLE_PARTITION = (p) =>
 const POPUP_STUB_TTL_MS = 10_000;
 
 /**
+ * Bao renderer mo URL thanh TAB MOI trong tab Browser, KEM NGU CANH TAB CHA.
+ *
+ * Vi sao khong gui moi URL tran: tab moi la mot <webview> hoan toan moi, nen no
+ * khong co gi cua tab cha — khong Referer, khong sessionStorage. Rat nhieu trang
+ * giu bo loc / so trang trong sessionStorage roi doc lai o trang sau; mat no thi
+ * bam sang trang 2 ra ket qua rong, hoac trang coi la truy cap truc tiep va da
+ * ve trang mac dinh. Doc san o day roi gui kem, LinkViewer dung lai truoc khi
+ * trang dich chay (xem prop `opener` cua LinkViewer).
+ *
+ * `sessionStorage` phai doc TAI DAY, luc guest cha con dang o dung trang do —
+ * mot nhip sau la nguoi dung co the da dieu huong di.
+ *
+ * Doc that bai (origin chan storage, guest vua chet) thi van gui URL: mat bo loc
+ * con hon khong mo duoc tab.
+ */
+function sendOpenInBrowserTab(win, guest, url) {
+  const openerUrl = (() => {
+    try { return guest.getURL() || ''; } catch { return ''; }
+  })();
+  const send = (session) => {
+    if (win.isDestroyed()) { shell.openExternal(url); return; }
+    win.webContents.send('workspace:openInBrowserTab', { url, opener: openerUrl, session });
+    log('OpenInBrowserTab', `${url} · ss=${session.length}`);
+  };
+  // `sessionStorage` la cua MAIN FRAME cua tab cha — link bam trong iframe van
+  // lay storage cua trang chu, dung nhu trinh duyet that.
+  //
+  // try/catch DONG BO bao ngoai .catch(): guest da bi huy thi executeJavaScript
+  // nem ngay tai cho, khong tra ve promise nao de bat — khong bao la ca cu mo
+  // tab im lang khong xay ra.
+  try {
+    guest
+      .executeJavaScript('(() => { try { return Object.entries(sessionStorage); } catch { return []; } })()', false)
+      .then((entries) => send(Array.isArray(entries) ? entries : []))
+      .catch(() => send([]));
+  } catch {
+    send([]);
+  }
+}
+
+/**
  * Hai host co cung "domain dang ky" (bo subdomain) → coi la CUNG MOT APP.
  * chat.zalo.me vs id.zalo.me → cung zalo.me. Tho nhung du: chi dung de phan biet
  * "URL cua chinh app nay" voi "link nguoi ta gui trong tin nhan".
@@ -1088,9 +1129,24 @@ function wireWebviewHardening(win) {
         //
         // Gui thang 'workspace:openInBrowserTab' (khong qua askOpenTarget) vi
         // o day khong con gi de hoi: nguoi dung dang O TRONG tab Browser.
+        //
+        // GUI KEM URL CUA TAB CHA (`opener`) — khong phai URL tran nhu truoc.
+        // Tab moi o day la mot <webview> HOAN TOAN MOI: khong opener, khong
+        // Referer, khong sessionStorage cua tab cha. Rat nhieu trang co phan
+        // trang / bo loc giu trang thai o sessionStorage roi doc lai o trang
+        // sau; mat no thi bam sang trang 2 ra ket qua rong hoac bi da ve trang
+        // mac dinh. LinkViewer dung `opener` de dung lai hai thu lay lai duoc:
+        // Referer va sessionStorage (xem prop `opener` cua LinkViewer).
+        //
+        // window.opener THAT thi KHONG the giu: cua so con do window.open sinh
+        // ra co du opener + sessionStorage, nhung Electron 43 khong cho gan no
+        // vao khung tab — `new WebContentsView({ webContents })` luon nem
+        // "options.webContents is already attached to a window" (da do bang
+        // harness, ca khi tab la <webview> lan khi tab la WebContentsView).
+        // Duong duy nhat giu opener song la de no lam cua so OS rieng, tuc
+        // khong con la tab nua.
         if (!win.isDestroyed()) {
-          win.webContents.send('workspace:openInBrowserTab', url);
-          log('OpenInBrowserTab', url);
+          sendOpenInBrowserTab(win, guest, url);
         } else {
           shell.openExternal(url);
         }
@@ -1245,8 +1301,9 @@ function wireWebviewHardening(win) {
           label: '⊞ Mở liên kết trong tab mới',
           click: () => {
             if (win.isDestroyed()) { shell.openExternal(params.linkURL); return; }
-            win.webContents.send('workspace:openInBrowserTab', params.linkURL);
-            log('OpenInBrowserTab', params.linkURL);
+            // Kem ngu canh tab cha nhu nhanh window.open o tren — chuot phai
+            // "mo trong tab moi" cung phai giu duoc bo loc/phan trang.
+            sendOpenInBrowserTab(win, guest, params.linkURL);
           },
         }] : []),
         ...(params.linkURL ? [{
