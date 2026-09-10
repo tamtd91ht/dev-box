@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Tab Git: project trỏ THẲNG vào một repo — bản thân project là repo, không cần repo con.**
+  Trước đây một project bắt buộc phải là thư mục CHỨA các repo: quét repo chỉ nhìn thư mục con
+  trực tiếp, mà một repo thì không chứa repo con nào, nên trỏ project vào chính repo (mono-repo,
+  hay một service lẻ như `dev-box`) là tab Git trắng trơn — không lỗi, không thông báo, không có
+  cách nào đoán ra là do trỏ sai kiểu. Giờ khi root chính là gốc working tree, danh sách repo trả
+  về đúng một mục là chính project đó, nên toàn bộ phần còn lại của tool (dropdown repo, kiểm tra
+  trạng thái tất cả, pull tất cả, commit/push, manifest) chạy y như một project có duy nhất một
+  repo con — không phải học thêm khái niệm nào.
+  Chi tiết đáng lưu ý:
+  - **Chỉ nhận GỐC repo, không nhận thư mục con.** `--is-inside-work-tree` trả true cho cả
+    `repo/src/lib`, nếu dùng nó thì trỏ project vào một subfolder cũng "đỗ" rồi mọi lệnh git
+    lặng lẽ chạy lên repo CHA với đường dẫn hiện ra sai. So `--show-toplevel` với root mới kết luận.
+  - **Ẩn Clone/Tạo repo ở project loại này** (và chặn cả ở server, không chỉ ẩn nút): thư mục đích
+    sẽ nằm BÊN TRONG working tree đang mở, repo mới hiện ra thành file lạ của repo cha chứ không
+    thành repo ngang hàng. Thông báo lỗi chỉ đúng việc cần làm: thêm project trỏ tới thư mục CHỨA repo.
+  - **Repo lồng repo** (submodule đã init) ưu tiên coi root là repo và bỏ qua con — submodule có
+    vòng đời do repo cha quản lý, hiện chúng thành repo ngang hàng chỉ dẫn tới commit/push lẫn nhau.
+  - **Manifest không báo khống.** Với project-là-repo, tên folder khác nhau giữa các máy
+    (`dev-box` vs `vhs-dev-box`) mà vẫn là đúng repo đó; so theo tên sẽ báo cùng lúc "thiếu 1" và
+    "dư 1" trong khi chẳng thiếu gì, nên entry được đánh dấu `self` và đối chiếu theo "root đã là
+    repo hay chưa".
+  Kiểm bằng `npm run check:selfrepo` (repo thật dựng bằng `git init`, canh đủ 5 ca: thư mục chứa
+  repo, root là repo, thư mục con trong repo, repo lồng repo, thư mục rỗng/không tồn tại).
+
 ### Changed
 
 - **Desktop shell mặc định chạy server production (`next build` + `next start`) thay vì `next dev`

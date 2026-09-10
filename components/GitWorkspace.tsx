@@ -143,6 +143,11 @@ export default function GitWorkspace() {
   // Create dialog — creates a NEW GitLab project, then clones it into that root.
   const [createOpen, setCreateOpen] = useState(false);
   const [repos, setRepos] = useState<RepoInfo[]>([]);
+  /** Project được trỏ THẲNG vào một repo (root chính là working tree) — repo duy
+   *  nhất trong dropdown là chính project. Ẩn Clone/Tạo repo: chúng clone vào
+   *  BÊN TRONG root, tức vào giữa repo đang mở (server cũng chặn, xem
+   *  resolveTargetProject trong app/api/git/route.ts). */
+  const [selfRepo, setSelfRepo] = useState(false);
   const [reposLoading, setReposLoading] = useState(false);
   const [repo, setRepo] = useState<string>('');
   const [status, setStatus] = useState<RepoStatus | null>(null);
@@ -248,14 +253,16 @@ export default function GitWorkspace() {
   const loadRepos = useCallback(async (projectId: string) => {
     if (!projectId) {
       setRepos([]);
+      setSelfRepo(false);
       setRepo('');
       return;
     }
     setReposLoading(true);
     try {
-      const r = await gitAction<{ repos: RepoInfo[] }>('repos', { projectId });
+      const r = await gitAction<{ repos: RepoInfo[]; selfRepo?: boolean }>('repos', { projectId });
       if (projectRef.current !== projectId) return; // stale project switch
       setRepos(r.repos);
+      setSelfRepo(!!r.selfRepo);
       let initial = '';
       try {
         initial = readLocal(LAST_REPO_KEY + ':' + projectId) ?? '';
@@ -267,6 +274,7 @@ export default function GitWorkspace() {
     } catch {
       if (projectRef.current !== projectId) return;
       setRepos([]);
+      setSelfRepo(false);
       setRepo('');
     } finally {
       if (projectRef.current === projectId) setReposLoading(false);
@@ -760,27 +768,40 @@ export default function GitWorkspace() {
           className="small"
           style={{ color: 'var(--muted)', marginTop: -6, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}
         >
-          <span style={{ fontFamily: 'var(--mono)' }} title="thư mục gốc của project này">
-            📁 {activeProject.root}
-            {reposLoading ? ' · đang quét repo…' : ` · ${repos.length} repo`}
+          <span
+            style={{ fontFamily: 'var(--mono)' }}
+            title={selfRepo ? 'project này chính là một repo' : 'thư mục gốc của project này'}
+          >
+            {selfRepo ? '⎇' : '📁'} {activeProject.root}
+            {reposLoading
+              ? ' · đang quét repo…'
+              : selfRepo
+                ? ' · project này chính là repo'
+                : ` · ${repos.length} repo`}
           </span>
           <span style={{ flex: 1 }} />
-          <button
-            className="ghost sm"
-            onClick={() => setCreateOpen(true)}
-            disabled={busy || !!commandRunning}
-            title={`Tạo repo mới trên GitLab rồi clone về ${activeProject.root}`}
-          >
-            ⊕ Tạo repo…
-          </button>
-          <button
-            className="ghost sm"
-            onClick={() => setCloneOpen(true)}
-            disabled={busy || !!commandRunning}
-            title={`git clone một repo về ${activeProject.root}`}
-          >
-            ⧉ Clone repo…
-          </button>
+          {/* Project-là-repo: clone/tạo repo sẽ đặt thư mục mới vào GIỮA repo đang
+              mở, nên hai nút này không có nghĩa ở đây (server chặn luôn). */}
+          {!selfRepo && (
+            <>
+              <button
+                className="ghost sm"
+                onClick={() => setCreateOpen(true)}
+                disabled={busy || !!commandRunning}
+                title={`Tạo repo mới trên GitLab rồi clone về ${activeProject.root}`}
+              >
+                ⊕ Tạo repo…
+              </button>
+              <button
+                className="ghost sm"
+                onClick={() => setCloneOpen(true)}
+                disabled={busy || !!commandRunning}
+                title={`git clone một repo về ${activeProject.root}`}
+              >
+                ⧉ Clone repo…
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -792,8 +813,9 @@ export default function GitWorkspace() {
           ) : (
             <p>
               Không tìm thấy repo git nào trong <code className="small">{activeProject?.root ?? 'thư mục này'}</code>.
-              Chọn/ thêm một project trỏ tới thư mục chứa các repo (bấm <b>Quản lý</b> phía trên), hoặc{' '}
-              <b>Clone repo…</b> để tải một repo về thư mục này, hoặc <b>Tạo repo…</b> để tạo repo mới trên GitLab.
+              Chọn/ thêm một project trỏ tới thư mục chứa các repo — hoặc trỏ thẳng vào MỘT repo, khi đó
+              project chính là repo đó (bấm <b>Quản lý</b> phía trên). Hoặc <b>Clone repo…</b> để tải một
+              repo về thư mục này, hoặc <b>Tạo repo…</b> để tạo repo mới trên GitLab.
             </p>
           )}
         </div>
@@ -2573,7 +2595,8 @@ function ProjectTabs({
                 thật trên máy (xem lib/gitProjects) — câu "phải nằm trong…" cũ
                 làm người dùng tưởng không thêm được project ở ổ/nhánh khác. */}
             <div className="small" style={{ color: 'var(--muted)', marginBottom: 6 }}>
-              {editingId ? 'Sửa project' : 'Thêm project'} — thư mục gốc là thư mục <b>chứa các repo git</b>.
+              {editingId ? 'Sửa project' : 'Thêm project'} — thư mục gốc là thư mục <b>chứa các repo git</b>,
+              hoặc trỏ thẳng vào <b>một repo</b> (khi đó project chính là repo đó, không có repo con).
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <input

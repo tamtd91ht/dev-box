@@ -27,7 +27,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { configPath } from './configDir';
-import { detectRepos, remoteUrl } from './gitCore';
+import { detectRepos, isSelfRepo, remoteUrl } from './gitCore';
 import { listProjects, type GitProject } from './gitProjects';
 
 /** Một repo trong manifest — đủ để clone lại trên máy khác. */
@@ -36,6 +36,16 @@ export interface ManifestRepo {
   path: string;
   /** Remote origin URL, đã strip credential. '' khi repo không có origin. */
   url: string;
+  /**
+   * true khi project này CHÍNH LÀ repo (root trỏ thẳng vào working tree) chứ
+   * không phải thư mục chứa nhiều repo.
+   *
+   * Với entry như vậy `path` chỉ là tên folder trên máy đã đồng bộ manifest — và
+   * tên đó KHÁC nhau giữa các máy (`dev-box` vs `vhs-dev-box`), nên nó không
+   * dùng được để đối chiếu. Cờ này để manifestStatus biết mà so theo "root có
+   * phải repo không" thay vì so tên folder, tránh báo missing/extra khống.
+   */
+  self?: boolean;
 }
 
 /** Một project trong manifest. Khớp với project local theo `name`. */
@@ -100,7 +110,7 @@ export async function readManifest(): Promise<ManifestProject[]> {
         // Chỉ nhận folder name một segment — manifest được commit nên có thể do
         // người khác sửa tay; một "../.." ở đây sẽ thành đích clone.
         .filter((r) => r.path === path.basename(r.path) && r.path !== '.' && r.path !== '..')
-        .map((r) => ({ path: r.path, url: sanitizeRemote(r.url) })),
+        .map((r) => ({ path: r.path, url: sanitizeRemote(r.url), ...(r.self ? { self: true } : {}) })),
     }));
 }
 
@@ -115,11 +125,12 @@ async function writeManifest(projects: ManifestProject[]): Promise<void> {
  * này có repo tên X"), và UI sẽ báo là không clone lại được.
  */
 async function scanProject(project: GitProject): Promise<ManifestProject> {
-  const repos = await detectRepos(project.root);
+  const [repos, self] = await Promise.all([detectRepos(project.root), isSelfRepo(project.root)]);
   const entries = await Promise.all(
     repos.map(async (r) => ({
       path: r.name,
       url: sanitizeRemote((await remoteUrl(r.path)) ?? ''),
+      ...(self ? { self: true } : {}),
     })),
   );
   return { name: project.name, repos: entries };
@@ -191,7 +202,24 @@ export interface ManifestStatus {
 export async function manifestStatus(project: GitProject): Promise<ManifestStatus> {
   const manifest = await readManifest();
   const entry = manifest.find((p) => p.name === project.name);
-  const onDisk = new Set((await detectRepos(project.root)).map((r) => r.name));
+  const [detected, self] = await Promise.all([detectRepos(project.root), isSelfRepo(project.root)]);
+  const onDisk = new Set(detected.map((r) => r.name));
+
+  // PROJECT LÀ CHÍNH REPO — không đối chiếu theo tên folder được. Manifest ghi
+  // tên folder của máy đã đồng bộ (`dev-box`), máy khác clone ra tên khác
+  // (`vhs-dev-box`) mà vẫn là ĐÚNG repo đó; so tên sẽ báo cùng lúc "thiếu 1" và
+  // "dư 1" trong khi chẳng thiếu gì. Với loại này câu hỏi duy nhất là root đã là
+  // repo hay chưa, và detectRepos đã trả lời: có repo = đủ, không = thiếu.
+  const selfEntry = entry?.repos.find((r) => r.self);
+  if (selfEntry || self) {
+    const listedSelf = selfEntry ?? null;
+    return {
+      present: !!entry || manifest.length > 0,
+      total: listedSelf ? 1 : 0,
+      missing: listedSelf && !self ? [{ path: listedSelf.path, url: listedSelf.url }] : [],
+      extra: !listedSelf && self ? [...onDisk] : [],
+    };
+  }
 
   if (!entry) {
     return { present: manifest.length > 0, total: 0, missing: [], extra: [...onDisk].sort() };

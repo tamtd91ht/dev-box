@@ -102,6 +102,32 @@ async function isGitRepo(dir: string): Promise<boolean> {
 }
 
 /**
+ * True khi `dir` là GỐC của working tree, không phải một thư mục con nằm trong
+ * repo. `--is-inside-work-tree` trả true cho cả `repo/src/lib`, nên nó KHÔNG
+ * dùng được cho câu hỏi "root của project có phải chính là một repo không":
+ * trỏ project vào `omicx/some-service/src` sẽ đỗ, rồi mọi lệnh git sau đó chạy
+ * trên repo cha với đường dẫn hiển thị sai. `--show-toplevel` trả về gốc thật,
+ * so lại với `dir` mới kết luận được.
+ *
+ * So sánh sau khi resolve + hạ chữ thường trên Windows: git in ra `E:/vihat/...`
+ * (forward slash) còn `dir` là `E:\vihat\...`, và ổ đĩa có thể khác hoa/thường.
+ */
+async function isRepoRoot(dir: string): Promise<boolean> {
+  let top: string;
+  try {
+    top = (await git(dir, ['rev-parse', '--show-toplevel'])).trim();
+  } catch {
+    return false;
+  }
+  if (!top) return false;
+  const norm = (v: string) => {
+    const abs = path.resolve(v);
+    return process.platform === 'win32' ? abs.toLowerCase() : abs;
+  };
+  return norm(top) === norm(dir);
+}
+
+/**
  * The repo's `origin` remote URL, or null when it has none (a repo created with
  * `git init` and never pushed). Never throws — callers treat "no remote" as data,
  * not an error.
@@ -115,9 +141,43 @@ export async function remoteUrl(repo: string): Promise<string | null> {
   }
 }
 
-/** Auto-detect immediate sibling directories under `root` that are git repos.
- *  Defaults to the legacy GIT_ROOT so callers that don't pass a root keep working. */
+/**
+ * True khi bản thân `root` là gốc của một repo — tức project được trỏ THẲNG vào
+ * một repo chứ không phải vào thư mục chứa nhiều repo. Xem detectRepos.
+ */
+export async function isSelfRepo(root: string = GIT_ROOT): Promise<boolean> {
+  try {
+    await fs.access(path.join(path.resolve(root), '.git'));
+  } catch {
+    return false;
+  }
+  return isRepoRoot(path.resolve(root));
+}
+
+/**
+ * Auto-detect immediate sibling directories under `root` that are git repos.
+ * Defaults to the legacy GIT_ROOT so callers that don't pass a root keep working.
+ *
+ * PROJECT LÀ CHÍNH MỘT REPO — nhiều project không phải "thư mục chứa nhiều repo"
+ * mà bản thân nó là một repo duy nhất (một mono-repo, hay một service lẻ). Trước
+ * đây trỏ project vào đó là tab Git trắng trơn: hàm này chỉ quét con trực tiếp,
+ * và một repo không chứa repo con nào cả.
+ *
+ * Cách xử lý: trả về đúng MỘT entry trỏ vào chính root. Nhờ vậy toàn bộ phần còn
+ * lại của tool (dropdown repo, status-all, pull-all, manifest, authorizeRepo —
+ * đã cho phép `resolved === root`) không cần biết đến ca này, project hiện ra y
+ * như một project có duy nhất một repo con.
+ *
+ * Trường hợp lai (root là repo VÀ có repo con bên trong, vd submodule đã init)
+ * ưu tiên coi root là repo và bỏ qua con: người trỏ project vào một repo là muốn
+ * làm việc với repo đó, còn submodule có vòng đời riêng do repo cha quản lý —
+ * hiện chúng ra thành repo ngang hàng chỉ dẫn tới commit/push lẫn nhau.
+ */
 export async function detectRepos(root: string = GIT_ROOT): Promise<RepoInfo[]> {
+  const rootAbs = path.resolve(root);
+  if (await isSelfRepo(rootAbs)) {
+    return [{ path: rootAbs, name: path.basename(rootAbs) || rootAbs }];
+  }
   let entries: string[] = [];
   try {
     const dirents = await fs.readdir(root, { withFileTypes: true });

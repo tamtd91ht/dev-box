@@ -24,7 +24,8 @@
     "check:zalo": "tsx scripts/check-zalo-extract.ts",
     "check:json-edit": "tsx scripts/check-json-edit.ts",
     "check:history": "tsx scripts/check-browser-history.ts",
-    "check:session": "tsx scripts/check-browser-session.ts"
+    "check:session": "tsx scripts/check-browser-session.ts",
+    "check:selfrepo": "tsx scripts/check-git-selfrepo.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

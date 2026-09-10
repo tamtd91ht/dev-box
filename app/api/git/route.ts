@@ -12,6 +12,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import {
   GIT_ENABLED,
   detectRepos,
+  isSelfRepo,
   authorizeRepo,
   status,
   statusAll,
@@ -73,6 +74,21 @@ async function resolveRootRequired(projectId: unknown): Promise<string> {
  * (lib/gitManifest khớp project theo name, vì id/root là thứ riêng từng máy).
  */
 async function resolveTargetProject(projectId: unknown): Promise<{ name: string; root: string }> {
+  const picked = await pickTargetProject(projectId);
+  // KHÔNG cho clone vào một project mà root chính là repo: thư mục đích sẽ nằm
+  // BÊN TRONG working tree đang mở, nên repo mới hiện ra thành file lạ của repo
+  // cha (hoặc bị .gitignore ăn mất) chứ không thành một repo ngang hàng. UI đã
+  // ẩn hai nút này, guard ở đây chặn cả request gọi trực tiếp.
+  if (await isSelfRepo(picked.root)) {
+    throw new Error(
+      `project "${picked.name}" chính là một repo (${picked.root}) — không clone thêm repo vào bên trong được. ` +
+        'Thêm một project trỏ tới thư mục CHỨA các repo rồi clone vào đó.',
+    );
+  }
+  return picked;
+}
+
+async function pickTargetProject(projectId: unknown): Promise<{ name: string; root: string }> {
   if (typeof projectId === 'string' && projectId) {
     const project = await getProject(projectId);
     if (!project) throw new Error(`unknown project: ${projectId}`);
@@ -112,7 +128,11 @@ export async function POST(req: NextRequest) {
     // default root when no projectId is supplied).
     if (action === 'repos') {
       const root = await resolveRoot(body.projectId);
-      return NextResponse.json({ repos: await detectRepos(root) });
+      // `selfRepo`: project được trỏ THẲNG vào một repo (không phải thư mục chứa
+      // nhiều repo). Client cần biết để ẩn Clone/Tạo repo — clone vào bên trong
+      // một repo đang làm việc là sai, xem guard ở action 'clone'.
+      const [repos, selfRepo] = await Promise.all([detectRepos(root), isSelfRepo(root)]);
+      return NextResponse.json({ repos, selfRepo });
     }
     if (action === 'status-all') {
       const root = await resolveRoot(body.projectId);
