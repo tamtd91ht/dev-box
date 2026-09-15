@@ -454,8 +454,15 @@ export default function BrowserTabWorkspace() {
   /* Hai callback ổn định cho BrowserTab (React.memo). Nhận `tab` làm tham số
      thay vì bắt biến từ closure — nhờ vậy tham chiếu không đổi giữa các lần
      render, và memo mới thật sự chặn được render lại của <webview>. */
-  const openTabBackground = useCallback((url: string, tab: Tab) => {
-    openTab(url, { profile: tab.profile, background: true });
+  // Ctrl+click / chuột giữa / Shift+click trong trang → tab NỀN.
+  //
+  // `opener` PHẢI được chuyển tiếp: tab con dựng lại Referer + sessionStorage
+  // của tab cha, nếu không thì trang có bộ lọc/phân trang mở ra rỗng hoặc bị
+  // đá về mặc định. Nhánh target=_blank đã làm việc này từ f11378f; nhánh
+  // ctrl+click thì chưa, nên cùng một cú "mở liên kết liên quan" lúc được lúc
+  // không tuỳ người dùng bấm kiểu gì. Giờ hai nhánh đi chung một đường.
+  const openTabBackground = useCallback((url: string, tab: Tab, opener?: TabOpener) => {
+    openTab(url, { profile: tab.profile, background: true, opener });
   }, [openTab]);
 
   const trackUrlFromTab = useCallback((url: string, tab: Tab) => {
@@ -1160,13 +1167,16 @@ const BrowserTab = memo(function BrowserTab({ tab, hidden, onClose, onSaveBookma
   tab: Tab; hidden: boolean;
   onClose: (id: string) => void;
   onSaveBookmark: (name: string, url: string, tab: Tab) => Promise<void>;
-  onOpenNewTab: (url: string, tab: Tab) => void;
+  onOpenNewTab: (url: string, tab: Tab, opener?: TabOpener) => void;
   /** Guest điều hướng → báo lên để cha giữ `tab.url` luôn là trang ĐANG xem
    *  ("nhân đôi tab" cần đúng trang đó, không phải trang lúc mở tab). */
   onUrlChange: (url: string, tab: Tab) => void;
 }) {
   const close = useCallback(() => onClose(tab.id), [onClose, tab.id]);
-  const openNew = useCallback((u: string) => onOpenNewTab(u, tab), [onOpenNewTab, tab]);
+  const openNew = useCallback(
+    (u: string, opener?: TabOpener) => onOpenNewTab(u, tab, opener),
+    [onOpenNewTab, tab],
+  );
   const save = useCallback((name: string, url: string) => onSaveBookmark(name, url, tab), [onSaveBookmark, tab]);
   const track = useCallback((u: string) => onUrlChange(u, tab), [onUrlChange, tab]);
 

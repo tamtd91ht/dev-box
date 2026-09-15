@@ -802,6 +802,38 @@ function uniquePath(dir, file) {
 }
 
 /**
+ * BAO LOI TAI FILE CHO NGUOI DUNG THAY — khong chi ghi log terminal.
+ *
+ * VI SAO CAN: truoc day moi nhanh hong cua `will-download` deu ket thuc bang
+ * `item.cancel()` + mot dong `log(...)`. Log chay ra terminal, ma nguoi dung
+ * binh thuong KHONG mo terminal — nen bam nut tai file thi "khong co gi xay
+ * ra", khong biet tai sao, khong biet co phai minh bam hut khong. Dung mot
+ * trieu chung voi "mo lien ket khong duoc" da sua o tren: that bai im lang.
+ *
+ * Dung `dialog.showMessageBox` chu khong dung mot kenh toast rieng: main
+ * process chua co duong bao trang thai nao sang renderer (chi co cac kenh
+ * 'workspace:open*'), va dung dialog thi thong bao van hien ke ca khi renderer
+ * chua mount hay dang ket. Cung ly do da chon dialog cho Save o duoi.
+ *
+ * KHONG truyen cua so cha — cung ly do nhu `saveDialogOptions`: hop thoai modal
+ * gan vao cua so bi <webview> native che mat, ket phia sau va khong bam duoc.
+ */
+function notifyDownloadFailed(title, detail) {
+  try {
+    dialog.showMessageBox({
+      type: 'warning',
+      title: 'Tải file không thành công',
+      message: title,
+      detail,
+      buttons: ['Đóng'],
+      noLink: true,
+    }).catch(() => {});
+  } catch {
+    /* dialog khong dung duoc (app dang thoat) — da co log o noi goi */
+  }
+}
+
+/**
  * Download policy for ONE session — dùng chung cho session mặc định (UI DevBox,
  * vd nút ⬇ tab Google) lẫn partition của từng webview guest.
  *
@@ -825,8 +857,14 @@ function wireDownloadPolicy(ses, label) {
   wiredDownloadSessions.add(ses);
   ses.on('will-download', (_event, item) => {
     if (!CONFIG.allowDownload) {
-      log('DownloadBlocked', item.getFilename());
+      const blocked = item.getFilename() || 'file';
+      log('DownloadBlocked', blocked);
       item.cancel();
+      // Noi ro DANG TAT O DAU — nguoi dung tu bat lai duoc, khong phai di hoi.
+      notifyDownloadFailed(
+        `Tính năng tải file đang tắt nên "${blocked}" không được tải về.`,
+        'Bật lại: đặt "allowDownload": true trong userData/workspace.config.json rồi mở lại app.',
+      );
       return;
     }
     const file = item.getFilename() || 'download';
@@ -838,6 +876,12 @@ function wireDownloadPolicy(ses, label) {
       } catch (err) {
         log('DownloadError', err && err.message);
         item.cancel();
+        notifyDownloadFailed(
+          `Không lưu được "${file}".`,
+          `Thư mục tải về: ${dir}
+
+Lý do: ${(err && err.message) || 'không rõ'}`,
+        );
       }
       return;
     }
@@ -853,6 +897,12 @@ function wireDownloadPolicy(ses, label) {
     } catch (err) {
       log('DownloadError', err && err.message);
       item.cancel();
+      notifyDownloadFailed(
+        `Không chuẩn bị được chỗ tải tạm cho "${file}".`,
+        `Thư mục tạm: ${path.dirname(stagePath)}
+
+Lý do: ${(err && err.message) || 'không rõ'}`,
+      );
       return;
     }
     log('DownloadStaged', `${label || 'default'} · ${file}`);
@@ -879,6 +929,14 @@ function wireDownloadPolicy(ses, label) {
       if (state !== 'completed') {
         log('DownloadDone', `${file} · ${state}`);
         removeQuietly(stagePath);
+        // Nguoi dung DA chon cho luu roi moi hong — im lang o day la te nhat:
+        // ho se ra thu muc do tim mot file khong bao gio toi.
+        notifyDownloadFailed(
+          `Tải "${file}" không xong.`,
+          state === 'interrupted'
+            ? 'Kết nối bị ngắt giữa chừng. Thử tải lại.'
+            : `Trạng thái: ${state}`,
+        );
         return;
       }
       try {
@@ -887,12 +945,26 @@ function wireDownloadPolicy(ses, label) {
         shell.showItemInFolder(filePath);
       } catch (err) {
         log('DownloadError', `${file} · ${err && err.message}`);
+        // File tai XONG nhung khong chuyen sang cho nguoi dung chon duoc (o dia
+        // day, khong co quyen ghi, file dang bi mo...). Bao ro — va giu file tam
+        // lai, khong `removeQuietly`, de con cuu duoc.
+        notifyDownloadFailed(
+          `Đã tải xong "${file}" nhưng không lưu được vào chỗ bạn chọn.`,
+          `Chỗ chọn: ${filePath}
+Bản tạm còn ở: ${stagePath}
+
+Lý do: ${(err && err.message) || 'không rõ'}`,
+        );
       }
     }).catch(async (err) => {
       log('DownloadError', err && err.message);
       item.cancel();
       await finished.catch(() => {});
       removeQuietly(stagePath);
+      notifyDownloadFailed(
+        `Không tải được "${file}".`,
+        `Lý do: ${(err && err.message) || 'không rõ'}`,
+      );
     });
   });
 }
@@ -1102,7 +1174,23 @@ function wireWebviewHardening(win) {
     // voi link dung mot lan / link xac nhan qua email — nhung PHAI SONG mot luc,
     // xem POPUP_STUB_TTL_MS.
     guest.setWindowOpenHandler(({ url, disposition }) => {
-      if (!/^https?:\/\//i.test(url)) return { action: 'deny' };
+      if (!/^https?:\/\//i.test(url)) {
+        // mailto: / tel: / msteams: ... — Chrome giao cho HE DIEU HANH mo bang
+        // app tuong ung. Truoc day 'deny' tran o day nuot im lang: bam vao mot
+        // dia chi email trong trang thi KHONG CO GI xay ra, khong bao loi, dung
+        // trieu chung "mo lien ket khong duoc".
+        //
+        // Chan lai dung hai thu that su nguy hiem: javascript: (chay code trong
+        // ngu canh trang) va data: (duong quen de nhet HTML gia mao). Con lai
+        // day sang OS — no la ben quyet dinh mo bang gi, giong het Chrome.
+        if (!/^(javascript|data|blob|file):/i.test(url)) {
+          shell.openExternal(url).catch(() => {});
+          log('OpenExternalScheme', url.slice(0, 120));
+        } else {
+          log('OpenBlockedScheme', url.slice(0, 120));
+        }
+        return { action: 'deny' };
+      }
 
       if (isWorkspaceApp) {
         // URL CUA CHINH APP (zalo.me → zalo.me): day la app tu dieu huong, dien
@@ -2039,6 +2127,79 @@ function createWindow() {
     }
     return { action: 'deny' };
   });
+
+  // ── CHOT CUOI: khung app KHONG BAO GIO duoc dieu huong di noi khac ─────────
+  //
+  // TRIEU CHUNG NGUOI DUNG GAP: bam mot lien ket thi "ca trang bi F5", moi tab
+  // Browser dang mo bien mat. Do la vi khung app (trang Next.js) bi dieu huong
+  // THAT sang URL do — React state mat sach, moi <webview> bi huy theo.
+  //
+  // VI SAO setWindowOpenHandler O TREN KHONG DU: no CHI bat window.open /
+  // target=_blank. Mot dieu huong TOP-LEVEL cung khung (`<a href>` khong co
+  // target, form submit, location.assign, keo tha mot URL vao cua so) khong he
+  // di qua no. Truoc chot nay khong co gi chan duong do — da do: win.webContents
+  // chi co dung mot handler 'did-finish-load'.
+  //
+  // Chot o TANG ELECTRON chu khong di vá tung `<a onClick preventDefault>` trong
+  // React: cac cho do da co san va van sot (vi du components/ResponseView.tsx
+  // `<a href={url}>audio</a>` khong target khong onClick). Vá tung cho la tro
+  // duoi bat, chi can mot cho moi quen la loi quay lai. Chan o day thi MOI
+  // duong deu quy ve mot moi — dung cung ly le da dung cho popup extension
+  // (xem guest.on('will-navigate') o tren).
+  //
+  // Dieu huong NOI BO cua chinh app (APP_URL) van cho qua: reload that, chuyen
+  // route, HardReloadButton... deu phai chay binh thuong.
+  // Chi CHINH APP moi duoc phep thay the khung. Moi thu khac deu bi chan:
+  // http(s) ra ngoai, va ca `file:` — keo tha mot FILE vao vung trong cua giao
+  // dien la Chromium dieu huong ca khung sang file do, mat sach app. Splash
+  // (`data:`) va `about:blank` la trang thai noi bo cua chinh khung nen cho qua.
+  const isAppUrl = (u) => {
+    const str = String(u || '');
+    if (/^about:blank/i.test(str) || /^data:/i.test(str)) return true;
+    try {
+      return new URL(str).origin === new URL(APP_URL).origin;
+    } catch {
+      // Khong phan giai duoc thi coi nhu khong phai app — chan cho chac.
+      return false;
+    }
+  };
+  const keepAppPut = (e, url) => {
+    if (isAppUrl(url)) return;
+    e.preventDefault();
+    // Khong nuot lien ket: day no vao dung duong ma window.open dang dung, nen
+    // nguoi dung van thay trang mo ra (tab Browser / tab Links theo
+    // defaultTargetFor), chi khac la khung app khong bi keo di.
+    if (/^https?:\/\//i.test(url)) {
+      try {
+        win.webContents.send('workspace:openInApp', url);
+        log('NavGuard', `chan dieu huong khung app → mo trong app: ${url.slice(0, 120)}`);
+      } catch {
+        shell.openExternal(url);
+        log('NavGuard', `chan dieu huong khung app → mo ngoai: ${url.slice(0, 120)}`);
+      }
+    } else if (/^(mailto|tel|sms|callto|msteams|zoommtg):/i.test(url)) {
+      // mailto:/tel:/... — Chrome giao cho HE DIEU HANH mo bang app tuong ung.
+      // Liet ke TUONG MINH chu khong phai "moi thu khong phai http": mot cu
+      // keo tha file vao cua so cung roi vao nhanh nay, va `shell.openExternal`
+      // mot duong dan `file:` bat ky la tu mo file tren may nguoi dung — viec
+      // ma mot cu tha nham khong duoc phep gay ra.
+      shell.openExternal(url).catch(() => {});
+      log('NavGuard', `chan dieu huong khung app → OS: ${url.slice(0, 120)}`);
+    } else {
+      // `file:` (keo tha file/thu muc vao vung trong), `blob:`, scheme la...
+      // Chan va KHONG lam gi them — khung app duoc giu nguyen, khong co file
+      // nao tu dung mo ra.
+      log('NavGuard', `chan dieu huong khung app (bo qua): ${url.slice(0, 120)}`);
+    }
+  };
+  win.webContents.on('will-navigate', keepAppPut);
+  // will-frame-navigate: iframe trong khung app (vi du form login nhung) cung
+  // khong duoc keo ca khung di. Electron >= 25; khong co thi bo qua.
+  try {
+    win.webContents.on('will-frame-navigate', (e) => {
+      if (e.isMainFrame) keepAppPut(e, e.url);
+    });
+  } catch { /* ban Electron cu khong co su kien nay */ }
 
   wireWebviewHardening(win);
 
