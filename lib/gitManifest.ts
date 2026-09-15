@@ -27,7 +27,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { configPath } from './configDir';
-import { detectRepos, isSelfRepo, remoteUrl } from './gitCore';
+import { detectRepos, remoteUrl } from './gitCore';
 import { listProjects, type GitProject } from './gitProjects';
 
 /** Một repo trong manifest — đủ để clone lại trên máy khác. */
@@ -125,12 +125,15 @@ async function writeManifest(projects: ManifestProject[]): Promise<void> {
  * này có repo tên X"), và UI sẽ báo là không clone lại được.
  */
 async function scanProject(project: GitProject): Promise<ManifestProject> {
-  const [repos, self] = await Promise.all([detectRepos(project.root), isSelfRepo(project.root)]);
+  const repos = await detectRepos(project.root);
   const entries = await Promise.all(
+    // `self` lấy theo TỪNG entry, không phải một cờ chung của project: từ khi
+    // project vừa-là-repo vừa-chứa-repo-con hiện đủ cả hai, một cờ chung sẽ
+    // đánh dấu MỌI repo con là "self" — manifest sai và đối chiếu báo khống.
     repos.map(async (r) => ({
       path: r.name,
       url: sanitizeRemote((await remoteUrl(r.path)) ?? ''),
-      ...(self ? { self: true } : {}),
+      ...(r.self ? { self: true } : {}),
     })),
   );
   return { name: project.name, repos: entries };
@@ -202,34 +205,49 @@ export interface ManifestStatus {
 export async function manifestStatus(project: GitProject): Promise<ManifestStatus> {
   const manifest = await readManifest();
   const entry = manifest.find((p) => p.name === project.name);
-  const [detected, self] = await Promise.all([detectRepos(project.root), isSelfRepo(project.root)]);
-  const onDisk = new Set(detected.map((r) => r.name));
+  const detected = await detectRepos(project.root);
+  const self = detected.some((r) => r.self);
+  // ROOT tách khỏi repo CON ở cả hai phía. Root đối chiếu theo "có hay không",
+  // repo con đối chiếu theo TÊN như thường — xem hai khối dưới.
+  const onDisk = new Set(detected.filter((r) => !r.self).map((r) => r.name));
 
-  // PROJECT LÀ CHÍNH REPO — không đối chiếu theo tên folder được. Manifest ghi
-  // tên folder của máy đã đồng bộ (`dev-box`), máy khác clone ra tên khác
-  // (`vhs-dev-box`) mà vẫn là ĐÚNG repo đó; so tên sẽ báo cùng lúc "thiếu 1" và
-  // "dư 1" trong khi chẳng thiếu gì. Với loại này câu hỏi duy nhất là root đã là
-  // repo hay chưa, và detectRepos đã trả lời: có repo = đủ, không = thiếu.
-  const selfEntry = entry?.repos.find((r) => r.self);
-  if (selfEntry || self) {
-    const listedSelf = selfEntry ?? null;
+  // PROJECT LÀ CHÍNH REPO — riêng phần ROOT không đối chiếu theo tên folder
+  // được. Manifest ghi tên folder của máy đã đồng bộ (`dev-box`), máy khác
+  // clone ra tên khác (`vhs-dev-box`) mà vẫn là ĐÚNG repo đó; so tên sẽ báo
+  // cùng lúc "thiếu 1" và "dư 1" trong khi chẳng thiếu gì. Với root câu hỏi duy
+  // nhất là nó đã là repo hay chưa.
+  const selfEntry = entry?.repos.find((r) => r.self) ?? null;
+
+  if (!entry) {
     return {
-      present: !!entry || manifest.length > 0,
-      total: listedSelf ? 1 : 0,
-      missing: listedSelf && !self ? [{ path: listedSelf.path, url: listedSelf.url }] : [],
-      extra: !listedSelf && self ? [...onDisk] : [],
+      present: manifest.length > 0,
+      total: 0,
+      missing: [],
+      // Root là repo mà manifest chưa ghi gì → nó cũng là thứ "dư", đúng như
+      // mọi repo con chưa được ghi.
+      extra: [...(self ? [path.basename(path.resolve(project.root))] : []), ...onDisk].sort(),
     };
   }
 
-  if (!entry) {
-    return { present: manifest.length > 0, total: 0, missing: [], extra: [...onDisk].sort() };
-  }
-  const listed = new Set(entry.repos.map((r) => r.path));
+  // Repo CON: so theo tên như project thường.
+  const childEntries = entry.repos.filter((r) => !r.self);
+  const listed = new Set(childEntries.map((r) => r.path));
+  const missing: MissingRepo[] = childEntries
+    .filter((r) => !onDisk.has(r.path))
+    .map((r) => ({ path: r.path, url: r.url }));
+  const extra = [...onDisk].filter((n) => !listed.has(n));
+
+  // ROOT: manifest ghi có mà đĩa không phải repo → thiếu; đĩa có mà manifest
+  // chưa ghi → dư. Cả hai cộng vào cùng kết quả với repo con, nên project lai
+  // (vừa là repo vừa chứa repo con) được đối chiếu ĐỦ cả hai tầng.
+  if (selfEntry && !self) missing.unshift({ path: selfEntry.path, url: selfEntry.url });
+  if (!selfEntry && self) extra.unshift(path.basename(path.resolve(project.root)));
+
   return {
     present: true,
     total: entry.repos.length,
     // Không có url thì không clone lại được — vẫn báo thiếu, UI sẽ disable nút.
-    missing: entry.repos.filter((r) => !onDisk.has(r.path)).map((r) => ({ path: r.path, url: r.url })),
-    extra: [...onDisk].filter((n) => !listed.has(n)).sort(),
+    missing,
+    extra: extra.sort(),
   };
 }

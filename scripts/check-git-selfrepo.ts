@@ -88,14 +88,35 @@ async function main(): Promise<void> {
       'thư mục con trong repo: không quét ra repo nào (không "mượn" repo cha)',
     );
 
-    // ── Ca 4: repo LỒNG trong repo → ưu tiên root, bỏ qua con ─────────────────
+    // ── Ca 4: repo LỒNG trong repo → HIỆN CẢ HAI, root đứng đầu ───────────────
+    // Project vừa là repo (tài liệu/script dùng chung) vừa chứa repo service
+    // bên trong là bố cục có thật. Ẩn repo con đi là chúng biến mất khỏi tool
+    // mà không một dòng giải thích.
     const nested = path.join(tmp, 'outer');
     await initRepo(nested);
     await initRepo(path.join(nested, 'vendored'));
+    await initRepo(path.join(nested, 'another'));
     const nestedRepos = await detectRepos(nested);
     check(
-      nestedRepos.length === 1 && nestedRepos[0].path === path.resolve(nested),
-      `repo lồng repo: chỉ hiện root, không hiện repo con (được ${nestedRepos.map((r) => r.name).join(',')})`,
+      nestedRepos.length === 3,
+      `repo lồng repo: hiện đủ root + 2 repo con (được ${nestedRepos.length}: ${nestedRepos.map((r) => r.name).join(',')})`,
+    );
+    check(
+      nestedRepos[0]?.path === path.resolve(nested) && nestedRepos[0]?.self === true,
+      `repo lồng repo: root đứng ĐẦU và được đánh dấu self (được ${nestedRepos[0]?.name ?? '∅'})`,
+    );
+    check(
+      nestedRepos.slice(1).map((r) => r.name).join(',') === 'another,vendored',
+      `repo lồng repo: repo con xếp theo tên (được ${nestedRepos.slice(1).map((r) => r.name).join(',')})`,
+    );
+    check(
+      nestedRepos.slice(1).every((r) => !r.self),
+      'repo lồng repo: CHỈ root mang cờ self, repo con thì không',
+    );
+    // Repo con phải dùng được thật, không chỉ hiện ra cho đẹp.
+    check(
+      nestedRepos.slice(1).every((r) => path.resolve(r.path).startsWith(path.resolve(nested) + path.sep)),
+      'repo lồng repo: đường dẫn repo con nằm trong root (authorizeRepo cho qua)',
     );
 
     // ── Ca 5: thư mục rỗng / không tồn tại vẫn im lặng trả rỗng ───────────────

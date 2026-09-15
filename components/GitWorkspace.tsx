@@ -773,10 +773,15 @@ export default function GitWorkspace() {
             title={selfRepo ? 'project này chính là một repo' : 'thư mục gốc của project này'}
           >
             {selfRepo ? '⎇' : '📁'} {activeProject.root}
+            {/* Project LAI (root là repo VÀ có repo con) phải nói đủ cả hai,
+                nếu không người dùng thấy "project này chính là repo" rồi tưởng
+                mấy repo con không được quản lý. */}
             {reposLoading
               ? ' · đang quét repo…'
               : selfRepo
-                ? ' · project này chính là repo'
+                ? repos.length > 1
+                  ? ` · project này là repo + ${repos.length - 1} repo con`
+                  : ' · project này chính là repo'
                 : ` · ${repos.length} repo`}
           </span>
           <span style={{ flex: 1 }} />
@@ -848,8 +853,13 @@ export default function GitWorkspace() {
             title={overviewLoading ? 'Đang kiểm tra trạng thái repo…' : 'Chọn repo — bấm “Kiểm tra tất cả” ở trên để xem repo nào cần pull (↓)'}
             style={{ padding: '6px 10px', minWidth: 260, fontFamily: 'var(--mono)', fontSize: 12 }}
           >
+            {/* `(gốc)` cho entry là CHÍNH root của project: ở project lai, root
+                và repo con nằm cùng một danh sách và tên folder không nói lên
+                cái nào là cái nào. */}
             {repos.map((r) => (
-              <option key={r.path} value={r.path}>{repoOptionLabel(r.name, overview[r.path])}</option>
+              <option key={r.path} value={r.path}>
+                {repoOptionLabel(r.self ? `${r.name} (gốc)` : r.name, overview[r.path])}
+              </option>
             ))}
           </select>
 

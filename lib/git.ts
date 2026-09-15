@@ -54,6 +54,12 @@ export interface MergeResult {
 export interface RepoInfo {
   path: string;
   name: string;
+  /**
+   * True khi entry này CHÍNH LÀ root của project — project vừa là repo vừa
+   * chứa repo con thì cả hai cùng nằm trong danh sách này. Xem detectRepos
+   * (lib/gitCore.ts); giữ đồng bộ với RepoInfo bên đó.
+   */
+  self?: boolean;
 }
 
 export interface CommitLog {

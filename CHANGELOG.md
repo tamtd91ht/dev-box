@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tab Git: project vừa là repo vừa chứa repo con giờ hiện ĐỦ, không chỉ mỗi root.**
+  Bố cục rất thật: một thư mục vừa là repo (tài liệu, script, manifest dùng chung) vừa chứa
+  các repo service bên trong. Bản trước ưu tiên root và **bỏ qua** repo con, với lập luận
+  “submodule có vòng đời riêng do repo cha quản lý” — nhưng lập luận đó coi mọi repo con đều
+  là submodule. Hậu quả: các repo con biến mất khỏi tool, không commit/push được, mà không có
+  lấy một dòng giải thích — đúng kiểu lỗi im lặng mà chính thay đổi đó đặt ra để tránh.
+  Giờ root đứng đầu danh sách kèm nhãn `(gốc)`, repo con xếp theo tên ngay sau; dòng mô tả
+  project nói rõ “project này là repo + N repo con”. Manifest cũng đối chiếu ĐỦ hai tầng:
+  cờ `self` lấy theo từng entry thay vì một cờ chung (cờ chung sẽ đánh dấu mọi repo con là
+  “self” và báo khống), root so theo “đã là repo hay chưa” còn repo con so theo tên.
+  Nút Clone/Tạo repo vẫn ẩn ở project loại này — lý do cũ không đổi: thư mục đích sẽ nằm bên
+  trong working tree đang mở.
+
 ### Added
 
 - **Tab Git: project trỏ THẲNG vào một repo — bản thân project là repo, không cần repo con.**
@@ -23,8 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Ẩn Clone/Tạo repo ở project loại này** (và chặn cả ở server, không chỉ ẩn nút): thư mục đích
     sẽ nằm BÊN TRONG working tree đang mở, repo mới hiện ra thành file lạ của repo cha chứ không
     thành repo ngang hàng. Thông báo lỗi chỉ đúng việc cần làm: thêm project trỏ tới thư mục CHỨA repo.
-  - **Repo lồng repo** (submodule đã init) ưu tiên coi root là repo và bỏ qua con — submodule có
-    vòng đời do repo cha quản lý, hiện chúng thành repo ngang hàng chỉ dẫn tới commit/push lẫn nhau.
+  - **Repo lồng repo** — root là repo VÀ có repo con bên trong: hiện ĐỦ CẢ HAI, root đứng đầu
+    (đánh dấu `(gốc)` trong dropdown) rồi tới các repo con theo tên.
   - **Manifest không báo khống.** Với project-là-repo, tên folder khác nhau giữa các máy
     (`dev-box` vs `vhs-dev-box`) mà vẫn là đúng repo đó; so theo tên sẽ báo cùng lúc "thiếu 1" và
     "dư 1" trong khi chẳng thiếu gì, nên entry được đánh dấu `self` và đối chiếu theo "root đã là

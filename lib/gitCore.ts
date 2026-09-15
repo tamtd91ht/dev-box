@@ -39,6 +39,11 @@ export interface RepoInfo {
   path: string;
   /** Basename, used as the display label. */
   name: string;
+  /**
+   * True khi entry này CHÍNH LÀ root của project (project vừa là repo vừa chứa
+   * repo con). UI dùng để đánh dấu; mọi thao tác git không phân biệt.
+   */
+  self?: boolean;
 }
 
 interface GitOpts {
@@ -168,26 +173,38 @@ export async function isSelfRepo(root: string = GIT_ROOT): Promise<boolean> {
  * đã cho phép `resolved === root`) không cần biết đến ca này, project hiện ra y
  * như một project có duy nhất một repo con.
  *
- * Trường hợp lai (root là repo VÀ có repo con bên trong, vd submodule đã init)
- * ưu tiên coi root là repo và bỏ qua con: người trỏ project vào một repo là muốn
- * làm việc với repo đó, còn submodule có vòng đời riêng do repo cha quản lý —
- * hiện chúng ra thành repo ngang hàng chỉ dẫn tới commit/push lẫn nhau.
+ * TRƯỜNG HỢP LAI — root là repo VÀ có repo con bên trong: HIỆN CẢ HAI, root
+ * đứng đầu rồi tới các repo con theo thứ tự tên.
+ *
+ * Bản trước ưu tiên root và BỎ QUA con, với lập luận "submodule có vòng đời
+ * riêng do repo cha quản lý". Lập luận đó coi mọi repo con đều là submodule.
+ * Thực tế phổ biến hơn nhiều: một thư mục vừa là repo (chứa tài liệu, script,
+ * manifest dùng chung) vừa chứa các repo service bên trong — người dùng cần
+ * thấy ĐỦ để commit/push từng cái. Ẩn đi thì repo con biến mất khỏi tool mà
+ * không một dòng giải thích: đúng kiểu lỗi im lặng mà chính commit đó đặt ra
+ * để tránh.
+ *
+ * Submodule thật vẫn hiện ra, và điều đó KHÔNG có hại: mỗi entry là một repo
+ * độc lập trong dropdown, commit/push cái này không đụng cái kia. Thấy rồi tự
+ * quyết định vẫn hơn bị giấu.
  */
 export async function detectRepos(root: string = GIT_ROOT): Promise<RepoInfo[]> {
   const rootAbs = path.resolve(root);
+  const repos: RepoInfo[] = [];
+  // Root là repo → nó đứng ĐẦU danh sách, rồi vẫn quét tiếp repo con bên dưới.
   if (await isSelfRepo(rootAbs)) {
-    return [{ path: rootAbs, name: path.basename(rootAbs) || rootAbs }];
+    repos.push({ path: rootAbs, name: path.basename(rootAbs) || rootAbs, self: true });
   }
   let entries: string[] = [];
   try {
-    const dirents = await fs.readdir(root, { withFileTypes: true });
+    const dirents = await fs.readdir(rootAbs, { withFileTypes: true });
     entries = dirents.filter((d) => d.isDirectory()).map((d) => d.name);
   } catch {
-    return [];
+    // Thư mục không đọc được: root là repo thì vẫn trả về chính nó.
+    return repos;
   }
-  const repos: RepoInfo[] = [];
   for (const name of entries.sort()) {
-    const full = path.join(root, name);
+    const full = path.join(rootAbs, name);
     // Fast pre-check: a .git entry (dir or file for worktrees/submodules).
     try {
       await fs.access(path.join(full, '.git'));
