@@ -9362,3 +9362,42 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .hist-open:hover { background: var(--glass-2); }
 .hist-title { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hist-url { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+
+/* ── Ô soạn SQL có gợi ý (components/pg/SqlEditor.tsx) ──────────────────── */
+/* relative = gốc toạ độ cho bảng gợi ý thả xuống dưới ô. */
+.sqled { position: relative; display: block; }
+.sqled > textarea { width: 100%; }
+
+.sqled-pop {
+  position: absolute; z-index: 70; top: calc(100% + 4px); left: 0;
+  min-width: 300px; max-width: 520px; max-height: 300px; overflow-y: auto;
+  display: flex; flex-direction: column; padding: 4px;
+  background: var(--bg-1); border: 1px solid var(--glass-brd); border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0,0,0,.45);
+}
+
+.sqled-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 8px; border: 0; border-radius: 7px; cursor: pointer;
+  background: transparent; color: var(--text); text-align: left; min-width: 0;
+  font: inherit;
+}
+/* Chọn bằng chuột và bằng ↑↓ dùng CÙNG lớp `.on` — hover không tô màu riêng,
+   nếu không vừa di chuột vừa bấm ↓ sẽ có HAI dòng cùng sáng và không đoán được
+   Enter nhận dòng nào. (onMouseEnter đặt luôn sel.) */
+.sqled-row.on { background: var(--glass-2); }
+
+.sqled-ico { flex: none; width: 14px; font-size: 11px; opacity: .75; text-align: center; }
+.sqled-label {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sqled-detail {
+  flex: none; font-size: 11px; color: var(--muted); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%;
+}
+.sqled-hint {
+  padding: 5px 8px 3px; font-size: 10.5px; color: var(--muted);
+  border-top: 1px solid var(--glass-brd); margin-top: 2px;
+}

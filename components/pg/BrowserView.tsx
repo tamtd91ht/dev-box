@@ -27,6 +27,7 @@ import {
   type WireRow,
 } from '@/lib/pg';
 import UpdateModal from './UpdateModal';
+import SqlEditor from './SqlEditor';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
 
@@ -142,6 +143,18 @@ export default function BrowserView({ connectionId, defaultDb, readOnly, allowWr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, connectionId]);
 
+  /**
+   * Cột đổ vào gợi ý SQL. Dùng lại `columns` — đã được nạp sẵn khi chọn bảng
+   * (xem effect auto-run), nên gợi ý không tốn thêm request nào.
+   *
+   * Chưa chọn bảng thì rỗng: gợi ý vẫn chạy với TỪ KHOÁ và TÊN BẢNG, chỉ thiếu
+   * phần cột — đúng bằng những gì tool thực sự biết lúc đó, không đoán bừa.
+   */
+  const suggestColumns = useMemo(
+    () => columns.map((c) => ({ name: c.name, dataType: c.dataType })),
+    [columns],
+  );
+
   const filteredDbs = dbs.filter((d) => !treeFilter || d.name.includes(treeFilter));
   const filteredTables = tables.filter((t) => !treeFilter || `${t.schema}.${t.name}`.includes(treeFilter));
   const writeArmed = allowWrite && !readOnly;
@@ -224,16 +237,23 @@ export default function BrowserView({ connectionId, defaultDb, readOnly, allowWr
             {tab === 'rows' && (
               <>
                 <div className="pg-querybar">
-                  <label className="pg-field"><span>SQL (chạy trong transaction READ ONLY · timeout 15s · trần 500 dòng — Ctrl+Enter để chạy)</span>
-                    <textarea
-                      className="input mono"
-                      rows={3}
+                  {/* <div> chứ KHÔNG phải <label> như các ô khác: label chuyển
+                      mọi cú bấm bên trong nó sang control của nó, nên bấm chuột
+                      vào một dòng gợi ý sẽ bị lái thành "focus lại textarea" và
+                      gợi ý không bao giờ nhận được bằng chuột. */}
+                  <div className="pg-field">
+                    <span>SQL (chạy trong transaction READ ONLY · timeout 15s · trần 500 dòng — Ctrl+Enter để chạy · Ctrl+Space gợi ý)</span>
+                    {/* Gợi ý lấy CỘT của bảng đang chọn + BẢNG của database đang
+                        mở — đều là dữ liệu đã nạp sẵn cho cây bên trái và tab
+                        Columns, nên không tốn thêm một request nào. */}
+                    <SqlEditor
                       value={sql}
-                      onChange={(e) => setSql(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) void runQuery(); }}
-                      style={{ minHeight: 70 }}
+                      onChange={setSql}
+                      onRun={() => void runQuery()}
+                      columns={suggestColumns}
+                      tables={tables}
                     />
-                  </label>
+                  </div>
                   <div className="status-line" style={{ gap: 8 }}>
                     <button className="sm" disabled={busy || !sql.trim()} onClick={() => void runQuery()}>
                       {busy ? <span className="spinner" aria-hidden /> : '▶'} Run

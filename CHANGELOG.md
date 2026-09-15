@@ -23,6 +23,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Tab PostgreSQL: ô SQL có gợi ý kiểu IDE.** Gõ `se` ra `SELECT`, gõ `WHERE ten` ra thẳng cột
+  `tenantId` của bảng đang chọn — nhận xong thành `WHERE tenantId = ''` với con trỏ nằm sẵn giữa
+  hai nháy, gõ tiếp giá trị là xong. `↑↓` chọn · `Tab`/`Enter` nhận · `Esc` đóng · `Ctrl+Space`
+  gọi lại · `Ctrl+Enter` vẫn chạy câu lệnh như cũ.
+  Gợi ý bám NGỮ CẢNH chứ không đổ một danh sách chung: sau `FROM`/`JOIN`/`UPDATE` thì tên BẢNG nổi
+  lên trước, sau `WHERE`/`AND`/`SELECT`/`ORDER BY` thì tên CỘT nổi lên trước — nếu không, gõ
+  `WHERE ten` sẽ ra từ khoá `THEN` đứng trên cột `tenantId`, đúng thứ người dùng không muốn.
+  Phần điền sẵn `= …` theo KIỂU cột: `text`/`uuid`/`timestamp` ra `= ''` (có nháy), số ra `= `,
+  boolean ra `= true` — thêm nháy vào cột số là câu lệnh sai ngay.
+  Khớp cả tiền tố lẫn rời rạc (`tid` vẫn ra `tenantId`), nhưng khớp tiền tố luôn xếp trên. Thứ tự
+  từ khoá trong bảng là ĐỘ PHỔ BIẾN và được dùng để xếp hạng: xếp theo bảng chữ cái hay độ dài thì
+  `se` ra `SET` trước `SELECT`.
+  Cột/bảng lấy từ dữ liệu đã nạp sẵn cho cây bên trái và tab Columns nên **không thêm một request
+  nào**. Chưa chọn bảng thì vẫn gợi ý từ khoá + tên bảng, chỉ thiếu phần cột — đúng bằng những gì
+  tool thực sự biết lúc đó.
+  Toàn bộ phần "nghĩ" nằm ở `lib/sqlComplete.ts` (hàm thuần) với
+  `npm run check:sql` phủ 34 ca — sai ở đây không ném lỗi, chỉ làm gợi ý "hơi ngu" nên không kiểm
+  tự động thì không ai phát hiện.
+
 - **Tab Git: project trỏ THẲNG vào một repo — bản thân project là repo, không cần repo con.**
   Trước đây một project bắt buộc phải là thư mục CHỨA các repo: quét repo chỉ nhìn thư mục con
   trực tiếp, mà một repo thì không chứa repo con nào, nên trỏ project vào chính repo (mono-repo,
