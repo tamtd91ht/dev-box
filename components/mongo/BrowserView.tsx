@@ -42,6 +42,7 @@ import Splitter from '../Splitter';
 
 import SessionHistory from '../SessionHistory';
 import { recordSession, short, type MongoSession } from '@/lib/sessionHistory';
+import { useLastSession } from '@/lib/useLastSession';
 
 export interface BrowserViewProps {
   connectionId: string;
@@ -53,6 +54,49 @@ export interface BrowserViewProps {
 
 type CollTab = 'docs' | 'indexes' | 'stats';
 type QueryMode = 'find' | 'aggregate';
+
+/**
+ * Phiên làm việc ĐANG DỞ, tự nhớ lại khi mở tab — xem lib/useLastSession.
+ *
+ * KHÁC với "⏱ Phiên gần đây" (SessionHistory) ngay bên dưới, dù cùng chữ
+ * "phiên": danh sách kia là NHẬT KÝ các lần ĐÃ CHẠY, phải bấm một dòng mới nạp
+ * lại. Cái này là chỗ ngồi hiện tại — gõ dở nửa câu filter rồi liếc sang tab
+ * khác, quay lại vẫn còn nguyên, không phải bấm gì cả.
+ *
+ * Cũng chỉ lưu Ý ĐỊNH, không lưu document trả về — cùng ba lý do đã ghi ở đầu
+ * lib/sessionHistory.ts (dữ liệu cũ tưởng là mới, dữ liệu nhạy cảm nằm lại
+ * trên đĩa, và hạn ngạch localStorage).
+ */
+interface MongoDraft {
+  openDb: string;
+  selected: { db: string; coll: string } | null;
+  collTab: CollTab;
+  queryMode: QueryMode;
+  filter: string;
+  projection: string;
+  sort: string;
+  limit: number;
+  skip: number;
+  pipeline: string;
+}
+
+const COLL_TABS: CollTab[] = ['docs', 'indexes', 'stats'];
+const QUERY_MODES: QueryMode[] = ['find', 'aggregate'];
+
+function isMongoDraft(v: unknown): v is MongoDraft {
+  if (!v || typeof v !== 'object') return false;
+  const x = v as Record<string, unknown>;
+  const strs = ['openDb', 'filter', 'projection', 'sort', 'pipeline'];
+  if (strs.some((k) => typeof x[k] !== 'string')) return false;
+  if (typeof x.limit !== 'number' || typeof x.skip !== 'number') return false;
+  if (!COLL_TABS.includes(x.collTab as CollTab)) return false;
+  if (!QUERY_MODES.includes(x.queryMode as QueryMode)) return false;
+  if (x.selected !== null) {
+    const sel = x.selected as Record<string, unknown> | undefined;
+    if (!sel || typeof sel.db !== 'string' || typeof sel.coll !== 'string') return false;
+  }
+  return true;
+}
 
 const DEFAULT_LIMIT = 50;
 
@@ -97,26 +141,46 @@ const PIPELINE_SNIPPETS: Snippet[] = [
   { label: 'đếm theo nhóm', title: 'Mẫu hay dùng: match → group → sort', text: '[\n  { "$match": {  } },\n  { "$group": { "_id": "$field", "n": { "$sum": 1 } } },\n  { "$sort": { "n": -1 } }\n]', caretOffset: 17 },
 ];
 
-export default function BrowserView({ connectionId, readOnly, allowWrite, initialDb }: BrowserViewProps) {
+/**
+ * Vỏ ngoài: ĐỌC XONG phiên đang dở rồi mới dựng khung làm việc.
+ *
+ * Tách hai component vì state ban đầu (filter, pipeline, collection đang mở)
+ * lấy thẳng từ phiên đã lưu trong `useState(...)`. Đọc localStorage ngay trong
+ * render đầu thì lệch hydrate giữa server và client; nhồi lại bằng effect thì
+ * các ô loé lên rỗng một nhịp rồi mới có chữ.
+ */
+export default function BrowserView(props: BrowserViewProps) {
+  const draft = useLastSession<MongoDraft>('mongo', props.connectionId, isMongoDraft);
+  if (!draft.ready) {
+    return <p className="empty" style={{ margin: 'auto' }}><span className="spinner" /> Đang mở lại phiên trước…</p>;
+  }
+  return <BrowserViewInner {...props} draft={draft} />;
+}
+
+function BrowserViewInner({
+  connectionId, readOnly, allowWrite, initialDb, draft,
+}: BrowserViewProps & { draft: ReturnType<typeof useLastSession<MongoDraft>> }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const tree = useSplit({ varName: '--mongo-tree', min: 160, max: 520, gap: 12 });
+  /** Phiên đã lưu, chốt lại lúc mount — về sau chỉ GHI, không đọc nữa. */
+  const restored = useRef(draft.saved).current;
   // ── Tree state ──────────────────────────────────────────────────────────────
   const [dbs, setDbs] = useState<DatabaseInfo[]>([]);
   const [dbsLoading, setDbsLoading] = useState(false);
-  const [openDb, setOpenDb] = useState<string>('');
+  const [openDb, setOpenDb] = useState<string>(restored?.openDb ?? '');
   const [collections, setCollections] = useState<CollectionInfo[]>([]);
   const [collsLoading, setCollsLoading] = useState(false);
-  const [selected, setSelected] = useState<{ db: string; coll: string } | null>(null);
+  const [selected, setSelected] = useState<{ db: string; coll: string } | null>(restored?.selected ?? null);
   const [treeFilter, setTreeFilter] = useState('');
 
   // ── Query state ─────────────────────────────────────────────────────────────
-  const [queryMode, setQueryMode] = useState<QueryMode>('find');
-  const [filter, setFilter] = useState('');
-  const [projection, setProjection] = useState('');
-  const [sort, setSort] = useState('');
-  const [limit, setLimit] = useState(DEFAULT_LIMIT);
-  const [skip, setSkip] = useState(0);
-  const [pipeline, setPipeline] = useState('');
+  const [queryMode, setQueryMode] = useState<QueryMode>(restored?.queryMode ?? 'find');
+  const [filter, setFilter] = useState(restored?.filter ?? '');
+  const [projection, setProjection] = useState(restored?.projection ?? '');
+  const [sort, setSort] = useState(restored?.sort ?? '');
+  const [limit, setLimit] = useState(restored?.limit ?? DEFAULT_LIMIT);
+  const [skip, setSkip] = useState(restored?.skip ?? 0);
+  const [pipeline, setPipeline] = useState(restored?.pipeline ?? '');
 
   // ── Query editing aids (format + field autocomplete) ────────────────────────
   const [fields, setFields] = useState<FieldInfo[]>([]);
@@ -134,7 +198,7 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
   const [findIndex, setFindIndex] = useState(0);
 
   // ── Results ────────────────────────────────────────────────────────────────
-  const [collTab, setCollTab] = useState<CollTab>('docs');
+  const [collTab, setCollTab] = useState<CollTab>(restored?.collTab ?? 'docs');
   const [result, setResult] = useState<FindResult | null>(null);
   const [aggResult, setAggResult] = useState<AggregateResult | null>(null);
   const [countInfo, setCountInfo] = useState<string | null>(null);
@@ -175,13 +239,29 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
   }, [connectionId]);
 
   // Jump from Overview: open the requested DB once.
+  //
+  // Không có `initialDb` thì bung lại database của phiên trước — nếu không, mở
+  // tab lên thấy cây đóng kín và phải tự lần lại đúng db/collection đang làm dở
+  // (state `selected` có sẵn nhưng cây thì không tự mở theo).
+  // `initialDb` (vừa bấm "mở db" ở Tổng quan) vẫn thắng: đó là thao tác chủ
+  // động vừa xảy ra, mới hơn phiên cũ.
   const jumpedRef = useRef('');
   useEffect(() => {
-    if (initialDb && jumpedRef.current !== initialDb) {
-      jumpedRef.current = initialDb;
-      void expandDb(initialDb);
+    const target = initialDb || restored?.openDb;
+    if (target && jumpedRef.current !== target) {
+      jumpedRef.current = target;
+      void expandDb(target);
     }
+    // `restored` chốt lúc mount nên không cần vào deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDb, expandDb]);
+
+  // Ghi lại chỗ đang ngồi mỗi khi thứ người dùng gõ/chọn đổi. useLastSession
+  // gộp trễ ~400ms nên gõ filter không thành một chuỗi ghi localStorage liên tục.
+  const saveDraft = draft.save;
+  useEffect(() => {
+    saveDraft({ openDb, selected, collTab, queryMode, filter, projection, sort, limit, skip, pipeline });
+  }, [saveDraft, openDb, selected, collTab, queryMode, filter, projection, sort, limit, skip, pipeline]);
 
   // ── Phiên làm việc ──────────────────────────────────────────────────────────
   /**
@@ -391,18 +471,45 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
   }, []);
 
   // Auto-run after selection state settles (first page, stats, indexes).
+  //
+  // Collection được KHÔI PHỤC từ phiên trước thì giữ nguyên `skip` đã lưu —
+  // đang xem trang 5 mà quay lại bị kéo về trang 1 thì phần "nhớ phiên" mất
+  // một nửa ý nghĩa. Chọn collection mới (bấm ở cây) vẫn về trang đầu như cũ,
+  // vì selectColl đã đặt skip = 0 rồi.
   const lastAuto = useRef('');
+  const firstAuto = useRef(true);
   useEffect(() => {
     if (!selected) return;
     const key = `${connectionId}/${selected.db}/${selected.coll}`;
     if (lastAuto.current === key) return;
     lastAuto.current = key;
-    void runFind({ skip: 0 });
+    const isRestored = firstAuto.current
+      && restored?.selected?.db === selected.db
+      && restored.selected.coll === selected.coll;
+    firstAuto.current = false;
+    // Khôi phục vào chế độ aggregate thì KHÔNG tự chạy gì cả: pipeline chưa bao
+    // giờ được chạy tự động (nó có thể rất nặng — xem nút ▶ Aggregate), và chạy
+    // một `find` thay thế thì vừa tốn request vừa hiện kết quả không khớp với
+    // pipeline đang nằm trên màn hình.
+    if (!(isRestored && restored.queryMode === 'aggregate')) {
+      void runFind({ skip: isRestored ? restored.skip : 0 });
+    }
     void loadStats();
     void loadIndexes();
     void loadFields();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, connectionId]);
+
+  /** Quên phiên đang nhớ + dọn màn hình về trạng thái vừa mở connection. */
+  const clearDraft = draft.clear;
+  const resetSession = useCallback(() => {
+    clearDraft();
+    setSelected(null); setCollTab('docs'); setQueryMode('find');
+    setFilter(''); setProjection(''); setSort(''); setLimit(DEFAULT_LIMIT); setSkip(0);
+    setPipeline('');
+    setResult(null); setAggResult(null); setCountInfo(null); setStats(null); setIndexes([]);
+    setError(null); setJsonError(null); setFields([]);
+  }, [clearDraft]);
 
   const docs = queryMode === 'aggregate' ? aggResult?.docs ?? null : result?.docs ?? null;
 
@@ -446,7 +553,16 @@ export default function BrowserView({ connectionId, readOnly, allowWrite, initia
       <div className="mongo-tree">
         <div className="status-line" style={{ justifyContent: 'space-between' }}>
           <strong>Databases</strong>
-          <button className="chip-btn" onClick={loadDbs} disabled={dbsLoading}>↻</button>
+          <span style={{ display: 'flex', gap: 4 }}>
+            {/* Phiên được nhớ lại tự động, nên phải có đường VỀ TRẠNG THÁI SẠCH
+                — không thì mở tab lên lúc nào cũng dính câu query cũ và phải tự
+                xoá tay từng ô. */}
+            <button className="chip-btn" onClick={resetSession}
+              title="Quên phiên đang nhớ và bắt đầu lại từ trạng thái trống">
+              ⟲ Phiên mới
+            </button>
+            <button className="chip-btn" onClick={loadDbs} disabled={dbsLoading}>↻</button>
+          </span>
         </div>
         <input
           className="input"

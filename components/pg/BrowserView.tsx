@@ -30,6 +30,7 @@ import UpdateModal from './UpdateModal';
 import SqlEditor from './SqlEditor';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
+import { useLastSession } from '@/lib/useLastSession';
 
 export interface BrowserViewProps {
   connectionId: string;
@@ -42,21 +43,72 @@ export interface BrowserViewProps {
 
 type TableTab = 'rows' | 'columns' | 'indexes';
 
-export default function BrowserView({ connectionId, defaultDb, readOnly, allowWrite, initialDb }: BrowserViewProps) {
+/**
+ * Phiên làm việc được nhớ lại giữa các lần mở tab — xem lib/useLastSession.
+ *
+ * Chỉ những thứ NGƯỜI DÙNG gõ/chọn. Cố ý KHÔNG có `result`: dữ liệu cũ hiện
+ * lại như vừa chạy xong là sai lệch nguy hiểm (bảng có thể đã đổi), và một
+ * trang 500 dòng thì quá to cho localStorage.
+ */
+interface PgSession {
+  /** Database đang bung ở cây bên trái. */
+  openDb: string;
+  selected: { db: string; schema: string; table: string } | null;
+  tab: TableTab;
+  /** Câu SQL đang soạn — thứ đáng tiếc nhất khi mất. */
+  sql: string;
+}
+
+const TABS: TableTab[] = ['rows', 'columns', 'indexes'];
+
+function isPgSession(v: unknown): v is PgSession {
+  if (!v || typeof v !== 'object') return false;
+  const x = v as Record<string, unknown>;
+  if (typeof x.openDb !== 'string' || typeof x.sql !== 'string') return false;
+  if (!TABS.includes(x.tab as TableTab)) return false;
+  if (x.selected !== null) {
+    const sel = x.selected as Record<string, unknown> | undefined;
+    if (!sel || typeof sel.db !== 'string' || typeof sel.schema !== 'string' || typeof sel.table !== 'string') return false;
+  }
+  return true;
+}
+
+/**
+ * Vỏ ngoài: ĐỌC XONG phiên đã lưu rồi mới dựng khung làm việc.
+ *
+ * Phải tách làm hai component vì state ban đầu (câu SQL, bảng đang mở) lấy
+ * thẳng từ phiên đã lưu trong `useState(...)`. Đọc localStorage ngay trong
+ * render đầu thì HTML dựng ở server (không có window) lệch với client và React
+ * báo lỗi hydrate; còn nhồi lại bằng effect sau khi mount thì ô SQL loé lên
+ * rỗng một nhịp rồi mới có chữ. Chờ `ready` rồi remount bằng `key` là gọn nhất.
+ */
+export default function BrowserView(props: BrowserViewProps) {
+  const session = useLastSession<PgSession>('pg', props.connectionId, isPgSession);
+  if (!session.ready) {
+    return <p className="empty" style={{ margin: 'auto' }}><span className="spinner" /> Đang mở lại phiên trước…</p>;
+  }
+  return <BrowserViewInner {...props} session={session} />;
+}
+
+function BrowserViewInner({
+  connectionId, defaultDb, readOnly, allowWrite, initialDb, session,
+}: BrowserViewProps & { session: ReturnType<typeof useLastSession<PgSession>> }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const tree = useSplit({ varName: '--pg-tree', min: 160, max: 520, gap: 12 });
+  /** Phiên đã lưu, chốt lại lúc mount — về sau chỉ GHI, không đọc nữa. */
+  const restored = useRef(session.saved).current;
   // ── Tree ────────────────────────────────────────────────────────────────────
   const [dbs, setDbs] = useState<PgDatabaseInfo[]>([]);
   const [dbsLoading, setDbsLoading] = useState(false);
-  const [openDb, setOpenDb] = useState<string>('');
+  const [openDb, setOpenDb] = useState<string>(restored?.openDb ?? '');
   const [tables, setTables] = useState<PgTableInfo[]>([]);
   const [tablesLoading, setTablesLoading] = useState(false);
-  const [selected, setSelected] = useState<{ db: string; schema: string; table: string } | null>(null);
+  const [selected, setSelected] = useState<{ db: string; schema: string; table: string } | null>(restored?.selected ?? null);
   const [treeFilter, setTreeFilter] = useState('');
 
   // ── Query + results ─────────────────────────────────────────────────────────
-  const [tab, setTab] = useState<TableTab>('rows');
-  const [sql, setSql] = useState('');
+  const [tab, setTab] = useState<TableTab>(restored?.tab ?? 'rows');
+  const [sql, setSql] = useState(restored?.sql ?? '');
   const [result, setResult] = useState<PgQueryResult | null>(null);
   const [columns, setColumns] = useState<PgColumnInfo[]>([]);
   const [indexes, setIndexes] = useState<PgIndexInfo[]>([]);
@@ -91,13 +143,20 @@ export default function BrowserView({ connectionId, defaultDb, readOnly, allowWr
   }, [connectionId]);
 
   // Jump from Overview (or open the connection's default DB on first mount).
-  const jumpedRef = useRef('');
+  //
+  // Phiên đã lưu ĐƯỢC ƯU TIÊN hơn `defaultDb`: mở lại tab thì phải thấy đúng
+  // database đang làm dở, không phải database mặc định của connection. Nhưng
+  // `initialDb` (người dùng vừa bấm "mở db" ở Tổng quan) vẫn thắng — đó là
+  // thao tác CHỦ ĐỘNG vừa xảy ra, mới hơn phiên cũ.
+  const jumpedRef = useRef(restored?.openDb && !initialDb ? restored.openDb : '');
   useEffect(() => {
-    const target = initialDb || defaultDb;
+    const target = initialDb || restored?.openDb || defaultDb;
     if (target && jumpedRef.current !== target) {
       jumpedRef.current = target;
       void expandDb(target);
     }
+    // `restored` chốt lúc mount nên không cần vào deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDb, defaultDb, expandDb]);
 
   const runQuery = useCallback(async (sqlOverride?: string) => {
@@ -132,13 +191,27 @@ export default function BrowserView({ connectionId, defaultDb, readOnly, allowWr
   }, []);
 
   // Auto-run after selection settles.
+  //
+  // Bảng được KHÔI PHỤC từ phiên cũ thì chạy lại chính CÂU SQL đã lưu, không
+  // phải `SELECT *` dựng sẵn — nếu không, mở tab lên là câu query vừa viết dở
+  // bị thay bằng câu mặc định, đúng thứ ta đang cố giữ. Các lần chọn bảng sau
+  // đó (người dùng bấm ở cây) vẫn dùng câu dựng sẵn như cũ.
   const lastAuto = useRef('');
+  const firstAuto = useRef(true);
   useEffect(() => {
     if (!selected) return;
     const key = `${connectionId}/${selected.db}/${selected.schema}/${selected.table}`;
     if (lastAuto.current === key) return;
     lastAuto.current = key;
-    void runQuery(`SELECT * FROM "${selected.schema}"."${selected.table}" LIMIT 50`);
+    const isRestored = firstAuto.current
+      && restored?.selected?.db === selected.db
+      && restored.selected.schema === selected.schema
+      && restored.selected.table === selected.table
+      && !!restored.sql.trim();
+    firstAuto.current = false;
+    void runQuery(isRestored
+      ? restored.sql
+      : `SELECT * FROM "${selected.schema}"."${selected.table}" LIMIT 50`);
     void loadColumns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, connectionId]);
@@ -155,6 +228,22 @@ export default function BrowserView({ connectionId, defaultDb, readOnly, allowWr
     [columns],
   );
 
+  // Ghi lại phiên mỗi khi thứ người dùng gõ/chọn đổi. useLastSession gộp trễ
+  // ~400ms nên gõ SQL không biến thành một chuỗi ghi localStorage liên tục.
+  const saveSession = session.save;
+  useEffect(() => {
+    saveSession({ openDb, selected, tab, sql });
+  }, [saveSession, openDb, selected, tab, sql]);
+
+  /** Quên phiên đang nhớ + dọn màn hình về trạng thái vừa mở connection. */
+  const clearSession = session.clear;
+  const resetSession = useCallback(() => {
+    clearSession();
+    setSelected(null); setSql(''); setTab('rows');
+    setResult(null); setColumns([]); setIndexes([]);
+    setError(null); setSelectedRow(null);
+  }, [clearSession]);
+
   const filteredDbs = dbs.filter((d) => !treeFilter || d.name.includes(treeFilter));
   const filteredTables = tables.filter((t) => !treeFilter || `${t.schema}.${t.name}`.includes(treeFilter));
   const writeArmed = allowWrite && !readOnly;
@@ -169,7 +258,16 @@ export default function BrowserView({ connectionId, defaultDb, readOnly, allowWr
       <div className="pg-tree">
         <div className="status-line" style={{ justifyContent: 'space-between' }}>
           <strong>Databases</strong>
-          <button className="chip-btn" onClick={loadDbs} disabled={dbsLoading}>↻</button>
+          <span style={{ display: 'flex', gap: 4 }}>
+            {/* Phiên được nhớ lại tự động, nên phải có đường VỀ TRẠNG THÁI SẠCH
+                — không thì mở tab lên lúc nào cũng dính câu query cũ và phải tự
+                xoá tay từng ô. */}
+            <button className="chip-btn" onClick={resetSession}
+              title="Quên phiên đang nhớ và bắt đầu lại từ trạng thái trống">
+              ⟲ Phiên mới
+            </button>
+            <button className="chip-btn" onClick={loadDbs} disabled={dbsLoading}>↻</button>
+          </span>
         </div>
         <input
           className="input"

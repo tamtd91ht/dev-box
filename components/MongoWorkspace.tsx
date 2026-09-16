@@ -38,6 +38,9 @@ import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 
 const LAST_CONN_KEY = 'mongo.lastConn';
+/** Mục đang xem lúc rời tab — tải lại app là quay đúng chỗ đó, không phải bị
+ *  ném về Tổng quan rồi tự bấm lại sang Dữ liệu mỗi lần. */
+const LAST_VIEW_KEY = 'mongo.lastView';
 
 type SubView = 'overview' | 'browser' | 'quickfind';
 
@@ -61,7 +64,16 @@ export default function MongoWorkspace() {
   const [menuId, setMenuId] = useState<string | null>(null);
   const [pings, setPings] = useState<Record<string, number | 'err'>>({});
 
+  // Khởi tạo 'overview' rồi mới nạp lại trong effect, KHÔNG đọc localStorage
+  // ngay trong initializer: HTML dựng ở server (không có window) sẽ khác client
+  // và React báo lỗi hydrate. Đổi mục là việc rẻ nên một nhịp loé là chấp nhận
+  // được — khác với ô filter, nơi loé nội dung rỗng trông như mất bài.
   const [subView, setSubView] = useState<SubView>('overview');
+  useEffect(() => {
+    const saved = readLocal(LAST_VIEW_KEY);
+    if (saved && SUB_VIEWS.some((v) => v.key === saved)) setSubView(saved as SubView);
+  }, []);
+  useEffect(() => { writeLocal(LAST_VIEW_KEY, subView); }, [subView]);
   /** Set by the Overview "open db" jump; consumed by BrowserView. */
   const [jumpDb, setJumpDb] = useState<string | undefined>(undefined);
 
