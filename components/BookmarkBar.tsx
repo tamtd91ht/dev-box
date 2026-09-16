@@ -15,7 +15,7 @@
 // cờ data-popup-over-webview (ẩn RIÊNG <webview>, giữ nguyên thanh tab + thanh
 // dấu trang + layout), không phải data-modal-over-webview vốn đẩy cả pane đi.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { bmTree, type Bookmark, type BmNode } from '@/lib/bookmarks';
 import { usePopupOverWebview } from '@/lib/useOverWebview';
@@ -36,8 +36,16 @@ const HOVER_OPEN_MS = 550;
  */
 interface DropTarget { at: 'before' | 'after' | 'into' | 'end'; id: string | null }
 
-/** Một tầng menu đang mở. Mảng các tầng = đường dẫn folder đang bung. */
-interface MenuLevel { node: BmNode; x: number; y: number }
+/**
+ * Một tầng menu đang mở. Mảng các tầng = đường dẫn folder đang bung.
+ *
+ * Giữ `id` chứ KHÔNG giữ nguyên `BmNode`: node là ảnh chụp của cây tại lúc mở
+ * menu, mà `children` của nó là một mảng cố định. Kéo một mục vào folder khác
+ * thì `bookmarks` đổi và cây được dựng lại, nhưng menu đang mở vẫn vẽ từ ảnh
+ * chụp cũ — nội dung y nguyên cho tới khi đóng menu mở lại. Lưu id rồi tra
+ * node LIVE từ cây hiện tại lúc render thì menu tự cập nhật ngay.
+ */
+interface MenuLevel { id: string; x: number; y: number }
 interface CtxState { node: BmNode | null; x: number; y: number }
 
 export interface BookmarkBarProps {
@@ -81,6 +89,14 @@ export default function BookmarkBar(props: BookmarkBarProps) {
   useEffect(() => setMounted(true), []);
 
   const tree = bmTree(bookmarks);
+  /** id → node của CÂY HIỆN TẠI. Menu đang mở tra bảng này mỗi lần render, nên
+   *  kéo thả xong là nội dung menu đổi ngay, không phải đóng ra mở lại. */
+  const nodeById = useMemo(() => {
+    const m = new Map<string, BmNode>();
+    const walk = (ns: BmNode[]) => ns.forEach((n) => { m.set(n.id, n); walk(n.children); });
+    walk(tree);
+    return m;
+  }, [tree]);
   const open = levels.length > 0 || !!ctx;
 
   const clearHover = useCallback(() => {
@@ -102,6 +118,38 @@ export default function BookmarkBar(props: BookmarkBarProps) {
   }, [clearHover, setTarget]);
 
   useEffect(() => () => clearHover(), [clearHover]);
+
+  /**
+   * Cắt các tầng menu KHÔNG CÒN HỢP LỆ sau khi cây đổi.
+   *
+   * Hai ca thật sự xảy ra khi kéo thả / xoá ngay lúc menu đang mở:
+   *   · folder của một tầng bị xoá → tầng đó trỏ vào hư không;
+   *   · folder bị CHUYỂN đi chỗ khác → chuỗi cha–con của đường dẫn đang mở
+   *     đứt, menu con vẫn nổi cạnh một menu cha không còn chứa nó.
+   * Cả hai đều để lại menu mồ côi lơ lửng. Cắt từ tầng hỏng trở đi, giữ phần
+   * đầu còn đúng — đóng sạch tất cả thì người dùng mất luôn chỗ đang làm.
+   *
+   * `tree`/`nodeById` dựng lại mỗi lần render nên effect này chạy mỗi lần
+   * render. Không sao: khi không có gì hỏng nó trả về ĐÚNG mảng `ls` cũ, React
+   * thấy tham chiếu không đổi nên bỏ qua, không có vòng render.
+   */
+  useEffect(() => {
+    setLevels((ls) => {
+      let keep = ls.length;
+      for (let i = 0; i < ls.length; i++) {
+        const n = nodeById.get(ls[i].id);
+        // Tầng 0 phải là folder ở GỐC CÂY, tầng sau phải là con THẬT của tầng
+        // trước. Soi theo cây đã dựng chứ không theo `parentId` thô: bmTree đưa
+        // mục có parentId trỏ vào folder đã xoá về gốc mà vẫn giữ nguyên field
+        // đó, nên tin `parentId` sẽ cắt nhầm một tầng vẫn đang hiển thị đúng.
+        const parentOk = i === 0
+          ? tree.some((r) => r.id === ls[i].id)
+          : (nodeById.get(ls[i - 1].id)?.children.some((k) => k.id === ls[i].id) ?? false);
+        if (!n || n.kind !== 'folder' || !parentOk) { keep = i; break; }
+      }
+      return keep === ls.length ? ls : ls.slice(0, keep);
+    });
+  }, [nodeById, tree]);
 
   // Đóng menu khi bấm ra ngoài / Esc / đổi kích thước.
   useEffect(() => {
@@ -192,7 +240,7 @@ export default function BookmarkBar(props: BookmarkBarProps) {
     const r = el.getBoundingClientRect();
     const pos = depth === 0 ? { x: r.left, y: r.bottom + 4 } : { x: r.right + 2, y: r.top };
     hoverTimer.current = setTimeout(() => {
-      setLevels((ls) => [...ls.slice(0, depth), { node, ...pos }]);
+      setLevels((ls) => [...ls.slice(0, depth), { id: node.id, ...pos }]);
     }, HOVER_OPEN_MS);
   }, [clearHover]);
 
@@ -251,7 +299,7 @@ export default function BookmarkBar(props: BookmarkBarProps) {
 
   /** Một mục trên thanh ngang (cấp gốc). */
   const chip = (node: BmNode) => {
-    const isOpen = levels[0]?.node.id === node.id;
+    const isOpen = levels[0]?.id === node.id;
     return (
       <span
         key={node.id}
@@ -280,7 +328,7 @@ export default function BookmarkBar(props: BookmarkBarProps) {
               if (isOpen) { setLevels([]); return; }
               const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
               setCtx(null);
-              setLevels([{ node, x: r.left, y: r.bottom + 4 }]);
+              setLevels([{ id: node.id, x: r.left, y: r.bottom + 4 }]);
             } else {
               onOpen(node);
             }
@@ -304,24 +352,29 @@ export default function BookmarkBar(props: BookmarkBarProps) {
    * một biến `menu` duy nhất nên mở con là ghi đè cha, mất luôn đường lùi.
    */
   const dropdown = (lvl: MenuLevel, depth: number) => {
-    const kids = lvl.node.children;
-    const endMark = drop?.at === 'end' && drop.id === lvl.node.id ? ' drop-end' : '';
+    // Tra node LIVE từ cây hiện tại. Folder vừa bị xoá (hoặc bị chuyển thành
+    // con của chính nhánh này) thì không còn trong bảng — bỏ qua tầng đó thay
+    // vì vẽ một menu trỏ vào dữ liệu đã mất.
+    const node = nodeById.get(lvl.id);
+    if (!node || node.kind !== 'folder') return null;
+    const kids = node.children;
+    const endMark = drop?.at === 'end' && drop.id === node.id ? ' drop-end' : '';
     return (
       <div
-        key={lvl.node.id}
+        key={node.id}
         className={`bmk-menu${endMark}`}
         style={{
           left: Math.max(4, Math.min(lvl.x, window.innerWidth - 264)),
           top: Math.max(4, Math.min(lvl.y, window.innerHeight - 120)),
         }}
         onMouseDown={(e) => e.stopPropagation()}
-        onDragOver={(e) => allow(e, { at: 'end', id: lvl.node.id })}
-        onDrop={(e) => handleDrop(e, { at: 'end', id: lvl.node.id }, kids)}
-        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtx({ node: lvl.node, x: e.clientX, y: e.clientY }); }}
+        onDragOver={(e) => allow(e, { at: 'end', id: node.id })}
+        onDrop={(e) => handleDrop(e, { at: 'end', id: node.id }, kids)}
+        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtx({ node, x: e.clientX, y: e.clientY }); }}
       >
         {kids.length === 0 && <div className="bmk-menu-empty">Thư mục trống</div>}
         {kids.map((c) => {
-          const openHere = levels[depth + 1]?.node.id === c.id;
+          const openHere = levels[depth + 1]?.id === c.id;
           return (
             <div
               key={c.id}
@@ -344,7 +397,7 @@ export default function BookmarkBar(props: BookmarkBarProps) {
               onMouseEnter={(e) => {
                 if (c.kind === 'folder') {
                   const r = e.currentTarget.getBoundingClientRect();
-                  setLevels((ls) => [...ls.slice(0, depth + 1), { node: c, x: r.right + 2, y: r.top }]);
+                  setLevels((ls) => [...ls.slice(0, depth + 1), { id: c.id, x: r.right + 2, y: r.top }]);
                 } else {
                   setLevels((ls) => (ls.length > depth + 1 ? ls.slice(0, depth + 1) : ls));
                 }
