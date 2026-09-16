@@ -156,7 +156,7 @@ async function logHandles(cfg: LogStoreConfig): Promise<{ coll: Collection<Docum
     throw new Error('Kết nối MongoDB đã bị xoá khỏi danh sách quản lý Mongo — chọn lại.');
   }
   const name = cfg.collection || DEFAULT_LOG_COLLECTION;
-  const db = internalClient(conn).db(cfg.database || DEFAULT_LOG_DB);
+  const db = (await internalClient(conn)).db(cfg.database || DEFAULT_LOG_DB);
   return { coll: db.collection(name), db, name };
 }
 
