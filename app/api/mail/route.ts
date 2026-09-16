@@ -14,6 +14,11 @@
 //                      đòi đã đăng nhập Google cho email đó + có scope mail)
 //     'googleAuthUrl' { email? }                      → { ok, result: { url } }
 //                     (consent kèm scope https://mail.google.com/)
+//     'accountRelink' { id, pass, user?, imapHost?, imapPort?, imapSecure?,
+//                       smtpHost?, smtpPort?, smtpSecure? }
+//                     → { ok, result: MailAccountPublic[] }
+//                     (ĐẶT LẠI mật khẩu cho hòm thư đã có — giữ nguyên chữ ký,
+//                      tên, cấu hình; verify IMAP trước khi ghi đè)
 //     'accountRemove' { id }                          → { ok, result: MailAccountPublic[] }
 //     'accountRename' { id, title?, label? }          → { ok, result: MailAccountPublic[] }
 //                     (title = tên quản lý hiện trên tab; label = tên người gửi ở header From)
@@ -43,10 +48,11 @@
 //       để tải ngay trong app thay vì văng ra trình duyệt ngoài.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { listAccounts, getAccount, addAccount, removeAccount, renameAccount, relinkGoogle, setSignature, toPublic } from '@/lib/mailAccounts';
+import { listAccounts, getAccount, addAccount, removeAccount, renameAccount, relinkGoogle, relinkPassword, setSignature, toPublic } from '@/lib/mailAccounts';
 import {
   verifyImap, listFolders, listMessages, getMessage, getAttachment, sendMail, deleteMessage,
   markSpam, markSeen, markAllSeen, getNestedMessage, getNestedAttachment, ImapVerifyError,
+  flattenFailure,
 } from '@/lib/mailServer';
 import { fetchZimbraSignatures } from '@/lib/zimbraSignature';
 import { listContacts, recordAddresses, removeContact, domainOf } from '@/lib/mailContacts';
@@ -131,6 +137,33 @@ export async function POST(req: NextRequest) {
         // Login thử qua IMAP trước khi lưu — sai password là biết ngay.
         await verifyImap({ ...acc, id: 'verify' });
         result = (await addAccount(acc)).map(toPublic);
+        break;
+      }
+      // LIÊN KẾT LẠI hòm thư mật khẩu: mật khẩu mail hết hạn/bị admin đổi là
+      // chuyện thường, và trước đây lối thoát duy nhất là GỠ rồi THÊM LẠI —
+      // mất chữ ký, mất tên đã đặt. Ở đây chỉ ghi đè thông tin đăng nhập.
+      case 'accountRelink': {
+        const id = String(body.id ?? '');
+        const cur = await getAccount(id);
+        const pass = String(body.pass ?? '');
+        if (!pass) throw new Error('Thiếu password.');
+        // Host/port bỏ trống → giữ nguyên cái đang có. "Mất liên kết" đôi khi
+        // là do server đổi endpoint chứ không phải sai mật khẩu, nên vẫn cho sửa.
+        const imap = {
+          host: String(body.imapHost ?? '').trim() || cur.imap.host,
+          port: Number(body.imapPort) || cur.imap.port,
+          secure: body.imapSecure === undefined ? cur.imap.secure : body.imapSecure !== false,
+        };
+        const smtp = {
+          host: String(body.smtpHost ?? '').trim() || cur.smtp.host,
+          port: Number(body.smtpPort) || cur.smtp.port,
+          secure: body.smtpSecure === undefined ? cur.smtp.secure : body.smtpSecure !== false,
+        };
+        const user = String(body.user ?? '').trim() || cur.user;
+        // Login thử TRƯỚC khi ghi đè: thông tin cũ dù chết vẫn hơn ghi đè bằng
+        // thông tin sai rồi mất luôn cả hai.
+        await verifyImap({ ...cur, auth: 'password', googleAccountId: undefined, pass, user, imap, smtp });
+        result = (await relinkPassword(id, { pass, user, imap, smtp })).map(toPublic);
         break;
       }
       case 'accountRemove':
@@ -318,10 +351,14 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json({ ok: true, result });
   } catch (err) {
-    const msg = (err as Error).message || 'Mail operation failed';
-    // Lỗi verify IMAP mang theo phân loại + link khắc phục → client dựng UI
-    // hành động được thay vì in một khối text.
+    // Lỗi IMAP mang theo phân loại + link khắc phục → client dựng UI hành động
+    // được (nút "Liên kết lại") thay vì in "Command failed".
+    //
+    // Nay withImap phân loại ở MỌI đường chạy, không riêng lúc thêm tài khoản:
+    // hòm thư đang dùng mà mất xác thực cũng ra được failure, đúng cảnh người
+    // dùng gặp nhiều nhất.
     const failure = err instanceof ImapVerifyError ? err.failure : undefined;
+    const msg = failure ? flattenFailure(failure) : ((err as Error).message || 'Mail operation failed');
     return NextResponse.json({ ok: false, error: msg, failure }, { status: 502 });
   }
 }

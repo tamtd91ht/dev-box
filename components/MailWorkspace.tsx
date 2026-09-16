@@ -23,8 +23,10 @@ import {
   type MailThread, type ZimbraSignature,
 } from '@/lib/mail';
 import MailBody, { textToHtml } from './mail/MailBody';
+import ComposePreview from './mail/ComposePreview';
 import RichTextEditor, { htmlToText } from './mail/RichTextEditor';
 import MailErrorPanel from './MailErrorPanel';
+import RelinkModal from './mail/RelinkModal';
 import MailCalendar from './MailCalendar';
 import GoogleAuthWindow from './GoogleAuthWindow';
 import { fmtRel } from '@/lib/google';
@@ -32,6 +34,7 @@ import PasswordInput from './PasswordInput';
 import { MAIL_REFRESH_EVENT, MAIL_NEW_EVENT, MAIL_SNAPSHOT_EVENT } from './MailWatchHost';
 import { MAIL_MUTED_EVENT, loadMutedMail, toggleMutedMail } from '@/lib/mailMuted';
 import { useSplit } from '@/lib/useSplit';
+import { useComposeSize } from '@/lib/useComposeSize';
 import Splitter from './Splitter';
 import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
@@ -441,6 +444,17 @@ function Composer({ account, draft, onClose, onSent }: {
   const [contacts, setContacts] = useState<MailContact[]>([]);
   useEffect(() => { mContacts().then(setContacts).catch(() => {}); }, []);
 
+  /**
+   * Kích thước cửa sổ soạn thư — xem hook useComposeSize.
+   *
+   * Khung 720×88vh cố định là quá chật cho mail có bảng/ảnh: gõ vài dòng đã
+   * phải cuộn, mà cuộn thì mất luôn phần trích dẫn đang cần đối chiếu.
+   */
+  const size = useComposeSize();
+
+  /** Xem trước ĐÚNG như người nhận thấy — xem ghi chú ở ComposePreview. */
+  const [preview, setPreview] = useState(false);
+
   const isReply = !!draft.inReplyTo;
   const isForward = (draft.forwardAttachments?.length ?? 0) > 0 || /^fwd?:/i.test(draft.subject);
 
@@ -516,7 +530,8 @@ function Composer({ account, draft, onClose, onSent }: {
 
   return (
     <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && !busy && onClose()}>
-      <div className="mail-compose"
+      <div className={`mail-compose mc-sizable${size.maximized ? ' is-max' : ''}${size.resizing ? ' is-resizing' : ''}`}
+        style={size.style}
         onDragOver={(e) => { e.preventDefault(); }}
         onDrop={(e) => { e.preventDefault(); void addFiles(e.dataTransfer.files); }}>
         {/* Header gradient — phân biệt reply / soạn mới */}
@@ -524,6 +539,14 @@ function Composer({ account, draft, onClose, onSent }: {
           <span className="mc-head-ico" aria-hidden>{isReply ? '↩' : isForward ? '↳' : '✉'}</span>
           <span className="mc-head-title">{isReply ? 'Trả lời' : isForward ? 'Chuyển tiếp' : 'Thư mới'}</span>
           <span className="mc-head-from">từ {account.email}</span>
+          <span style={{ flex: 1 }} />
+          {/* Ô vuông cửa sổ kiểu window manager: ▢ = phóng to, ❐ = thu về khổ
+              cũ. Đặt cạnh ✕ đúng thứ tự quen thuộc của thanh tiêu đề. */}
+          <button className="mc-x" onClick={size.toggleMax}
+            aria-pressed={size.maximized}
+            title={size.maximized ? 'Thu nhỏ về khổ cũ' : 'Phóng to gần hết màn hình'}>
+            {size.maximized ? '❐' : '▢'}
+          </button>
           <button className="mc-x" onClick={onClose} disabled={busy} title="Đóng">✕</button>
         </div>
 
@@ -549,16 +572,30 @@ function Composer({ account, draft, onClose, onSent }: {
         </div>
 
         <div className="mc-body-wrap">
-          <RichTextEditor
-            value={body}
-            onChange={setBody}
-            onSubmit={() => { if (to.trim() && !busy) void send(); }}
-            placeholder="Viết nội dung… (kéo-thả file vào đây để đính kèm · Ctrl+Enter gửi)"
-            minHeight={240}
-            // Soạn mới: con trỏ vào ngay chỗ trống phía trên chữ ký. Trả lời thì
-            // ô "Tới" đã điền sẵn nên cũng nên nhảy thẳng vào chỗ gõ.
-            autoFocusTop={isReply || isForward || !!to.trim()}
-          />
+          {preview ? (
+            <ComposePreview
+              html={body}
+              account={account}
+              to={to}
+              cc={cc}
+              subject={subject}
+              attachments={[
+                ...fwdAtts.map((a) => ({ filename: a.filename, size: a.size })),
+                ...atts.map((a) => ({ filename: a.filename, size: a.size })),
+              ]}
+            />
+          ) : (
+            <RichTextEditor
+              value={body}
+              onChange={setBody}
+              onSubmit={() => { if (to.trim() && !busy) void send(); }}
+              placeholder="Viết nội dung… (kéo-thả file vào đây để đính kèm · Ctrl+Enter gửi)"
+              minHeight={240}
+              // Soạn mới: con trỏ vào ngay chỗ trống phía trên chữ ký. Trả lời thì
+              // ô "Tới" đã điền sẵn nên cũng nên nhảy thẳng vào chỗ gõ.
+              autoFocusTop={isReply || isForward || !!to.trim()}
+            />
+          )}
         </div>
 
         {(atts.length > 0 || fwdAtts.length > 0) && (
@@ -593,9 +630,24 @@ function Composer({ account, draft, onClose, onSent }: {
             📎 Đính kèm
           </button>
           <input ref={fileRef} type="file" multiple hidden onChange={(e) => void addFiles(e.target.files)} />
+          {/* Xem trước = render CHÍNH cái HTML sắp gửi, qua đúng khung iframe
+              dùng để ĐỌC mail. Ô soạn thảo hiển thị theo theme tối của app nên
+              nhìn không giống bên người nhận chút nào; ở đây mới thấy thật. */}
+          <button className={`mc-tool${preview ? ' is-on' : ''}`} onClick={() => setPreview((v) => !v)}
+            disabled={busy} aria-pressed={preview}
+            title="Xem trước đúng như bên người nhận mở ra">
+            {preview ? '✎ Soạn tiếp' : '👁 Xem trước'}
+          </button>
           <span style={{ flex: 1 }} />
           <button className="mc-tool" onClick={onClose} disabled={busy}>Hủy</button>
         </div>
+
+        {/* Tay kéo góc dưới-phải. Ẩn khi đang phóng to (khung đã bám mép màn
+            hình, kéo thêm là vô nghĩa). */}
+        {!size.maximized && (
+          <div className="mc-grip" onPointerDown={size.onResizeStart}
+            role="separator" aria-label="Kéo để đổi kích thước ô soạn thư" title="Kéo để đổi kích thước" />
+        )}
       </div>
     </div>
   );
@@ -853,12 +905,14 @@ function forwardDraft(detail: MailDetail, path: string): ComposeDraft {
   };
 }
 
-function MailboxView({ account, onCompose, onReadLocal }: {
+function MailboxView({ account, onCompose, onReadLocal, onAccountChanged }: {
   account: MailAccountPub;
   onCompose: (draft: ComposeDraft) => void;
   /** Báo lên cha: N thư INBOX vừa được đọc/xử lý — chip tài khoản trừ NGAY,
    *  không chờ server đếm lại (snapshot event sẽ xác nhận sau ~1-3s). */
   onReadLocal?: (count: number) => void;
+  /** Cấu hình tài khoản vừa đổi (liên kết lại) → cha tải lại danh sách. */
+  onAccountChanged?: () => void;
 }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--gp-rail', min: 170, max: 520, gap: 12 });
@@ -895,14 +949,30 @@ function MailboxView({ account, onCompose, onReadLocal }: {
   const [spamming, setSpamming] = useState<number | null>(null);
   const [markingAll, setMarkingAll] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /** Phân loại lỗi server gửi kèm — có thì dựng được UI khắc phục (nút/link)
+   *  thay vì in "Command failed". */
+  const [failure, setFailure] = useState<ImapFailureInfo | undefined>();
+  /** Đang mở hộp thoại LIÊN KẾT LẠI (hòm thư mật khẩu mất xác thực). */
+  const [relinking, setRelinking] = useState(false);
   /** Consent Google mở trong app để XÁC THỰC LẠI hòm thư OAuth hết hạn. */
   const [reauthUrl, setReauthUrl] = useState<string | null>(null);
+
+  /** Ghi lỗi kèm phân loại. Mọi chỗ catch dùng hàm này thay cho setErr trần,
+   *  nếu không thì `failure` của lỗi TRƯỚC còn treo lại và UI mọc nút sai. */
+  const fail = useCallback((e: unknown) => {
+    const me = e as MailActionError;
+    setFailure(me.failure);
+    setErr(me.message || 'Mail operation failed');
+  }, []);
+
+  /** Xoá sạch trạng thái lỗi — gọi trước mỗi thao tác mới. */
+  const clearErr = useCallback(() => { setErr(null); setFailure(undefined); }, []);
 
   /** Token Google chết (app Testing hết hạn 7 ngày / bị thu hồi / đổi mật khẩu)
    *  → mở consent lại NGAY TẠI ĐÂY. Consent cùng email upsert vào đúng bản ghi
    *  Google cũ nên hòm thư sống lại tức thì, không phải gỡ/thêm lại. */
   const startReauth = async () => {
-    setErr(null);
+    clearErr();
     try {
       const { url } = await mGoogleAuthUrl(account.email);
       if (typeof window !== 'undefined' && window.workspace?.isDesktop) setReauthUrl(url);
@@ -911,7 +981,7 @@ function MailboxView({ account, onCompose, onReadLocal }: {
         setErr('Hoàn tất đăng nhập ở tab vừa mở, rồi bấm ↻ tải lại danh sách.');
       }
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     }
   };
 
@@ -922,23 +992,23 @@ function MailboxView({ account, onCompose, onReadLocal }: {
   }, [path, onReadLocal]);
 
   const loadFolders = useCallback(() => {
-    mFolders(account.id).then(setFolders).catch((e) => setErr((e as Error).message));
-  }, [account.id]);
+    mFolders(account.id).then(setFolders).catch((e) => fail(e));
+  }, [account.id, fail]);
   useEffect(() => { loadFolders(); }, [loadFolders]);
 
   const loadList = useCallback(async (p: string, beforeSeq?: number) => {
-    setLoading(true); setErr(null);
+    setLoading(true); clearErr();
     try {
       const page = await mList(account.id, p, beforeSeq);
       setItems((cur) => (beforeSeq ? [...cur, ...page.items] : page.items));
       setTotal(page.total);
       setOldestSeq(page.oldestSeq);
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     } finally {
       setLoading(false);
     }
-  }, [account.id]);
+  }, [account.id, fail, clearErr]);
 
   useEffect(() => { void loadList('INBOX'); }, [loadList]);
 
@@ -974,12 +1044,12 @@ function MailboxView({ account, onCompose, onReadLocal }: {
   const openNested = async (base: number[], idx: number) => {
     if (!detail) return;
     const trail = [...base, idx];
-    setNestedBusy(true); setErr(null);
+    setNestedBusy(true); clearErr();
     try {
       const nd = await mNestedMessage(account.id, path, detail.uid, trail);
       setNested((s) => [...s, { trail, detail: nd }]);
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     } finally {
       setNestedBusy(false);
     }
@@ -993,7 +1063,7 @@ function MailboxView({ account, onCompose, onReadLocal }: {
    * giảm, lọc "Chưa đọc" vẫn dính, mở kiểu gì cũng không hết đậm.
    */
   const openMessage = async (m: MailListItem, thread?: MailThread) => {
-    setOpening(m.uid); setErr(null);
+    setOpening(m.uid); clearErr();
     setNested([]); // mail khác → bỏ ngăn xếp mail lồng của mail cũ
     try {
       setDetail(await mMessage(account.id, path, m.uid));
@@ -1013,7 +1083,7 @@ function MailboxView({ account, onCompose, onReadLocal }: {
         pingMailWatch(); // badge tab Mail giảm ngay, khỏi chờ chu kỳ 10 phút
       }
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     } finally {
       setOpening(null);
     }
@@ -1021,7 +1091,7 @@ function MailboxView({ account, onCompose, onReadLocal }: {
 
   /** Đánh dấu toàn bộ mail trong folder hiện tại là đã đọc — optimistic UI. */
   const markAllRead = async () => {
-    setMarkingAll(true); setErr(null);
+    setMarkingAll(true); clearErr();
     // Chụp số chưa đọc TRƯỚC khi reset — markAllSeen quét cả folder (kể cả
     // trang chưa tải) nên số của folder là đúng nhất cho chip tài khoản.
     const wasUnseen = folders.find((f) => f.path === path)?.unseen
@@ -1036,7 +1106,7 @@ function MailboxView({ account, onCompose, onReadLocal }: {
       // trang chưa tải, nên đừng để badge/nút dựa vào phỏng đoán ở client.
       loadFolders();
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     } finally {
       setMarkingAll(false);
     }
@@ -1052,6 +1122,25 @@ function MailboxView({ account, onCompose, onReadLocal }: {
   const inTrash = curFolder?.specialUse === '\\Trash' || /^trash$/i.test(curFolder?.name ?? '');
   // Đang đứng trong Spam → ẩn nút 🚫 (đánh dấu spam một mail đã ở Spam là vô nghĩa).
   const inJunk = curFolder?.specialUse === '\\Junk' || /^(junk|spam)$/i.test(curFolder?.name ?? '');
+
+  /**
+   * Lỗi này có sửa được bằng cách ĐĂNG NHẬP LẠI không?
+   *
+   * Chỉ mọc nút "Liên kết lại" ở các nhóm thật sự do xác thực/quyền — nhập lại
+   * mật khẩu không cứu được lỗi DNS hay firewall, mà mọc nút ở đó thì người
+   * dùng gõ mật khẩu đúng vẫn thất bại và tưởng mình sai.
+   *
+   * 'unknown' vẫn tính vào: đây chính là ô mà "Command failed" rơi vào khi
+   * server từ chối bằng câu lạ, và bỏ nút ở đó là quay lại đúng cảnh bế tắc cũ.
+   *
+   * KHÔNG phân loại được (`failure` rỗng) thì KHÔNG mọc nút: đó là lỗi không
+   * đi qua IMAP — hết accountId, folder không tồn tại, mạng đứt giữa chừng —
+   * nhập lại mật khẩu chẳng cứu được gì, mà mời gõ mật khẩu cho một lỗi không
+   * liên quan là đẩy người dùng đi sai hướng.
+   */
+  const needsRelink = failure
+    ? ['auth', 'app-password', 'imap-disabled', 'unknown'].includes(failure.kind)
+    : false;
 
   const threads = useMemo(() => groupThreads(items), [items]);
 
@@ -1093,7 +1182,7 @@ function MailboxView({ account, onCompose, onReadLocal }: {
       ? `Xóa VĨNH VIỄN ${label}? (đang ở Thùng rác — không khôi phục được)`
       : `Xóa ${label}? Mail sẽ được chuyển vào Thùng rác.`;
     if (!window.confirm(q)) return;
-    setDeleting(m.uid); setErr(null);
+    setDeleting(m.uid); clearErr();
     try {
       await mDelete(account.id, path, m.uid);
       setItems((cur) => cur.filter((x) => x.uid !== m.uid));
@@ -1105,7 +1194,7 @@ function MailboxView({ account, onCompose, onReadLocal }: {
       }
       setDetail((d) => (d?.uid === m.uid ? null : d));
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     } finally {
       setDeleting(null);
     }
@@ -1115,7 +1204,7 @@ function MailboxView({ account, onCompose, onReadLocal }: {
    *  KHÔNG hỏi confirm như xóa: mail vẫn nằm nguyên trong thư mục Spam, bấm
    *  nhầm thì vào đó kéo lại được. Optimistic UI giống removeMail. */
   const markSpamMail = async (m: Pick<MailListItem, 'uid' | 'seen'>) => {
-    setSpamming(m.uid); setErr(null);
+    setSpamming(m.uid); clearErr();
     try {
       await mSpam(account.id, path, m.uid);
       setItems((cur) => cur.filter((x) => x.uid !== m.uid));
@@ -1127,7 +1216,7 @@ function MailboxView({ account, onCompose, onReadLocal }: {
       }
       setDetail((d) => (d?.uid === m.uid ? null : d));
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     } finally {
       setSpamming(null);
     }
@@ -1162,24 +1251,59 @@ function MailboxView({ account, onCompose, onReadLocal }: {
       )}
 
       <div className="g-main">
-        {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
-        {/* Hòm thư OAuth mà lỗi thì 9/10 là token Google hết hạn — đưa lối
-            xác thực lại NGAY ĐÂY thay vì bắt người dùng mò sang tab Google
-            (hoặc tệ hơn: gỡ tài khoản rồi thêm lại). */}
-        {err && account.auth === 'oauth' && (
+        {/* Lỗi đã PHÂN LOẠI (server gửi kèm `failure`) → bảng có bước sửa +
+            link + nút thử lại. Chưa phân loại được thì MailErrorPanel tự rơi
+            về in text thô như cũ. */}
+        {err && <MailErrorPanel failure={failure} message={err}
+          onRetry={() => { clearErr(); loadFolders(); void loadList(path); }} retrying={loading} />}
+        {/* Hòm thư mất xác thực thì phải có LỐI SỐNG LẠI ngay tại đây — trước
+            đây chỉ hòm thư OAuth mới có nút, còn hòm thư mật khẩu (Zimbra/mail
+            nội bộ) chỉ thấy "Command failed" và hết đường, phải gỡ rồi thêm
+            lại (mất chữ ký, mất tên đã đặt). */}
+        {err && needsRelink && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: '4px 0 8px' }}>
-            <button className="sm" onClick={() => void startReauth()}>
-              Ⓖ Xác thực lại Google
-            </button>
-            <span className="small" style={{ color: 'var(--muted)' }}>
-              Token Google có hạn dùng — xác thực lại là hòm thư sống lại, giữ nguyên cấu hình.
-            </span>
+            {account.auth === 'oauth' ? (
+              <>
+                <button className="sm" onClick={() => void startReauth()}>
+                  Ⓖ Xác thực lại Google
+                </button>
+                <button className="ghost sm" onClick={() => setRelinking(true)}
+                  title="Chuyển hòm thư này sang đăng nhập bằng mật khẩu / App Password">
+                  🔗 Dùng mật khẩu thay
+                </button>
+                <span className="small" style={{ color: 'var(--muted)' }}>
+                  Token Google có hạn dùng — xác thực lại là hòm thư sống lại, giữ nguyên cấu hình.
+                </span>
+              </>
+            ) : (
+              <>
+                <button className="sm" onClick={() => setRelinking(true)}>
+                  🔗 Liên kết lại
+                </button>
+                <span className="small" style={{ color: 'var(--muted)' }}>
+                  Nhập lại mật khẩu là hòm thư chạy tiếp — giữ nguyên chữ ký, tên và mọi cấu hình.
+                </span>
+              </>
+            )}
           </div>
+        )}
+        {relinking && (
+          <RelinkModal
+            account={account}
+            onCancel={() => setRelinking(false)}
+            onDone={() => {
+              setRelinking(false);
+              clearErr();
+              loadFolders();
+              void loadList(path);
+              onAccountChanged?.();
+            }}
+          />
         )}
         {reauthUrl && (
           <GoogleAuthWindow
             url={reauthUrl}
-            onDone={() => { setReauthUrl(null); setErr(null); loadFolders(); void loadList(path); }}
+            onDone={() => { setReauthUrl(null); clearErr(); loadFolders(); void loadList(path); }}
             onCancel={() => setReauthUrl(null)}
           />
         )}
@@ -1757,6 +1881,9 @@ export default function MailWorkspace() {
                 ...cur,
                 [active.id]: Math.max(0, (cur[active.id] ?? 0) - n),
               }))}
+              // Liên kết lại xong: cấu hình tài khoản (auth, host…) đã đổi ở
+              // server, nạp lại để chip/tab hiện đúng trạng thái mới.
+              onAccountChanged={() => { void mAccounts().then(setAccounts).catch(() => {}); }}
             />}
       </div>
 

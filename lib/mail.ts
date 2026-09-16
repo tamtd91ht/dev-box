@@ -233,6 +233,20 @@ export const mAccountAddOAuth = (email: string, meta: { label?: string; title?: 
 /** URL consent Google kèm scope mail (XOAUTH2 cho IMAP/SMTP). */
 export const mGoogleAuthUrl = (email?: string) =>
   mailAction<{ url: string }>('googleAuthUrl', { email });
+/** LIÊN KẾT LẠI hòm thư mật khẩu: đặt lại thông tin đăng nhập, giữ nguyên
+ *  chữ ký/tên/cấu hình. Host/port bỏ trống = giữ cái đang có. */
+export interface AccountRelinkInput {
+  pass: string;
+  user?: string;
+  imapHost?: string;
+  imapPort?: number;
+  imapSecure?: boolean;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpSecure?: boolean;
+}
+export const mAccountRelink = (id: string, input: AccountRelinkInput) =>
+  mailAction<MailAccountPub[]>('accountRelink', { id, ...input });
 /** Đổi tên tài khoản. title = tên quản lý trên tab; label = tên người gửi (From). */
 export const mAccountRename = (id: string, patch: { title?: string; label?: string }) =>
   mailAction<MailAccountPub[]>('accountRename', { id, ...patch });

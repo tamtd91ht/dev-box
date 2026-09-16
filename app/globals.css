@@ -5929,6 +5929,70 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
   padding: 8px 14px; border-radius: 9px; cursor: pointer; font-size: 13px;
 }
 .mc-tool:hover:not(:disabled) { background: var(--glass-2); }
+/* Nút đang BẬT (Xem trước) — nhìn là biết đang ở chế độ nào, khỏi đọc nhãn. */
+.mc-tool.is-on {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* ── Composer: phóng to / kéo giãn (lib/useComposeSize.ts) ───────────────── */
+/* Khung có kích thước do JS đặt qua style inline → bỏ trần cứng của .mail-compose. */
+.mc-sizable { width: auto; max-height: none; }
+/* Đổi khổ mượt khi bấm ▢; KHI ĐANG KÉO thì tắt đi, không thì khung chạy đuổi
+   theo chuột một nhịp và cảm giác như bị lag. */
+.mc-sizable { transition: width .16s ease, height .16s ease; }
+.mc-sizable.is-resizing { transition: none; user-select: none; }
+
+/* Tay kéo góc dưới-phải — ba vạch chéo như mọi ô resize của trình duyệt. */
+.mc-grip {
+  position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
+  cursor: nwse-resize; touch-action: none;
+  background:
+    linear-gradient(135deg, transparent 46%, var(--faint) 46%, var(--faint) 54%, transparent 54%) no-repeat,
+    linear-gradient(135deg, transparent 66%, var(--faint) 66%, var(--faint) 74%, transparent 74%) no-repeat;
+  opacity: .6;
+}
+.mc-grip:hover { opacity: 1; }
+/* Khung phải là mốc định vị cho tay kéo; overflow ẩn sẵn nên nó không tràn ra. */
+.mail-compose { position: relative; }
+
+/* ── Composer: xem trước thư sắp gửi (components/mail/ComposePreview.tsx) ── */
+.mc-preview { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.mc-preview-bar {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 6px 16px; border-bottom: 1px solid var(--glass-brd);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.mc-preview-tag { font-size: 12px; font-weight: 700; color: var(--accent); }
+.mc-preview-tab {
+  border: 1px solid transparent; background: transparent; color: var(--muted);
+  padding: 3px 10px; border-radius: 7px; cursor: pointer; font-size: 12px;
+}
+.mc-preview-tab:hover { background: var(--glass-2); color: var(--text); }
+.mc-preview-tab.is-on {
+  background: var(--glass-2); border-color: var(--glass-brd);
+  color: var(--text); font-weight: 600;
+}
+.mc-preview-scroll { flex: 1; min-height: 0; overflow: auto; }
+/* Header dựng như webmail: nền TRẮNG liền mạch với iframe body bên dưới, để
+   toàn bộ vùng xem trước trông đúng như một thư đang mở, không phải một mảnh
+   giao diện app dán lên trên. */
+.mc-preview-head {
+  padding: 12px 14px 10px; background: #fff; color: #202124;
+  border-bottom: 1px solid #e8eaed;
+}
+.mc-preview-subject { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+.mc-preview-meta { font-size: 12.5px; color: #5f6368; line-height: 1.6; }
+.mc-preview-addr { color: #80868b; margin-left: 4px; }
+/* Bản text thuần — mono, nền trắng như client text-only thật sự hiện. */
+.mc-preview-text {
+  margin: 0; padding: 12px 14px; background: #fff; color: #202124;
+  white-space: pre-wrap; word-break: break-word;
+  font: 12.5px/1.6 var(--mono, ui-monospace, Consolas, monospace);
+}
+/* Trong ô xem trước, iframe nối LIỀN với header trắng ở trên: bỏ viền + bo góc
+   của khung đọc mail, không thì thấy rõ hai mảnh dán vào nhau. */
+.mc-preview .mail-frame { border: 0; border-radius: 0; }
 
 /* Add-account form */
 .mail-add { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
