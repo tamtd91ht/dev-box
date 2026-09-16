@@ -9,6 +9,22 @@ import { configPath } from './configDir';
 
 export interface ApiHeader { key: string; value: string; on?: boolean }
 
+/** Mirror của ApiBodyType ở lib/api.ts (file này không import module browser). */
+export type ApiBodyType = 'none' | 'raw' | 'form' | 'multipart';
+
+/** Một dòng form. `fileB64` KHÔNG bao giờ được ghi xuống đây — client đã lược
+ *  bỏ (stripFiles), và saveRequest lược lần nữa cho chắc: file vài MB nhồi vào
+ *  file cấu hình JSON làm mọi lần đọc/ghi chậm hẳn. */
+export interface ApiFormField {
+  key: string;
+  value: string;
+  on?: boolean;
+  kind?: 'text' | 'file';
+  fileName?: string;
+  fileB64?: string;
+  fileType?: string;
+}
+
 export interface ApiRequest {
   id: string;
   name: string;
@@ -18,7 +34,9 @@ export interface ApiRequest {
   url: string;
   headers: ApiHeader[];
   body: string;
-  bodyType: 'none' | 'raw' | 'form';
+  bodyType: ApiBodyType;
+  /** Dòng form khi bodyType là 'form' (urlencoded) hoặc 'multipart'. */
+  form?: ApiFormField[];
   updatedAt: string;
 }
 
@@ -59,6 +77,9 @@ export async function saveRequest(input: Partial<ApiRequest> & { name: string })
     headers: input.headers ?? [],
     body: input.body ?? '',
     bodyType: input.bodyType ?? 'none',
+    // Chốt chặn cuối: ruột file không được nằm trong collections dù client có
+    // lỡ gửi lên. Giữ tên/kiểu để UI còn hiện "đã chọn file X, chọn lại đi".
+    form: input.form?.map((f) => (f.kind === 'file' ? { ...f, fileB64: undefined } : f)),
     updatedAt: now,
   };
   if (input.id) {

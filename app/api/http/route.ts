@@ -2,8 +2,14 @@
 // Browser POST vào đây, server fetch tới target thật rồi trả envelope
 // (status + headers + body + thời gian) — né CORS hoàn toàn (server-to-server).
 //
-//   POST { method, url, headers?: {key,value}[], body?: string }
+//   POST { method, url, headers?: {key,value}[], body?: string,
+//          bodyType?: 'none'|'raw'|'form'|'multipart', form?: ApiFormField[] }
 //   → { ok, result: { status, statusText, headers, body, timeMs, size } }
+//
+// bodyType='form'      → dựng application/x-www-form-urlencoded từ `form`.
+// bodyType='multipart' → dựng multipart/form-data, dòng kind='file' mang nội
+//                        dung base64 (fileB64) được giải mã lại thành Blob.
+// Bỏ trống bodyType → gửi `body` nguyên văn, y như trước.
 //
 // KHÔNG dính auth/apiPrefix của backend cấu hình sẵn (khác /api/proxy) — đây là HTTP thô.
 
@@ -31,9 +37,68 @@ function explain(e: unknown): string {
   return parts.join(' ← ') || String(e);
 }
 
+interface FormField {
+  key: string; value: string; on?: boolean;
+  kind?: 'text' | 'file'; fileName?: string; fileB64?: string; fileType?: string;
+}
+
+/** Trần tổng dung lượng file — base64 nằm trọn trong RAM, quá tay là treo
+ *  process chứ không phải chỉ chậm. Khớp FILE_LIMIT ở lib/api.ts. */
+const FILE_LIMIT = 20 * 1024 * 1024;
+
+/** Dòng dùng được: có tên field và chưa bị tắt. */
+const usable = (f: FormField) => f.key.trim() !== '' && f.on !== false;
+
+/**
+ * Dựng body theo `bodyType`.
+ *
+ * TRẢ VỀ `undefined` CHO CONTENT-TYPE ở hai dạng form: để fetch/undici TỰ đặt.
+ * Với multipart điều này là bắt buộc — header phải kèm `boundary=...` mà chỉ
+ * runtime mới biết; tự tay đặt 'multipart/form-data' trơn là server bên kia
+ * không tách nổi part nào và trả 400. Với urlencoded thì FormData/URLSearchParams
+ * cũng tự khai đúng, khỏi phải nhớ.
+ */
+function buildBody(
+  bodyType: string | undefined,
+  raw: string | undefined,
+  form: FormField[] | undefined,
+): { body: BodyInit | undefined; dropContentType: boolean } {
+  if (bodyType === 'form') {
+    const p = new URLSearchParams();
+    for (const f of form ?? []) if (usable(f)) p.append(f.key.trim(), f.value ?? '');
+    return { body: p, dropContentType: true };
+  }
+  if (bodyType === 'multipart') {
+    const fd = new FormData();
+    let total = 0;
+    for (const f of form ?? []) {
+      if (!usable(f)) continue;
+      if (f.kind === 'file') {
+        // Dòng file chưa chọn lại file (request vừa nạp từ collections — ruột
+        // file cố ý không được lưu) thì BỎ QUA, không gửi một part rỗng mang
+        // tên file cũ: server bên kia sẽ nhận một file 0 byte và tưởng là thật.
+        if (!f.fileB64) continue;
+        const buf = Buffer.from(f.fileB64, 'base64');
+        total += buf.length;
+        if (total > FILE_LIMIT) throw new Error(`Tổng file vượt ${Math.round(FILE_LIMIT / 1024 / 1024)}MB.`);
+        fd.append(
+          f.key.trim(),
+          new Blob([new Uint8Array(buf)], { type: f.fileType || 'application/octet-stream' }),
+          f.fileName || 'file',
+        );
+      } else {
+        fd.append(f.key.trim(), f.value ?? '');
+      }
+    }
+    return { body: fd, dropContentType: true };
+  }
+  return { body: raw || undefined, dropContentType: false };
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null) as {
     method?: string; url?: string; headers?: { key: string; value: string }[]; body?: string;
+    bodyType?: string; form?: FormField[];
   } | null;
   if (!body?.url) return NextResponse.json({ ok: false, error: 'Thiếu URL.' }, { status: 400 });
 
@@ -47,8 +112,19 @@ export async function POST(req: NextRequest) {
   const headers = new Headers();
   for (const h of body.headers ?? []) if (h.key.trim()) headers.set(h.key.trim(), h.value);
 
+  let built: { body: BodyInit | undefined; dropContentType: boolean };
+  try {
+    built = buildBody(body.bodyType, body.body, body.form);
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
+  }
+  // Content-Type do người dùng gõ tay ở tab Headers phải NHƯỜNG cho bản runtime
+  // tự sinh: giữ lại cái cũ (vd 'application/json' còn sót từ lần gõ raw) thì
+  // multipart mất boundary và request hỏng mà không rõ vì sao.
+  if (built.dropContentType) headers.delete('content-type');
+
   const init: RequestInit & { dispatcher?: unknown } = { method, headers, redirect: 'follow' };
-  if (body.body && !['GET', 'HEAD'].includes(method)) init.body = body.body;
+  if (built.body !== undefined && !['GET', 'HEAD'].includes(method)) init.body = built.body;
   if (url.protocol === 'https:') init.dispatcher = insecureAgent;
 
   const t0 = Date.now();

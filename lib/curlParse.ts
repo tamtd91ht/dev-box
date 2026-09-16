@@ -150,12 +150,20 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/** Dòng form để dựng curl — khớp ApiFormField (chỉ phần buildCurl cần). */
+export interface CurlFormField {
+  key: string; value: string; on?: boolean;
+  kind?: 'text' | 'file'; fileName?: string;
+}
+
 export interface CurlBuildInput {
   method: string;
   url: string;
   headers: { key: string; value: string; on?: boolean }[];
   body: string;
-  bodyType: 'none' | 'raw' | 'form';
+  bodyType: 'none' | 'raw' | 'form' | 'multipart';
+  /** Dòng form khi bodyType là 'form' hoặc 'multipart'. */
+  form?: CurlFormField[];
 }
 
 /**
@@ -173,7 +181,9 @@ export function buildCurl(req: CurlBuildInput, opts: { multiline?: boolean } = {
   const parts: string[] = ['curl'];
 
   const method = (req.method || 'GET').toUpperCase();
-  const hasBody = req.bodyType !== 'none' && !!req.body;
+  const formRows = (req.form ?? []).filter((f) => f.key.trim() && f.on !== false);
+  const isForm = req.bodyType === 'form' || req.bodyType === 'multipart';
+  const hasBody = isForm ? formRows.length > 0 : req.bodyType !== 'none' && !!req.body;
   if (method !== 'GET') parts.push(`-X ${method}`);
 
   parts.push(shellQuote(req.url));
@@ -183,7 +193,24 @@ export function buildCurl(req: CurlBuildInput, opts: { multiline?: boolean } = {
     parts.push(`-H ${shellQuote(`${h.key.trim()}: ${h.value}`)}`);
   }
 
-  if (hasBody) {
+  if (hasBody && isForm) {
+    // Mỗi dòng form một cờ riêng, đúng cách curl nhận:
+    //   urlencoded → --data-urlencode 'k=v' (curl tự mã hoá, khỏi tự escape)
+    //   multipart  → -F 'k=v', file là -F 'k=@đường/dẫn'
+    // File chỉ ghi được TÊN: lệnh curl chạy ở máy khác nên đường dẫn thật vô
+    // nghĩa; người nhận thay bằng đường dẫn của họ. Ghi @tên còn hơn bỏ hẳn —
+    // bỏ thì lệnh trông như không cần file và họ không biết mà thêm vào.
+    for (const f of formRows) {
+      const k = f.key.trim();
+      if (req.bodyType === 'multipart') {
+        parts.push(f.kind === 'file'
+          ? `-F ${shellQuote(`${k}=@${f.fileName || 'file'}`)}`
+          : `-F ${shellQuote(`${k}=${f.value}`)}`);
+      } else {
+        parts.push(`--data-urlencode ${shellQuote(`${k}=${f.value}`)}`);
+      }
+    }
+  } else if (hasBody) {
     // --data-raw chứ không phải -d: -d nuốt ký tự xuống dòng và diễn giải @file,
     // nên JSON nhiều dòng hay body bắt đầu bằng @ sẽ sai âm thầm.
     parts.push(`--data-raw ${shellQuote(req.body)}`);

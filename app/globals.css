@@ -6434,6 +6434,35 @@ iframe.tools-view-box { background: #fff; }
 .api-bodytype { display: flex; gap: 14px; align-items: center; font-size: 12px; }
 /* resize:vertical = kéo tay ở góc dưới-phải khi muốn khác mặc định. */
 .api-bodytext { flex: 1; min-height: 160px; font-family: var(--mono, monospace); font-size: 12px; resize: vertical; }
+
+/* Ô body / response dựng bằng Monaco (components/api/JsonBox.tsx) — viền + bo
+   góc để khớp các ô .input xung quanh, vì Monaco tự vẽ nền riêng của nó. */
+/* KHÔNG dùng flex:1 ở đây: Monaco đòi chiều cao TUYỆT ĐỐI (nó tự đo rồi vẽ
+   canvas), nên chiều cao do prop `height` của JsonBox quyết định và khung chỉ
+   việc ôm lấy. Cho flex:1 thì khung co giãn còn editor bên trong vẫn giữ nguyên
+   px — thừa ra một mảng trống có viền. */
+.api-bodybox, .api-resbox {
+  flex: none; overflow: hidden;
+  border: 1px solid var(--glass-brd); border-radius: 8px;
+}
+.api-resbox { margin: 0 10px 10px; }
+
+/* Radio chọn kiểu body: nhãn dài hơn trước (x-www-form-urlencoded) nên cho
+   xuống dòng thay vì đẩy tràn ngang. */
+.api-bodytype { flex-wrap: wrap; row-gap: 6px; }
+.api-bodytype label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+
+/* Nút chọn file trong một dòng form-data — trông như .input để cả hàng thẳng. */
+.api-file {
+  flex: 1; min-width: 0; display: flex; align-items: center; cursor: pointer;
+  padding: 6px 10px; border: 1px dashed var(--glass-brd); border-radius: 8px;
+  font-size: 12.5px; color: var(--muted); background: transparent;
+}
+.api-file:hover { border-color: var(--accent); color: var(--text); }
+.api-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* File của request ĐÃ LƯU: còn tên nhưng không còn ruột (cố ý không lưu) —
+   phải nhìn ra ngay là cần chọn lại, không thì bấm Send mà thiếu file. */
+.api-file-name.is-stale { color: var(--warn, #d90); }
 /* Có response rồi thì hai bên chia nhau, editor không nuốt hết. */
 .api-main:has(.api-res) .api-editor { flex: 1 1 40%; }
 .api-main:has(.api-res) .api-res { flex: 1 1 60%; }

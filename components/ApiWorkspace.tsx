@@ -14,28 +14,41 @@
 // thứ đang dở nữa. Danh sách tab (chỉ phần draft, không kèm response) nhớ qua
 // localStorage nên đóng app mở lại vẫn còn nguyên bàn làm việc.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   apiGet, apiSaveRequest, apiRemoveRequest, apiSaveEnv, apiRemoveEnv, apiSetActiveEnv, apiSend,
+  stripFiles, FILE_LIMIT,
   type ApiData, type ApiRequest, type ApiHeader, type ApiEnvironment, type HttpResult,
+  type ApiBodyType, type ApiFormField,
 } from '@/lib/api';
 import { parseCurl, resolveVars, looksLikeCurl, buildCurl } from '@/lib/curlParse';
 import { formatText, type FormatKind } from '@/lib/format';
-import {
-  backspace as jsonBackspace, closeBracket as jsonCloseBracket, enter as jsonEnter,
-  looksLikeJson, openBrace, openBracket, quote as jsonQuote, remapCaret, type EditResult,
-} from '@/lib/jsonEdit';
+import { looksLikeJson } from '@/lib/jsonEdit';
 import { fmtRel } from '@/lib/google';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
+import JsonBox from './api/JsonBox';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 /** Draft rỗng — hàm chứ không phải hằng dùng chung: mỗi tab phải có mảng
  *  headers của riêng nó, không thì hai tab sửa chung một chỗ. */
 const blankDraft = (): Draft => ({
   name: '', method: 'GET', url: '', headers: [{ key: '', value: '' }], body: '', bodyType: 'none',
+  form: [{ key: '', value: '', kind: 'text' }],
 });
+
+/** Nhãn + gợi ý cho từng kiểu body. Gói một chỗ để radio và phần diễn giải
+ *  dưới nó không bao giờ lệch nhau. */
+const BODY_TYPES: { key: ApiBodyType; label: string; hint: string }[] = [
+  { key: 'none', label: 'none', hint: 'Không gửi body.' },
+  { key: 'raw', label: 'raw', hint: 'Text thô (JSON/XML…). Tự đặt Content-Type ở tab Headers.' },
+  { key: 'form', label: 'x-www-form-urlencoded', hint: 'Cặp key=value, mã hoá như form HTML cổ điển.' },
+  { key: 'multipart', label: 'form-data', hint: 'Cặp key=value, kèm được FILE. Content-Type + boundary do runtime tự đặt.' },
+];
+
+/** Hai kiểu dùng bảng key/value thay vì ô text. */
+const isFormType = (t: ApiBodyType) => t === 'form' || t === 'multipart';
 
 interface Draft {
   id?: string;
@@ -45,7 +58,11 @@ interface Draft {
   url: string;
   headers: ApiHeader[];
   body: string;
-  bodyType: 'none' | 'raw' | 'form';
+  bodyType: ApiBodyType;
+  /** Dòng form cho 'form' (urlencoded) và 'multipart'. Dùng CHUNG một mảng cho
+   *  cả hai: đổi qua lại giữa hai kiểu là chuyện thường khi dò API, giữ chung
+   *  thì không phải gõ lại; chỉ dòng kind='file' là bị bỏ khi ở urlencoded. */
+  form: ApiFormField[];
 }
 
 /** Một tab request đang mở — mọi thứ thuộc về nó nằm gọn ở đây. */
@@ -79,7 +96,8 @@ function methodClass(m: string): string {
 function isPristine(s: Session): boolean {
   const d = s.draft;
   return !d.id && !d.url.trim() && !d.body.trim() && !d.name.trim() && !s.res
-    && d.headers.every((h) => !h.key.trim() && !h.value.trim());
+    && d.headers.every((h) => !h.key.trim() && !h.value.trim())
+    && d.form.every((f) => !f.key.trim() && !f.value.trim() && !f.fileName);
 }
 
 /** Nhãn hiển thị trên tab: tên đã lưu, hoặc method + path cho dễ nhận ra. */
@@ -190,7 +208,10 @@ export default function ApiWorkspace() {
   useEffect(() => {
     if (!hydrated) return;
     try {
-      const drafts = sessions.map((s) => s.draft);
+      // Lược RUỘT FILE trước khi ghi: localStorage chỉ ~5MB, một file base64
+      // là đủ tràn quota và khi đó MẤT LUÔN cả bàn làm việc (catch nuốt lỗi,
+      // không ghi được gì nữa). Tên file vẫn giữ để UI hiện "chọn lại file".
+      const drafts = sessions.map((s) => ({ ...s.draft, form: stripFiles(s.draft.form) }));
       const active = Math.max(0, sessions.findIndex((s) => s.key === cur?.key));
       localStorage.setItem(TABS_KEY, JSON.stringify({ drafts, active }));
     } catch { /* đầy thì thôi */ }
@@ -220,7 +241,22 @@ export default function ApiWorkspace() {
         .map((h) => ({ key: resolveVars(h.key, envMap), value: resolveVars(h.value, envMap) }));
       const r = await apiSend({
         method: d.method, url, headers,
-        body: d.bodyType === 'none' ? undefined : resolveVars(d.body, envMap),
+        bodyType: d.bodyType,
+        body: d.bodyType === 'raw' ? resolveVars(d.body, envMap) : undefined,
+        // Biến {{var}} áp cho cả tên field lẫn giá trị — cùng quy ước với URL
+        // và headers, người dùng không phải nhớ chỗ nào được chỗ nào không.
+        form: isFormType(d.bodyType)
+          ? d.form
+              .filter((f) => f.key.trim() && f.on !== false)
+              // urlencoded không mang được file — bỏ hẳn dòng đó thay vì để
+              // server nhận một field rỗng trùng tên (UI đã cảnh báo ở tab Body).
+              .filter((f) => !(d.bodyType === 'form' && f.kind === 'file'))
+              .map((f) => ({
+                ...f,
+                key: resolveVars(f.key, envMap),
+                value: f.kind === 'file' ? '' : resolveVars(f.value, envMap),
+              }))
+          : undefined,
       });
       patch(key, { res: r, resTab: 'body', resPretty: true });
     } catch (e) {
@@ -241,6 +277,9 @@ export default function ApiWorkspace() {
         name: '', method: p.method, url: p.url,
         headers: p.headers.length ? p.headers.map((h) => ({ ...h, on: true })) : [{ key: '', value: '' }],
         body: p.body, bodyType: p.bodyType,
+        // curl mang body dạng text thô; không tách ngược thành dòng form (một
+        // `--data a=1&b=2` có thể là urlencoded mà cũng có thể là chuỗi thường).
+        form: [{ key: '', value: '', kind: 'text' }],
       };
     } catch (e) {
       setErr('Không phân tích được curl: ' + (e as Error).message);
@@ -301,6 +340,9 @@ export default function ApiWorkspace() {
       })),
       body: resolveVars(draft.body, envMap),
       bodyType: draft.bodyType,
+      form: draft.form.map((f) => ({
+        ...f, key: resolveVars(f.key, envMap), value: resolveVars(f.value, envMap),
+      })),
     });
     try {
       await navigator.clipboard.writeText(cmd);
@@ -324,6 +366,7 @@ export default function ApiWorkspace() {
       id: r.id, name: r.name, folder: r.folder, method: r.method, url: r.url,
       headers: r.headers.length ? r.headers : [{ key: '', value: '' }],
       body: r.body, bodyType: r.bodyType,
+      form: r.form?.length ? r.form : [{ key: '', value: '', kind: 'text' }],
     };
     if (isPristine(cur)) setCur({ draft: d, tab: d.bodyType === 'none' ? 'headers' : 'body', res: null, err: null });
     else openSession(d);
@@ -343,7 +386,11 @@ export default function ApiWorkspace() {
     const finalName = name.trim() || defaultName(draft);
     try {
       const before = new Set(data.requests.map((r) => r.id));
-      const d = await apiSaveRequest({ ...draft, name: finalName, folder: folder.trim() || undefined });
+      const d = await apiSaveRequest({
+        ...draft, name: finalName, folder: folder.trim() || undefined,
+        // Ruột file không đi vào collections — xem ghi chú ở ApiFormField.
+        form: stripFiles(draft.form),
+      });
       setData(d); setSaveOpen(false);
       if (!draft.id) {
         const fresh = d.requests.find((x) => !before.has(x.id));
@@ -395,35 +442,55 @@ export default function ApiWorkspace() {
   const addHeaderRow = () => setDraft((d) => ({ ...d, headers: [...d.headers, { key: '', value: '' }] }));
   const rmHeader = (i: number) => setDraft((d) => ({ ...d, headers: d.headers.filter((_, j) => j !== i) }));
 
-  // ── Ô body raw: gõ JSON có trợ lý + tự format ──────────────────────────────
-  //
-  // textarea là controlled component nên sau mỗi lần tự chèn phải TỰ đặt lại
-  // con trỏ: React vẽ lại xong là selection nhảy về cuối. caretRef giữ chỗ cần
-  // đặt, useLayoutEffect đặt trước khi trình duyệt vẽ khung hình (dùng
-  // useEffect thì thấy con trỏ giật một nhịp).
-  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
-  const caretRef = useRef<number | null>(null);
-  useLayoutEffect(() => {
-    const el = bodyRef.current;
-    if (el && caretRef.current !== null) {
-      el.setSelectionRange(caretRef.current, caretRef.current);
-      caretRef.current = null;
+  // ── Dòng form (x-www-form-urlencoded / form-data) ───────────────────────────
+  const setField = (i: number, patch: Partial<ApiFormField>) =>
+    setDraft((d) => ({ ...d, form: d.form.map((f, j) => (j === i ? { ...f, ...patch } : f)) }));
+  const addFieldRow = () =>
+    setDraft((d) => ({ ...d, form: [...d.form, { key: '', value: '', kind: 'text' }] }));
+  const rmField = (i: number) =>
+    setDraft((d) => ({ ...d, form: d.form.filter((_, j) => j !== i) }));
+
+  /**
+   * Chọn file cho một dòng: đọc thành base64 ngay tại browser.
+   *
+   * Đọc luôn (thay vì giữ File rồi đọc lúc Send) vì request đi qua proxy server
+   * dạng JSON — File không serialize được. Đổi lại phải chặn dung lượng: base64
+   * nằm trọn trong RAM của cả browser lẫn server, và còn phình thêm ~33%.
+   */
+  const pickFile = async (i: number, file: File | undefined) => {
+    if (!file) return;
+    if (file.size > FILE_LIMIT) {
+      setErr(`File ${file.name} nặng ${(file.size / 1024 / 1024).toFixed(1)}MB — trần là ${FILE_LIMIT / 1024 / 1024}MB.`);
+      return;
     }
-  });
+    try {
+      const b64 = await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        // result là data URL "data:<mime>;base64,<payload>" — chỉ lấy phần sau dấu phẩy.
+        fr.onload = () => resolve(String(fr.result).split(',')[1] ?? '');
+        fr.onerror = () => reject(new Error('Không đọc được file.'));
+        fr.readAsDataURL(file);
+      });
+      setField(i, {
+        kind: 'file', fileName: file.name, fileB64: b64,
+        fileType: file.type || 'application/octet-stream', value: '',
+      });
+      setErr(null);
+    } catch (e) { setErr((e as Error).message); }
+  };
 
-  const applyEdit = useCallback((r: EditResult) => {
-    caretRef.current = r.caret;
-    setDraft((d) => ({ ...d, body: r.text }));
-  }, [setDraft]);
+  // ── Ô body raw: format JSON ────────────────────────────────────────────────
+  //
+  // Phần gõ (đóng cặp ngoặc, thụt dòng, đặt lại con trỏ) nay do Monaco lo — xem
+  // components/api/JsonBox.tsx. Trước đây là <textarea> nên phải tự làm hết
+  // bằng lib/jsonEdit + caretRef; bỏ được cả mảng đó khi đổi sang Monaco, chỉ
+  // giữ lại nút ✨ Format và cờ auto vì chúng là hành vi riêng của tab này.
 
-  /** Format body về JSON 2-space, giữ con trỏ ở đúng chỗ đang gõ. */
+  /** Format body về JSON 2-space. */
   const formatBody = useCallback(() => {
     setDraft((d) => {
       const f = formatText('json', d.body);
-      if (!f.ok || f.text === d.body) return d;
-      const el = bodyRef.current;
-      caretRef.current = el ? remapCaret(d.body, el.selectionStart, f.text) : f.text.length;
-      return { ...d, body: f.text };
+      return !f.ok || f.text === d.body ? d : { ...d, body: f.text };
     });
   }, [setDraft]);
 
@@ -435,28 +502,6 @@ export default function ApiWorkspace() {
     return () => clearTimeout(t);
   }, [autoFmt, draft.body, draft.bodyType, formatBody]);
 
-  /** Phím trong ô body: đóng cặp ngoặc, khung object, field mới, Ctrl+Shift+F. */
-  const onBodyKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (draft.bodyType !== 'raw') return;
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
-      e.preventDefault(); formatBody(); return;
-    }
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.nativeEvent.isComposing) return; // đang gõ tiếng Việt — đừng chen ngang
-    const el = e.currentTarget;
-    const [v, from, to] = [el.value, el.selectionStart, el.selectionEnd];
-    const r =
-      e.key === '{' ? openBrace(v, from, to)
-        : e.key === '[' ? openBracket(v, from, to)
-          : e.key === '"' ? jsonQuote(v, from, to)
-            : e.key === '}' || e.key === ']' ? jsonCloseBracket(v, from, to, e.key)
-              : e.key === 'Enter' ? jsonEnter(v, from, to)
-                : e.key === 'Backspace' ? jsonBackspace(v, from, to)
-                  : null;
-    if (!r) return;
-    e.preventDefault();
-    applyEdit(r);
-  };
 
   // Báo JSON hỏng ngay dưới ô — biết sai trước khi bấm Send.
   const bodyErr = useMemo(() => {
@@ -611,13 +656,15 @@ export default function ApiWorkspace() {
             {tab === 'body' && (
               <div className="api-body">
                 <div className="api-bodytype">
-                  {(['none', 'raw', 'form'] as const).map((bt) => (
-                    <label key={bt}><input type="radio" checked={draft.bodyType === bt}
-                      onChange={() => setDraft({ ...draft, bodyType: bt })} /> {bt}</label>
+                  {BODY_TYPES.map((bt) => (
+                    <label key={bt.key} title={bt.hint}>
+                      <input type="radio" checked={draft.bodyType === bt.key}
+                        onChange={() => setDraft({ ...draft, bodyType: bt.key })} /> {bt.label}
+                    </label>
                   ))}
                   {draft.bodyType === 'raw' && (
                     <>
-                      <button className="ghost sm" onClick={formatBody} title="Format JSON (Ctrl+Shift+F)">
+                      <button className="ghost sm" onClick={formatBody} title="Format JSON 2 dấu cách">
                         ✨ Format JSON
                       </button>
                       <label title="Tự format lại khi ngơi tay, miễn là JSON đang hợp lệ">
@@ -630,13 +677,78 @@ export default function ApiWorkspace() {
                     </>
                   )}
                 </div>
-                {draft.bodyType !== 'none' && (
-                  <textarea className="input api-bodytext" value={draft.body} ref={bodyRef}
-                    spellCheck={false}
-                    placeholder={draft.bodyType === 'raw' ? '{ "key": "{{value}}" }  — gõ { để ra sẵn khung, Enter để thêm field' : 'key=value&key2=value2'}
-                    onKeyDown={onBodyKeyDown}
-                    onBlur={() => { if (autoFmt && draft.bodyType === 'raw' && looksLikeJson(draft.body)) formatBody(); }}
-                    onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
+                {/* Hai kiểu form dùng BẢNG key/value chứ không phải ô text:
+                    gõ tay `a=1&b=2` thì phải tự mã hoá ký tự đặc biệt (dấu &,
+                    dấu cách trong giá trị) — sai âm thầm, và multipart thì
+                    không có cách nào gõ tay ra file. */}
+                {isFormType(draft.bodyType) && (
+                  <div className="api-kv">
+                    {/* Nói rõ Content-Type SẼ gửi: cả hai kiểu đều do runtime tự
+                        đặt (multipart còn kèm boundary), và header tự gõ ở tab
+                        Headers bị bỏ qua — không nói thì người dùng tưởng header
+                        của mình có tác dụng rồi ngồi dò tại sao server trả 400. */}
+                    <p className="small" style={{ color: 'var(--muted)', margin: '0 2px 4px' }}>
+                      Content-Type: <code>{draft.bodyType === 'form'
+                        ? 'application/x-www-form-urlencoded'
+                        : 'multipart/form-data; boundary=…'}</code> — tự đặt khi gửi.
+                    </p>
+                    {draft.form.map((f, i) => (
+                      <div key={i} className="api-kv-row">
+                        <input type="checkbox" checked={f.on !== false}
+                          onChange={(e) => setField(i, { on: e.target.checked })} />
+                        <input className="input" placeholder="Key" value={f.key}
+                          onChange={(e) => setField(i, { key: e.target.value })} />
+                        {f.kind === 'file' ? (
+                          <label className="api-file">
+                            <input type="file" hidden
+                              onChange={(e) => void pickFile(i, e.target.files?.[0])} />
+                            {f.fileName
+                              ? <span className={`api-file-name${f.fileB64 ? '' : ' is-stale'}`}
+                                  title={f.fileB64 ? f.fileName : 'Request đã lưu không giữ ruột file — bấm để chọn lại'}>
+                                  📎 {f.fileName}{f.fileB64 ? '' : ' (chọn lại)'}
+                                </span>
+                              : <span className="api-file-name">📎 Chọn file…</span>}
+                          </label>
+                        ) : (
+                          <input className="input" placeholder="Value" value={f.value}
+                            onChange={(e) => setField(i, { value: e.target.value })} />
+                        )}
+                        {/* Chuyển text ↔ file. Chỉ multipart mới mang được file,
+                            urlencoded thì nút này không có nghĩa. */}
+                        {draft.bodyType === 'multipart' && (
+                          <button className="ghost sm" title={f.kind === 'file' ? 'Đổi về giá trị text' : 'Đổi thành file đính kèm'}
+                            onClick={() => setField(i, f.kind === 'file'
+                              ? { kind: 'text', fileName: undefined, fileB64: undefined, fileType: undefined }
+                              : { kind: 'file', value: '' })}>
+                            {f.kind === 'file' ? '📎' : 'T'}
+                          </button>
+                        )}
+                        <button className="ghost sm" onClick={() => rmField(i)}>✕</button>
+                      </div>
+                    ))}
+                    <button className="ghost sm" onClick={addFieldRow}>＋ Thêm field</button>
+                    {/* urlencoded KHÔNG mang được file — nói thẳng thay vì im
+                        lặng bỏ qua dòng đó lúc gửi. */}
+                    {draft.bodyType === 'form' && draft.form.some((f) => f.kind === 'file') && (
+                      <p className="small" style={{ color: 'var(--warn, #d90)', margin: '4px 2px' }}>
+                        ⚠ x-www-form-urlencoded không gửi được file — các dòng 📎 sẽ bị bỏ qua.
+                        Chuyển sang <b>form-data</b> nếu cần đính kèm.
+                      </p>
+                    )}
+                  </div>
+                )}
+                {draft.bodyType === 'raw' && (
+                  <div className="api-bodybox">
+                    <JsonBox
+                      path={`api-body-${cur.key}`}
+                      value={draft.body}
+                      onChange={(v) => setDraft({ ...draft, body: v })}
+                      language={looksLikeJson(draft.body) || !draft.body.trim() ? 'json' : 'plaintext'}
+                      height={260}
+                      placeholder={'{ "key": "{{value}}" }'}
+                      onSubmit={() => void send()}
+                    />
+                  </div>
                 )}
               </div>
             )}
@@ -660,7 +772,16 @@ export default function ApiWorkspace() {
                 )}
               </div>
               {resTab === 'body' ? (
-                <pre className="api-res-body">{resShown}</pre>
+                // JSON (đang format) → Monaco: gấp/mở từng khối bằng +/- ở lề,
+                // Ctrl+F đếm số khớp. Raw hoặc không phải JSON thì <pre> như cũ
+                // — dựng cả một editor cho một dòng text là phí.
+                resKind === 'json' && resPretty ? (
+                  <div className="api-resbox">
+                    <JsonBox path={`api-res-${cur.key}`} value={resShown} height={320} />
+                  </div>
+                ) : (
+                  <pre className="api-res-body">{resShown}</pre>
+                )
               ) : (
                 <pre className="api-res-body">{Object.entries(res.headers).map(([k, v]) => `${k}: ${v}`).join('\n')}</pre>
               )}
