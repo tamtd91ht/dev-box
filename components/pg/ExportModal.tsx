@@ -24,12 +24,11 @@ import {
   MAX_EXPORT_ROWS,
   NO_COLUMN_PATH,
 } from '@/lib/mongoReport';
-import ColumnMapper, { initialColumns, toReportColumns, type ColumnDraft } from '../export/ColumnMapper';
+import ColumnMapper, { hasDataColumn, initialColumns, toReportColumns, type ColumnDraft } from '../export/ColumnMapper';
 import ConfirmExportModal from '../export/ConfirmExportModal';
 import { runExport, parseRows } from '../export/exportRun';
 
 const PAGE = 200;
-const MAX_DEFAULT_COLUMNS = 5;
 
 export interface ExportModalProps {
   connectionId: string;
@@ -41,7 +40,6 @@ export interface ExportModalProps {
   querySummary: string;
   /** Gợi ý cột (từ information_schema). */
   fieldSuggestions: string[];
-  initialPaths: string[];
   defaultTitle: string;
   onClose: () => void;
   onDone: (rows: number, filename: string) => void;
@@ -50,18 +48,18 @@ export interface ExportModalProps {
 export default function ExportModal(props: ExportModalProps) {
   const {
     connectionId, db, schema, table, entries, querySummary,
-    fieldSuggestions, initialPaths, defaultTitle, onClose, onDone,
+    fieldSuggestions, defaultTitle, onClose, onDone,
   } = props;
 
   const [title, setTitle] = useState(defaultTitle);
-  const [columns, setColumns] = useState<ColumnDraft[]>(() => initialColumns(initialPaths, MAX_DEFAULT_COLUMNS, ''));
+  const [columns, setColumns] = useState<ColumnDraft[]>(initialColumns);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
 
   const validColumns = useMemo(() => columns.filter((c) => c.path.trim()), [columns]);
-  const canExport = !busy && !!title.trim() && validColumns.length > 0;
+  const canExport = !busy && !!title.trim() && hasDataColumn(columns);
 
   const countRows = useCallback(async () => {
     const r = await pgQuickCount(connectionId, db, { schema, table, entries });
@@ -128,7 +126,7 @@ export default function ExportModal(props: ExportModalProps) {
         </label>
 
         <div className="pg-field" style={{ marginBottom: 4, minHeight: 0 }}>
-          <span>Cột báo cáo (tên cột · column · định dạng · phân cách)</span>
+          <span>Cột báo cáo (tên cột · column · định dạng · phân cách · ⋯ đổi giá trị)</span>
           <ColumnMapper
             columns={columns}
             setColumns={setColumns}

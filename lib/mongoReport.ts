@@ -29,6 +29,35 @@ export interface ReportColumn {
   /** Ký tự nối khi path trỏ vào list object và thu được nhiều giá trị.
    *  Rỗng/undefined = DEFAULT_SEP. */
   sep?: string;
+  /** Đổi giá trị trước khi ghi ra ô — xem ValueMap. */
+  map?: ValueMap;
+}
+
+/** Một luật đổi giá trị: gặp `when` thì ghi ra `to`. */
+export interface ValueMapRule {
+  /** Giá trị gốc cần khớp. Rỗng = khớp ô TRỐNG (null/undefined/chuỗi rỗng). */
+  when: string;
+  /** Ghi ra ô Excel. Rỗng = ô trống. */
+  to: string;
+}
+
+/**
+ * Bảng đổi giá trị của một cột — switch/case cho dữ liệu thô.
+ *
+ * Cột `is_deleted` ra `true`/`false` thì đọc báo cáo rất chướng; khai
+ * `true → Đã xoá`, `false → Đang dùng` là xong, không phải sửa tay sau khi
+ * xuất (sửa tay thì lần xuất sau lại phải sửa lại).
+ */
+export interface ValueMap {
+  rules: ValueMapRule[];
+  /**
+   * Không khớp luật nào thì ghi gì.
+   *
+   * BỎ TRỐNG = GIỮ NGUYÊN giá trị gốc — mặc định an toàn: khai vài luật cho
+   * mấy giá trị hay gặp mà không vô tình xoá trắng phần dữ liệu còn lại. Muốn
+   * "còn lại để trống" thì khai một luật `to` rỗng cho đúng giá trị đó.
+   */
+  fallback?: string;
 }
 
 /** Phân cách mặc định khi cột không khai riêng. */
@@ -247,6 +276,41 @@ export function typeCell(raw: unknown, format: ColumnFormat, sep?: string): Type
   }
 }
 
+// ── Đổi giá trị (switch/case của từng cột) ───────────────────────────────────
+
+/**
+ * Khoá so khớp của một giá trị: chuỗi hoá, bỏ khoảng trắng hai đầu, KHÔNG phân
+ * biệt hoa thường.
+ *
+ * Người dùng gõ luật bằng tay nên `True` / `TRUE` / ` true ` phải khớp
+ * `true` — bắt khớp tuyệt đối ở đây chỉ tạo ra loại lỗi "khai rồi mà không ăn",
+ * nhìn bảng Excel thì không đoán ra vì sao.
+ */
+function mapKey(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  return asText(v).trim().toLowerCase();
+}
+
+/** Bảng đổi có thật sự khai gì không (rỗng = khỏi chạy cho nhanh). */
+export function hasValueMap(map?: ValueMap): boolean {
+  return !!map && (map.rules.some((r) => r.when.trim() !== '' || r.to !== '') || !!map.fallback);
+}
+
+/**
+ * Áp bảng đổi giá trị lên một ô.
+ *
+ * Ô NHIỀU GIÁ TRỊ (field con của list object) thì đổi TỪNG phần tử rồi mới nối
+ * — nối trước thì luật `true → Đã xoá` chẳng bao giờ khớp chuỗi `true, false`.
+ * Luật khớp theo thứ tự khai, luật đầu tiên trúng thì thắng.
+ */
+export function applyValueMap(raw: unknown, map?: ValueMap): unknown {
+  if (!hasValueMap(map) || !map) return raw;
+  if (Array.isArray(raw)) return raw.map((v) => applyValueMap(v, map));
+  const key = mapKey(raw);
+  for (const r of map.rules) if (mapKey(r.when) === key) return r.to;
+  return map.fallback ? map.fallback : raw;
+}
+
 function asText(v: unknown): string {
   if (typeof v === 'string') return v;
   if (typeof v === 'boolean' || typeof v === 'number') return String(v);
@@ -324,7 +388,9 @@ export async function buildReportXlsx(
       const cell = row.getCell(i + 1);
       const typed: TypedCell = c.path === NO_COLUMN_PATH
         ? { value: r + 1, align: 'right' } // sequential row number, not a doc value
-        : typeCell(collectByPath(doc, c.path), c.format, c.sep);
+        // Đổi giá trị TRƯỚC khi định kiểu ô: luật đổi ra chữ thì ô là text,
+        // đổi ra số/ngày thì vẫn thành ô số/ngày thật như mọi giá trị khác.
+        : typeCell(applyValueMap(collectByPath(doc, c.path), c.map), c.format, c.sep);
       cell.value = typed.value;
       if (typed.numFmt) cell.numFmt = typed.numFmt;
       cell.font = { name: 'Calibri', size: 10.5 };

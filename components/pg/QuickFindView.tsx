@@ -365,7 +365,6 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           entries={lastEntries}
           querySummary={querySummary}
           fieldSuggestions={colSuggestions.length ? colSuggestions : result.columns}
-          initialPaths={colSelected.length ? colSelected : result.columns}
           defaultTitle={run.name}
           onClose={() => setExportOpen(false)}
           onDone={(rows, filename) => {

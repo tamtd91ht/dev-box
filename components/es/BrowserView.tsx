@@ -534,9 +534,6 @@ function BrowserSession({
             ...deriveEsFieldNames(result.docs),
             ...fields.map((f) => f.path),
           ])]}
-          // Cột mặc định lấy từ kết quả THẬT — mapping có thể hàng trăm field
-          // mà truy vấn chỉ trả về vài cái.
-          initialPaths={['_id', ...deriveEsFieldNames(result.docs)].slice(0, 8)}
           defaultTitle={selected}
           onClose={() => setExportOpen(false)}
           onDone={(rows, filename) => {

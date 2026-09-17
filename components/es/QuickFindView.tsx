@@ -604,7 +604,6 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           sortSummary={sortSummary}
           querySummary={querySummary}
           fieldSuggestions={[...new Set(['_id', ...srcSuggestions, ...srcSelected, ...run.fields.map((f) => f.path), ...deriveEsFieldNames(result.docs)])]}
-          initialPaths={srcSelected.length ? ['_id', ...srcSelected] : ['_id', ...deriveEsFieldNames(result.docs)].slice(0, 8)}
           defaultTitle={run.name}
           onClose={() => setExportOpen(false)}
           onDone={(rows, filename) => {

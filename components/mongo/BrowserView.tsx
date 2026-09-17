@@ -879,7 +879,6 @@ function BrowserViewInner({
           sortSummary={sort.trim()}
           querySummary={filter.trim() ? short(filter.trim()) : 'toàn bộ collection'}
           fieldSuggestions={[...new Set(['_id', ...deriveDocFields(result.docs)])]}
-          initialPaths={['_id', ...deriveDocFields(result.docs)].slice(0, 8)}
           defaultTitle={`${selected.db}.${selected.coll}`}
           onClose={() => setExportOpen(false)}
           onDone={(rows, filename) => {
