@@ -100,6 +100,7 @@ export async function POST(req: NextRequest) {
           sort: body.sort,
           size: body.size,
           from: body.from,
+          searchAfter: body.searchAfter,
         });
         break;
       case 'count':

@@ -317,6 +317,19 @@ export interface EsSearchInput {
   /** 0 được phép — nghĩa là chỉ lấy aggregations, không lấy document. */
   size?: unknown;
   from?: unknown;
+  /**
+   * Con trỏ `search_after` — mảng giá trị sort của hit CUỐI trang trước.
+   *
+   * Vì sao cần: phân trang `from`+`size` bị ES chặn cứng ở result window
+   * 10.000 (from+size vượt là ném lỗi), nên xuất Excel một index lớn không thể
+   * đi bằng from. `search_after` không có trần đó và cũng không bắt ES sắp lại
+   * toàn bộ ở mỗi trang.
+   *
+   * Có searchAfter thì `from` bị BỎ (ES cấm dùng chung) và body BẮT BUỘC phải
+   * có `sort` — không sort thì ES không trả giá trị sort cho mỗi hit, không có
+   * gì làm con trỏ.
+   */
+  searchAfter?: unknown;
 }
 
 export interface EsSearchResult {
@@ -329,6 +342,11 @@ export interface EsSearchResult {
   tookMs: number;
   /** Kết quả `aggregations` (JSON, capped) — null khi request không có aggs. */
   aggs: { json: string; truncated: boolean } | null;
+  /**
+   * Giá trị `sort` của hit CUỐI trang này — đưa lại vào `searchAfter` để lấy
+   * trang kế. null khi body không sort (ES không trả sort) hoặc trang rỗng.
+   */
+  lastSort: unknown[] | null;
 }
 
 function parseSort(raw: unknown): unknown[] | undefined {
@@ -340,6 +358,19 @@ function parseSort(raw: unknown): unknown[] | undefined {
     try { v = JSON.parse(s); } catch (e) { throw new Error(`sort không phải JSON hợp lệ: ${(e as Error).message}`); }
   }
   return Array.isArray(v) ? v : [v];
+}
+
+/** Con trỏ search_after: mảng JSON (hoặc chuỗi JSON của mảng). Rỗng = không có. */
+function parseSearchAfter(raw: unknown): unknown[] | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  let v: unknown = raw;
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return undefined;
+    try { v = JSON.parse(s); } catch (e) { throw new Error(`search_after không phải JSON hợp lệ: ${(e as Error).message}`); }
+  }
+  if (!Array.isArray(v) || v.length === 0) return undefined;
+  return v;
 }
 
 function parseSource(raw: unknown): string[] | undefined {
@@ -386,10 +417,23 @@ export async function search(conn: EsConnection, index: string, input: EsSearchI
     ? Math.min(Math.max(Math.trunc(sizeRaw), 0), SEARCH_SIZE_MAX)
     : SEARCH_SIZE_DEFAULT;
   body.size = size;
-  // `from` rời (phân trang Prev/Next) đè lên from trong body.
-  const fromRaw = Number(input.from ?? body.from);
-  const from = Math.min(Math.max(Number.isInteger(fromRaw) ? fromRaw : 0, 0), RESULT_WINDOW - size);
-  body.from = from;
+
+  // ── search_after ─────────────────────────────────────────────────────────
+  // Có con trỏ thì đi bằng search_after và BỎ HẲN `from`: ES từ chối request có
+  // cả hai. Đổi lại không còn bị chặn bởi result window 10.000 — đó chính là lý
+  // do export dùng đường này.
+  const after = parseSearchAfter(input.searchAfter);
+  let from = 0;
+  if (after) {
+    if (!body.sort) throw new Error('search_after cần có sort trong body (không sort thì không có con trỏ).');
+    body.search_after = after;
+    delete body.from;
+  } else {
+    // `from` rời (phân trang Prev/Next) đè lên from trong body.
+    const fromRaw = Number(input.from ?? body.from);
+    from = Math.min(Math.max(Number.isInteger(fromRaw) ? fromRaw : 0, 0), RESULT_WINDOW - size);
+    body.from = from;
+  }
   body.timeout = '15s';
   // `track_total_hits` exists only from ES 7 — 6.8 rejects the unknown key
   // (its hits.total is an exact NUMBER already, normalized below).
@@ -402,7 +446,7 @@ export async function search(conn: EsConnection, index: string, input: EsSearchI
   const t0 = Date.now();
   const res = await esFetch<{
     took?: number;
-    hits?: { total?: number | { value?: number; relation?: string }; hits?: { _id: string; _source?: Record<string, unknown> }[] };
+    hits?: { total?: number | { value?: number; relation?: string }; hits?: { _id: string; _source?: Record<string, unknown>; sort?: unknown[] }[] };
     aggregations?: Record<string, unknown>;
   }>(conn, `/${indexPath(idx)}/_search`, body);
   const tookMs = Date.now() - t0;
@@ -410,8 +454,16 @@ export async function search(conn: EsConnection, index: string, input: EsSearchI
   const rawTotal = res.hits?.total;
   const total = typeof rawTotal === 'number' ? rawTotal : Number(rawTotal?.value ?? 0);
   const totalRelation: 'eq' | 'gte' = typeof rawTotal === 'object' && rawTotal?.relation === 'gte' ? 'gte' : 'eq';
-  const docs = (res.hits?.hits ?? []).map((h) => toWire({ _id: h._id, ...(h._source ?? {}) }));
-  return { docs, total, totalRelation, size, from, tookMs, aggs: res.aggregations ? toWire(res.aggregations) : null };
+  const hits = res.hits?.hits ?? [];
+  const docs = hits.map((h) => toWire({ _id: h._id, ...(h._source ?? {}) }));
+  // Con trỏ cho trang kế — chỉ có khi body sort (ES mới gắn `sort` vào mỗi hit).
+  const tail = hits.length ? hits[hits.length - 1].sort : undefined;
+  const lastSort = Array.isArray(tail) ? tail : null;
+  return {
+    docs, total, totalRelation, size, from, tookMs,
+    aggs: res.aggregations ? toWire(res.aggregations) : null,
+    lastSort,
+  };
 }
 
 /**

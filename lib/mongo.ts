@@ -233,6 +233,29 @@ export function countMongo(connectionId: string, db: string, coll: string, filte
   return mongoAction<CountResult>('count', { connectionId, db, coll, filter });
 }
 
+/**
+ * Ghép điều kiện cursor `_id > last` vào một filter EJSON để phân trang keyset.
+ *
+ * Vì sao BỌC $and thay vì nhét thẳng khoá `_id` vào object filter: filter là
+ * EJSON người dùng tự gõ, có thể đã có sẵn `_id`, hoặc là `{$or: [...]}` ở cấp
+ * cao nhất. Nhét thẳng sẽ ghi đè điều kiện của họ hoặc đổi nghĩa cả câu query.
+ * `{$and: [<filter gốc>, {_id: {$gt: last}}]}` đúng với MỌI hình dạng filter.
+ *
+ * Dùng cho export: sort theo `_id` tăng dần rồi lật trang bằng `_id` của dòng
+ * cuối — không dùng skip sâu dần (càng về sau Mongo càng phải bỏ qua nhiều
+ * document, chậm dần đều trên collection lớn).
+ */
+export function withIdCursor(filter: string, lastId: unknown): string {
+  const base = filter.trim();
+  let parsed: unknown = {};
+  if (base) {
+    try { parsed = JSON.parse(base); } catch { return base; } // filter hỏng — để server báo lỗi
+  }
+  const hasFilter = parsed && typeof parsed === 'object' && Object.keys(parsed as object).length > 0;
+  const cursor = { _id: { $gt: lastId } };
+  return JSON.stringify(hasFilter ? { $and: [parsed, cursor] } : cursor);
+}
+
 export function aggregateMongo(connectionId: string, db: string, coll: string, pipeline: string): Promise<AggregateResult> {
   return mongoAction<AggregateResult>('aggregate', { connectionId, db, coll, pipeline });
 }

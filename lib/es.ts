@@ -72,6 +72,9 @@ export interface EsSearchResult {
   tookMs: number;
   /** Kết quả `aggregations` — null khi request không có aggs. */
   aggs: WireDoc | null;
+  /** Giá trị sort của hit cuối — đưa lại vào `searchAfter` để lấy trang kế.
+   *  null khi body không sort hoặc trang rỗng. */
+  lastSort: unknown[] | null;
 }
 
 // ── Connection registry (CRUD) ────────────────────────────────────────────────
@@ -151,6 +154,9 @@ export interface EsSearchParams {
   size?: number;
   /** Phân trang — đè lên `from` trong body (nếu có). */
   from?: number;
+  /** Con trỏ search_after (mảng giá trị sort của hit cuối trang trước).
+   *  Có nó thì `from` bị bỏ qua — xem EsSearchInput ở lib/esClient. */
+  searchAfter?: unknown[];
 }
 
 export function searchEs(connectionId: string, index: string, p: EsSearchParams): Promise<EsSearchResult> {

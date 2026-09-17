@@ -34,6 +34,7 @@ import {
   type AggregateResult,
 } from '@/lib/mongo';
 import UpdateModal from './UpdateModal';
+import ExportModal from './ExportModal';
 import JsonView, { countHits } from './JsonView';
 import FieldSuggest from './FieldSuggest';
 import ResultFindBar from './ResultFindBar';
@@ -82,6 +83,18 @@ interface MongoDraft {
 
 const COLL_TABS: CollTab[] = ['docs', 'indexes', 'stats'];
 const QUERY_MODES: QueryMode[] = ['find', 'aggregate'];
+
+/** Hợp các khoá cấp 1 của vài document đầu → gợi ý cột cho modal xuất Excel. */
+function deriveDocFields(docs: { json: string }[]): string[] {
+  const keys = new Set<string>();
+  for (const d of docs.slice(0, 25)) {
+    try {
+      for (const k of Object.keys(JSON.parse(d.json) as Record<string, unknown>)) keys.add(k);
+    } catch { /* document bị cắt cụt — bỏ qua */ }
+  }
+  keys.delete('_id'); // _id luôn được thêm riêng ở đầu danh sách
+  return [...keys].sort((a, b) => a.localeCompare(b));
+}
 
 function isMongoDraft(v: unknown): v is MongoDraft {
   if (!v || typeof v !== 'object') return false;
@@ -200,6 +213,8 @@ function BrowserViewInner({
   // ── Results ────────────────────────────────────────────────────────────────
   const [collTab, setCollTab] = useState<CollTab>(restored?.collTab ?? 'docs');
   const [result, setResult] = useState<FindResult | null>(null);
+  /** Hộp thoại xuất Excel cho màn query (chỉ chế độ Find — xem nút bên dưới). */
+  const [exportOpen, setExportOpen] = useState(false);
   const [aggResult, setAggResult] = useState<AggregateResult | null>(null);
   const [countInfo, setCountInfo] = useState<string | null>(null);
   const [stats, setStats] = useState<CollStatsResult | null>(null);
@@ -704,6 +719,17 @@ function BrowserViewInner({
                           {busy ? <span className="spinner" aria-hidden /> : '▶'} Find
                         </button>
                         <button className="ghost sm" disabled={busy} onClick={() => void runCount()}>Count</button>
+                        {/* Xuất Excel — CHỈ ở chế độ Find. Aggregate không có vì
+                            pipeline đổi hẳn hình dạng kết quả (group/project…),
+                            không dùng chung đường phân trang filter+sort được. */}
+                        <button
+                          className="ghost sm"
+                          disabled={busy || !result || result.docs.length === 0}
+                          title={result && result.docs.length > 0
+                            ? 'Xuất toàn bộ kết quả khớp filter hiện tại ra .xlsx'
+                            : 'Chạy Find có kết quả trước đã'}
+                          onClick={() => setExportOpen(true)}
+                        >⬇ Xuất Excel</button>
                         <button
                           className="ghost sm"
                           disabled={busy || !writeArmed}
@@ -877,6 +903,27 @@ function BrowserViewInner({
           </>
         )}
       </div>
+
+      {exportOpen && selected && result && (
+        <ExportModal
+          connectionId={connectionId}
+          db={selected.db}
+          coll={selected.coll}
+          filter={filter}
+          // Sort người dùng đang gõ ở ô Sort — file xuất theo đúng thứ tự đó.
+          sort={sort}
+          sortSummary={sort.trim()}
+          querySummary={filter.trim() ? short(filter.trim()) : 'toàn bộ collection'}
+          fieldSuggestions={[...new Set(['_id', ...deriveDocFields(result.docs)])]}
+          initialPaths={['_id', ...deriveDocFields(result.docs)].slice(0, 8)}
+          defaultTitle={`${selected.db}.${selected.coll}`}
+          onClose={() => setExportOpen(false)}
+          onDone={(rows, filename) => {
+            setExportOpen(false);
+            flash(`Đã xuất ${rows.toLocaleString('en-US')} dòng → ${filename}`);
+          }}
+        />
+      )}
 
       {updateOpen && selected && (
         <UpdateModal

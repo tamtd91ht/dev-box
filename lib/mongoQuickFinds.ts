@@ -43,12 +43,18 @@ export interface QuickFindField {
 
 export type QuickSortDir = 'asc' | 'desc';
 
-/** Sắp xếp kết quả — TUỲ CHỌN. Không khai = giữ thứ tự tự nhiên của Mongo. */
+/** MỘT khoá sắp xếp. */
 export interface QuickFindSort {
   /** Field path để sort, e.g. "created_at". */
   path: string;
   dir: QuickSortDir;
 }
+
+/**
+ * Sắp xếp kết quả — TUỲ CHỌN, NHIỀU KHOÁ áp theo thứ tự khai báo.
+ * Không khai = giữ thứ tự tự nhiên của Mongo.
+ */
+export type QuickFindSortKeys = QuickFindSort[];
 
 export interface MongoQuickFind {
   id: string;
@@ -61,8 +67,9 @@ export interface MongoQuickFind {
   fields: QuickFindField[];
   /** Page size when running (server clamps to ≤200). */
   limit: number;
-  /** Optional — sort kết quả theo một field. */
-  sort?: QuickFindSort;
+  /** Optional — sort kết quả theo một hoặc nhiều field, áp theo thứ tự.
+   *  Preset cũ lưu dạng object đơn; sanitizeSort nâng lên mảng khi đọc. */
+  sort?: QuickFindSortKeys;
 }
 
 function isField(v: unknown): v is QuickFindField {
@@ -84,13 +91,28 @@ function isQuickFind(v: unknown): v is MongoQuickFind {
   );
 }
 
-/** Sort hợp lệ thì giữ, còn lại (thiếu path, dir lạ, tay sửa file hỏng) coi như không sort. */
-function sanitizeSort(v: unknown): QuickFindSort | undefined {
+/** Một khoá hợp lệ thì giữ, còn lại (thiếu path, dir lạ, tay sửa file hỏng) bỏ. */
+function sanitizeSortKey(v: unknown): QuickFindSort | undefined {
   if (!v || typeof v !== 'object') return undefined;
   const s = v as Record<string, unknown>;
   const path = typeof s.path === 'string' ? s.path.trim() : '';
   if (!path || (s.dir !== 'asc' && s.dir !== 'desc')) return undefined;
   return { path, dir: s.dir };
+}
+
+/**
+ * Chuẩn hoá `sort` khi đọc preset — nhận CẢ HAI dạng.
+ *
+ * TƯƠNG THÍCH NGƯỢC (bắt buộc): preset lưu từ bản trước nằm trong localStorage
+ * và configs/presets.json ở dạng object đơn `{path, dir}`. Chỉ nhận mảng thì
+ * mọi preset cũ mất sort trong im lặng — người dùng không được báo gì, chỉ thấy
+ * kết quả xếp sai. Nên object đơn được bọc thành mảng một phần tử.
+ */
+function sanitizeSort(v: unknown): QuickFindSortKeys | undefined {
+  if (!v) return undefined;
+  const raw = Array.isArray(v) ? v : [v]; // dạng cũ: object đơn
+  const keys = raw.map(sanitizeSortKey).filter((k): k is QuickFindSort => !!k);
+  return keys.length ? keys : undefined;
 }
 
 /** Read all presets (never throws — returns [] on any parse/storage error). */
@@ -148,10 +170,31 @@ export function removeQuickFind(id: string): MongoQuickFind[] {
   return list;
 }
 
-/** Sort EJSON cho find — '' khi preset không khai sort (giữ thứ tự tự nhiên). */
-export function buildQuickSort(sort?: QuickFindSort): string {
-  if (!sort?.path?.trim()) return '';
-  return JSON.stringify({ [sort.path.trim()]: sort.dir === 'desc' ? -1 : 1 });
+/**
+ * Sort EJSON cho find — '' khi không khai sort (giữ thứ tự tự nhiên).
+ *
+ * Nhiều khoá giữ ĐÚNG thứ tự khai báo: JSON.stringify của object literal giữ
+ * thứ tự chèn với khoá chuỗi không phải số, và Mongo đọc sort theo thứ tự đó.
+ * Khoá trùng path bị bỏ (khoá sau vô nghĩa, lại phá thứ tự).
+ */
+export function buildQuickSort(sort?: QuickFindSortKeys | QuickFindSort): string {
+  if (!sort) return '';
+  const keys = Array.isArray(sort) ? sort : [sort]; // nhận cả dạng cũ
+  const out: Record<string, 1 | -1> = {};
+  for (const k of keys) {
+    const path = k?.path?.trim();
+    if (!path || path in out) continue;
+    out[path] = k.dir === 'desc' ? -1 : 1;
+  }
+  return Object.keys(out).length ? JSON.stringify(out) : '';
+}
+
+/** Mô tả sort cho tooltip / hộp thoại xác nhận: "created_at ↓ · name ↑". */
+export function describeSort(sort?: QuickFindSortKeys): string {
+  if (!sort?.length) return '';
+  return sort.filter((k) => k.path.trim())
+    .map((k) => `${k.path} ${k.dir === 'desc' ? '↓' : '↑'}`)
+    .join(' · ');
 }
 
 // ── Run-time filter builder ────────────────────────────────────────────────
