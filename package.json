@@ -26,7 +26,8 @@
     "check:history": "tsx scripts/check-browser-history.ts",
     "check:session": "tsx scripts/check-browser-session.ts",
     "check:selfrepo": "tsx scripts/check-git-selfrepo.ts",
-    "check:sql": "tsx scripts/check-sql-complete.ts"
+    "check:sql": "tsx scripts/check-sql-complete.ts",
+    "check:mongo-query": "tsx scripts/check-mongo-query.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

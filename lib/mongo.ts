@@ -3,6 +3,10 @@
 // the browser never connects to MongoDB directly). This file is browser-safe:
 // NO `fs`, NO `mongodb`, no server-only imports.
 
+// Dùng chung phần gõ JSON với ô body raw của tab API — cùng một bài toán "text
+// đổi thì con trỏ đi đâu", không nên có hai bản lệch nhau.
+import { isCompletePair, remapCaret } from './jsonEdit';
+
 export type MongoScheme = 'mongodb' | 'mongodb+srv';
 
 /** A connection as returned to the browser — password is never sent, only its presence. */
@@ -402,7 +406,7 @@ export interface EnterFixResult {
  * Đếm ngoặc/nháy còn hở của một đoạn JSON đang gõ dở.
  * Bỏ qua ngoặc nằm TRONG chuỗi — `{"a": "}"}` không phải là ngoặc hở.
  */
-function scanOpen(src: string): { need: string; inString: boolean } {
+function scanOpen(src: string): { need: string; inString: boolean; quote: string } {
   const stack: string[] = [];
   let quote = '';
   for (let i = 0; i < src.length; i++) {
@@ -418,7 +422,7 @@ function scanOpen(src: string): { need: string; inString: boolean } {
       if (stack[stack.length - 1] === ch) stack.pop();
     }
   }
-  return { need: stack.reverse().join(''), inString: !!quote };
+  return { need: stack.reverse().join(''), inString: !!quote, quote };
 }
 
 /**
@@ -466,7 +470,127 @@ export function closeAndFormatOnEnter(text: string, caret: number): EnterFixResu
  * `[]` → `[\n  \n]` (con trỏ ở dòng giữa). Không rỗng → null (giữ format thường).
  */
 function skeletonIfEmpty(text: string): EnterFixResult | null {
-  if (/^\{\s*\}$/.test(text)) return { text: '{\n  "": ""\n}', caret: 4 };
+  // caret 5 = GIỮA hai nháy của key (`{\n  "|": ""`), không phải 4 (trước dấu
+  // nháy mở). Lệch một ô ở đây là gõ tên field ra ngoài chuỗi: `{"tenant"": ""}`
+  // — và autocomplete sau đó cũng chèn trật theo.
+  if (/^\{\s*\}$/.test(text)) return { text: '{\n  "": ""\n}', caret: 5 };
   if (/^\[\s*\]$/.test(text)) return { text: '[\n  \n]', caret: 4 };
   return null;
+}
+
+// ── Enter GIỮA câu query: xuống dòng đã thụt lề sẵn ─────────────────────────
+
+/** Một cấp thụt lề — bằng đúng cấp `JSON.stringify(x, null, 2)` sinh ra. */
+const INDENT = '  ';
+const indentOf = (depth: number): string => INDENT.repeat(Math.max(depth, 0));
+
+/** Ký tự khác khoảng trắng gần nhất về phía trước `pos`. */
+const prevNonSpace = (t: string, pos: number): string => {
+  for (let i = pos - 1; i >= 0; i -= 1) if (!/\s/.test(t[i])) return t[i];
+  return '';
+};
+/** Vị trí ký tự khác khoảng trắng đầu tiên từ `pos` trở đi (= t.length nếu hết). */
+const nextNonSpaceAt = (t: string, pos: number): number => {
+  let i = pos;
+  while (i < t.length && /\s/.test(t[i])) i += 1;
+  return i;
+};
+
+/**
+ * Enter trong ô query — MỘT cửa duy nhất, gồm ba việc theo thứ tự:
+ *
+ *   1. Con trỏ ở cuối phần có nội dung → đóng ngoặc còn hở + format cả ô
+ *      (closeAndFormatOnEnter, hành vi cũ: Enter = "hoàn tất khối này").
+ *   2. Ô parse được → format lại cả ô rồi dời con trỏ theo. Đây là chỗ câu
+ *      query lệch lề được nắn về chuẩn, kể cả khi nó vừa được dán vào hay gõ
+ *      dồn một dòng.
+ *   3. Xuống dòng THEO ĐỘ SÂU NGOẶC, không phải cột 0.
+ *
+ * Bước 3 đếm ngoặc còn hở chứ không chép thụt lề của dòng trên: dòng trên có
+ * thể đang lệch (gõ tay, vừa dán vào), chép theo là nhân cái lệch ra cả ô.
+ * Trong chuỗi thì trả null — Enter ở đó là ký tự xuống dòng thật, không phải
+ * lúc bày bố cục.
+ *
+ * Ba ca riêng, đều nhắm vào "gõ tiếp được ngay" chứ không chỉ là xuống dòng:
+ *   • Giữa `{}` → banh ba dòng, có sẵn `"": ""` để autocomplete bật lên.
+ *   • Cuối một cặp `"key": value` trong object → thêm phẩy (cả phẩy đuôi nếu
+ *     phía sau còn cặp khác) rồi mở dòng field mới.
+ *   • Ngay trước `}`/`]` → dòng mới lùi một cấp, vì nó sẽ chứa dấu đóng.
+ */
+export function smartEnter(text: string, caret: number): EnterFixResult | null {
+  // Con trỏ đang TRONG chuỗi: Enter ở đây nghĩa là "gõ xong giá trị rồi", chứ
+  // không phải chèn ký tự xuống dòng vào giữa chuỗi — JSON không cho, mà đó lại
+  // đúng là chỗ con trỏ nằm sau khi autocomplete chèn `"field": "|"`. Nhảy ra
+  // sau nháy đóng rồi xử lý như thường. Chuỗi chưa đóng nháy thì chịu, trả null.
+  const here = scanOpen(text.slice(0, caret));
+  let from = caret;
+  if (here.inString) {
+    let i = caret;
+    while (i < text.length && text[i] !== here.quote) i += text[i] === '\\' ? 2 : 1;
+    if (i >= text.length) return null;
+    from = i + 1;
+  }
+
+  const closed = closeAndFormatOnEnter(text, from);
+  if (closed) return closed;
+
+  // Nắn cả ô về chuẩn trước, rồi mới xuống dòng — có vậy dòng mới mới nằm đúng
+  // cấp so với phần xung quanh. Parse không được thì cứ để nguyên mà xuống dòng.
+  //
+  // CHỈ nhận khi format đơn thuần xê dịch khoảng trắng: `remapCaret` neo con trỏ
+  // theo số ký tự không-trắng đứng trước nó, nên format mà THÊM/BỚT ký tự thật
+  // là con trỏ trượt đi. Ca kinh điển: vừa gõ dấu phẩy cuối dòng rồi Enter —
+  // format bỏ phẩy đuôi, đếm hụt một ký tự, con trỏ văng ra ngoài dấu `}`.
+  let t = text;
+  let at = from;
+  const f = formatJsonInput(text);
+  const bare = (s: string): string => s.replace(/\s+/g, '');
+  if (!f.error && f.text !== text && bare(f.text) === bare(text)) {
+    at = remapCaret(text, from, f.text);
+    t = f.text;
+  }
+
+  const nl = t.indexOf('\n', at);
+  const lineEnd = nl === -1 ? t.length : nl;
+  const line = t.slice(t.lastIndexOf('\n', at - 1) + 1, lineEnd);
+
+  // Cuối dòng chỉ còn mỗi dấu phẩy → coi như con trỏ đã ở cuối dòng. Vừa gõ
+  // phẩy xong mà Enter là muốn MỞ FIELD MỚI, không phải cắt dòng trước dấu phẩy
+  // để nó nằm trơ một mình.
+  if (t.slice(at, lineEnd).trim() === ',') at = lineEnd;
+
+  const open = scanOpen(t.slice(0, at)).need;
+  const depth = open.length;
+  const prev = prevNonSpace(t, at);
+  const nextAt = nextNonSpaceAt(t, at);
+  const next = t[nextAt] ?? '';
+  const atLineEnd = t.slice(at, lineEnd).trim() === '';
+  const splice = (ins: string, until: number, caretIn: number): EnterFixResult =>
+    ({ text: t.slice(0, at) + ins + t.slice(until), caret: at + caretIn });
+
+  // 1. Giữa cặp ngoặc rỗng → banh ra, nuốt luôn khoảng trắng tới dấu đóng.
+  if ((prev === '{' && next === '}') || (prev === '[' && next === ']')) {
+    const body = prev === '{' ? `${indentOf(depth)}"": ""` : indentOf(depth);
+    const ins = `\n${body}\n${indentOf(depth - 1)}`;
+    return splice(ins, nextAt, 1 + indentOf(depth).length + (prev === '{' ? 1 : 0));
+  }
+
+  // 2. Cuối một cặp hoàn chỉnh trong object → mở sẵn field mới.
+  //
+  // Chỉ làm trong object. Trong MẢNG thì không tự thêm phẩy: phần tử cuối mà
+  // thêm phẩy là ra phẩy đuôi trước `]`, mà server parse bằng EJSON.parse thật
+  // — nó không tha phẩy đuôi như ô nhập. Xuống dòng đúng cấp là đủ.
+  if (atLineEnd && open[0] === '}' && isCompletePair(line)) {
+    const lead = /,\s*$/.test(line) ? '' : ',';
+    // Phía sau còn cặp nữa thì cặp mới phải có phẩy đuôi, không thì hỏng JSON.
+    const tail = next === '}' || next === '' ? '' : ',';
+    return splice(`${lead}\n${indentOf(depth)}"": ""${tail}`, lineEnd, lead.length + 1 + indentOf(depth).length + 1);
+  }
+
+  // 3. Xuống dòng thường. Dấu đóng đang nằm NGAY SAU trên cùng dòng → nó sẽ bị
+  // đẩy xuống dòng mới, nên dòng mới lùi một cấp. Dấu đóng ở dòng dưới rồi thì
+  // giữ nguyên cấp — chỗ đó là để gõ phần tử/field tiếp theo.
+  const closerFollows = (next === '}' || next === ']') && !t.slice(at, nextAt).includes('\n');
+  const level = closerFollows ? depth - 1 : depth;
+  return splice(`\n${indentOf(level)}`, at, 1 + indentOf(level).length);
 }

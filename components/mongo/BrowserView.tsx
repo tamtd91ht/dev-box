@@ -22,7 +22,7 @@ import {
   prettyDoc,
   formatJsonInput,
   minifyJsonInput,
-  closeAndFormatOnEnter,
+  smartEnter,
   fmtBytes,
   fmtCount,
   type DatabaseInfo,
@@ -37,6 +37,7 @@ import UpdateModal from './UpdateModal';
 import ExportModal from './ExportModal';
 import JsonView, { countHits } from './JsonView';
 import FieldSuggest from './FieldSuggest';
+import { expandSnippet, FILTER_SNIPPETS, PIPELINE_SNIPPETS, type Snippet } from '@/lib/mongoSnippets';
 import ResultFindBar from './ResultFindBar';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
@@ -112,47 +113,6 @@ function isMongoDraft(v: unknown): v is MongoDraft {
 }
 
 const DEFAULT_LIMIT = 50;
-
-/**
- * Khung JSON dựng sẵn cho ô query. `caretOffset` là vị trí con trỏ TRONG `text`
- * sau khi chèn — luôn trỏ vào chỗ cần gõ tiếp (trong nháy, sau dấu hai chấm),
- * để bấm xong là gõ được ngay chứ không phải rê chuột tìm chỗ.
- *
- * Chỉ để mồi cấu trúc — tên field cụ thể do autocomplete (FieldSuggest) lo,
- * nên ở đây dùng `field` làm chỗ giữ chỗ và bôi đen sẵn để gõ đè.
- */
-interface Snippet {
-  label: string;
-  title: string;
-  text: string;
-  caretOffset: number;
-  /** Số ký tự được BÔI ĐEN từ caretOffset — gõ là thay luôn. */
-  selectLen?: number;
-}
-
-const FILTER_SNIPPETS: Snippet[] = [
-  { label: '{ }', title: 'Khung filter rỗng — gõ tên field để gợi ý hiện lên', text: '{\n  \n}', caretOffset: 4 },
-  { label: 'field = value', title: 'So khớp bằng', text: '{\n  "field": ""\n}', caretOffset: 4, selectLen: 7 },
-  { label: '$and', title: 'Nhiều điều kiện cùng đúng', text: '{\n  "$and": [\n    {  },\n    {  }\n  ]\n}', caretOffset: 17 },
-  { label: '$or', title: 'Một trong các điều kiện', text: '{\n  "$or": [\n    {  },\n    {  }\n  ]\n}', caretOffset: 16 },
-  { label: '$in', title: 'Thuộc danh sách giá trị', text: '{\n  "field": { "$in": [] }\n}', caretOffset: 4, selectLen: 7 },
-  { label: '$regex', title: 'Khớp chuỗi (i = không phân biệt hoa thường)', text: '{\n  "field": { "$regex": "", "$options": "i" }\n}', caretOffset: 4, selectLen: 7 },
-  { label: 'khoảng số', title: 'Lớn hơn / nhỏ hơn', text: '{\n  "field": { "$gte": 0, "$lte": 0 }\n}', caretOffset: 4, selectLen: 7 },
-  { label: 'khoảng ngày', title: 'Lọc theo mốc thời gian (EJSON $date)', text: '{\n  "createdAt": { "$gte": { "$date": "2026-01-01T00:00:00Z" } }\n}', caretOffset: 4, selectLen: 11 },
-  { label: '_id', title: 'Tìm theo ObjectId', text: '{\n  "_id": { "$oid": "" }\n}', caretOffset: 21 },
-  { label: '$exists', title: 'Field có / không tồn tại', text: '{\n  "field": { "$exists": true }\n}', caretOffset: 4, selectLen: 7 },
-];
-
-const PIPELINE_SNIPPETS: Snippet[] = [
-  { label: '[ ]', title: 'Khung pipeline rỗng', text: '[\n  \n]', caretOffset: 4 },
-  { label: '$match', title: 'Lọc trước khi gom', text: '[\n  { "$match": {  } }\n]', caretOffset: 17 },
-  { label: '$group', title: 'Gom nhóm + đếm', text: '[\n  { "$group": { "_id": "$field", "n": { "$sum": 1 } } }\n]', caretOffset: 26, selectLen: 8 },
-  { label: '$sort + $limit', title: 'Sắp xếp rồi cắt', text: '[\n  { "$sort": { "field": -1 } },\n  { "$limit": 20 }\n]', caretOffset: 16, selectLen: 7 },
-  { label: '$project', title: 'Chọn cột trả về', text: '[\n  { "$project": { "_id": 0, "field": 1 } }\n]', caretOffset: 32, selectLen: 7 },
-  { label: '$unwind', title: 'Bung mảng thành nhiều dòng', text: '[\n  { "$unwind": "$field" }\n]', caretOffset: 17, selectLen: 6 },
-  { label: '$lookup', title: 'Join sang collection khác', text: '[\n  {\n    "$lookup": {\n      "from": "",\n      "localField": "",\n      "foreignField": "_id",\n      "as": "joined"\n    }\n  }\n]', caretOffset: 39 },
-  { label: 'đếm theo nhóm', title: 'Mẫu hay dùng: match → group → sort', text: '[\n  { "$match": {  } },\n  { "$group": { "_id": "$field", "n": { "$sum": 1 } } },\n  { "$sort": { "n": -1 } }\n]', caretOffset: 17 },
-];
 
 /**
  * Vỏ ngoài: ĐỌC XONG phiên đang dở rồi mới dựng khung làm việc.
@@ -405,7 +365,7 @@ function BrowserViewInner({
    */
   const applyPick = useCallback((
     box: 'filter' | 'pipeline',
-    r: { from: number; to: number; text: string; caretOffset?: number },
+    r: { from: number; to: number; text: string; caretOffset?: number; selectLen?: number },
   ) => {
     const ref = box === 'filter' ? filterRef : pipelineRef;
     const current = box === 'filter' ? filter : pipeline;
@@ -415,7 +375,9 @@ function BrowserViewInner({
     setCaret(at);
     requestAnimationFrame(() => {
       ref.current?.focus();
-      ref.current?.setSelectionRange(at, at);
+      // Khuôn value là literal (`0`, `true`) thì bôi đen sẵn để gõ là thay —
+      // không thì gõ `30` vào trước số 0 ra `300`.
+      ref.current?.setSelectionRange(at, at + (r.selectLen ?? 0));
     });
   }, [filter, pipeline]);
 
@@ -430,26 +392,28 @@ function BrowserViewInner({
     const ref = box === 'filter' ? filterRef : pipelineRef;
     const current = box === 'filter' ? filter : pipeline;
     const setter = box === 'filter' ? setFilter : setPipeline;
+    const snip = expandSnippet(s.src);
 
     const blank = current.trim() === '';
     const from = blank ? 0 : (ref.current?.selectionStart ?? current.length);
     const to = blank ? current.length : (ref.current?.selectionEnd ?? from);
-    const next = current.slice(0, from) + s.text + current.slice(to);
+    const next = current.slice(0, from) + snip.text + current.slice(to);
 
     setter(next);
     setJsonError(null);
-    const at = from + s.caretOffset;
+    const at = from + snip.caret;
     setCaret(at);
     requestAnimationFrame(() => {
       ref.current?.focus();
-      // Bôi đen chỗ giữ chỗ (vd `"field"`) để gõ là thay ngay.
-      ref.current?.setSelectionRange(at, at + (s.selectLen ?? 0));
+      // Bôi đen chỗ giữ chỗ (vd `field` trong `"field"`) để gõ là thay ngay.
+      ref.current?.setSelectionRange(at, at + snip.selectLen);
     });
   }, [filter, pipeline]);
 
   /**
-   * Enter trong ô query: đóng ngoặc còn hở + format (xem closeAndFormatOnEnter).
-   * Trả về true nếu đã xử lý — lúc đó chặn Enter mặc định.
+   * Enter trong ô query: đóng ngoặc còn hở, format, xuống dòng đúng cấp thụt
+   * lề (xem smartEnter). Trả về true nếu đã xử lý — lúc đó chặn Enter mặc định.
+   * Shift+Enter vẫn là xuống dòng trần, để còn tự bày bố cục khi cần.
    *
    * FieldSuggest cũng bắt Enter, nhưng nó nghe ở capture phase và chỉ khi đang
    * có gợi ý hiện; lúc đó nó preventDefault nên handler này không chạy tới.
@@ -461,7 +425,7 @@ function BrowserViewInner({
     // Có vùng chọn thì Enter là thay thế vùng chọn, không phải "đóng khối".
     if (el.selectionStart !== el.selectionEnd) return false;
 
-    const r = closeAndFormatOnEnter(box === 'filter' ? filter : pipeline, el.selectionStart);
+    const r = smartEnter(box === 'filter' ? filter : pipeline, el.selectionStart);
     if (!r) return false;
 
     (box === 'filter' ? setFilter : setPipeline)(r.text);
@@ -957,7 +921,7 @@ function SnippetBar({ snippets, onInsert }: { snippets: Snippet[]; onInsert: (s:
           key={s.label}
           type="button"
           className="chip-btn mongo-snip"
-          title={`${s.title}\n\n${s.text}`}
+          title={`${s.title}\n\n${expandSnippet(s.src).text}`}
           // Mouse-down để textarea không mất focus trước khi ta đặt lại con trỏ.
           onMouseDown={(e) => { e.preventDefault(); onInsert(s); }}
         >{s.label}</button>

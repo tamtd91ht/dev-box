@@ -116,8 +116,11 @@ export function closeBracket(text: string, from: number, to: number, ch: '}' | '
   return null;
 }
 
-/** Một dòng đã là cặp `"key": value` HOÀN CHỈNH? (để Enter đẻ field mới) */
-function isCompletePair(line: string): boolean {
+/**
+ * Một dòng đã là cặp `"key": value` HOÀN CHỈNH? (để Enter đẻ field mới)
+ * Ô query của tab Mongo dùng lại (lib/mongo.ts — smartEnter).
+ */
+export function isCompletePair(line: string): boolean {
   const s = line.trim().replace(/,$/, '');
   if (!/^"(?:[^"\\]|\\.)*"\s*:/.test(s)) return false;
   const val = s.slice(s.indexOf(':') + 1).trim();
