@@ -6,18 +6,22 @@
 // FIELD CODE ĐI XUYÊN LIST OBJECT: "deviceInfos.deviceId" gom deviceId của mọi
 // phần tử, nối bằng ký tự phân cách của cột (xem collectByPath).
 //
-// PHÂN TRANG BẰNG search_after, KHÔNG PHẢI from/size:
+// PHÂN TRANG BẰNG SCROLL, KHÔNG PHẢI from/size:
 // ES chặn cứng `from + size` ở result window 10.000 — quá ngưỡng là ném lỗi,
-// nên đường from cũ không xuất nổi một index lớn. `search_after` không có trần
-// đó và không bắt ES sắp lại toàn bộ ở mỗi trang.
+// nên đường from không xuất nổi một index lớn. Scroll không có trần đó, không
+// cần sort, và giữ một ảnh tĩnh của index trong lúc xuất.
 //
-// search_after BẮT BUỘC có sort, và sort phải ĐỊNH DANH được từng document, nếu
-// không hai document "bằng điểm" sẽ nhảy qua nhảy lại giữa các trang → xuất
-// trùng dòng hoặc sót dòng. Người dùng khai sort bao nhiêu khoá tuỳ ý; ta luôn
-// NỐI THÊM `_id` vào cuối làm khoá phá hoà (xem withTieBreaker).
+// Trước đây chỗ này đi bằng search_after và tự nối `_id` vào sort làm khoá phá
+// hoà — sai: sort `_id` cần fielddata, ES 8 tắt mặc định nên MỌI lần xuất chết
+// ngay từ trang đầu với "all shards failed". Xem khối ghi chú ở lib/esClient.ts
+// (phần Scroll) để biết vì sao không có khoá phá hoà nào dùng được ở mọi cụm.
+//
+// SORT Ở ĐÂY LÀ TUỲ CHỌN, chỉ quyết định THỨ TỰ DÒNG trong file. Ô sort dưới
+// đây điền sẵn sort của lần chạy đang nhìn (hoặc sort trong body) và sửa được;
+// bỏ trống thì xuất theo thứ tự index — nhanh nhất, vẫn đủ dòng.
 
-import { useCallback, useMemo, useState } from 'react';
-import { searchEs, countEs } from '@/lib/es';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { scrollStartEs, scrollNextEs, scrollClearEs, countEs } from '@/lib/es';
 import {
   buildReportXlsx,
   downloadBlob,
@@ -26,6 +30,13 @@ import {
   NO_COLUMN_PATH,
 } from '@/lib/mongoReport';
 import ColumnMapper, { hasDataColumn, initialColumns, toReportColumns, type ColumnDraft } from '../export/ColumnMapper';
+// Trợ lý gõ JSON dùng chung với ô query Mongo (cùng lẽ như lib/mongoReport là
+// engine xuất file dùng chung cho cả ba tab): Enter đóng ngoặc + thụt lề đúng
+// cấp, gợi ý tên field, `asc`/`desc` ở chỗ đặt giá trị.
+import { smartEnter } from '@/lib/mongo';
+import { tokenAt } from '@/lib/mongoSuggest';
+import { buildSortMatches } from '@/lib/esSortSuggest';
+import JsonSuggest, { type JsonSuggestPick } from '../JsonSuggest';
 import ConfirmExportModal from '../export/ConfirmExportModal';
 import { runExport, parseRows } from '../export/exportRun';
 
@@ -37,17 +48,14 @@ export interface ExportModalProps {
   /** Chỉ phần `query` (tab Tìm nhanh ráp sẵn). Bỏ trống khi dùng `body`. */
   query?: string;
   /**
-   * Sort JSON kèm `query` (tab Tìm nhanh) — rỗng = không sort. File xuất phải
-   * cùng thứ tự với bảng đang nhìn, nên chỗ gọi truyền sort của LẦN CHẠY vừa
-   * rồi. Bỏ qua khi dùng `body` (sort đã nằm trong body).
+   * Sort JSON của LẦN CHẠY đang nhìn — chỉ dùng để ĐIỀN SẴN ô sort của modal,
+   * người dùng sửa hoặc xoá được. Với `body` thì sort lấy từ chính body.
    */
   sort?: string;
-  /** Mô tả sort cho hộp thoại xác nhận. */
-  sortSummary?: string;
   /**
-   * NGUYÊN body _search kiểu Dev Tools (tab Dữ liệu). Có `body` thì server bỏ
-   * qua mọi field rời — nên `_source`/`size`/`sort` phải chèn thẳng vào body,
-   * xem buildBodyPage().
+   * NGUYÊN body _search kiểu Dev Tools (tab Dữ liệu). Phần `query` trong đó là
+   * cái quyết định xuất ra tập nào; `_source`/`size`/`sort` của lần xuất do
+   * scrollStart đè lên (xem lib/esClient).
    */
   body?: string;
   querySummary: string;
@@ -58,76 +66,38 @@ export interface ExportModalProps {
 }
 
 /**
- * Nối `_id` vào cuối danh sách sort làm khoá PHÁ HOÀ cho search_after.
- *
- * Không có khoá định danh thì các document có cùng giá trị sort không có thứ tự
- * ổn định giữa hai request — con trỏ search_after sẽ nhảy lung tung, file xuất
- * ra trùng dòng hoặc sót dòng mà không báo lỗi gì. Đây là lỗi âm thầm, nguy
- * hiểm hơn hẳn một lỗi ném ra mặt.
- *
- * Đã có `_id` (hoặc `_doc`, `_shard_doc`) trong sort rồi thì giữ nguyên.
- * Ghi chú hiệu năng: trên ES 7+ `_id` sort được mà không cần fielddata, nhưng
- * với index rất lớn nó chậm hơn `_shard_doc` — đổi sau nếu thực tế thấy chậm.
+ * Sort điền sẵn vào ô của modal: sort của lần chạy đang nhìn (tab Tìm nhanh),
+ * hoặc sort nằm trong body (tab Dữ liệu). Không có thì để trống — khi đó xuất
+ * theo thứ tự index, vẫn đủ dòng.
  */
-export function withTieBreaker(sortKeys: unknown[]): unknown[] {
-  const names = sortKeys.map((k) => {
-    if (typeof k === 'string') return k;
-    if (k && typeof k === 'object') return Object.keys(k as object)[0] ?? '';
-    return '';
-  });
-  if (names.some((n) => n === '_id' || n === '_doc' || n === '_shard_doc')) return sortKeys;
-  return [...sortKeys, { _id: 'asc' }];
-}
-
-/** sort JSON (chuỗi) → mảng khoá đã kèm tie-breaker. Rỗng → chỉ `_id`. */
-function sortWithTie(raw?: string): unknown[] {
-  const s = (raw ?? '').trim();
-  if (!s) return [{ _id: 'asc' }]; // không khai sort → đi theo _id cho ổn định
-  try {
-    const parsed = JSON.parse(s);
-    return withTieBreaker(Array.isArray(parsed) ? parsed : [parsed]);
-  } catch {
-    return [{ _id: 'asc' }]; // sort hỏng — vẫn xuất được, chỉ là theo _id
+function initialSort(sort?: string, body?: string): string {
+  if (sort?.trim()) return sort.trim();
+  if (body?.trim()) {
+    try {
+      const parsed = JSON.parse(body) as { sort?: unknown };
+      if (parsed.sort !== undefined && parsed.sort !== null) return JSON.stringify(parsed.sort);
+    } catch { /* body đang gõ dở — để trống, không đoán */ }
   }
-}
-
-/**
- * Ráp body cho MỘT trang export khi nguồn là body _search nguyên bản.
- *
- * Phải viết lại body thay vì truyền field rời vì server ưu tiên `body` và BỎ
- * QUA field rời khi body có nội dung (xem search() ở lib/esClient).
- *
- * Giữ nguyên phần còn lại của body người dùng gõ (query, sort, …) để export ra
- * ĐÚNG tập kết quả họ đang nhìn. `aggs` bị bỏ — export là bảng dòng, tính lại
- * aggs ở mỗi trang chỉ tốn thời gian.
- */
-function buildBodyPage(raw: string, tops: string[], size: number, after?: unknown[]): string {
-  let parsed: Record<string, unknown> = {};
-  if (raw.trim()) {
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; } catch { parsed = {}; }
-  }
-  const next: Record<string, unknown> = { ...parsed, size };
-  delete next.aggs;
-  delete next.track_total_hits;
-  delete next.from; // search_after không đi chung với from
-  // Sort của người dùng (nếu có) + tie-breaker; không có thì _id.
-  const userSort = next.sort;
-  next.sort = withTieBreaker(
-    userSort === undefined || userSort === null ? []
-      : Array.isArray(userSort) ? userSort : [userSort],
-  );
-  if (tops.length) next._source = tops;
-  if (after) next.search_after = after;
-  return JSON.stringify(next);
+  return '';
 }
 
 export default function ExportModal(props: ExportModalProps) {
   const {
-    connectionId, index, query, sort, sortSummary, body, querySummary,
+    connectionId, index, query, sort, body, querySummary,
     fieldSuggestions, defaultTitle, onClose, onDone,
   } = props;
 
   const [title, setTitle] = useState(defaultTitle);
+  /**
+   * Sort của LẦN XUẤT — điền sẵn theo cái đang nhìn rồi để người dùng toàn
+   * quyền. Trước đây sort bị ráp ngầm trong code, gõ sai chỗ nào cũng không
+   * biết mà sửa; giờ nó nằm ngay trên màn hình xuất.
+   */
+  const [sortText, setSortText] = useState(() => initialSort(sort, body));
+  const sortRef = useRef<HTMLTextAreaElement>(null);
+  const [sortCaret, setSortCaret] = useState(0);
+  /** Ô sort đang có con trỏ → mới hiện bảng gợi ý. */
+  const [sortFocused, setSortFocused] = useState(false);
   const [columns, setColumns] = useState<ColumnDraft[]>(initialColumns);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
@@ -135,7 +105,34 @@ export default function ExportModal(props: ExportModalProps) {
   const [confirming, setConfirming] = useState(false);
 
   const validColumns = useMemo(() => columns.filter((c) => c.path.trim()), [columns]);
-  const canExport = !busy && !!title.trim() && hasDataColumn(columns);
+  /** Bắt sort hỏng NGAY TRÊN FORM — để người dùng không đi qua hộp xác nhận rồi
+   *  mới nhận một câu lỗi từ ES. */
+  const sortError = useMemo(() => {
+    if (!sortText.trim()) return null;
+    try { JSON.parse(sortText); return null; } catch (e) { return `Sort không phải JSON hợp lệ: ${(e as Error).message}`; }
+  }, [sortText]);
+  const canExport = !busy && !!title.trim() && hasDataColumn(columns) && !sortError;
+
+  /** Thay text ô sort rồi đặt lại con trỏ (và vùng bôi đen) sau khi React vẽ. */
+  const applySort = (text: string, caret: number, selectLen = 0) => {
+    setSortText(text);
+    setSortCaret(caret);
+    requestAnimationFrame(() => {
+      sortRef.current?.focus();
+      sortRef.current?.setSelectionRange(caret, caret + selectLen);
+    });
+  };
+
+  const sortToken = sortFocused ? tokenAt(sortText, sortCaret) : null;
+  const sortMatches = useMemo(
+    () => buildSortMatches(fieldSuggestions, sortText, sortToken),
+    [fieldSuggestions, sortText, sortToken],
+  );
+
+  const pickSort = (r: JsonSuggestPick) => {
+    const next = sortText.slice(0, r.from) + r.text + sortText.slice(r.to);
+    applySort(next, r.from + (r.caretOffset ?? r.text.length), r.selectLen ?? 0);
+  };
 
   const countRows = useCallback(async () => {
     const r = await countEs(connectionId, index, query ?? '', body);
@@ -149,41 +146,54 @@ export default function ExportModal(props: ExportModalProps) {
       const tops = [...new Set(validColumns.map((c) => c.path.split('.')[0]))]
         .filter((t) => t !== '_id' && t !== NO_COLUMN_PATH); // __no dựng ở client
       const source = tops.length ? JSON.stringify(tops) : '';
-      const effSort = sortWithTie(sort);
 
-      const { rows, capped } = await runExport<unknown[]>({
-        max: MAX_EXPORT_ROWS,
-        onProgress: (n) => setProgress(`Đang tải dữ liệu… ${n.toLocaleString('en-US')} dòng`),
-        fetchPage: async (after) => {
-          // Hai nguồn: body nguyên bản (tab Dữ liệu) thì phân trang bằng cách
-          // viết lại body; query rời (tab Tìm nhanh) thì truyền field rời.
-          const page = body !== undefined
-            ? await searchEs(connectionId, index, { body: buildBodyPage(body, tops, PAGE, after) })
-            : await searchEs(connectionId, index, {
-                query, sort: JSON.stringify(effSort), source, size: PAGE, searchAfter: after,
-              });
-          return {
-            rows: parseRows(page.docs),
-            // Hết dữ liệu khi trang không đầy — khi đó cũng không cần con trỏ nữa.
-            next: page.docs.length < PAGE ? null : page.lastSort,
-          };
-        },
-      });
+      // Con trỏ của vòng lặp là scroll_id. Giữ riêng một biến ngoài để còn ĐÓNG
+      // được scroll ở finally — kể cả khi lỗi giữa chừng hay người dùng bỏ dở.
+      let scrollId: string | null = null;
+      try {
+        const { rows, capped } = await runExport<string>({
+          max: MAX_EXPORT_ROWS,
+          onProgress: (n) => setProgress(`Đang tải dữ liệu… ${n.toLocaleString('en-US')} dòng`),
+          fetchPage: async (cursor) => {
+            // Trang đầu mở scroll (server ráp body từ `body` hoặc `query` rời),
+            // các trang sau chỉ cần con trỏ.
+            const page = cursor === undefined
+              ? await scrollStartEs(connectionId, index, { body, query, sort: sortText, source, size: PAGE })
+              : await scrollNextEs(connectionId, cursor);
+            scrollId = page.scrollId;
+            // Còn dòng mà không có con trỏ thì DỪNG HẲN bằng lỗi, không im lặng
+            // trả về trang đầu: xuất thiếu dòng mà file vẫn mở được là kiểu hỏng
+            // không ai phát hiện ra.
+            if (page.docs.length > 0 && !page.scrollId) {
+              throw new Error('Cụm không trả scroll_id nên không lật được trang tiếp — dừng để file không bị thiếu dòng.');
+            }
+            return {
+              rows: parseRows(page.docs),
+              // Scroll báo hết bằng một trang RỖNG, không phải trang ngắn.
+              next: page.docs.length === 0 ? null : page.scrollId,
+            };
+          },
+        });
 
-      setProgress(`Đang dựng file Excel… ${rows.length.toLocaleString('en-US')} dòng`);
-      const blob = await buildReportXlsx(
-        {
-          title: title.trim(),
-          target: index,
-          rowCount: rows.length,
-          note: capped ? `đã cắt tại ${MAX_EXPORT_ROWS.toLocaleString('en-US')} dòng` : undefined,
-        },
-        toReportColumns(columns),
-        rows,
-      );
-      const filename = reportFilename(title);
-      downloadBlob(blob, filename);
-      onDone(rows.length, filename);
+        setProgress(`Đang dựng file Excel… ${rows.length.toLocaleString('en-US')} dòng`);
+        const blob = await buildReportXlsx(
+          {
+            title: title.trim(),
+            target: index,
+            rowCount: rows.length,
+            note: capped ? `đã cắt tại ${MAX_EXPORT_ROWS.toLocaleString('en-US')} dòng` : undefined,
+          },
+          toReportColumns(columns),
+          rows,
+        );
+        const filename = reportFilename(title);
+        downloadBlob(blob, filename);
+        onDone(rows.length, filename);
+      } finally {
+        // Trả context cho cụm — có trần max_open_scroll_context, bỏ rác lại mỗi
+        // lần xuất là tự bắn vào chân mình trên cụm dùng chung.
+        if (scrollId) void scrollClearEs(connectionId, scrollId);
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -204,6 +214,38 @@ export default function ExportModal(props: ExportModalProps) {
           <span>Tiêu đề báo cáo (hiện trên đầu sheet + tên file)</span>
           <input className="input" value={title} onChange={(e) => setTitle(e.target.value)}
             disabled={busy} placeholder="Báo cáo customer theo tenant" />
+        </label>
+
+        <label className="es-field" style={{ marginBottom: 8 }}>
+          <span>Sắp xếp (JSON — gõ tên field để gợi ý; bỏ trống = theo thứ tự index, nhanh nhất)</span>
+          <div className="json-suggest-wrap">
+            <textarea
+              ref={sortRef}
+              className="input mono"
+              rows={2}
+              value={sortText}
+              disabled={busy}
+              placeholder='[{"created_at": "desc"}]'
+              onChange={(e) => { setSortText(e.target.value); setSortCaret(e.target.selectionStart); }}
+              onFocus={(e) => { setSortFocused(true); setSortCaret(e.target.selectionStart); }}
+              onBlur={() => setSortFocused(false)}
+              onSelect={(e) => setSortCaret((e.target as HTMLTextAreaElement).selectionStart)}
+              onKeyDown={(e) => {
+                // `defaultPrevented` là BẮT BUỘC: JsonSuggest nghe ở capture phase
+                // nên khi nó vừa chèn một field bằng Enter, handler này vẫn chạy
+                // tiếp — không chặn thì cùng một phím Enter vừa chèn vừa format.
+                if (e.key !== 'Enter' || e.shiftKey || e.defaultPrevented) return;
+                const el = e.currentTarget;
+                if (el.selectionStart !== el.selectionEnd) return;
+                const r = smartEnter(sortText, el.selectionStart);
+                if (!r) return;
+                e.preventDefault();
+                applySort(r.text, r.caret);
+              }}
+            />
+            {sortFocused && <JsonSuggest matches={sortMatches} token={sortToken} onPick={pickSort} />}
+          </div>
+          {sortError && <span className="mongo-json-err">{sortError}</span>}
         </label>
 
         <div className="es-field" style={{ marginBottom: 4, minHeight: 0 }}>
@@ -244,7 +286,7 @@ export default function ExportModal(props: ExportModalProps) {
         target={index}
         querySummary={querySummary}
         columnCount={validColumns.length}
-        sortSummary={sortSummary || (body ? 'theo sort trong body' : '')}
+        sortSummary={sortText.trim() || 'theo thứ tự index'}
         count={countRows}
         onCancel={() => setConfirming(false)}
         onConfirm={() => void doExport()}

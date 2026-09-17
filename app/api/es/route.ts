@@ -9,6 +9,8 @@
 //     'mapping' { connectionId, index }         → { ok, result: { json, truncated } }
 //     'search'  { connectionId, index, body? | (query?, aggs?, source?, sort?, size?), from? } → { ok, result: EsSearchResult }
 //               (body = nguyên body _search kiểu Dev Tools — ưu tiên nếu có)
+//     'scroll'  { connectionId, index, mode: 'start'|'next'|'clear', … } → { ok, result: EsScrollPage }
+//               (đường phân trang của XUẤT BÁO CÁO — xem scrollStart ở esClient)
 //     'count'   { connectionId, index, query? | body? } → { ok, result: { count, tookMs } }
 //     'console' { connectionId, method, path, body? } → { ok, result: EsConsoleResult }
 //
@@ -28,6 +30,9 @@ import {
   listNodes,
   getMapping,
   search,
+  scrollStart,
+  scrollNext,
+  scrollClear,
   count,
   consoleRequest,
 } from '@/lib/esClient';
@@ -103,6 +108,23 @@ export async function POST(req: NextRequest) {
           searchAfter: body.searchAfter,
         });
         break;
+      case 'scroll': {
+        // Ba nhịp của một vòng xuất: mở scroll (start) → lấy tiếp (next) →
+        // đóng (clear). Con trỏ do client giữ, server không nhớ phiên nào cả.
+        const mode = String(body.mode ?? 'start');
+        if (mode === 'next') result = await scrollNext(conn, body.scrollId);
+        else if (mode === 'clear') { await scrollClear(conn, body.scrollId); result = { ok: true }; }
+        else {
+          result = await scrollStart(conn, String(body.index ?? ''), {
+            body: body.body,
+            query: body.query,
+            sort: body.sort,
+            source: body.source,
+            size: body.size,
+          });
+        }
+        break;
+      }
       case 'count':
         result = await count(conn, String(body.index ?? ''), { query: body.query, body: body.body });
         break;

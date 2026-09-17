@@ -163,6 +163,47 @@ export function searchEs(connectionId: string, index: string, p: EsSearchParams)
   return esAction<EsSearchResult>('search', { connectionId, index, ...p });
 }
 
+/**
+ * Một trang của vòng scroll — đường phân trang của XUẤT BÁO CÁO.
+ *
+ * Vì sao là scroll chứ không phải search_after: xem khối ghi chú dài ở
+ * lib/esClient.ts (tóm tắt: search_after cần một khoá sort định danh được từng
+ * document, mà không cụm nào cũng có — `_id` thì ES 8 chặn fielddata nên cả
+ * lần xuất chết ngay với "all shards failed").
+ */
+export interface EsScrollPage {
+  docs: WireDoc[];
+  tookMs: number;
+  /** Con trỏ trang kế — ES có thể ĐỔI id giữa các trang, luôn gửi lại cái mới nhất. */
+  scrollId: string | null;
+}
+
+export interface EsScrollParams {
+  /** NGUYÊN body _search (tab Dữ liệu). */
+  body?: string;
+  /** `query` rời (tab Tìm nhanh). */
+  query?: string;
+  /** Sort của lần xuất — đè lên sort trong body. Rỗng = không sort. */
+  sort?: string;
+  source?: string;
+  size?: number;
+}
+
+/** Mở scroll + lấy trang đầu. */
+export function scrollStartEs(connectionId: string, index: string, p: EsScrollParams): Promise<EsScrollPage> {
+  return esAction<EsScrollPage>('scroll', { connectionId, index, mode: 'start', ...p });
+}
+
+/** Trang kế. */
+export function scrollNextEs(connectionId: string, scrollId: string): Promise<EsScrollPage> {
+  return esAction<EsScrollPage>('scroll', { connectionId, mode: 'next', scrollId });
+}
+
+/** Đóng scroll. Gọi xong lần xuất (kể cả khi lỗi) để cụm thu hồi context. */
+export function scrollClearEs(connectionId: string, scrollId: string): Promise<{ ok: boolean }> {
+  return esAction<{ ok: boolean }>('scroll', { connectionId, mode: 'clear', scrollId });
+}
+
 export function countEs(connectionId: string, index: string, query: string, body?: string): Promise<{ count: number; tookMs: number }> {
   return esAction<{ count: number; tookMs: number }>('count', { connectionId, index, query, body });
 }

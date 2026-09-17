@@ -2652,28 +2652,31 @@ pre.kafka-drawer-body {
 .mongo-json-err { font-size: 11.5px; color: var(--err); word-break: break-word; }
 
 .mongo-field { position: relative; }
-.mongo-suggest {
+/* Ô nhập nào có bảng gợi ý thì bọc trong khối này (ô query Mongo đã sẵn
+   position: relative qua .mongo-field). */
+.json-suggest-wrap { position: relative; }
+.json-suggest {
   position: absolute; z-index: 30; top: 100%; left: 0; margin-top: 2px;
   min-width: 260px; max-width: 100%; max-height: 240px; overflow: auto;
   background: var(--panel, var(--bg)); border: 1px solid var(--glass-brd);
   border-radius: 9px; padding: 4px; box-shadow: 0 8px 22px rgba(0, 0, 0, .35);
   display: flex; flex-direction: column; gap: 1px;
 }
-.mongo-suggest-item {
+.json-suggest-item {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   width: 100%; text-align: left; background: none; border: none; cursor: pointer;
   color: var(--text); font-family: var(--mono); font-size: 12px;
   padding: 5px 8px; border-radius: 6px;
 }
-.mongo-suggest-item.active, .mongo-suggest-item:hover { background: var(--glass-bg); color: var(--accent); }
-.mongo-suggest-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none; }
+.json-suggest-item.active, .json-suggest-item:hover { background: var(--glass-bg); color: var(--accent); }
+.json-suggest-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none; }
 /* Bản xem trước đoạn sẽ chèn (vd `"email": ""`) — mờ hơn tên field, co lại trước. */
-.mongo-suggest-prev {
+.json-suggest-prev {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--faint); font-size: 11px;
 }
-.mongo-suggest-type { flex: none; font-size: 10.5px; color: var(--muted); }
-.mongo-suggest-hint { font-size: 10.5px; color: var(--muted); padding: 3px 8px 1px; border-top: 1px solid var(--glass-brd); margin-top: 2px; }
+.json-suggest-type { flex: none; font-size: 10.5px; color: var(--muted); }
+.json-suggest-hint { font-size: 10.5px; color: var(--muted); padding: 3px 8px 1px; border-top: 1px solid var(--glass-brd); margin-top: 2px; }
 
 /* ── Danger block (update modal) ───────────────────────────────────────── */
 .mongo-danger {

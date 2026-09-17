@@ -37,7 +37,12 @@ const REQUEST_TIMEOUT_MS = 15_000;
  * authoritative and NOT retried on another node (same policy as the RabbitMQ
  * tab's management-API client). Throws Error with the ES reason.
  */
-async function esFetch<T>(conn: EsConnection, pathAndQuery: string, body?: unknown): Promise<T> {
+async function esFetch<T>(
+  conn: EsConnection,
+  pathAndQuery: string,
+  body?: unknown,
+  method?: 'GET' | 'POST' | 'DELETE',
+): Promise<T> {
   const scheme = conn.tls ? 'https' : 'http';
   let lastErr: Error | null = null;
   for (const node of conn.nodes) {
@@ -45,7 +50,7 @@ async function esFetch<T>(conn: EsConnection, pathAndQuery: string, body?: unkno
     const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
     try {
       const res = await fetch(`${scheme}://${node}${pathAndQuery}`, {
-        method: body === undefined ? 'GET' : 'POST',
+        method: method ?? (body === undefined ? 'GET' : 'POST'),
         headers: body === undefined ? undefined : { 'content-type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: ctrl.signal,
@@ -55,8 +60,7 @@ async function esFetch<T>(conn: EsConnection, pathAndQuery: string, body?: unkno
       let json: unknown;
       try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
       if (!res.ok) {
-        const reason = (json as { error?: { reason?: string; type?: string } })?.error;
-        throw new AuthoritativeError(reason?.reason || reason?.type || `ES trả HTTP ${res.status}`);
+        throw new AuthoritativeError(esErrorMessage(json, res.status));
       }
       return json as T;
     } catch (e) {
@@ -74,6 +78,34 @@ async function esFetch<T>(conn: EsConnection, pathAndQuery: string, body?: unkno
 
 /** Marker: the cluster ANSWERED (4xx/5xx) — don't fail over to another node. */
 class AuthoritativeError extends Error {}
+
+/** Hình dạng lỗi của ES — chỉ những nhánh ta thật sự đọc. */
+interface EsErrorBody {
+  reason?: string;
+  type?: string;
+  root_cause?: { reason?: string; type?: string }[];
+  caused_by?: { reason?: string; type?: string };
+  failed_shards?: { reason?: { reason?: string; type?: string } }[];
+}
+
+/**
+ * Thông điệp lỗi của ES — LẤY TỚI NGUYÊN NHÂN GỐC.
+ *
+ * `error.reason` ngoài cùng của một search hỏng gần như luôn là "all shards
+ * failed": đúng mà vô dụng, vì nó chỉ nói "mọi shard đều lỗi" chứ không nói
+ * lỗi gì. Nguyên nhân thật nằm ở `root_cause[0]` / `failed_shards[0].reason` /
+ * `caused_by`. Nuốt mất phần đó là người dùng nhìn một câu không suy ra được
+ * gì, còn người sửa thì phải đoán — đúng cái đã xảy ra với lỗi sort `_id`.
+ */
+export function esErrorMessage(json: unknown, status: number): string {
+  const err = (json as { error?: EsErrorBody } | undefined)?.error;
+  if (!err) return `ES trả HTTP ${status}`;
+  const head = err.reason || err.type || `ES trả HTTP ${status}`;
+  const deep = err.root_cause?.[0]?.reason
+    ?? err.failed_shards?.[0]?.reason?.reason
+    ?? err.caused_by?.reason;
+  return deep && deep !== head ? `${head} — ${deep}` : head;
+}
 
 // ── Cluster major-version cache (6.8 vs 7/8 body differences) ────────────────
 
@@ -464,6 +496,142 @@ export async function search(conn: EsConnection, index: string, input: EsSearchI
     aggs: res.aggregations ? toWire(res.aggregations) : null,
     lastSort,
   };
+}
+
+// ── Scroll: đường phân trang của XUẤT BÁO CÁO ────────────────────────────────
+//
+// VÌ SAO KHÔNG DÙNG search_after CHO EXPORT: search_after bắt buộc có sort, và
+// sort đó phải ĐỊNH DANH được từng document — nếu không, hai document "bằng
+// điểm" ở ranh giới trang sẽ trùng hoặc rơi mất, file xuất ra thiếu dòng mà
+// KHÔNG báo lỗi gì. Mà không có khoá phá hoà nào dùng được ở mọi cụm:
+//   · `_id`        — sort được nhưng phải bật fielddata trên _id. ES 8 tắt mặc
+//                    định (indices.id_field_data.enabled=false) → mọi shard ném
+//                    lỗi, người dùng nhận đúng một câu "all shards failed".
+//                    Đây chính là lỗi export ES chết ngay từ trang đầu.
+//   · `_shard_doc` — chỉ tồn tại khi mở point-in-time (ES ≥ 7.10).
+//   · `_doc`       — chỉ duy nhất TRONG một shard, index nhiều shard vẫn sót
+//                    dòng ở ranh giới trang.
+//
+// Scroll thì không cần sort, không đụng result window 10.000, và giữ một ẢNH
+// TĨNH của index nên dữ liệu ghi vào giữa chừng không làm lệch trang. ES
+// khuyến nghị PIT + search_after cho phân trang sâu, nhưng PIT chỉ có từ 7.10
+// mà tool này đỡ cả 6.8 — scroll chạy trên mọi phiên bản đang đỡ.
+
+/** Giữ scroll context giữa hai trang: đủ cho một trang chậm, đủ ngắn để cluster
+ *  dọn sớm nếu người dùng đóng tab giữa chừng. */
+const SCROLL_KEEP_ALIVE = '2m';
+
+export interface EsScrollInput {
+  /** NGUYÊN body _search (tab Dữ liệu) — lấy phần `query` và các tuỳ chọn khác. */
+  body?: unknown;
+  /** `query` rời (tab Tìm nhanh) — dùng khi không có `body`. */
+  query?: unknown;
+  /** Sort của LẦN XUẤT — đè lên sort trong body. Rỗng = không sort (nhanh nhất). */
+  sort?: unknown;
+  source?: unknown;
+  size?: unknown;
+}
+
+export interface EsScrollPage {
+  docs: { json: string; truncated: boolean }[];
+  tookMs: number;
+  /** Con trỏ cho trang kế — ES có thể ĐỔI id giữa các trang, luôn dùng cái mới
+   *  nhất. null = không mở được scroll (cụm trả thiếu _scroll_id). */
+  scrollId: string | null;
+}
+
+/** Chuẩn hoá một trang scroll (dùng chung cho trang đầu và các trang sau). */
+function toScrollPage(
+  res: { _scroll_id?: string; hits?: { hits?: { _id: string; _source?: Record<string, unknown> }[] } },
+  tookMs: number,
+): EsScrollPage {
+  const hits = res.hits?.hits ?? [];
+  return {
+    docs: hits.map((h) => toWire({ _id: h._id, ...(h._source ?? {}) })),
+    tookMs,
+    scrollId: res._scroll_id ?? null,
+  };
+}
+
+/**
+ * Dựng body cho trang đầu của một vòng scroll.
+ *
+ * Tách riêng khỏi phần gọi mạng để kiểm được bằng scripts/check-es-export.ts —
+ * đây đúng là chỗ đã làm chết cả tính năng xuất: một khoá sort tự chèn vào mà
+ * không ai soát được.
+ */
+export function buildScrollBody(input: EsScrollInput): Record<string, unknown> {
+  let body: Record<string, unknown>;
+  const full = parseJson(input.body, 'body');
+  if (Object.keys(full).length) {
+    forbidScripts(full);
+    body = { ...full };
+  } else {
+    body = {};
+    const query = parseJson(input.query, 'query');
+    forbidScripts(query);
+    if (Object.keys(query).length) body.query = query;
+  }
+
+  // Sort/_source/size của LẦN XUẤT đè lên body: xuất báo cáo là việc khác với
+  // xem trên màn hình. Sort rỗng = KHÔNG sort — scroll vẫn đủ dòng, chỉ là thứ
+  // tự file theo index chứ không theo ý người dùng (và chạy nhanh hơn).
+  const sort = parseSort(input.sort);
+  if (sort) body.sort = sort; else delete body.sort;
+  const source = parseSource(input.source);
+  if (source) body._source = source;
+  // Những khoá vô nghĩa (hoặc bị ES từ chối) trong một vòng scroll.
+  delete body.aggs;
+  delete body.from;
+  delete body.search_after;
+  delete body.track_total_hits;
+
+  if (body.query === undefined) body.query = { match_all: {} };
+  const sizeRaw = Number(input.size);
+  body.size = Number.isFinite(sizeRaw)
+    ? Math.min(Math.max(Math.trunc(sizeRaw), 1), SEARCH_SIZE_MAX)
+    : SEARCH_SIZE_MAX;
+  body.timeout = '15s';
+  return body;
+}
+
+/** Mở scroll + lấy trang đầu. */
+export async function scrollStart(conn: EsConnection, index: string, input: EsScrollInput): Promise<EsScrollPage> {
+  const idx = requireIndex(index);
+  const body = buildScrollBody(input);
+
+  const t0 = Date.now();
+  const res = await esFetch<Parameters<typeof toScrollPage>[0]>(
+    conn, `/${indexPath(idx)}/_search?scroll=${SCROLL_KEEP_ALIVE}`, body,
+  );
+  return toScrollPage(res, Date.now() - t0);
+}
+
+/** Trang kế của một scroll đang mở. Trang rỗng = đã hết dữ liệu. */
+export async function scrollNext(conn: EsConnection, scrollId: unknown): Promise<EsScrollPage> {
+  const id = typeof scrollId === 'string' ? scrollId.trim() : '';
+  if (!id) throw new Error('Thiếu scroll_id cho trang kế.');
+  const t0 = Date.now();
+  const res = await esFetch<Parameters<typeof toScrollPage>[0]>(
+    conn, '/_search/scroll', { scroll: SCROLL_KEEP_ALIVE, scroll_id: id },
+  );
+  return toScrollPage(res, Date.now() - t0);
+}
+
+/**
+ * Đóng scroll, trả tài nguyên cho cluster.
+ *
+ * Không đóng thì context vẫn tự hết hạn sau SCROLL_KEEP_ALIVE, nhưng cụm có
+ * trần `search.max_open_scroll_context` (mặc định 500) — bỏ rác lại mỗi lần
+ * xuất là tự bắn vào chân mình trên cụm dùng chung. Lỗi khi đóng thì NUỐT:
+ * dữ liệu đã lấy xong rồi, không có lý gì làm hỏng lần xuất vì bước dọn dẹp.
+ */
+export async function scrollClear(conn: EsConnection, scrollId: unknown): Promise<void> {
+  const id = typeof scrollId === 'string' ? scrollId.trim() : '';
+  if (!id) return;
+  try {
+    await esFetch(conn, '/_search/scroll', { scroll_id: [id] }, 'DELETE');
+  } catch { /* context sẽ tự hết hạn — không làm phiền người dùng vì việc này */ }
 }
 
 /**

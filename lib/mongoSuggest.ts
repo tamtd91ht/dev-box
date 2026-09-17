@@ -163,65 +163,83 @@ export function operatorTemplate(op: string): [string, number] {
 }
 
 /**
- * Danh sách gợi ý cho token đang gõ. Rỗng = không có gì để gợi ý.
+ * Con trỏ đang ở LOẠI CHỖ nào trong câu JSON — thứ quyết định chèn ra cái gì.
+ * Tách riêng vì ô sort của tab ES dùng lại y nguyên phần này (lib/esSortSuggest).
  */
-export function buildMatches(fields: FieldInfo[], value: string, token: Token | null): Match[] {
-  if (!token) return [];
-  const w = token.word.toLowerCase();
+export interface Slot {
+  /** Chỗ đặt GIÁ TRỊ (ngay sau `:`) → chỉ chèn tên trần, không chèn cặp. */
+  bare: boolean;
+  /** Đã có `: …` ngay sau token → thay TÊN, không đẻ thêm cặp. */
+  pair: { emptyValueEnd: number } | null;
+  /** Còn nội dung dính ngay sau → đoạn chèn phải tự mang dấu phẩy. */
+  needComma: boolean;
+}
 
-  // Sau dấu `:` là chỗ của GIÁ TRỊ — chỉ chèn tên trần, giữ nguyên hành vi cũ.
+export function slotAt(value: string, token: Token): Slot {
   const bare = atValuePosition(value, token.from);
-  // Đã có `: …` ngay sau → thay TÊN, không đẻ thêm cặp.
   const pair = bare ? null : existingPair(value, token.to);
   // `,` đứng ngay sau nghĩa là đã có cặp tiếp theo → không tự thêm dấu phẩy.
   // Đo từ `token.to` (đã qua nháy đóng) chứ không từ `caret`, nếu không thì
   // dấu nháy đóng sẽ bị coi là "còn nội dung phía sau" và sinh phẩy thừa.
   const after = nextMeaningful(value, token.to);
   const needComma = !bare && !pair && after !== '' && after !== ',' && after !== '}' && after !== ']';
+  return { bare, pair, needComma };
+}
 
-  /**
-   * Ở chỗ đặt GIÁ TRỊ ta chỉ chèn tên trần — nhưng `tokenAt` đã nuốt cặp nháy
-   * người dùng tự gõ, nên phải trả lại, không thì `{"a": "$b"}` mất nháy.
-   */
-  const bareInsert = (name: string): [string, number] =>
-    token.quoted ? [`"${name}"`, name.length + 1] : [name, name.length];
-
-  /** Một mục gợi ý cho `name`, với khuôn value `[tpl, off]` của kiểu tương ứng. */
-  const build = (name: string, hint: string, tpl: string, off: number): Match => {
-    // Con trỏ rơi vào ĐẦU khuôn = khuôn là literal cần gõ đè (`0`, `true`) →
-    // bôi đen cả nó. Còn lại con trỏ đã nằm trong ruột khuôn, không bôi gì.
-    const selectLen = off === 0 ? tpl.length : 0;
-    if (bare) {
-      const [ins, offset] = bareInsert(name);
-      return { label: name, hint, insert: ins, caretOffset: offset, selectLen: 0, preview: ins, from: token.from, to: token.to };
-    }
-    if (pair) {
-      // Value đang là chỗ trống `""` → thay luôn bằng khuôn đúng kiểu, con trỏ
-      // vào giữa. Value đã có chữ → chỉ đổi tên key, không đạp lên cái đã gõ.
-      if (pair.emptyValueEnd >= 0) {
-        const insert = `"${name}": ${tpl}`;
-        return {
-          label: name, hint, insert, caretOffset: name.length + 4 + off, selectLen,
-          preview: insert, from: token.from, to: pair.emptyValueEnd,
-        };
-      }
-      const insert = `"${name}"`;
+/**
+ * Một mục gợi ý cho `name`, với khuôn value `[tpl, off]`.
+ *
+ * `off` là vị trí con trỏ TRONG khuôn. Con trỏ rơi vào ĐẦU khuôn nghĩa là khuôn
+ * là một literal cần gõ đè (`0`, `true`) → bôi đen cả nó; khuôn có chỗ trống
+ * sẵn (`""`, `[]`) thì con trỏ đã nằm trong ruột, không bôi gì. `selectLen`
+ * truyền vào để đè luật đó (ô sort ES bôi đen chữ `desc` nằm trong nháy).
+ */
+export function buildMatch(
+  token: Token, slot: Slot, name: string, hint: string, tpl: string, off: number, selectLen?: number,
+): Match {
+  const sel = selectLen ?? (off === 0 ? tpl.length : 0);
+  if (slot.bare) {
+    // Ở chỗ đặt GIÁ TRỊ ta chỉ chèn tên trần — nhưng `tokenAt` đã nuốt cặp nháy
+    // người dùng tự gõ, nên phải trả lại, không thì `{"a": "$b"}` mất nháy.
+    const insert = token.quoted ? `"${name}"` : name;
+    const caretOffset = token.quoted ? name.length + 1 : name.length;
+    return { label: name, hint, insert, caretOffset, selectLen: 0, preview: insert, from: token.from, to: token.to };
+  }
+  if (slot.pair) {
+    // Value đang là chỗ trống `""` → thay luôn bằng khuôn đúng kiểu, con trỏ
+    // vào giữa. Value đã có chữ → chỉ đổi tên key, không đạp lên cái đã gõ.
+    if (slot.pair.emptyValueEnd >= 0) {
+      const insert = `"${name}": ${tpl}`;
       return {
-        label: name, hint, insert, caretOffset: insert.length, selectLen: 0,
-        preview: insert, from: token.from, to: token.to,
+        label: name, hint, insert, caretOffset: name.length + 4 + off, selectLen: sel,
+        preview: insert, from: token.from, to: slot.pair.emptyValueEnd,
       };
     }
-    const insert = `"${name}": ${tpl}${needComma ? ',' : ''}`;
-    // `"` + name + `": ` = name.length + 4 ký tự trước khi tới value.
+    const insert = `"${name}"`;
     return {
-      label: name, hint, insert, caretOffset: name.length + 4 + off, selectLen,
-      preview: `"${name}": ${tpl}`, from: token.from, to: token.to,
+      label: name, hint, insert, caretOffset: insert.length, selectLen: 0,
+      preview: insert, from: token.from, to: token.to,
     };
+  }
+  const insert = `"${name}": ${tpl}${slot.needComma ? ',' : ''}`;
+  // `"` + name + `": ` = name.length + 4 ký tự trước khi tới value.
+  return {
+    label: name, hint, insert, caretOffset: name.length + 4 + off, selectLen: sel,
+    preview: `"${name}": ${tpl}`, from: token.from, to: token.to,
   };
+}
+
+/**
+ * Danh sách gợi ý cho token đang gõ. Rỗng = không có gì để gợi ý.
+ */
+export function buildMatches(fields: FieldInfo[], value: string, token: Token | null): Match[] {
+  if (!token) return [];
+  const w = token.word.toLowerCase();
+  const slot = slotAt(value, token);
 
   if (w.startsWith('$')) {
     return OPERATORS.filter((o) => o.startsWith(w)).slice(0, MAX_MATCHES)
-      .map((o) => build(o, 'operator', ...operatorTemplate(o)));
+      .map((o) => buildMatch(token, slot, o, 'operator', ...operatorTemplate(o)));
   }
 
   return fields
@@ -229,5 +247,5 @@ export function buildMatches(fields: FieldInfo[], value: string, token: Token | 
     // Prefix matches first — typing `ten` should surface `tenantId` above `clientTenant`.
     .sort((a, b) => Number(b.path.toLowerCase().startsWith(w)) - Number(a.path.toLowerCase().startsWith(w)))
     .slice(0, MAX_MATCHES)
-    .map((f) => build(f.path, f.type, ...valueTemplate(f.type)));
+    .map((f) => buildMatch(token, slot, f.path, f.type, ...valueTemplate(f.type)));
 }
