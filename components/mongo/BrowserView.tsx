@@ -4,6 +4,13 @@
 // left, a query bar + results on the right. Self-contained state; the shell
 // remounts it per connection (key={activeId}) so nothing leaks across clusters.
 //
+// NHIỀU TAB QUERY: mỗi tab là một ĐIỂM LÀM VIỆC đầy đủ — db + collection đang
+// chọn, tab con (Documents/Indexes/Stats), chế độ Find/Aggregate cùng toàn bộ
+// filter · sort · projection · pipeline, và kết quả của riêng nó. Nhờ vậy mở
+// song song vài collection để đối chiếu mà không phải xoá câu đang viết dở. Bộ
+// tab được nhớ theo từng connection (xem lib/queryTabs); riêng KẾT QUẢ chỉ sống
+// trong RAM, không ghi xuống localStorage.
+//
 // Reads are unrestricted (find / count / aggregate / indexes / stats — all
 // server-bounded by maxTimeMS + page caps). The ONLY write is "Update…", which
 // opens UpdateModal and is triple-gated (env flag + per-connection readOnly +
@@ -44,7 +51,8 @@ import Splitter from '../Splitter';
 
 import SessionHistory from '../SessionHistory';
 import { recordSession, short, type MongoSession } from '@/lib/sessionHistory';
-import { useLastSession } from '@/lib/useLastSession';
+import QueryTabBar from '../QueryTabBar';
+import { useQueryTabs } from '@/lib/queryTabs';
 
 export interface BrowserViewProps {
   connectionId: string;
@@ -58,7 +66,7 @@ type CollTab = 'docs' | 'indexes' | 'stats';
 type QueryMode = 'find' | 'aggregate';
 
 /**
- * Phiên làm việc ĐANG DỞ, tự nhớ lại khi mở tab — xem lib/useLastSession.
+ * Trạng thái của MỘT tab query, tự nhớ lại khi mở app — xem lib/queryTabs.
  *
  * KHÁC với "⏱ Phiên gần đây" (SessionHistory) ngay bên dưới, dù cùng chữ
  * "phiên": danh sách kia là NHẬT KÝ các lần ĐÃ CHẠY, phải bấm một dòng mới nạp
@@ -105,58 +113,120 @@ function isMongoDraft(v: unknown): v is MongoDraft {
   if (typeof x.limit !== 'number' || typeof x.skip !== 'number') return false;
   if (!COLL_TABS.includes(x.collTab as CollTab)) return false;
   if (!QUERY_MODES.includes(x.queryMode as QueryMode)) return false;
-  if (x.selected !== null) {
-    const sel = x.selected as Record<string, unknown> | undefined;
-    if (!sel || typeof sel.db !== 'string' || typeof sel.coll !== 'string') return false;
+  if (x.selected !== null && x.selected !== undefined) {
+    const sel = x.selected as Record<string, unknown>;
+    if (typeof sel.db !== 'string' || typeof sel.coll !== 'string') return false;
   }
   return true;
 }
 
 const DEFAULT_LIMIT = 50;
 
+function blankMongoTab(): MongoDraft {
+  return {
+    openDb: '', selected: null, collTab: 'docs', queryMode: 'find',
+    filter: '', projection: '', sort: '', limit: DEFAULT_LIMIT, skip: 0, pipeline: '',
+  };
+}
+
+/** Nhãn mặc định của tab: collection đang mở, hoặc "Tab mới" khi chưa chọn gì. */
+function mongoTabTitle(s: MongoDraft): string {
+  return s.selected ? s.selected.coll : 'Tab mới';
+}
+
+/** Kết quả + metadata của một tab, sống trong RAM (xem ghi chú ở MongoDraft). */
+interface MongoTabRuntime {
+  result: FindResult | null;
+  aggResult: AggregateResult | null;
+  countInfo: string | null;
+  stats: CollStatsResult | null;
+  indexes: IndexInfo[];
+  fields: FieldInfo[];
+  error: string | null;
+  busy: boolean;
+  /** Tăng sau MỖI lần chạy query — dùng làm key để thẻ kết quả dựng lại từ đầu. */
+  runSeq: number;
+}
+
+const EMPTY_RUNTIME: MongoTabRuntime = {
+  result: null, aggResult: null, countInfo: null, stats: null,
+  indexes: [], fields: [], error: null, busy: false, runSeq: 0,
+};
+
 /**
- * Vỏ ngoài: ĐỌC XONG phiên đang dở rồi mới dựng khung làm việc.
+ * Vỏ ngoài: ĐỌC XONG bộ tab đã lưu rồi mới dựng khung làm việc.
  *
- * Tách hai component vì state ban đầu (filter, pipeline, collection đang mở)
- * lấy thẳng từ phiên đã lưu trong `useState(...)`. Đọc localStorage ngay trong
- * render đầu thì lệch hydrate giữa server và client; nhồi lại bằng effect thì
- * các ô loé lên rỗng một nhịp rồi mới có chữ.
+ * Tách hai component vì mọi thứ bên trong đọc thẳng từ tab đang mở. Đọc
+ * localStorage ngay trong render đầu thì lệch hydrate giữa server và client;
+ * nhồi lại bằng effect thì các ô loé lên rỗng một nhịp rồi mới có chữ.
  */
 export default function BrowserView(props: BrowserViewProps) {
-  const draft = useLastSession<MongoDraft>('mongo', props.connectionId, isMongoDraft);
-  if (!draft.ready) {
+  const tabs = useQueryTabs<MongoDraft>('mongo', props.connectionId, blankMongoTab, isMongoDraft, mongoTabTitle);
+  if (!tabs.ready || !tabs.active) {
     return <p className="empty" style={{ margin: 'auto' }}><span className="spinner" /> Đang mở lại phiên trước…</p>;
   }
-  return <BrowserViewInner {...props} draft={draft} />;
+  return <BrowserViewInner {...props} tabs={tabs} />;
 }
 
 function BrowserViewInner({
-  connectionId, readOnly, allowWrite, initialDb, draft,
-}: BrowserViewProps & { draft: ReturnType<typeof useLastSession<MongoDraft>> }) {
+  connectionId, readOnly, allowWrite, initialDb, tabs,
+}: BrowserViewProps & { tabs: ReturnType<typeof useQueryTabs<MongoDraft>> }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const tree = useSplit({ varName: '--mongo-tree', min: 160, max: 520, gap: 12 });
-  /** Phiên đã lưu, chốt lại lúc mount — về sau chỉ GHI, không đọc nữa. */
-  const restored = useRef(draft.saved).current;
-  // ── Tree state ──────────────────────────────────────────────────────────────
+
+  const activeId = tabs.activeId;
+  const st = tabs.active!.state;
+  const { openDb, selected, collTab, queryMode, filter, projection, sort, limit, skip, pipeline } = st;
+  const patch = tabs.update;
+  const patchTab = tabs.patchTab;
+  const tabsRef = tabs.tabsRef;
+
+  // Setter cho từng ô, ghi vào tab ĐANG XEM. Giữ nguyên hình dạng `setX(v)` của
+  // useState để phần render (ô filter, pipeline, các phím tắt…) không phải đổi
+  // gì khi chuyển từ "một phiên" sang "nhiều tab".
+  const setFilter = useCallback((v: string) => patch({ filter: v }), [patch]);
+  const setProjection = useCallback((v: string) => patch({ projection: v }), [patch]);
+  const setSort = useCallback((v: string) => patch({ sort: v }), [patch]);
+  const setPipeline = useCallback((v: string) => patch({ pipeline: v }), [patch]);
+  const setLimit = useCallback((v: number) => patch({ limit: v }), [patch]);
+  const setSkip = useCallback((v: number) => patch({ skip: v }), [patch]);
+  const setQueryMode = useCallback((v: QueryMode) => patch({ queryMode: v }), [patch]);
+  const setCollTab = useCallback((v: CollTab) => patch({ collTab: v }), [patch]);
+
+  // ── Tree state (DÙNG CHUNG mọi tab: cùng một cluster thì cùng một cây) ──────
   const [dbs, setDbs] = useState<DatabaseInfo[]>([]);
   const [dbsLoading, setDbsLoading] = useState(false);
-  const [openDb, setOpenDb] = useState<string>(restored?.openDb ?? '');
-  const [collections, setCollections] = useState<CollectionInfo[]>([]);
+  /** Collection của database đang bung, cache theo tên db — đổi tab qua lại
+   *  (cùng db) khỏi phải nạp lại danh sách mỗi lần. */
+  const [collsByDb, setCollsByDb] = useState<Record<string, CollectionInfo[]>>({});
   const [collsLoading, setCollsLoading] = useState(false);
-  const [selected, setSelected] = useState<{ db: string; coll: string } | null>(restored?.selected ?? null);
   const [treeFilter, setTreeFilter] = useState('');
+  const collections = collsByDb[openDb] ?? [];
 
-  // ── Query state ─────────────────────────────────────────────────────────────
-  const [queryMode, setQueryMode] = useState<QueryMode>(restored?.queryMode ?? 'find');
-  const [filter, setFilter] = useState(restored?.filter ?? '');
-  const [projection, setProjection] = useState(restored?.projection ?? '');
-  const [sort, setSort] = useState(restored?.sort ?? '');
-  const [limit, setLimit] = useState(restored?.limit ?? DEFAULT_LIMIT);
-  const [skip, setSkip] = useState(restored?.skip ?? 0);
-  const [pipeline, setPipeline] = useState(restored?.pipeline ?? '');
+  // ── Kết quả: MỘT bộ cho mỗi tab, giữ trong RAM ─────────────────────────────
+  const [runtime, setRuntime] = useState<Record<string, MongoTabRuntime>>({});
+  const rt = runtime[activeId] ?? EMPTY_RUNTIME;
+  const { result, aggResult, countInfo, stats, indexes, fields, error, busy, runSeq } = rt;
+
+  const setRt = useCallback((id: string, p: Partial<MongoTabRuntime>) => {
+    setRuntime((cur) => ({ ...cur, [id]: { ...(cur[id] ?? EMPTY_RUNTIME), ...p } }));
+  }, []);
+
+  // Tab bị đóng thì bỏ luôn kết quả của nó — không thì một phiên làm việc dài
+  // cứ tích dần các trang 200 document của những tab không còn tồn tại.
+  const liveIds = tabs.tabs.map((t) => t.id).join(',');
+  useEffect(() => {
+    const alive = new Set(liveIds.split(','));
+    setRuntime((cur) => {
+      const keys = Object.keys(cur).filter((k) => !alive.has(k));
+      if (keys.length === 0) return cur;
+      const next = { ...cur };
+      for (const k of keys) delete next[k];
+      return next;
+    });
+  }, [liveIds]);
 
   // ── Query editing aids (format + field autocomplete) ────────────────────────
-  const [fields, setFields] = useState<FieldInfo[]>([]);
   const [jsonError, setJsonError] = useState<string | null>(null);
   const filterRef = useRef<HTMLTextAreaElement>(null);
   const pipelineRef = useRef<HTMLTextAreaElement>(null);
@@ -170,21 +240,11 @@ function BrowserViewInner({
   const [findQuery, setFindQuery] = useState('');
   const [findIndex, setFindIndex] = useState(0);
 
-  // ── Results ────────────────────────────────────────────────────────────────
-  const [collTab, setCollTab] = useState<CollTab>(restored?.collTab ?? 'docs');
-  const [result, setResult] = useState<FindResult | null>(null);
+  // ── Kết quả ────────────────────────────────────────────────────────────────
   /** Hộp thoại xuất Excel cho màn query (chỉ chế độ Find — xem nút bên dưới). */
   const [exportOpen, setExportOpen] = useState(false);
-  const [aggResult, setAggResult] = useState<AggregateResult | null>(null);
-  const [countInfo, setCountInfo] = useState<string | null>(null);
-  const [stats, setStats] = useState<CollStatsResult | null>(null);
-  const [indexes, setIndexes] = useState<IndexInfo[]>([]);
-  const [busy, setBusy] = useState(false);
-  /** Tăng sau MỖI lần chạy query — dùng làm key để thẻ kết quả dựng lại từ đầu. */
-  const [runSeq, setRunSeq] = useState(0);
   /** Tăng lên mỗi lần ghi một phiên — buộc SessionHistory đọc lại danh sách. */
   const [sessBump, setSessBump] = useState(0);
-  const [error, setError] = useState<string | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -197,149 +257,176 @@ function BrowserViewInner({
 
   // ── Tree loaders ────────────────────────────────────────────────────────────
   const loadDbs = useCallback(async () => {
-    setDbsLoading(true); setError(null);
+    setDbsLoading(true);
     try { setDbs(await listMongoDatabases(connectionId)); }
-    catch (e) { setError((e as Error).message); }
+    catch (e) { setRt(activeId, { error: (e as Error).message }); }
     finally { setDbsLoading(false); }
-  }, [connectionId]);
+  }, [connectionId, activeId, setRt]);
 
   useEffect(() => { void loadDbs(); }, [loadDbs]);
 
+  /** Bung một database ở cây cho TAB ĐANG XEM (mỗi tab nhớ db riêng của nó). */
   const expandDb = useCallback(async (db: string) => {
-    setOpenDb(db);
-    setCollections([]); setCollsLoading(true); setError(null);
-    try { setCollections(await listMongoCollections(connectionId, db)); }
-    catch (e) { setError((e as Error).message); }
-    finally { setCollsLoading(false); }
-  }, [connectionId]);
-
-  // Jump from Overview: open the requested DB once.
-  //
-  // Không có `initialDb` thì bung lại database của phiên trước — nếu không, mở
-  // tab lên thấy cây đóng kín và phải tự lần lại đúng db/collection đang làm dở
-  // (state `selected` có sẵn nhưng cây thì không tự mở theo).
-  // `initialDb` (vừa bấm "mở db" ở Tổng quan) vẫn thắng: đó là thao tác chủ
-  // động vừa xảy ra, mới hơn phiên cũ.
-  const jumpedRef = useRef('');
-  useEffect(() => {
-    const target = initialDb || restored?.openDb;
-    if (target && jumpedRef.current !== target) {
-      jumpedRef.current = target;
-      void expandDb(target);
+    patch({ openDb: db });
+    if (collsByDb[db]) return; // đã nạp rồi — khỏi gọi lại
+    setCollsLoading(true);
+    try {
+      const list = await listMongoCollections(connectionId, db);
+      setCollsByDb((cur) => ({ ...cur, [db]: list }));
     }
-    // `restored` chốt lúc mount nên không cần vào deps.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialDb, expandDb]);
+    catch (e) { setRt(activeId, { error: (e as Error).message }); }
+    finally { setCollsLoading(false); }
+  }, [connectionId, patch, collsByDb, activeId, setRt]);
 
-  // Ghi lại chỗ đang ngồi mỗi khi thứ người dùng gõ/chọn đổi. useLastSession
-  // gộp trễ ~400ms nên gõ filter không thành một chuỗi ghi localStorage liên tục.
-  const saveDraft = draft.save;
+  // Bung lại db của tab vừa chuyển sang / vừa khôi phục — nếu không, đổi tab là
+  // thấy cây đóng kín và phải tự lần lại đúng db/collection đang làm dở (state
+  // `selected` có sẵn nhưng cây thì không tự mở theo).
+  //
+  // `initialDb` (vừa bấm "mở db" ở Tổng quan) thắng phiên cũ: đó là thao tác
+  // CHỦ ĐỘNG vừa xảy ra. Nó chỉ được tiêu thụ MỘT lần, không thì mỗi lần đổi
+  // tab lại bị kéo về db ấy.
+  const jumpConsumed = useRef(false);
   useEffect(() => {
-    saveDraft({ openDb, selected, collTab, queryMode, filter, projection, sort, limit, skip, pipeline });
-  }, [saveDraft, openDb, selected, collTab, queryMode, filter, projection, sort, limit, skip, pipeline]);
+    if (initialDb && !jumpConsumed.current) {
+      jumpConsumed.current = true;
+      if (initialDb !== openDb || !collsByDb[initialDb]) void expandDb(initialDb);
+      return;
+    }
+    if (openDb && !collsByDb[openDb]) void expandDb(openDb);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDb, activeId, openDb]);
+
+  // Nhãn tab đi theo collection đang chọn, cho tới khi người dùng tự đặt tên.
+  const autoTitle = tabs.autoTitle;
+  useEffect(() => { autoTitle(mongoTabTitle(st)); }, [autoTitle, st]);
 
   // ── Phiên làm việc ──────────────────────────────────────────────────────────
   /**
    * Ghi một phiên sau khi CHẠY query. Chỉ lưu ý định (db/collection + filter/
    * sort/projection), không lưu document trả về — xem lib/sessionHistory.
    */
-  const noteSession = useCallback((mode: QueryMode, q: string) => {
-    if (!selected) return;
+  const noteSession = useCallback((mode: QueryMode, q: string, tabId: string) => {
+    const t = tabsRef.current.find((x) => x.id === tabId)?.state;
+    if (!t?.selected) return;
     const state: MongoSession = {
       subView: mode,
-      database: selected.db,
-      collection: selected.coll,
-      filter: mode === 'find' ? filter : q,
-      sort: mode === 'find' ? sort : '',
-      projection: mode === 'find' ? projection : '',
+      database: t.selected.db,
+      collection: t.selected.coll,
+      filter: mode === 'find' ? t.filter : q,
+      sort: mode === 'find' ? t.sort : '',
+      projection: mode === 'find' ? t.projection : '',
     };
     const trimmed = q.trim();
     recordSession('mongo', {
-      label: `${selected.db}.${selected.coll}${trimmed ? ` · ${short(trimmed)}` : ''}${mode === 'aggregate' ? ' (agg)' : ''}`,
+      label: `${t.selected.db}.${t.selected.coll}${trimmed ? ` · ${short(trimmed)}` : ''}${mode === 'aggregate' ? ' (agg)' : ''}`,
       connectionId,
       state: state as unknown as Record<string, unknown>,
     });
     setSessBump((n) => n + 1);
-  }, [connectionId, selected, filter, sort, projection]);
+  }, [connectionId, tabsRef]);
 
   /**
-   * Khôi phục: mở lại db/collection và ĐIỀN LẠI query — KHÔNG tự chạy. Người
-   * dùng bấm ▶ Find khi đã nhìn thấy mình sắp chạy gì.
+   * Khôi phục: mở một TAB MỚI với db/collection và query của phiên đó, ĐIỀN SẴN
+   * chứ KHÔNG tự chạy — người dùng bấm ▶ Find khi đã nhìn thấy mình sắp chạy gì.
+   *
+   * Mở tab mới chứ không đạp lên tab đang xem: tra lại một phiên cũ là việc
+   * phụ, không có lý do gì để nó xoá mất câu query đang viết dở.
    */
   const restoreSession = useCallback((raw: Record<string, unknown>) => {
-    const st = raw as Partial<MongoSession>;
-    const db = typeof st.database === 'string' ? st.database : '';
-    const coll = typeof st.collection === 'string' ? st.collection : '';
+    const sess = raw as Partial<MongoSession>;
+    const db = typeof sess.database === 'string' ? sess.database : '';
+    const coll = typeof sess.collection === 'string' ? sess.collection : '';
     if (!db || !coll) return;
-    setQueryMode(st.subView === 'aggregate' ? 'aggregate' : 'find');
-    if (st.subView === 'aggregate') setPipeline(typeof st.filter === 'string' ? st.filter : '');
-    else {
-      setFilter(typeof st.filter === 'string' ? st.filter : '');
-      setSort(typeof st.sort === 'string' ? st.sort : '');
-      setProjection(typeof st.projection === 'string' ? st.projection : '');
-    }
-    setSelected({ db, coll });
-    setSkip(0);
-    setResult(null); setAggResult(null); setCountInfo(null);
+    const agg = sess.subView === 'aggregate';
+    tabs.open({
+      openDb: db,
+      selected: { db, coll },
+      collTab: 'docs',
+      queryMode: agg ? 'aggregate' : 'find',
+      pipeline: agg && typeof sess.filter === 'string' ? sess.filter : '',
+      filter: !agg && typeof sess.filter === 'string' ? sess.filter : '',
+      sort: !agg && typeof sess.sort === 'string' ? sess.sort : '',
+      projection: !agg && typeof sess.projection === 'string' ? sess.projection : '',
+      skip: 0,
+    });
     void expandDb(db);
-    flash('Đã điền lại phiên — bấm ▶ để chạy.');
-  }, [expandDb, flash]);
+    flash('Đã mở phiên vào tab mới — bấm ▶ để chạy.');
+  }, [expandDb, flash, tabs]);
 
   // ── Query runners ───────────────────────────────────────────────────────────
-  const runFind = useCallback(async (over?: { skip?: number }) => {
-    if (!selected) return;
-    const eff = { filter, projection, sort, limit, skip: over?.skip ?? skip };
-    setBusy(true); setError(null); setAggResult(null); setCountInfo(null);
+  //
+  // Mọi runner nhận `tabId` để kết quả rơi đúng tab đã bấm chạy: query nặng ở
+  // tab A trong lúc người dùng bấm sang tab B thì kết quả của A phải ở lại A,
+  // không được đè lên màn hình B.
+  const runFind = useCallback(async (over?: { skip?: number }, tabId = activeId) => {
+    const target = tabsRef.current.find((t) => t.id === tabId)?.state;
+    if (!target?.selected) return;
+    const eff = {
+      filter: target.filter, projection: target.projection, sort: target.sort,
+      limit: target.limit, skip: over?.skip ?? target.skip,
+    };
+    setRt(tabId, { busy: true, error: null, aggResult: null, countInfo: null });
     try {
-      const r = await findMongo(connectionId, selected.db, selected.coll, eff);
-      setResult(r);
-      setSkip(r.skip);
-      setRunSeq((n) => n + 1);
-      noteSession('find', filter);
-    } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
-  }, [connectionId, selected, filter, projection, sort, limit, skip, noteSession]);
+      const r = await findMongo(connectionId, target.selected.db, target.selected.coll, eff);
+      setRuntime((cur) => {
+        const prev = cur[tabId] ?? EMPTY_RUNTIME;
+        return { ...cur, [tabId]: { ...prev, result: r, busy: false, runSeq: prev.runSeq + 1 } };
+      });
+      patchTab(tabId, { skip: r.skip });
+      noteSession('find', target.filter, tabId);
+    } catch (e) { setRt(tabId, { error: (e as Error).message, busy: false }); }
+  }, [connectionId, activeId, patchTab, setRt, noteSession]);
 
-  const runCount = useCallback(async () => {
-    if (!selected) return;
-    setBusy(true); setError(null);
+  const runCount = useCallback(async (tabId = activeId) => {
+    const target = tabsRef.current.find((t) => t.id === tabId)?.state;
+    if (!target?.selected) return;
+    setRt(tabId, { busy: true, error: null });
     try {
-      const r = await countMongo(connectionId, selected.db, selected.coll, filter);
-      setCountInfo(`${fmtCount(r.count)} document${r.count === 1 ? '' : 's'}${r.estimated ? ' (ước lượng metadata)' : ''} · ${r.tookMs}ms`);
-    } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
-  }, [connectionId, selected, filter]);
+      const r = await countMongo(connectionId, target.selected.db, target.selected.coll, target.filter);
+      setRt(tabId, {
+        countInfo: `${fmtCount(r.count)} document${r.count === 1 ? '' : 's'}${r.estimated ? ' (ước lượng metadata)' : ''} · ${r.tookMs}ms`,
+        busy: false,
+      });
+    } catch (e) { setRt(tabId, { error: (e as Error).message, busy: false }); }
+  }, [connectionId, activeId, setRt]);
 
-  const runAggregate = useCallback(async () => {
-    if (!selected) return;
-    setBusy(true); setError(null); setResult(null); setCountInfo(null);
+  const runAggregate = useCallback(async (tabId = activeId) => {
+    const target = tabsRef.current.find((t) => t.id === tabId)?.state;
+    if (!target?.selected) return;
+    setRt(tabId, { busy: true, error: null, result: null, countInfo: null });
     try {
-      setAggResult(await aggregateMongo(connectionId, selected.db, selected.coll, pipeline));
-      setRunSeq((n) => n + 1);
-      noteSession('aggregate', pipeline);
+      const r = await aggregateMongo(connectionId, target.selected.db, target.selected.coll, target.pipeline);
+      setRuntime((cur) => {
+        const prev = cur[tabId] ?? EMPTY_RUNTIME;
+        return { ...cur, [tabId]: { ...prev, aggResult: r, busy: false, runSeq: prev.runSeq + 1 } };
+      });
+      noteSession('aggregate', target.pipeline, tabId);
     }
-    catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
-  }, [connectionId, selected, pipeline, noteSession]);
+    catch (e) { setRt(tabId, { error: (e as Error).message, busy: false }); }
+  }, [connectionId, activeId, setRt, noteSession]);
 
-  const loadStats = useCallback(async () => {
-    if (!selected) return;
-    try { setStats(await mongoCollectionStats(connectionId, selected.db, selected.coll)); }
-    catch { setStats(null); }
-  }, [connectionId, selected]);
+  const loadStats = useCallback(async (tabId = activeId) => {
+    const sel = tabsRef.current.find((t) => t.id === tabId)?.state.selected;
+    if (!sel) return;
+    try { setRt(tabId, { stats: await mongoCollectionStats(connectionId, sel.db, sel.coll) }); }
+    catch { setRt(tabId, { stats: null }); }
+  }, [connectionId, activeId, setRt]);
 
-  const loadIndexes = useCallback(async () => {
-    if (!selected) return;
-    try { setIndexes(await listMongoIndexes(connectionId, selected.db, selected.coll)); }
-    catch (e) { setError((e as Error).message); }
-  }, [connectionId, selected]);
+  const loadIndexes = useCallback(async (tabId = activeId) => {
+    const sel = tabsRef.current.find((t) => t.id === tabId)?.state.selected;
+    if (!sel) return;
+    try { setRt(tabId, { indexes: await listMongoIndexes(connectionId, sel.db, sel.coll) }); }
+    catch (e) { setRt(tabId, { error: (e as Error).message }); }
+  }, [connectionId, activeId, setRt]);
 
   /** Sample the collection's field paths for the query-bar autocomplete. */
-  const loadFields = useCallback(async () => {
-    if (!selected) return;
-    try { setFields(await sampleMongoFields(connectionId, selected.db, selected.coll)); }
-    catch { setFields([]); } // suggestions are a nicety — never block the query bar
-  }, [connectionId, selected]);
+  const loadFields = useCallback(async (tabId = activeId) => {
+    const sel = tabsRef.current.find((t) => t.id === tabId)?.state.selected;
+    if (!sel) return;
+    // suggestions are a nicety — never block the query bar
+    try { setRt(tabId, { fields: await sampleMongoFields(connectionId, sel.db, sel.coll) }); }
+    catch { setRt(tabId, { fields: [] }); }
+  }, [connectionId, activeId, setRt]);
 
   /** Pretty-print (or collapse) whichever query box is in play. */
   const formatQuery = useCallback((collapse = false) => {
@@ -440,55 +527,62 @@ function BrowserViewInner({
 
   /** Select a collection → reset the query panel and auto-run the first page. */
   const selectColl = useCallback((db: string, coll: string) => {
-    setSelected({ db, coll });
-    setCollTab('docs');
-    setFilter(''); setProjection(''); setSort(''); setLimit(DEFAULT_LIMIT); setSkip(0);
-    setPipeline(''); setQueryMode('find');
-    setResult(null); setAggResult(null); setCountInfo(null); setStats(null); setIndexes([]);
-    setError(null); setJsonError(null); setFields([]);
+    patch({
+      selected: { db, coll }, collTab: 'docs', queryMode: 'find',
+      filter: '', projection: '', sort: '', limit: DEFAULT_LIMIT, skip: 0, pipeline: '',
+    });
+    setRt(activeId, { ...EMPTY_RUNTIME, runSeq: rt.runSeq });
+    setJsonError(null);
     setFindOpen(false); setFindQuery(''); setFindIndex(0);
-  }, []);
+  }, [patch, activeId, setRt, rt.runSeq]);
 
-  // Auto-run after selection state settles (first page, stats, indexes).
+  /**
+   * Mở collection sang MỘT TAB MỚI — đường ngắn nhất để "query nhiều bảng":
+   * đang dở câu filter ở collection A, bấm chuột giữa ở B là có ngay hai tab
+   * cạnh nhau, câu của A còn nguyên.
+   */
+  const openInNewTab = useCallback((db: string, coll: string) => {
+    tabs.open({ openDb: db, selected: { db, coll }, collTab: 'docs', queryMode: 'find' });
+  }, [tabs]);
+
+  // Tự chạy trang đầu khi lựa chọn của một tab vừa ổn định — chọn collection
+  // mới, hoặc lần ĐẦU bấm sang một tab khôi phục từ phiên trước.
   //
-  // Collection được KHÔI PHỤC từ phiên trước thì giữ nguyên `skip` đã lưu —
-  // đang xem trang 5 mà quay lại bị kéo về trang 1 thì phần "nhớ phiên" mất
-  // một nửa ý nghĩa. Chọn collection mới (bấm ở cây) vẫn về trang đầu như cũ,
-  // vì selectColl đã đặt skip = 0 rồi.
-  const lastAuto = useRef('');
-  const firstAuto = useRef(true);
+  // Tab khôi phục giữ nguyên `skip` đã lưu: đang xem trang 5 mà quay lại bị kéo
+  // về trang 1 thì phần "nhớ phiên" mất một nửa ý nghĩa. Chọn collection mới
+  // (bấm ở cây) vẫn về trang đầu như cũ, vì selectColl đã đặt skip = 0 rồi.
+  //
+  // Chỉ chạy cho tab ĐANG XEM: mở app với 5 tab mà bắn 5 query cùng lúc vào
+  // cụm production là việc người dùng không hề yêu cầu. Tab khác chạy khi bấm
+  // sang — `autoRan` nhớ riêng từng tab nên mỗi tab chỉ tự chạy một lần.
+  const autoRan = useRef<Record<string, string>>({});
   useEffect(() => {
     if (!selected) return;
     const key = `${connectionId}/${selected.db}/${selected.coll}`;
-    if (lastAuto.current === key) return;
-    lastAuto.current = key;
-    const isRestored = firstAuto.current
-      && restored?.selected?.db === selected.db
-      && restored.selected.coll === selected.coll;
-    firstAuto.current = false;
-    // Khôi phục vào chế độ aggregate thì KHÔNG tự chạy gì cả: pipeline chưa bao
+    if (autoRan.current[activeId] === key) return;
+    autoRan.current[activeId] = key;
+    // Tab đang ở chế độ aggregate thì KHÔNG tự chạy gì cả: pipeline chưa bao
     // giờ được chạy tự động (nó có thể rất nặng — xem nút ▶ Aggregate), và chạy
     // một `find` thay thế thì vừa tốn request vừa hiện kết quả không khớp với
     // pipeline đang nằm trên màn hình.
-    if (!(isRestored && restored.queryMode === 'aggregate')) {
-      void runFind({ skip: isRestored ? restored.skip : 0 });
-    }
-    void loadStats();
-    void loadIndexes();
-    void loadFields();
+    if (queryMode !== 'aggregate') void runFind({ skip }, activeId);
+    void loadStats(activeId);
+    void loadIndexes(activeId);
+    void loadFields(activeId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, connectionId]);
+  }, [activeId, selected?.db, selected?.coll, connectionId]);
 
-  /** Quên phiên đang nhớ + dọn màn hình về trạng thái vừa mở connection. */
-  const clearDraft = draft.clear;
+  /** Quên MỌI tab của connection này + dọn màn hình về trạng thái vừa mở. */
+  const resetTabs = tabs.reset;
   const resetSession = useCallback(() => {
-    clearDraft();
-    setSelected(null); setCollTab('docs'); setQueryMode('find');
-    setFilter(''); setProjection(''); setSort(''); setLimit(DEFAULT_LIMIT); setSkip(0);
-    setPipeline('');
-    setResult(null); setAggResult(null); setCountInfo(null); setStats(null); setIndexes([]);
-    setError(null); setJsonError(null); setFields([]);
-  }, [clearDraft]);
+    if (tabs.tabs.length > 1
+      && !window.confirm(`Đóng cả ${tabs.tabs.length} tab query và bắt đầu lại từ trạng thái trống?`)) return;
+    autoRan.current = {};
+    setRuntime({});
+    setJsonError(null);
+    setFindOpen(false); setFindQuery(''); setFindIndex(0);
+    resetTabs();
+  }, [resetTabs, tabs.tabs.length]);
 
   const docs = queryMode === 'aggregate' ? aggResult?.docs ?? null : result?.docs ?? null;
 
@@ -533,11 +627,11 @@ function BrowserViewInner({
         <div className="status-line" style={{ justifyContent: 'space-between' }}>
           <strong>Databases</strong>
           <span style={{ display: 'flex', gap: 4 }}>
-            {/* Phiên được nhớ lại tự động, nên phải có đường VỀ TRẠNG THÁI SẠCH
-                — không thì mở tab lên lúc nào cũng dính câu query cũ và phải tự
-                xoá tay từng ô. */}
+            {/* Các tab được nhớ lại tự động, nên phải có đường VỀ TRẠNG THÁI
+                SẠCH — không thì mở app lên lúc nào cũng dính nguyên bộ tab cũ
+                và phải tự đóng từng cái. */}
             <button className="chip-btn" onClick={resetSession}
-              title="Quên phiên đang nhớ và bắt đầu lại từ trạng thái trống">
+              title="Đóng hết tab query đang nhớ và bắt đầu lại từ trạng thái trống">
               ⟲ Phiên mới
             </button>
             <button className="chip-btn" onClick={loadDbs} disabled={dbsLoading}>↻</button>
@@ -562,7 +656,7 @@ function BrowserViewInner({
             <li key={d.name}>
               <button
                 className={`mongo-db-item${openDb === d.name ? ' open' : ''}`}
-                onClick={() => (openDb === d.name ? setOpenDb('') : void expandDb(d.name))}
+                onClick={() => (openDb === d.name ? patch({ openDb: '' }) : void expandDb(d.name))}
                 title={fmtBytes(d.sizeOnDisk)}
               >
                 <span className="mongo-tree-caret">{openDb === d.name ? '▾' : '▸'}</span>
@@ -570,16 +664,25 @@ function BrowserViewInner({
               </button>
               {openDb === d.name && (
                 <ul className="mongo-coll-list">
-                  {collsLoading && <li className="empty" style={{ padding: '4px 8px' }}><span className="spinner" /></li>}
+                  {collsLoading && collections.length === 0 && <li className="empty" style={{ padding: '4px 8px' }}><span className="spinner" /></li>}
                   {filteredColls.map((c) => (
                     <li key={c.name}>
-                      <button
-                        className={`mongo-coll-item${selected?.db === d.name && selected?.coll === c.name ? ' active' : ''}`}
-                        onClick={() => selectColl(d.name, c.name)}
-                      >
-                        {c.name}
-                        {c.type !== 'collection' && <span className="badge" style={{ marginLeft: 6 }}>{c.type}</span>}
-                      </button>
+                      <div className="mongo-coll-row">
+                        <button
+                          className={`mongo-coll-item${selected?.db === d.name && selected?.coll === c.name ? ' active' : ''}`}
+                          onClick={() => selectColl(d.name, c.name)}
+                          onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); openInNewTab(d.name, c.name); } }}
+                          title={`${d.name}.${c.name}\n\nChuột giữa (hoặc nút ⧉) để mở sang tab mới`}
+                        >
+                          {c.name}
+                          {c.type !== 'collection' && <span className="badge" style={{ marginLeft: 6 }}>{c.type}</span>}
+                        </button>
+                        <button
+                          className="mongo-coll-newtab"
+                          title="Mở collection này sang tab query mới"
+                          onClick={() => openInNewTab(d.name, c.name)}
+                        >⧉</button>
+                      </div>
                     </li>
                   ))}
                   {!collsLoading && filteredColls.length === 0 && (
@@ -594,6 +697,14 @@ function BrowserViewInner({
 
       {/* ── Query + results ───────────────────────────────────────────── */}
       <div className="mongo-main">
+        <QueryTabBar
+          tabs={tabs.tabs}
+          activeId={activeId}
+          onSelect={tabs.select}
+          onOpen={() => tabs.open({ openDb })}
+          onClose={tabs.close}
+          onRename={tabs.rename}
+        />
         {!selected ? (
           <p className="empty" style={{ margin: 'auto' }}>Chọn một collection ở cây bên trái để truy vấn.</p>
         ) : (

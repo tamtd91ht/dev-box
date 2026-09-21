@@ -2,6 +2,15 @@
 
 // NHỚ PHIÊN LÀM VIỆC GẦN NHẤT của một tab dữ liệu (Postgres, Mongo…).
 //
+// ⚠️ ĐÃ NGHỈ HƯU — hiện KHÔNG còn component nào gọi. Postgres và Mongo đã
+// chuyển sang lib/queryTabs (nhiều tab query cùng lúc thay vì một chỗ ngồi
+// duy nhất). File này ở lại vì hai lý do, xoá đi là hỏng cả hai:
+//   1. Nó là tài liệu duy nhất mô tả khoá `<ns>.session.<connectionId>` mà
+//      queryTabs vẫn đọc để vớt phiên đang dở của người nâng cấp từ bản cũ.
+//   2. Còn dùng lại được nguyên vẹn cho tab nào chỉ cần MỘT phiên.
+// Bỏ hẳn được khi không còn trình duyệt nào giữ khoá `*.session.*` (xem thêm
+// ghi chú cùng loại ở lib/localKeys).
+//
 // VÌ SAO: tab Elasticsearch đã nhớ nội dung Console theo từng cluster
 // (lib/esConsole.ts), nên thoát ra vào lại là gõ tiếp được ngay. Postgres và
 // Mongo thì không: `BrowserView` bị remount sạch mỗi lần đổi connection

@@ -29,7 +29,8 @@
     "check:sql": "tsx scripts/check-sql-complete.ts",
     "check:mongo-query": "tsx scripts/check-mongo-query.ts",
     "check:export-map": "tsx scripts/check-export-map.ts",
-    "check:es-export": "tsx scripts/check-es-export.ts"
+    "check:es-export": "tsx scripts/check-es-export.ts",
+    "check:query-tabs": "tsx scripts/check-query-tabs.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

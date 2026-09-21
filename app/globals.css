@@ -9587,3 +9587,58 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   padding: 5px 8px 3px; font-size: 10.5px; color: var(--muted);
   border-top: 1px solid var(--glass-brd); margin-top: 2px;
 }
+
+/* ── Thanh tab query (Mongo · Postgres) ──────────────────────────────────────
+   Xem components/QueryTabBar + lib/queryTabs: mỗi tab là một điểm làm việc đầy
+   đủ (db/bảng + câu query + kết quả), nhớ theo từng connection. */
+.qtabs {
+  flex: none; display: flex; align-items: center; gap: 3px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--glass-brd);
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+}
+.qtab {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+  max-width: 190px; padding: 4px 6px 4px 10px; border-radius: 8px 8px 0 0;
+  font-size: 12px; line-height: 1.6; cursor: pointer; white-space: nowrap;
+  color: var(--muted); background: transparent;
+  border: 1px solid transparent; border-bottom: 0;
+}
+.qtab:hover { color: var(--text); background: var(--glass-bg); }
+.qtab.on {
+  color: var(--text); font-weight: 600;
+  background: var(--glass-bg); border-color: var(--glass-brd);
+}
+.qtab-label { overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); }
+.qtab-x {
+  flex: none; background: transparent; border: 0; cursor: pointer; padding: 0 3px;
+  border-radius: 4px; font-size: 10px; line-height: 1.4; color: var(--faint);
+  /* Giữ chỗ sẵn cho nút ✕ nhưng để nó mờ: hiện/ẩn hẳn theo hover sẽ làm nhãn
+     tab nhảy ngang mỗi lần rê chuột qua. */
+  opacity: .35;
+}
+.qtab:hover .qtab-x, .qtab.on .qtab-x { opacity: 1; }
+.qtab-x:hover { color: var(--err); background: color-mix(in srgb, var(--err) 18%, transparent); }
+.qtab-rename {
+  width: 130px; font-size: 12px; font-family: var(--mono); color: var(--text);
+  background: var(--panel); border: 1px solid var(--accent); border-radius: 5px;
+  padding: 1px 5px; outline: none;
+}
+.qtab-add {
+  flex: none; background: transparent; border: 1px solid var(--glass-brd); color: var(--muted);
+  border-radius: 7px; cursor: pointer; padding: 2px 9px; font-size: 14px; line-height: 1.4;
+}
+.qtab-add:hover:not(:disabled) { color: var(--text); border-color: var(--glass-brd-hover); background: var(--glass-bg); }
+.qtab-add:disabled { opacity: .4; cursor: default; }
+
+/* Dòng collection/table ở cây: tên bảng + nút ⧉ mở sang tab mới. Nút chỉ hiện
+   khi rê chuột vào dòng — để cây vẫn là một danh sách tên, không phải một rừng
+   biểu tượng. */
+.mongo-coll-row, .pg-coll-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.mongo-coll-row > .mongo-coll-item, .pg-coll-row > .pg-coll-item { flex: 1; min-width: 0; }
+.mongo-coll-newtab, .pg-coll-newtab {
+  flex: none; background: transparent; border: 0; cursor: pointer;
+  border-radius: 5px; padding: 1px 4px; font-size: 11px; color: var(--faint);
+  opacity: 0;
+}
+.mongo-coll-row:hover .mongo-coll-newtab, .pg-coll-row:hover .pg-coll-newtab { opacity: 1; }
+.mongo-coll-newtab:hover, .pg-coll-newtab:hover { color: var(--text); background: var(--glass-bg); }

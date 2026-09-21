@@ -4,6 +4,12 @@
 // results on the right. Self-contained state; the shell remounts it per
 // connection (key={activeId}).
 //
+// NHIỀU TAB QUERY: mỗi tab là một ĐIỂM LÀM VIỆC đầy đủ — database + bảng đang
+// chọn, tab con (Rows/Columns/Indexes), câu SQL, và kết quả của riêng nó. Nhờ
+// vậy mở song song vài bảng để đối chiếu mà không phải xoá câu đang viết dở.
+// Bộ tab được nhớ theo từng connection (xem lib/queryTabs); riêng KẾT QUẢ chỉ
+// sống trong RAM, không ghi xuống localStorage.
+//
 // Every read runs server-side inside a READ ONLY transaction with a statement
 // timeout — the database itself refuses writes smuggled into a "read" query.
 // Results are row-capped (500). The ONLY write is the ✎ UPDATE modal
@@ -30,7 +36,8 @@ import UpdateModal from './UpdateModal';
 import SqlEditor from './SqlEditor';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
-import { useLastSession } from '@/lib/useLastSession';
+import QueryTabBar from '../QueryTabBar';
+import { useQueryTabs } from '@/lib/queryTabs';
 
 export interface BrowserViewProps {
   connectionId: string;
@@ -44,14 +51,14 @@ export interface BrowserViewProps {
 type TableTab = 'rows' | 'columns' | 'indexes';
 
 /**
- * Phiên làm việc được nhớ lại giữa các lần mở tab — xem lib/useLastSession.
+ * Trạng thái của MỘT tab query, được nhớ lại giữa các lần mở app.
  *
  * Chỉ những thứ NGƯỜI DÙNG gõ/chọn. Cố ý KHÔNG có `result`: dữ liệu cũ hiện
  * lại như vừa chạy xong là sai lệch nguy hiểm (bảng có thể đã đổi), và một
- * trang 500 dòng thì quá to cho localStorage.
+ * trang 500 dòng × nhiều tab thì quá to cho localStorage.
  */
-interface PgSession {
-  /** Database đang bung ở cây bên trái. */
+interface PgTabState {
+  /** Database đang bung ở cây bên trái khi tab này được mở. */
   openDb: string;
   selected: { db: string; schema: string; table: string } | null;
   tab: TableTab;
@@ -59,61 +66,103 @@ interface PgSession {
   sql: string;
 }
 
+/** Kết quả + metadata của một tab, sống trong RAM (xem ghi chú ở PgTabState). */
+interface PgTabRuntime {
+  result: PgQueryResult | null;
+  columns: PgColumnInfo[];
+  indexes: PgIndexInfo[];
+  error: string | null;
+  busy: boolean;
+}
+
+const EMPTY_RUNTIME: PgTabRuntime = { result: null, columns: [], indexes: [], error: null, busy: false };
+
 const TABS: TableTab[] = ['rows', 'columns', 'indexes'];
 
-function isPgSession(v: unknown): v is PgSession {
+function blankPgTab(): PgTabState {
+  return { openDb: '', selected: null, tab: 'rows', sql: '' };
+}
+
+function isPgTabState(v: unknown): v is PgTabState {
   if (!v || typeof v !== 'object') return false;
   const x = v as Record<string, unknown>;
   if (typeof x.openDb !== 'string' || typeof x.sql !== 'string') return false;
   if (!TABS.includes(x.tab as TableTab)) return false;
-  if (x.selected !== null) {
-    const sel = x.selected as Record<string, unknown> | undefined;
-    if (!sel || typeof sel.db !== 'string' || typeof sel.schema !== 'string' || typeof sel.table !== 'string') return false;
+  if (x.selected !== null && x.selected !== undefined) {
+    const sel = x.selected as Record<string, unknown>;
+    if (typeof sel.db !== 'string' || typeof sel.schema !== 'string' || typeof sel.table !== 'string') return false;
   }
   return true;
 }
 
+/** Nhãn mặc định của tab: bảng đang mở, hoặc "Tab mới" khi chưa chọn gì. */
+function pgTabTitle(s: PgTabState): string {
+  if (!s.selected) return 'Tab mới';
+  return s.selected.schema === 'public'
+    ? s.selected.table
+    : `${s.selected.schema}.${s.selected.table}`;
+}
+
 /**
- * Vỏ ngoài: ĐỌC XONG phiên đã lưu rồi mới dựng khung làm việc.
+ * Vỏ ngoài: ĐỌC XONG bộ tab đã lưu rồi mới dựng khung làm việc.
  *
- * Phải tách làm hai component vì state ban đầu (câu SQL, bảng đang mở) lấy
- * thẳng từ phiên đã lưu trong `useState(...)`. Đọc localStorage ngay trong
- * render đầu thì HTML dựng ở server (không có window) lệch với client và React
- * báo lỗi hydrate; còn nhồi lại bằng effect sau khi mount thì ô SQL loé lên
- * rỗng một nhịp rồi mới có chữ. Chờ `ready` rồi remount bằng `key` là gọn nhất.
+ * Phải tách làm hai component vì mọi thứ bên trong đọc thẳng từ tab đang mở.
+ * Đọc localStorage ngay trong render đầu thì HTML dựng ở server (không có
+ * window) lệch với client và React báo lỗi hydrate; còn nhồi lại bằng effect
+ * sau khi mount thì ô SQL loé lên rỗng một nhịp rồi mới có chữ.
  */
 export default function BrowserView(props: BrowserViewProps) {
-  const session = useLastSession<PgSession>('pg', props.connectionId, isPgSession);
-  if (!session.ready) {
+  const tabs = useQueryTabs<PgTabState>('pg', props.connectionId, blankPgTab, isPgTabState, pgTabTitle);
+  if (!tabs.ready || !tabs.active) {
     return <p className="empty" style={{ margin: 'auto' }}><span className="spinner" /> Đang mở lại phiên trước…</p>;
   }
-  return <BrowserViewInner {...props} session={session} />;
+  return <BrowserViewInner {...props} tabs={tabs} />;
 }
 
 function BrowserViewInner({
-  connectionId, defaultDb, readOnly, allowWrite, initialDb, session,
-}: BrowserViewProps & { session: ReturnType<typeof useLastSession<PgSession>> }) {
+  connectionId, defaultDb, readOnly, allowWrite, initialDb, tabs,
+}: BrowserViewProps & { tabs: ReturnType<typeof useQueryTabs<PgTabState>> }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const tree = useSplit({ varName: '--pg-tree', min: 160, max: 520, gap: 12 });
-  /** Phiên đã lưu, chốt lại lúc mount — về sau chỉ GHI, không đọc nữa. */
-  const restored = useRef(session.saved).current;
-  // ── Tree ────────────────────────────────────────────────────────────────────
+
+  const activeId = tabs.activeId;
+  const st = tabs.active!.state;
+  const { openDb, selected, tab, sql } = st;
+  const patch = tabs.update;
+
+  // ── Tree (DÙNG CHUNG mọi tab: cùng một server thì cùng một cây) ─────────────
   const [dbs, setDbs] = useState<PgDatabaseInfo[]>([]);
   const [dbsLoading, setDbsLoading] = useState(false);
-  const [openDb, setOpenDb] = useState<string>(restored?.openDb ?? '');
-  const [tables, setTables] = useState<PgTableInfo[]>([]);
+  /** Bảng của database đang bung. Cache theo tên db để đổi tab qua lại (cùng db)
+   *  không phải nạp lại danh sách bảng mỗi lần. */
+  const [tablesByDb, setTablesByDb] = useState<Record<string, PgTableInfo[]>>({});
   const [tablesLoading, setTablesLoading] = useState(false);
-  const [selected, setSelected] = useState<{ db: string; schema: string; table: string } | null>(restored?.selected ?? null);
   const [treeFilter, setTreeFilter] = useState('');
+  const tables = tablesByDb[openDb] ?? [];
 
-  // ── Query + results ─────────────────────────────────────────────────────────
-  const [tab, setTab] = useState<TableTab>(restored?.tab ?? 'rows');
-  const [sql, setSql] = useState(restored?.sql ?? '');
-  const [result, setResult] = useState<PgQueryResult | null>(null);
-  const [columns, setColumns] = useState<PgColumnInfo[]>([]);
-  const [indexes, setIndexes] = useState<PgIndexInfo[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // ── Kết quả: MỘT bộ cho mỗi tab, giữ trong RAM ─────────────────────────────
+  const [runtime, setRuntime] = useState<Record<string, PgTabRuntime>>({});
+  const rt = runtime[activeId] ?? EMPTY_RUNTIME;
+  const { result, columns, indexes, error, busy } = rt;
+
+  const setRt = useCallback((id: string, p: Partial<PgTabRuntime>) => {
+    setRuntime((cur) => ({ ...cur, [id]: { ...(cur[id] ?? EMPTY_RUNTIME), ...p } }));
+  }, []);
+
+  // Tab bị đóng thì bỏ luôn kết quả của nó — không thì một phiên làm việc dài
+  // cứ tích dần các trang 500 dòng của những tab không còn tồn tại.
+  const liveIds = tabs.tabs.map((t) => t.id).join(',');
+  useEffect(() => {
+    const alive = new Set(liveIds.split(','));
+    setRuntime((cur) => {
+      const keys = Object.keys(cur).filter((k) => !alive.has(k));
+      if (keys.length === 0) return cur;
+      const next = { ...cur };
+      for (const k of keys) delete next[k];
+      return next;
+    });
+  }, [liveIds]);
+
   const [selectedRow, setSelectedRow] = useState<WireRow | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -126,95 +175,120 @@ function BrowserViewInner({
   useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
 
   const loadDbs = useCallback(async () => {
-    setDbsLoading(true); setError(null);
+    setDbsLoading(true);
     try { setDbs(await listPgDatabases(connectionId)); }
-    catch (e) { setError((e as Error).message); }
+    catch (e) { setRt(activeId, { error: (e as Error).message }); }
     finally { setDbsLoading(false); }
-  }, [connectionId]);
+  }, [connectionId, activeId, setRt]);
 
   useEffect(() => { void loadDbs(); }, [loadDbs]);
 
+  /** Bung một database ở cây cho TAB ĐANG XEM (mỗi tab nhớ db riêng của nó). */
   const expandDb = useCallback(async (db: string) => {
-    setOpenDb(db);
-    setTables([]); setTablesLoading(true); setError(null);
-    try { setTables(await listPgTables(connectionId, db)); }
-    catch (e) { setError((e as Error).message); }
-    finally { setTablesLoading(false); }
-  }, [connectionId]);
-
-  // Jump from Overview (or open the connection's default DB on first mount).
-  //
-  // Phiên đã lưu ĐƯỢC ƯU TIÊN hơn `defaultDb`: mở lại tab thì phải thấy đúng
-  // database đang làm dở, không phải database mặc định của connection. Nhưng
-  // `initialDb` (người dùng vừa bấm "mở db" ở Tổng quan) vẫn thắng — đó là
-  // thao tác CHỦ ĐỘNG vừa xảy ra, mới hơn phiên cũ.
-  const jumpedRef = useRef(restored?.openDb && !initialDb ? restored.openDb : '');
-  useEffect(() => {
-    const target = initialDb || restored?.openDb || defaultDb;
-    if (target && jumpedRef.current !== target) {
-      jumpedRef.current = target;
-      void expandDb(target);
+    patch({ openDb: db });
+    if (tablesByDb[db]) return; // đã nạp rồi — khỏi gọi lại
+    setTablesLoading(true);
+    try {
+      const list = await listPgTables(connectionId, db);
+      setTablesByDb((cur) => ({ ...cur, [db]: list }));
     }
-    // `restored` chốt lúc mount nên không cần vào deps.
+    catch (e) { setRt(activeId, { error: (e as Error).message }); }
+    finally { setTablesLoading(false); }
+  }, [connectionId, patch, tablesByDb, activeId, setRt]);
+
+  // Bung lại db của tab vừa chuyển sang / vừa khôi phục, và mở db mặc định cho
+  // tab còn trống.
+  //
+  // `initialDb` (người dùng vừa bấm "mở db" ở Tổng quan) thắng phiên cũ — đó là
+  // thao tác CHỦ ĐỘNG vừa xảy ra. Nó chỉ được tiêu thụ MỘT lần, không thì mỗi
+  // lần đổi tab lại bị kéo về db ấy.
+  const jumpConsumed = useRef(false);
+  useEffect(() => {
+    if (initialDb && !jumpConsumed.current) {
+      jumpConsumed.current = true;
+      if (initialDb !== openDb || !tablesByDb[initialDb]) void expandDb(initialDb);
+      return;
+    }
+    const target = openDb || defaultDb;
+    if (target && !tablesByDb[target]) void expandDb(target);
+    else if (target && !openDb) patch({ openDb: target });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialDb, defaultDb, expandDb]);
+  }, [initialDb, defaultDb, activeId, openDb]);
 
-  const runQuery = useCallback(async (sqlOverride?: string) => {
-    if (!selected) return;
-    const eff = sqlOverride ?? sql;
+  const runQuery = useCallback(async (sqlOverride?: string, tabId = activeId) => {
+    const target = tabs.tabs.find((t) => t.id === tabId)?.state;
+    if (!target?.selected) return;
+    const eff = sqlOverride ?? target.sql;
     if (!eff.trim()) return;
-    setBusy(true); setError(null);
-    try { setResult(await queryPg(connectionId, selected.db, eff)); }
-    catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
-  }, [connectionId, selected, sql]);
+    setRt(tabId, { busy: true, error: null });
+    try {
+      const r = await queryPg(connectionId, target.selected.db, eff);
+      setRt(tabId, { result: r, busy: false });
+    }
+    catch (e) { setRt(tabId, { error: (e as Error).message, busy: false }); }
+  }, [connectionId, activeId, tabs.tabs, setRt]);
 
-  const loadColumns = useCallback(async () => {
-    if (!selected) return;
-    try { setColumns(await listPgColumns(connectionId, selected.db, selected.schema, selected.table)); }
-    catch (e) { setError((e as Error).message); }
-  }, [connectionId, selected]);
+  const loadColumns = useCallback(async (tabId = activeId) => {
+    const sel = tabs.tabs.find((t) => t.id === tabId)?.state.selected;
+    if (!sel) return;
+    try { setRt(tabId, { columns: await listPgColumns(connectionId, sel.db, sel.schema, sel.table) }); }
+    catch (e) { setRt(tabId, { error: (e as Error).message }); }
+  }, [connectionId, activeId, tabs.tabs, setRt]);
 
-  const loadIndexes = useCallback(async () => {
-    if (!selected) return;
-    try { setIndexes(await listPgIndexes(connectionId, selected.db, selected.schema, selected.table)); }
-    catch (e) { setError((e as Error).message); }
-  }, [connectionId, selected]);
+  const loadIndexes = useCallback(async (tabId = activeId) => {
+    const sel = tabs.tabs.find((t) => t.id === tabId)?.state.selected;
+    if (!sel) return;
+    try { setRt(tabId, { indexes: await listPgIndexes(connectionId, sel.db, sel.schema, sel.table) }); }
+    catch (e) { setRt(tabId, { error: (e as Error).message }); }
+  }, [connectionId, activeId, tabs.tabs, setRt]);
 
   /** Select a table → prefill the SQL editor and auto-run the first page. */
   const selectTable = useCallback((db: string, schema: string, table: string) => {
-    setSelected({ db, schema, table });
-    setTab('rows');
-    const q = `SELECT * FROM "${schema}"."${table}" LIMIT 50`;
-    setSql(q);
-    setResult(null); setColumns([]); setIndexes([]); setError(null);
-  }, []);
+    patch({
+      selected: { db, schema, table },
+      tab: 'rows',
+      sql: `SELECT * FROM "${schema}"."${table}" LIMIT 50`,
+    });
+    setRt(activeId, { result: null, columns: [], indexes: [], error: null });
+  }, [patch, activeId, setRt]);
 
-  // Auto-run after selection settles.
+  /**
+   * Mở bảng đang chọn sang MỘT TAB MỚI — đường ngắn nhất để "query nhiều bảng":
+   * đang xem bảng A, bấm chuột giữa (hoặc ⇧ mở tab) ở bảng B là có ngay hai tab
+   * cạnh nhau, câu SQL của A còn nguyên.
+   */
+  const openInNewTab = useCallback((db: string, schema: string, table: string) => {
+    tabs.open({
+      openDb: db,
+      selected: { db, schema, table },
+      tab: 'rows',
+      sql: `SELECT * FROM "${schema}"."${table}" LIMIT 50`,
+    });
+  }, [tabs]);
+
+  // Auto-run khi lựa chọn của một tab vừa ổn định (chọn bảng mới, hoặc lần đầu
+  // chuyển sang một tab khôi phục từ phiên trước).
   //
-  // Bảng được KHÔI PHỤC từ phiên cũ thì chạy lại chính CÂU SQL đã lưu, không
-  // phải `SELECT *` dựng sẵn — nếu không, mở tab lên là câu query vừa viết dở
-  // bị thay bằng câu mặc định, đúng thứ ta đang cố giữ. Các lần chọn bảng sau
-  // đó (người dùng bấm ở cây) vẫn dùng câu dựng sẵn như cũ.
-  const lastAuto = useRef('');
-  const firstAuto = useRef(true);
+  // Tab KHÔI PHỤC chạy lại chính CÂU SQL đã lưu, không phải `SELECT *` dựng sẵn
+  // — nếu không, mở app lên là câu query vừa viết dở bị thay bằng câu mặc định,
+  // đúng thứ ta đang cố giữ.
+  //
+  // Chỉ chạy cho tab ĐANG XEM: mở app với 5 tab mà bắn 5 query cùng lúc vào
+  // production là việc người dùng không hề yêu cầu. Tab khác chạy khi bấm sang.
+  const autoRan = useRef<Record<string, string>>({});
   useEffect(() => {
     if (!selected) return;
     const key = `${connectionId}/${selected.db}/${selected.schema}/${selected.table}`;
-    if (lastAuto.current === key) return;
-    lastAuto.current = key;
-    const isRestored = firstAuto.current
-      && restored?.selected?.db === selected.db
-      && restored.selected.schema === selected.schema
-      && restored.selected.table === selected.table
-      && !!restored.sql.trim();
-    firstAuto.current = false;
-    void runQuery(isRestored
-      ? restored.sql
-      : `SELECT * FROM "${selected.schema}"."${selected.table}" LIMIT 50`);
-    void loadColumns();
+    if (autoRan.current[activeId] === key) return;
+    autoRan.current[activeId] = key;
+    void runQuery(sql.trim() ? sql : `SELECT * FROM "${selected.schema}"."${selected.table}" LIMIT 50`, activeId);
+    void loadColumns(activeId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, connectionId]);
+  }, [activeId, selected?.db, selected?.schema, selected?.table, connectionId]);
+
+  // Nhãn tab đi theo bảng đang chọn, cho tới khi người dùng tự đặt tên.
+  const autoTitle = tabs.autoTitle;
+  useEffect(() => { autoTitle(pgTabTitle(st)); }, [autoTitle, st]);
 
   /**
    * Cột đổ vào gợi ý SQL. Dùng lại `columns` — đã được nạp sẵn khi chọn bảng
@@ -228,21 +302,16 @@ function BrowserViewInner({
     [columns],
   );
 
-  // Ghi lại phiên mỗi khi thứ người dùng gõ/chọn đổi. useLastSession gộp trễ
-  // ~400ms nên gõ SQL không biến thành một chuỗi ghi localStorage liên tục.
-  const saveSession = session.save;
-  useEffect(() => {
-    saveSession({ openDb, selected, tab, sql });
-  }, [saveSession, openDb, selected, tab, sql]);
-
-  /** Quên phiên đang nhớ + dọn màn hình về trạng thái vừa mở connection. */
-  const clearSession = session.clear;
+  /** Quên MỌI tab của connection này + dọn màn hình về trạng thái vừa mở. */
+  const resetTabs = tabs.reset;
   const resetSession = useCallback(() => {
-    clearSession();
-    setSelected(null); setSql(''); setTab('rows');
-    setResult(null); setColumns([]); setIndexes([]);
-    setError(null); setSelectedRow(null);
-  }, [clearSession]);
+    if (tabs.tabs.length > 1
+      && !window.confirm(`Đóng cả ${tabs.tabs.length} tab query và bắt đầu lại từ trạng thái trống?`)) return;
+    autoRan.current = {};
+    setRuntime({});
+    setSelectedRow(null);
+    resetTabs();
+  }, [resetTabs, tabs.tabs.length]);
 
   const filteredDbs = dbs.filter((d) => !treeFilter || d.name.includes(treeFilter));
   const filteredTables = tables.filter((t) => !treeFilter || `${t.schema}.${t.name}`.includes(treeFilter));
@@ -259,11 +328,11 @@ function BrowserViewInner({
         <div className="status-line" style={{ justifyContent: 'space-between' }}>
           <strong>Databases</strong>
           <span style={{ display: 'flex', gap: 4 }}>
-            {/* Phiên được nhớ lại tự động, nên phải có đường VỀ TRẠNG THÁI SẠCH
-                — không thì mở tab lên lúc nào cũng dính câu query cũ và phải tự
-                xoá tay từng ô. */}
+            {/* Các tab được nhớ lại tự động, nên phải có đường VỀ TRẠNG THÁI
+                SẠCH — không thì mở app lên lúc nào cũng dính nguyên bộ tab cũ
+                và phải tự đóng từng cái. */}
             <button className="chip-btn" onClick={resetSession}
-              title="Quên phiên đang nhớ và bắt đầu lại từ trạng thái trống">
+              title="Đóng hết tab query đang nhớ và bắt đầu lại từ trạng thái trống">
               ⟲ Phiên mới
             </button>
             <button className="chip-btn" onClick={loadDbs} disabled={dbsLoading}>↻</button>
@@ -282,7 +351,7 @@ function BrowserViewInner({
             <li key={d.name}>
               <button
                 className={`pg-db-item${openDb === d.name ? ' open' : ''}`}
-                onClick={() => (openDb === d.name ? setOpenDb('') : void expandDb(d.name))}
+                onClick={() => (openDb === d.name ? patch({ openDb: '' }) : void expandDb(d.name))}
                 title={fmtBytes(d.sizeBytes)}
               >
                 <span className="pg-tree-caret">{openDb === d.name ? '▾' : '▸'}</span>
@@ -290,16 +359,24 @@ function BrowserViewInner({
               </button>
               {openDb === d.name && (
                 <ul className="pg-coll-list">
-                  {tablesLoading && <li className="empty" style={{ padding: '4px 8px' }}><span className="spinner" /></li>}
+                  {tablesLoading && tables.length === 0 && <li className="empty" style={{ padding: '4px 8px' }}><span className="spinner" /></li>}
                   {filteredTables.map((t) => (
                     <li key={`${t.schema}.${t.name}`}>
-                      <button
-                        className={`pg-coll-item${selected?.db === d.name && selected?.schema === t.schema && selected?.table === t.name ? ' active' : ''}`}
-                        onClick={() => selectTable(d.name, t.schema, t.name)}
-                        title={`~${fmtCount(t.estRows)} rows · ${fmtBytes(t.sizeBytes)}`}
-                      >
-                        {t.schema === 'public' ? t.name : `${t.schema}.${t.name}`}
-                      </button>
+                      <div className="pg-coll-row">
+                        <button
+                          className={`pg-coll-item${selected?.db === d.name && selected?.schema === t.schema && selected?.table === t.name ? ' active' : ''}`}
+                          onClick={() => selectTable(d.name, t.schema, t.name)}
+                          onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); openInNewTab(d.name, t.schema, t.name); } }}
+                          title={`~${fmtCount(t.estRows)} rows · ${fmtBytes(t.sizeBytes)}\n\nChuột giữa (hoặc nút ⧉) để mở sang tab mới`}
+                        >
+                          {t.schema === 'public' ? t.name : `${t.schema}.${t.name}`}
+                        </button>
+                        <button
+                          className="pg-coll-newtab"
+                          title="Mở bảng này sang tab query mới"
+                          onClick={() => openInNewTab(d.name, t.schema, t.name)}
+                        >⧉</button>
+                      </div>
                     </li>
                   ))}
                   {!tablesLoading && filteredTables.length === 0 && (
@@ -314,6 +391,14 @@ function BrowserViewInner({
 
       {/* ── SQL + results ─────────────────────────────────────────────── */}
       <div className="pg-main">
+        <QueryTabBar
+          tabs={tabs.tabs}
+          activeId={activeId}
+          onSelect={tabs.select}
+          onOpen={() => tabs.open({ openDb })}
+          onClose={tabs.close}
+          onRename={tabs.rename}
+        />
         {!selected ? (
           <p className="empty" style={{ margin: 'auto' }}>Chọn một table ở cây bên trái để truy vấn.</p>
         ) : (
@@ -321,11 +406,11 @@ function BrowserViewInner({
             <div className="status-line" style={{ justifyContent: 'space-between' }}>
               <strong className="pg-ns">{selected.db} › {selected.schema}.{selected.table}</strong>
               <div className="pg-subnav">
-                <button className={tab === 'rows' ? 'on' : ''} onClick={() => setTab('rows')}>Rows</button>
-                <button className={tab === 'columns' ? 'on' : ''} onClick={() => { setTab('columns'); if (columns.length === 0) void loadColumns(); }}>
+                <button className={tab === 'rows' ? 'on' : ''} onClick={() => patch({ tab: 'rows' })}>Rows</button>
+                <button className={tab === 'columns' ? 'on' : ''} onClick={() => { patch({ tab: 'columns' }); if (columns.length === 0) void loadColumns(); }}>
                   Columns{columns.length > 0 ? ` (${columns.length})` : ''}
                 </button>
-                <button className={tab === 'indexes' ? 'on' : ''} onClick={() => { setTab('indexes'); void loadIndexes(); }}>Indexes</button>
+                <button className={tab === 'indexes' ? 'on' : ''} onClick={() => { patch({ tab: 'indexes' }); void loadIndexes(); }}>Indexes</button>
               </div>
             </div>
 
@@ -345,8 +430,12 @@ function BrowserViewInner({
                         mở — đều là dữ liệu đã nạp sẵn cho cây bên trái và tab
                         Columns, nên không tốn thêm một request nào. */}
                     <SqlEditor
+                      /* key theo tab: trình soạn giữ state nội bộ (con trỏ, gợi
+                         ý đang mở) — đổi tab mà tái dùng cùng một instance thì
+                         con trỏ của tab cũ nhảy vào câu SQL của tab mới. */
+                      key={activeId}
                       value={sql}
-                      onChange={setSql}
+                      onChange={(v) => patch({ sql: v })}
                       onRun={() => void runQuery()}
                       columns={suggestColumns}
                       tables={tables}
