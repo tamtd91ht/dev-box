@@ -27,6 +27,8 @@ import {
   type ListMrsResult,
   type MergeMrResult,
   type MergeResult,
+  type CheckoutResult,
+  type FetchResult,
   type GitLabTokenStatusResult,
   type ListGitLabTokensResult,
   type ListNamespacesResult,
@@ -162,6 +164,8 @@ export default function GitWorkspace() {
   const [notice, setNotice] = useState<string | null>(null);
   const [newBranch, setNewBranch] = useState('');
   const [showBranches, setShowBranches] = useState(false);
+  /** Cửa sổ chọn branch để checkout (gồm cả branch mới chỉ có trên remote). */
+  const [branchPickerOpen, setBranchPickerOpen] = useState(false);
   // ── Local merge (branch A → branch hiện tại, kiểu SourceTree) ────────────────
   // `mergeFrom` = ref được chọn để merge vào branch đang checkout; `mergeNoFf` ép
   // tạo merge commit; `mergeConflicts` giữ danh sách file conflict của lần merge
@@ -570,14 +574,58 @@ export default function GitWorkspace() {
     setSelected(null);
   }
 
-  async function doCheckout(branch: string, create: boolean) {
-    await run('Checkout', () => gitAction('checkout', { repo, branch, create }));
-    const br = await gitAction<BranchInfo>('branches', { repo });
-    if (repoRef.current === repo) setBranchInfo(br);
-    if (create) setNewBranch('');
-    setMergeConflicts([]); // stale — they belonged to the previous branch
-    setSelected(null);
-  }
+  /**
+   * Checkout `ref`. `ref` ĐƯỢC PHÉP là một remote ref ("origin/feat"): server
+   * dựng branch local cùng tên và track nó thay vì rơi vào detached HEAD (xem
+   * checkout() trong lib/gitCore). `create` = tạo branch mới, khi đó `startPoint`
+   * là điểm xuất phát (rỗng = từ HEAD hiện tại).
+   *
+   * NÉM lỗi ra ngoài chứ không tự nuốt: cửa sổ chọn branch phải hiện lỗi ngay
+   * cạnh danh sách, chứ không phải ở dòng lỗi của panel đang bị chính nó che.
+   */
+  const doCheckout = useCallback(
+    async (ref: string, create: boolean, startPoint?: string): Promise<CheckoutResult> => {
+      const target = repoRef.current;
+      if (!target) throw new Error('chưa chọn repo');
+      setBusy(true);
+      setError(null);
+      try {
+        const res = await gitAction<CheckoutResult>('checkout', {
+          repo: target,
+          branch: ref,
+          create,
+          startPoint: startPoint || undefined,
+        });
+        if (repoRef.current === target) {
+          setStatus(res.status);
+          setBranchInfo(res.branches);
+        }
+        if (create) setNewBranch('');
+        setMergeConflicts([]); // stale — chúng thuộc về branch trước
+        setSelected(null);
+        setDiff('');
+        flash(
+          res.trackedFrom
+            ? `Đã tạo branch local "${res.branch}" theo dõi ${res.trackedFrom}`
+            : res.created
+              ? `Đã tạo & checkout "${res.branch}"`
+              : `Đang ở branch "${res.branch}"`,
+        );
+        return res;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [flash],
+  );
+
+  /** Bản cho các nút trong panel — nuốt lỗi vào dòng lỗi chung của panel. */
+  const doCheckoutInline = useCallback(
+    (ref: string, create: boolean) => {
+      doCheckout(ref, create).catch((e) => setError(`Checkout failed: ${(e as Error).message}`));
+    },
+    [doCheckout],
+  );
 
   /**
    * Merge the selected branch INTO the branch currently checked out — the
@@ -870,8 +918,16 @@ export default function GitWorkspace() {
               </span>
               {status.ahead > 0 && <span className="badge" title="commit chưa push">↑ {status.ahead}</span>}
               {status.behind > 0 && <span className="badge warn" title="commit ở remote chưa pull">↓ {status.behind}</span>}
-              <button className="ghost sm" onClick={() => setShowBranches((s) => !s)} disabled={busy}>
-                {showBranches ? 'Ẩn branch' : 'Branch…'}
+              <button
+                className="sm"
+                onClick={() => setBranchPickerOpen(true)}
+                disabled={busy || !!commandRunning}
+                title="Mở cửa sổ chọn branch — kể cả branch mới chỉ có trên remote"
+              >
+                ⎇ Đổi branch…
+              </button>
+              <button className="ghost sm" onClick={() => setShowBranches((s) => !s)} disabled={busy} title="Danh sách branch local + merge branch khác vào branch hiện tại">
+                {showBranches ? 'Ẩn branch/merge' : 'Branch/merge…'}
               </button>
             </>
           )}
@@ -945,7 +1001,7 @@ export default function GitWorkspace() {
                 <button
                   key={b}
                   className={b === branchInfo.current ? 'sm' : 'ghost sm'}
-                  onClick={() => b !== branchInfo.current && doCheckout(b, false)}
+                  onClick={() => b !== branchInfo.current && doCheckoutInline(b, false)}
                   disabled={busy || !!commandRunning || b === branchInfo.current}
                   title={b === branchInfo.current ? 'branch hiện tại' : `checkout ${b}`}
                 >
@@ -958,14 +1014,14 @@ export default function GitWorkspace() {
                 type="text"
                 value={newBranch}
                 onChange={(e) => setNewBranch(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && newBranch.trim() && doCheckout(newBranch.trim(), true)}
+                onKeyDown={(e) => e.key === 'Enter' && newBranch.trim() && doCheckoutInline(newBranch.trim(), true)}
                 placeholder="tên branch mới"
                 style={{ flex: 1, maxWidth: 260, fontFamily: 'var(--mono)', fontSize: 12 }}
                 disabled={busy || !!commandRunning}
               />
               <button
                 className="sm"
-                onClick={() => newBranch.trim() && doCheckout(newBranch.trim(), true)}
+                onClick={() => newBranch.trim() && doCheckoutInline(newBranch.trim(), true)}
                 disabled={busy || !!commandRunning || !newBranch.trim()}
                 title="git checkout -b"
               >
@@ -1120,6 +1176,8 @@ export default function GitWorkspace() {
         <span style={{ flex: 1 }} />
         {headerCollapsed && (
           <>
+            <button className="ghost sm" onClick={() => setBranchPickerOpen(true)}
+              disabled={busy || !!commandRunning || !repo} title="Đổi branch — kể cả branch chỉ có trên remote">⎇ Branch</button>
             <button className="ghost sm" onClick={() => run('Pull', () => gitAction('pull', { repo }))}
               disabled={busy || !!commandRunning} title="git pull --ff-only">↓ Pull</button>
             <button className="ghost sm" onClick={() => run('Push', () => gitAction('push', { repo }))}
@@ -1582,6 +1640,18 @@ export default function GitWorkspace() {
           existingNames={repos.map((r) => r.name)}
           onClose={() => setCreateOpen(false)}
           onCreated={afterCreate}
+        />
+      )}
+
+      {branchPickerOpen && repo && (
+        <BranchPickerModal
+          repo={repo}
+          repoName={repoName}
+          busy={busy || !!commandRunning}
+          onCheckout={doCheckout}
+          onBranches={(br) => { if (repoRef.current === repo) setBranchInfo(br); }}
+          onStatus={(st) => { if (repoRef.current === repo) setStatus(st); }}
+          onClose={() => setBranchPickerOpen(false)}
         />
       )}
 
@@ -2082,6 +2152,345 @@ function CreateRepoModal({ projectId, projectName, root, existingNames, onClose,
             }}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Cửa sổ chọn branch để checkout ──────────────────────────────────────────
+
+interface BranchPickerModalProps {
+  repo: string;
+  repoName: string;
+  busy: boolean;
+  onCheckout: (ref: string, create: boolean, startPoint?: string) => Promise<CheckoutResult>;
+  onBranches: (br: BranchInfo) => void;
+  onStatus: (st: RepoStatus) => void;
+  onClose: () => void;
+}
+
+/** Một dòng trong danh sách: branch local, hoặc branch MỚI CHỈ CÓ trên remote. */
+interface BranchRow {
+  /** Ref gửi cho server: "feat" (local) hoặc "origin/feat" (chỉ có trên remote). */
+  ref: string;
+  /** Tên branch local sẽ đứng sau khi checkout — cũng là tên hiển thị. */
+  name: string;
+  /** Remote chứa nó, chỉ có ở dòng remote-only. */
+  remote?: string;
+  current: boolean;
+}
+
+/**
+ * Chọn branch để checkout — ĐIỂM CHÍNH: liệt kê cả branch chưa có dưới máy.
+ *
+ * Clone về chỉ có đúng một branch local, nên danh sách `git branch` (cái panel
+ * bên ngoài đang hiện) gần như luôn là một dòng: không có đường nào sang branch
+ * khác. Cửa sổ này gộp `refs/heads` và `refs/remotes` thành MỘT danh sách, và
+ * `git fetch --prune` ngay lúc mở để branch người khác vừa push cũng hiện ra —
+ * bản sao local của refs/remotes không tự cập nhật bao giờ.
+ *
+ * Bấm một dòng remote-only thì server dựng branch local cùng tên và track nó
+ * (không phải detached HEAD) — xem checkout() trong lib/gitCore.
+ *
+ * TỰ ĐỌC DANH SÁCH, KHÔNG NHẬN QUA PROP: panel ngoài giữ branchInfo của repo
+ * vừa xem, mà đổi repo thì nó về muộn (fetch/status xếp hàng sau vài request
+ * khác). Nhận qua prop là có lúc hiện branch của repo TRƯỚC dưới cái tên repo
+ * MỚI — sai một cách rất khó ngờ, vì mọi thứ trông vẫn bình thường.
+ */
+function BranchPickerModal({ repo, repoName, busy, onCheckout, onBranches, onStatus, onClose }: BranchPickerModalProps) {
+  const [list, setList] = useState<BranchInfo | null>(null);
+  /** Số file đang đổi — git sẽ CHẶN checkout nếu branch kia cũng đụng vào chúng. */
+  const [dirty, setDirty] = useState<number | null>(null);
+  const [query, setQuery] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [fetchNote, setFetchNote] = useState<string | null>(null);
+  /** Ref đang checkout (hoặc '__new__' khi đang tạo branch mới) — khóa danh sách. */
+  const [working, setWorking] = useState<string | null>(null);
+  const [newName, setNewName] = useState('');
+  const [startPoint, setStartPoint] = useState('');
+  const [creating, setCreating] = useState(false);
+
+  // Esc đóng, giống các modal khác trong workspace này.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const apply = useCallback(
+    (br: BranchInfo, st?: RepoStatus) => {
+      setList(br);
+      onBranches(br);
+      if (st) {
+        setDirty(st.files.length);
+        onStatus(st);
+      }
+    },
+    [onBranches, onStatus],
+  );
+
+  /** Đọc danh sách dưới máy — chỉ chạm đĩa, nên hiện ra gần như tức thì. */
+  const loadLocal = useCallback(async () => {
+    try {
+      const [st, br] = await Promise.all([
+        gitAction<RepoStatus>('status', { repo }),
+        gitAction<BranchInfo>('branches', { repo }),
+      ]);
+      apply(br, st);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, [repo, apply]);
+
+  const doFetch = useCallback(async () => {
+    setFetching(true);
+    try {
+      const res = await gitAction<FetchResult>('fetch', { repo });
+      apply(res.branches, res.status);
+      setFetchNote(
+        res.fetched
+          ? 'Đã hỏi remote — danh sách dưới đây là branch trên server lúc này.'
+          : '⚠ Không fetch được (offline / chưa có quyền) — đang xem bản local có thể đã cũ.',
+      );
+    } catch (e) {
+      // Fetch hỏng KHÔNG chặn việc chọn branch: danh sách local vẫn dùng được.
+      setFetchNote(`⚠ Fetch lỗi: ${(e as Error).message} — đang xem bản local có thể đã cũ.`);
+    } finally {
+      setFetching(false);
+    }
+  }, [repo, apply]);
+
+  // Mở lên: hiện ngay danh sách dưới máy, rồi mới đi hỏi remote (chậm hơn nhiều).
+  useEffect(() => {
+    loadLocal().then(doFetch);
+  }, [loadLocal, doFetch]);
+
+  /** Local trước (theo thứ tự git), rồi các branch CHỈ CÓ trên remote. */
+  const rows = useMemo<BranchRow[]>(() => {
+    const local = list?.branches ?? [];
+    const localSet = new Set(local);
+    const out: BranchRow[] = local.map((b) => ({ ref: b, name: b, current: b === list?.current }));
+    const remoteOnly: BranchRow[] = [];
+    for (const r of list?.remotes ?? []) {
+      const slash = r.indexOf('/');
+      if (slash <= 0) continue;
+      const remote = r.slice(0, slash);
+      const name = r.slice(slash + 1);
+      // Đã có bản local cùng tên → dòng local phía trên MỚI là cái đúng để bấm;
+      // thêm dòng remote nữa chỉ làm người dùng tưởng có hai branch khác nhau.
+      if (!name || localSet.has(name)) continue;
+      remoteOnly.push({ ref: r, name, remote, current: false });
+    }
+    remoteOnly.sort((a, b) => a.name.localeCompare(b.name));
+    return out.concat(remoteOnly);
+  }, [list]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) => r.ref.toLowerCase().includes(q));
+  }, [rows, query]);
+
+  const localCount = rows.filter((r) => !r.remote).length;
+  const remoteCount = rows.length - localCount;
+  const locked = !!working || busy;
+
+  const pick = useCallback(
+    async (row: BranchRow) => {
+      if (row.current || locked) return;
+      setWorking(row.ref);
+      setErr(null);
+      try {
+        await onCheckout(row.ref, false);
+        onClose();
+      } catch (e) {
+        setErr((e as Error).message);
+      } finally {
+        setWorking(null);
+      }
+    },
+    [locked, onCheckout, onClose],
+  );
+
+  const createBranch = useCallback(async () => {
+    const name = newName.trim();
+    if (!name || locked) return;
+    setWorking('__new__');
+    setErr(null);
+    try {
+      await onCheckout(name, true, startPoint || undefined);
+      onClose();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setWorking(null);
+    }
+  }, [newName, startPoint, locked, onCheckout, onClose]);
+
+  return (
+    <div className="modal-backdrop" onClick={() => !working && onClose()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(620px, 94vw)' }}>
+        <div className="status-line" style={{ marginBottom: 10 }}>
+          <h3 style={{ margin: 0, flex: 1 }}>Đổi branch — {repoName || 'repo'}</h3>
+          <button
+            className="ghost sm"
+            onClick={doFetch}
+            disabled={fetching || !!working}
+            title="git fetch --prune — lấy danh sách branch mới nhất từ remote"
+          >
+            {fetching ? <span className="spinner" aria-hidden /> : '↻'} Fetch
+          </button>
+          <button className="ghost sm" onClick={onClose} disabled={!!working}>✕</button>
+        </div>
+
+        <div className="small" style={{ color: 'var(--muted)', marginBottom: 8 }}>
+          {list ? (
+            <>
+              {localCount} branch dưới máy · {remoteCount} branch chỉ có trên remote
+              {list.current ? <> · đang ở <b>{list.current}</b></> : null}
+            </>
+          ) : (
+            'Đang đọc danh sách branch…'
+          )}
+        </div>
+
+        {(fetching || fetchNote) && (
+          <div
+            className="small"
+            style={{ color: fetchNote?.startsWith('⚠') ? 'var(--warn, #d29922)' : 'var(--muted)', marginBottom: 8 }}
+          >
+            {fetching ? 'Đang hỏi remote xem có branch nào mới…' : fetchNote}
+          </div>
+        )}
+
+        {!!dirty && (
+          <div className="badge warn" style={{ marginBottom: 8 }}>
+            ⚠ Đang có {dirty} file thay đổi chưa commit — git sẽ chặn nếu branch kia cũng đụng vào chúng.
+          </div>
+        )}
+
+        <input
+          type="text"
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && filtered.length) {
+              const first = filtered.find((r) => !r.current);
+              if (first) pick(first);
+            }
+          }}
+          placeholder="Lọc theo tên branch…"
+          disabled={locked}
+          style={{ width: '100%', fontFamily: 'var(--mono)', fontSize: 12, marginBottom: 8 }}
+        />
+
+        {err && <pre className="code" style={{ color: 'var(--err)', margin: '0 0 10px', whiteSpace: 'pre-wrap' }}>{err}</pre>}
+
+        {filtered.length === 0 ? (
+          <div className="empty" style={{ padding: '24px 8px' }}>
+            <div className="empty-ico">⎇</div>
+            <p className="small">
+              {!list
+                ? 'Đang đọc danh sách branch…'
+                : rows.length === 0
+                  ? 'Chưa thấy branch nào — bấm ↻ Fetch, hoặc repo này chưa có remote.'
+                  : `Không có branch nào khớp “${query}”.`}
+            </p>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: '46vh', overflow: 'auto' }}>
+            {filtered.map((row) => (
+              <button
+                key={row.ref}
+                className="ghost sm"
+                onClick={() => pick(row)}
+                disabled={row.current || locked}
+                title={
+                  row.current
+                    ? 'branch hiện tại'
+                    : row.remote
+                      ? `Tạo branch local "${row.name}" theo dõi ${row.ref} rồi checkout`
+                      : `git checkout ${row.ref}`
+                }
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  justifyContent: 'flex-start',
+                  textAlign: 'left',
+                  fontFamily: 'var(--mono)',
+                  padding: '7px 10px',
+                  border: row.current ? '1px solid var(--accent, #6c8cff)' : undefined,
+                }}
+              >
+                <span aria-hidden style={{ color: row.current ? 'var(--accent, #6c8cff)' : 'var(--muted)' }}>
+                  {row.current ? '●' : '⎇'}
+                </span>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.name}</span>
+                {row.current && <span className="badge info">hiện tại</span>}
+                {row.remote && (
+                  <span className="badge" title={`chỉ có trên ${row.remote} — checkout sẽ tải về thành branch local`}>
+                    ↓ {row.remote}
+                  </span>
+                )}
+                {working === row.ref && <span className="spinner" aria-hidden />}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* ── Tạo branch mới (tuỳ chọn: từ một branch khác) ─────────────────── */}
+        <div style={{ marginTop: 12, borderTop: '1px solid var(--border, rgba(127,127,127,.2))', paddingTop: 10 }}>
+          {!creating ? (
+            <button className="ghost sm" onClick={() => setCreating(true)} disabled={!!working} title="git checkout -b">
+              + Tạo branch mới…
+            </button>
+          ) : (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && createBranch()}
+                placeholder="tên branch mới"
+                disabled={!!working}
+                style={{ flex: 1, minWidth: 180, fontFamily: 'var(--mono)', fontSize: 12 }}
+              />
+              <label className="small" style={{ color: 'var(--muted)' }}>từ</label>
+              <select
+                value={startPoint}
+                onChange={(e) => setStartPoint(e.target.value)}
+                disabled={!!working}
+                style={{ minWidth: 170, maxWidth: 240, fontFamily: 'var(--mono)', fontSize: 12 }}
+              >
+                <option value="">branch hiện tại</option>
+                {(list?.branches ?? []).map((b) => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+                {(list?.remotes ?? []).length > 0 && (
+                  <optgroup label="remote">
+                    {(list?.remotes ?? []).map((b) => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+              <button className="sm" onClick={createBranch} disabled={!newName.trim() || !!working}>
+                {working === '__new__' ? <><span className="spinner" aria-hidden /> Đang tạo</> : '+ Tạo & checkout'}
+              </button>
+              <button className="ghost sm" onClick={() => setCreating(false)} disabled={!!working}>Hủy</button>
+            </div>
+          )}
+        </div>
+
+        <div className="small" style={{ color: 'var(--muted)', marginTop: 10 }}>
+          Branch có dấu <b>↓ origin</b> là branch chưa có dưới máy — checkout sẽ tạo branch local cùng tên,
+          theo dõi remote đó và lấy code về (không rơi vào detached HEAD).
+        </div>
       </div>
     </div>
   );

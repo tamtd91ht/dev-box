@@ -478,14 +478,21 @@ export async function branches(repo: string): Promise<BranchInfo> {
   }
 
   // Remote-tracking refs. `origin/HEAD` is a symbolic alias for the default
-  // branch, not a branch to merge — drop it.
+  // branch, not a branch — drop it.
+  //
+  // ĐỌC REFNAME ĐẦY ĐỦ, không dùng `%(refname:short)`: git rút gọn
+  // `refs/remotes/origin/HEAD` thành đúng chữ “origin”, nên bộ lọc theo đuôi
+  // “/HEAD” không bắt được nó: danh sách remote có thêm một dòng “origin” không
+  // phải branch nào cả, chọn nó để merge/checkout là sai hoàn toàn.
   let remotes: string[] = [];
   try {
-    const rout = await git(repo, ['branch', '--remotes', '--format=%(refname:short)']);
+    const rout = await git(repo, ['branch', '--remotes', '--format=%(refname)']);
     remotes = rout
       .split('\n')
       .map((l) => l.trim())
-      .filter((l) => l && !/\/HEAD$/.test(l) && !l.includes(' -> '));
+      .filter((l) => l.startsWith('refs/remotes/') && !l.endsWith('/HEAD'))
+      .map((l) => l.slice('refs/remotes/'.length))
+      .filter(Boolean);
   } catch {
     /* no remotes configured — leave empty */
   }
@@ -1057,12 +1064,181 @@ export async function commit(repo: string, message: string): Promise<string> {
   return git(repo, ['commit', '-m', msg]);
 }
 
-export async function checkout(repo: string, branch: string, create: boolean): Promise<string> {
-  const name = (branch || '').trim();
-  if (!name) throw new Error('branch name required');
-  // A leading dash could be read as a flag → refuse it defensively.
-  if (name.startsWith('-')) throw new Error('invalid branch name');
-  return create ? git(repo, ['checkout', '-b', name]) : git(repo, ['checkout', name]);
+// ── Checkout (đổi branch, kể cả branch mới chỉ có trên remote) ───────────────
+
+/**
+ * Kết quả một lần checkout. UI cần cả ba thứ:
+ *   • `branch` — branch THẬT SỰ đang đứng sau lệnh. Bấm "origin/feat" thì branch
+ *     local dựng ra tên "feat", không phải chuỗi người dùng đã bấm.
+ *   • `created` — có vừa tạo branch local hay không (để báo đúng câu).
+ *   • `trackedFrom` — remote ref đã dựng branch local từ đó, nếu có.
+ */
+export interface CheckoutResult {
+  output: string;
+  branch: string;
+  created: boolean;
+  trackedFrom?: string;
+}
+
+/** Cú pháp tên branch/ref gửi lên từ client. Dash đầu sẽ bị git đọc thành cờ. */
+function validateRefName(raw: unknown, what = 'branch'): string {
+  const ref = typeof raw === 'string' ? raw.trim() : '';
+  if (!ref) throw new Error(`cần tên ${what}`);
+  if (ref.startsWith('-')) throw new Error('tên branch không hợp lệ');
+  if (/[\s~^:?*[\]\\]/.test(ref) || ref.includes('..')) throw new Error('tên branch không hợp lệ');
+  return ref;
+}
+
+/** True khi repo có branch LOCAL đúng tên này. */
+async function localBranchExists(repo: string, name: string): Promise<boolean> {
+  try {
+    await git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Những remote đang có branch tên `name` (thường là ['origin']). */
+async function remotesWithBranch(repo: string, name: string): Promise<string[]> {
+  let names: string[] = [];
+  try {
+    names = (await git(repo, ['remote'])).split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+  const found: string[] = [];
+  for (const r of names) {
+    try {
+      await git(repo, ['rev-parse', '--verify', '--quiet', `refs/remotes/${r}/${name}`]);
+      found.push(r);
+    } catch {
+      /* remote này không có branch đó */
+    }
+  }
+  return found;
+}
+
+/**
+ * Dịch lời than của git thành câu đọc là biết phải làm gì. Ca gần như duy nhất
+ * làm checkout hỏng trong thực tế là working tree đang bẩn — git nói bằng tiếng
+ * Anh giữa một đống tên file, rất dễ bị đọc thành "lỗi tool".
+ */
+function checkoutError(e: unknown): Error {
+  const msg = ((e as Error).message || 'checkout thất bại').trim();
+  if (/local changes|would be overwritten|commit your changes|Please commit/i.test(msg)) {
+    return new Error(
+      `${msg}\n\n→ Working tree đang có thay đổi chưa lưu. Commit (hoặc "Bỏ hết thay đổi") rồi đổi branch lại.`,
+    );
+  }
+  return new Error(msg);
+}
+
+/**
+ * Đổi branch — NHẬN CẢ branch chỉ có trên remote.
+ *
+ * Clone về chỉ dựng đúng MỘT branch local (branch mặc định của repo); mọi branch
+ * khác nằm ở `refs/remotes/*`. Checkout thẳng "origin/feat" sẽ rơi vào detached
+ * HEAD — commit ở đó không thuộc branch nào và rất dễ mất. Nên khi đích là một
+ * remote ref, hàm này dựng branch local cùng tên rồi --track ref đó.
+ *
+ * Bốn đường vào, theo thứ tự:
+ *   1. `create` → `git checkout -b <name> [<startPoint>]`.
+ *   2. đã có branch local cùng tên → checkout thẳng.
+ *   3. ref dạng `<remote>/<name>` → tạo local `<name>` track ref đó.
+ *   4. tên trần mà đúng MỘT remote có → tạo local track remote đó.
+ */
+export async function checkout(
+  repo: string,
+  branch: string,
+  create: boolean,
+  startPointRaw?: unknown,
+): Promise<CheckoutResult> {
+  const name = validateRefName(branch);
+
+  // 1 — tạo branch mới (tuỳ chọn: từ một điểm xuất phát, kể cả remote ref).
+  if (create) {
+    if (await localBranchExists(repo, name)) {
+      throw new Error(`branch "${name}" đã có rồi — chọn nó trong danh sách thay vì tạo mới`);
+    }
+    const start =
+      startPointRaw === undefined || startPointRaw === null || startPointRaw === ''
+        ? ''
+        : validateRefName(startPointRaw, 'điểm xuất phát');
+    if (start) await assertMergeRefExists(repo, start);
+    const args = ['checkout', '-b', name];
+    if (start) args.push(start);
+    try {
+      const out = await git(repo, args, { withStderr: true });
+      const trackedFrom = start && (await remoteOfRef(repo, start)) ? start : undefined;
+      return { output: out.trim(), branch: name, created: true, trackedFrom };
+    } catch (e) {
+      throw checkoutError(e);
+    }
+  }
+
+  // 2 — branch local: đường thường gặp nhất.
+  if (await localBranchExists(repo, name)) {
+    try {
+      const out = await git(repo, ['checkout', name], { withStderr: true });
+      return { output: out.trim(), branch: name, created: false };
+    } catch (e) {
+      throw checkoutError(e);
+    }
+  }
+
+  // 3 — bấm thẳng vào một remote ref ("origin/feat").
+  const remote = await remoteOfRef(repo, name);
+  if (remote) {
+    const local = name.slice(remote.length + 1);
+    if (!local) throw new Error(`"${name}" không phải một branch`);
+    // Local cùng tên đã có: checkout NÓ, không dựng thêm bản sao tên khác.
+    if (await localBranchExists(repo, local)) {
+      try {
+        const out = await git(repo, ['checkout', local], { withStderr: true });
+        return { output: out.trim(), branch: local, created: false };
+      } catch (e) {
+        throw checkoutError(e);
+      }
+    }
+    try {
+      const out = await git(repo, ['checkout', '-b', local, '--track', name], { withStderr: true });
+      return { output: out.trim(), branch: local, created: true, trackedFrom: name };
+    } catch (e) {
+      throw checkoutError(e);
+    }
+  }
+
+  // 4 — tên trần chưa có local: tìm trên từng remote.
+  const hosts = await remotesWithBranch(repo, name);
+  if (hosts.length === 1) {
+    const ref = `${hosts[0]}/${name}`;
+    try {
+      const out = await git(repo, ['checkout', '-b', name, '--track', ref], { withStderr: true });
+      return { output: out.trim(), branch: name, created: true, trackedFrom: ref };
+    } catch (e) {
+      throw checkoutError(e);
+    }
+  }
+  if (hosts.length > 1) {
+    throw new Error(
+      `branch "${name}" có ở nhiều remote (${hosts.join(', ')}) — chọn rõ "${hosts[0]}/${name}"`,
+    );
+  }
+  throw new Error(
+    `không có branch "${name}" (cả local lẫn remote) — bấm ↻ Fetch để lấy danh sách mới, hoặc tạo branch mới`,
+  );
+}
+
+/**
+ * `git fetch --prune` rồi trả danh sách branch mới. Đây là thứ làm branch người
+ * khác VỪA PUSH hiện ra: `git branch -r` chỉ đọc bản sao local của refs/remotes,
+ * nó không tự hỏi server bao giờ. Best-effort: offline thì `fetched=false` và
+ * danh sách vẫn trả về (bản local), để UI nói rõ "đang xem bản cũ".
+ */
+export async function fetchBranches(repo: string): Promise<{ fetched: boolean; branches: BranchInfo }> {
+  const fetched = await fetchRepo(repo);
+  return { fetched, branches: await branches(repo) };
 }
 
 export async function pull(repo: string): Promise<string> {

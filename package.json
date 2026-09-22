@@ -26,6 +26,7 @@
     "check:history": "tsx scripts/check-browser-history.ts",
     "check:session": "tsx scripts/check-browser-session.ts",
     "check:selfrepo": "tsx scripts/check-git-selfrepo.ts",
+    "check:checkout": "tsx scripts/check-git-checkout.ts",
     "check:sql": "tsx scripts/check-sql-complete.ts",
     "check:mongo-query": "tsx scripts/check-mongo-query.ts",
     "check:export-map": "tsx scripts/check-export-map.ts",

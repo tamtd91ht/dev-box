@@ -32,6 +32,7 @@ import {
   cloneRepo,
   commit,
   checkout,
+  fetchBranches,
   pull,
   push,
   mergeBranch,
@@ -284,8 +285,17 @@ export async function POST(req: NextRequest) {
       }
 
       case 'checkout': {
-        const out = await checkout(repo, String(body.branch ?? ''), !!body.create);
-        return NextResponse.json({ output: out, status: await status(repo), branches: await branches(repo) });
+        // `branch` nhận cả remote ref ("origin/feat") — lúc đó server dựng branch
+        // local cùng tên và track nó, xem checkout() trong lib/gitCore.
+        const res = await checkout(repo, String(body.branch ?? ''), !!body.create, body.startPoint);
+        return NextResponse.json({ ...res, status: await status(repo), branches: await branches(repo) });
+      }
+
+      case 'fetch': {
+        // `git fetch --prune` — cập nhật refs/remotes để branch người khác vừa push
+        // hiện ra trong cửa sổ chọn branch. Không đụng vào working tree.
+        const res = await fetchBranches(repo);
+        return NextResponse.json({ ...res, status: await status(repo) });
       }
 
       case 'merge': {
