@@ -4275,6 +4275,8 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
 /* Ô đệm cuối dòng/cột: chỉ để nuốt chỗ trống, không phải ô dữ liệu — bỏ viền
    phải và không nhận tô nền theo hover/chọn để nó "vô hình". */
 .sheet-filler { padding: 0; border-right: 0; cursor: default; }
+/* Dòng đệm của cuộn ảo (xem VIRT_* trong SheetWorkspace): chỉ chiếm chỗ, vô hình. */
+.sheet-grid tr.sheet-vpad td, .sheet-grid.paper tr.sheet-vpad td { padding: 0; border: 0; background: transparent !important; }
 .sheet-grid tbody tr:hover td.sheet-filler,
 .sheet-grid.paper tbody tr:hover td.sheet-filler { background: transparent; }
 .sheet-table th, .sheet-table td {

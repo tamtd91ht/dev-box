@@ -47,7 +47,7 @@
 // style/công thức. Save luôn backup `<file>.bak` trước, gated bởi
 // OFFICE_ALLOW_WRITE.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import FolderPicker from './FolderPicker';
 import OfficeNewFileModal from './OfficeNewFileModal';
 import SheetFormatBar from './SheetFormatBar';
@@ -76,7 +76,11 @@ import {
 } from '@/lib/sheet';
 
 const RECENT_KEY = 'sheet.recent';
-const RENDER_STEP = 500; // rows rendered at a time (the DOM, not the data, is the bottleneck)
+// Cuộn ảo theo dòng: chỉ vẽ các dòng quanh khung nhìn (DOM mới là nút thắt,
+// không phải dữ liệu) — phần trên/dưới là 2 dòng đệm cao đúng bằng tổng chiều
+// cao các dòng không vẽ, nên thanh cuộn vẫn phản ánh cả sheet.
+const VIRT_OVERSCAN_PX = 800; // vẽ dư trên/dưới khung nhìn, cuộn nhanh khỏi chớp trắng
+const VIRT_CHUNK = 20;        // cửa sổ nhảy theo bội số → không render lại mỗi pixel cuộn
 const MIN_COLS = 12;     // lưới trống tối thiểu — như mở Excel mới
 const MIN_ROWS = 30;
 const PAD_COLS = 4;      // ô trống đệm quanh vùng dữ liệu
@@ -269,7 +273,10 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const [fillRange, setFillRange] = useState<SelRange | null>(null);
   const [filling, setFilling] = useState(false);
   const [editing, setEditing] = useState<Editing | null>(null);
-  const [rowLimit, setRowLimit] = useState(RENDER_STEP);
+  /** Cửa sổ dòng đang vẽ [s, e] (1-based, gồm 2 đầu) — xem VIRT_*. */
+  const [vwin, setVwin] = useState({ s: 1, e: 60 });
+  /** Chiều cao thật của một dòng mặc định, đo từ DOM (ước lượng ban đầu). */
+  const [baseRowPx, setBaseRowPx] = useState(DEFAULT_ROW_PX + 1);
   /** Lưới nở thêm khi đi tới mép (giữ cảm giác "vô tận" của Excel). */
   const [padR, setPadR] = useState(0);
   const [padC, setPadC] = useState(0);
@@ -393,7 +400,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const resetView = useCallback(() => {
     // Mở file/đổi sheet là chọn sẵn A1 như Excel — ribbon định dạng dùng được ngay.
     setSel({ r: 1, c: 1 }); setSelRange(null); setSelKind('cells');
-    setEditing(null); setRowLimit(RENDER_STEP); setPadR(0); setPadC(0);
+    setEditing(null); setPadR(0); setPadC(0);
+    if (gridRef.current) gridRef.current.scrollTop = 0;
     setCtx(null);
   }, []);
 
@@ -518,7 +526,6 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const usedCols = grid.reduce((m, row) => Math.max(m, row.length), 0);
   const dispCols = Math.max(MIN_COLS, usedCols + PAD_COLS, padC);
   const dispRows = Math.max(MIN_ROWS, usedRows + PAD_ROWS, padR);
-  const shownRows = Math.min(dispRows, rowLimit);
 
   /** Bảng style đang dùng để VẼ (file + định dạng user vừa áp trong phiên). */
   const styleTable = styleRef.current[active] ?? [];
@@ -598,6 +605,74 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
 
   const hiddenRowSet = useMemo(() => new Set(structShifted ? [] : sheetMeta?.hiddenRows ?? []), [sheetMeta, structShifted]);
   const hiddenColSet = useMemo(() => new Set(structShifted ? [] : sheetMeta?.hiddenCols ?? []), [sheetMeta, structShifted]);
+
+  /** off[r] = mép dưới dòng r tính từ đầu tbody (off[0] = 0) — dòng ẩn cao 0. */
+  const rowOffsets = useMemo(() => {
+    const off = new Float64Array(dispRows + 1);
+    const hw = rowHW[active];
+    for (let r = 1; r <= dispRows; r++) {
+      off[r] = off[r - 1] + (hiddenRowSet.has(r) ? 0 : hw?.get(r) ?? baseRowPx);
+    }
+    return off;
+  }, [dispRows, rowHW, active, hiddenRowSet, baseRowPx]);
+
+  /** Tính lại cửa sổ dòng từ vị trí cuộn hiện tại. */
+  const syncWin = useCallback(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    const off = rowOffsets;
+    const n = off.length - 1;
+    // Dòng đầu tiên có mép dưới vượt y.
+    const rowAtY = (y: number) => {
+      let lo = 1, hi = n;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (off[mid] > y) hi = mid; else lo = mid + 1; }
+      return lo;
+    };
+    const s0 = rowAtY(Math.max(0, el.scrollTop - VIRT_OVERSCAN_PX));
+    const e0 = rowAtY(el.scrollTop + el.clientHeight + VIRT_OVERSCAN_PX);
+    const s = Math.max(1, Math.floor((s0 - 1) / VIRT_CHUNK) * VIRT_CHUNK + 1);
+    const e = Math.min(n, Math.ceil(e0 / VIRT_CHUNK) * VIRT_CHUNK);
+    setVwin((p) => (p.s === s && p.e === e ? p : { s, e }));
+  }, [rowOffsets]);
+
+  useLayoutEffect(() => { syncWin(); }, [syncWin]);
+  // Khung nhìn đổi cỡ (kéo cửa sổ, đóng/mở panel) → vẽ đủ dòng cho chiều cao mới.
+  const syncWinRef = useRef(syncWin);
+  syncWinRef.current = syncWin;
+  const hasFile = !!file;
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    syncWinRef.current();
+    const ro = new ResizeObserver(() => syncWinRef.current());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [hasFile]);
+
+  // Cửa sổ thực vẽ: kẹp theo dispRows (có thể vừa co lại) rồi nới ra để không
+  // cắt ngang vùng merge — ô master nằm ngoài cửa sổ thì các ô bị nó che trong
+  // cửa sổ sẽ không được vẽ, lưới lệch cột.
+  let rs = Math.min(vwin.s, dispRows);
+  let re = Math.min(Math.max(vwin.e, rs), dispRows);
+  if (!structShifted) {
+    for (const m of sheetMerges) if (m.r1 < rs && m.r2 >= rs) rs = m.r1;
+    for (const m of sheetMerges) if (m.r1 >= rs && m.r1 <= re && m.r2 > re) re = Math.min(dispRows, m.r2);
+  }
+  const padTopPx = rowOffsets[rs - 1];
+  const padBotPx = rowOffsets[dispRows] - rowOffsets[re];
+
+  // Đo chiều cao thật của một dòng mặc định (padding + font + viền) để phần
+  // đệm khớp, thanh cuộn không "trượt" khi cuộn xa.
+  useLayoutEffect(() => {
+    const trs = gridRef.current?.querySelectorAll<HTMLTableRowElement>('tbody tr[data-r]');
+    if (!trs) return;
+    for (const tr of trs) {
+      if (tr.style.height || tr.style.display) continue;
+      const h = tr.getBoundingClientRect().height;
+      if (h > 0 && Math.abs(h - baseRowPx) > 0.5) setBaseRowPx(h);
+      return;
+    }
+  }, [vwin, hasFile, active, baseRowPx]);
 
   /** Thống kê vùng chọn — Sum/Avg/Count như status bar Excel. */
   const rangeStats = useMemo(() => {
@@ -696,7 +771,6 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     setSel({ r: at, c: sel?.c ?? 1 });
     setSelRange(null);
     setEditing(null);
-    setRowLimit((l) => (at > l ? at + RENDER_STEP : l));
   }, [active, sel, pushOps, clampStep, shiftSizes, pushHistory]);
 
   const deleteRowAt = useCallback((at: number, howMany = 1) => {
@@ -1052,10 +1126,9 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       // Đi tới mép → lưới nở thêm (cảm giác lưới vô tận của Excel).
       if (r >= dispRows - 1) setPadR(r + PAD_ROWS);
       if (c >= dispCols - 1) setPadC(c + PAD_COLS);
-      if (r > rowLimit - 3) setRowLimit(r + RENDER_STEP);
       return { r, c };
     });
-  }, [dispRows, dispCols, rowLimit]);
+  }, [dispRows, dispCols]);
 
   // ── Sao chép vùng chọn (Ctrl+C / menu chuột phải) ──────────────────────────
   // Ra hai định dạng như Excel: text/plain là TSV (dán sang Excel/Sheets/Notepad
@@ -1224,7 +1297,6 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     setSelKind('cells');
     setPadR((p) => Math.max(p, r0 + nR + PAD_ROWS));
     setPadC((p) => Math.max(p, c0 + nC + PAD_COLS));
-    setRowLimit((l) => Math.max(l, r0 + nR + 5));
     flash(`Đã dán ${nR}×${nC} ô vào ${colLetter(c0 - 1)}${r0}`);
   }, [sel, active, flash, pushHistory]);
 
@@ -1328,7 +1400,6 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     setSelKind('cells');
     setPadR((p) => Math.max(p, union.r2 + PAD_ROWS));
     setPadC((p) => Math.max(p, union.c2 + PAD_COLS));
-    setRowLimit((l) => Math.max(l, union.r2 + 5));
     flash(`Đã fill ${sets.length} ô${ctrl ? ' (Ctrl: đảo lặp↔tăng)' : ''} — Ctrl+Z để hoàn tác`);
   }, [active, grid, editText, flash, pushHistory]);
 
@@ -1424,7 +1495,19 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   // Giữ ô chọn trong khung nhìn.
   useEffect(() => {
     if (!sel) return;
-    gridRef.current?.querySelector('.sheet-cell.selc')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const el = gridRef.current;
+    if (!el) return;
+    const reveal = () => el.querySelector('.sheet-cell.selc')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (el.querySelector('.sheet-cell.selc')) { reveal(); return; }
+    // Ô chọn nằm ngoài cửa sổ đang vẽ (PageDown, Ctrl+↓…) → cuộn dọc theo
+    // offset tính sẵn trước, đợi cửa sổ vẽ tới rồi mới canh chính xác.
+    const off = rowOffsets;
+    const r = Math.min(sel.r, off.length - 1);
+    const headH = el.querySelector('thead')?.getBoundingClientRect().height ?? 0;
+    if (off[r - 1] < el.scrollTop) el.scrollTop = off[r - 1];
+    else if (headH + off[r] > el.scrollTop + el.clientHeight) el.scrollTop = headH + off[r] - el.clientHeight;
+    requestAnimationFrame(() => requestAnimationFrame(reveal));
+    // rowOffsets cố ý không nằm trong deps: chỉ canh lại khi ô chọn đổi.
   }, [sel]);
 
   /** Commit từ ô đang sửa rồi di chuyển (Enter ↓ / Tab → / mũi tên). */
@@ -1457,7 +1540,6 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     input.value = REF_TAIL.test(v) ? v.replace(REF_TAIL, text) : v + text;
     const L = input.value.length;
     input.setSelectionRange(L, L);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** mousedown trên một ô: đang gõ công thức → chèn ref (GIỮ focus input);
@@ -1483,7 +1565,6 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     placeRef(input, refText(r, c));
     pointDragRef.current = { anchor: { r, c }, input };
     setPointRange({ r1: r, c1: c, r2: r, c2: c });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFormulaInput, placeRef, refText, clearRange]);
 
   /** Quét chuột (giữ phím trái) qua các ô: kéo fill handle → cập nhật preview;
@@ -1509,7 +1590,6 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       // Kéo tới mép → lưới nở thêm, như moveSel.
       if (r >= dispRows - 1) setPadR(r + PAD_ROWS);
       if (c >= dispCols - 1) setPadC(c + PAD_COLS);
-      if (r > rowLimit - 3) setRowLimit(r + RENDER_STEP);
       return;
     }
     const d = pointDragRef.current;
@@ -1526,7 +1606,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       setSelRange(normRange(anchor, { r, c }));
       setSelKind('cells');
     }
-  }, [placeRef, refText, dispRows, dispCols, rowLimit]);
+  }, [placeRef, refText, dispRows, dispCols]);
 
   useEffect(() => {
     const up = () => { pointDragRef.current = null; selDragRef.current = null; headDragRef.current = null; };
@@ -1885,6 +1965,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
         onKeyDown={onGridKeyDown}
         onCopy={onGridCopy}
         onPaste={onGridPaste}
+        onScroll={syncWin}
       >
         {/* xlsx: nền "giấy trắng" như Excel thật — màu chữ/nền của file vốn
             thiết kế cho giấy trắng, render trên dark theme sẽ chìm nghỉm. */}
@@ -1945,8 +2026,11 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
             </tr>
           </thead>
           <tbody>
-            {Array.from({ length: shownRows }, (_, ri) => {
-              const r = ri + 1;
+            {padTopPx > 0 && (
+              <tr className="sheet-vpad" aria-hidden style={{ height: padTopPx }}><td colSpan={dispCols + 2} /></tr>
+            )}
+            {Array.from({ length: re - rs + 1 }, (_, ri) => {
+              const r = rs + ri;
               const rh = rowHW[active]?.get(r) ?? null;
               return (
                 <tr
@@ -2107,18 +2191,11 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                 </tr>
               );
             })}
+            {padBotPx > 0 && (
+              <tr className="sheet-vpad" aria-hidden style={{ height: padBotPx }}><td colSpan={dispCols + 2} /></tr>
+            )}
           </tbody>
         </table>
-        {dispRows > rowLimit && (
-          <div style={{ padding: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="ghost sm" onClick={() => setRowLimit((l) => l + RENDER_STEP)}>
-              ↓ Hiện thêm {RENDER_STEP} dòng
-            </button>
-            <span className="small" style={{ color: 'var(--muted)' }}>
-              đang hiện {rowLimit.toLocaleString('vi')} / {dispRows.toLocaleString('vi')} dòng
-            </span>
-          </div>
-        )}
       </div>
 
       {/* Đang kéo mép: hiện số đo như Excel ("Độ rộng: 128 px").
