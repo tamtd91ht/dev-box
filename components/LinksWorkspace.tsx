@@ -91,6 +91,11 @@ function MetaFields({ meta, onChange, showUrl = false }: {
   );
 }
 
+/** Chữ cái đầu của tên tab — hiện thay tên khi tab bị co hẹp tới mức không đủ chỗ. */
+function tabInitial(name: string): string {
+  return (Array.from(name.trim())[0] ?? '•').toUpperCase();
+}
+
 export default function LinksWorkspace() {
   const [links, setLinks] = useState<SavedLink[]>([]);
   const [url, setUrl] = useState('');
@@ -503,7 +508,8 @@ export default function LinksWorkspace() {
                 }}>
                 <button className="lv-tab-btn" role="tab" aria-selected={t.id === activeTab}
                   onClick={() => setActiveTab(t.id)}>
-                  {t.name}
+                  <span className="lv-tab-ico" aria-hidden>{tabInitial(t.name)}</span>
+                  <span className="lv-tab-name">{t.name}</span>
                 </button>
                 <button className="lv-tab-x" title="Đóng tab"
                   onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}>✕</button>

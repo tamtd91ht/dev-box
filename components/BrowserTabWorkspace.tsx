@@ -42,6 +42,11 @@ interface Tab {
 /** Chuột phải trên một dấu trang → menu ngữ cảnh tại toạ độ con trỏ. */
 interface Ctx { x: number; y: number; bm: Bookmark }
 
+/** Chữ cái đầu của tên tab — hiện thay tên khi tab bị co hẹp tới mức không đủ chỗ. */
+function tabInitial(name: string): string {
+  return (Array.from(name.trim())[0] ?? '•').toUpperCase();
+}
+
 export default function BrowserTabWorkspace() {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [addr, setAddr] = useState('');
@@ -794,7 +799,8 @@ export default function BrowserTabWorkspace() {
               }}
             >
               <button className="lv-tab-btn" onClick={() => { setActiveId(t.id); setNewTabOpen(false); }}>
-                {t.name}{t.profile && <span className="bt-mark-prof">{t.profile}</span>}
+                <span className="lv-tab-ico" aria-hidden>{tabInitial(t.name)}</span>
+                <span className="lv-tab-name">{t.name}{t.profile && <span className="bt-mark-prof">{t.profile}</span>}</span>
               </button>
               <button className="lv-tab-x" onClick={() => closeTab(t.id)} title="Đóng tab">✕</button>
             </span>

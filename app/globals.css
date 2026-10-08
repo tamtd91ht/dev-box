@@ -6143,17 +6143,34 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
   flex: none; display: flex; align-items: center; gap: 2px; padding: 4px 6px;
   border-bottom: 1px solid var(--glass-brd); overflow-x: auto;
 }
-.lv-tab { display: inline-flex; align-items: center; border-radius: 7px; max-width: 240px; }
-.lv-tab.on { background: var(--glass-2); }
+/* Tab tự co lại khi mở nhiều (như Chrome): mỗi tab xin 200px nhưng được phép
+   thu nhỏ dần cho vừa thanh; tên cắt "…" theo bề rộng còn lại. Tới khi hẹp hơn
+   ngưỡng thì bỏ hẳn tên, chỉ còn chữ cái đầu (đủ để nhận ra, tên đầy đủ nằm ở
+   tooltip) và nút ✕ chỉ còn ở tab đang chọn. Tab đang chọn luôn giữ đủ rộng để
+   đọc. Bề rộng quyết định bằng container query nên không cần JS đo đạc. */
+.lv-tab {
+  display: inline-flex; align-items: center; border-radius: 7px;
+  flex: 0 1 200px; min-width: 34px; max-width: 240px;
+  container-type: inline-size;
+}
+.lv-tab.on { background: var(--glass-2); min-width: 104px; }
 .lv-tab-btn {
   border: none; background: transparent; cursor: pointer; color: var(--muted);
-  padding: 4px 4px 4px 10px; font-size: 12px; max-width: 200px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 4px 4px 4px 10px; font-size: 12px; flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
+}
+.lv-tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-tab-ico { display: none; font-weight: 600; text-align: center; }
+@container (max-width: 76px) {
+  .lv-tab-name { display: none; }
+  .lv-tab-ico { display: inline; }
+  .lv-tab-btn { padding: 4px 6px; text-align: center; }
+  .lv-tab:not(.on) .lv-tab-x { display: none; }
 }
 .lv-tab.on .lv-tab-btn { color: var(--text); font-weight: 600; }
 .lv-tab-x {
   border: none; background: transparent; cursor: pointer; color: var(--faint);
-  padding: 4px 8px 4px 4px; font-size: 11px;
+  padding: 4px 8px 4px 4px; font-size: 11px; flex: none;
 }
 .lv-tab-x:hover { color: var(--err, #e55); }
 .lv-body { flex: 1; min-height: 0; position: relative; }
