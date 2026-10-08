@@ -6,35 +6,35 @@
 // RabbitMQ · MongoDB · Elastic · PostgreSQL). Each workspace mounts lazily and
 // stays mounted (hidden) across tab switches so long-running state survives.
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import WebhookReceiver from '@/components/WebhookReceiver';
-import ApiExplorerWorkspace, { type IntegrationView } from '@/components/ApiExplorerWorkspace';
+import ApiExplorerWorkspaceRaw, { type IntegrationView } from '@/components/ApiExplorerWorkspace';
 import PackManager from '@/components/PackManager';
-import GitWorkspace from '@/components/GitWorkspace';
-import CodeStudio from '@/components/CodeStudio';
-import TerminalWorkspace from '@/components/TerminalWorkspace';
-import RedisWorkspace from '@/components/RedisWorkspace';
-import KafkaWorkspace from '@/components/KafkaWorkspace';
-import RabbitWorkspace from '@/components/RabbitWorkspace';
-import MongoWorkspace from '@/components/MongoWorkspace';
-import EsWorkspace from '@/components/EsWorkspace';
-import PgWorkspace from '@/components/PgWorkspace';
-import OfficeWorkspace, { type OfficeApi } from '@/components/OfficeWorkspace';
-import GoogleWorkspace from '@/components/GoogleWorkspace';
-import MailWorkspace from '@/components/MailWorkspace';
-import LinksWorkspace from '@/components/LinksWorkspace';
-import AppsWorkspace from '@/components/AppsWorkspace';
-import ToolsWorkspace, { type ToolsApi } from '@/components/ToolsWorkspace';
-import ApiWorkspace from '@/components/ApiWorkspace';
-import BrowserTabWorkspace from '@/components/BrowserTabWorkspace';
-import BrowserWorkspace from '@/components/BrowserWorkspace';
-import ZaloApiWorkspace from '@/components/ZaloApiWorkspace';
-import RemoteWorkspace from '@/components/RemoteWorkspace';
-import AutomationWorkspace from '@/components/automation/AutomationWorkspace';
+import GitWorkspaceRaw from '@/components/GitWorkspace';
+import CodeStudioRaw from '@/components/CodeStudio';
+import TerminalWorkspaceRaw from '@/components/TerminalWorkspace';
+import RedisWorkspaceRaw from '@/components/RedisWorkspace';
+import KafkaWorkspaceRaw from '@/components/KafkaWorkspace';
+import RabbitWorkspaceRaw from '@/components/RabbitWorkspace';
+import MongoWorkspaceRaw from '@/components/MongoWorkspace';
+import EsWorkspaceRaw from '@/components/EsWorkspace';
+import PgWorkspaceRaw from '@/components/PgWorkspace';
+import OfficeWorkspaceRaw, { type OfficeApi } from '@/components/OfficeWorkspace';
+import GoogleWorkspaceRaw from '@/components/GoogleWorkspace';
+import MailWorkspaceRaw from '@/components/MailWorkspace';
+import LinksWorkspaceRaw from '@/components/LinksWorkspace';
+import AppsWorkspaceRaw from '@/components/AppsWorkspace';
+import ToolsWorkspaceRaw, { type ToolsApi } from '@/components/ToolsWorkspace';
+import ApiWorkspaceRaw from '@/components/ApiWorkspace';
+import BrowserTabWorkspaceRaw from '@/components/BrowserTabWorkspace';
+import BrowserWorkspaceRaw from '@/components/BrowserWorkspace';
+import ZaloApiWorkspaceRaw from '@/components/ZaloApiWorkspace';
+import RemoteWorkspaceRaw from '@/components/RemoteWorkspace';
+import AutomationWorkspaceRaw from '@/components/automation/AutomationWorkspace';
 import AutomationHost from '@/components/AutomationHost';
 import GitAutoPullHost from '@/components/GitAutoPullHost';
 import MailWatchHost from '@/components/MailWatchHost';
-import WorkWorkspace from '@/components/WorkWorkspace';
+import WorkWorkspaceRaw from '@/components/WorkWorkspace';
 import WorkAlertHost from '@/components/WorkAlertHost';
 import ConvertHost from '@/components/ConvertHost';
 import StockTickerHost, { StockHeaderButton } from '@/components/StockTickerHost';
@@ -61,6 +61,34 @@ import {
   type LocalConfig,
   type GlobalVars,
 } from '@/lib/persist';
+
+// Mỗi workspace bọc memo: page này đổi state rất hay (đổi tab, badge chưa đọc,
+// hòm thông báo, Ultra View…) mà các pane đã mở đều đang mount (chỉ bị ẩn). Không
+// memo thì mỗi lần như vậy cả chục workspace nghìn dòng bị render lại vô ích.
+// Props truyền xuống đều ổn định (không có object/hàm tạo mới mỗi lượt) nên memo ăn.
+const WorkWorkspace = memo(WorkWorkspaceRaw);
+const GitWorkspace = memo(GitWorkspaceRaw);
+const CodeStudio = memo(CodeStudioRaw);
+const TerminalWorkspace = memo(TerminalWorkspaceRaw);
+const RedisWorkspace = memo(RedisWorkspaceRaw);
+const KafkaWorkspace = memo(KafkaWorkspaceRaw);
+const RabbitWorkspace = memo(RabbitWorkspaceRaw);
+const MongoWorkspace = memo(MongoWorkspaceRaw);
+const EsWorkspace = memo(EsWorkspaceRaw);
+const PgWorkspace = memo(PgWorkspaceRaw);
+const OfficeWorkspace = memo(OfficeWorkspaceRaw);
+const GoogleWorkspace = memo(GoogleWorkspaceRaw);
+const MailWorkspace = memo(MailWorkspaceRaw);
+const LinksWorkspace = memo(LinksWorkspaceRaw);
+const AppsWorkspace = memo(AppsWorkspaceRaw);
+const ToolsWorkspace = memo(ToolsWorkspaceRaw);
+const ApiWorkspace = memo(ApiWorkspaceRaw);
+const BrowserTabWorkspace = memo(BrowserTabWorkspaceRaw);
+const BrowserWorkspace = memo(BrowserWorkspaceRaw);
+const ZaloApiWorkspace = memo(ZaloApiWorkspaceRaw);
+const RemoteWorkspace = memo(RemoteWorkspaceRaw);
+const ApiExplorerWorkspace = memo(ApiExplorerWorkspaceRaw);
+const AutomationWorkspace = memo(AutomationWorkspaceRaw);
 
 const DEFAULT_BASE_URL = 'http://localhost:8090';
 
