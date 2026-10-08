@@ -51,6 +51,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import FolderPicker from './FolderPicker';
 import OfficeNewFileModal from './OfficeNewFileModal';
 import SheetFormatBar from './SheetFormatBar';
+import UniverPane from './sheet/UniverPane';
 import { evaluateGrid } from '@/lib/formulaEval';
 import { fillSeries, shiftFormulaRefs } from '@/lib/sheetFill';
 import { formatNumFmt } from '@/lib/numFmt';
@@ -399,6 +400,13 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
 
   const dirtyCount = ops.reduce((n, o) => n + o.length, 0);
 
+  // Giao diện Excel mới (Univer, beta) thay phần lưới tự dựng khi bật. Hai giao diện giữ
+  // thay đổi chưa lưu ở HAI nơi khác nhau (op log vs bản chụp Univer) nên mọi chỗ hỏi
+  // "có gì chưa lưu?" dùng `unsaved` — số của giao diện đang hiển thị.
+  const [univerOn, setUniverOn] = useState(false);
+  const [univerDirty, setUniverDirty] = useState(0);
+  const unsaved = univerOn ? univerDirty : dirtyCount;
+
   const resetView = useCallback(() => {
     // Mở file/đổi sheet là chọn sẵn A1 như Excel — ribbon định dạng dùng được ngay.
     setSel({ r: 1, c: 1 }); setSelRange(null); setSelKind('cells');
@@ -488,8 +496,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
 
   // Dãy tab của Office cần tên file + số thay đổi để hiện dấu ●.
   useEffect(() => {
-    onDocState?.({ path: file?.path ?? null, dirtyCount });
-  }, [file?.path, dirtyCount, onDocState]);
+    onDocState?.({ path: file?.path ?? null, dirtyCount: unsaved });
+  }, [file?.path, unsaved, onDocState]);
 
   const doCreate = useCallback(async (dir: string, name: string) => {
     setBusy(true); setErr(null);
@@ -506,9 +514,9 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   }, [applyOpen, flash]);
 
   const openCreate = useCallback(() => {
-    if (dirtyCount > 0 && !window.confirm(`Đang có ${dirtyCount} thay đổi chưa lưu — tạo file mới sẽ mất hết. Tiếp tục?`)) return;
+    if (unsaved > 0 && !window.confirm(`Đang có ${unsaved} thay đổi chưa lưu — tạo file mới sẽ mất hết. Tiếp tục?`)) return;
     setErr(null); setCreateOpen(true);
-  }, [dirtyCount]);
+  }, [unsaved]);
 
   const switchSheet = useCallback((i: number) => {
     setActive(i);
@@ -517,10 +525,11 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
 
   const reload = useCallback(() => {
     if (!file) return;
-    if (dirtyCount > 0 && !window.confirm(`Đang có ${dirtyCount} thay đổi chưa lưu — tải lại sẽ mất hết. Tiếp tục?`)) return;
+    if (unsaved > 0 && !window.confirm(`Đang có ${unsaved} thay đổi chưa lưu — tải lại sẽ mất hết. Tiếp tục?`)) return;
     setExtChanged(false);
+    setUniverDirty(0);
     void openPath(file.path);
-  }, [file, dirtyCount, openPath]);
+  }, [file, unsaved, openPath]);
 
   // ── Mở bằng Excel (ứng dụng ngoài) + tự nạp lại khi file bị sửa bên ngoài ──
   //
@@ -531,13 +540,28 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   // tự ghi đè — hiện thanh báo để người dùng chọn. Dò bằng sự kiện focus chứ
   // không bằng timer: không tốn một nhịp poll nào lúc đang làm việc.
   const [extChanged, setExtChanged] = useState(false);
-  const live = useRef({ file, dirtyCount, editing, busy: false, active });
-  live.current = { file, dirtyCount, editing, busy, active };
+
+  // Giao diện Excel mới (Univer, beta) thay phần lưới tự dựng khi bật. Nhớ lựa chọn
+  // qua lần mở sau; đọc SAU mount (đọc lúc render là hydration mismatch).
+  useEffect(() => {
+    try { if (localStorage.getItem('sheet.engine') === 'univer') setUniverOn(true); } catch { /* bỏ qua */ }
+  }, []);
+  const toggleUniver = useCallback((on: boolean) => {
+    // Hai giao diện không chia sẻ thay đổi chưa lưu — chuyển qua lại là bỏ phần đang dở.
+    if (unsaved > 0 && !window.confirm(
+      `Đang có ${unsaved} thay đổi chưa lưu ở ${on ? 'lưới cũ' : 'giao diện mới'} — chuyển sang ${on ? 'giao diện mới' : 'lưới cũ'} sẽ mất chúng (hai bên không dùng chung). Vẫn chuyển?`,
+    )) return;
+    setUniverDirty(0);
+    setUniverOn(on);
+    try { localStorage.setItem('sheet.engine', on ? 'univer' : 'classic'); } catch { /* bỏ qua */ }
+  }, [unsaved]);
+  const live = useRef({ file, dirtyCount: unsaved, editing, busy: false, active });
+  live.current = { file, dirtyCount: unsaved, editing, busy, active };
 
   const openExternally = useCallback(async () => {
     if (!file) return;
-    if (dirtyCount > 0 && !window.confirm(
-      `Có ${dirtyCount} thay đổi chưa lưu trong app — Excel sẽ mở bản trên đĩa, KHÔNG có các thay đổi này.\n\nBấm OK để vẫn mở (nên Lưu trước), Hủy để quay lại.`,
+    if (unsaved > 0 && !window.confirm(
+      `Có ${unsaved} thay đổi chưa lưu trong app — Excel sẽ mở bản trên đĩa, KHÔNG có các thay đổi này.\n\nBấm OK để vẫn mở (nên Lưu trước), Hủy để quay lại.`,
     )) return;
     try {
       await openSheetExternal(file.path);
@@ -545,7 +569,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     } catch (e) {
       setErr((e as Error).message);
     }
-  }, [file, dirtyCount, flash]);
+  }, [file, unsaved, flash]);
 
   useEffect(() => {
     if (!file?.path) return;
@@ -1854,6 +1878,40 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     if (kind === 'col') selectWholeCol(d.anchor, idx); else selectWholeRow(d.anchor, idx);
   };
 
+  if (univerOn) {
+    return (
+      <div className="panel sheet-panel">
+        <div className="sheet-toolbar">
+          <span className="picker-cwd small" title={file.path}>{file.path}</span>
+          <span className="badge">{file.kind === 'csv' ? 'CSV' : 'XLSX'}</span>
+          <span className="badge">{fmtBytes(file.sizeBytes)}</span>
+          <button className="ghost sm" onClick={() => toggleUniver(false)} title="Quay về lưới cũ">← Lưới cũ</button>
+          <button className="ghost sm" onClick={() => void openExternally()} title="Mở bằng ứng dụng mặc định (Excel / WPS / LibreOffice…)">↗ Mở bằng Excel</button>
+          <button className="ghost sm" onClick={() => setPickerOpen(true)} title="Mở file khác">📂 File khác</button>
+        </div>
+        {extChanged && (
+          <div className="sheet-extbar" role="alert">
+            File đã bị chương trình khác sửa trên đĩa{univerDirty > 0 ? `, trong khi bạn có ${univerDirty} thay đổi chưa lưu — lưu từ app sẽ bị từ chối cho tới khi tải lại` : ''}.
+            <button className="sm" onClick={reload}>↻ Tải lại bản mới</button>
+          </div>
+        )}
+        {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '6px 0' }}>{notice}</div>}
+        {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
+        <UniverPane
+          path={file.path}
+          version={file.mtimeMs}
+          allowWrite={allowWrite}
+          onDirty={setUniverDirty}
+          onSaved={(r) => {
+            // Cập nhật mtime/dung lượng để lần focus kế không tưởng file bị sửa ngoài app.
+            setFile((f) => (f ? { ...f, mtimeMs: r.mtimeMs, sizeBytes: r.sizeBytes } : f));
+            setExtChanged(false);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     /* data-hist: undo/redo stack nằm trong ref (không kích hoạt render), nên
        histTick là thứ ép render lại để hai nút Hoàn tác/Làm lại bật-tắt đúng. */
@@ -1884,6 +1942,10 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
         <button className="ghost sm" onClick={() => void openExternally()} disabled={busy}
           title="Mở file bằng ứng dụng mặc định (Excel / WPS / LibreOffice…) để làm việc nặng. Sửa xong Lưu bên đó, quay lại đây app tự nạp lại.">
           ↗ Mở bằng Excel
+        </button>
+        <button className="ghost sm" onClick={() => toggleUniver(true)} disabled={busy}
+          title="Thử giao diện bảng tính kiểu Excel (beta): freeze, lọc, sắp xếp, Ctrl+F, file lớn, sửa và lưu.">
+          🧪 Giao diện Excel mới
         </button>
         <button className="ghost sm" onClick={() => setPickerOpen(true)} disabled={busy} title="Mở file khác">📂 File khác</button>
         <button
@@ -2403,7 +2465,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           title="Chọn file .xlsx / .csv"
           fileExts={['xlsx', 'csv']}
           onPickFile={(p) => {
-            if (dirtyCount > 0 && !window.confirm(`Đang có ${dirtyCount} thay đổi chưa lưu — mở file khác sẽ mất hết. Tiếp tục?`)) return;
+            if (unsaved > 0 && !window.confirm(`Đang có ${unsaved} thay đổi chưa lưu — mở file khác sẽ mất hết. Tiếp tục?`)) return;
             void openPath(p);
           }}
           onPick={() => {}}
