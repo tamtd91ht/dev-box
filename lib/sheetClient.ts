@@ -371,14 +371,14 @@ function decodeCsvBuffer(buf: Buffer): { text: string; hasBom: boolean; encoding
 
 function parseCsv(buf: Buffer): CsvDoc {
   const { text, hasBom, encoding } = decodeCsvBuffer(buf);
-  const parsed = Papa.parse<string[]>(text, { delimiter: '' /* auto-detect */ });
-  const grid = parsed.data;
-  // A trailing newline makes Papa emit one final [''] row — an artifact, not data.
   const endsWithNewline = /\r?\n$/.test(text);
-  if (endsWithNewline && grid.length > 0) {
-    const last = grid[grid.length - 1];
-    if (last.length === 0 || (last.length === 1 && last[0] === '')) grid.pop();
-  }
+  // Bỏ MỘT xuống dòng cuối TRƯỚC khi parse (không phải sau): dòng rỗng cuối làm Papa
+  // tính số trường trung bình dưới ngưỡng dò (1.99) nên file nhỏ dưới ~100 dòng dùng
+  // dấu ';' (kiểu xuất của Excel tiếng Việt) bị dò nhầm thành ',' — rồi lưu lại là đổi
+  // luôn dấu phân cách của file. Dòng rỗng cuối vốn chỉ là hệ quả của xuống dòng cuối.
+  const body = endsWithNewline ? text.replace(/\r?\n$/, '') : text;
+  const parsed = Papa.parse<string[]>(body, { delimiter: '' /* auto-detect */ });
+  const grid = body === '' ? [] : parsed.data;
   const newline: '\r\n' | '\n' = parsed.meta.linebreak === '\r\n' ? '\r\n' : '\n';
   return { grid, delimiter: parsed.meta.delimiter || ',', newline, hasBom, encoding, endsWithNewline };
 }
