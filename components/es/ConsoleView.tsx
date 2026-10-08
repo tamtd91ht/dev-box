@@ -61,6 +61,7 @@ import { useConsoleSplit } from '@/lib/useConsoleSplit';
 import { defineEsThemes, useEsTheme, ES_MONO } from './esMonaco';
 import ConsoleGripBar from './ConsoleGrip';
 import ConfirmRunModal from './ConfirmRunModal';
+import ResultBox, { ExpandButton, useResultExpand } from '../ResultBox';
 
 const LANG = 'es-console';
 
@@ -269,6 +270,7 @@ export interface ConsoleViewProps {
 }
 
 export default function ConsoleView({ connection }: ConsoleViewProps) {
+  const rx = useResultExpand();
   const theme = useEsTheme();
   const editorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null);
   const decorationsRef = useRef<string[]>([]);
@@ -535,9 +537,10 @@ export default function ConsoleView({ connection }: ConsoleViewProps) {
         </div>
       </div>
 
-      <div className="es-con-pane">
+      <div className={`es-con-pane${rx.expanded ? ' res-box res-max' : ''}`}>
         <div className="es-con-bar">
           <strong className="es-con-restitle">Kết quả</strong>
+          <ExpandButton expanded={rx.expanded} onToggle={rx.toggle} />
           {result && (
             <>
               <span className="badge" style={{ color: statusTone }}>

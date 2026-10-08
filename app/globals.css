@@ -9642,3 +9642,20 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .mongo-coll-row:hover .mongo-coll-newtab, .pg-coll-row:hover .pg-coll-newtab { opacity: 1; }
 .mongo-coll-newtab:hover, .pg-coll-newtab:hover { color: var(--text); background: var(--glass-bg); }
+
+/* ── Khung kết quả có nút mở rộng (components/ResultBox.tsx) ───────────────
+   Thu lại: display:contents → không tạo hộp, bố cục y như chưa bọc.
+   Mở rộng: phủ gần kín cửa sổ, dưới toast/modal (9000+) nhưng trên mọi pane. */
+.res-box { display: contents; }
+.res-box.res-max {
+  position: fixed; inset: 10px; z-index: 8000;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--glass-brd-hover); border-radius: 14px;
+  box-shadow: 0 24px 70px rgb(0 0 0 / .55);
+}
+/* Danh sách kết quả ăn hết chiều cao còn lại thay vì trần 56–58vh. */
+.res-max .mongo-results, .res-max .es-results, .res-max .pg-results,
+.res-max .mongo-qf-rows, .res-max .es-qf-rows, .res-max .pg-qf-rows {
+  flex: 1 1 0; min-height: 0; max-height: none;
+}

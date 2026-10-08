@@ -42,6 +42,7 @@ import {
 import ExportModal from './ExportModal';
 import JsonViewer from './JsonViewer';
 import TargetPicker from '../TargetPicker';
+import ResultBox, { ExpandButton, FilterBar, FindButton, Hl, useResultExpand, useResultFilter } from '../ResultBox';
 
 export interface QuickFindViewProps {
   connections: PublicEsConnection[];
@@ -133,6 +134,8 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<WireDoc | null>(null);
+  const rx = useResultExpand();
+  const flt = useResultFilter(result?.docs, (d) => d.json);
 
   const [lastQuery, setLastQuery] = useState('');
   /** Sort của LẦN CHẠY vừa rồi — export phải xuất đúng thứ tự đang nhìn, nên
@@ -550,6 +553,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
             </>
           )}
 
+          <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
           <div className="status-line" style={{ gap: 8 }}>
             <button className="sm" disabled={busy || enabledCount === 0} onClick={() => void doRun()}>
               {busy ? <span className="spinner" aria-hidden /> : '▶'} Chạy ({enabledCount} điều kiện, AND)
@@ -567,6 +571,8 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                   title="Xuất toàn bộ kết quả khớp query ra file Excel có định dạng"
                   onClick={() => setExportOpen(true)}
                 >📄 Xuất báo cáo</button>
+                <ExpandButton expanded={rx.expanded} onToggle={rx.toggle} />
+                <FindButton flt={flt} />
               </>
             )}
           </div>
@@ -575,9 +581,12 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
 
           {result && (
+            <>
+            <FilterBar flt={flt} />
             <div className={`es-qf-rows${panelOpen ? '' : ' expanded'}`}>
               {result.docs.length === 0 && <p className="empty">Không có document nào khớp.</p>}
-              {result.docs.map((d, i) => (
+              {flt.needle && flt.rows.length === 0 && result.docs.length > 0 && <p className="empty">Không có kết quả nào khớp ô tìm.</p>}
+              {flt.rows.map(({ item: d, index: i }) => (
                 <button
                   key={`${result.from}-${i}`}
                   className="es-qf-row"
@@ -585,11 +594,13 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                   onClick={() => setSelectedDoc(d)}
                 >
                   <span className="es-doc-idx">#{result.from + i + 1}</span>
-                  <span className="es-qf-row-text">{d.json}</span>
+                  <span className="es-qf-row-text"><Hl text={d.json} needle={flt.needle} /></span>
                 </button>
               ))}
             </div>
+            </>
           )}
+          </ResultBox>
         </div>
       )}
 

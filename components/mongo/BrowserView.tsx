@@ -53,6 +53,7 @@ import SessionHistory from '../SessionHistory';
 import { recordSession, short, type MongoSession } from '@/lib/sessionHistory';
 import QueryTabBar from '../QueryTabBar';
 import { useQueryTabs } from '@/lib/queryTabs';
+import ResultBox, { ExpandButton, useResultExpand } from '../ResultBox';
 
 export interface BrowserViewProps {
   connectionId: string;
@@ -237,6 +238,7 @@ function BrowserViewInner({
   // ── Result view: JSON tree vs raw text, plus the Ctrl+F bar ────────────────
   const [treeView, setTreeView] = useState(true);
   const [findOpen, setFindOpen] = useState(false);
+  const rx = useResultExpand();
   const [findQuery, setFindQuery] = useState('');
   const [findIndex, setFindIndex] = useState(0);
 
@@ -869,7 +871,7 @@ function BrowserViewInner({
 
                 {/* Results */}
                 {docs && (
-                  <>
+                  <ResultBox expanded={rx.expanded}>
                     <div className="status-line" style={{ justifyContent: 'space-between' }}>
                       <span className="badge">
                         {queryMode === 'aggregate'
@@ -886,6 +888,7 @@ function BrowserViewInner({
                           title="Tìm trong kết quả (Ctrl+F)"
                           onClick={() => { setTreeView(true); setFindOpen(true); }}
                         >🔍</button>
+                        <ExpandButton expanded={rx.expanded} onToggle={rx.toggle} />
                         {queryMode === 'find' && result && (
                           <>
                             <button
@@ -934,7 +937,7 @@ function BrowserViewInner({
                         />
                       ))}
                     </div>
-                  </>
+                  </ResultBox>
                 )}
               </>
             )}

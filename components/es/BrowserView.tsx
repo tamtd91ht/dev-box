@@ -38,6 +38,7 @@ import Splitter from '../Splitter';
 
 import SessionHistory from '../SessionHistory';
 import { recordSession, short, type EsSession } from '@/lib/sessionHistory';
+import ResultBox, { ExpandButton, FilterBar, FindButton, Hl, useResultExpand, useResultFilter } from '../ResultBox';
 
 export interface BrowserViewProps {
   connectionId: string;
@@ -253,6 +254,8 @@ function BrowserSession({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const rx = useResultExpand();
+  const flt = useResultFilter(result?.docs, (d) => d.json);
   const [notice, setNotice] = useState<string | null>(null);
 
   /**
@@ -434,12 +437,14 @@ function BrowserSession({
                 </div>
 
                 {result && (
-                  <>
+                  <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
                     <div className="status-line" style={{ justifyContent: 'space-between' }}>
                       <span className="badge">
                         {fmtCount(result.total)}{result.totalRelation === 'gte' ? '+' : ''} khớp · hiển thị {result.docs.length} · from {result.from} · {result.tookMs}ms
                       </span>
                       <div style={{ display: 'flex', gap: 6 }}>
+                        <FindButton flt={flt} />
+                        <ExpandButton expanded={rx.expanded} onToggle={rx.toggle} />
                         {/* Xuất .xlsx — chỉ có nghĩa khi truy vấn đang trả về
                             document; size=0 (chỉ lấy aggs) thì không có gì để xuất. */}
                         <button
@@ -456,6 +461,7 @@ function BrowserSession({
                           onClick={() => void runSearch({ from: result.from + result.size })}>Next →</button>
                       </div>
                     </div>
+                    <FilterBar flt={flt} />
                     <div className="es-results">
                       {result.aggs && (
                         <>
@@ -468,7 +474,8 @@ function BrowserSession({
                       {result.docs.length === 0 && (
                         <p className="empty">{result.size === 0 ? 'size = 0 — chỉ lấy aggregations, không lấy document.' : 'Không có document nào khớp.'}</p>
                       )}
-                      {result.docs.map((d, i) => (
+                      {flt.needle && flt.rows.length === 0 && result.docs.length > 0 && <p className="empty">Không có document nào khớp ô tìm.</p>}
+                      {flt.rows.map(({ item: d, index: i }) => (
                         <DocCard
                           key={`${result.from}-${i}`}
                           json={d.json}
@@ -480,7 +487,7 @@ function BrowserSession({
                         />
                       ))}
                     </div>
-                  </>
+                  </ResultBox>
                 )}
               </>
             )}

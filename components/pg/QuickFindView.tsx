@@ -32,6 +32,7 @@ import {
   type PgQuickFindField,
 } from '@/lib/pgQuickFinds';
 import ExportModal from './ExportModal';
+import ResultBox, { ExpandButton, FilterBar, FindButton, Hl, useResultExpand, useResultFilter } from '../ResultBox';
 
 export interface QuickFindViewProps {
   connections: PublicPgConnection[];
@@ -64,6 +65,8 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedRow, setSelectedRow] = useState<WireRow | null>(null);
+  const rx = useResultExpand();
+  const flt = useResultFilter(result?.rows, (r) => r.json);
 
   const [lastEntries, setLastEntries] = useState<PgQuickEntry[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
@@ -301,6 +304,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
             </>
           )}
 
+          <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
           <div className="status-line" style={{ gap: 8 }}>
             <button className="sm" disabled={busy || enabledCount === 0} onClick={() => void doRun()}>
               {busy ? <span className="spinner" aria-hidden /> : '▶'} Chạy ({enabledCount} điều kiện, AND)
@@ -316,6 +320,8 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                   title="Xuất toàn bộ kết quả khớp query ra file Excel có định dạng"
                   onClick={() => setExportOpen(true)}
                 >📄 Xuất báo cáo</button>
+                <ExpandButton expanded={rx.expanded} onToggle={rx.toggle} />
+                <FindButton flt={flt} />
               </>
             )}
           </div>
@@ -324,9 +330,12 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
 
           {result && (
+            <>
+            <FilterBar flt={flt} />
             <div className={`pg-qf-rows${panelOpen ? '' : ' expanded'}`}>
               {result.rowCount === 0 && <p className="empty">Không có dòng nào khớp.</p>}
-              {result.rows.map((r, i) => (
+              {flt.needle && flt.rows.length === 0 && result.rowCount > 0 && <p className="empty">Không có kết quả nào khớp ô tìm.</p>}
+              {flt.rows.map(({ item: r, index: i }) => (
                 <button
                   key={`${result.offset}-${i}`}
                   className="pg-qf-row"
@@ -334,11 +343,13 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                   onClick={() => setSelectedRow(r)}
                 >
                   <span className="pg-doc-idx">#{result.offset + i + 1}</span>
-                  <span className="pg-qf-row-text">{r.json}</span>
+                  <span className="pg-qf-row-text"><Hl text={r.json} needle={flt.needle} /></span>
                 </button>
               ))}
             </div>
+            </>
           )}
+          </ResultBox>
         </div>
       )}
 

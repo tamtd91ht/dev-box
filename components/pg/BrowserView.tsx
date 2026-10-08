@@ -38,6 +38,7 @@ import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
 import QueryTabBar from '../QueryTabBar';
 import { useQueryTabs } from '@/lib/queryTabs';
+import ResultBox, { ExpandButton, FilterBar, FindButton, Hl, useResultExpand, useResultFilter } from '../ResultBox';
 
 export interface BrowserViewProps {
   connectionId: string;
@@ -164,6 +165,8 @@ function BrowserViewInner({
   }, [liveIds]);
 
   const [selectedRow, setSelectedRow] = useState<WireRow | null>(null);
+  const rx = useResultExpand();
+  const flt = useResultFilter(result?.rows, (r) => r.json);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -455,18 +458,25 @@ function BrowserViewInner({
                           : 'Connection này đang read-only'}
                       onClick={() => setUpdateOpen(true)}
                     >✎ Update…{!writeArmed && ' 🔒'}</button>
-                    {result && (
-                      <span className="badge">
-                        {result.rowCount} dòng{result.capped ? ' (chạm trần 500)' : ''} · {result.tookMs}ms
-                      </span>
-                    )}
                   </div>
                 </div>
 
                 {result && (
+                  <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
+                  <div className="status-line" style={{ justifyContent: 'space-between' }}>
+                    <span className="badge">
+                      {result.rowCount} dòng{result.capped ? ' (chạm trần 500)' : ''} · {result.tookMs}ms
+                    </span>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <FindButton flt={flt} />
+                      <ExpandButton expanded={rx.expanded} onToggle={rx.toggle} />
+                    </div>
+                  </div>
+                  <FilterBar flt={flt} />
                   <div className="pg-results">
                     {result.rowCount === 0 && <p className="empty">Không có dòng nào.</p>}
-                    {result.rowCount > 0 && (
+                    {flt.needle && flt.rows.length === 0 && result.rowCount > 0 && <p className="empty">Không có dòng nào khớp ô tìm.</p>}
+                    {flt.rows.length > 0 && (
                       <table className="pg-table pg-grid">
                         <thead>
                           <tr>
@@ -475,14 +485,14 @@ function BrowserViewInner({
                           </tr>
                         </thead>
                         <tbody>
-                          {result.rows.map((r, i) => {
+                          {flt.rows.map(({ item: r, index: i }) => {
                             const row = parsedRows[i];
                             return (
                               <tr key={i} onClick={() => setSelectedRow(r)} title="Bấm để xem JSON đầy đủ" style={{ cursor: 'pointer' }}>
                                 <td className="pg-rownum">{i + 1}</td>
                                 {result.columns.map((c) => (
                                   <td key={c} style={{ textAlign: 'left' }}>
-                                    <span className="pg-cell">{cellText(row?.[c])}</span>
+                                    <span className="pg-cell"><Hl text={cellText(row?.[c])} needle={flt.needle} /></span>
                                   </td>
                                 ))}
                               </tr>
@@ -492,6 +502,7 @@ function BrowserViewInner({
                       </table>
                     )}
                   </div>
+                  </ResultBox>
                 )}
               </>
             )}
