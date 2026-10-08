@@ -688,7 +688,7 @@ export default function ApiWorkspace() {
         {/* ── Builder + response ── */}
         <div className="api-main">
           {/* Thanh tab request đang mở — chuột giữa để đóng, như trình duyệt. */}
-          <div className="api-wintabs">
+          <div className="api-wintabs g-shrink">
             {sessions.map((s) => (
               <div key={s.key} className={`api-wintab${s.key === cur.key ? ' on' : ''}`}
                 onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeSession(s.key); } }}>
