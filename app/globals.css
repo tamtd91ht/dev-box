@@ -9896,3 +9896,6 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .univer-host { position: absolute; inset: 0; }
 .univer-state { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
 .univer-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+
+/* Word: ảnh trong đoạn (hiển thị) */
+.word-img { display: block; max-width: 100%; height: auto; margin: 4px auto; }

@@ -42,11 +42,11 @@ import {
 import {
   R_NS, W, type XDoc, type XEl,
   appendChild, attr, elementChildren, findChild, findChildren, insertBefore, insertOrdered,
-  local, maker, numAttr, removeChild, setAttr, textOf, val,
+  local, maker, numAttr, removeChild, setAttr, textOf, val, walk,
 } from './wordXml';
 import {
   collectBlockEls, lockReason, readBlocks, readDocx, readHeadersFooters,
-  readNumbering, readPageSetup, type ParsedDocx,
+  readImages, readNumbering, readPageSetup, type ParsedDocx,
 } from './wordRead';
 import {
   NumIdPool, buildPageBreak, buildParaProps, buildTable, cellAt,
@@ -56,7 +56,7 @@ import {
 } from './wordWrite';
 import {
   EMPTY_NUMBERING_XML, FOOTER_CT, FOOTER_REL, HEADER_CT, HEADER_REL,
-  emptyHeaderFooterXml, newDocxParts,
+  emptyHeaderFooterXml, newDocxParts, xmlEscape,
 } from './wordDocxParts';
 
 export { OFFICE_ENABLED as WORD_ENABLED, OFFICE_ALLOW_WRITE as WORD_ALLOW_WRITE } from './officeFlags';
@@ -98,7 +98,7 @@ export async function openDocx(rawPath: unknown): Promise<WordOpenResult> {
   const nums = await readNumbering(parsed.zip);
 
   const els = collectBlockEls(parsed.body);
-  const blocks = readBlocks(els.slice(0, MAX_BLOCKS), nums);
+  const blocks = readBlocks(els.slice(0, MAX_BLOCKS), nums, await readImages(parsed.zip));
   const { headers, footers } = await readHeadersFooters(parsed.zip, parsed.body, nums);
 
   return {
@@ -330,6 +330,23 @@ function sanitizeOps(raw: unknown): WordOp[] {
           jc: op.jc === 'l' || op.jc === 'c' || op.jc === 'r' ? op.jc : 'c',
           pageNum: op.pageNum ? 1 : 0,
         };
+      case 'imgInsert': {
+        const mime = String(op.mime ?? '');
+        if (!IMG_EXT[mime]) throw new Error('Chỉ chèn được ảnh PNG, JPEG, GIF hoặc BMP.');
+        const b64 = String(op.b64 ?? '');
+        if (!b64) throw new Error('Thiếu nội dung ảnh.');
+        if (b64.length > MAX_IMG_B64) throw new Error(`Ảnh quá lớn (tối đa ${Math.round(MAX_IMG_BYTES / 1048576)} MB).`);
+        const dim = (v: unknown, what: string): number => {
+          const x = Number(v);
+          if (!Number.isFinite(x) || x < 1 || x > 3000) throw new Error(`${what} ảnh không hợp lệ.`);
+          return Math.round(x * 100) / 100;
+        };
+        return {
+          op: 'imgInsert', i: idx(op.i, 'chỉ số đoạn'), name: str(op.name, 120) || 'Hình ảnh', mime, b64,
+          w: dim(op.w, 'Chiều rộng'), h: dim(op.h, 'Chiều cao'),
+          jc: op.jc === 'l' || op.jc === 'c' || op.jc === 'r' ? op.jc : 'c',
+        };
+      }
       case 'pageSetup': {
         const n = (v: unknown, what: string, min: number, max: number): number => {
           const x = Number(v);
@@ -529,6 +546,103 @@ async function applyHeaderFooter(
 }
 
 // ── replaceAll ───────────────────────────────────────────────────────────────
+
+// ── Chèn ảnh ─────────────────────────────────────────────────────────────────
+
+const IMG_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/gif': 'gif', 'image/bmp': 'bmp' };
+const MAX_IMG_BYTES = 8 * 1024 * 1024;
+const MAX_IMG_B64 = Math.ceil((MAX_IMG_BYTES * 4) / 3) + 8;
+const IMG_CT: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp' };
+const IMG_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
+
+/** Chữ ký đầu file khớp mime khai báo? (chặn nhét file lạ vào word/media dưới tên ảnh) */
+function hasImageMagic(mime: string, b: Buffer): boolean {
+  switch (mime) {
+    case 'image/png': return b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+    case 'image/jpeg': return b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+    case 'image/gif': return b.length > 6 && b.subarray(0, 4).toString('latin1') === 'GIF8';
+    case 'image/bmp': return b.length > 2 && b[0] === 0x42 && b[1] === 0x4d;
+    default: return false;
+  }
+}
+
+/** id lớn nhất đang dùng của wp:docPr + 1 — Word đòi id duy nhất trong tài liệu. */
+function nextDocPrId(body: XEl): number {
+  let max = 0;
+  walk(body, (e) => {
+    if (local(e) === 'docPr') max = Math.max(max, numAttr(e, 'id') ?? 0);
+    return undefined;
+  });
+  return max + 1;
+}
+
+/**
+ * Ghi ảnh vào gói: word/media/<tên>, Default content type cho đuôi file (nếu chưa có) và
+ * relationship trong document.xml.rels. Trả về rId để gắn vào a:blip.
+ */
+async function registerImagePart(zip: JSZip, bytes: Buffer, ext: string): Promise<string> {
+  let k = 1;
+  while (zip.file(`word/media/devbox_image${k}.${ext}`)) k++;
+  const fileName = `devbox_image${k}.${ext}`;
+  zip.file(`word/media/${fileName}`, bytes);
+
+  const ctEntry = zip.file('[Content_Types].xml');
+  if (ctEntry) {
+    const ctDoc = new DOMParser().parseFromString(await ctEntry.async('string'), 'text/xml');
+    const ctRoot = ctDoc.documentElement as unknown as XEl;
+    const has = elementChildren(ctRoot).some((e) => local(e) === 'Default' && (attr(e, 'Extension') ?? '').toLowerCase() === ext);
+    if (!has) {
+      const d = ctDoc.createElementNS('http://schemas.openxmlformats.org/package/2006/content-types', 'Default') as unknown as XEl;
+      const set = (n: string, v: string) => (d as unknown as { setAttribute(a: string, b: string): void }).setAttribute(n, v);
+      set('Extension', ext);
+      set('ContentType', IMG_CT[ext]);
+      // Default phải đứng TRƯỚC các Override cho gọn (schema cho phép lẫn, nhưng thói quen của Word).
+      const firstOverride = elementChildren(ctRoot).find((e) => local(e) === 'Override');
+      insertBefore(ctRoot, d, firstOverride);
+      zip.file('[Content_Types].xml', serialize(ctDoc));
+    }
+  }
+
+  const relsPath = 'word/_rels/document.xml.rels';
+  const relsEntry = zip.file(relsPath);
+  const relsXml = relsEntry
+    ? await relsEntry.async('string')
+    : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>';
+  const relsDoc = new DOMParser().parseFromString(relsXml, 'text/xml');
+  const relsRoot = relsDoc.documentElement as unknown as XEl;
+  const rId = nextRelId(relsRoot);
+  const rel = relsDoc.createElementNS('http://schemas.openxmlformats.org/package/2006/relationships', 'Relationship') as unknown as XEl;
+  const set = (n: string, v: string) => (rel as unknown as { setAttribute(a: string, b: string): void }).setAttribute(n, v);
+  set('Id', rId);
+  set('Type', IMG_REL);
+  set('Target', `media/${fileName}`);
+  appendChild(relsRoot, rel);
+  zip.file(relsPath, serialize(relsDoc));
+  return rId;
+}
+
+/** Đoạn chứa MỘT ảnh inline — đúng khuôn tối thiểu mà Word tự sinh khi chèn ảnh. */
+function buildImageParagraph(doc: XDoc, rId: string, op: Extract<WordOp, { op: 'imgInsert' }>, docPrId: number): XEl {
+  const cx = Math.round(op.w * 12700);
+  const cy = Math.round(op.h * 12700);
+  const name = xmlEscape(op.name);
+  const jc = { l: 'left', c: 'center', r: 'right' }[op.jc ?? 'c'];
+  // Mọi namespace khai ngay trên phần tử gốc của mảnh: không phụ thuộc document.xml gốc
+  // đã khai wp/a/pic hay chưa.
+  const xml = `<w:p xmlns:w="${W}" xmlns:r="${R_NS}" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">`
+    + `<w:pPr><w:jc w:val="${jc}"/></w:pPr>`
+    + `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">`
+    + `<wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>`
+    + `<wp:docPr id="${docPrId}" name="${name}"/>`
+    + `<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>`
+    + `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic>`
+    + `<pic:nvPicPr><pic:cNvPr id="0" name="${name}"/><pic:cNvPicPr/></pic:nvPicPr>`
+    + `<pic:blipFill><a:blip r:embed="${rId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>`
+    + `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>`
+    + `</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+  const frag = new DOMParser().parseFromString(xml, 'text/xml');
+  return (doc as unknown as { importNode(n: unknown, deep: boolean): unknown }).importNode(frag.documentElement, true) as XEl;
+}
 
 /** Thứ tự con của w:sectPr theo schema — Word từ chối file nếu sai thứ tự. */
 const SECT_ORDER = [
@@ -858,6 +972,16 @@ export async function saveDocx(input: SaveDocxInput): Promise<WordSaveResult> {
       case 'hfSet':
         await applyHeaderFooter(parsed, op.part, op.text, op.jc ?? 'c', op.pageNum === 1);
         break;
+      case 'imgInsert': {
+        const buf = Buffer.from(op.b64, 'base64');
+        if (!hasImageMagic(op.mime, buf)) throw new Error(`Nội dung không đúng định dạng ${op.mime} — từ chối chèn.`);
+        if (buf.length > MAX_IMG_BYTES) throw new Error(`Ảnh quá lớn (tối đa ${Math.round(MAX_IMG_BYTES / 1048576)} MB).`);
+        const rId = await registerImagePart(zip, buf, IMG_EXT[op.mime]);
+        const p = buildImageParagraph(doc, rId, op, nextDocPrId(body));
+        insertBefore(body, p, blocks[op.i] ?? tailAnchor());
+        blocks.splice(op.i, 0, p);
+        break;
+      }
       case 'pageSetup':
         applyPageSetup(doc, body, op);
         break;

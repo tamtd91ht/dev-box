@@ -293,7 +293,9 @@ export function buildPrintHtml(
     const style = (b.fmt?.style ?? '').toLowerCase();
     const tag = HEADING_TAG[style] ?? 'p';
     const css = paraCss(b.fmt as never);
-    const inner = b.runs.map(runHtml).join('') || '&nbsp;';
+    const imgHtml = (b.imgs ?? []).map((im) =>
+      `<img src="${im.src}" alt="" style="${im.w ? `width:${im.w}pt;` : ''}max-width:100%;height:auto">`).join('');
+    const inner = imgHtml + (b.runs.map(runHtml).join('') || (imgHtml ? '' : '&nbsp;'));
 
     if (b.fmt?.list) {
       const marker = b.fmt.list === 'bullet'

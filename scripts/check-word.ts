@@ -90,6 +90,58 @@ async function main() {
     );
   });
 
+  // ── Ảnh ───────────────────────────────────────────────────────────────────
+  // PNG 1×1 hợp lệ.
+  const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const img = (o: Record<string, unknown> = {}) => ({ op: 'imgInsert', i: 0, name: 'Logo công ty', mime: 'image/png', b64: PNG_B64, w: 120, h: 60, ...o });
+
+  await ok('chèn ảnh: đọc lại thấy ảnh (data URL, kích thước pt), đoạn bị khóa, file media + rel + content type đủ', async () => {
+    const st = await statDocx(f);
+    await saveDocx({ path: f, mtimeMs: st.mtimeMs, ops: [img()] });
+    const re = await openDocx(f);
+    const b = re.blocks[0] as { kind: string; imgs?: { src: string; w: number; h: number }[]; locked?: boolean };
+    assert.equal(b.kind, 'p');
+    assert.ok(b.imgs && b.imgs.length === 1);
+    assert.ok(b.imgs![0].src.startsWith('data:image/png;base64,'));
+    assert.ok(Math.abs(b.imgs![0].w - 120) < 0.1 && Math.abs(b.imgs![0].h - 60) < 0.1);
+    assert.equal(b.locked, true);
+    const zip = await JSZip.loadAsync(await fs.readFile(f));
+    const media = await zip.file('word/media/devbox_image1.png')!.async('nodebuffer');
+    assert.equal(media.toString('base64'), PNG_B64);
+    assert.match(await zip.file('[Content_Types].xml')!.async('string'), /<Default [^>]*Extension="png"/);
+    assert.match(await zip.file('word/_rels/document.xml.rels')!.async('string'), /relationships\/image"[^>]*Target="media\/devbox_image1\.png"|Target="media\/devbox_image1\.png"[^>]*relationships\/image"/);
+  });
+
+  await ok('chèn ảnh thứ hai: tên file, rId và docPr id không trùng', async () => {
+    const st = await statDocx(f);
+    await saveDocx({ path: f, mtimeMs: st.mtimeMs, ops: [img({ i: 1, name: 'Ảnh 2' })] });
+    const zip = await JSZip.loadAsync(await fs.readFile(f));
+    assert.ok(zip.file('word/media/devbox_image2.png'));
+    const xml = await zip.file('word/document.xml')!.async('string');
+    const ids = [...xml.matchAll(/<wp:docPr id="(\d+)"/g)].map((m) => m[1]);
+    assert.deepEqual(ids.sort(), ['1', '2']);
+    const rids = [...xml.matchAll(/r:embed="(rId\d+)"/g)].map((m) => m[1]);
+    assert.equal(new Set(rids).size, 2);
+  });
+
+  await ok('trình đọc docx độc lập (mammoth) cũng thấy 2 ảnh trong file đã ghi', async () => {
+    const mammoth = (await import('mammoth')).default;
+    const out = await mammoth.convertToHtml({ path: f });
+    assert.equal((out.value.match(/<img /g) ?? []).length, 2, out.value.slice(0, 300));
+  });
+
+  await ok('ảnh xấu bị từ chối: sai chữ ký, định dạng lạ, quá lớn, kích thước vô lý', async () => {
+    const st = await statDocx(f);
+    const run = (o: Record<string, unknown>) => saveDocx({ path: f, mtimeMs: st.mtimeMs, ops: [img(o)] });
+    await assert.rejects(() => run({ mime: 'image/jpeg' }), /không đúng định dạng/);        // bytes PNG khai là JPEG
+    await assert.rejects(() => run({ mime: 'image/webp' }), /PNG, JPEG, GIF/);
+    await assert.rejects(() => run({ b64: '' }), /Thiếu nội dung/);
+    await assert.rejects(() => run({ b64: 'A'.repeat(12 * 1024 * 1024) }), /quá lớn/);
+    await assert.rejects(() => run({ w: 0 }), /Chiều rộng/);
+    await assert.rejects(() => run({ h: 99999 }), /Chiều cao/);
+    assert.equal((await statDocx(f)).mtimeMs, st.mtimeMs, 'file không bị đụng tới');
+  });
+
   void r1;
   await fs.rm(dir, { recursive: true, force: true });
   console.log(`\n${n} kiểm tra đạt.`);

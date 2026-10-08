@@ -202,6 +202,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
   const [hfOpen, setHfOpen] = useState<'header' | 'footer' | null>(null);
   const [tableOpen, setTableOpen] = useState(false);
   const [pageOpen, setPageOpen] = useState(false);
+  const imgInputRef = useRef<HTMLInputElement | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(true);
   // Đọc từ localStorage trong effect (không phải initializer) — component này
   // vẫn được render trước ở server, đụng `window` ở đó là vỡ.
@@ -708,6 +709,61 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     flash(`Đã đặt ${part === 'header' ? 'đầu trang' : 'chân trang'} — bấm Lưu để ghi vào file.`);
   }, [pushOp, flash]);
 
+  // ── Chèn ảnh ────────────────────────────────────────────────────────────────
+
+  /**
+   * Chèn ảnh thành MỘT đoạn riêng (căn giữa) ngay dưới khối đang chọn. Kích thước đổi từ
+   * px sang point theo 96dpi rồi co lại cho vừa bề rộng vùng chữ (và không cao quá một
+   * trang) — ảnh chụp màn hình/ảnh điện thoại thường to gấp nhiều lần khổ giấy.
+   * Đoạn có ảnh bị khóa sửa chữ, giống mọi đoạn chứa ảnh khác trong file.
+   */
+  const insertImage = useCallback(async (file: File) => {
+    if (!['image/png', 'image/jpeg', 'image/gif', 'image/bmp'].includes(file.type)) {
+      setErr('Chỉ chèn được ảnh PNG, JPEG, GIF hoặc BMP.');
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) { setErr('Ảnh quá lớn (tối đa 8 MB).'); return; }
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(new Error('Không đọc được file ảnh.'));
+        fr.readAsDataURL(file);
+      });
+      const px = await new Promise<{ w: number; h: number }>((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight });
+        im.onerror = () => reject(new Error('File không phải ảnh hợp lệ.'));
+        im.src = dataUrl;
+      });
+      let w = Math.max(1, px.w * 0.75);
+      let h = Math.max(1, px.h * 0.75);
+      const maxW = Math.max(72, page.w - page.ml - page.mr);
+      const maxH = Math.max(72, page.h - page.mt - page.mb);
+      if (w > maxW) { h = (h * maxW) / w; w = maxW; }
+      if (h > maxH) { w = (w * maxH) / h; h = maxH; }
+      w = Math.round(w * 100) / 100; h = Math.round(h * 100) / 100;
+
+      const at = sel !== null ? sel + 1 : blocks.length;
+      setBlocks((bs) => {
+        const nb = bs.slice();
+        nb.splice(Math.min(at, nb.length), 0, {
+          kind: 'p', runs: [], fmt: { jc: 'c' }, locked: true, lockReason: 'ảnh/hình vẽ',
+          imgs: [{ src: dataUrl, w, h }], d: true,
+        });
+        return nb;
+      });
+      pushOp({
+        op: 'imgInsert', i: at, name: file.name.replace(/\.[^.]+$/, '').slice(0, 100) || 'Hình ảnh',
+        mime: file.type, b64: dataUrl.slice(dataUrl.indexOf(',') + 1), w, h, jc: 'c',
+      });
+      setSel(at); setEditing(null);
+      flash('Đã chèn ảnh — bấm Lưu để ghi vào file.');
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, [page, sel, blocks.length, pushOp, flash]);
+
   // ── Bố cục trang (khổ giấy / hướng / lề) ───────────────────────────────────
 
   const applyPageSetup = useCallback((p: PageSetup) => {
@@ -908,6 +964,8 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
             <span className="office-point">🔢 Đầu/chân trang &amp; số trang</span>
             <span className="office-point">🔎 Tìm &amp; thay thế · mục lục</span>
             <span className="office-point">🖨 In / xuất PDF</span>
+            <span className="office-point">↶ Hoàn tác / làm lại</span>
+            <span className="office-point">🖼 Chèn ảnh · 📐 Khổ giấy &amp; lề</span>
             <span className="office-point">🛟 Tự backup .bak khi lưu</span>
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
@@ -978,7 +1036,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
   const fmtEdits = opCount(['runFmt', 'paraFmt', 'cellFmt', 'tblBorder']);
   const structEdits = opCount([
     'insert', 'delete', 'move', 'pageBreak', 'tblInsert',
-    'tblRowInsert', 'tblRowDelete', 'tblColInsert', 'tblColDelete', 'hfSet', 'pageSetup',
+    'tblRowInsert', 'tblRowDelete', 'tblColInsert', 'tblColDelete', 'hfSet', 'pageSetup', 'imgInsert',
   ]);
 
   const targetLabel = cell
@@ -1071,6 +1129,25 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
         >
           ＋ Thêm đoạn
         </button>
+        <button
+          className="ghost sm"
+          onClick={() => imgInputRef.current?.click()}
+          disabled={busy}
+          title="Chèn ảnh PNG / JPEG / GIF / BMP (tối đa 8 MB) thành một đoạn riêng"
+        >
+          🖼 Chèn ảnh
+        </button>
+        <input
+          ref={imgInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/bmp"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = ''; // chọn lại cùng file vẫn kích hoạt onChange
+            if (f) void insertImage(f);
+          }}
+        />
         <button className="ghost sm" onClick={() => moveBlock(-1)} disabled={busy || sel === null || sel === 0}
           title="Đưa khối đang chọn lên trên">↑ Lên</button>
         <button className="ghost sm" onClick={() => moveBlock(1)} disabled={busy || sel === null || sel === blocks.length - 1}
