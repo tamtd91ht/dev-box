@@ -38,6 +38,33 @@ export interface ApiFormField {
   fileType?: string;
 }
 
+/** Một biến {{key}}. `on:false` = tắt tạm mà không phải xoá. */
+export interface ApiVar { key: string; value: string; on?: boolean }
+
+export type ApiAuthType = 'none' | 'bearer' | 'basic' | 'apikey';
+
+/** Tab Auth: sinh header Authorization (hoặc header/query tuỳ API key) lúc gửi. */
+export interface ApiAuth {
+  type: ApiAuthType;
+  /** bearer */
+  token?: string;
+  /** basic */
+  user?: string;
+  pass?: string;
+  /** apikey */
+  keyName?: string;
+  keyValue?: string;
+  keyIn?: 'header' | 'query';
+}
+
+/** Cấu hình gửi riêng từng request. Bỏ trống = mặc định (không giới hạn, theo redirect). */
+export interface ApiSendOpts {
+  /** Giây. 0/bỏ trống = không đặt trần (server tự giới hạn). */
+  timeoutSec?: number;
+  /** false = không theo redirect, trả thẳng 3xx để xem header Location. */
+  follow?: boolean;
+}
+
 export interface ApiRequest {
   id: string;
   name: string;
@@ -49,6 +76,10 @@ export interface ApiRequest {
   bodyType: ApiBodyType;
   /** Các dòng form khi bodyType là 'form' hoặc 'multipart'. */
   form?: ApiFormField[];
+  /** Bảng Params (gồm cả dòng đang tắt). Vắng = suy ra từ query của `url`. */
+  params?: ApiHeader[];
+  auth?: ApiAuth;
+  opts?: ApiSendOpts;
   updatedAt: string;
 }
 
@@ -60,8 +91,13 @@ export interface ApiEnvironment {
 
 export interface ApiData {
   requests: ApiRequest[];
+  /** Cũ — còn trong file để không mất dữ liệu, UI không dùng nữa (xem globalVars). */
   environments: ApiEnvironment[];
   activeEnvId?: string;
+  /** Biến chung cho mọi dự án. */
+  globalVars?: ApiVar[];
+  /** Biến theo dự án (khoá = tên dự án = `folder` của request). Ghi đè biến chung. */
+  projectVars?: Record<string, ApiVar[]>;
 }
 
 export interface HttpResult {
@@ -71,11 +107,16 @@ export interface HttpResult {
   body: string;
   timeMs: number;
   size: number;
+  /** Các dòng Set-Cookie (headers là Record nên không giữ được nhiều dòng cùng tên). */
+  cookies?: string[];
+  contentType?: string;
+  /** Nội dung dạng base64 khi response không phải text (ảnh/pdf/zip…), tối đa vài MB. */
+  bodyB64?: string;
 }
 
-async function call<T>(endpoint: string, payload: Record<string, unknown>): Promise<T> {
+async function call<T>(endpoint: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   const r = await fetch(endpoint, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal,
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok || (data as { ok?: boolean }).ok === false) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
@@ -91,6 +132,8 @@ export const apiRemoveRequest = (id: string) => store('removeRequest', { id });
 export const apiSaveEnv = (e: Partial<ApiEnvironment> & { name: string }) => store('saveEnv', { ...e });
 export const apiRemoveEnv = (id: string) => store('removeEnv', { id });
 export const apiSetActiveEnv = (id: string | null) => store('setActiveEnv', { id });
+export const apiSaveGlobals = (vars: ApiVar[]) => store('saveGlobals', { vars });
+export const apiSaveProjectVars = (project: string, vars: ApiVar[]) => store('saveProjectVars', { project, vars });
 
 /** Gửi một request qua proxy server (né CORS).
  *  `bodyType`/`form` để server tự dựng urlencoded hoặc multipart (kèm file);
@@ -98,7 +141,8 @@ export const apiSetActiveEnv = (id: string | null) => store('setActiveEnv', { id
 export const apiSend = (input: {
   method: string; url: string; headers?: ApiHeader[]; body?: string;
   bodyType?: ApiBodyType; form?: ApiFormField[];
-}) => call<HttpResult>('/api/http', input);
+  timeoutSec?: number; follow?: boolean;
+}, signal?: AbortSignal) => call<HttpResult>('/api/http', input, signal);
 
 /** Trần tổng dung lượng file đính kèm — base64 nằm trọn trong RAM của cả
  *  browser lẫn server, quá tay là treo app chứ không phải chỉ chậm. */

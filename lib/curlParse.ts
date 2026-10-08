@@ -228,6 +228,4 @@ function toB64(s: string): string {
 }
 
 /** Thay biến {{name}} bằng giá trị từ env. Giữ nguyên nếu không có biến. */
-export function resolveVars(text: string, env: Record<string, string>): string {
-  return text.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (m, name) => (name in env ? env[name] : m));
-}
+export { resolveVars } from './apiVars';

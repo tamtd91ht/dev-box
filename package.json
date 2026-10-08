@@ -31,7 +31,8 @@
     "check:mongo-query": "tsx scripts/check-mongo-query.ts",
     "check:export-map": "tsx scripts/check-export-map.ts",
     "check:es-export": "tsx scripts/check-es-export.ts",
-    "check:query-tabs": "tsx scripts/check-query-tabs.ts"
+    "check:query-tabs": "tsx scripts/check-query-tabs.ts",
+    "check:api": "tsx scripts/check-api-vars.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
