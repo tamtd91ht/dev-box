@@ -23,7 +23,7 @@ import WordInsertTableModal from './WordInsertTableModal';
 import { fmtBytes } from '@/lib/sheet';
 import {
   applyParaPatch, commonRunFormat, mergeRuns, patchRunRange, runsText,
-  fetchWordFlags, openWordFile, createWordFile, saveWordFile,
+  fetchWordFlags, openWordFile, createWordFile, saveWordFile, statWordFile, openWordExternal,
   type HeaderFooter, type PageSetup, type ParaFormatPatch, type RunFormatPatch,
   type RunSpan, type TableCell, type WordFlags, type WordOp, type WordOpenResult,
   type WordTemplate,
@@ -313,8 +313,60 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
 
   const reload = useCallback(() => {
     if (!file || !confirmDiscard('tải lại')) return;
+    setExtChanged(false);
     void openPath(file.path);
   }, [file, confirmDiscard, openPath]);
+
+  // ── Mở bằng Word (ứng dụng ngoài) + tự nạp lại khi file bị sửa bên ngoài ────
+  //
+  // Việc nặng (hình, SmartArt, theo dõi thay đổi, mẫu phức tạp…) làm bằng chính Word.
+  // Hai bên chia sẻ MỘT file trên đĩa, nên khi cửa sổ app được focus lại ta so mtime:
+  // file đã đổi mà chưa có thay đổi nào của app thì nạp lại ngay; còn thay đổi chưa lưu
+  // thì KHÔNG tự ghi đè — hiện thanh báo để người dùng chọn. Dò bằng sự kiện focus chứ
+  // không bằng timer: không tốn một nhịp poll nào lúc đang làm việc.
+  const [extChanged, setExtChanged] = useState(false);
+  const live = useRef({ file, dirtyCount, editing, editingCell, busy: false });
+  live.current = { file, dirtyCount, editing, editingCell, busy };
+
+  const openExternally = useCallback(async () => {
+    if (!file) return;
+    if (dirtyCount > 0 && !window.confirm(
+      `Có ${dirtyCount} thay đổi chưa lưu trong app — Word sẽ mở bản trên đĩa, KHÔNG có các thay đổi này.\n\nBấm OK để vẫn mở (nên Lưu trước), Hủy để quay lại.`,
+    )) return;
+    try {
+      await openWordExternal(file.path);
+      flash('Đã mở bằng ứng dụng mặc định. Sửa xong, Lưu bên đó rồi quay lại đây — app tự nạp lại.');
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, [file, dirtyCount, flash]);
+
+  useEffect(() => {
+    if (!file?.path) return;
+    const path = file.path;
+    const check = async () => {
+      const cur = live.current;
+      if (!cur.file || cur.file.path !== path || cur.busy) return;
+      try {
+        const st = await statWordFile(path);
+        if (Math.abs(st.mtimeMs - cur.file.mtimeMs) <= 1) return;
+        if (live.current.dirtyCount > 0 || live.current.editing !== null || live.current.editingCell !== null) {
+          setExtChanged(true);
+          return;
+        }
+        applyOpen(await openWordFile(path));
+        setExtChanged(false);
+        flash('File vừa được chương trình khác sửa — đã nạp lại bản mới.');
+      } catch { /* file bị xoá/đổi tên/đang bị khoá: bỏ qua, lần focus sau thử lại */ }
+    };
+    const onVis = () => { if (document.visibilityState === 'visible') void check(); };
+    window.addEventListener('focus', check);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('focus', check);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [file?.path, applyOpen, flash]);
 
   // ── Op log ──────────────────────────────────────────────────────────────────
 
@@ -864,6 +916,10 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
         <span className="badge">DOCX</span>
         <span className="badge" title="Kích thước file">{fmtBytes(file.sizeBytes)}</span>
         <button className="ghost sm" onClick={reload} disabled={busy} title="Đọc lại file từ đĩa">↻ Tải lại</button>
+        <button className="ghost sm" onClick={() => void openExternally()} disabled={busy}
+          title="Mở file bằng ứng dụng mặc định (Word / WPS / LibreOffice…) để làm việc nặng. Sửa xong Lưu bên đó, quay lại đây app tự nạp lại.">
+          ↗ Mở bằng Word
+        </button>
         <button className="ghost sm" onClick={() => setPickerOpen(true)} disabled={busy} title="Mở file khác">📂 File khác</button>
         <button
           className="ghost sm"
@@ -966,6 +1022,13 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
         <div className="sheet-banner">
           ⚠ Tài liệu quá dài — chỉ hiển thị {blocks.length.toLocaleString('vi')} khối đầu.
           Sửa trong vùng hiển thị vẫn an toàn cho phần còn lại.
+        </div>
+      )}
+      {extChanged && (
+        <div className="sheet-extbar" role="alert">
+          File đã bị chương trình khác sửa trên đĩa, trong khi bạn đang có {dirtyCount} thay đổi chưa lưu — app không tự ghi đè.
+          <button className="sm" onClick={reload} title="Bỏ các thay đổi chưa lưu và đọc lại bản trên đĩa">↻ Tải lại bản mới</button>
+          <button className="ghost sm" onClick={() => setExtChanged(false)} title="Giữ nguyên. Lưu từ app sẽ bị từ chối cho tới khi tải lại (tránh đè mất bản kia)">Để sau</button>
         </div>
       )}
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '6px 0' }}>{err}</pre>}

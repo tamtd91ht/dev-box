@@ -348,6 +348,16 @@ export function fetchWordFlags(): Promise<WordFlags> {
   return wordAction<WordFlags>('flags', {});
 }
 
+/** mtime hiện tại của file trên đĩa — so với lúc mở để biết có bị sửa ngoài app không. */
+export function statWordFile(path: string): Promise<{ mtimeMs: number; sizeBytes: number }> {
+  return wordAction('stat', { path });
+}
+
+/** Mở file bằng ứng dụng mặc định của hệ điều hành (Word / WPS / LibreOffice…). */
+export function openWordExternal(path: string): Promise<{ path: string }> {
+  return wordAction('openExternal', { path });
+}
+
 export function openWordFile(path: string): Promise<WordOpenResult> {
   return wordAction<WordOpenResult>('open', { path });
 }

@@ -18,7 +18,6 @@
 //      the save (the file changed underneath — reload first).
 
 import { promises as fs } from 'fs';
-import { spawn } from 'child_process';
 import ExcelJS from 'exceljs';
 import Papa from 'papaparse';
 import type { BorderPreset, CellType, SheetOp, SheetOpenResult, SheetSaveResult, StylePatch, WireCell, WireMerge, WireSheet, WireStyle } from './sheet';
@@ -42,6 +41,7 @@ import {
   writeNewFile,
   assertNotStale,
   atomicBackupWrite,
+  openWithDefaultApp,
   type OfficeTarget,
 } from './officeFiles';
 
@@ -81,17 +81,7 @@ export async function statFile(rawPath: unknown): Promise<{ mtimeMs: number; siz
  */
 export async function openExternal(rawPath: unknown): Promise<{ path: string }> {
   const t = await resolveTarget(rawPath);
-  const [cmd, args] = process.platform === 'win32'
-    ? ['rundll32.exe', ['url.dll,FileProtocolHandler', t.abs]]
-    : process.platform === 'darwin'
-      ? ['open', [t.abs]]
-      : ['xdg-open', [t.abs]];
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
-    child.once('error', (e) => reject(new Error(`Không mở được bằng ứng dụng ngoài: ${e.message}`)));
-    // spawn chỉ báo lỗi (ENOENT…) qua 'error' ngay sau đó; im lặng = đã chạy.
-    child.once('spawn', () => { child.unref(); resolve(); });
-  });
+  await openWithDefaultApp(t.abs);
   return { path: t.abs };
 }
 

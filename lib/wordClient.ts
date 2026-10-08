@@ -37,6 +37,7 @@ import {
   writeNewFile,
   assertNotStale,
   atomicBackupWrite,
+  openWithDefaultApp,
 } from './officeFiles';
 import {
   R_NS, W, type XDoc, type XEl,
@@ -73,6 +74,21 @@ const writeGate = () => {
     throw new Error('Ghi file đang tắt cho toàn tool. Set OFFICE_ALLOW_WRITE=true trong .env.local (local dev only).');
   }
 };
+
+// ── Mở bằng ứng dụng ngoài + dò file đổi ─────────────────────────────────────
+
+/** mtime + dung lượng hiện tại — để app biết file vừa bị sửa bởi chương trình khác. */
+export async function statDocx(rawPath: unknown): Promise<{ mtimeMs: number; sizeBytes: number }> {
+  const t = await resolveOfficeFile(rawPath, ['.docx'], REFUSED);
+  return { mtimeMs: t.mtimeMs, sizeBytes: t.sizeBytes };
+}
+
+/** Mở .docx bằng ứng dụng mặc định của OS (Word / WPS / LibreOffice…). */
+export async function openDocxExternal(rawPath: unknown): Promise<{ path: string }> {
+  const t = await resolveOfficeFile(rawPath, ['.docx'], REFUSED);
+  await openWithDefaultApp(t.abs);
+  return { path: t.abs };
+}
 
 // ── open ─────────────────────────────────────────────────────────────────────
 

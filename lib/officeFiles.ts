@@ -4,6 +4,7 @@
 // ONE place means every Office editor gets the exact same safety behaviour.
 
 import { promises as fs } from 'fs';
+import { spawn } from 'child_process';
 import path from 'path';
 
 export const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB
@@ -118,4 +119,23 @@ export async function atomicBackupWrite(abs: string, data: Buffer): Promise<stri
     await fs.unlink(tmp).catch(() => {}); // no-op when the rename succeeded
   }
   return backupPath;
+}
+
+/**
+ * Mở một file bằng ứng dụng MẶC ĐỊNH của hệ điều hành (Word/Excel/WPS/LibreOffice…
+ * tuỳ máy gán đuôi file cho gì). Đường dẫn đi vào như MỘT đối số, không qua shell —
+ * tên file có dấu cách / ký tự lạ không bị diễn giải. Gọi sau khi đã resolveOfficeFile.
+ */
+export async function openWithDefaultApp(abs: string): Promise<void> {
+  const [cmd, args] = process.platform === 'win32'
+    ? ['rundll32.exe', ['url.dll,FileProtocolHandler', abs]]
+    : process.platform === 'darwin'
+      ? ['open', [abs]]
+      : ['xdg-open', [abs]];
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.once('error', (e) => reject(new Error(`Không mở được bằng ứng dụng ngoài: ${e.message}`)));
+    // spawn chỉ báo lỗi (ENOENT…) qua 'error' ngay sau đó; 'spawn' = đã chạy.
+    child.once('spawn', () => { child.unref(); resolve(); });
+  });
 }
