@@ -16,20 +16,27 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  apiGet, apiSaveRequest, apiRemoveRequest, apiSaveEnv, apiRemoveEnv, apiSetActiveEnv, apiSend,
+  apiGet, apiSaveRequest, apiRemoveRequest, apiSend,
   stripFiles, FILE_LIMIT,
-  type ApiData, type ApiRequest, type ApiHeader, type ApiEnvironment, type HttpResult,
-  type ApiBodyType, type ApiFormField,
+  type ApiData, type ApiRequest, type ApiHeader, type HttpResult,
+  type ApiBodyType, type ApiFormField, type ApiAuth, type ApiSendOpts,
 } from '@/lib/api';
-import { parseCurl, resolveVars, looksLikeCurl, buildCurl } from '@/lib/curlParse';
-import { formatText, type FormatKind } from '@/lib/format';
+import { parseCurl, looksLikeCurl, buildCurl } from '@/lib/curlParse';
+import { resolveVars, findVarNames, splitQuery, joinQuery, applyAuth } from '@/lib/apiVars';
+import { pushHistory } from '@/lib/apiHistory';
+import { formatText } from '@/lib/format';
 import { looksLikeJson } from '@/lib/jsonEdit';
-import { fmtRel } from '@/lib/google';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 import JsonBox from './api/JsonBox';
 import SplitPane, { type SplitCollapsed, type SplitDir } from './api/SplitPane';
+import ResponsePane, { type ResTab } from './api/ResponsePane';
+import AuthPanel from './api/AuthPanel';
+import KvTable from './api/KvTable';
+import VarsModal from './api/VarsModal';
+import HistoryPopover from './api/HistoryPopover';
+import SendOptsPopover from './api/SendOptsPopover';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 /** Draft rỗng — hàm chứ không phải hằng dùng chung: mỗi tab phải có mảng
@@ -64,17 +71,21 @@ interface Draft {
    *  cả hai: đổi qua lại giữa hai kiểu là chuyện thường khi dò API, giữ chung
    *  thì không phải gõ lại; chỉ dòng kind='file' là bị bỏ khi ở urlencoded. */
   form: ApiFormField[];
+  /** Bảng Params (gồm dòng đang tắt). Vắng = suy ra từ query của `url`. */
+  params?: ApiHeader[];
+  auth?: ApiAuth;
+  opts?: ApiSendOpts;
 }
 
 /** Một tab request đang mở — mọi thứ thuộc về nó nằm gọn ở đây. */
 interface Session {
   key: string;
   draft: Draft;
-  tab: 'params' | 'headers' | 'body';
+  tab: 'params' | 'auth' | 'headers' | 'body';
   res: HttpResult | null;
   err: string | null;
   sending: boolean;
-  resTab: 'body' | 'headers';
+  resTab: ResTab;
   resPretty: boolean;
 }
 
@@ -104,6 +115,7 @@ function methodClass(m: string): string {
 function isPristine(s: Session): boolean {
   const d = s.draft;
   return !d.id && !d.url.trim() && !d.body.trim() && !d.name.trim() && !s.res
+    && (!d.auth || d.auth.type === 'none')
     && d.headers.every((h) => !h.key.trim() && !h.value.trim())
     && d.form.every((f) => !f.key.trim() && !f.value.trim() && !f.fileName);
 }
@@ -123,7 +135,12 @@ export default function ApiWorkspace() {
   const [activeKey, setActiveKey] = useState<string>(() => '');
   const [importOpen, setImportOpen] = useState(false);
   const [curlText, setCurlText] = useState('');
-  const [envEdit, setEnvEdit] = useState<ApiEnvironment | null>(null);
+  /** Hộp quản lý biến: null = đóng; scope '' = biến chung, hoặc tên dự án. */
+  const [varsOpen, setVarsOpen] = useState<{ scope: string } | null>(null);
+  /** Tăng sau mỗi lần ghi lịch sử để popover đọc lại. */
+  const [histVersion, setHistVersion] = useState(0);
+  /** Request đang chạy theo tab — để nút Hủy cắt đúng cái cần cắt. */
+  const aborts = useRef<Record<string, AbortController>>({});
   const [autoFmt, setAutoFmt] = useState(true);
   const [layout, setLayout] = useState<Layout>(DEFAULT_LAYOUT);
   const setFrac = useCallback((frac: number) => setLayout((l) => ({ ...l, frac })), []);
@@ -250,12 +267,54 @@ export default function ApiWorkspace() {
     } catch { /* đầy thì thôi */ }
   }, [hydrated, layout, closedProj]);
 
-  const activeEnv = data.environments.find((e) => e.id === data.activeEnvId);
-  const envMap = useMemo(() => {
+  // ── Biến ───────────────────────────────────────────────────────────────────
+  //
+  // Hợp của biến CHUNG và biến của DỰ ÁN mà request đang thuộc về (draft.folder),
+  // biến dự án ghi đè khi trùng tên. Dòng bị tắt (on:false) không tính.
+  const project = (draft.folder ?? '').trim();
+  const vars = useMemo(() => {
     const m: Record<string, string> = {};
-    for (const v of activeEnv?.vars ?? []) if (v.key.trim()) m[v.key.trim()] = v.value;
+    for (const v of data.globalVars ?? []) if (v.key.trim() && v.on !== false) m[v.key.trim()] = v.value;
+    for (const v of (project ? data.projectVars?.[project] : undefined) ?? []) {
+      if (v.key.trim() && v.on !== false) m[v.key.trim()] = v.value;
+    }
     return m;
-  }, [activeEnv]);
+  }, [data.globalVars, data.projectVars, project]);
+  const envMap = vars; // tên cũ — phần còn lại của file vẫn gọi envMap
+
+  /** Biến request này dùng nhưng chưa khai ở đâu cả — để cảnh báo trước khi gửi. */
+  const missingVars = useMemo(() => {
+    const a = draft.auth;
+    const names = findVarNames(
+      draft.url,
+      ...draft.headers.filter((h) => h.on !== false).flatMap((h) => [h.key, h.value]),
+      draft.bodyType === 'raw' ? draft.body : undefined,
+      ...(isFormType(draft.bodyType) ? draft.form.filter((f) => f.on !== false).flatMap((f) => [f.key, f.value]) : []),
+      a?.token, a?.user, a?.pass, a?.keyName, a?.keyValue,
+    );
+    return names.filter((n) => !(n in vars));
+  }, [draft, vars]);
+
+  /** URL sau khi thay biến — hiện dưới ô URL để thấy biến map ra gì. */
+  const resolvedUrl = useMemo(() => (draft.url.includes('{{') ? resolveVars(draft.url, vars) : ''), [draft.url, vars]);
+
+  // ── Params ⇄ URL ───────────────────────────────────────────────────────────
+  //
+  // Bảng Params là một cái nhìn của query trong URL: sửa bảng thì URL đổi theo, gõ
+  // URL thì bảng đọc lại. Dòng đang TẮT chỉ nằm trong bảng (draft.params), không
+  // có trong URL. Chỉ cập nhật theo thao tác của người dùng (không effect) nên
+  // không có vòng lặp URL ↔ bảng.
+  const paramRows: ApiHeader[] = draft.params ?? splitQuery(draft.url).rows;
+  const setParamRows = (rows: ApiHeader[]) => {
+    const sp = splitQuery(draft.url);
+    setDraft((d) => ({ ...d, params: rows, url: joinQuery(sp.base, rows, sp.hash) }));
+  };
+  const setUrl = (url: string) => setDraft((d) => ({
+    ...d,
+    url,
+    // URL gõ tay: dòng đang bật đọc lại từ URL, dòng đang tắt giữ nguyên.
+    params: [...splitQuery(url).rows, ...(d.params ?? []).filter((r) => r.on === false)],
+  }));
 
   // ── Gửi request ────────────────────────────────────────────────────────────
   //
@@ -265,13 +324,21 @@ export default function ApiWorkspace() {
   const send = async () => {
     const key = cur.key;
     const d = cur.draft;
-    const url = resolveVars(d.url, envMap).trim();
-    if (!url) { patch(key, { err: 'Nhập URL trước.' }); return; }
+    const url0 = resolveVars(d.url, envMap).trim();
+    if (!url0) { patch(key, { err: 'Nhập URL trước.' }); return; }
+    const baseHeaders = d.headers
+      .filter((h) => h.key.trim() && h.on !== false)
+      .map((h) => ({ key: resolveVars(h.key, envMap), value: resolveVars(h.value, envMap) }));
+    // Tab Auth sinh thêm header / query param (header gõ tay cùng tên thắng).
+    const { url, headers } = applyAuth(url0, baseHeaders, d.auth, envMap);
+
+    const ctl = new AbortController();
+    aborts.current[key] = ctl;
     patch(key, { sending: true, err: null, res: null });
+    let status: number | undefined;
+    let timeMs: number | undefined;
+    let error: string | undefined;
     try {
-      const headers = d.headers
-        .filter((h) => h.key.trim() && h.on !== false)
-        .map((h) => ({ key: resolveVars(h.key, envMap), value: resolveVars(h.value, envMap) }));
       const r = await apiSend({
         method: d.method, url, headers,
         bodyType: d.bodyType,
@@ -290,14 +357,30 @@ export default function ApiWorkspace() {
                 value: f.kind === 'file' ? '' : resolveVars(f.value, envMap),
               }))
           : undefined,
-      });
+        timeoutSec: d.opts?.timeoutSec,
+        follow: d.opts?.follow,
+      }, ctl.signal);
+      status = r.status; timeMs = r.timeMs;
       patch(key, { res: r, resTab: 'body', resPretty: true });
     } catch (e) {
-      patch(key, { err: (e as Error).message });
+      const aborted = (e as Error).name === 'AbortError';
+      error = aborted ? 'Đã hủy request.' : (e as Error).message;
+      patch(key, { err: error });
     } finally {
+      delete aborts.current[key];
       patch(key, { sending: false });
+      // Hủy tay thì không ghi lịch sử — đó không phải một lần gửi có kết quả.
+      if (error !== 'Đã hủy request.') {
+        pushHistory({
+          method: d.method, url: d.url, status, timeMs, error,
+          draft: { ...d, form: stripFiles(d.form) } as unknown as Record<string, unknown>,
+        });
+        setHistVersion((v) => v + 1);
+      }
     }
   };
+
+  const cancel = () => aborts.current[cur.key]?.abort();
 
   // ── Import curl ──────────────────────────────────────────────────────────────
 
@@ -365,12 +448,17 @@ export default function ApiWorkspace() {
    * token thật nằm trong clipboard: có cảnh báo ở tooltip.
    */
   const copyCurl = useCallback(async () => {
+    // Có cả header/query do tab Auth sinh ra — lệnh curl phải gửi được y như Send.
+    const authed = applyAuth(
+      resolveVars(draft.url, envMap),
+      draft.headers.filter((h) => h.key.trim() && h.on !== false)
+        .map((h) => ({ key: resolveVars(h.key, envMap), value: resolveVars(h.value, envMap) })),
+      draft.auth, envMap,
+    );
     const cmd = buildCurl({
       method: draft.method,
-      url: resolveVars(draft.url, envMap),
-      headers: draft.headers.map((h) => ({
-        key: resolveVars(h.key, envMap), value: resolveVars(h.value, envMap), on: h.on,
-      })),
+      url: authed.url,
+      headers: authed.headers,
       body: resolveVars(draft.body, envMap),
       bodyType: draft.bodyType,
       form: draft.form.map((f) => ({
@@ -400,7 +488,17 @@ export default function ApiWorkspace() {
       headers: r.headers.length ? r.headers : [{ key: '', value: '' }],
       body: r.body, bodyType: r.bodyType,
       form: r.form?.length ? r.form : [{ key: '', value: '', kind: 'text' }],
+      params: r.params, auth: r.auth, opts: r.opts,
     };
+    if (isPristine(cur)) setCur({ draft: d, tab: d.bodyType === 'none' ? 'headers' : 'body', res: null, err: null });
+    else openSession(d);
+  };
+
+  /** Mở lại một lần gửi trong lịch sử thành tab mới (tab trắng thì dùng luôn). */
+  const openFromHistory = (raw: Record<string, unknown>) => {
+    const d: Draft = { ...blankDraft(), ...(raw as Partial<Draft>), id: undefined };
+    if (!d.headers?.length) d.headers = [{ key: '', value: '' }];
+    if (!d.form?.length) d.form = [{ key: '', value: '', kind: 'text' }];
     if (isPristine(cur)) setCur({ draft: d, tab: d.bodyType === 'none' ? 'headers' : 'body', res: null, err: null });
     else openSession(d);
   };
@@ -444,24 +542,6 @@ export default function ApiWorkspace() {
         ? { ...s, draft: { ...s.draft, id: undefined } } : s)));
     } catch (e) { setErr((e as Error).message); }
   };
-
-  // ── Environment ────────────────────────────────────────────────────────────
-  const newEnv = () => setEnvEdit({ id: '', name: '', vars: [{ key: '', value: '' }] });
-  const saveEnv = async () => {
-    if (!envEdit) return;
-    try {
-      const d = await apiSaveEnv({
-        id: envEdit.id || undefined, name: envEdit.name,
-        vars: envEdit.vars.filter((v) => v.key.trim()),
-      });
-      setData(d); setEnvEdit(null);
-    } catch (e) { setErr((e as Error).message); }
-  };
-  const removeEnv = async (e: ApiEnvironment) => {
-    if (!window.confirm(`Xóa environment "${e.name}"?`)) return;
-    try { setData(await apiRemoveEnv(e.id)); } catch (er) { setErr((er as Error).message); }
-  };
-  const pickEnv = async (id: string | null) => { try { setData(await apiSetActiveEnv(id)); } catch (e) { setErr((e as Error).message); } };
 
   // Gom request theo folder cho rail.
   const grouped = useMemo(() => {
@@ -543,27 +623,6 @@ export default function ApiWorkspace() {
     return f.ok ? null : f.error ?? 'JSON không hợp lệ';
   }, [draft.body, draft.bodyType]);
 
-  // ── Response: format để đọc, KHÔNG đụng vào text gốc ───────────────────────
-  //
-  // Đây là chỗ khác bản cũ: trước kia nút ✨ ghi đè res.body nên bấm rồi là mất
-  // nguyên văn (mà nguyên văn mới là thứ để đối chiếu khi nghi server trả lạ).
-  // Giờ nó chỉ là công tắc Pretty/Raw.
-  const resKind = useMemo<FormatKind | null>(() => {
-    if (!res) return null;
-    const ct = res.headers['content-type'] ?? '';
-    if (/json/i.test(ct)) return 'json';
-    if (/html/i.test(ct)) return 'html';
-    if (/xml/i.test(ct)) return 'xml';
-    return looksLikeJson(res.body) ? 'json' : null; // server trả text/plain mà ruột là JSON
-  }, [res]);
-
-  const resShown = useMemo(() => {
-    if (!res) return '';
-    if (!resPretty || !resKind) return res.body;
-    const f = formatText(resKind, res.body);
-    return f.ok ? f.text : res.body;
-  }, [res, resKind, resPretty]);
-
   return (
     <div className="panel sheet-panel">
       <div className="api-root" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
@@ -616,22 +675,13 @@ export default function ApiWorkspace() {
           {data.requests.length === 0 && <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px' }}>Chưa có request. Dựng rồi 💾, hoặc “Dán curl”.</p>}
 
           <div className="group-title" style={{ margin: '14px 4px 6px', display: 'flex', gap: 6 }}>
-            <span style={{ flex: 1 }}>Environment</span>
-            <button className="ghost sm" onClick={newEnv} title="Environment mới">＋</button>
+            <span style={{ flex: 1 }}>Biến</span>
+            <button className="ghost sm" onClick={() => setVarsOpen({ scope: '' })} title="Quản lý biến chung và biến theo dự án">🔣 Quản lý</button>
           </div>
-          <select className="input sm" value={data.activeEnvId ?? ''} onChange={(e) => void pickEnv(e.target.value || null)}>
-            <option value="">— không dùng —</option>
-            {data.environments.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-          </select>
-          {data.environments.map((e) => (
-            <div key={e.id} className="g-root" style={{ marginTop: 2 }}>
-              <button className="g-root-btn" onClick={() => setEnvEdit(structuredClone(e))} title="Sửa biến">
-                <span aria-hidden>🌱</span><span className="g-root-name">{e.name}</span>
-                <span className="small" style={{ color: 'var(--muted)' }}>{e.vars.length} biến</span>
-              </button>
-              <button className="ghost sm g-root-act" onClick={() => void removeEnv(e)} title="Xóa">✕</button>
-            </div>
-          ))}
+          <p className="small" style={{ color: 'var(--muted)', margin: '2px 6px' }}>
+            {(data.globalVars ?? []).filter((v) => v.key.trim()).length} biến chung
+            {' · '}{Object.keys(data.projectVars ?? {}).length} dự án có biến riêng
+          </p>
         </aside>
         )}
 
@@ -662,19 +712,37 @@ export default function ApiWorkspace() {
               onChange={(e) => setDraft({ ...draft, method: e.target.value })}>
               {METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            <input className="input" style={{ flex: 1 }}
+            <input className="input" style={{ flex: 1, minWidth: 160 }}
               placeholder="https://… (dùng {{var}}) — hoặc dán thẳng lệnh curl vào đây"
-              value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })}
+              value={draft.url} onChange={(e) => setUrl(e.target.value)}
               onPaste={onUrlPaste}
               onKeyDown={(e) => e.key === 'Enter' && void send()} />
-            <button onClick={() => void send()} disabled={sending}>{sending ? '…' : '▶ Send'}</button>
-            <button className="ghost sm" onClick={() => void saveRequest()} title="Lưu vào collection">💾</button>
+            {sending
+              ? <button onClick={cancel} title="Hủy request đang chạy">■ Hủy</button>
+              : <button onClick={() => void send()}>▶ Send</button>}
+            <SendOptsPopover opts={draft.opts} onChange={(o) => setDraft((d) => ({ ...d, opts: o }))} />
+            <HistoryPopover version={histVersion} onOpen={openFromHistory} />
+            <button className="ghost sm" onClick={() => void saveRequest()} title="Lưu vào dự án">💾</button>
             <button className="ghost sm" onClick={() => void copyCurl()} disabled={!draft.url.trim()}
               title="Chép request này thành lệnh curl (biến {{var}} được thay bằng giá trị thật — cẩn thận token)">
               {curlCopied ? '✓ Đã chép' : '⧉ Copy curl'}
             </button>
             <button className="ghost sm" onClick={() => setImportOpen(true)} title="Dán một lệnh curl để import">Dán curl</button>
           </div>
+
+          {/* Biến map ra gì + biến nào còn thiếu — "map đúng" thấy ngay, không đợi
+              server trả 4xx rồi mới đoán. */}
+          {(missingVars.length > 0 || resolvedUrl) && (
+            <div className="api-vline">
+              {missingVars.length > 0 && (
+                <button className="api-vwarn" onClick={() => setVarsOpen({ scope: project })}
+                  title="Bấm để khai biến">
+                  ⚠ Chưa có biến: {missingVars.map((n) => `{{${n}}}`).join(' ')}
+                </button>
+              )}
+              {resolvedUrl && <span className="api-vresolved" title={resolvedUrl}>→ {resolvedUrl}</span>}
+            </div>
+          )}
 
           <SplitPane
             dir={layout.dir}
@@ -687,13 +755,18 @@ export default function ApiWorkspace() {
             first={
               <div className="api-req">
                 <div className="api-tabs">
-                  {(['params', 'headers', 'body'] as const).map((t) => (
+                  {(['params', 'auth', 'headers', 'body'] as const).map((t) => (
                     <button key={t} className={`api-tab${tab === t ? ' on' : ''}`} onClick={() => setTab(t)}>
-                      {t === 'params' ? 'Params' : t === 'headers' ? `Headers (${draft.headers.filter((h) => h.key.trim()).length})` : 'Body'}
+                      {t === 'params' ? `Params${paramRows.filter((r) => r.key.trim() && r.on !== false).length ? ` (${paramRows.filter((r) => r.key.trim() && r.on !== false).length})` : ''}`
+                        : t === 'auth' ? `Auth${draft.auth && draft.auth.type !== 'none' ? ' ●' : ''}`
+                        : t === 'headers' ? `Headers (${draft.headers.filter((h) => h.key.trim()).length})` : 'Body'}
                     </button>
                   ))}
                   <span style={{ flex: 1 }} />
-                  {activeEnv && <span className="small" style={{ color: 'var(--muted)' }}>env: <b>{activeEnv.name}</b></span>}
+                  <button className="ghost sm" onClick={() => setVarsOpen({ scope: project })}
+                    title={project ? `Biến của dự án “${project}” + biến chung` : 'Biến chung (request chưa thuộc dự án nào)'}>
+                    🔣 {Object.keys(vars).length}{project ? ` · ${project}` : ''}
+                  </button>
                   <span className="api-tools">
                     <button className="ghost sm" onClick={flipDir}
                       title={layout.dir === 'h' ? 'Đang xếp ngang (request trái · response phải) — bấm để xếp dọc' : 'Đang xếp dọc (request trên · response dưới) — bấm để xếp ngang'}>
@@ -719,10 +792,14 @@ export default function ApiWorkspace() {
               </div>
             )}
             {tab === 'params' && (
-              <p className="small" style={{ color: 'var(--muted)', padding: 8 }}>
-                Query params gõ thẳng vào URL (…?a=1&amp;b=2). Hỗ trợ biến {'{{var}}'} như mọi nơi.
-              </p>
+              <div>
+                <KvTable rows={paramRows} onChange={setParamRows} keyPlaceholder="Param" valuePlaceholder="Value" addLabel="＋ Thêm param" />
+                <p className="small" style={{ color: 'var(--muted)', margin: '2px 4px 6px' }}>
+                  Đồng bộ hai chiều với URL. Bỏ tick một dòng để tắt tạm (không gửi nhưng vẫn giữ). Hỗ trợ <code>{'{{var}}'}</code>.
+                </p>
+              </div>
             )}
+            {tab === 'auth' && <AuthPanel auth={draft.auth} onChange={(a) => setDraft((d) => ({ ...d, auth: a }))} />}
             {tab === 'body' && (
               <div className="api-body">
                 <div className="api-bodytype">
@@ -829,61 +906,26 @@ export default function ApiWorkspace() {
               </div>
             }
             second={
-              <div className="api-res">
-                <div className="api-res-head">
-                  {res
-                    ? (
-                      <>
-                        <span className={`api-status api-status--${Math.floor(res.status / 100)}`}>{res.status} {res.statusText}</span>
-                        <span className="small" style={{ color: 'var(--muted)' }}>{res.timeMs} ms · {res.size} B</span>
-                      </>
-                    )
-                    : <b>Response</b>}
-                  {sending && <span className="small" style={{ color: 'var(--muted)' }}>đang gửi…</span>}
-                  <span style={{ flex: 1 }} />
-                  {res && (
-                    <>
-                      <button className={`api-tab${resTab === 'body' ? ' on' : ''}`} onClick={() => setResTab('body')}>Body</button>
-                      <button className={`api-tab${resTab === 'headers' ? ' on' : ''}`} onClick={() => setResTab('headers')}>Headers</button>
-                      {resTab === 'body' && resKind && (
-                        <button className="ghost sm" onClick={() => setResPretty((p) => !p)}
-                          title={resPretty ? 'Xem nguyên văn server trả về' : `Format ${resKind.toUpperCase()} cho dễ đọc`}>
-                          {resPretty ? '↩ Raw' : `✨ Format ${resKind.toUpperCase()}`}
-                        </button>
-                      )}
-                    </>
-                  )}
-                  <span className="api-tools">
+              <ResponsePane
+                res={res}
+                err={err}
+                sending={sending}
+                tab={resTab}
+                onTab={setResTab}
+                pretty={resPretty}
+                onPretty={setResPretty}
+                modelKey={cur.key}
+                tools={(
+                  <>
                     <button className="ghost sm" onClick={flipDir}
                       title={layout.dir === 'h' ? 'Đang xếp ngang — bấm để xếp dọc' : 'Đang xếp dọc — bấm để xếp ngang'}>
                       {layout.dir === 'h' ? '⇄' : '⇅'}
                     </button>
                     <button className="ghost sm" onClick={() => setCollapsed('second')}
                       title="Thu gọn response để soạn request rộng hơn">{layout.dir === 'h' ? '▸' : '▾'}</button>
-                  </span>
-                </div>
-                {err && <pre className="code api-err">{err}</pre>}
-                {res ? (
-                  resTab === 'body' ? (
-                    // JSON (đang format) → Monaco: gấp/mở từng khối bằng +/- ở lề,
-                    // Ctrl+F đếm số khớp. Raw hoặc không phải JSON thì <pre> như cũ
-                    // — dựng cả một editor cho một dòng text là phí.
-                    resKind === 'json' && resPretty ? (
-                      <div className="api-resbox">
-                        <div className="api-fill">
-                          <JsonBox path={`api-res-${cur.key}`} value={resShown} height="100%" />
-                        </div>
-                      </div>
-                    ) : (
-                      <pre className="api-res-body">{resShown}</pre>
-                    )
-                  ) : (
-                    <pre className="api-res-body">{Object.entries(res.headers).map(([k, v]) => `${k}: ${v}`).join('\n')}</pre>
-                  )
-                ) : (
-                  !err && <div className="api-res-empty">{sending ? 'Đang chờ server trả lời…' : 'Chưa có response — nhập URL rồi bấm ▶ Send.'}</div>
+                  </>
                 )}
-              </div>
+              />
             }
           />
         </div>
@@ -929,32 +971,14 @@ export default function ApiWorkspace() {
         </div>
       )}
 
-      {/* Modal environment editor */}
-      {envEdit && (
-        <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && setEnvEdit(null)}>
-          <div className="mail-compose panel" style={{ width: 'min(620px, 94vw)' }}>
-            <div className="mail-compose-head"><b>🌱 Environment</b><span style={{ flex: 1 }} />
-              <button className="ghost sm" onClick={() => setEnvEdit(null)}>✕</button></div>
-            <input className="input" placeholder="Tên environment (vd: dev, prod)" value={envEdit.name}
-              onChange={(e) => setEnvEdit({ ...envEdit, name: e.target.value })} />
-            <div className="api-kv">
-              {envEdit.vars.map((v, i) => (
-                <div key={i} className="api-kv-row">
-                  <input className="input" placeholder="Biến (dùng {{tên}})" value={v.key}
-                    onChange={(e) => setEnvEdit({ ...envEdit, vars: envEdit.vars.map((x, j) => j === i ? { ...x, key: e.target.value } : x) })} />
-                  <input className="input" placeholder="Giá trị" value={v.value}
-                    onChange={(e) => setEnvEdit({ ...envEdit, vars: envEdit.vars.map((x, j) => j === i ? { ...x, value: e.target.value } : x) })} />
-                  <button className="ghost sm" onClick={() => setEnvEdit({ ...envEdit, vars: envEdit.vars.filter((_, j) => j !== i) })}>✕</button>
-                </div>
-              ))}
-              <button className="ghost sm" onClick={() => setEnvEdit({ ...envEdit, vars: [...envEdit.vars, { key: '', value: '' }] })}>＋ Thêm biến</button>
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => void saveEnv()} disabled={!envEdit.name.trim()}>💾 Lưu</button>
-              <button className="ghost" onClick={() => setEnvEdit(null)}>Hủy</button>
-            </div>
-          </div>
-        </div>
+      {varsOpen && (
+        <VarsModal
+          data={data}
+          projects={[...new Set(data.requests.map((r) => r.folder).filter((f): f is string => !!f))]}
+          initialScope={varsOpen.scope}
+          onSaved={setData}
+          onClose={() => setVarsOpen(null)}
+        />
       )}
     </div>
   );

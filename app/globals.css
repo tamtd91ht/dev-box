@@ -9731,3 +9731,63 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .api-proj:hover { background: var(--glass-2); color: var(--text); }
 .api-proj-n { margin-left: auto; font-weight: 400; opacity: .7; }
+
+/* ── Tab API: biến, popover, Auth, bảng response ────────────────────────── */
+.api-urlbar { flex-wrap: wrap; position: relative; }
+.api-vline { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 11.5px; margin-top: -2px; }
+.api-vwarn {
+  flex: none; border: 1px solid color-mix(in srgb, var(--warn, #d90) 55%, transparent); background: color-mix(in srgb, var(--warn, #d90) 14%, transparent);
+  color: var(--warn, #d90); border-radius: 999px; padding: 1px 10px; cursor: pointer; font-size: 11.5px;
+}
+.api-vwarn:hover { background: color-mix(in srgb, var(--warn, #d90) 24%, transparent); }
+.api-vresolved { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-family: var(--mono, monospace); }
+
+/* Popover gắn vào nút ở thanh URL (⚙ cấu hình gửi, 🕘 lịch sử). */
+.api-pop-wrap { position: relative; display: inline-flex; }
+.api-pop-veil { position: fixed; inset: 0; z-index: 40; }
+.api-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 41;
+  background: var(--panel); border: 1px solid var(--glass-brd-hover); border-radius: 10px;
+  box-shadow: 0 14px 40px rgb(0 0 0 / .45); padding: 10px;
+}
+.api-opts { width: 280px; }
+.api-opts-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; padding: 3px 0; }
+.api-opts-row .input { width: 120px; }
+.api-hist { width: min(560px, 90vw); max-height: 55vh; overflow: auto; padding: 6px; }
+.api-hist-head { display: flex; align-items: center; padding: 2px 6px 6px; }
+.api-hist-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: none; border: none; border-radius: 7px; padding: 5px 6px; cursor: pointer; color: var(--text);
+}
+.api-hist-item:hover { background: var(--glass-2); }
+.api-hist-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-family: var(--mono, monospace); }
+
+/* Tab Auth */
+.api-auth { display: flex; flex-direction: column; gap: 8px; padding: 6px 2px; }
+.api-auth-grid { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px 10px; align-items: center; font-size: 12px; }
+
+/* Hộp quản lý biến */
+.api-vars-body { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 12px; min-height: 260px; max-height: 58vh; }
+.api-vars-scopes { display: flex; flex-direction: column; gap: 2px; overflow: auto; border-right: 1px solid var(--glass-brd); padding-right: 10px; }
+.api-vars-scope {
+  display: flex; align-items: center; gap: 6px; text-align: left; background: none; border: none; border-radius: 7px;
+  padding: 5px 8px; cursor: pointer; color: var(--text); font-size: 12.5px;
+}
+.api-vars-scope > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.api-vars-scope:hover { background: var(--glass-2); }
+.api-vars-scope.on { background: var(--glass-2); box-shadow: inset 2px 0 0 var(--accent); font-weight: 600; }
+.api-vars-main { overflow: auto; min-width: 0; }
+.api-vars-dyn { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+@media (max-width: 700px) { .api-vars-body { grid-template-columns: 1fr; } .api-vars-scopes { border-right: none; border-bottom: 1px solid var(--glass-brd); padding: 0 0 8px; max-height: 140px; } }
+
+/* Response: thanh công cụ body, bảng cookies/headers, preview */
+.api-res-bar { flex: none; display: flex; align-items: center; gap: 6px; padding: 4px 10px; }
+.api-res-table { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 10px; }
+.api-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.api-tbl th, .api-tbl td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--glass-brd); vertical-align: top; }
+.api-tbl th { position: sticky; top: 0; background: var(--panel); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+.api-tbl td:first-child { white-space: nowrap; font-weight: 600; }
+.api-tbl-wrap { font-family: var(--mono, monospace); word-break: break-all; }
+.api-preview { flex: 1; min-height: 0; overflow: auto; padding: 10px; display: flex; align-items: flex-start; justify-content: center; }
+.api-preview img { max-width: 100%; height: auto; }
+.api-preview-frame { flex: 1; min-height: 0; width: 100%; border: none; background: #fff; }

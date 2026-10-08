@@ -75,16 +75,18 @@ export interface JsonBoxProps {
   /** Model path phải DUY NHẤT giữa các ô đang mount cùng lúc: trùng path là
    *  dùng chung model, nội dung hai ô sẽ đè lên nhau. */
   path: string;
-  language?: 'json' | 'plaintext';
+  language?: 'json' | 'plaintext' | 'xml' | 'html';
   /** Số px, hoặc '100%' để lấp đầy khung cha (khung cha phải có chiều cao xác định). */
   height: number | string;
   placeholder?: string;
   /** Ctrl+Enter — ô soạn body dùng để bấm Send luôn. */
   onSubmit?: () => void;
+  /** Nhận editor sau khi mount — để nút ngoài (🔍 tìm) gọi được action của Monaco. */
+  onEditor?: (ed: editor.IStandaloneCodeEditor) => void;
 }
 
 export default function JsonBox({
-  value, onChange, path, language = 'json', height, placeholder, onSubmit,
+  value, onChange, path, language = 'json', height, placeholder, onSubmit, onEditor,
 }: JsonBoxProps) {
   const theme = useApiTheme();
   // Giữ callback mới nhất trong ref: addCommand chỉ chạy lúc mount nên nó đóng
@@ -103,6 +105,7 @@ export default function JsonBox({
       beforeMount={defineApiThemes}
       onMount={(ed: editor.IStandaloneCodeEditor, monaco: Monaco) => {
         ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => submitRef.current?.());
+        onEditor?.(ed);
       }}
       loading={<span className="spinner" aria-hidden />}
       height={height}
