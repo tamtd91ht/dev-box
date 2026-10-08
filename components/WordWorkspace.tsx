@@ -34,6 +34,8 @@ import {
 } from '@/lib/wordDocUtils';
 
 const RECENT_KEY = 'word.recent';
+/** Trần số bước hoàn tác giữ trong bộ nhớ. */
+const MAX_UNDO = 50;
 const VIEW_KEY = 'word.view';
 
 /** Các nấc phóng to của khung soạn thảo (Ctrl+= / Ctrl+− nhảy theo nấc). */
@@ -247,6 +249,24 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
 
   const dirtyCount = ops.length;
 
+  // ── Hoàn tác / làm lại (Ctrl+Z / Ctrl+Y) ───────────────────────────────────
+  //
+  // Mỗi thao tác sửa chụp NGUYÊN trạng thái tài liệu TRƯỚC khi đổi (blocks + đầu/chân
+  // trang + khổ giấy + op log) — rẻ ở quy mô tài liệu văn phòng và khỏi phải viết hàm
+  // nghịch đảo cho từng loại op (cùng cách với Sheet). Trạng thái hiện tại luôn nằm
+  // trong `docRef`; pushOp đọc nó lúc bấm nên thấy đúng trạng thái trước thao tác.
+  // MỞ file khác và LƯU đều xoá lịch sử: hoàn tác qua mốc lưu sẽ khôi phục op log cũ,
+  // mà các op đó đã nằm trong file rồi — lần lưu sau sẽ phát lại chúng lần nữa.
+  const docRef = useRef({ blocks, headers, footers, page, ops });
+  docRef.current = { blocks, headers, footers, page, ops };
+  const undoRef = useRef<(typeof docRef.current)[]>([]);
+  const redoRef = useRef<(typeof docRef.current)[]>([]);
+  const [histTick, setHistTick] = useState(0);
+  const clearHistory = useCallback(() => {
+    undoRef.current = []; redoRef.current = [];
+    setHistTick((t) => t + 1);
+  }, []);
+
   const applyOpen = useCallback((res: WordOpenResult) => {
     setFile(res);
     setBlocks(res.blocks.slice());
@@ -254,13 +274,14 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     setFooters(res.footers);
     setPage(res.page);
     setOps([]);
+    clearHistory();
     setSel(null); setEditing(null); setRange(null);
     setCell(null); setEditingCell(null);
     setHits(new Set()); setFocusBlock(null);
     setPickerOpen(false);
     const list = [res.path, ...loadRecent().filter((x) => x !== res.path)];
     saveRecent(list); setRecent(list.slice(0, 10));
-  }, []);
+  }, [clearHistory]);
 
   const openPath = useCallback(async (p: string) => {
     setBusy(true); setErr(null);
@@ -370,7 +391,42 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
 
   // ── Op log ──────────────────────────────────────────────────────────────────
 
-  const pushOp = useCallback((op: WordOp) => setOps((os) => [...os, op]), []);
+  const pushOp = useCallback((op: WordOp) => {
+    const before = docRef.current;
+    const last = undoRef.current[undoRef.current.length - 1];
+    // Nhiều op trong CÙNG một thao tác (vd chèn bảng + đoạn trống phía sau) cùng đọc một
+    // trạng thái trước → chỉ chụp một lần, hoàn tác lùi được cả cụm.
+    if (!last || last.ops !== before.ops) {
+      undoRef.current.push(before);
+      if (undoRef.current.length > MAX_UNDO) undoRef.current.shift();
+      redoRef.current = [];
+      setHistTick((t) => t + 1);
+    }
+    setOps((os) => [...os, op]);
+  }, []);
+
+  const restore = useCallback((snap: typeof docRef.current) => {
+    setBlocks(snap.blocks); setHeaders(snap.headers); setFooters(snap.footers);
+    setPage(snap.page); setOps(snap.ops);
+    // Chỉ số khối có thể không còn nghĩa sau khi khôi phục — bỏ chọn cho chắc.
+    setSel(null); setEditing(null); setRange(null); setCell(null); setEditingCell(null);
+    setHits(new Set());
+    setHistTick((t) => t + 1);
+  }, []);
+
+  const doUndo = useCallback(() => {
+    const snap = undoRef.current.pop();
+    if (!snap) return;
+    redoRef.current.push(docRef.current);
+    restore(snap);
+  }, [restore]);
+
+  const doRedo = useCallback(() => {
+    const snap = redoRef.current.pop();
+    if (!snap) return;
+    undoRef.current.push(docRef.current);
+    restore(snap);
+  }, [restore]);
 
   /** Đánh dấu một block là đã sửa (để tô nền cảnh báo). */
   const markDirty = useCallback((i: number) => {
@@ -729,6 +785,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
       const res = await saveWordFile(file.path, file.mtimeMs, ops);
       setFile((f) => (f ? { ...f, mtimeMs: res.mtimeMs, sizeBytes: res.sizeBytes } : f));
       setOps([]);
+      clearHistory();
       setBlocks((bs) => bs.map((b) => (b.d ? { ...b, d: undefined } : b)));
       setSaveOpen(false);
       flash(`Đã lưu ✓${res.replaced ? ` (thay ${res.replaced} chỗ)` : ''} · backup: ${res.backupPath}`);
@@ -737,7 +794,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     } finally {
       setBusy(false);
     }
-  }, [file, ops, flash]);
+  }, [file, ops, flash, clearHistory]);
 
   // ── Phím tắt ────────────────────────────────────────────────────────────────
 
@@ -750,7 +807,14 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
       const k = e.key.toLowerCase();
-      if (k === 'f') { e.preventDefault(); setFindOpen(true); }
+      // Đang gõ trong một đoạn/ô: Ctrl+Z là của trình duyệt (hoàn tác chữ vừa gõ),
+      // không phải của lịch sử tài liệu.
+      const typing = editing !== null || editingCell !== null;
+      if ((k === 'z' || k === 'y') && !typing) {
+        e.preventDefault();
+        if (k === 'y' || e.shiftKey) doRedo(); else doUndo();
+      }
+      else if (k === 'f') { e.preventDefault(); setFindOpen(true); }
       else if (k === 'b') { e.preventDefault(); applyRunFormat({ b: 1 }); }
       else if (k === 'i') { e.preventDefault(); applyRunFormat({ i: 1 }); }
       else if (k === 'u') { e.preventDefault(); applyRunFormat({ u: 1 }); }
@@ -767,7 +831,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [file, active, applyRunFormat, doPrint, allowWrite, ops.length, zoomBy, patchView]);
+  }, [file, active, applyRunFormat, doPrint, allowWrite, ops.length, zoomBy, patchView, editing, editingCell, doUndo, doRedo]);
 
   // ── Dẫn xuất cho thanh công cụ ──────────────────────────────────────────────
 
@@ -910,11 +974,29 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
       : 'chỗ đang chọn';
 
   return (
-    <div className="panel sheet-panel">
+    /* data-hist: undo/redo stack nằm trong ref (không kích hoạt render), nên histTick
+       là thứ ép render lại để hai nút Hoàn tác/Làm lại bật-tắt đúng. */
+    <div className="panel sheet-panel" data-hist={histTick}>
       <div className="sheet-toolbar">
         <span className="picker-cwd small" title={file.path}>{file.path}</span>
         <span className="badge">DOCX</span>
         <span className="badge" title="Kích thước file">{fmtBytes(file.sizeBytes)}</span>
+        <button
+          className="ghost sm"
+          onClick={doUndo}
+          disabled={busy || undoRef.current.length === 0}
+          title={`Hoàn tác (Ctrl+Z)${undoRef.current.length ? ` — còn ${undoRef.current.length} bước` : ''}`}
+        >
+          ↶ Hoàn tác
+        </button>
+        <button
+          className="ghost sm"
+          onClick={doRedo}
+          disabled={busy || redoRef.current.length === 0}
+          title={`Làm lại (Ctrl+Y)${redoRef.current.length ? ` — còn ${redoRef.current.length} bước` : ''}`}
+        >
+          ↷ Làm lại
+        </button>
         <button className="ghost sm" onClick={reload} disabled={busy} title="Đọc lại file từ đĩa">↻ Tải lại</button>
         <button className="ghost sm" onClick={() => void openExternally()} disabled={busy}
           title="Mở file bằng ứng dụng mặc định (Word / WPS / LibreOffice…) để làm việc nặng. Sửa xong Lưu bên đó, quay lại đây app tự nạp lại.">
