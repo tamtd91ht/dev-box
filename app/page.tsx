@@ -808,7 +808,7 @@ export default function Home() {
         )}
         {visited.apps && (
           <main className="workspace" style={pane('apps')} aria-hidden={!shown('apps')}>
-            <AppsWorkspace />
+            <AppsWorkspace visible={shown('apps')} />
           </main>
         )}
         {visited.tools && (

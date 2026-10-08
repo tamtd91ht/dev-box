@@ -14,6 +14,7 @@
 // Lịch sử chỉ có TỪ LÚC listener chạy (kho RAM, không backfill tin cũ trước khi
 // kết nối) — đủ để quản lý hội thoại đang diễn ra và trả lời.
 
+import { keepIfSame } from '@/lib/sameData';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   zaloApiThreads,
@@ -188,6 +189,7 @@ export default function ZaloChatPanel({
   connected,
   canSend,
   active,
+  visible = true,
 }: {
   accountKey: string;
   /** Đã đăng nhập (có phiên server) — chưa thì màn chat trơ. */
@@ -196,6 +198,8 @@ export default function ZaloChatPanel({
   canSend: boolean;
   /** Tài khoản này đang là tab hiển thị — chỉ poll khi cần cho nhẹ. */
   active: boolean;
+  /** Tab Zalo API đang hiện trên màn hình — ẩn thì dừng poll, hiện lại poll bù ngay. */
+  visible?: boolean;
 }) {
   const [threads, setThreads] = useState<ZaloThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<string>('');
@@ -264,32 +268,34 @@ export default function ZaloChatPanel({
   // ── Poll danh sách hội thoại ────────────────────────────────────────────
   useEffect(() => {
     if (!connected) { setThreads([]); return; }
+    if (!visible) return;
     let stop = false;
     const pump = () => {
       if (stop) return;
       zaloApiThreads(accountKey)
-        .then((list) => { if (!stop) setThreads(list); })
+        .then((list) => { if (!stop) setThreads(keepIfSame(list)); })
         .catch(() => { /* route/listener sẽ báo trạng thái ở nơi khác */ });
     };
     pump();
     const t = setInterval(pump, POLL_MS);
     return () => { stop = true; clearInterval(t); };
-  }, [accountKey, connected]);
+  }, [accountKey, connected, visible]);
 
   // ── Poll lịch sử của hội thoại đang mở ─────────────────────────────────
   useEffect(() => {
     if (!connected || !activeThread) { setMessages([]); return; }
+    if (!visible) return;
     let stop = false;
     const pump = () => {
       if (stop) return;
       zaloApiHistory(accountKey, activeThread)
-        .then((list) => { if (!stop) setMessages(list); })
+        .then((list) => { if (!stop) setMessages(keepIfSame(list)); })
         .catch(() => { /* bỏ nhịp */ });
     };
     pump();
     const t = setInterval(pump, POLL_MS);
     return () => { stop = true; clearInterval(t); };
-  }, [accountKey, connected, activeThread]);
+  }, [accountKey, connected, activeThread, visible]);
 
   // Cuộn xuống đáy khi có tin mới / đổi hội thoại.
   useEffect(() => {

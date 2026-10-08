@@ -553,6 +553,7 @@ function ZaloApiAccountView({
               connected={!!session}
               canSend={!!(flags?.enabled && flags?.allowSend)}
               active={active}
+              visible={viewing}
             />
           </div>
         )}
