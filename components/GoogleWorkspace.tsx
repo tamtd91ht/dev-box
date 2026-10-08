@@ -1271,7 +1271,7 @@ export default function GoogleWorkspace() {
           một tab thì subnav ngay trên đã nói rõ đang ở đâu, thêm một hàng nữa
           chỉ để nhắc lại là ăn mất chiều cao của vùng chính. */}
       {secTabs.length > 1 && (
-        <div className="api-wintabs" role="tablist" aria-label="Google views đang mở">
+        <div className="api-wintabs g-shrink" role="tablist" aria-label="Google views đang mở">
           {secTabs.map((t) => {
             const def = SECTIONS.find((d) => d.key === t.sec)!;
             return (
@@ -1329,7 +1329,7 @@ export default function GoogleWorkspace() {
           dung sheet vài MB đã tải đều còn nguyên khi chuyển qua lại. */}
       {docs.length > 0 && (
         <div className="g-docs">
-          <div className="api-wintabs g-doctabs" role="tablist" aria-label="Tài liệu đang mở">
+          <div className="api-wintabs g-doctabs g-shrink" role="tablist" aria-label="Tài liệu đang mở">
             {docs.map((d) => (
               <div key={d.key} className={`api-wintab${d.key === curDoc?.key ? ' on' : ''}`}
                 onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeDoc(d.key); } }}>

@@ -6482,6 +6482,20 @@ iframe.tools-view-box { background: #fff; }
 .api-wintab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .api-wintab-x { border: none; background: transparent; cursor: pointer; color: var(--muted); padding: 4px 6px; font-size: 11px; border-radius: 6px; }
 .api-wintab-x:hover { color: var(--err, #e55); }
+
+/* Tab Google tự co khi mở nhiều (cùng cách với .lv-tab của Links/Browser): mỗi
+   tab xin 200px, co dần cho vừa thanh; hẹp hơn 76px thì bỏ tên, chỉ còn icon
+   (✏️/👁/icon view — tên đầy đủ ở tooltip) và ✕ chỉ còn ở tab đang chọn. Chỉ
+   áp cho thanh có `.g-shrink`: ApiWorkspace dùng chung class tab nhưng giữ nguyên. */
+.g-shrink .api-wintab { flex: 0 1 200px; min-width: 34px; container-type: inline-size; }
+.g-shrink .api-wintab.on { min-width: 104px; }
+.g-shrink .api-wintab-btn { flex: 1 1 auto; min-width: 0; text-align: left; }
+.g-shrink > button { flex: none; }
+@container (max-width: 76px) {
+  .g-shrink .api-wintab-name { display: none; }
+  .g-shrink .api-wintab-btn { padding: 4px 6px; justify-content: center; }
+  .g-shrink .api-wintab:not(.on) .api-wintab-x { display: none; }
+}
 .api-dot { font-size: 9px; line-height: 1; }
 .api-tabs { display: flex; gap: 4px; align-items: center; border-bottom: 1px solid var(--glass-brd); }
 .api-tab { border: none; background: transparent; cursor: pointer; color: var(--muted); padding: 5px 12px; font-size: 12px; border-radius: 6px 6px 0 0; }
