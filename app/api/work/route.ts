@@ -25,7 +25,15 @@
 //     'note-update'  { id, name, tags, body }    → { note }
 //     'note-remove'  { id }                      → { ok }
 //
-// Gate theo MONGO_TOOL_ENABLED — tính năng sống trên cụm Mongo do người dùng
+// NHIỆM VỤ TRỌNG TÂM (lib/workFocus) — KHÔNG bị cổng Mongo chặn: có Mongo đã cấu
+// hình thì lưu Mongo, không thì lưu file local:
+//     'focus-list'          {}                    → { items, storage:{mode,label}, localPending }
+//     'focus-add'           { period, periodKey, title, ... }  → { item }
+//     'focus-update'        { id, ...patch }      → { item }
+//     'focus-remove'        { id }                → { ok }
+//     'focus-import-local'  {}                    → { imported }   (file local → Mongo)
+//
+// Phần còn lại gate theo MONGO_TOOL_ENABLED — tính năng sống trên cụm Mongo do người dùng
 // quản lý trong tab Mongo, tắt tool Mongo là tắt luôn chỗ này.
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -35,6 +43,7 @@ import {
 } from '@/lib/workTasks';
 import { listNotes, addNote, updateNote, removeNote } from '@/lib/workNotes';
 import { ensureWorkWatch, getWorkWatchState, runWorkWatchNow } from '@/lib/workWatch';
+import { listFocus, addFocus, updateFocus, removeFocus, importLocalFocus } from '@/lib/workFocus';
 
 export const runtime = 'nodejs';
 
@@ -52,14 +61,32 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  if (!MONGO_ENABLED) return disabled();
-  ensureWorkWatch();
-
   const body = await req.json().catch(() => null) as Record<string, unknown> | null;
   const action = body?.action as string | undefined;
   if (!body || !action) {
     return NextResponse.json({ ok: false, error: 'Missing action' }, { status: 400 });
   }
+
+  // Trọng tâm: đứng TRƯỚC cổng Mongo (xem đầu file) — tự chọn Mongo hoặc local.
+  if (action.startsWith('focus-')) {
+    try {
+      let result: unknown;
+      switch (action) {
+        case 'focus-list': result = await listFocus(); break;
+        case 'focus-add': result = { item: await addFocus(body) }; break;
+        case 'focus-update': result = { item: await updateFocus(body.id, body) }; break;
+        case 'focus-remove': await removeFocus(body.id); result = { ok: true }; break;
+        case 'focus-import-local': result = await importLocalFocus(); break;
+        default: return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
+      }
+      return NextResponse.json({ ok: true, result });
+    } catch (err) {
+      return NextResponse.json({ ok: false, error: (err as Error).message || 'focus operation failed' }, { status: 400 });
+    }
+  }
+
+  if (!MONGO_ENABLED) return disabled();
+  ensureWorkWatch();
 
   try {
     let result: unknown;
