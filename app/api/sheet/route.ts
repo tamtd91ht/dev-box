@@ -5,6 +5,8 @@
 //     'open'   { path }                          → { ok, result: SheetOpenResult }
 //     'create' { dir, name }                     → { ok, result: SheetOpenResult }
 //     'save'   { path, mtimeMs, sheets: [{ name, ops[] }] } → { ok, result: SheetSaveResult }
+//     'stat'   { path }                          → { ok, result: { mtimeMs, sizeBytes } }   (dò file bị sửa ngoài app)
+//     'openExternal' { path }                    → { ok, result: { path } }   (mở bằng ứng dụng mặc định của OS)
 //
 // 'open' parses the file server-side (ExcelJS / papaparse) and ships a capped
 // JSON view. 'create' makes a NEW empty .xlsx/.csv (create-only, never
@@ -24,6 +26,8 @@ import {
   openFile,
   createFile,
   saveFile,
+  statFile,
+  openExternal,
 } from '@/lib/sheetClient';
 
 export const runtime = 'nodejs';
@@ -51,6 +55,10 @@ export async function POST(req: NextRequest) {
         });
       case 'open':
         return NextResponse.json({ ok: true, result: await openFile(body.path) });
+      case 'stat':
+        return NextResponse.json({ ok: true, result: await statFile(body.path) });
+      case 'openExternal':
+        return NextResponse.json({ ok: true, result: await openExternal(body.path) });
       case 'create': {
         try {
           const result = await createFile({ dir: body.dir, name: body.name });

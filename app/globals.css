@@ -9882,3 +9882,9 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .fc-sub { display: flex; align-items: center; gap: 6px; }
 .fc-sub .input { flex: 1; min-width: 0; }
 .fc-foot { display: flex; align-items: center; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+
+/* Sheet: file bị sửa ngoài app trong khi còn thay đổi chưa lưu */
+.sheet-extbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; margin: 6px 0; border-radius: 8px; font-size: 12.5px;
+  border: 1px solid color-mix(in srgb, var(--warn, #d90) 55%, transparent); background: color-mix(in srgb, var(--warn, #d90) 12%, transparent);
+}

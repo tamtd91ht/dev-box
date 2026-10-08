@@ -18,6 +18,7 @@
 //      the save (the file changed underneath — reload first).
 
 import { promises as fs } from 'fs';
+import { spawn } from 'child_process';
 import ExcelJS from 'exceljs';
 import Papa from 'papaparse';
 import type { BorderPreset, CellType, SheetOp, SheetOpenResult, SheetSaveResult, StylePatch, WireCell, WireMerge, WireSheet, WireStyle } from './sheet';
@@ -62,6 +63,36 @@ async function resolveTarget(raw: unknown): Promise<ResolvedTarget> {
     '.xlsm': '.xlsm (file có macro) không được hỗ trợ — lưu qua ExcelJS sẽ mất VBA. Hãy Save As .xlsx trước.',
   });
   return { ...t, kind: t.ext === '.csv' ? 'csv' : 'xlsx' };
+}
+
+// ── Mở bằng ứng dụng ngoài + dò file đổi ─────────────────────────────────────
+
+/** mtime + dung lượng hiện tại — để app biết file vừa bị sửa bởi chương trình khác. */
+export async function statFile(rawPath: unknown): Promise<{ mtimeMs: number; sizeBytes: number }> {
+  const t = await resolveTarget(rawPath);
+  return { mtimeMs: t.mtimeMs, sizeBytes: t.sizeBytes };
+}
+
+/**
+ * Mở file bằng ứng dụng MẶC ĐỊNH của hệ điều hành (Excel, WPS, LibreOffice…
+ * tuỳ máy gán .xlsx cho gì) — cùng đường kiểm tra path như `open` nên chỉ mở
+ * được .xlsx/.csv có thật. Không dùng shell: đường dẫn đi vào như MỘT đối số,
+ * tên file có dấu cách / ký tự lạ không bị diễn giải.
+ */
+export async function openExternal(rawPath: unknown): Promise<{ path: string }> {
+  const t = await resolveTarget(rawPath);
+  const [cmd, args] = process.platform === 'win32'
+    ? ['rundll32.exe', ['url.dll,FileProtocolHandler', t.abs]]
+    : process.platform === 'darwin'
+      ? ['open', [t.abs]]
+      : ['xdg-open', [t.abs]];
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.once('error', (e) => reject(new Error(`Không mở được bằng ứng dụng ngoài: ${e.message}`)));
+    // spawn chỉ báo lỗi (ENOENT…) qua 'error' ngay sau đó; im lặng = đã chạy.
+    child.once('spawn', () => { child.unref(); resolve(); });
+  });
+  return { path: t.abs };
 }
 
 // ── xlsx → wire ──────────────────────────────────────────────────────────────

@@ -57,6 +57,8 @@ import { formatNumFmt } from '@/lib/numFmt';
 import {
   fetchSheetFlags,
   openSheetFile,
+  openSheetExternal,
+  statSheetFile,
   createSheetFile,
   saveSheetFile,
   colLetter,
@@ -516,8 +518,61 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const reload = useCallback(() => {
     if (!file) return;
     if (dirtyCount > 0 && !window.confirm(`Đang có ${dirtyCount} thay đổi chưa lưu — tải lại sẽ mất hết. Tiếp tục?`)) return;
+    setExtChanged(false);
     void openPath(file.path);
   }, [file, dirtyCount, openPath]);
+
+  // ── Mở bằng Excel (ứng dụng ngoài) + tự nạp lại khi file bị sửa bên ngoài ──
+  //
+  // Sheet trong app là bản xem/sửa nhanh; việc nặng (biểu đồ, pivot, lọc/sắp xếp
+  // sâu…) làm bằng chính Excel. Hai bên chia sẻ MỘT file trên đĩa, nên khi cửa sổ
+  // app được focus lại ta so mtime: file đã đổi mà chưa có thay đổi nào của app
+  // thì nạp lại ngay (giữ nguyên sheet đang xem); còn thay đổi chưa lưu thì KHÔNG
+  // tự ghi đè — hiện thanh báo để người dùng chọn. Dò bằng sự kiện focus chứ
+  // không bằng timer: không tốn một nhịp poll nào lúc đang làm việc.
+  const [extChanged, setExtChanged] = useState(false);
+  const live = useRef({ file, dirtyCount, editing, busy: false, active });
+  live.current = { file, dirtyCount, editing, busy, active };
+
+  const openExternally = useCallback(async () => {
+    if (!file) return;
+    if (dirtyCount > 0 && !window.confirm(
+      `Có ${dirtyCount} thay đổi chưa lưu trong app — Excel sẽ mở bản trên đĩa, KHÔNG có các thay đổi này.\n\nBấm OK để vẫn mở (nên Lưu trước), Hủy để quay lại.`,
+    )) return;
+    try {
+      await openSheetExternal(file.path);
+      flash('Đã mở bằng ứng dụng mặc định. Sửa xong, Lưu bên đó rồi quay lại đây — app tự nạp lại.');
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, [file, dirtyCount, flash]);
+
+  useEffect(() => {
+    if (!file?.path) return;
+    const path = file.path;
+    const check = async () => {
+      const cur = live.current;
+      if (!cur.file || cur.file.path !== path || cur.busy) return;
+      try {
+        const st = await statSheetFile(path);
+        if (Math.abs(st.mtimeMs - cur.file.mtimeMs) <= 1) return;
+        if (live.current.dirtyCount > 0 || live.current.editing) { setExtChanged(true); return; }
+        const keep = live.current.active;
+        const res = await openSheetFile(path);
+        applyOpen(res);
+        setActive(Math.min(keep, Math.max(0, res.sheets.length - 1)));
+        setExtChanged(false);
+        flash('File vừa được chương trình khác sửa — đã nạp lại bản mới.');
+      } catch { /* file bị xoá/đổi tên/đang bị khoá: bỏ qua, lần focus sau thử lại */ }
+    };
+    const onVis = () => { if (document.visibilityState === 'visible') void check(); };
+    window.addEventListener('focus', check);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('focus', check);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [file?.path, applyOpen, flash]);
 
   // ── Grid dimensions (data extent + padding = "lưới Excel") ─────────────────
 
@@ -1826,6 +1881,10 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           ↷ Làm lại
         </button>
         <button className="ghost sm" onClick={reload} disabled={busy} title="Đọc lại file từ đĩa">↻ Tải lại</button>
+        <button className="ghost sm" onClick={() => void openExternally()} disabled={busy}
+          title="Mở file bằng ứng dụng mặc định (Excel / WPS / LibreOffice…) để làm việc nặng. Sửa xong Lưu bên đó, quay lại đây app tự nạp lại.">
+          ↗ Mở bằng Excel
+        </button>
         <button className="ghost sm" onClick={() => setPickerOpen(true)} disabled={busy} title="Mở file khác">📂 File khác</button>
         <button
           className="ghost sm"
@@ -1956,6 +2015,13 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
         </div>
       )}
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '6px 0' }}>{err}</pre>}
+      {extChanged && (
+        <div className="sheet-extbar" role="alert">
+          File đã bị chương trình khác sửa trên đĩa, trong khi bạn đang có {dirtyCount} thay đổi chưa lưu — app không tự ghi đè.
+          <button className="sm" onClick={reload} title="Bỏ các thay đổi chưa lưu và đọc lại bản trên đĩa">↻ Tải lại bản mới</button>
+          <button className="ghost sm" onClick={() => setExtChanged(false)} title="Giữ nguyên. Lưu từ app sẽ bị từ chối cho tới khi tải lại (tránh đè mất bản kia)">Để sau</button>
+        </div>
+      )}
       {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '6px 0' }}>{notice}</div>}
 
       <div

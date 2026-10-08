@@ -238,6 +238,16 @@ export function openSheetFile(path: string): Promise<SheetOpenResult> {
   return sheetAction<SheetOpenResult>('open', { path });
 }
 
+/** mtime hiện tại của file trên đĩa — so với lúc mở để biết có bị sửa ngoài app không. */
+export function statSheetFile(path: string): Promise<{ mtimeMs: number; sizeBytes: number }> {
+  return sheetAction('stat', { path });
+}
+
+/** Mở file bằng ứng dụng mặc định của hệ điều hành (Excel / WPS / LibreOffice…). */
+export function openSheetExternal(path: string): Promise<{ path: string }> {
+  return sheetAction('openExternal', { path });
+}
+
 /** Create a new empty .xlsx/.csv in `dir` (never overwrites) and open it. */
 export function createSheetFile(dir: string, name: string): Promise<SheetOpenResult> {
   return sheetAction<SheetOpenResult>('create', { dir, name });
