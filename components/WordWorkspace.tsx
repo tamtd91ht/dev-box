@@ -20,6 +20,7 @@ import WordFindPanel from './WordFindPanel';
 import WordOutline from './WordOutline';
 import WordHeaderFooterModal from './WordHeaderFooterModal';
 import WordInsertTableModal from './WordInsertTableModal';
+import WordPageSetupModal from './WordPageSetupModal';
 import { fmtBytes } from '@/lib/sheet';
 import {
   applyParaPatch, commonRunFormat, mergeRuns, patchRunRange, runsText,
@@ -200,6 +201,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
   const [findOpen, setFindOpen] = useState(false);
   const [hfOpen, setHfOpen] = useState<'header' | 'footer' | null>(null);
   const [tableOpen, setTableOpen] = useState(false);
+  const [pageOpen, setPageOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(true);
   // Đọc từ localStorage trong effect (không phải initializer) — component này
   // vẫn được render trước ở server, đụng `window` ở đó là vỡ.
@@ -706,6 +708,18 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     flash(`Đã đặt ${part === 'header' ? 'đầu trang' : 'chân trang'} — bấm Lưu để ghi vào file.`);
   }, [pushOp, flash]);
 
+  // ── Bố cục trang (khổ giấy / hướng / lề) ───────────────────────────────────
+
+  const applyPageSetup = useCallback((p: PageSetup) => {
+    setPage(p);
+    pushOp({
+      op: 'pageSetup', w: p.w, h: p.h, mt: p.mt, mr: p.mr, mb: p.mb, ml: p.ml,
+      ...(p.landscape ? { landscape: 1 as const } : {}),
+    });
+    setPageOpen(false);
+    flash('Đã đổi bố cục trang — bấm Lưu để ghi vào file.');
+  }, [pushOp, flash]);
+
   // ── Tìm & thay thế ──────────────────────────────────────────────────────────
 
   const jumpTo = useCallback((i: number) => {
@@ -964,7 +978,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
   const fmtEdits = opCount(['runFmt', 'paraFmt', 'cellFmt', 'tblBorder']);
   const structEdits = opCount([
     'insert', 'delete', 'move', 'pageBreak', 'tblInsert',
-    'tblRowInsert', 'tblRowDelete', 'tblColInsert', 'tblColDelete', 'hfSet',
+    'tblRowInsert', 'tblRowDelete', 'tblColInsert', 'tblColDelete', 'hfSet', 'pageSetup',
   ]);
 
   const targetLabel = cell
@@ -1014,6 +1028,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
         <span style={{ flex: 1 }} />
         {dirtyCount > 0 && <span className="badge sheet-dirty-badge">● {dirtyCount} thay đổi</span>}
         <button className="ghost sm" onClick={() => setFindOpen((o) => !o)} title="Tìm & thay thế (Ctrl+F)">🔎 Tìm</button>
+        <button className="ghost sm" onClick={() => setPageOpen(true)} title="Khổ giấy, hướng giấy, lề">📐 Bố cục trang</button>
         <button className="ghost sm" onClick={() => setHfOpen('header')} title="Đặt nội dung đầu trang">⌃ Đầu trang</button>
         <button className="ghost sm" onClick={() => setHfOpen('footer')} title="Đặt chân trang và số trang tự động">⌄ Chân trang</button>
         <button className="ghost sm" onClick={doPrint} title="Mở bản in — chọn 'Save as PDF' để xuất PDF (Ctrl+P)">🖨 In / PDF</button>
@@ -1182,6 +1197,10 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
         <WordInsertTableModal onInsert={insertTable} onClose={() => setTableOpen(false)} />
       )}
 
+      {pageOpen && (
+        <WordPageSetupModal page={page} onApply={applyPageSetup} onClose={() => setPageOpen(false)} />
+      )}
+
       {hfOpen && (
         <WordHeaderFooterModal
           part={hfOpen}
@@ -1206,7 +1225,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
             <ul className="sheet-save-summary">
               {textEdits > 0 && <li>{textEdits} thay đổi nội dung</li>}
               {fmtEdits > 0 && <li>{fmtEdits} thay đổi định dạng</li>}
-              {structEdits > 0 && <li>{structEdits} thay đổi bố cục (thêm/xóa/di chuyển khối, bảng, đầu-chân trang)</li>}
+              {structEdits > 0 && <li>{structEdits} thay đổi bố cục (thêm/xóa/di chuyển khối, bảng, đầu-chân trang, khổ giấy/lề)</li>}
             </ul>
 
             <div className="sheet-save-note">

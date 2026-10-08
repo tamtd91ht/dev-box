@@ -36,7 +36,8 @@
     "check:focus": "tsx scripts/check-work-focus.ts",
     "check:univer": "tsx scripts/check-sheet-univer.ts",
     "check:univer-load": "tsx scripts/check-univer-headless.ts",
-    "check:univer-save": "set OFFICE_ALLOW_WRITE=true&& tsx scripts/check-univer-save.ts"
+    "check:univer-save": "set OFFICE_ALLOW_WRITE=true&& tsx scripts/check-univer-save.ts",
+    "check:word": "set OFFICE_ALLOW_WRITE=true&& tsx scripts/check-word.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

@@ -179,6 +179,9 @@ export type WordOp =
   /** Set the default header/footer text. `pageNum` appends an auto page field. */
   | { op: 'hfSet'; part: 'header' | 'footer'; text: string; jc?: 'l' | 'c' | 'r'; pageNum?: 0 | 1 }
   // ── Whole-document ────────────────────────────────────────────────────────
+  /** Khổ giấy + hướng + lề của section CUỐI (cái Word coi là khổ mặc định của tài liệu).
+   *  Đơn vị point. Với giấy nằm ngang, `w` là cạnh DÀI (Word lưu w > h kèm orient). */
+  | { op: 'pageSetup'; w: number; h: number; mt: number; mr: number; mb: number; ml: number; landscape?: 0 | 1 }
   /** Find & replace across every paragraph and table cell. */
   | { op: 'replaceAll'; find: string; replace: string; matchCase?: 0 | 1; whole?: 0 | 1 };
 

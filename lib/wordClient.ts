@@ -41,7 +41,7 @@ import {
 } from './officeFiles';
 import {
   R_NS, W, type XDoc, type XEl,
-  appendChild, attr, elementChildren, findChild, findChildren, insertBefore,
+  appendChild, attr, elementChildren, findChild, findChildren, insertBefore, insertOrdered,
   local, maker, numAttr, removeChild, setAttr, textOf, val,
 } from './wordXml';
 import {
@@ -330,6 +330,22 @@ function sanitizeOps(raw: unknown): WordOp[] {
           jc: op.jc === 'l' || op.jc === 'c' || op.jc === 'r' ? op.jc : 'c',
           pageNum: op.pageNum ? 1 : 0,
         };
+      case 'pageSetup': {
+        const n = (v: unknown, what: string, min: number, max: number): number => {
+          const x = Number(v);
+          if (!Number.isFinite(x) || x < min || x > max) throw new Error(`${what} không hợp lệ.`);
+          return Math.round(x * 20) / 20; // point, bước 0.05 (1 twip)
+        };
+        const w = n(op.w, 'Chiều rộng giấy', 100, 3000);
+        const h = n(op.h, 'Chiều cao giấy', 100, 3000);
+        const mt = n(op.mt, 'Lề trên', 0, 720);
+        const mr = n(op.mr, 'Lề phải', 0, 720);
+        const mb = n(op.mb, 'Lề dưới', 0, 720);
+        const ml = n(op.ml, 'Lề trái', 0, 720);
+        // Lề ăn hết trang thì không còn chỗ cho chữ — Word tự sửa nhưng ta chặn sớm cho rõ lỗi.
+        if (mt + mb > h - 36 || ml + mr > w - 36) throw new Error('Lề quá lớn so với khổ giấy (phải còn ít nhất 0,5 inch cho nội dung).');
+        return { op: 'pageSetup', w, h, mt, mr, mb, ml, ...(op.landscape ? { landscape: 1 as const } : {}) };
+      }
       case 'replaceAll': {
         const find = str(op.find, 1000);
         if (find === '') throw new Error('Chuỗi cần tìm đang để trống.');
@@ -513,6 +529,49 @@ async function applyHeaderFooter(
 }
 
 // ── replaceAll ───────────────────────────────────────────────────────────────
+
+/** Thứ tự con của w:sectPr theo schema — Word từ chối file nếu sai thứ tự. */
+const SECT_ORDER = [
+  'headerReference', 'footerReference', 'footnotePr', 'endnotePr', 'type', 'pgSz', 'pgMar', 'paperSrc',
+  'pgBorders', 'lnNumType', 'pgNumType', 'cols', 'formProt', 'vAlign', 'noEndnote', 'titlePg',
+  'textDirection', 'bidi', 'rtlGutter', 'docGrid', 'printerSettings', 'sectPrChange',
+];
+
+/**
+ * Đặt khổ giấy / hướng / lề cho section cuối (w:sectPr ở cuối body). Chỉ ghi đè các
+ * thuộc tính khai trong op: gutter, header/footer distance… trong w:pgMar được giữ nguyên.
+ * Section nằm giữa tài liệu (sectPr trong pPr của một đoạn) KHÔNG đụng tới.
+ */
+function applyPageSetup(doc: XDoc, body: XEl, op: Extract<WordOp, { op: 'pageSetup' }>): void {
+  const { el } = maker(doc);
+  let sectPr = findChild(body, 'sectPr');
+  if (!sectPr) {
+    sectPr = el('sectPr');
+    appendChild(body, sectPr); // sectPr luôn là con CUỐI của body
+  }
+  const ensure = (name: string): XEl => {
+    let e = findChild(sectPr!, name);
+    if (!e) { e = el(name); insertOrdered(sectPr!, e, SECT_ORDER); }
+    return e;
+  };
+  const tw = (pt: number) => String(Math.round(pt * 20));
+
+  const pgSz = ensure('pgSz');
+  setAttr(pgSz, 'w', tw(op.w));
+  setAttr(pgSz, 'h', tw(op.h));
+  if (op.landscape) setAttr(pgSz, 'orient', 'landscape');
+  else (pgSz as unknown as { removeAttribute(n: string): void }).removeAttribute('w:orient');
+
+  const pgMar = ensure('pgMar');
+  setAttr(pgMar, 'top', tw(op.mt));
+  setAttr(pgMar, 'right', tw(op.mr));
+  setAttr(pgMar, 'bottom', tw(op.mb));
+  setAttr(pgMar, 'left', tw(op.ml));
+  // Word đòi đủ header/footer/gutter trong pgMar; thiếu thì thêm giá trị mặc định chuẩn.
+  if (attr(pgMar, 'header') === null) setAttr(pgMar, 'header', '708');
+  if (attr(pgMar, 'footer') === null) setAttr(pgMar, 'footer', '708');
+  if (attr(pgMar, 'gutter') === null) setAttr(pgMar, 'gutter', '0');
+}
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -798,6 +857,9 @@ export async function saveDocx(input: SaveDocxInput): Promise<WordSaveResult> {
         break;
       case 'hfSet':
         await applyHeaderFooter(parsed, op.part, op.text, op.jc ?? 'c', op.pageNum === 1);
+        break;
+      case 'pageSetup':
+        applyPageSetup(doc, body, op);
         break;
       case 'replaceAll':
         replaced += replaceAllInBody(doc, body, op);
