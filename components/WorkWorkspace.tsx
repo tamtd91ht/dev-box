@@ -32,10 +32,15 @@
 //   · 📝 Ghi chú (components/work/NotesPanel) — kho thông tin dạng text: tên +
 //     tag + nội dung, không trạng thái/deadline/cảnh báo. Cùng cụm Mongo, cùng
 //     database, KHÁC collection ('devbox_work_notes').
+//   · 🎯 Nhiệm vụ trọng tâm (components/work/FocusPanel) — việc quan trọng phải
+//     xong trong một TUẦN / THÁNG, có deadline + tag, xem Kanban hoặc bảng. Khác
+//     hai tab trên: dùng được cả khi CHƯA cấu hình Mongo (lưu file local) — vì vậy
+//     thanh tab con luôn hiện, kể cả ở màn cài đặt.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ConnectionForm from './mongo/ConnectionForm';
 import NotesPanel from './work/NotesPanel';
+import FocusPanel from './work/FocusPanel';
 import type { PublicMongoConnection } from '@/lib/mongo';
 
 // ── Types (khớp lib/workTasks) ───────────────────────────────────────────────
@@ -693,7 +698,7 @@ function MoveTaskPopup({
 // ── Workspace chính ──────────────────────────────────────────────────────────
 
 /** Hai tab con của workspace — lịch task và kho ghi chú. */
-type Sub = 'tasks' | 'notes';
+type Sub = 'tasks' | 'notes' | 'focus';
 
 export default function WorkWorkspace() {
   /** Tab con đang xem. Ghi chú mount lazy (chỉ gọi API khi người dùng mở). */
@@ -929,27 +934,64 @@ export default function WorkWorkspace() {
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
+  const pickSub = (v: Sub) => { setSub(v); setShowSetup(false); };
+  const subTabs = (
+    /* Tab con: lịch công việc ↔ trọng tâm ↔ ghi chú. Công việc + ghi chú dùng chung
+       kho Mongo; trọng tâm tự chọn Mongo hoặc file local. */
+    <div className="wk-subtabs" role="tablist" aria-label="Tab con Công việc">
+      <button role="tab" aria-selected={sub === 'tasks'} className={`wk-subtab${sub === 'tasks' ? ' on' : ''}`}
+        onClick={() => pickSub('tasks')} title="Lịch tháng + danh sách công việc">📅 Công việc</button>
+      <button role="tab" aria-selected={sub === 'focus'} className={`wk-subtab${sub === 'focus' ? ' on' : ''}`}
+        onClick={() => pickSub('focus')} title="Việc quan trọng phải xong trong tuần / tháng — Kanban hoặc bảng, có deadline và tag">🎯 Nhiệm vụ trọng tâm</button>
+      <button role="tab" aria-selected={sub === 'notes'} className={`wk-subtab${sub === 'notes' ? ' on' : ''}`}
+        onClick={() => pickSub('notes')} title="Kho ghi chú: tên + tag + nội dung">📝 Ghi chú</button>
+    </div>
+  );
+  /** Khung có sẵn thanh tab con — cho các màn thay thế toàn bộ nội dung (cài đặt, chờ tải…). */
+  const shell = (body: React.ReactNode) => (
+    <div className="panel sheet-panel">
+      <div className="sheet-toolbar">{subTabs}</div>
+      {body}
+    </div>
+  );
+  /** Từ tab Trọng tâm: sang màn cấu hình cụm Mongo của tab Công việc. */
+  const configureMongo = () => {
+    setSub('tasks');
+    workAction<ConfigView>('config')
+      .then((v) => { setView(v); setEnabled(true); setShowSetup(true); })
+      .catch((e) => {
+        if ((e as Error).message.includes('MONGO_TOOL_ENABLED')) setEnabled(false);
+        else setErr((e as Error).message);
+      });
+  };
+
+  // Trọng tâm không cần Mongo → đứng TRƯỚC các màn chặn bên dưới.
+  if (sub === 'focus') return shell(<FocusPanel action={workAction} onConfigureMongo={configureMongo} />);
+
   if (enabled === false) {
-    return (
+    return shell(
       <div className="panel" style={{ margin: 'auto', width: 'min(560px, 94%)' }}>
         <div className="office-hero">
           <div className="office-hero-ico" aria-hidden>📋</div>
           <div className="office-hero-title">Tab Công việc cần Mongo tool</div>
           <p className="office-hero-sub">Đặt <code>MONGO_TOOL_ENABLED=true</code> trong <code>.env.local</code> rồi khởi động lại.</p>
+          <p className="office-hero-sub small" style={{ color: 'var(--muted)' }}>
+            Riêng <b>🎯 Nhiệm vụ trọng tâm</b> vẫn dùng được ngay — chưa có Mongo thì lưu trong file trên máy này.
+          </p>
         </div>
-      </div>
+      </div>,
     );
   }
   if (view === null) {
-    return <div className="panel" style={{ margin: 'auto' }}><span className="spinner" /> Đang tải…</div>;
+    return shell(<div className="panel" style={{ margin: 'auto' }}><span className="spinner" /> Đang tải…</div>);
   }
   if (!view.configured || showSetup) {
-    return (
+    return shell(
       <SetupPanel
         view={view}
         onSaved={(v) => { setView(v); setShowSetup(false); setTasks([]); if (v.configured) void loadTasks(); }}
         onCancel={view.configured ? () => setShowSetup(false) : undefined}
-      />
+      />,
     );
   }
 
@@ -1021,13 +1063,7 @@ export default function WorkWorkspace() {
   return (
     <div className="panel sheet-panel">
       <div className="sheet-toolbar">
-        {/* Tab con: lịch công việc ↔ ghi chú. Cả hai dùng chung kho Mongo. */}
-        <div className="wk-subtabs" role="tablist" aria-label="Tab con Công việc">
-          <button role="tab" aria-selected={sub === 'tasks'} className={`wk-subtab${sub === 'tasks' ? ' on' : ''}`}
-            onClick={() => setSub('tasks')} title="Lịch tháng + danh sách công việc">📅 Công việc</button>
-          <button role="tab" aria-selected={sub === 'notes'} className={`wk-subtab${sub === 'notes' ? ' on' : ''}`}
-            onClick={() => setSub('notes')} title="Kho ghi chú: tên + tag + nội dung">📝 Ghi chú</button>
-        </div>
+        {subTabs}
         {sub === 'tasks' && (
           <>
             <button className="ghost sm" onClick={() => setYm(({ y, m }) => (m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 }))}>‹</button>
