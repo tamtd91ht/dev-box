@@ -33,10 +33,22 @@
     "check:es-export": "tsx scripts/check-es-export.ts",
     "check:query-tabs": "tsx scripts/check-query-tabs.ts",
     "check:api": "tsx scripts/check-api-vars.ts",
-    "check:focus": "tsx scripts/check-work-focus.ts"
+    "check:focus": "tsx scripts/check-work-focus.ts",
+    "check:univer": "tsx scripts/check-sheet-univer.ts",
+    "check:univer-load": "tsx scripts/check-univer-headless.ts",
+    "check:univer-save": "set OFFICE_ALLOW_WRITE=true&& tsx scripts/check-univer-save.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@univerjs/preset-sheets-conditional-formatting": "^1.0.3",
+    "@univerjs/preset-sheets-core": "^1.0.3",
+    "@univerjs/preset-sheets-data-validation": "^1.0.3",
+    "@univerjs/preset-sheets-filter": "^1.0.3",
+    "@univerjs/preset-sheets-find-replace": "^1.0.3",
+    "@univerjs/preset-sheets-hyper-link": "^1.0.3",
+    "@univerjs/preset-sheets-note": "^1.0.3",
+    "@univerjs/preset-sheets-sort": "^1.0.3",
+    "@univerjs/presets": "^1.0.3",
     "@xmldom/xmldom": "^0.9.10",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
@@ -63,6 +75,7 @@
     "react": "18.3.1",
     "react-datepicker": "^7.6.0",
     "react-dom": "18.3.1",
+    "rxjs": "^7.8.2",
     "ws": "^8.21.3"
   },
   "devDependencies": {

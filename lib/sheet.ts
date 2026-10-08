@@ -238,6 +238,23 @@ export function openSheetFile(path: string): Promise<SheetOpenResult> {
   return sheetAction<SheetOpenResult>('open', { path });
 }
 
+/** Dữ liệu workbook cho giao diện Univer (xem lib/sheetUniver). */
+export type UniverOpened = import('./sheetUniver').UniverOpenResult;
+
+/** Mở file cho giao diện Univer — không cắt ở 5.000 dòng như lưới cũ. */
+export function openUniverSheet(path: string): Promise<UniverOpened> {
+  return sheetAction<UniverOpened>('openUniver', { path });
+}
+
+/** Lưu từ giao diện Univer: xlsx gửi bản vá (chỉ phần đã đổi), csv gửi cả lưới giá trị. */
+export function saveUniverSheet(
+  path: string,
+  mtimeMs: number,
+  body: { patch: unknown } | { grid: string[][] },
+): Promise<SheetSaveResult & { cells: number }> {
+  return sheetAction('saveUniver', { path, mtimeMs, ...body });
+}
+
 /** mtime hiện tại của file trên đĩa — so với lúc mở để biết có bị sửa ngoài app không. */
 export function statSheetFile(path: string): Promise<{ mtimeMs: number; sizeBytes: number }> {
   return sheetAction('stat', { path });

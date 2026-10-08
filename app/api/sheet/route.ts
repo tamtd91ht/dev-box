@@ -5,6 +5,8 @@
 //     'open'   { path }                          → { ok, result: SheetOpenResult }
 //     'create' { dir, name }                     → { ok, result: SheetOpenResult }
 //     'save'   { path, mtimeMs, sheets: [{ name, ops[] }] } → { ok, result: SheetSaveResult }
+//     'openUniver' { path }                      → { ok, result: UniverOpenResult }   (dữ liệu cho giao diện Univer, không cắt 5.000 dòng)
+//     'saveUniver' { path, mtimeMs, patch | grid } → { ok, result }   (ghi bản vá từ giao diện Univer; cùng cổng ghi + .bak như 'save')
 //     'stat'   { path }                          → { ok, result: { mtimeMs, sizeBytes } }   (dò file bị sửa ngoài app)
 //     'openExternal' { path }                    → { ok, result: { path } }   (mở bằng ứng dụng mặc định của OS)
 //
@@ -29,6 +31,8 @@ import {
   statFile,
   openExternal,
 } from '@/lib/sheetClient';
+import { openUniverFile } from '@/lib/sheetUniver';
+import { saveUniverFile } from '@/lib/sheetUniverSave';
 
 export const runtime = 'nodejs';
 
@@ -55,6 +59,18 @@ export async function POST(req: NextRequest) {
         });
       case 'open':
         return NextResponse.json({ ok: true, result: await openFile(body.path) });
+      case 'openUniver':
+        return NextResponse.json({ ok: true, result: await openUniverFile(body.path) });
+      case 'saveUniver': {
+        try {
+          const result = await saveUniverFile({ path: body.path, mtimeMs: body.mtimeMs, patch: body.patch, grid: body.grid });
+          return NextResponse.json({ ok: true, result });
+        } catch (err) {
+          const msg = (err as Error).message || 'save refused';
+          const gate = msg.includes('ALLOW_WRITE');
+          return NextResponse.json({ ok: false, error: msg }, { status: gate ? 403 : 400 });
+        }
+      }
       case 'stat':
         return NextResponse.json({ ok: true, result: await statFile(body.path) });
       case 'openExternal':

@@ -54,11 +54,11 @@ export const MAX_COLS = 256;
 
 // ── Path validation ──────────────────────────────────────────────────────────
 
-interface ResolvedTarget extends OfficeTarget {
+export interface ResolvedTarget extends OfficeTarget {
   kind: 'xlsx' | 'csv';
 }
 
-async function resolveTarget(raw: unknown): Promise<ResolvedTarget> {
+export async function resolveTarget(raw: unknown): Promise<ResolvedTarget> {
   const t = await resolveOfficeFile(raw, ['.xlsx', '.csv'], {
     '.xlsm': '.xlsm (file có macro) không được hỗ trợ — lưu qua ExcelJS sẽ mất VBA. Hãy Save As .xlsx trước.',
   });
@@ -154,7 +154,7 @@ function applyTint(hex: string, tint: number): string {
 }
 
 /** ExcelJS color ({argb} | {theme,tint} | {indexed}) → CSS #rrggbb. */
-function resolveColor(c: unknown): string | undefined {
+export function resolveColor(c: unknown): string | undefined {
   if (!c || typeof c !== 'object') return undefined;
   const o = c as { argb?: string; theme?: number; tint?: number; indexed?: number };
   if (typeof o.argb === 'string' && o.argb.length >= 6) {
@@ -380,7 +380,7 @@ function sheetToWire(ws: ExcelJS.Worksheet): WireSheet {
 
 // ── CSV encode/decode ────────────────────────────────────────────────────────
 
-interface CsvDoc {
+export interface CsvDoc {
   grid: string[][];
   delimiter: string;
   newline: '\r\n' | '\n';
@@ -400,7 +400,7 @@ function decodeCsvBuffer(buf: Buffer): { text: string; hasBom: boolean; encoding
   return { text: buf.toString('utf8'), hasBom: false, encoding: 'utf8' };
 }
 
-function parseCsv(buf: Buffer): CsvDoc {
+export function parseCsv(buf: Buffer): CsvDoc {
   const { text, hasBom, encoding } = decodeCsvBuffer(buf);
   const endsWithNewline = /\r?\n$/.test(text);
   // Bỏ MỘT xuống dòng cuối TRƯỚC khi parse (không phải sau): dòng rỗng cuối làm Papa
@@ -414,7 +414,7 @@ function parseCsv(buf: Buffer): CsvDoc {
   return { grid, delimiter: parsed.meta.delimiter || ',', newline, hasBom, encoding, endsWithNewline };
 }
 
-function encodeCsv(doc: CsvDoc): Buffer {
+export function encodeCsv(doc: CsvDoc): Buffer {
   let text = Papa.unparse(doc.grid, { delimiter: doc.delimiter, newline: doc.newline });
   if (doc.endsWithNewline) text += doc.newline;
   if (doc.encoding === 'utf16le') {
