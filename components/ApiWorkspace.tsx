@@ -29,6 +29,7 @@ import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 import JsonBox from './api/JsonBox';
+import SplitPane, { type SplitCollapsed, type SplitDir } from './api/SplitPane';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 /** Draft rỗng — hàm chứ không phải hằng dùng chung: mỗi tab phải có mảng
@@ -78,6 +79,13 @@ interface Session {
 }
 
 const TABS_KEY = 'devbox.api.tabs';
+const LAYOUT_KEY = 'devbox.api.layout';
+const PROJ_KEY = 'devbox.api.projects.closed';
+
+/** Bố cục Request | Response — nhớ qua lần mở sau (khác useSplit: đây là tuỳ chọn
+ *  làm việc hằng ngày chứ không phải "nới tạm ra xem"). */
+interface Layout { dir: SplitDir; frac: number; collapsed: SplitCollapsed }
+const DEFAULT_LAYOUT: Layout = { dir: 'h', frac: 0.5, collapsed: null };
 let seq = 0;
 const newKey = (): string => `t${Date.now().toString(36)}${(seq += 1).toString(36)}`;
 
@@ -117,6 +125,12 @@ export default function ApiWorkspace() {
   const [curlText, setCurlText] = useState('');
   const [envEdit, setEnvEdit] = useState<ApiEnvironment | null>(null);
   const [autoFmt, setAutoFmt] = useState(true);
+  const [layout, setLayout] = useState<Layout>(DEFAULT_LAYOUT);
+  const setFrac = useCallback((frac: number) => setLayout((l) => ({ ...l, frac })), []);
+  const setCollapsed = useCallback((collapsed: SplitCollapsed) => setLayout((l) => ({ ...l, collapsed })), []);
+  const flipDir = useCallback(() => setLayout((l) => ({ ...l, dir: l.dir === 'h' ? 'v' : 'h' })), []);
+  /** Dự án đang thu gọn trong rail ('' = nhóm chưa phân dự án). */
+  const [closedProj, setClosedProj] = useState<string[]>([]);
   // Thu gọn cột collection để nhường chỗ cho builder + response. Rail còn rỗng
   // trơn (chưa request, chưa environment) thì buộc hiện — mấy nút ＋ ở trong đó.
   const rail = useRailCollapse('api', '--api-rail',
@@ -203,6 +217,18 @@ export default function ApiWorkspace() {
         setActiveKey(ss[Math.min(saved.active ?? 0, ss.length - 1)].key);
       }
     } catch { /* localStorage hỏng/đầy — mở bàn trắng, không phải lỗi đáng kêu */ }
+    try {
+      const l = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null') as Partial<Layout> | null;
+      if (l) {
+        setLayout({
+          dir: l.dir === 'v' ? 'v' : 'h',
+          frac: typeof l.frac === 'number' && l.frac > 0 && l.frac < 1 ? l.frac : 0.5,
+          collapsed: l.collapsed === 'first' || l.collapsed === 'second' ? l.collapsed : null,
+        });
+      }
+      const pc = JSON.parse(localStorage.getItem(PROJ_KEY) ?? 'null') as unknown;
+      if (Array.isArray(pc)) setClosedProj(pc.filter((x): x is string => typeof x === 'string'));
+    } catch { /* bố cục hỏng — dùng mặc định */ }
     setHydrated(true);
   }, []);
   useEffect(() => {
@@ -216,6 +242,13 @@ export default function ApiWorkspace() {
       localStorage.setItem(TABS_KEY, JSON.stringify({ drafts, active }));
     } catch { /* đầy thì thôi */ }
   }, [hydrated, sessions, cur]);
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+      localStorage.setItem(PROJ_KEY, JSON.stringify(closedProj));
+    } catch { /* đầy thì thôi */ }
+  }, [hydrated, layout, closedProj]);
 
   const activeEnv = data.environments.find((e) => e.id === data.activeEnvId);
   const envMap = useMemo(() => {
@@ -540,27 +573,46 @@ export default function ApiWorkspace() {
         ) : (
         <aside className="g-rail api-rail">
           <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', gap: 6 }}>
-            <span style={{ flex: 1 }}>Collection</span>
+            <span style={{ flex: 1 }}>Dự án</span>
             <button className="ghost sm" onClick={() => openSession(blankDraft())} title="Request mới (tab mới)">＋</button>
+            {(grouped.length > 1 || grouped.some(([f]) => f)) && (
+              closedProj.length === 0
+                ? <button className="ghost sm" onClick={() => setClosedProj(grouped.map(([f]) => f))} title="Thu gọn tất cả dự án">⊟</button>
+                : <button className="ghost sm" onClick={() => setClosedProj([])} title="Mở rộng tất cả dự án">⊞</button>
+            )}
             <button className="ghost sm" onClick={() => void reload()} title="Tải lại">↻</button>
             <RailHideButton onHide={rail.hide} className="ghost sm"
               title="Thu gọn cột collection — nhường chỗ cho request đang dựng" />
           </div>
-          {grouped.map(([folder, reqs]) => (
-            <div key={folder || '_'}>
-              {folder && <div className="api-folder">📁 {folder}</div>}
-              {reqs.map((r) => (
-                <div key={r.id} className={`g-root${draft.id === r.id ? ' on' : ''}`}>
-                  <button className="g-root-btn" onClick={() => openRequest(r)}
-                    title={sessions.some((s) => s.draft.id === r.id) ? `${r.url}\n(đang mở — bấm để nhảy tới tab)` : r.url}>
-                    <span className={methodClass(r.method)}>{r.method}</span>
-                    <span className="g-root-name">{r.name}</span>
+          {grouped.map(([folder, reqs]) => {
+            // Có ≥2 nhóm thì mới cần tiêu đề; chỉ một nhóm "chưa phân dự án" thì
+            // bày thẳng danh sách, khỏi một dòng tiêu đề thừa không thu gọn được.
+            const hasHead = !!folder || grouped.length > 1;
+            const closed = hasHead && closedProj.includes(folder);
+            return (
+              <div key={folder || '_'}>
+                {hasHead && (
+                  <button className="api-folder api-proj" aria-expanded={!closed}
+                    onClick={() => setClosedProj((c) => (c.includes(folder) ? c.filter((x) => x !== folder) : [...c, folder]))}
+                    title={closed ? 'Mở rộng dự án' : 'Thu gọn dự án'}>
+                    <span aria-hidden>{closed ? '▸' : '▾'}</span>
+                    <span>📁 {folder || 'Chưa phân dự án'}</span>
+                    <span className="api-proj-n">{reqs.length}</span>
                   </button>
-                  <button className="ghost sm g-root-act" onClick={() => void removeRequest(r)} title="Xóa">✕</button>
-                </div>
-              ))}
-            </div>
-          ))}
+                )}
+                {!closed && reqs.map((r) => (
+                  <div key={r.id} className={`g-root${draft.id === r.id ? ' on' : ''}`}>
+                    <button className="g-root-btn" onClick={() => openRequest(r)}
+                      title={sessions.some((s) => s.draft.id === r.id) ? `${r.url}\n(đang mở — bấm để nhảy tới tab)` : r.url}>
+                      <span className={methodClass(r.method)}>{r.method}</span>
+                      <span className="g-root-name">{r.name}</span>
+                    </button>
+                    <button className="ghost sm g-root-act" onClick={() => void removeRequest(r)} title="Xóa">✕</button>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
           {data.requests.length === 0 && <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px' }}>Chưa có request. Dựng rồi 💾, hoặc “Dán curl”.</p>}
 
           <div className="group-title" style={{ margin: '14px 4px 6px', display: 'flex', gap: 6 }}>
@@ -624,15 +676,33 @@ export default function ApiWorkspace() {
             <button className="ghost sm" onClick={() => setImportOpen(true)} title="Dán một lệnh curl để import">Dán curl</button>
           </div>
 
-          <div className="api-tabs">
-            {(['params', 'headers', 'body'] as const).map((t) => (
-              <button key={t} className={`api-tab${tab === t ? ' on' : ''}`} onClick={() => setTab(t)}>
-                {t === 'params' ? 'Params' : t === 'headers' ? `Headers (${draft.headers.filter((h) => h.key.trim()).length})` : 'Body'}
-              </button>
-            ))}
-            <span style={{ flex: 1 }} />
-            {activeEnv && <span className="small" style={{ color: 'var(--muted)' }}>env: <b>{activeEnv.name}</b></span>}
-          </div>
+          <SplitPane
+            dir={layout.dir}
+            frac={layout.frac}
+            onFrac={setFrac}
+            collapsed={layout.collapsed}
+            onCollapsed={setCollapsed}
+            firstLabel="Request"
+            secondLabel="Response"
+            first={
+              <div className="api-req">
+                <div className="api-tabs">
+                  {(['params', 'headers', 'body'] as const).map((t) => (
+                    <button key={t} className={`api-tab${tab === t ? ' on' : ''}`} onClick={() => setTab(t)}>
+                      {t === 'params' ? 'Params' : t === 'headers' ? `Headers (${draft.headers.filter((h) => h.key.trim()).length})` : 'Body'}
+                    </button>
+                  ))}
+                  <span style={{ flex: 1 }} />
+                  {activeEnv && <span className="small" style={{ color: 'var(--muted)' }}>env: <b>{activeEnv.name}</b></span>}
+                  <span className="api-tools">
+                    <button className="ghost sm" onClick={flipDir}
+                      title={layout.dir === 'h' ? 'Đang xếp ngang (request trái · response phải) — bấm để xếp dọc' : 'Đang xếp dọc (request trên · response dưới) — bấm để xếp ngang'}>
+                      {layout.dir === 'h' ? '⇄' : '⇅'}
+                    </button>
+                    <button className="ghost sm" onClick={() => setCollapsed('first')}
+                      title="Thu gọn request để xem response rộng hơn">{layout.dir === 'h' ? '◂' : '▴'}</button>
+                  </span>
+                </div>
 
           <div className="api-editor">
             {tab === 'headers' && (
@@ -739,54 +809,83 @@ export default function ApiWorkspace() {
                 )}
                 {draft.bodyType === 'raw' && (
                   <div className="api-bodybox">
-                    <JsonBox
-                      path={`api-body-${cur.key}`}
-                      value={draft.body}
-                      onChange={(v) => setDraft({ ...draft, body: v })}
-                      language={looksLikeJson(draft.body) || !draft.body.trim() ? 'json' : 'plaintext'}
-                      height={260}
-                      placeholder={'{ "key": "{{value}}" }'}
-                      onSubmit={() => void send()}
-                    />
+                    <div className="api-fill">
+                      <JsonBox
+                        path={`api-body-${cur.key}`}
+                        value={draft.body}
+                        onChange={(v) => setDraft({ ...draft, body: v })}
+                        language={looksLikeJson(draft.body) || !draft.body.trim() ? 'json' : 'plaintext'}
+                        height="100%"
+                        placeholder={'{ "key": "{{value}}" }'}
+                        onSubmit={() => void send()}
+                      />
+                    </div>
                   </div>
                 )}
               </div>
             )}
           </div>
 
-          {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '4px 0' }}>{err}</pre>}
-
-          {res && (
-            <div className="api-res">
-              <div className="api-res-head">
-                <span className={`api-status api-status--${Math.floor(res.status / 100)}`}>{res.status} {res.statusText}</span>
-                <span className="small" style={{ color: 'var(--muted)' }}>{res.timeMs} ms · {res.size} B</span>
-                <span style={{ flex: 1 }} />
-                <button className={`api-tab${resTab === 'body' ? ' on' : ''}`} onClick={() => setResTab('body')}>Body</button>
-                <button className={`api-tab${resTab === 'headers' ? ' on' : ''}`} onClick={() => setResTab('headers')}>Headers</button>
-                {resTab === 'body' && resKind && (
-                  <button className="ghost sm" onClick={() => setResPretty((p) => !p)}
-                    title={resPretty ? 'Xem nguyên văn server trả về' : `Format ${resKind.toUpperCase()} cho dễ đọc`}>
-                    {resPretty ? '↩ Raw' : `✨ Format ${resKind.toUpperCase()}`}
-                  </button>
+              </div>
+            }
+            second={
+              <div className="api-res">
+                <div className="api-res-head">
+                  {res
+                    ? (
+                      <>
+                        <span className={`api-status api-status--${Math.floor(res.status / 100)}`}>{res.status} {res.statusText}</span>
+                        <span className="small" style={{ color: 'var(--muted)' }}>{res.timeMs} ms · {res.size} B</span>
+                      </>
+                    )
+                    : <b>Response</b>}
+                  {sending && <span className="small" style={{ color: 'var(--muted)' }}>đang gửi…</span>}
+                  <span style={{ flex: 1 }} />
+                  {res && (
+                    <>
+                      <button className={`api-tab${resTab === 'body' ? ' on' : ''}`} onClick={() => setResTab('body')}>Body</button>
+                      <button className={`api-tab${resTab === 'headers' ? ' on' : ''}`} onClick={() => setResTab('headers')}>Headers</button>
+                      {resTab === 'body' && resKind && (
+                        <button className="ghost sm" onClick={() => setResPretty((p) => !p)}
+                          title={resPretty ? 'Xem nguyên văn server trả về' : `Format ${resKind.toUpperCase()} cho dễ đọc`}>
+                          {resPretty ? '↩ Raw' : `✨ Format ${resKind.toUpperCase()}`}
+                        </button>
+                      )}
+                    </>
+                  )}
+                  <span className="api-tools">
+                    <button className="ghost sm" onClick={flipDir}
+                      title={layout.dir === 'h' ? 'Đang xếp ngang — bấm để xếp dọc' : 'Đang xếp dọc — bấm để xếp ngang'}>
+                      {layout.dir === 'h' ? '⇄' : '⇅'}
+                    </button>
+                    <button className="ghost sm" onClick={() => setCollapsed('second')}
+                      title="Thu gọn response để soạn request rộng hơn">{layout.dir === 'h' ? '▸' : '▾'}</button>
+                  </span>
+                </div>
+                {err && <pre className="code api-err">{err}</pre>}
+                {res ? (
+                  resTab === 'body' ? (
+                    // JSON (đang format) → Monaco: gấp/mở từng khối bằng +/- ở lề,
+                    // Ctrl+F đếm số khớp. Raw hoặc không phải JSON thì <pre> như cũ
+                    // — dựng cả một editor cho một dòng text là phí.
+                    resKind === 'json' && resPretty ? (
+                      <div className="api-resbox">
+                        <div className="api-fill">
+                          <JsonBox path={`api-res-${cur.key}`} value={resShown} height="100%" />
+                        </div>
+                      </div>
+                    ) : (
+                      <pre className="api-res-body">{resShown}</pre>
+                    )
+                  ) : (
+                    <pre className="api-res-body">{Object.entries(res.headers).map(([k, v]) => `${k}: ${v}`).join('\n')}</pre>
+                  )
+                ) : (
+                  !err && <div className="api-res-empty">{sending ? 'Đang chờ server trả lời…' : 'Chưa có response — nhập URL rồi bấm ▶ Send.'}</div>
                 )}
               </div>
-              {resTab === 'body' ? (
-                // JSON (đang format) → Monaco: gấp/mở từng khối bằng +/- ở lề,
-                // Ctrl+F đếm số khớp. Raw hoặc không phải JSON thì <pre> như cũ
-                // — dựng cả một editor cho một dòng text là phí.
-                resKind === 'json' && resPretty ? (
-                  <div className="api-resbox">
-                    <JsonBox path={`api-res-${cur.key}`} value={resShown} height={320} />
-                  </div>
-                ) : (
-                  <pre className="api-res-body">{resShown}</pre>
-                )
-              ) : (
-                <pre className="api-res-body">{Object.entries(res.headers).map(([k, v]) => `${k}: ${v}`).join('\n')}</pre>
-              )}
-            </div>
-          )}
+            }
+          />
         </div>
         {!rail.collapsed && <Splitter {...railSplit.grip} />}
       </div>
@@ -799,7 +898,7 @@ export default function ApiWorkspace() {
               <button className="ghost sm" onClick={() => setSaveOpen(false)}>✕</button></div>
             <input className="input" autoFocus placeholder="Tên request" value={saveName}
               onChange={(e) => setSaveName(e.target.value)} />
-            <input className="input" placeholder="Folder/nhóm (optional) — vd: Auth, Backend" value={saveFolder}
+            <input className="input" placeholder="Dự án (optional) — vd: Auth, Backend" value={saveFolder}
               list="api-folders" onChange={(e) => setSaveFolder(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && void persistRequest(saveName, saveFolder)} />
             <datalist id="api-folders">

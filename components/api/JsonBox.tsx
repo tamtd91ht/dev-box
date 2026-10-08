@@ -76,7 +76,8 @@ export interface JsonBoxProps {
    *  dùng chung model, nội dung hai ô sẽ đè lên nhau. */
   path: string;
   language?: 'json' | 'plaintext';
-  height: number;
+  /** Số px, hoặc '100%' để lấp đầy khung cha (khung cha phải có chiều cao xác định). */
+  height: number | string;
   placeholder?: string;
   /** Ctrl+Enter — ô soạn body dùng để bấm Send luôn. */
   onSubmit?: () => void;

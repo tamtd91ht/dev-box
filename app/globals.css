@@ -6503,7 +6503,7 @@ iframe.tools-view-box { background: #fff; }
 /* Editor ăn hết chiều cao còn thừa: soạn body JSON dài mà không phải cuộn
    trong một ô 160px giữa màn hình trống. Khi đã có response thì nhường bớt —
    xem .api-main:has(.api-res) bên dưới. */
-.api-editor { flex: 1; min-height: 120px; display: flex; flex-direction: column; overflow: auto; }
+.api-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
 .api-kv { display: flex; flex-direction: column; gap: 4px; padding: 6px 2px; }
 .api-kv-row { display: flex; gap: 6px; align-items: center; }
 .api-kv-row .input { flex: 1; }
@@ -6514,15 +6514,16 @@ iframe.tools-view-box { background: #fff; }
 
 /* Ô body / response dựng bằng Monaco (components/api/JsonBox.tsx) — viền + bo
    góc để khớp các ô .input xung quanh, vì Monaco tự vẽ nền riêng của nó. */
-/* KHÔNG dùng flex:1 ở đây: Monaco đòi chiều cao TUYỆT ĐỐI (nó tự đo rồi vẽ
-   canvas), nên chiều cao do prop `height` của JsonBox quyết định và khung chỉ
-   việc ôm lấy. Cho flex:1 thì khung co giãn còn editor bên trong vẫn giữ nguyên
-   px — thừa ra một mảng trống có viền. */
+/* Monaco đòi chiều cao TUYỆT ĐỐI nên khung cha phải có chiều cao xác định: khung
+   là flex:1 và JsonBox nằm trong `.api-fill` (absolute, inset 0) với height
+   '100%'. Ô body/response vì thế co giãn theo ô chia (SplitPane) thay vì cao cứng
+   260/320px như trước. min-height để ô nhỏ quá thì cả cột cuộn chứ không biến mất. */
 .api-bodybox, .api-resbox {
-  flex: none; overflow: hidden;
+  flex: 1 1 auto; min-height: 140px; position: relative; overflow: hidden;
   border: 1px solid var(--glass-brd); border-radius: 8px;
 }
 .api-resbox { margin: 0 10px 10px; }
+.api-fill { position: absolute; inset: 0; }
 
 /* Radio chọn kiểu body: nhãn dài hơn trước (x-www-form-urlencoded) nên cho
    xuống dòng thay vì đẩy tràn ngang. */
@@ -6540,9 +6541,6 @@ iframe.tools-view-box { background: #fff; }
 /* File của request ĐÃ LƯU: còn tên nhưng không còn ruột (cố ý không lưu) —
    phải nhìn ra ngay là cần chọn lại, không thì bấm Send mà thiếu file. */
 .api-file-name.is-stale { color: var(--warn, #d90); }
-/* Có response rồi thì hai bên chia nhau, editor không nuốt hết. */
-.api-main:has(.api-res) .api-editor { flex: 1 1 40%; }
-.api-main:has(.api-res) .api-res { flex: 1 1 60%; }
 .api-res { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--glass-brd); border-radius: 10px; overflow: hidden; }
 .api-res-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--glass-brd); background: var(--bg-1, var(--bg)); }
 .api-res-body { flex: 1; min-height: 0; margin: 0; padding: 10px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 12px/1.5 var(--mono, ui-monospace, monospace); }
@@ -9690,3 +9688,46 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .res-max .mongo-qf-rows, .res-max .es-qf-rows, .res-max .pg-qf-rows {
   flex: 1 1 0; min-height: 0; max-height: none;
 }
+
+/* ── Tab API: Request | Response chia đôi, kéo được (components/api/SplitPane.tsx) ──
+   Mặc định xếp ngang (request trái, response phải) để response ăn hết chiều cao. */
+.api-split { flex: 1; min-height: 0; display: flex; gap: 0; position: relative; }
+.api-split--h { flex-direction: row; }
+.api-split--v { flex-direction: column; }
+.api-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.api-split--h > .api-pane { min-width: 220px; }
+.api-split--v > .api-pane { min-height: 120px; }
+.api-req { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.api-divider {
+  flex: none; display: flex; align-items: center; justify-content: center;
+  touch-action: none; border-radius: 3px; z-index: 2;
+}
+.api-divider--h { width: 10px; cursor: col-resize; }
+.api-divider--v { height: 10px; cursor: row-resize; }
+.api-divider-line { border-radius: 2px; background: var(--glass-brd); transition: background .12s; }
+.api-divider--h .api-divider-line { width: 2px; height: 100%; }
+.api-divider--v .api-divider-line { height: 2px; width: 100%; }
+.api-divider:hover .api-divider-line, .api-divider:focus-visible .api-divider-line, .api-divider.on .api-divider-line { background: var(--accent); }
+.api-divider--h:hover .api-divider-line, .api-divider--h.on .api-divider-line { width: 3px; }
+.api-divider--v:hover .api-divider-line, .api-divider--v.on .api-divider-line { height: 3px; }
+.api-divider:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* Ô bị thu gọn: dải mỏng có nút mở lại. */
+.api-strip {
+  flex: none; display: flex; align-items: center; justify-content: center; gap: 6px;
+  border: 1px solid var(--glass-brd); border-radius: 8px; background: var(--glass-2);
+  color: var(--muted); cursor: pointer; font-size: 12px; padding: 0;
+}
+.api-strip:hover { color: var(--accent); border-color: var(--accent); }
+.api-strip--h { width: 30px; flex-direction: column; padding: 8px 0; }
+.api-strip--h .api-strip-label { writing-mode: vertical-rl; }
+.api-strip--v { height: 30px; flex-direction: row; }
+.api-res-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; color: var(--muted); font-size: 12.5px; }
+.api-err { margin: 6px 10px 0; color: var(--err); white-space: pre-wrap; }
+.api-tools { display: flex; gap: 4px; align-items: center; }
+/* Nhóm dự án trong rail Collection: bấm để thu gọn/mở rộng. */
+.api-proj {
+  display: flex; align-items: center; gap: 4px; width: calc(100% - 8px);
+  background: none; border: none; cursor: pointer; text-align: left; padding: 3px 4px; border-radius: 6px;
+}
+.api-proj:hover { background: var(--glass-2); color: var(--text); }
+.api-proj-n { margin-left: auto; font-weight: 400; opacity: .7; }
