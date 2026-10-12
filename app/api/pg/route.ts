@@ -8,7 +8,7 @@
 //     'columns'    { connectionId, db, schema, table }     → { ok, result: PgColumnInfo[] }
 //     'indexes'    { connectionId, db, schema, table }     → { ok, result: PgIndexInfo[] }
 //     'query'      { connectionId, db, sql }               → { ok, result: PgQueryResult }        (READ ONLY tx)
-//     'quickFind'  { connectionId, db, schema, table, entries[], limit?, offset?, columns? } → { ok, result }
+//     'quickFind'  { connectionId, db, schema, table, entries[], limit?, offset?, columns?, sort? } → { ok, result }
 //     'quickCount' { connectionId, db, schema, table, entries[] } → { ok, result: { count } }
 //     'countWhere' { connectionId, db, schema, table, where } → { ok, result: { count } }         (update dry-run)
 //     'update'     { connectionId, db, schema, table, set[], where } → { ok, result: { updated } } (gated write)
@@ -108,6 +108,7 @@ export async function POST(req: NextRequest) {
           limit: body.limit,
           offset: body.offset,
           columns: body.columns,
+          sort: body.sort,
         });
         break;
       case 'quickCount':

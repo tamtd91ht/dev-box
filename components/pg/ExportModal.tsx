@@ -1,32 +1,16 @@
 'use client';
 
-// Xuất kết quả PG quick-find ra .xlsx — cùng UX + engine với tab Mongo/ES
-// (lib/mongoReport): cột STT, timestamp epoch/ISO → date-cell thật của Excel
-// (dd/MM/yyyy · HH:mm:ss dd/MM/yyyy), bề rộng tối thiểu vừa khổ A4.
+// Xuất kết quả PG quick-find ra .xlsx — dùng hộp thoại chung (components/export/ExportDialog: khai cột, cột thời gian
+// theo pattern, nối cột từ bảng/index khác, lưu cấu hình).
 //
-// Chạy lại CHÍNH mệnh đề WHERE đã tham số hoá, lật từng trang (200 dòng/trang),
-// chỉ SELECT các cột được nhắc tới.
+// Chạy lại CHÍNH mệnh đề WHERE đã tham số hoá, lật từng trang (200 dòng/trang), chỉ SELECT các cột được nhắc tới.
+// Cột jsonb chứa mảng object khai được dạng "deviceInfos.deviceId" (xem collectByPath ở lib/mongoReport).
 //
-// FIELD CODE ĐI XUYÊN LIST OBJECT: cột jsonb chứa mảng object khai được dạng
-// "deviceInfos.deviceId" — gom giá trị con rồi nối bằng ký tự phân cách của cột
-// (xem collectByPath ở lib/mongoReport).
-//
-// PHÂN TRANG: vẫn LIMIT/OFFSET như trước. Quick-find của PG chưa có sort do
-// người dùng khai nên không có khoá ổn định để đi keyset; OFFSET sâu dần sẽ
-// chậm trên bảng rất lớn — đổi được khi PG quick-find có sort.
+// PHÂN TRANG: vẫn LIMIT/OFFSET — quick-find PG chưa có khoá sort ổn định để đi keyset.
 
-import { useCallback, useMemo, useState } from 'react';
-import { pgQuickFind, pgQuickCount, type PgQuickEntry } from '@/lib/pg';
-import {
-  buildReportXlsx,
-  downloadBlob,
-  reportFilename,
-  MAX_EXPORT_ROWS,
-  NO_COLUMN_PATH,
-} from '@/lib/mongoReport';
-import ColumnMapper, { hasDataColumn, initialColumns, toReportColumns, type ColumnDraft } from '../export/ColumnMapper';
-import ConfirmExportModal from '../export/ConfirmExportModal';
+import { pgQuickFind, pgQuickCount, type PgQuickEntry, type PgSortKey } from '@/lib/pg';
 import { runExport, parseRows } from '../export/exportRun';
+import ExportDialog from '../export/ExportDialog';
 
 const PAGE = 200;
 
@@ -37,6 +21,9 @@ export interface ExportModalProps {
   table: string;
   /** Điều kiện của lần chạy đang xuất (tham số hoá ở server). */
   entries: PgQuickEntry[];
+  /** Sort của LẦN CHẠY vừa rồi — file xuất cùng thứ tự bảng đang nhìn. */
+  sort?: PgSortKey[];
+  sortSummary?: string;
   querySummary: string;
   /** Gợi ý cột (từ information_schema). */
   fieldSuggestions: string[];
@@ -46,127 +33,32 @@ export interface ExportModalProps {
 }
 
 export default function ExportModal(props: ExportModalProps) {
-  const {
-    connectionId, db, schema, table, entries, querySummary,
-    fieldSuggestions, defaultTitle, onClose, onDone,
-  } = props;
-
-  const [title, setTitle] = useState(defaultTitle);
-  const [columns, setColumns] = useState<ColumnDraft[]>(initialColumns);
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
-
-  const validColumns = useMemo(() => columns.filter((c) => c.path.trim()), [columns]);
-  const canExport = !busy && !!title.trim() && hasDataColumn(columns);
-
-  const countRows = useCallback(async () => {
-    const r = await pgQuickCount(connectionId, db, { schema, table, entries });
-    return r.count;
-  }, [connectionId, db, schema, table, entries]);
-
-  const doExport = async () => {
-    setConfirming(false);
-    setBusy(true); setError(null);
-    try {
-      // Cột jsonb khai dạng "doc.field" → SELECT vẫn phải lấy cột GỐC ("doc"),
-      // phần sau dấu chấm là đường đi bên trong JSON, không phải tên cột.
-      const selectCols = [...new Set(
-        validColumns.map((c) => c.path.split('.')[0]).filter((p) => p !== NO_COLUMN_PATH),
-      )];
-
-      const { rows, capped } = await runExport<number>({
-        max: MAX_EXPORT_ROWS,
-        onProgress: (n) => setProgress(`Đang tải dữ liệu… ${n.toLocaleString('en-US')} dòng`),
-        fetchPage: async (offset) => {
-          const at = offset ?? 0;
-          const page = await pgQuickFind(connectionId, db, {
-            schema, table, entries, limit: PAGE, offset: at,
-            columns: selectCols.length ? selectCols : undefined,
-          });
-          return { rows: parseRows(page.rows), next: page.hasMore ? at + PAGE : null };
-        },
-      });
-
-      setProgress(`Đang dựng file Excel… ${rows.length.toLocaleString('en-US')} dòng`);
-      const blob = await buildReportXlsx(
-        {
-          title: title.trim(),
-          target: `${db}.${schema}.${table}`,
-          rowCount: rows.length,
-          note: capped ? `đã cắt tại ${MAX_EXPORT_ROWS.toLocaleString('en-US')} dòng` : undefined,
-        },
-        toReportColumns(columns),
-        rows,
-      );
-      const filename = reportFilename(title);
-      downloadBlob(blob, filename);
-      onDone(rows.length, filename);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false); setProgress(null);
-    }
-  };
-
+  const { connectionId, db, schema, table, entries, sort } = props;
   return (
-    <>
-    <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(760px, 94vw)' }}>
-        <div className="status-line" style={{ marginBottom: 8 }}>
-          <h3 style={{ margin: 0, flex: 1 }}>📄 Xuất báo cáo — {schema}.{table}</h3>
-          <button className="ghost sm" onClick={onClose} disabled={busy}>✕</button>
-        </div>
-
-        <label className="pg-field" style={{ marginBottom: 8 }}>
-          <span>Tiêu đề báo cáo (hiện trên đầu sheet + tên file)</span>
-          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)}
-            disabled={busy} placeholder="Báo cáo extension theo tenant" />
-        </label>
-
-        <div className="pg-field" style={{ marginBottom: 4, minHeight: 0 }}>
-          <span>Cột báo cáo (tên cột · column · định dạng · phân cách · ⋯ đổi giá trị)</span>
-          <ColumnMapper
-            columns={columns}
-            setColumns={setColumns}
-            fieldSuggestions={fieldSuggestions}
-            datalistId="pg-export-fields"
-            prefix="pg"
-            placeholder="column (vd. created_at)"
-            disabled={busy}
-          />
-        </div>
-
-        <p className="pg-hint" style={{ marginBottom: 8 }}>
-          Xuất <b>toàn bộ</b> kết quả khớp query <code>{querySummary}</code> (không chỉ trang đang xem,
-          trần {MAX_EXPORT_ROWS.toLocaleString('en-US')} dòng). Cột <b>jsonb</b> khai được dạng
-          <code> doc.field</code>; nhiều giá trị nối bằng ký tự ở ô phân cách (mặc định <code>, </code>).
-        </p>
-
-        {error && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{error}</pre>}
-
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
-          {progress && <span className="badge"><span className="spinner" aria-hidden /> {progress}</span>}
-          <button className="ghost sm" onClick={onClose} disabled={busy}>Huỷ</button>
-          <button className="sm" disabled={!canExport} onClick={() => setConfirming(true)}
-            title={canExport ? 'Xem số lượng rồi xác nhận' : 'Cần tiêu đề + ít nhất 1 cột'}>
-            {busy ? <span className="spinner" aria-hidden /> : '⬇'} Xuất .xlsx
-          </button>
-        </div>
-      </div>
-    </div>
-
-    {confirming && (
-      <ConfirmExportModal
-        target={`${db}.${schema}.${table}`}
-        querySummary={querySummary}
-        columnCount={validColumns.length}
-        count={countRows}
-        onCancel={() => setConfirming(false)}
-        onConfirm={() => void doExport()}
-      />
-    )}
-    </>
+    <ExportDialog
+      target={`${db}.${schema}.${table}`}
+      querySummary={props.querySummary}
+      sortSummary={props.sortSummary}
+      fieldSuggestions={props.fieldSuggestions}
+      defaultTitle={props.defaultTitle}
+      placeholder="column (vd. created_at)"
+      allowJoin
+      countRows={async () => (await pgQuickCount(connectionId, db, { schema, table, entries })).count}
+      fetchRows={({ paths, max, onProgress }) =>
+        runExport<number>({
+          max,
+          onProgress,
+          fetchPage: async (offset) => {
+            const at = offset ?? 0;
+            // Cột jsonb khai dạng "doc.field" → SELECT vẫn phải lấy cột GỐC ("doc"); `paths` đã là field cấp 1.
+            const page = await pgQuickFind(connectionId, db, {
+              schema, table, entries, limit: PAGE, offset: at, columns: paths.length ? paths : undefined, sort: sort?.length ? sort : undefined,
+            });
+            return { rows: parseRows(page.rows), next: page.hasMore ? at + PAGE : null };
+          },
+        })}
+      onClose={props.onClose}
+      onDone={props.onDone}
+    />
   );
 }

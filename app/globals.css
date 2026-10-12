@@ -9899,3 +9899,46 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 
 /* Word: ảnh trong đoạn (hiển thị) */
 .word-img { display: block; max-width: 100%; height: auto; margin: 4px auto; }
+
+/* ── Xuất Excel: khai cột nâng cao (thời gian theo pattern, nối cột) — port từ vhs-monitor ── */
+.xrow { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.export-join { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--glass-brd); border-radius: 10px; background: var(--glass-bg); }
+.export-join .xrow { align-items: flex-start; gap: 8px; }
+.export-time { padding-left: 10px; }
+.xhint { font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.xhint code, .export-join code { font-family: var(--mono); font-size: 11.5px; }
+.xerr { font-size: 12px; color: var(--err); }
+.xchk { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; }
+.input.bad { border-color: var(--err); }
+
+/* ── Chia đôi truy vấn trái · kết quả phải (components/ColSplit.tsx) — port từ vhs-monitor ── */
+.cs-split { display: flex; height: var(--cs-split-h, 70vh); min-height: 0; min-width: 0; }
+.cs-split.dragging { user-select: none; cursor: col-resize; }
+.cs-split-left, .cs-split-right { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.cs-split-left { flex: 0 0 var(--cs-split-l, 40%); overflow: auto; padding-right: 6px; }
+.cs-split-right { flex: 1 1 0; overflow: hidden; padding-left: 6px; }
+.cs-split-bar { flex: 0 0 9px; margin: 0 -1px; cursor: col-resize; position: relative; touch-action: none; outline: none; }
+.cs-split-bar::after { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: var(--glass-brd); transition: background .12s, width .12s, left .12s; }
+.cs-split-bar:hover::after, .cs-split-bar:focus-visible::after, .cs-split.dragging .cs-split-bar::after { background: var(--accent); width: 3px; left: 3px; }
+/* Mỗi bên là một khung `*-qf-run` đầy chiều cao; bên phải: thanh công cụ cố định, danh sách kết quả chiếm phần còn lại và tự cuộn. */
+.cs-split-left > *, .cs-split-right > * { flex: 1 1 auto; min-height: 0; }
+.cs-split-right > .res-box, .cs-split-right > * > .res-box { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.cs-split-right [class*="-qf-rows"] { flex: 1 1 0; max-height: none; min-height: 0; }
+.cs-split-right .res-box:not(.res-max) { overflow: hidden; }
+.cs-split-pin { margin-top: auto; }
+@media (max-width: 860px) {
+  .cs-split { flex-direction: column; height: auto; }
+  .cs-split-left { flex: none; overflow: visible; padding-right: 0; }
+  .cs-split-right { overflow: visible; padding-left: 0; }
+  .cs-split-bar { display: none; }
+  .cs-split-left > *, .cs-split-right > * { flex: none; }
+  .cs-split-right [class*="-qf-rows"] { max-height: 56vh; }
+}
+/* Tab Truy vấn chia đôi (Mongo/ES/PG BrowserView·Console): khung truy vấn cao hết cột trái, nút chạy dính đáy; kết quả cuộn riêng. */
+.cs-split-left > .pg-querybar, .cs-split-left > .mongo-querybar, .cs-split-left > .es-querybar { flex: 1 1 auto; }
+.cs-split-right > .pg-resultpane, .cs-split-right > .mongo-resultpane, .cs-split-right > .es-resultpane { display: flex; flex-direction: column; gap: 8px; }
+.cs-split-right .pg-results, .cs-split-right .mongo-results, .cs-split-right .es-results { flex: 1 1 0; max-height: none; min-height: 0; }
+.cs-split-left textarea.pg-sql, .cs-split-left .pg-querybar textarea { min-height: 200px; }
+@media (max-width: 860px) {
+  .cs-split-right .pg-results, .cs-split-right .mongo-results, .cs-split-right .es-results { max-height: 58vh; }
+}

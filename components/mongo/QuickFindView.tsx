@@ -35,6 +35,8 @@
 // browser, so every server-side bound (maxTimeMS, limit clamp) applies here too.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import QuickSortEditor from '../export/QuickSortEditor';
+import ColSplit from '../ColSplit';
 import { usePresetSync } from '@/lib/presetSync';
 import {
   findMongo,
@@ -76,7 +78,7 @@ interface RunField extends QuickFindField {
   list: boolean;
 }
 
-type RunTab = 'conditions' | 'projection';
+type RunTab = 'conditions' | 'projection' | 'sort';
 
 /** Union of top-level keys across sample docs → projection suggestions. */
 function deriveFieldNames(docs: WireDoc[]): string[] {
@@ -107,6 +109,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   // Setup panel visibility + tab. Collapsed after a successful run.
   const [panelOpen, setPanelOpen] = useState(true);
   const [runTab, setRunTab] = useState<RunTab>('conditions');
+  /** Sort của LẦN CHẠY — điền sẵn từ nút đã lưu, sửa ở tab "Sắp xếp" chỉ áp cho lần chạy/xuất hiện tại
+   *  (muốn đổi vĩnh viễn thì sửa nút ✎). Rỗng = không sort. */
+  const [sortKeys, setSortKeys] = useState<QuickFindSort[]>([]);
 
   // Projection (run-time only, never persisted into the preset).
   const [projSuggestions, setProjSuggestions] = useState<string[]>([]);
@@ -166,6 +171,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   /** Open the run panel for a preset — every field starts unticked and empty. */
   const startRun = useCallback((p: MongoQuickFind) => {
     setRun(p);
+    setSortKeys(p.sort ?? []);
     setRunFields(p.fields.map((f) => ({ ...f, checked: false, value: '', list: false })));
     setRunDb(p.database); setRunColl(p.collection);
     setDbOpts([]); setCollOpts([]);
@@ -197,7 +203,8 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
       const filter = buildQuickFilter(
         runFields.filter((f) => f.checked).map((f) => ({ path: f.path, type: f.type, value: f.value, list: f.list })),
       );
-      const sortJson = buildQuickSort(run.sort);
+      const effSort = sortKeys.filter((k) => k.path.trim()).map((k) => ({ path: k.path.trim(), dir: k.dir }));
+      const sortJson = buildQuickSort(effSort);
       const r = await findMongo(run.connectionId, runDb, runColl, {
         filter, projection: buildProjection(), sort: sortJson, limit: run.limit, skip: effSkip,
       });
@@ -205,18 +212,18 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
       setSkip(r.skip);
       setLastFilter(filter); // the export re-queries with exactly this filter
       setLastSort(sortJson);
-      setLastSortText(describeSort(run.sort));
-      setPanelOpen(false); // results take the screen; the summary bar carries the query
+      setLastSortText(describeSort(effSort));
+      // Khung chia đôi: điều kiện luôn ở cột trái, kết quả ở cột phải — không cần thu panel để nhường chỗ.
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [run, runFields, buildProjection, runDb, runColl]);
+  }, [run, runFields, buildProjection, runDb, runColl, sortKeys]);
 
   /**
    * Discover projectable fields when the tab opens: reuse the docs we already
    * have; otherwise sample 5 full documents from the live collection.
    */
-  const openProjectionTab = useCallback(async () => {
-    setRunTab('projection');
+  const openProjectionTab = useCallback(async (tab: RunTab = 'projection') => {
+    setRunTab(tab);
     if (!run || projSuggestions.length > 0 || !runDb || !runColl) return;
     const have = result?.docs?.length ? result.docs : null;
     if (have) { setProjSuggestions(deriveFieldNames(have)); return; }
@@ -308,12 +315,13 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
 
       {/* ── Run panel ───────────────────────────────────────────────────── */}
       {run && !edit && (
+        <ColSplit storageKey="devbox-mongo-qf-split">
         <div className="mongo-qf-run">
           <div className="status-line" style={{ justifyContent: 'space-between' }}>
             <strong>🔎 {run.name}</strong>
             <span className="badge">
               {connName(run.connectionId) ?? '⚠ connection đã xoá'} · limit {run.limit}
-              {run.sort?.length ? ` · sort ${describeSort(run.sort)}` : ''}
+              {sortKeys.some((k) => k.path.trim()) ? ` · sort ${describeSort(sortKeys.filter((k) => k.path.trim()))}` : ''}
             </span>
           </div>
 
@@ -370,6 +378,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                 </button>
                 <button className={runTab === 'projection' ? 'on' : ''} onClick={() => void openProjectionTab()}>
                   Trường trả về{projSelected.length > 0 ? ` (${projSelected.length})` : ''}
+                </button>
+                <button className={runTab === 'sort' ? 'on' : ''} onClick={() => void openProjectionTab('sort')}>
+                  Sắp xếp{sortKeys.some((k) => k.path.trim()) ? ` (${sortKeys.filter((k) => k.path.trim()).length})` : ''}
                 </button>
               </div>
 
@@ -435,6 +446,10 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                 </div>
               )}
 
+              {runTab === 'sort' && (
+                <QuickSortEditor value={sortKeys} onChange={setSortKeys} suggestions={projSuggestions} disabled={busy} />
+              )}
+
               {runTab === 'projection' && (
                 <div className="mongo-qf-proj">
                   <p className="mongo-qf-hint">
@@ -475,11 +490,17 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
             </>
           )}
 
-          <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
-          <div className="status-line" style={{ gap: 8 }}>
+          <div className="status-line cs-split-pin" style={{ gap: 8 }}>
             <button className="sm" disabled={busy || enabledCount === 0} onClick={() => void doRun()}>
               {busy ? <span className="spinner" aria-hidden /> : '▶'} Chạy ({enabledCount} điều kiện, AND)
             </button>
+          </div>
+        </div>
+
+        <div className="mongo-qf-run">
+          <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
+          <div className="status-line" style={{ gap: 8 }}>
+            {!result && <span className="xhint">Kết quả sẽ hiện ở đây sau khi chạy.</span>}
             {result && (
               <>
                 <span className="badge">{result.docs.length} docs · skip {result.skip} · {result.tookMs}ms</span>
@@ -522,6 +543,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           )}
           </ResultBox>
         </div>
+        </ColSplit>
       )}
 
       {selectedDoc && <DocModal doc={selectedDoc} onClose={() => setSelectedDoc(null)} />}

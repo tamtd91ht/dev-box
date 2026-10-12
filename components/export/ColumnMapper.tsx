@@ -21,10 +21,33 @@
 // lớn cột không cần tới, mà dòng cột thì đã chật sẵn.
 
 import { useState } from 'react';
+import SuggestInput, { type SuggestOption } from '../SuggestInput';
 import {
-  COLUMN_FORMATS, DEFAULT_SEP, NO_COLUMN_PATH, hasValueMap,
-  type ColumnFormat, type ReportColumn, type ValueMap,
+  COLUMN_FORMATS, DEFAULT_SEP, DEFAULT_TIME_PATTERN, NO_COLUMN_PATH, TIME_UNITS, hasValueMap, isValidTimeZone,
+  type ColumnFormat, type ReportColumn, type TimeUnit, type ValueMap,
 } from '@/lib/mongoReport';
+
+const PATTERN_OPTIONS: SuggestOption[] = [
+  { value: 'dd/MM/yyyy', hint: 'ngày' },
+  { value: 'dd/MM/yyyy HH:mm:ss', hint: 'ngày giờ' },
+  { value: 'HH:mm:ss dd/MM/yyyy', hint: 'giờ ngày' },
+  { value: 'yyyy-MM-dd', hint: 'ISO ngày' },
+  { value: 'yyyy-MM-dd HH:mm:ss', hint: 'ISO ngày giờ' },
+  { value: "yyyy-MM-dd'T'HH:mm:ss.SSS", hint: 'ISO + ms' },
+  { value: 'MM/yyyy', hint: 'tháng' },
+  { value: 'HH:mm:ss', hint: 'giờ' },
+  { value: 'hh:mm a dd/MM/yyyy', hint: '12 giờ' },
+];
+
+const TZ_OPTIONS: SuggestOption[] = [
+  { value: 'Asia/Ho_Chi_Minh', hint: 'UTC+7' },
+  { value: 'UTC', hint: 'UTC' },
+  { value: 'Asia/Bangkok', hint: 'UTC+7' },
+  { value: 'Asia/Singapore', hint: 'UTC+8' },
+  { value: 'Asia/Tokyo', hint: 'UTC+9' },
+  { value: 'Europe/London', hint: 'UTC+0/+1' },
+  { value: 'America/New_York', hint: 'UTC-5/-4' },
+];
 
 export interface ColumnDraft extends ReportColumn { key: number }
 
@@ -65,10 +88,14 @@ export function hasDataColumn(columns: ColumnDraft[]): boolean {
 export function toReportColumns(columns: ColumnDraft[]): ReportColumn[] {
   return columns
     .filter((c) => c.path.trim())
-    .map(({ header, path, format, sep, map }) => ({
+    .map(({ header, path, format, sep, map, timeUnit, pattern, tz }) => ({
       header: header.trim() || path.trim(),
       path: path.trim(),
       format,
+      // Tuỳ chọn thời gian chỉ mang theo khi cột thật sự chọn "theo pattern".
+      ...(format === 'custom'
+        ? { timeUnit: timeUnit ?? 'auto', pattern: pattern?.trim() || DEFAULT_TIME_PATTERN, ...(tz?.trim() ? { tz: tz.trim() } : {}) }
+        : {}),
       // sep giữ NGUYÊN chuỗi người dùng gõ, kể cả khoảng trắng (" / " là hợp lệ).
       // Chỉ chuỗi rỗng mới coi là "không khai".
       ...(sep ? { sep } : {}),
@@ -82,18 +109,14 @@ export function toReportColumns(columns: ColumnDraft[]): ReportColumn[] {
 export interface ColumnMapperProps {
   columns: ColumnDraft[];
   setColumns: React.Dispatch<React.SetStateAction<ColumnDraft[]>>;
-  /** Gợi ý field code cho datalist. */
-  fieldSuggestions: string[];
-  /** id datalist — phải là duy nhất trên trang (mongo/es/pg mở cùng lúc được). */
-  datalistId: string;
-  /** Class prefix của tab để giữ đúng style sẵn có: 'mongo' | 'es' | 'pg'. */
-  prefix: string;
+  /** Gợi ý field code (Tab/Enter để điền). */
+  fieldSuggestions: Array<string | SuggestOption>;
   placeholder: string;
   disabled?: boolean;
 }
 
 export default function ColumnMapper(props: ColumnMapperProps) {
-  const { columns, setColumns, fieldSuggestions, datalistId, prefix, placeholder, disabled } = props;
+  const { columns, setColumns, fieldSuggestions, placeholder, disabled } = props;
   /** Cột đang mở bảng đổi giá trị — mỗi lúc chỉ một, modal không đủ chỗ cho nhiều. */
   const [openMap, setOpenMap] = useState<number | null>(null);
 
@@ -113,15 +136,22 @@ export default function ColumnMapper(props: ColumnMapperProps) {
           const nRules = c.map?.rules.filter((r) => r.when.trim() !== '' || r.to !== '').length ?? 0;
           return (
             <div key={c.key} className="export-col">
-              <div className={`${prefix}-form-row`} style={{ alignItems: 'center', flexWrap: 'nowrap' }}>
-                <input className="input" style={{ flex: 1 }} value={c.header} placeholder="Tên cột (vd. Ngày tạo)"
+              <div className="xrow">
+                <input className="input" style={{ flex: "1 1 140px" }} value={c.header} placeholder="Tên cột (vd. Ngày tạo)"
                   disabled={disabled}
                   onChange={(e) => patch(c.key, { header: e.target.value })} />
-                <input className="input mono" style={{ flex: 1.2 }} value={c.path} list={datalistId}
-                  placeholder={placeholder} disabled={disabled}
-                  onChange={(e) => patch(c.key, { path: e.target.value, header: c.header || prettyHeader(e.target.value) })} />
-                <select className="input" style={{ flex: '0 0 150px' }} value={c.format} disabled={disabled}
-                  onChange={(e) => patch(c.key, { format: e.target.value as ColumnFormat })}>
+                <div style={{ flex: "1.2 1 180px", minWidth: 0 }}>
+                  <SuggestInput className="input mono" value={c.path} options={fieldSuggestions} placeholder={placeholder} disabled={disabled} showWhenEmpty
+                    // Tên cột tự điền theo field; chỉ coi là "người dùng đã sửa tay" khi khác tên suy ra từ field hiện tại —
+                    // nếu không, chữ đầu gõ dở ("c" → "C") sẽ khoá tên cột và chọn gợi ý xong không điền lại được.
+                    onChange={(v) => patch(c.key, { path: v, header: !c.header || c.header === prettyHeader(c.path) ? prettyHeader(v) : c.header })} />
+                </div>
+                <select className="input" style={{ flex: '0 0 130px' }} value={c.format} disabled={disabled}
+                  onChange={(e) => {
+                    const format = e.target.value as ColumnFormat;
+                    // Chọn "theo pattern" lần đầu → điền sẵn pattern + đơn vị tự nhận để dùng được ngay.
+                    patch(c.key, format === 'custom' ? { format, pattern: c.pattern || DEFAULT_TIME_PATTERN, timeUnit: c.timeUnit ?? 'auto' } : { format });
+                  }}>
                   {COLUMN_FORMATS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
                 </select>
                 <input
@@ -146,6 +176,28 @@ export default function ColumnMapper(props: ColumnMapperProps) {
                     setOpenMap((k) => (k === c.key ? null : k));
                   }}>✕</button>
               </div>
+              {c.format === 'custom' && (
+                <div className="xrow export-time">
+                  <span className="xhint">Timestamp gốc</span>
+                  <select className="input" style={{ flex: '0 0 140px' }} value={c.timeUnit ?? 'auto'} disabled={disabled}
+                    title={'Tự nhận: đoán theo độ lớn của số (giây / mili giây / micro giây / nano giây). Chọn tay nếu dữ liệu có giá trị bất thường.'}
+                    onChange={(e) => patch(c.key, { timeUnit: e.target.value as TimeUnit })}>
+                    {TIME_UNITS.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
+                  </select>
+                  <span className="xhint">→ pattern</span>
+                  <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+                    <SuggestInput className="input mono" value={c.pattern ?? ''} options={PATTERN_OPTIONS} showWhenEmpty disabled={disabled}
+                      placeholder={DEFAULT_TIME_PATTERN} title={"yyyy yy MM M dd d HH H hh h mm m ss s SSS a — chữ cố định đặt trong 'nháy đơn'"}
+                      onChange={(v) => patch(c.key, { pattern: v })} />
+                  </div>
+                  <span className="xhint">múi giờ</span>
+                  <div style={{ flex: '0 1 180px', minWidth: 0 }}>
+                    <SuggestInput className={`input mono${isValidTimeZone(c.tz ?? '') ? '' : ' bad'}`} value={c.tz ?? ''} options={TZ_OPTIONS} showWhenEmpty disabled={disabled}
+                      placeholder="giờ máy" title="Múi giờ IANA, vd. Asia/Ho_Chi_Minh, UTC. Bỏ trống = múi giờ của máy đang xuất."
+                      onChange={(v) => patch(c.key, { tz: v })} />
+                  </div>
+                </div>
+              )}
               {openMap === c.key && (
                 <ValueMapEditor
                   value={c.map}
@@ -158,9 +210,6 @@ export default function ColumnMapper(props: ColumnMapperProps) {
           );
         })}
       </div>
-      <datalist id={datalistId}>
-        {fieldSuggestions.map((f) => <option key={f} value={f} />)}
-      </datalist>
       <div><button className="ghost sm" onClick={addColumn} disabled={disabled}>+ Thêm cột</button></div>
     </>
   );

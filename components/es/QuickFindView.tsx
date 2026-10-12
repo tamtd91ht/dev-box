@@ -40,6 +40,7 @@ import {
   type EsQuickFieldType,
 } from '@/lib/esQuickFinds';
 import ExportModal from './ExportModal';
+import ColSplit from '../ColSplit';
 import JsonViewer from './JsonViewer';
 import TargetPicker from '../TargetPicker';
 import ResultBox, { ExpandButton, FilterBar, FindButton, Hl, useResultExpand, useResultFilter } from '../ResultBox';
@@ -190,7 +191,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
       setFrom(r.from);
       setLastQuery(query);
       setLastSort(sort);
-      setPanelOpen(false);
+      // Khung chia đôi: điều kiện luôn ở cột trái, kết quả ở cột phải.
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }, [run, runFields, buildSource, runIndices, indexArg, sortKeys]);
@@ -291,6 +292,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
       )}
 
       {run && !edit && (
+        <ColSplit storageKey="devbox-es-qf-split">
         <div className="es-qf-run">
           <div className="status-line" style={{ justifyContent: 'space-between' }}>
             <strong>🔎 {run.name}</strong>
@@ -553,11 +555,17 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
             </>
           )}
 
-          <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
-          <div className="status-line" style={{ gap: 8 }}>
+          <div className="status-line cs-split-pin" style={{ gap: 8 }}>
             <button className="sm" disabled={busy || enabledCount === 0} onClick={() => void doRun()}>
               {busy ? <span className="spinner" aria-hidden /> : '▶'} Chạy ({enabledCount} điều kiện, AND)
             </button>
+          </div>
+        </div>
+
+        <div className="es-qf-run">
+          <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
+          <div className="status-line" style={{ gap: 8 }}>
+            {!result && <span className="xhint">Kết quả sẽ hiện ở đây sau khi chạy.</span>}
             {result && (
               <>
                 <span className="badge">
@@ -602,6 +610,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           )}
           </ResultBox>
         </div>
+        </ColSplit>
       )}
 
       {selectedDoc && <DocModal doc={selectedDoc} onClose={() => setSelectedDoc(null)} />}

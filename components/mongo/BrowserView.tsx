@@ -46,6 +46,7 @@ import JsonView, { countHits } from './JsonView';
 import FieldSuggest from './FieldSuggest';
 import { expandSnippet, FILTER_SNIPPETS, PIPELINE_SNIPPETS, type Snippet } from '@/lib/mongoSnippets';
 import ResultFindBar from './ResultFindBar';
+import ColSplit from '../ColSplit';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
 
@@ -726,7 +727,7 @@ function BrowserViewInner({
             {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
 
             {collTab === 'docs' && (
-              <>
+              <ColSplit storageKey="devbox-mongo-query-split">
                 <div className="mongo-querybar">
                   <div className="mongo-subnav">
                     <button className={queryMode === 'find' ? 'on' : ''} onClick={() => setQueryMode('find')}>Find</button>
@@ -870,6 +871,8 @@ function BrowserViewInner({
                 </div>
 
                 {/* Results */}
+                <div className="mongo-resultpane">
+                {!docs && <p className="xhint">Kết quả sẽ hiện ở đây sau khi chạy.</p>}
                 {docs && (
                   <ResultBox expanded={rx.expanded}>
                     <div className="status-line" style={{ justifyContent: 'space-between' }}>
@@ -939,7 +942,8 @@ function BrowserViewInner({
                     </div>
                   </ResultBox>
                 )}
-              </>
+                </div>
+              </ColSplit>
             )}
 
             {collTab === 'indexes' && (
@@ -992,7 +996,10 @@ function BrowserViewInner({
           sort={sort}
           sortSummary={sort.trim()}
           querySummary={filter.trim() ? short(filter.trim()) : 'toàn bộ collection'}
-          fieldSuggestions={[...new Set(['_id', ...deriveDocFields(result.docs)])]}
+          fieldSuggestions={[
+            ...fields.map((f) => ({ value: f.path, hint: f.type })),
+            ...[...new Set(['_id', ...deriveDocFields(result.docs)])].filter((p) => !fields.some((f) => f.path === p)),
+          ]}
           defaultTitle={`${selected.db}.${selected.coll}`}
           onClose={() => setExportOpen(false)}
           onDone={(rows, filename) => {

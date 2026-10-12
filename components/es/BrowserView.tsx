@@ -35,6 +35,7 @@ import AggsResult from './AggsResult';
 import JsonViewer from './JsonViewer';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
+import ColSplit from '../ColSplit';
 
 import SessionHistory from '../SessionHistory';
 import { recordSession, short, type EsSession } from '@/lib/sessionHistory';
@@ -415,7 +416,7 @@ function BrowserSession({
             {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
 
             {idxTab === 'docs' && (
-              <>
+              <ColSplit storageKey="devbox-es-query-split">
                 <div className="es-querybar">
                   <QueryEditor
                     mode="body"
@@ -436,6 +437,8 @@ function BrowserSession({
                   </div>
                 </div>
 
+                <div className="es-resultpane">
+                {!result && <p className="xhint">Kết quả sẽ hiện ở đây sau khi chạy.</p>}
                 {result && (
                   <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
                     <div className="status-line" style={{ justifyContent: 'space-between' }}>
@@ -489,7 +492,8 @@ function BrowserSession({
                     </div>
                   </ResultBox>
                 )}
-              </>
+                </div>
+              </ColSplit>
             )}
 
             {idxTab === 'mapping' && (
@@ -536,11 +540,10 @@ function BrowserSession({
           body={body}
           querySummary={body.trim() ? 'body _search đang gõ' : 'match_all'}
           // Gợi ý field: mapping (đầy đủ) + tên field có thật trong kết quả.
-          fieldSuggestions={[...new Set([
-            '_id',
-            ...deriveEsFieldNames(result.docs),
-            ...fields.map((f) => f.path),
-          ])]}
+          fieldSuggestions={[
+            ...fields.map((f) => ({ value: f.path, hint: f.type })),
+            ...[...new Set(['_id', ...deriveEsFieldNames(result.docs)])].filter((p) => !fields.some((f) => f.path === p)),
+          ]}
           defaultTitle={selected}
           onClose={() => setExportOpen(false)}
           onDone={(rows, filename) => {

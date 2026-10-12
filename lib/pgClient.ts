@@ -352,6 +352,8 @@ export interface PgQuickFindInput {
   offset?: unknown;
   /** Optional column allowlist to SELECT (default *). */
   columns?: unknown;
+  /** Optional ORDER BY: [{ column, dir }] (tối đa 5 khoá; cột đi qua ident()). */
+  sort?: unknown;
 }
 
 export async function quickFind(conn: PgConnection, db: string, input: PgQuickFindInput): Promise<PgQueryResult & { hasMore: boolean; offset: number }> {
@@ -365,10 +367,18 @@ export async function quickFind(conn: PgConnection, db: string, input: PgQuickFi
     ? input.columns.map((c) => ident(c, 'column')).join(', ')
     : '*';
 
+  // ORDER BY: cột qua ident() (chặn injection), chiều chỉ nhận desc/asc. Không sort = thứ tự tự nhiên của PG.
+  const orderKeys = (Array.isArray(input.sort) ? input.sort : []).slice(0, 5).flatMap((s) => {
+    const o = (s ?? {}) as { column?: unknown; dir?: unknown };
+    if (typeof o.column !== 'string' || !o.column.trim()) return [];
+    return [`${ident(o.column, 'column')} ${o.dir === 'desc' ? 'DESC' : 'ASC'}`];
+  });
+  const orderBy = orderKeys.length ? ` ORDER BY ${orderKeys.join(', ')}` : '';
+
   const pool = getPool(conn, db);
   const t0 = Date.now();
   const res = await runReadOnly(pool, (q) =>
-    q(`SELECT ${cols} FROM ${schema}.${table} WHERE ${text} LIMIT ${limit + 1} OFFSET ${offset}`, params),
+    q(`SELECT ${cols} FROM ${schema}.${table} WHERE ${text}${orderBy} LIMIT ${limit + 1} OFFSET ${offset}`, params),
   );
   const tookMs = Date.now() - t0;
   const rows: Record<string, unknown>[] = res.rows ?? [];
@@ -379,7 +389,7 @@ export async function quickFind(conn: PgConnection, db: string, input: PgQuickFi
 }
 
 /** Dry-run count for the quick-find entries (also powers the update modal). */
-export async function quickCount(conn: PgConnection, db: string, input: Omit<PgQuickFindInput, 'limit' | 'offset' | 'columns'>): Promise<{ count: number; tookMs: number }> {
+export async function quickCount(conn: PgConnection, db: string, input: Omit<PgQuickFindInput, 'limit' | 'offset' | 'columns' | 'sort'>): Promise<{ count: number; tookMs: number }> {
   const schema = ident(input.schema, 'schema');
   const table = ident(input.table, 'table');
   const { text, params } = buildWhere(input.entries ?? []);

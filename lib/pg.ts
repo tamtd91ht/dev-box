@@ -79,6 +79,12 @@ export interface PgQuickEntry {
   list?: boolean;
 }
 
+/** Một khoá ORDER BY của Tìm nhanh. */
+export interface PgSortKey {
+  column: string;
+  dir: 'asc' | 'desc';
+}
+
 export interface PgUpdateSet {
   column: string;
   type: PgQuickFieldType | 'null';
@@ -164,7 +170,7 @@ export function queryPg(connectionId: string, db: string, sql: string): Promise<
 export function pgQuickFind(
   connectionId: string,
   db: string,
-  p: { schema: string; table: string; entries: PgQuickEntry[]; limit: number; offset: number; columns?: string[] },
+  p: { schema: string; table: string; entries: PgQuickEntry[]; limit: number; offset: number; columns?: string[]; sort?: PgSortKey[] },
 ): Promise<PgQuickFindResult> {
   return pgAction<PgQuickFindResult>('quickFind', { connectionId, db, ...p });
 }

@@ -34,6 +34,7 @@ import {
 } from '@/lib/pg';
 import UpdateModal from './UpdateModal';
 import SqlEditor from './SqlEditor';
+import ColSplit from '../ColSplit';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
 import QueryTabBar from '../QueryTabBar';
@@ -421,7 +422,7 @@ function BrowserViewInner({
             {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
 
             {tab === 'rows' && (
-              <>
+              <ColSplit storageKey="devbox-pg-query-split">
                 <div className="pg-querybar">
                   {/* <div> chứ KHÔNG phải <label> như các ô khác: label chuyển
                       mọi cú bấm bên trong nó sang control của nó, nên bấm chuột
@@ -444,7 +445,7 @@ function BrowserViewInner({
                       tables={tables}
                     />
                   </div>
-                  <div className="status-line" style={{ gap: 8 }}>
+                  <div className="status-line cs-split-pin" style={{ gap: 8 }}>
                     <button className="sm" disabled={busy || !sql.trim()} onClick={() => void runQuery()}>
                       {busy ? <span className="spinner" aria-hidden /> : '▶'} Run
                     </button>
@@ -461,6 +462,8 @@ function BrowserViewInner({
                   </div>
                 </div>
 
+                <div className="pg-resultpane">
+                {!result && <p className="xhint">Kết quả sẽ hiện ở đây sau khi chạy.</p>}
                 {result && (
                   <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
                   <div className="status-line" style={{ justifyContent: 'space-between' }}>
@@ -504,7 +507,8 @@ function BrowserViewInner({
                   </div>
                   </ResultBox>
                 )}
-              </>
+                </div>
+              </ColSplit>
             )}
 
             {tab === 'columns' && (
