@@ -123,3 +123,38 @@ export function mergeLegacy(list: BrowserProfile[], refs: Array<string | undefin
   }
   return next;
 }
+
+/* ── Các trang gần nhất của từng hồ sơ ───────────────────────────────────
+   Chuyển sang hồ sơ khác thì KHÔNG mang tab của hồ sơ cũ theo (đó là tài khoản
+   khác) và cũng không dựng lại cả đống tab: chỉ mở lại TỐI ĐA `MAX_RESTORE`
+   trang gần nhất của hồ sơ đích, chưa có gì thì để trắng. Lịch sử truy cập
+   (configs/browser-history.json) dùng chung mọi hồ sơ nên không đọc được "gần
+   nhất của hồ sơ B" từ đó; mỗi hồ sơ tự nhớ riêng ở đây. */
+
+export interface LastPage { url: string; name: string }
+export interface LastPages { pages: LastPage[]; active: number }
+
+export const MAX_RESTORE = 5;
+
+const lastKey = (id: string) => `devbox.browser.last.${id}`;
+
+export function saveLastPages(id: string, v: LastPages): void {
+  try { localStorage.setItem(lastKey(id), JSON.stringify(v)); } catch { /* đầy thì thôi */ }
+}
+
+export function loadLastPages(id: string): LastPages | null {
+  try {
+    const o = JSON.parse(localStorage.getItem(lastKey(id)) ?? 'null') as Partial<LastPages> | null;
+    const pages = (Array.isArray(o?.pages) ? o.pages : [])
+      .filter((x): x is LastPage => !!x && typeof x.url === 'string' && /^https?:\/\//i.test(x.url))
+      .map((x) => ({ url: x.url, name: typeof x.name === 'string' ? x.name : '' }))
+      .slice(0, MAX_RESTORE);
+    if (!pages.length) return null;
+    const a = typeof o?.active === 'number' ? o.active : 0;
+    return { pages, active: a >= 0 && a < pages.length ? a : 0 };
+  } catch { return null; }
+}
+
+export function clearLastPages(id: string): void {
+  try { localStorage.removeItem(lastKey(id)); } catch { /* bỏ qua */ }
+}

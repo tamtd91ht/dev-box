@@ -31,7 +31,8 @@ import {
 import { usePopupOverWebview } from '@/lib/useOverWebview';
 import {
   PROFILES_KEY, CUR_PROFILE_KEY, DEFAULT_PROFILE_ID, loadProfiles, mergeLegacy, findProfile,
-  defaultProfile, partitionOfProfile, refOf, slugOf, type BrowserProfile,
+  defaultProfile, partitionOfProfile, refOf, slugOf, saveLastPages, loadLastPages, clearLastPages, MAX_RESTORE,
+  type BrowserProfile,
 } from '@/lib/browserProfiles';
 import { ProfileButton, ProfileDot, ProfileManager, ProfileSelect } from './BrowserProfiles';
 
@@ -306,11 +307,47 @@ export default function BrowserTabWorkspace() {
   const currentProfile = findProfile(profiles, profile);
   const labelOf = useCallback((ref?: string) => findProfile(profiles, ref).name, [profiles]);
 
-  /** Chọn hồ sơ từ nút avatar = mở trang tab mới bằng hồ sơ đó (như mở cửa sổ
-   *  hồ sơ khác của Chrome). */
+  // Nhớ các trang gần nhất (tối đa MAX_RESTORE) của từng hồ sơ có tab đang mở —
+  // để lần sau chuyển về hồ sơ đó còn biết mở lại những trang nào. Hồ sơ không
+  // còn tab nào thì giữ nguyên bản đã nhớ (không ghi đè bằng rỗng).
+  useEffect(() => {
+    if (!profLoaded) return;
+    const byProf = new Map<string, Tab[]>();
+    for (const t of tabs) {
+      if (!/^https?:\/\//i.test(t.url)) continue;
+      const id = findProfile(profiles, t.profile).id;
+      byProf.set(id, [...(byProf.get(id) ?? []), t]);
+    }
+    for (const [id, list] of byProf) {
+      // Ưu tiên tab đang xem, rồi tới các tab cuối danh sách (mới mở nhất).
+      const act = list.find((t) => t.id === activeId);
+      const rest = list.filter((t) => t !== act).slice(-(MAX_RESTORE - (act ? 1 : 0)));
+      const picked = act ? [act, ...rest] : rest;
+      saveLastPages(id, { pages: picked.map((t) => ({ url: t.url, name: t.name })), active: 0 });
+    }
+  }, [profLoaded, profiles, tabs, activeId]);
+
+  /** Chọn hồ sơ từ nút avatar = ĐỔI HỒ SƠ, như chuyển cửa sổ hồ sơ của Chrome:
+   *  đóng hết tab hiện có (huỷ <webview> cho nhẹ máy) rồi mở lại tối đa
+   *  MAX_RESTORE trang gần nhất của hồ sơ đích, chưa có thì để trang trắng.
+   *  Chọn lại chính hồ sơ đang dùng chỉ mở trang tab mới. */
   const pickProfile = (p: BrowserProfile) => {
+    if (p.id === currentProfile.id) { openNewTabPage(); return; }
+    setTabs([]);
+    setActiveId(null);
+    setNewTabOpen(false);
+    setAddr('');
     setProfile(refOf(p));
-    openNewTabPage();
+    const last = loadLastPages(p.id);
+    if (!last) return;
+    // Tab đang xem mở sau cùng (không background) để nó là tab nổi; các tab còn
+    // lại mở nền, theo thứ tự đã nhớ.
+    last.pages.forEach((pg, i) => {
+      if (i === last.active) return;
+      openTab(pg.url, { name: pg.name || undefined, profile: refOf(p), forceNew: true, background: true });
+    });
+    const cur = last.pages[last.active];
+    if (cur) openTab(cur.url, { name: cur.name || undefined, profile: refOf(p), forceNew: true });
   };
 
   const tabCounts = tabs.reduce<Record<string, number>>((m, t) => {
@@ -336,6 +373,7 @@ export default function BrowserTabWorkspace() {
 
   const signOutProfile = (p: BrowserProfile) => {
     if (!window.confirm(`Đăng xuất hồ sơ "${p.name}"? Xoá cookie/dữ liệu trang của hồ sơ này và đóng các tab đang dùng nó.`)) return;
+    clearLastPages(p.id);
     void wipeProfile(p);
   };
 
@@ -350,6 +388,7 @@ export default function BrowserTabWorkspace() {
         setBookmarks(await bmUpdate(b.id, { profile: '' }));
       }
     } catch (e) { setErr((e as Error).message); }
+    clearLastPages(p.id);
     await wipeProfile(p);
   };
 
