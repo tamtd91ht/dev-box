@@ -29,6 +29,11 @@ import {
   TABS_KEY, serialize as serializeSession, restore as restoreSession,
 } from '@/lib/browserSession';
 import { usePopupOverWebview } from '@/lib/useOverWebview';
+import {
+  PROFILES_KEY, CUR_PROFILE_KEY, DEFAULT_PROFILE_ID, loadProfiles, mergeLegacy, findProfile,
+  defaultProfile, partitionOfProfile, refOf, slugOf, type BrowserProfile,
+} from '@/lib/browserProfiles';
+import { ProfileButton, ProfileDot, ProfileManager, ProfileSelect } from './BrowserProfiles';
 
 interface Tab {
   id: string; name: string; url: string; profile?: string; partition: string;
@@ -50,7 +55,13 @@ function tabInitial(name: string): string {
 export default function BrowserTabWorkspace() {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [addr, setAddr] = useState('');
+  /** Hồ sơ dùng cho tab MỚI (ref: '' = mặc định). Đi theo tab đang xem, và
+   *  chọn từ nút avatar thì đổi sang hồ sơ đó. */
   const [profile, setProfile] = useState('');
+  const [profiles, setProfiles] = useState<BrowserProfile[]>(() => [defaultProfile()]);
+  const [profLoaded, setProfLoaded] = useState(false);
+  const [profMenuOpen, setProfMenuOpen] = useState(false);
+  const [profMgrOpen, setProfMgrOpen] = useState(false);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -255,7 +266,92 @@ export default function BrowserTabWorkspace() {
   const reload = useCallback(() => { bmList().then(setBookmarks).catch((e) => setErr((e as Error).message)); }, []);
   useEffect(() => { reload(); }, [reload]);
 
-  const profiles = [...new Set(bookmarks.map((b) => b.profile).filter(Boolean) as string[])].sort();
+  /* ── Sổ hồ sơ ───────────────────────────────────────────────────────────
+     Nạp sau mount (đọc localStorage ngay ở useState sẽ lệch SSR/client). Effect
+     nạp phải đứng TRƯỚC effect gộp: hai cái cùng chạy ở lượt mount và gộp dùng
+     setState dạng hàm nên nhận đúng giá trị vừa nạp. */
+  useEffect(() => {
+    try {
+      setProfiles(loadProfiles(localStorage.getItem(PROFILES_KEY)));
+      const cur = slugOf(localStorage.getItem(CUR_PROFILE_KEY) ?? '');
+      setProfile(cur === DEFAULT_PROFILE_ID ? '' : cur);
+    } catch { /* localStorage bị chặn — chỉ có hồ sơ mặc định */ }
+    setProfLoaded(true);
+  }, []);
+
+  // Profile gõ tay từ trước (dấu trang, tab khôi phục) tự thành hồ sơ — cùng id
+  // nên phiên đăng nhập cũ giữ nguyên.
+  useEffect(() => {
+    const refs = [...bookmarks.map((b) => b.profile), ...tabs.map((t) => t.profile)];
+    setProfiles((cur) => mergeLegacy(cur, refs));
+  }, [bookmarks, tabs]);
+
+  useEffect(() => {
+    if (!profLoaded) return;
+    try { localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles)); } catch { /* đầy thì thôi */ }
+  }, [profLoaded, profiles]);
+
+  useEffect(() => {
+    if (!profLoaded) return;
+    try { localStorage.setItem(CUR_PROFILE_KEY, profile); } catch { /* bỏ qua */ }
+  }, [profLoaded, profile]);
+
+  // Chuyển sang xem một tab → hồ sơ "hiện tại" theo tab đó, để tab mới mở từ
+  // đây dùng chung tài khoản (đang ở Gmail của hồ sơ B thì ＋ cũng là hồ sơ B).
+  useEffect(() => {
+    const t = tabsRef.current.find((x) => x.id === activeId);
+    if (t) setProfile(t.profile ?? '');
+  }, [activeId]);
+
+  const currentProfile = findProfile(profiles, profile);
+  const labelOf = useCallback((ref?: string) => findProfile(profiles, ref).name, [profiles]);
+
+  /** Chọn hồ sơ từ nút avatar = mở trang tab mới bằng hồ sơ đó (như mở cửa sổ
+   *  hồ sơ khác của Chrome). */
+  const pickProfile = (p: BrowserProfile) => {
+    setProfile(refOf(p));
+    openNewTabPage();
+  };
+
+  const tabCounts = tabs.reduce<Record<string, number>>((m, t) => {
+    const id = findProfile(profiles, t.profile).id;
+    m[id] = (m[id] ?? 0) + 1;
+    return m;
+  }, {});
+
+  /** Xoá cookie/dữ liệu của hồ sơ. Đóng tab đang dùng nó trước, chờ một nhịp để
+   *  Electron huỷ hẳn <webview> (xem BrowserWorkspace.pendingWipe) rồi mới xoá —
+   *  xoá khi guest còn chạy thì trang ghi lại cookie ngay sau đó. */
+  const wipeProfile = useCallback(async (p: BrowserProfile) => {
+    setTabs((cur) => {
+      const next = cur.filter((t) => findProfile(profiles, t.profile).id !== p.id);
+      setActiveId((a) => (cur.some((t) => t.id === a && !next.includes(t)) ? next[next.length - 1]?.id ?? null : a));
+      if (next.length === 0) setNewTabOpen(false);
+      return next;
+    });
+    await new Promise((r) => setTimeout(r, 350));
+    const res = await window.workspace?.clearSession(partitionOfProfile(p));
+    if (res && !res.ok) setErr(`Không xoá được phiên "${p.name}": ${res.error ?? 'lỗi không rõ'}`);
+  }, [profiles]);
+
+  const signOutProfile = (p: BrowserProfile) => {
+    if (!window.confirm(`Đăng xuất hồ sơ "${p.name}"? Xoá cookie/dữ liệu trang của hồ sơ này và đóng các tab đang dùng nó.`)) return;
+    void wipeProfile(p);
+  };
+
+  const deleteProfile = async (p: BrowserProfile) => {
+    if (p.id === DEFAULT_PROFILE_ID) return;
+    if (!window.confirm(`Xoá hồ sơ "${p.name}"? Toàn bộ phiên đăng nhập của nó bị xoá và các tab đang dùng nó bị đóng. Dấu trang đang gắn hồ sơ này sẽ về hồ sơ Mặc định.`)) return;
+    setProfiles((cur) => cur.filter((x) => x.id !== p.id));
+    if (slugOf(profile) === p.id) setProfile('');
+    // Dấu trang trỏ vào hồ sơ vừa xoá → về Mặc định, khỏi mở ra một phiên trắng không tên.
+    try {
+      for (const b of bookmarks.filter((x) => x.kind === 'link' && slugOf(x.profile) === p.id)) {
+        setBookmarks(await bmUpdate(b.id, { profile: '' }));
+      }
+    } catch (e) { setErr((e as Error).message); }
+    await wipeProfile(p);
+  };
 
   /**
    * Mở một URL thành tab.
@@ -619,7 +715,7 @@ export default function BrowserTabWorkspace() {
   // gõ đi vào TRANG WEB chứ không vào ô nhập — `edit` từng bị sót, triệu chứng
   // là "sửa tên dấu trang không được, bàn phím như bị chặn". Menu ⋯ cũng vậy:
   // z-index 21 không cứu được gì trước tầng native.
-  usePopupOverWebview(!!folderAsk || menuOpen || !!dupAsk || !!edit || !!tabCtx);
+  usePopupOverWebview(!!folderAsk || menuOpen || !!dupAsk || !!edit || !!tabCtx || profMenuOpen || profMgrOpen);
 
   /** Esc đóng menu ⋯. Menu đã portal ra body nên không nhận keydown của cây
    *  con nữa — phải nghe ở window. */
@@ -676,11 +772,11 @@ export default function BrowserTabWorkspace() {
 
   /** Một chip dấu trang — click mở tại chỗ, chuột phải ra menu (tab mới…). */
   const markChip = (b: Bookmark) => (
-    <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${b.profile}` : ''} — chuột phải để mở trong tab mới`}
+    <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${labelOf(b.profile)}` : ''} — chuột phải để mở trong tab mới`}
       onContextMenu={(ev) => openCtx(ev, b)}>
       <button className="bt-mark-go" onClick={() => openBookmark(b)}
         onAuxClick={(ev) => { if (ev.button === 1) { ev.preventDefault(); openBookmark(b, true); } }}>
-        🔖 {b.name}{b.profile && <span className="bt-mark-prof">{b.profile}</span>}
+        🔖 {b.name}{b.profile && <span className="bt-mark-prof">{labelOf(b.profile)}</span>}
       </button>
       <button className="bt-mark-act" onClick={() => setEdit(structuredClone(b))} title="Sửa">✎</button>
       <button className="bt-mark-act" onClick={() => void removeBookmark(b)} title="Xóa">✕</button>
@@ -754,10 +850,8 @@ export default function BrowserTabWorkspace() {
           }} />
         <AddressSuggest {...addrSug.listProps} />
       </div>
-      <input className="input" style={{ width: 130 }} list="bt-profiles" placeholder="Profile"
-        value={profile} onChange={(e) => setProfile(e.target.value)}
-        title="Cùng profile = chung phiên đăng nhập. Hai tài khoản SSO khác nhau → hai profile." />
-      <datalist id="bt-profiles">{profiles.map((p) => <option key={p} value={p} />)}</datalist>
+      <ProfileSelect profiles={profiles} value={profile} onChange={setProfile}
+        title="Cùng hồ sơ = chung phiên đăng nhập. Hai tài khoản khác nhau → hai hồ sơ (⚙ trong nút avatar để thêm)." />
       {/* Bấm "▶ Mở" phải mở ĐÚNG thứ đang hiện trong ô. Đang chọn một dòng gợi
           ý bằng ↑↓ thì ô hiện URL của dòng đó nhưng `addr` vẫn là chữ gõ dở
           (có thể rỗng) — dựa vào `addr` thì nút xám đi hoặc mở sai trang. */}
@@ -800,7 +894,12 @@ export default function BrowserTabWorkspace() {
             >
               <button className="lv-tab-btn" onClick={() => { setActiveId(t.id); setNewTabOpen(false); }}>
                 <span className="lv-tab-ico" aria-hidden>{tabInitial(t.name)}</span>
-                <span className="lv-tab-name">{t.name}{t.profile && <span className="bt-mark-prof">{t.profile}</span>}</span>
+                <span className="lv-tab-name">{t.name}{t.profile && (
+                  <span className="bt-mark-prof" style={{
+                    background: `color-mix(in srgb, ${findProfile(profiles, t.profile).color} 22%, transparent)`,
+                    color: findProfile(profiles, t.profile).color,
+                  }}>{labelOf(t.profile)}</span>
+                )}</span>
               </button>
               <button className="lv-tab-x" onClick={() => closeTab(t.id)} title="Đóng tab">✕</button>
             </span>
@@ -810,6 +909,11 @@ export default function BrowserTabWorkspace() {
           {/* Thanh công cụ extension — icon từng extension có popup, cộng nút
               🧩 quản lý. Đứng NGOÀI menu ⋯ như Chrome: đang ở trang bất kỳ vẫn
               bấm được ngay. */}
+          <ProfileButton
+            profiles={profiles} current={currentProfile}
+            open={profMenuOpen} onOpenChange={setProfMenuOpen}
+            onPick={pickProfile} onManage={() => setProfMgrOpen(true)}
+          />
           <BrowserExtBar
             partition={tabs.find((t) => t.id === activeId)?.partition ?? bmPartition(profile || undefined)}
             activeUrl={tabs.find((t) => t.id === activeId)?.url ?? ''}
@@ -917,7 +1021,9 @@ export default function BrowserTabWorkspace() {
             {addressForm}
             {marksList}
             <p className="small" style={{ color: 'var(--muted)' }}>
-              Nhiều tab mở song song; mỗi profile giữ phiên đăng nhập riêng.{' '}
+              Nhiều tab mở song song; mỗi hồ sơ giữ phiên đăng nhập riêng.{' '}
+              <button className="ghost sm" onClick={() => setProfMgrOpen(true)}
+                title="Thêm / đổi tên / xoá hồ sơ (tài khoản)">👤 Hồ sơ: {currentProfile.name}</button>{' '}
               <button className="ghost sm" onClick={() => setPwOpen(true)}
                 title="Xem/sửa mật khẩu đã lưu — tự điền khi mở lại trang">🔑 Mật khẩu đã lưu</button>{' '}
               <button className="ghost sm" onClick={() => setExtOpen(true)}
@@ -1057,6 +1163,13 @@ export default function BrowserTabWorkspace() {
       )}
       {pwOpen && <PasswordManager onClose={() => setPwOpen(false)} />}
       {extOpen && <BrowserExtensions onClose={() => setExtOpen(false)} />}
+      {profMgrOpen && (
+        <ProfileManager
+          profiles={profiles} tabCounts={tabCounts}
+          onChange={setProfiles} onSignOut={signOutProfile} onDelete={(p) => void deleteProfile(p)}
+          onClose={() => setProfMgrOpen(false)}
+        />
+      )}
 
       {/* Menu chuột phải TRÊN MỘT TAB của dải tab — như trình duyệt thật. */}
       {tabCtx && (() => {
@@ -1074,6 +1187,22 @@ export default function BrowserTabWorkspace() {
             }}>
               ↻ Tải lại
             </button>
+            {/* Mở đúng trang này bằng tài khoản khác: vd. đang ở Claude hồ sơ A
+                thì mở thêm một tab Claude ở hồ sơ B. */}
+            {profiles.filter((p) => p.id !== findProfile(profiles, t.profile).id).length > 0 && (
+              <>
+                <div className="bt-menu-sep" />
+                <div className="small" style={{ color: 'var(--muted)', padding: '2px 10px' }}>Mở trang này bằng hồ sơ…</div>
+                {profiles.filter((p) => p.id !== findProfile(profiles, t.profile).id).map((p) => (
+                  <button key={p.id} onClick={() => {
+                    setTabCtx(null);
+                    openTab(t.url, { name: t.name, profile: refOf(p), forceNew: true });
+                  }}>
+                    <ProfileDot p={p} size={14} /> {p.name}
+                  </button>
+                ))}
+              </>
+            )}
             <div className="bt-menu-sep" />
             <button onClick={() => { void navigator.clipboard?.writeText(t.url); setTabCtx(null); }}>
               ⧉ Copy địa chỉ
@@ -1138,8 +1267,9 @@ export default function BrowserTabWorkspace() {
               onChange={(e) => setEdit({ ...edit, url: e.target.value })} />
             <input className="input" placeholder="Tên hiển thị (mặc định: hostname)" value={edit.name}
               onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
-            <input className="input" list="bt-profiles" placeholder="Profile phiên đăng nhập (optional)" value={edit.profile ?? ''}
-              onChange={(e) => setEdit({ ...edit, profile: e.target.value })} />
+            <ProfileSelect profiles={profiles} value={edit.profile ?? ''} style={{ width: '100%' }}
+              title="Hồ sơ (phiên đăng nhập) mà dấu trang này mở bằng"
+              onChange={(v) => setEdit({ ...edit, profile: v })} />
             <div className="glink-meta-pair">
               <input className="input" placeholder="Username (optional)" value={edit.username ?? ''}
                 autoComplete="off" onChange={(e) => setEdit({ ...edit, username: e.target.value })} />
