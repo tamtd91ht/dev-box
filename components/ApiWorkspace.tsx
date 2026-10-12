@@ -15,6 +15,7 @@
 // localStorage nên đóng app mở lại vẫn còn nguyên bàn làm việc.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   apiGet, apiSaveRequest, apiRemoveRequest, apiSend,
   stripFiles, FILE_LIMIT,
@@ -133,8 +134,15 @@ export default function ApiWorkspace() {
   const [data, setData] = useState<ApiData>({ requests: [], environments: [] });
   const [sessions, setSessions] = useState<Session[]>(() => [blankSession()]);
   const [activeKey, setActiveKey] = useState<string>(() => '');
-  const [importOpen, setImportOpen] = useState(false);
-  const [curlText, setCurlText] = useState('');
+  /** Hộp "View curl": xem lệnh curl của request đang dựng. */
+  const [curlView, setCurlView] = useState(false);
+  /** Thay {{var}} bằng giá trị thật trong curl (mặc định giữ nguyên {{var}} —
+   *  không để lộ token ra màn hình/clipboard nếu người dùng không chủ ý). */
+  const [curlResolve, setCurlResolve] = useState(false);
+  /** Menu ⋯ / chuột phải của một request ở rail (toạ độ fixed). */
+  const [railMenu, setRailMenu] = useState<{ x: number; y: number; req: ApiRequest } | null>(null);
+  /** Hộp sửa tên/dự án của request đã lưu. */
+  const [railEdit, setRailEdit] = useState<{ req: ApiRequest; name: string; folder: string } | null>(null);
   /** Hộp quản lý biến: null = đóng; scope '' = biến chung, hoặc tên dự án. */
   const [varsOpen, setVarsOpen] = useState<{ scope: string } | null>(null);
   /** Tăng sau mỗi lần ghi lịch sử để popover đọc lại. */
@@ -272,14 +280,16 @@ export default function ApiWorkspace() {
   // Hợp của biến CHUNG và biến của DỰ ÁN mà request đang thuộc về (draft.folder),
   // biến dự án ghi đè khi trùng tên. Dòng bị tắt (on:false) không tính.
   const project = (draft.folder ?? '').trim();
-  const vars = useMemo(() => {
+  /** Biến hiệu lực của MỘT dự án — cũng dùng cho request ở rail (copy curl). */
+  const varsFor = useCallback((proj: string) => {
     const m: Record<string, string> = {};
     for (const v of data.globalVars ?? []) if (v.key.trim() && v.on !== false) m[v.key.trim()] = v.value;
-    for (const v of (project ? data.projectVars?.[project] : undefined) ?? []) {
+    for (const v of (proj ? data.projectVars?.[proj] : undefined) ?? []) {
       if (v.key.trim() && v.on !== false) m[v.key.trim()] = v.value;
     }
     return m;
-  }, [data.globalVars, data.projectVars, project]);
+  }, [data.globalVars, data.projectVars]);
+  const vars = useMemo(() => varsFor(project), [varsFor, project]);
   const envMap = vars; // tên cũ — phần còn lại của file vẫn gọi envMap
 
   /** Biến request này dùng nhưng chưa khai ở đâu cả — để cảnh báo trước khi gửi. */
@@ -411,16 +421,6 @@ export default function ApiWorkspace() {
     return true;
   }, [curlToDraft, setCur]);
 
-  /** Modal "Dán curl" = mang một request MỚI vào bàn → tab mới, trừ khi tab
-   *  đang xem còn trắng tinh thì dùng luôn cho đỡ thừa. */
-  const doImport = () => {
-    const d = curlToDraft(curlText);
-    if (!d) return;
-    if (isPristine(cur)) setCur({ draft: d, tab: d.bodyType === 'none' ? 'headers' : 'body', err: null, res: null });
-    else openSession(d);
-    setImportOpen(false); setCurlText('');
-  };
-
   /**
    * Dán vào ô URL: là curl thì tách luôn thành request (kiểu Postman), còn lại
    * để trình duyệt dán bình thường.
@@ -437,42 +437,46 @@ export default function ApiWorkspace() {
     applyCurl(text);
   }, [applyCurl]);
 
-  // ── Copy as curl ─────────────────────────────────────────────────────────────
+  // ── View / Copy curl ─────────────────────────────────────────────────────────
   const [curlCopied, setCurlCopied] = useState(false);
 
   /**
-   * Chép request đang điền thành lệnh curl.
+   * Dựng lệnh curl từ một draft.
    *
-   * Biến {{var}} được THAY bằng giá trị environment đang chọn — lệnh này để đưa
-   * cho người khác chạy, mà máy họ không có environment của mình. Đổi lại là
-   * token thật nằm trong clipboard: có cảnh báo ở tooltip.
+   * `resolve` = thay {{var}} bằng giá trị environment (để đưa cho người khác
+   * chạy, máy họ không có environment của mình) — đổi lại là token thật nằm
+   * trong lệnh. Tắt thì {{var}} giữ nguyên chữ.
    */
-  const copyCurl = useCallback(async () => {
+  const curlOf = useCallback((d: Draft, resolve: boolean): string => {
+    const m = resolve ? varsFor((d.folder ?? '').trim()) : {};
+    const rv = (t: string) => (resolve ? resolveVars(t, m) : t);
+    const heads = d.headers.filter((h) => h.key.trim() && h.on !== false)
+      .map((h) => ({ key: rv(h.key), value: rv(h.value) }));
     // Có cả header/query do tab Auth sinh ra — lệnh curl phải gửi được y như Send.
-    const authed = applyAuth(
-      resolveVars(draft.url, envMap),
-      draft.headers.filter((h) => h.key.trim() && h.on !== false)
-        .map((h) => ({ key: resolveVars(h.key, envMap), value: resolveVars(h.value, envMap) })),
-      draft.auth, envMap,
-    );
-    const cmd = buildCurl({
-      method: draft.method,
+    const authed = resolve
+      ? applyAuth(rv(d.url), heads, d.auth, m)
+      : { url: d.url, headers: heads };
+    return buildCurl({
+      method: d.method,
       url: authed.url,
       headers: authed.headers,
-      body: resolveVars(draft.body, envMap),
-      bodyType: draft.bodyType,
-      form: draft.form.map((f) => ({
-        ...f, key: resolveVars(f.key, envMap), value: resolveVars(f.value, envMap),
-      })),
+      body: rv(d.body),
+      bodyType: d.bodyType,
+      form: d.form.map((f) => ({ ...f, key: rv(f.key), value: rv(f.value) })),
     });
+  }, [varsFor]);
+
+  const copyText = useCallback(async (text: string) => {
     try {
-      await navigator.clipboard.writeText(cmd);
+      await navigator.clipboard.writeText(text);
       setCurlCopied(true);
       setTimeout(() => setCurlCopied(false), 1500);
     } catch {
       setErr('Không chép được vào clipboard.');
     }
-  }, [draft, envMap]);
+  }, [setErr]);
+
+  const copyCurl = useCallback(() => copyText(curlOf(draft, true)), [copyText, curlOf, draft]);
 
   // ── Collection ───────────────────────────────────────────────────────────────
   /**
@@ -483,13 +487,7 @@ export default function ApiWorkspace() {
   const openRequest = (r: ApiRequest) => {
     const already = sessions.find((s) => s.draft.id === r.id);
     if (already) { setActiveKey(already.key); return; }
-    const d: Draft = {
-      id: r.id, name: r.name, folder: r.folder, method: r.method, url: r.url,
-      headers: r.headers.length ? r.headers : [{ key: '', value: '' }],
-      body: r.body, bodyType: r.bodyType,
-      form: r.form?.length ? r.form : [{ key: '', value: '', kind: 'text' }],
-      params: r.params, auth: r.auth, opts: r.opts,
-    };
+    const d = requestToDraft(r);
     if (isPristine(cur)) setCur({ draft: d, tab: d.bodyType === 'none' ? 'headers' : 'body', res: null, err: null });
     else openSession(d);
   };
@@ -541,6 +539,40 @@ export default function ApiWorkspace() {
       setSessions((ss) => ss.map((s) => (s.draft.id === r.id
         ? { ...s, draft: { ...s.draft, id: undefined } } : s)));
     } catch (e) { setErr((e as Error).message); }
+  };
+
+  /** Lưu đổi tên / chuyển dự án của request đã lưu. Tab đang mở nó cũng đổi theo
+   *  (chỉ tên + dự án — nội dung đang gõ dở của tab giữ nguyên). */
+  const saveRailEdit = async () => {
+    if (!railEdit) return;
+    const { req, name, folder } = railEdit;
+    try {
+      const d = await apiSaveRequest({
+        ...req, name: name.trim() || req.name, folder: folder.trim() || undefined,
+      });
+      setData(d);
+      const fresh = d.requests.find((x) => x.id === req.id);
+      if (fresh) {
+        setSessions((ss) => ss.map((s) => (s.draft.id === req.id
+          ? { ...s, draft: { ...s.draft, name: fresh.name, folder: fresh.folder } } : s)));
+      }
+      setRailEdit(null);
+    } catch (e) { setErr((e as Error).message); }
+  };
+
+  const duplicateRequest = async (r: ApiRequest) => {
+    try {
+      setData(await apiSaveRequest({ ...r, id: undefined, name: `${r.name} (copy)` }));
+    } catch (e) { setErr((e as Error).message); }
+  };
+
+  /** Mở menu của một request tại toạ độ (kẹp trong màn hình). */
+  const openRailMenu = (x: number, y: number, req: ApiRequest) => {
+    setRailMenu({
+      x: Math.max(6, Math.min(x, window.innerWidth - 230)),
+      y: Math.max(6, Math.min(y, window.innerHeight - 240)),
+      req,
+    });
   };
 
   // Gom request theo folder cho rail.
@@ -660,19 +692,25 @@ export default function ApiWorkspace() {
                   </button>
                 )}
                 {!closed && reqs.map((r) => (
-                  <div key={r.id} className={`g-root${draft.id === r.id ? ' on' : ''}`}>
+                  <div key={r.id} className={`g-root${draft.id === r.id ? ' on' : ''}`}
+                    onContextMenu={(e) => { e.preventDefault(); openRailMenu(e.clientX, e.clientY, r); }}>
                     <button className="g-root-btn" onClick={() => openRequest(r)}
                       title={sessions.some((s) => s.draft.id === r.id) ? `${r.url}\n(đang mở — bấm để nhảy tới tab)` : r.url}>
                       <span className={methodClass(r.method)}>{r.method}</span>
                       <span className="g-root-name">{r.name}</span>
                     </button>
-                    <button className="ghost sm g-root-act" onClick={() => void removeRequest(r)} title="Xóa">✕</button>
+                    <button className="ghost sm g-root-act" title="Sửa / nhân bản / copy curl / xóa (hoặc chuột phải)"
+                      aria-haspopup="menu"
+                      onClick={(e) => {
+                        const b = e.currentTarget.getBoundingClientRect();
+                        openRailMenu(b.right - 220, b.bottom + 2, r);
+                      }}>⋯</button>
                   </div>
                 ))}
               </div>
             );
           })}
-          {data.requests.length === 0 && <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px' }}>Chưa có request. Dựng rồi 💾, hoặc “Dán curl”.</p>}
+          {data.requests.length === 0 && <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px' }}>Chưa có request. Dựng rồi 💾, hoặc dán lệnh curl vào ô URL.</p>}
 
           <div className="group-title" style={{ margin: '14px 4px 6px', display: 'flex', gap: 6 }}>
             <span style={{ flex: 1 }}>Biến</span>
@@ -727,7 +765,8 @@ export default function ApiWorkspace() {
               title="Chép request này thành lệnh curl (biến {{var}} được thay bằng giá trị thật — cẩn thận token)">
               {curlCopied ? '✓ Đã chép' : '⧉ Copy curl'}
             </button>
-            <button className="ghost sm" onClick={() => setImportOpen(true)} title="Dán một lệnh curl để import">Dán curl</button>
+            <button className="ghost sm" onClick={() => setCurlView(true)} disabled={!draft.url.trim()}
+              title="Xem lệnh curl của request này">👁 View curl</button>
           </div>
 
           {/* Biến map ra gì + biến nào còn thiếu — "map đúng" thấy ngay, không đợi
@@ -954,18 +993,77 @@ export default function ApiWorkspace() {
         </div>
       )}
 
-      {/* Modal dán curl */}
-      {importOpen && (
-        <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && setImportOpen(false)}>
-          <div className="mail-compose panel" style={{ width: 'min(680px, 94vw)' }}>
-            <div className="mail-compose-head"><b>Dán lệnh curl</b><span style={{ flex: 1 }} />
-              <button className="ghost sm" onClick={() => setImportOpen(false)}>✕</button></div>
-            <textarea className="input" style={{ minHeight: 200, fontFamily: 'var(--mono, monospace)' }} autoFocus
-              placeholder="curl 'https://api.example.com/x' -H 'Authorization: Bearer {{token}}' -d '{...}'"
-              value={curlText} onChange={(e) => setCurlText(e.target.value)} />
+      {/* View curl — chỉ đọc; muốn import thì dán thẳng curl vào ô URL. */}
+      {curlView && (
+        <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && setCurlView(false)}>
+          <div className="mail-compose panel" style={{ width: 'min(720px, 94vw)' }}>
+            <div className="mail-compose-head"><b>👁 Lệnh curl</b><span style={{ flex: 1 }} />
+              <button className="ghost sm" onClick={() => setCurlView(false)}>✕</button></div>
+            <textarea className="input" readOnly style={{ minHeight: 220, fontFamily: 'var(--mono, monospace)' }}
+              value={curlOf(draft, curlResolve)} onFocus={(e) => e.currentTarget.select()} />
+            <label className="small" style={{ display: 'flex', gap: 6, alignItems: 'center', color: 'var(--muted)' }}>
+              <input type="checkbox" checked={curlResolve} onChange={(e) => setCurlResolve(e.target.checked)} />
+              Thay {'{{var}}'} bằng giá trị thật (cẩn thận token)
+            </label>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={doImport} disabled={!curlText.trim()}>Import</button>
-              <button className="ghost" onClick={() => setImportOpen(false)}>Hủy</button>
+              <button onClick={() => void copyText(curlOf(draft, curlResolve))}>
+                {curlCopied ? '✓ Đã chép' : '⧉ Copy'}
+              </button>
+              <button className="ghost" onClick={() => setCurlView(false)}>Đóng</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Menu ⋯ / chuột phải của request ở rail */}
+      {railMenu && typeof document !== 'undefined' && createPortal(
+        <>
+          <div className="bt-menu-backdrop" onMouseDown={() => setRailMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setRailMenu(null); }} />
+          <div className="bt-menu bt-menu-fixed" role="menu" style={{ left: railMenu.x, top: railMenu.y }}
+            onMouseDown={(e) => e.stopPropagation()}>
+            {(() => {
+              const r = railMenu.req;
+              const close = () => setRailMenu(null);
+              return (
+                <>
+                  <button onClick={() => { close(); setRailEdit({ req: r, name: r.name, folder: r.folder ?? '' }); }}>
+                    ✎ Sửa tên / dự án…
+                  </button>
+                  <button onClick={() => { close(); openRequest(r); }}>▶ Mở</button>
+                  <button onClick={() => { close(); openSession(requestToDraft(r)); }}>⊞ Mở trong tab mới</button>
+                  <button onClick={() => { close(); void duplicateRequest(r); }}>⧉ Nhân bản</button>
+                  <div className="bt-menu-sep" />
+                  <button onClick={() => { close(); void copyText(curlOf(requestToDraft(r), true)); }}>⧉ Copy curl</button>
+                  <div className="bt-menu-sep" />
+                  <button className="danger" onClick={() => { close(); void removeRequest(r); }}>🗑 Xóa</button>
+                </>
+              );
+            })()}
+          </div>
+        </>,
+        document.body,
+      )}
+
+      {/* Sửa tên / dự án của request đã lưu */}
+      {railEdit && (
+        <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && setRailEdit(null)}>
+          <div className="mail-compose panel" style={{ width: 'min(480px, 92vw)' }}>
+            <div className="mail-compose-head"><b>✎ Sửa request</b><span style={{ flex: 1 }} />
+              <button className="ghost sm" onClick={() => setRailEdit(null)}>✕</button></div>
+            <input className="input" autoFocus placeholder="Tên request" value={railEdit.name}
+              onChange={(e) => setRailEdit({ ...railEdit, name: e.target.value })}
+              onKeyDown={(e) => e.key === 'Enter' && void saveRailEdit()} />
+            <input className="input" placeholder="Dự án (optional)" value={railEdit.folder}
+              list="api-folders"
+              onChange={(e) => setRailEdit({ ...railEdit, folder: e.target.value })}
+              onKeyDown={(e) => e.key === 'Enter' && void saveRailEdit()} />
+            <datalist id="api-folders">
+              {[...new Set(data.requests.map((r) => r.folder).filter(Boolean))].map((f) => <option key={f} value={f} />)}
+            </datalist>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => void saveRailEdit()}>💾 Lưu</button>
+              <button className="ghost" onClick={() => setRailEdit(null)}>Hủy</button>
             </div>
           </div>
         </div>
@@ -982,6 +1080,16 @@ export default function ApiWorkspace() {
       )}
     </div>
   );
+}
+
+function requestToDraft(r: ApiRequest): Draft {
+  return {
+    id: r.id, name: r.name, folder: r.folder, method: r.method, url: r.url,
+    headers: r.headers.length ? r.headers : [{ key: '', value: '' }],
+    body: r.body, bodyType: r.bodyType,
+    form: r.form?.length ? r.form : [{ key: '', value: '', kind: 'text' }],
+    params: r.params, auth: r.auth, opts: r.opts,
+  };
 }
 
 function defaultName(d: Draft): string {
