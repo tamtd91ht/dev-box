@@ -22,12 +22,12 @@ export default function QuickSortEditor<T extends SortRow>({ value, onChange, su
       {value.length === 0 && <span className="xhint">Chưa sắp xếp — giữ thứ tự tự nhiên. Thêm khoá để sắp theo field.</span>}
       {value.map((s, i) => (
         <div className="xrow" key={i}>
-          <span className="xhint" style={{ flex: '0 0 76px' }}>{i === 0 ? 'Sắp xếp theo' : 'rồi theo'}</span>
-          <div style={{ flex: '1 1 160px', minWidth: 0 }}>
+          <span className="xhint" style={{ flex: '0 0 70px' }}>{i === 0 ? 'Sắp xếp theo' : 'rồi theo'}</span>
+          <div style={{ flex: '1 1 110px', minWidth: 0 }}>
             <SuggestInput className="input mono" value={s.path} options={suggestions} showWhenEmpty disabled={disabled}
               placeholder="field (vd. created_at)" onChange={(v) => set(i, { path: v })} />
           </div>
-          <select className="input" style={{ flex: '0 0 120px' }} value={s.dir} disabled={disabled}
+          <select className="input" style={{ flex: '0 0 104px' }} value={s.dir} disabled={disabled}
             onChange={(e) => set(i, { dir: e.target.value as 'asc' | 'desc' })}>
             <option value="asc">Tăng ↑</option>
             <option value="desc">Giảm ↓</option>

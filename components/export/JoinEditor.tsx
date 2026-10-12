@@ -113,11 +113,11 @@ function JoinRow({ j, all, patch, remove, srcSuggestions, onTargetFields, onAddC
   return (
     <div className="export-join">
       <div className="xrow">
-        <label className="mongo-field" style={{ flex: '0 0 74px' }}>
+        <div className="mongo-field" style={{ flex: '0 0 74px' }}>
           <span>Tên ngắn</span>
           <input className="input mono" value={j.alias} disabled={disabled} onChange={(e) => patch({ alias: e.target.value.trim() })} />
-        </label>
-        <label className="mongo-field" style={{ flex: '1 1 200px' }}>
+        </div>
+        <div className="mongo-field" style={{ flex: '1 1 200px' }}>
           <span>Nối sang kết nối</span>
           <select className="input" value={j.connectionId} disabled={disabled}
             onChange={(e) => {
@@ -127,7 +127,7 @@ function JoinRow({ j, all, patch, remove, srcSuggestions, onTargetFields, onAddC
             <option value="">— chọn kết nối —</option>
             {options.map((c) => <option key={`${c.kind}-${c.id}`} value={c.id}>{c.name} · {KIND_LABEL[c.kind]}</option>)}
           </select>
-        </label>
+        </div>
         {(j.kind === 'mongo' || j.kind === 'pg') && (
           <div className="mongo-field" style={{ flex: '1 1 140px' }}>
             <span>Database</span>
@@ -155,14 +155,14 @@ function JoinRow({ j, all, patch, remove, srcSuggestions, onTargetFields, onAddC
           <SuggestInput className="input mono" value={j.targetField} options={targetFields} showWhenEmpty disabled={disabled || !id}
             placeholder={j.kind === 'es' ? 'vd. tenant_id (keyword)' : 'vd. _id'} onChange={(v) => patch({ targetField: v })} />
         </div>
-        <label className="mongo-field" style={{ flex: '0 0 150px' }}>
+        <div className="mongo-field" style={{ flex: '0 0 150px' }}>
           <span>Kiểu khoá</span>
           <select className="input" value={j.keyType} disabled={disabled}
             title={'Tự nhận: Mongo hỏi cả dạng text, ObjectId và số; ES gửi dạng text; PG chọn số/UUID/text theo giá trị.\nChọn tay khi dữ liệu hai bên lệch kiểu.'}
             onChange={(e) => patch({ keyType: e.target.value as JoinKeyType })}>
             {JOIN_KEY_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
           </select>
-        </label>
+        </div>
       </div>
       {/* Lọc bớt dữ liệu bên nối (AND giữa các điều kiện) + giới hạn số dòng nối cho mỗi dòng của file. */}
       <div className="mongo-field">
@@ -205,12 +205,12 @@ function JoinRow({ j, all, patch, remove, srcSuggestions, onTargetFields, onAddC
         ))}
         <div className="xrow">
           <button className="ghost sm" disabled={disabled || !id} onClick={() => patch({ filters: [...filters, { field: '', op: 'eq', value: '', type: 'text' }] })}>+ Thêm điều kiện lọc</button>
-          <label className="mongo-field" style={{ flex: '0 0 220px', flexDirection: 'row', alignItems: 'center', gap: 6 }}
+          <div className="mongo-field" style={{ flex: '0 0 220px', flexDirection: 'row', alignItems: 'center', gap: 6 }}
             title={'Một dòng của file khớp nhiều dòng bên nối thì chỉ nối tối đa N dòng đầu. Trống / 0 = không giới hạn.'}>
             <span>Tối đa dòng nối / dòng</span>
             <input className="input" type="number" min={0} style={{ width: 80 }} value={j.maxPerRow ?? ''} disabled={disabled}
               placeholder="∞" onChange={(e) => patch({ maxPerRow: Math.max(0, Math.floor(Number(e.target.value) || 0)) || undefined })} />
-          </label>
+          </div>
         </div>
         {sorts.map((s, i) => (
           <div className="xrow" key={`s${i}`}>

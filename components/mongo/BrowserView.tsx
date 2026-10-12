@@ -792,7 +792,7 @@ function BrowserViewInner({
                             onChange={(e) => setLimit(Math.min(Math.max(Number(e.target.value) || DEFAULT_LIMIT, 1), 200))} />
                         </label>
                       </div>
-                      <div className="status-line" style={{ gap: 8 }}>
+                      <div className="status-line cs-sticky" style={{ gap: 8 }}>
                         <button className="sm" disabled={busy} onClick={() => { setSkip(0); void runFind({ skip: 0 }); }}>
                           {busy ? <span className="spinner" aria-hidden /> : '▶'} Find
                         </button>
@@ -861,7 +861,7 @@ function BrowserViewInner({
                         )}
                       </label>
                       {jsonError && <span className="mongo-json-err">{jsonError}</span>}
-                      <div className="status-line" style={{ gap: 8 }}>
+                      <div className="status-line cs-sticky" style={{ gap: 8 }}>
                         <button className="sm" disabled={busy || !pipeline.trim()} onClick={() => void runAggregate()}>
                           {busy ? <span className="spinner" aria-hidden /> : '▶'} Aggregate
                         </button>

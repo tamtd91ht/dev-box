@@ -427,7 +427,7 @@ function BrowserSession({
                     label={`Body _search — như Kibana Dev Tools (trống = match_all)${fields.length ? ` · ${fields.length} field từ mapping` : ''}`}
                     placeholder='{ "query": { "term": { "field": "value" } }, "aggs": { … }, "sort": [{ "createdAt": "desc" }], "size": 50 }'
                   />
-                  <div className="status-line" style={{ gap: 8 }}>
+                  <div className="status-line cs-sticky" style={{ gap: 8 }}>
                     <button className="sm" disabled={busy} onClick={() => void runSearch()}>
                       {busy ? <span className="spinner" aria-hidden /> : '▶'} Search
                     </button>

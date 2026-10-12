@@ -12,7 +12,7 @@ import { Children, useCallback, useEffect, useRef, useState, type KeyboardEvent 
 
 const MIN_PCT = 18;
 const MAX_PCT = 82;
-const BOTTOM_GAP = 12;
+const BOTTOM_GAP = 24;
 const MIN_HEIGHT = 360;
 
 const clamp = (n: number) => Math.min(MAX_PCT, Math.max(MIN_PCT, n));
@@ -37,12 +37,23 @@ export default function ColSplit({ storageKey, children, defaultPct = 40 }: {
 
   const save = (v: number) => { try { localStorage.setItem(storageKey, String(Math.round(v * 10) / 10)); } catch { /* bỏ qua */ } };
 
-  // Đo chiều cao còn lại của cửa sổ. Tính theo vị trí trong TÀI LIỆU (cộng scrollY) nên cuộn trang không làm lệch.
+  // Đo chiều cao còn lại: từ mép trên khung tới đáy VÙNG LÀM VIỆC (`.workspace` — phần giữa header và footer của app,
+  // tự cuộn), không phải đáy cửa sổ: footer chiếm ~60px dưới cùng nên đo theo cửa sổ sẽ tràn xuống dưới footer.
+  // Vị trí tính theo toạ độ NỘI DUNG của vùng cuộn (cộng scrollTop) để cuộn trang không làm chiều cao đổi.
   const fit = useCallback(() => {
     const el = root.current;
     if (!el || el.offsetParent === null) return; // đang ẩn (tab khác)
-    const top = el.getBoundingClientRect().top + window.scrollY;
-    el.style.setProperty('--cs-split-h', `${Math.max(MIN_HEIGHT, window.innerHeight - top - BOTTOM_GAP)}px`);
+    const ws = el.closest('.workspace') as HTMLElement | null;
+    const rect = el.getBoundingClientRect();
+    let h: number;
+    if (ws) {
+      const wr = ws.getBoundingClientRect();
+      const posInContent = rect.top - wr.top + ws.scrollTop;
+      h = ws.clientHeight - posInContent - BOTTOM_GAP;
+    } else {
+      h = window.innerHeight - (rect.top + window.scrollY) - BOTTOM_GAP;
+    }
+    el.style.setProperty('--cs-split-h', `${Math.max(MIN_HEIGHT, Math.floor(h))}px`);
   }, []);
 
   useEffect(() => {
@@ -51,6 +62,8 @@ export default function ColSplit({ storageKey, children, defaultPct = 40 }: {
     const ro = new ResizeObserver(fit); // bật lại từ trạng thái ẩn, hoặc bố cục phía trên đổi cao
     if (root.current) ro.observe(root.current);
     ro.observe(document.body);
+    const ws = root.current?.closest('.workspace');
+    if (ws) ro.observe(ws);
     return () => { window.removeEventListener('resize', fit); ro.disconnect(); };
   }, [fit]);
 

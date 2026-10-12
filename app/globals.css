@@ -9926,6 +9926,8 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .cs-split-right [class*="-qf-rows"] { flex: 1 1 0; max-height: none; min-height: 0; }
 .cs-split-right .res-box:not(.res-max) { overflow: hidden; }
 .cs-split-pin { margin-top: auto; }
+/* Hàng nút chạy luôn thấy được ở đáy cột trái dù form dài phải cuộn. */
+.cs-split-left .cs-sticky, .cs-split-left .cs-split-pin { position: sticky; bottom: 0; z-index: 2; padding: 8px 0 2px; background: var(--panel, var(--bg-0)); }
 @media (max-width: 860px) {
   .cs-split { flex-direction: column; height: auto; }
   .cs-split-left { flex: none; overflow: visible; padding-right: 0; }
@@ -9942,3 +9944,8 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 @media (max-width: 860px) {
   .cs-split-right .pg-results, .cs-split-right .mongo-results, .cs-split-right .es-results { max-height: 58vh; }
 }
+/* Cột trái hẹp: lưới field của Tìm nhanh dùng bố cục gọn (như màn hẹp) — giá trị xuống hàng riêng, không sinh thanh cuộn ngang. */
+.cs-split-left .mongo-qf-field, .cs-split-left .es-qf-field, .cs-split-left .pg-qf-field { grid-template-columns: minmax(100px, 1fr) 100px 110px; }
+.cs-split-left .mongo-qf-field > .input.mono, .cs-split-left .mongo-qf-field > select.input:last-child,
+.cs-split-left .pg-qf-field > .input.mono, .cs-split-left .pg-qf-field > select.input:last-child { grid-column: 1 / -1; }
+.cs-split-left .es-qf-field > *:last-child { grid-column: 1 / -1; }
