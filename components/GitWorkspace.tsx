@@ -44,6 +44,7 @@ import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 import DiffView from './git/DiffView';
+import { layoutGraph, GRAPH_COLORS } from '@/lib/gitGraph';
 
 const LAST_REPO_KEY = 'git.lastRepo';
 const LAST_PROJECT_KEY = 'git.lastProject';
@@ -199,6 +200,13 @@ export default function GitWorkspace() {
   /** Cột sidebar (repo + branch) | vùng chính — kéo để nới. */
   const sideSplit = useSplit({ varName: '--split-side', min: 180, max: 420, gap: 0 });
   const [commits, setCommits] = useState<CommitLog[]>([]);
+  /** Đồ thị nhánh: bật = log MỌI branch (--all) kèm đường nối; tắt = chỉ HEAD, dạng danh sách. */
+  const [logAll, setLogAll] = useState(true);
+  useEffect(() => { if (readLocal('git.logAll') === '0') setLogAll(false); }, []);
+  const toggleLogAll = useCallback(() => {
+    setLogAll((v) => { writeLocal('git.logAll', v ? '0' : '1'); return !v; });
+  }, []);
+  const graph = useMemo(() => (logAll ? layoutGraph(commits) : null), [logAll, commits]);
   const [logLoading, setLogLoading] = useState(false);
   // ── Xem nội dung thay đổi của một commit trong tab Lịch sử ──────────────────
   // `openCommit` = commit đang mở (null = chỉ xem danh sách). Danh sách file tải
@@ -385,7 +393,7 @@ export default function GitWorkspace() {
     if (!path) return;
     setLogLoading(true);
     try {
-      const r = await gitAction<{ commits: CommitLog[] }>('log', { repo: path, limit: 50 });
+      const r = await gitAction<{ commits: CommitLog[] }>('log', { repo: path, limit: logAll ? 150 : 50, all: logAll });
       if (repoRef.current !== path) return;
       setCommits(r.commits);
     } catch (e) {
@@ -395,7 +403,7 @@ export default function GitWorkspace() {
     } finally {
       setLogLoading(false);
     }
-  }, []);
+  }, [logAll]);
 
   useEffect(() => {
     if (view !== 'history' || !repo) return;
@@ -1092,6 +1100,13 @@ export default function GitWorkspace() {
           <div className="panel">
             <div className="status-line">
               <h3 style={{ margin: 0, flex: 1 }}>Commit gần đây</h3>
+              <button
+                className={`ghost sm${logAll ? ' on' : ''}`}
+                onClick={toggleLogAll}
+                title={logAll ? 'Đang hiện mọi branch kèm đồ thị — bấm để chỉ xem branch hiện tại' : 'Bấm để hiện mọi branch kèm đồ thị'}
+              >
+                ⑂ Tất cả branch
+              </button>
               <span className="small" style={{ color: 'var(--muted)' }}>
                 {status && !status.detached ? `⎇ ${status.branch}` : ''} · {commits.length}
               </span>
@@ -1109,19 +1124,22 @@ export default function GitWorkspace() {
               </div>
             ) : (
               <div className="log-list" style={{ marginTop: 10, overflow: 'auto', flex: 1, minHeight: 0 }}>
-                {commits.map((c) => (
+                {commits.map((c, idx) => (
                   <button
                     key={c.hash}
                     type="button"
-                    className={`log-row log-pick${openCommit?.hash === c.hash ? ' active' : ''}`}
+                    className={`log-row log-pick${graph ? ' log-graph' : ''}${openCommit?.hash === c.hash ? ' active' : ''}`}
                     onClick={() => openCommitDetail(c.hash)}
                     title={`${c.hash}\n${c.author} · ${c.date}\n\nBấm để xem nội dung thay đổi`}
                   >
+                    {graph && <GraphCell row={graph.rows[idx]} width={graph.width} />}
                     <code className="log-hash">{c.shortHash}</code>
                     <div className="log-main">
                       <div className="log-subject">
                         {c.subject}
-                        {c.refs && <span className="log-refs">{c.refs}</span>}
+                        {c.refs && (graph
+                          ? c.refs.split(', ').map((r) => <span key={r} className="log-refs">{r.replace('HEAD -> ', '● ')}</span>)
+                          : <span className="log-refs">{c.refs}</span>)}
                       </div>
                       <div className="log-meta small">
                         {c.author} · {c.relDate}
@@ -3693,4 +3711,35 @@ function repoGlyph(ov?: RepoOverview): { ch: string; color: string; title: strin
     case 'clean': return { ch: '✓', color: 'var(--ok, #3fb950)', title: 'sạch, đã đồng bộ' };
     default: return { ch: '?', color: 'var(--muted)', title: 'không rõ / chưa có upstream' };
   }
+}
+
+// ── Đồ thị nhánh (cột bên trái mỗi commit ở tab History) ──────────────────────
+
+const LANE_W = 14;
+const ROW_H = 44;
+const MAX_LANES = 8;
+
+function GraphCell({ row, width }: { row: ReturnType<typeof layoutGraph>['rows'][number]; width: number }) {
+  // Cột đồ thị rộng đều cho mọi dòng (theo số làn lớn nhất, chặn ở MAX_LANES) để
+  // hash/subject thẳng hàng; làn vượt trần bị cắt chứ không đẩy chữ đi.
+  const lanes = Math.min(width, MAX_LANES);
+  const w = lanes * LANE_W + 6;
+  const x = (lane: number) => Math.min(lane, MAX_LANES - 1) * LANE_W + LANE_W / 2 + 3;
+  const color = (lane: number) => GRAPH_COLORS[lane % GRAPH_COLORS.length];
+  return (
+    <svg className="log-graph-svg" width={w} height={ROW_H} viewBox={`0 0 ${w} ${ROW_H}`} aria-hidden>
+      {row.segs.map((sg, i) => (
+        <line
+          key={i}
+          x1={x(sg.x1)} y1={sg.y1 * ROW_H} x2={x(sg.x2)} y2={sg.y2 * ROW_H}
+          stroke={color(sg.lane)} strokeWidth={2} strokeLinecap="round"
+        />
+      ))}
+      <circle
+        cx={x(row.col)} cy={ROW_H / 2} r={row.merge ? 4.5 : 4}
+        fill={row.merge ? 'var(--bg, #0d1117)' : color(row.col)}
+        stroke={color(row.col)} strokeWidth={2}
+      />
+    </svg>
+  );
 }

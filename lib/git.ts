@@ -90,6 +90,7 @@ export interface CommitLog {
   relDate: string;
   subject: string;
   refs: string;
+  parents: string[];
 }
 
 /** One file touched by a commit — payload of the `commit-detail` action. */

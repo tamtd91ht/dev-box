@@ -10021,3 +10021,10 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   .sg-body { grid-template-columns: 1fr; }
   .sg-side { max-height: 40vh; }
 }
+
+/* ── Git · đồ thị nhánh trong History ───────────────────────────────────────── */
+.log-row.log-graph { height: 44px; padding: 0 10px 0 4px; align-items: center; gap: 8px; border-bottom: none; }
+.log-graph-svg { flex: none; display: block; }
+.log-row.log-graph .log-main { overflow: hidden; }
+.log-row.log-graph .log-subject { display: block; white-space: nowrap; -webkit-line-clamp: unset; }
+.log-row.log-graph .log-hash { padding-top: 0; }

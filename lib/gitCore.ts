@@ -97,10 +97,19 @@ async function fetchRepo(repo: string): Promise<boolean> {
 }
 
 /** True when `dir` is the top level of a git working tree. */
+const GIT_REPO_OK_TTL_MS = 30_000;
+const gitRepoOk = new Map<string, number>();
+
 async function isGitRepo(dir: string): Promise<boolean> {
+  // Chỉ cache kết quả DƯƠNG: repo bị xoá/hỏng trong 30s vẫn bị bắt ở lệnh git thật
+  // phía sau; còn "không phải repo" thì luôn hỏi lại để repo mới clone hiện ngay.
+  const hit = gitRepoOk.get(dir);
+  if (hit && Date.now() - hit < GIT_REPO_OK_TTL_MS) return true;
   try {
     const out = await git(dir, ['rev-parse', '--is-inside-work-tree']);
-    return out.trim() === 'true';
+    const ok = out.trim() === 'true';
+    if (ok) gitRepoOk.set(dir, Date.now());
+    return ok;
   } catch {
     return false;
   }
@@ -203,16 +212,19 @@ export async function detectRepos(root: string = GIT_ROOT): Promise<RepoInfo[]> 
     // Thư mục không đọc được: root là repo thì vẫn trả về chính nó.
     return repos;
   }
-  for (const name of entries.sort()) {
-    const full = path.join(rootAbs, name);
-    // Fast pre-check: a .git entry (dir or file for worktrees/submodules).
-    try {
-      await fs.access(path.join(full, '.git'));
-    } catch {
-      continue;
-    }
-    if (await isGitRepo(full)) repos.push({ path: full, name });
-  }
+  const found = await Promise.all(
+    entries.sort().map(async (name): Promise<RepoInfo | null> => {
+      const full = path.join(rootAbs, name);
+      // Fast pre-check: a .git entry (dir or file for worktrees/submodules).
+      try {
+        await fs.access(path.join(full, '.git'));
+      } catch {
+        return null;
+      }
+      return (await isGitRepo(full)) ? { path: full, name } : null;
+    }),
+  );
+  for (const r of found) if (r) repos.push(r);
   return repos;
 }
 
@@ -462,6 +474,10 @@ export interface BranchInfo {
 }
 
 export async function branches(repo: string): Promise<BranchInfo> {
+  // Remote-tracking refs + trạng thái merge không phụ thuộc danh sách local →
+  // phóng sẵn cùng lúc, khỏi nối đuôi 3 process git.
+  const remotesP = git(repo, ['branch', '--remotes', '--format=%(refname)']).catch(() => null);
+  const mergingP = isMerging(repo);
   const out = await git(repo, [
     'branch',
     '--list',
@@ -486,7 +502,8 @@ export async function branches(repo: string): Promise<BranchInfo> {
   // phải branch nào cả, chọn nó để merge/checkout là sai hoàn toàn.
   let remotes: string[] = [];
   try {
-    const rout = await git(repo, ['branch', '--remotes', '--format=%(refname)']);
+    const rout = await remotesP;
+    if (rout === null) throw new Error('no remotes');
     remotes = rout
       .split('\n')
       .map((l) => l.trim())
@@ -497,7 +514,7 @@ export async function branches(repo: string): Promise<BranchInfo> {
     /* no remotes configured — leave empty */
   }
 
-  return { current, branches: branchList, remotes, merging: await isMerging(repo) };
+  return { current, branches: branchList, remotes, merging: await mergingP };
 }
 
 /** True when a merge is in progress (MERGE_HEAD present in the real git dir). */
@@ -658,21 +675,27 @@ export interface CommitLog {
   subject: string;
   /** Ref decorations (branch/tag names) attached to this commit, if any. */
   refs: string;
+  /** Hash các commit cha (đồ thị nhánh); rỗng với commit gốc, ≥2 với merge. */
+  parents: string[];
 }
 
 // Field separator = US (0x1f), record separator = RS (0x1e). Neither can appear
 // in commit metadata, so parsing is unambiguous without shell-quoting concerns.
-const LOG_FMT = ['%H', '%an', '%aI', '%ar', '%s', '%D'].join('%x1f') + '%x1e';
+const LOG_FMT = ['%H', '%an', '%aI', '%ar', '%s', '%D', '%P'].join('%x1f') + '%x1e';
 
 /** Most-recent commits on the current HEAD (newest first). */
-export async function log(repo: string, limit = 30): Promise<CommitLog[]> {
+export async function log(repo: string, limit = 30, all = false): Promise<CommitLog[]> {
   const n = Math.min(Math.max(1, Math.floor(limit) || 30), 200);
-  const out = await git(repo, ['log', `--max-count=${n}`, '--no-color', `--pretty=format:${LOG_FMT}`]);
+  // `all` = mọi branch/tag (dựng đồ thị); --topo-order để cha luôn đứng sau con,
+  // điều kiện của thuật toán chia làn ở client.
+  const args = ['log', `--max-count=${n}`, '--no-color', `--pretty=format:${LOG_FMT}`];
+  if (all) args.push('--all', '--topo-order');
+  const out = await git(repo, args);
   const commits: CommitLog[] = [];
   for (const record of out.split('\x1e')) {
     const rec = record.replace(/^\n/, '');
     if (!rec.trim()) continue;
-    const [hash, author, date, relDate, subject, refs] = rec.split('\x1f');
+    const [hash, author, date, relDate, subject, refs, parents] = rec.split('\x1f');
     if (!hash) continue;
     commits.push({
       hash,
@@ -682,6 +705,7 @@ export async function log(repo: string, limit = 30): Promise<CommitLog[]> {
       relDate: relDate ?? '',
       subject: subject ?? '',
       refs: (refs ?? '').trim(),
+      parents: (parents ?? '').trim().split(/\s+/).filter(Boolean),
     });
   }
   return commits;
@@ -767,6 +791,7 @@ export async function commitDetail(repo: string, hash: string): Promise<CommitDe
     // %b là phần thân, đã không gồm subject. Lệnh này không kèm patch nên phần
     // đuôi chỉ có thể là thân commit — cắt \0 thừa của -z là đủ.
     body: (body ?? '').replace(/\0/g, '').trim(),
+    parents: (parents ?? '').trim().split(/\s+/).filter(Boolean),
     merge: (parents ?? '').trim().split(/\s+/).filter(Boolean).length > 1,
     files: mergeFileLists(parseNumstatZ(numstat), parseNameStatusZ(nameStatus)),
   };

@@ -221,7 +221,7 @@ export async function POST(req: NextRequest) {
 
       case 'log': {
         const limit = typeof body.limit === 'number' ? body.limit : 30;
-        return NextResponse.json({ commits: await log(repo, limit) });
+        return NextResponse.json({ commits: await log(repo, limit, !!body.all) });
       }
 
       case 'diff': {
