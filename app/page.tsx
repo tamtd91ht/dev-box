@@ -13,6 +13,7 @@ import PackManager from '@/components/PackManager';
 import GitWorkspaceRaw from '@/components/GitWorkspace';
 import CodeStudioRaw from '@/components/CodeStudio';
 import TerminalWorkspaceRaw from '@/components/TerminalWorkspace';
+import MonitorWorkspaceRaw, { type MonitorSummary } from '@/components/monitor/MonitorWorkspace';
 import RedisWorkspaceRaw from '@/components/RedisWorkspace';
 import KafkaWorkspaceRaw from '@/components/KafkaWorkspace';
 import RabbitWorkspaceRaw from '@/components/RabbitWorkspace';
@@ -70,6 +71,7 @@ const WorkWorkspace = memo(WorkWorkspaceRaw);
 const GitWorkspace = memo(GitWorkspaceRaw);
 const CodeStudio = memo(CodeStudioRaw);
 const TerminalWorkspace = memo(TerminalWorkspaceRaw);
+const MonitorWorkspace = memo(MonitorWorkspaceRaw);
 const RedisWorkspace = memo(RedisWorkspaceRaw);
 const KafkaWorkspace = memo(KafkaWorkspaceRaw);
 const RabbitWorkspace = memo(RabbitWorkspaceRaw);
@@ -198,6 +200,7 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'git', icon: '⎇', label: 'Git', badge: 'local' },
   { key: 'code', icon: '⌨', label: 'Code', badge: 'ide' },
   { key: 'terminal', icon: '❯', label: 'Terminal', badge: 'shell' },
+  { key: 'monitor', icon: '📊', label: 'Monitor', badge: 'infra' },
   { key: 'redis', icon: '◆', label: 'Redis', badge: 'local' },
   { key: 'kafka', icon: '≋', label: 'Kafka', badge: 'local' },
   { key: 'rabbit', icon: '🐇', label: 'RabbitMQ', badge: 'local' },
@@ -443,6 +446,8 @@ export default function Home() {
   // Tin chưa đọc của tab Zalo API (nhánh API) — riêng với Workspace vì hai luồng
   // độc lập, nhưng dồn chung vào tiêu đề cửa sổ.
   const [zaUnread, setZaUnread] = useState(0);
+  // Tóm tắt Monitor (số tài nguyên đỏ/vàng) → chấm màu trên nút menu khi đang ở tab khác.
+  const [monSum, setMonSum] = useState<MonitorSummary | null>(null);
   useEffect(() => {
     const total = wsUnread + zaUnread;
     document.title = total > 0 ? `(${total}) VHS DevBox` : 'VHS DevBox';
@@ -628,6 +633,13 @@ export default function Home() {
             >
               <span className="ms-ico" aria-hidden>{t.icon}</span>
               {t.label}
+              {t.key === 'monitor' && monSum && (monSum.bad > 0 || monSum.warn > 0) ? (
+                <span
+                  className={`ms-mon ${monSum.bad > 0 ? 'bad' : 'warn'}`}
+                  title={`${monSum.bad} đỏ · ${monSum.warn} vàng trên ${monSum.total} tài nguyên`}
+                  aria-label={`${monSum.bad} tài nguyên đỏ, ${monSum.warn} vàng`}
+                />
+              ) : null}
               {t.key === 'workspace' && wsUnread > 0 ? (
                 <span
                   className={`ms-unread ms-bell${!shown('workspace') ? ' ringing' : ''}`}
@@ -779,6 +791,11 @@ export default function Home() {
         {visited.terminal && (
           <main className="workspace" style={pane('terminal')} aria-hidden={!shown('terminal')}>
             <TerminalWorkspace visible={shown('terminal')} />
+          </main>
+        )}
+        {visited.monitor && (
+          <main className="workspace" style={pane('monitor')} aria-hidden={!shown('monitor')}>
+            <MonitorWorkspace visible={shown('monitor')} onOpenTab={pickTab} onSummary={setMonSum} />
           </main>
         )}
         {visited.redis && (

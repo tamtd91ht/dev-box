@@ -23,6 +23,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Menu Monitor: dashboard giám sát toàn bộ hạ tầng đã cấu hình.** Một màn hình cho Redis ·
+  Kafka · RabbitMQ · MongoDB · Elastic · PostgreSQL. Mặc định xem dạng **ô**: mỗi kết nối một
+  ô xanh/vàng/đỏ, gom theo loại (hoặc theo dự án), có banner tổng quan, dải đếm theo loại và
+  khung “Cần chú ý” liệt kê mọi tài nguyên đang vàng/đỏ. **Hover** ô → nguyên nhân cụ thể
+  (“RAM đã dùng = 93% (đỏ khi > 90%)” kèm vì sao đáng lo, và đã ở trạng thái đó từ bao lâu);
+  **bấm** → ngăn chi tiết (toàn bộ chỉ số + đồ thị nhỏ, dải lịch sử trạng thái, consumer group
+  và host broker của Kafka, chẩn đoán TCP khi mất kết nối). Có dạng **bảng** sắp xếp được, lọc
+  theo mức/dự án/từ khoá, chu kỳ đo 10s–5 phút, tạm dừng, và hộp ⚙ chỉnh ngưỡng từng chỉ số.
+  Số liệu dùng lại đúng `probeStack()` của Automation — không thêm đường thu thập mới. Đo song
+  song tối đa 3 kết nối (renderer chỉ có 6 socket/host); Kafka chỉ quét lag/host mỗi 5 vòng.
+  Tab ẩn vẫn đo thưa hơn để nút menu hiện chấm đỏ/vàng. Luật ngưỡng ở `lib/monitor/status.ts`,
+  kiểm bằng `npm run check:monitor`.
+
 - **Tab PostgreSQL: ô SQL có gợi ý kiểu IDE.** Gõ `se` ra `SELECT`, gõ `WHERE ten` ra thẳng cột
   `tenantId` của bảng đang chọn — nhận xong thành `WHERE tenantId = ''` với con trỏ nằm sẵn giữa
   hai nháy, gõ tiếp giá trị là xong. `↑↓` chọn · `Tab`/`Enter` nhận · `Esc` đóng · `Ctrl+Space`
