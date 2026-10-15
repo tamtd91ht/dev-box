@@ -42,7 +42,7 @@ type Tab = 'export' | 'import';
 
 /** Nhãn danh từ cho từng loại, dùng trong câu tiếng Việt ("3 cụm", "2 server"). */
 const NOUN: Record<RegistryKind, string> = {
-  kafka: 'cụm', redis: 'kết nối', mongo: 'cụm', rabbit: 'broker', es: 'cụm', pg: 'server',
+  kafka: 'cụm', redis: 'kết nối', mongo: 'cụm', rabbit: 'broker', es: 'cụm', pg: 'server', minio: 'server',
 };
 
 export default function ConnTransferButton({ kind, connections, onImported, onError }: ConnTransferButtonProps) {

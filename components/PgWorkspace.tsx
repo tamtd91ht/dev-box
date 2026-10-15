@@ -14,10 +14,14 @@ import {
   fetchPgConnections,
   pingPg,
   pgInfo,
+  pgStats,
+  pgHostMetrics,
   listPgDatabases,
   type PublicPgConnection,
   type PgTestResult,
   type PgDatabaseInfo,
+  type PgStats,
+  type PgHostMetrics,
 } from '@/lib/pg';
 import ConnRail from './pg/ConnRail';
 import OverviewView from './pg/OverviewView';
@@ -73,6 +77,8 @@ export default function PgWorkspace() {
 
   const [info, setInfo] = useState<PgTestResult | null>(null);
   const [databases, setDatabases] = useState<PgDatabaseInfo[]>([]);
+  const [stats, setStats] = useState<PgStats | null>(null);
+  const [hosts, setHosts] = useState<PgHostMetrics[]>([]);
   const [ovLoading, setOvLoading] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
@@ -109,16 +115,25 @@ export default function PgWorkspace() {
   }, [activeId]);
 
   useEffect(() => {
-    setInfo(null); setDatabases([]); setJumpDb(undefined);
+    setInfo(null); setDatabases([]); setStats(null); setHosts([]); setJumpDb(undefined);
     setError(null);
   }, [activeId]);
 
   const loadOverview = useCallback(async () => {
     if (!activeId) return;
     setOvLoading(true); setError(null);
-    const [inf, dbs] = await Promise.allSettled([pgInfo(activeId), listPgDatabases(activeId)]);
+    // Thống kê sức khoẻ + máy chủ là phần THÊM: lỗi ở đó (thiếu quyền, exporter tắt)
+    // không được làm hỏng phần tổng quan cơ bản nên không đẩy vào `error`.
+    const [inf, dbs, st, hm] = await Promise.allSettled([
+      pgInfo(activeId),
+      listPgDatabases(activeId),
+      pgStats(activeId, true),
+      pgHostMetrics(activeId),
+    ]);
     if (inf.status === 'fulfilled') setInfo(inf.value); else setError((inf.reason as Error).message);
     if (dbs.status === 'fulfilled') setDatabases(dbs.value);
+    setStats(st.status === 'fulfilled' ? st.value : null);
+    setHosts(hm.status === 'fulfilled' ? hm.value : []);
     setOvLoading(false);
   }, [activeId]);
 
@@ -216,6 +231,9 @@ export default function PgWorkspace() {
             {subView === 'overview' && (
               <OverviewView
                 info={info}
+                stats={stats}
+                hosts={hosts}
+                hasMetricsUrls={(active.metricsUrls?.length ?? 0) > 0}
                 databases={databases}
                 loading={ovLoading}
                 onReload={loadOverview}

@@ -3,7 +3,7 @@
 // Kiểu dữ liệu khai báo lại ở đây để hai bên độc lập — cùng hình dạng JSON.
 
 /** Các menu có hỗ trợ export/import. Phải khớp RegistryKind ở lib/connTransfer.ts. */
-export type RegistryKind = 'kafka' | 'redis' | 'mongo' | 'rabbit' | 'es' | 'pg';
+export type RegistryKind = 'kafka' | 'redis' | 'mongo' | 'rabbit' | 'es' | 'pg' | 'minio';
 
 /** Cách xử lý bản ghi trùng id khi import. */
 export type ConflictMode = 'overwrite' | 'skip' | 'duplicate';

@@ -1804,6 +1804,8 @@ interface ConnectionFormProps {
   onBusy: (b: boolean) => void;
   /** Persist: returns the new list; the parent decides prefer-id + close. */
   onSaved: (next: PublicRedisConnection[], savedId?: string) => void;
+  /** Thoát không lưu — hiện nút Huỷ và bắt phím Esc khi có. */
+  onCancel?: () => void;
 }
 
 /**
@@ -1811,7 +1813,7 @@ interface ConnectionFormProps {
  * cluster(seed nodes) + password, with an inline "Test connection" probe.
  * Reused by both the add panel and the compact edit modal.
  */
-function ConnectionForm({ initial, editingId, busy, onBusy, onSaved }: ConnectionFormProps) {
+function ConnectionForm({ initial, editingId, busy, onBusy, onSaved, onCancel }: ConnectionFormProps) {
   const [form, setForm] = useState<ConnForm>(() => (initial ? formOf(initial) : { ...EMPTY_FORM }));
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<TestState>(null);
@@ -1877,7 +1879,7 @@ function ConnectionForm({ initial, editingId, busy, onBusy, onSaved }: Connectio
 
   return (
     <>
-      <div className="redis-form">
+      <div className="redis-form" onKeyDown={(e) => { if (e.key === 'Escape' && onCancel && !busy) onCancel(); }}>
         <input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Tên (vd: crm-cache)" disabled={busy} style={fInput} />
         <input value={form.project} onChange={(e) => set('project', e.target.value)} placeholder="Dự án (vd: vn / core)" disabled={busy} style={fInput} />
         <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--muted)' }}>
@@ -1924,6 +1926,7 @@ function ConnectionForm({ initial, editingId, busy, onBusy, onSaved }: Connectio
         <button className="ghost sm" onClick={runTest} disabled={!canTest} title="Thử kết nối với thông tin đang nhập">
           {testing ? <span className="spinner" aria-hidden /> : '⚡'} Test
         </button>
+        {onCancel && <button className="ghost sm" onClick={onCancel} disabled={busy} title="Thoát, không lưu (Esc)">Huỷ</button>}
         <button className="sm" onClick={submit} disabled={!canSubmit}>
           {busy ? '…' : editingId ? 'Lưu' : '+ Lưu'}
         </button>
@@ -1952,6 +1955,7 @@ function ConnectionManager({ connections, onChanged, onDone }: ConnectionManager
       <ConnectionForm
         busy={busy}
         onBusy={setBusy}
+        onCancel={onDone}
         onSaved={(next) => {
           const added = next.find((c) => !connections.some((q) => q.id === c.id));
           onChanged(next, added?.id);
@@ -1988,6 +1992,7 @@ function EditConnectionModal({ conn, onCancel, onSaved }: EditConnectionModalPro
           editingId={conn.id}
           busy={busy}
           onBusy={setBusy}
+          onCancel={onCancel}
           onSaved={(next) => onSaved(next)}
         />
       </div>

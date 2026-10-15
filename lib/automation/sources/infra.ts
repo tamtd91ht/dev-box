@@ -18,7 +18,8 @@ import type {
   KafkaBrokerReach, KafkaDnsAnswer, KafkaDnsDiagnosis, KafkaDnsResult, KafkaProtocolProbe,
 } from '@/lib/kafka';
 import { mongoMonitor } from '@/lib/mongo';
-import { pingPg } from '@/lib/pg';
+import { pingPg, pgStats, pgHostMetrics, type PgHostMetrics } from '@/lib/pg';
+import { probeMinio, minioHostMetrics } from '@/lib/minio';
 import { listRabbitNodes, rabbitOverview } from '@/lib/rabbit';
 import { redisStats } from '@/lib/redis';
 import type { AutomationEvent, InfraStack, InfraWatch, WatchSeverity } from '../types';
@@ -289,7 +290,11 @@ const CPU_PREV_MAX_AGE_MS = 15 * 60 * 1000;
 
 /** Đọc node_exporter của mọi broker host và gộp thành chỉ số cụm + chi tiết máy. */
 async function kafkaHostPayload(id: string): Promise<{ metrics: MetricMap; hosts: KafkaHostDetail[] }> {
-  const raw = await kafkaHostMetrics(id);
+  return hostPayloadFrom(await kafkaHostMetrics(id));
+}
+
+/** node_exporter thô → chỉ số host đã chuẩn hoá. Dùng chung Kafka + Postgres (cùng tên chỉ số `host*`). */
+function hostPayloadFrom(raw: PgHostMetrics[]): { metrics: MetricMap; hosts: KafkaHostDetail[] } {
   const m: MetricMap = {};
   if (raw.length === 0) return { metrics: m, hosts: [] };
 
@@ -489,9 +494,72 @@ async function probeRabbit(id: string): Promise<ProbePayload> {
   return { metrics: m };
 }
 
-async function probePg(id: string): Promise<ProbePayload> {
+/** Chỉ số host của Postgres (node_exporter) — chỉ fetch khi watch thật sự đọc chúng. */
+export const PG_HOST_METRICS = new Set([
+  'hostDiskUsedPct',
+  'hostDiskFreeGb',
+  'hostMemUsedPct',
+  'hostCpuPct',
+  'hostLoad1PerCore',
+  'hostsDown',
+  'hostsTotal',
+]);
+
+async function probePg(id: string, metric?: string): Promise<ProbePayload> {
   const r = await pingPg(id);
-  return { metrics: { up: 1, latencyMs: round(r.latencyMs) } };
+  const m: MetricMap = { up: 1, latencyMs: round(r.latencyMs) };
+  // Watch chỉ hỏi up/latency thì dừng ở đây — không tốn thêm truy vấn thống kê.
+  if (metric === 'up' || metric === 'latencyMs') return { metrics: m };
+
+  const wantHost = metric === undefined || PG_HOST_METRICS.has(metric);
+  const wantStats = metric === undefined || !PG_HOST_METRICS.has(metric);
+  const [st, host] = await Promise.allSettled([
+    wantStats ? pgStats(id) : Promise.resolve(null),
+    wantHost ? pgHostMetrics(id) : Promise.resolve([] as PgHostMetrics[]),
+  ]);
+  if (st.status === 'fulfilled' && st.value) {
+    const s = st.value;
+    put(m, 'connections', s.connections);
+    put(m, 'maxConnections', s.maxConnections);
+    put(m, 'connectionsUsedPct', s.connectionsUsedPct);
+    put(m, 'activeQueries', s.active);
+    put(m, 'idleInTx', s.idleInTx);
+    put(m, 'lockWaiters', s.lockWaiters);
+    put(m, 'longestQuerySec', s.longestQuerySec);
+    put(m, 'longestTxSec', s.longestTxSec);
+    put(m, 'cacheHitPct', s.cacheHitPct);
+    put(m, 'dbSizeGb', s.dbSizeBytes === null ? null : round(s.dbSizeBytes / GB));
+    put(m, 'deadlocks', s.deadlocks);
+    put(m, 'wraparoundPct', s.wraparoundPct);
+    put(m, 'sharedBuffersMb', s.sharedBuffersBytes === null ? null : round(s.sharedBuffersBytes / MB));
+    put(m, 'uptimeSec', s.uptimeSec);
+    put(m, 'isStandby', s.role === 'standby' ? 1 : 0);
+    put(m, 'replicas', s.replicas);
+    put(m, 'replicaLagMb', s.replicaLagBytes === null ? null : round(s.replicaLagBytes / MB));
+    put(m, 'replayLagSec', s.replayLagSec);
+    put(m, 'inactiveSlots', s.inactiveSlots);
+    put(m, 'slotRetainedMb', s.slotRetainedBytes === null ? null : round(s.slotRetainedBytes / MB));
+  }
+  if (host.status === 'fulfilled' && host.value.length > 0) {
+    Object.assign(m, hostPayloadFrom(host.value).metrics);
+  }
+  return { metrics: m };
+}
+
+async function probeMinioStack(id: string, metric?: string): Promise<ProbePayload> {
+  // Server đo sẵn (list bucket + /minio/health + metrics Prometheus nếu đọc được).
+  const r = await probeMinio(id);
+  const m: MetricMap = { ...r.metrics };
+  // Chỉ số HOST (node_exporter) chỉ fetch khi cần: probe tổng quát (Monitor) hoặc watch đang hỏi chúng.
+  if (metric === undefined || PG_HOST_METRICS.has(metric)) {
+    try {
+      const raw = await minioHostMetrics(id);
+      if (raw.length > 0) Object.assign(m, hostPayloadFrom(raw).metrics);
+    } catch {
+      /* exporter tắt / chưa khai → bỏ qua, không làm hỏng probe */
+    }
+  }
+  return { metrics: m };
 }
 
 const PROBES: Record<InfraStack, (connectionId: string, metric?: string, opts?: ProbeOpts) => Promise<ProbePayload>> = {
@@ -501,6 +569,7 @@ const PROBES: Record<InfraStack, (connectionId: string, metric?: string, opts?: 
   kafka: probeKafka,
   rabbit: probeRabbit,
   pg: probePg,
+  minio: probeMinioStack,
 };
 
 /**

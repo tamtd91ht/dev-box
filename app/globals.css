@@ -10341,3 +10341,29 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .sg-sync.down { color: var(--warn, #d29922); }
 .sg-sync.up { color: var(--accent, #6c8cff); }
 .sg-sync.both { color: var(--err, #f85149); }
+
+/* ── MinIO tab ─────────────────────────────────────────────────────────────── */
+.mio-browser { display: flex; flex-direction: column; gap: 8px; min-height: 0; flex: 1; }
+.mio-crumbs { font-size: 12.5px; display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.mio-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 320px); gap: 10px; min-height: 0; flex: 1; }
+.mio-split:not(:has(.mio-detail)) { grid-template-columns: minmax(0, 1fr); }
+.mio-list { overflow: auto; min-height: 0; }
+.mio-list tr.sel td { background: color-mix(in srgb, var(--accent, #6c8cff) 18%, transparent); }
+.mio-detail { overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding-left: 10px; border-left: 1px solid var(--glass-brd, #515151); }
+.mio-meta { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; font-size: 12px; }
+.mio-meta dt { color: var(--muted); }
+.mio-meta dd { margin: 0; word-break: break-all; }
+.mio-img { max-width: 100%; max-height: 260px; object-fit: contain; border-radius: 6px; background: rgba(0,0,0,.15); }
+.mio-preview { max-height: 260px; overflow: auto; margin: 0; font-size: 11.5px; white-space: pre-wrap; }
+.mio-danger { border: 1px solid var(--err, #f85149); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+@media (max-width: 900px) { .mio-split { grid-template-columns: minmax(0, 1fr); } .mio-detail { border-left: 0; padding-left: 0; } }
+
+/* Tab PostgreSQL › Tổng quan: thanh chỉ số sức khoẻ */
+.pg-meters { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; margin-top: 6px; }
+.pg-meters-host { grid-column: 1 / -1; }
+.pg-meter { border: 1px solid var(--glass-brd, rgba(127,127,127,.25)); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.pg-meter-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.pg-meter-head b { font-size: 15px; white-space: nowrap; }
+.pg-meter-bar { height: 5px; border-radius: 3px; background: rgba(127,127,127,.22); overflow: hidden; }
+.pg-meter-bar > div { height: 100%; border-radius: 3px; transition: width .3s; }
+.pg-meter-sub { font-size: 11px; color: var(--muted); }

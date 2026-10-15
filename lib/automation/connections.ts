@@ -10,6 +10,7 @@
 
 import { fetchEsConnections } from '@/lib/es';
 import { fetchKafkaConnections } from '@/lib/kafka';
+import { fetchMinioConnections } from '@/lib/minio';
 import { fetchMongoConnections } from '@/lib/mongo';
 import { fetchPgConnections } from '@/lib/pg';
 import { fetchRabbitConnections } from '@/lib/rabbit';
@@ -91,6 +92,13 @@ const LOADERS: Record<InfraStack, () => Promise<ConnOption[]>> = {
       name: c.name,
       project: c.project,
       address: joinAddrs([`${c.host}:${c.port}/${c.database}`]),
+    })),
+  minio: async () =>
+    (await fetchMinioConnections()).connections.map((c) => ({
+      id: c.id,
+      name: c.name,
+      project: c.project,
+      address: joinAddrs([`${c.tls ? 'https://' : ''}${c.host}:${c.port}`]),
     })),
 };
 

@@ -68,6 +68,29 @@ const rule = RULES.redis.find((r) => r.metric === 'memUsedPct')!;
 check(effectiveRule('redis', rule, { 'redis.memUsedPct': { crit: null } }).crit === undefined, 'null bỏ hẳn một ngưỡng');
 check(effectiveRule('redis', rule, { 'redis.memUsedPct': { warn: 10 } }).crit === 90, 'chỉ ghi đè warn thì crit giữ mặc định');
 
+// ── PostgreSQL ──
+check(evaluate('pg', probe({ up: 1, latencyMs: 5 })).level === 'ok', 'pg chỉ có latency → ok');
+check(evaluate('pg', probe({ up: 1, connectionsUsedPct: 85 })).level === 'warn', 'pg kết nối 85% → warn');
+check(evaluate('pg', probe({ up: 1, connectionsUsedPct: 95 })).level === 'crit', 'pg kết nối 95% → crit');
+check(evaluate('pg', probe({ up: 1, cacheHitPct: 85 })).level === 'warn', 'pg cache hit 85% → warn (luật lt)');
+check(evaluate('pg', probe({ up: 1, cacheHitPct: 99.5 })).level === 'ok', 'pg cache hit cao → ok');
+check(evaluate('pg', probe({ up: 1, wraparoundPct: 75 })).level === 'crit', 'pg XID 75% → crit');
+check(evaluate('pg', probe({ up: 1, hostDiskUsedPct: 92 })).level === 'crit', 'pg đĩa máy chủ 92% → crit');
+check(evaluate('pg', probe({ up: 1, inactiveSlots: 1 })).level === 'warn', 'pg slot không hoạt động → warn');
+check(evaluate('pg', probe({ up: 1, connectionsUsedPct: 10, cacheHitPct: 99 })).kpis.length === 2, 'pg KPI chỉ gồm chỉ số có mặt');
+
+// ── MinIO ──
+check(evaluate('minio', probe({ up: 1, latencyMs: 40, buckets: 3, clusterDown: 0 })).level === 'ok', 'minio khoẻ → ok');
+check(evaluate('minio', probe({ up: 1, clusterDown: 1 })).level === 'crit', 'minio thiếu quorum → crit');
+check(evaluate('minio', probe({ up: 1, diskUsedPct: 85 })).level === 'warn', 'minio đĩa 85% → warn');
+check(evaluate('minio', probe({ up: 1, drivesOffline: 1 })).level === 'warn', 'minio mất 1 ổ → warn');
+check(evaluate('minio', probe({ up: 0 })).level === 'down', 'minio up=0 → down');
+check(evaluate('minio', probe({ up: 1, hostDiskUsedPct: 93 })).level === 'crit', 'minio đĩa máy chủ 93% → crit');
+check(evaluate('minio', probe({ up: 1, hostsDown: 1 })).level === 'warn', 'minio mất exporter → warn');
+check(evaluate('minio', probe({ up: 1, nodesOffline: 1 })).level === 'warn', 'minio mất 1 node → warn');
+check(evaluate('minio', probe({ up: 1, nodesOffline: 2 })).level === 'crit', 'minio mất 2 node → crit');
+check(evaluate('minio', probe({ up: 1, latencyMs: 5, buckets: 2 })).kpis.some((k) => k.metric === 'buckets'), 'minio KPI có số bucket');
+
 // ── rollup ──
 check(rollup([]) === 'unknown', 'nhóm rỗng → unknown');
 check(rollup(['ok', 'warn', 'ok']) === 'warn', 'rollup lấy mức xấu nhất');

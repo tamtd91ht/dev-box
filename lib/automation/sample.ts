@@ -157,6 +157,26 @@ const INFRA_SAMPLES: Record<InfraStack, SampleSpec> = {
     breach: 0,
     ok: 1,
   },
+  minio: {
+    watch: {
+      id: 'w-minio-demo',
+      name: 'MinIO CRM — dung lượng đầy (>85%)',
+      enabled: true,
+      stack: 'minio',
+      connectionId: 'crm-minio-01',
+      connectionLabel: 'MinIO CRM',
+      metric: 'diskUsedPct',
+      op: 'gt',
+      threshold: 85,
+      everySec: 300,
+      forSec: 600,
+      severity: 'warning',
+      tags: ['minio', 'crm'],
+    },
+    address: '10.0.0.20:9000',
+    breach: 91.4,
+    ok: 62.8,
+  },
 };
 
 const SAMPLE_DOWN_SEC = 340;

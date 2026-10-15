@@ -20,6 +20,7 @@ import RabbitWorkspaceRaw from '@/components/RabbitWorkspace';
 import MongoWorkspaceRaw from '@/components/MongoWorkspace';
 import EsWorkspaceRaw from '@/components/EsWorkspace';
 import PgWorkspaceRaw from '@/components/PgWorkspace';
+import MinioWorkspaceRaw from '@/components/MinioWorkspace';
 import OfficeWorkspaceRaw, { type OfficeApi } from '@/components/OfficeWorkspace';
 import GoogleWorkspaceRaw from '@/components/GoogleWorkspace';
 import MailWorkspaceRaw from '@/components/MailWorkspace';
@@ -78,6 +79,7 @@ const RabbitWorkspace = memo(RabbitWorkspaceRaw);
 const MongoWorkspace = memo(MongoWorkspaceRaw);
 const EsWorkspace = memo(EsWorkspaceRaw);
 const PgWorkspace = memo(PgWorkspaceRaw);
+const MinioWorkspace = memo(MinioWorkspaceRaw);
 const OfficeWorkspace = memo(OfficeWorkspaceRaw);
 const GoogleWorkspace = memo(GoogleWorkspaceRaw);
 const MailWorkspace = memo(MailWorkspaceRaw);
@@ -207,6 +209,7 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'mongo', icon: '🍃', label: 'MongoDB', badge: 'local' },
   { key: 'es', icon: '🔍', label: 'Elastic', badge: 'local' },
   { key: 'pg', icon: '🐘', label: 'PostgreSQL', badge: 'local' },
+  { key: 'minio', icon: '🪣', label: 'MinIO', badge: 'local' },
   { key: 'office', icon: '🗂', label: 'Office', badge: 'local' },
   { key: 'google', icon: 'Ⓖ', label: 'Google', badge: 'cloud' },
   { key: 'mail', icon: '✉️', label: 'Mail', badge: 'imap' },
@@ -826,6 +829,11 @@ export default function Home() {
         {visited.pg && (
           <main className="workspace" style={pane('pg')} aria-hidden={!shown('pg')}>
             <PgWorkspace />
+          </main>
+        )}
+        {visited.minio && (
+          <main className="workspace" style={pane('minio')} aria-hidden={!shown('minio')}>
+            <MinioWorkspace />
           </main>
         )}
         {visited.office && (

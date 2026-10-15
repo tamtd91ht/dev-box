@@ -24,7 +24,7 @@ import path from 'path';
 import { configPath } from './configDir';
 
 /** Các menu có hỗ trợ export/import cấu hình. */
-export type RegistryKind = 'kafka' | 'redis' | 'mongo' | 'rabbit' | 'es' | 'pg';
+export type RegistryKind = 'kafka' | 'redis' | 'mongo' | 'rabbit' | 'es' | 'pg' | 'minio';
 
 interface RegistrySpec {
   /** Nhãn tiếng Việt hiện trên UI + trong file export. */
@@ -50,6 +50,7 @@ const REGISTRIES: Record<RegistryKind, RegistrySpec> = {
   rabbit: { label: 'RabbitMQ brokers',    file: 'rabbitconnections.json', legacy: ['.rabbitconnections.json'], envVar: 'RABBIT_CONNECTIONS_PATH', enabledEnv: 'RABBIT_TOOL_ENABLED' },
   es:     { label: 'Elastic clusters',    file: 'esconnections.json',     legacy: ['.esconnections.json'],     envVar: 'ES_CONNECTIONS_PATH',     enabledEnv: 'ES_TOOL_ENABLED' },
   pg:     { label: 'PostgreSQL servers',  file: 'pgconnections.json',     legacy: ['.pgconnections.json'],     envVar: 'PG_CONNECTIONS_PATH',     enabledEnv: 'PG_TOOL_ENABLED' },
+  minio:  { label: 'MinIO servers',       file: 'minioconnections.json',  legacy: ['.minioconnections.json'],  envVar: 'MINIO_CONNECTIONS_PATH',  enabledEnv: 'MINIO_TOOL_ENABLED' },
 };
 
 export function isRegistryKind(v: unknown): v is RegistryKind {
@@ -98,7 +99,7 @@ export interface TransferFile {
   connections: AnyConnection[];
 }
 
-const SECRET_FIELDS = ['password'] as const;
+const SECRET_FIELDS = ['password', 'secretKey', 'metricsToken'] as const;
 
 function hasSecret(c: AnyConnection): boolean {
   return SECRET_FIELDS.some((f) => typeof c[f] === 'string' && (c[f] as string).length > 0);

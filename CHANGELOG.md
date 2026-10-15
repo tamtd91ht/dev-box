@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Tab MinIO: quản lý bucket / object ngay trong DevBox, và Monitor giám sát luôn MinIO.**
+  Cấu hình server (endpoint dán URL cũng được, access/secret key, ssl, region) lưu local cùng
+  kiểu với Postgres; có export/import cấu hình và nút Test. Duyệt bucket → thư mục → object,
+  lọc, xem chi tiết + xem trước ảnh/văn bản, tải xuống (stream qua server, không lộ secret),
+  copy link tạm (presigned). Ghi (upload, xoá object/thư mục, tạo/xoá bucket) cần
+  `MINIO_ALLOW_WRITE=true` **và** bỏ chọn Read-only trên server đó; xoá thư mục/bucket bắt
+  gõ lại tên. Monitor có thêm loại **MinIO**: độ trễ, số bucket, quorum ghi
+  (`/minio/health/cluster`), dung lượng / node / ổ đĩa (Prometheus metrics) và đĩa/RAM/CPU máy
+  chủ (node_exporter); luật xanh/vàng/đỏ kiểm bằng `npm run check:monitor`. Bật bằng
+  `MINIO_TOOL_ENABLED=true`.
+  MinIO tách **S3 API** (cổng 9000) và **Console** (cổng 9001) nên mỗi server cấu hình riêng:
+  endpoint S3 API, địa chỉ Console (nút “Console ↗” mở nhanh), Metrics URL + token và
+  node_exporter. Mọi ô địa chỉ nhận cả `IP:port` lẫn domain/URL đầy đủ (thiếu scheme thì tự
+  thêm). Tổng quan có thanh dung lượng, ổ đĩa, node, tổng object, dung lượng từng bucket
+  (từ metrics, không phải quét) và mục máy chủ — thanh chỉ số dùng chung với PostgreSQL
+  (`components/health/Meters.tsx`) và tô màu theo đúng luật của Monitor.
+  Mục **🖥 Console** nhúng thẳng MinIO Console vào tab và đăng nhập sẵn: server đăng nhập hộ bằng
+  key đã lưu (secret không xuống trình duyệt, chỉ cookie phiên được nạp vào `<webview>`), nên
+  không phải gõ lại. Chỉ chạy ở app desktop; Console chỉ cho SSO/OIDC thì vẫn phải đăng nhập tay.
+- **Tab PostgreSQL: ô Host nhận cả cluster** (`pg1:5432,pg2:5433,pg3`) — tự chọn node primary.
+- **PostgreSQL có số liệu thật ở Monitor và tab Tổng quan** (trước đây chỉ đo mỗi `SELECT 1`).
+  Bằng SQL chỉ đọc: kết nối/`max_connections`, phiên chờ lock, `idle in transaction`, query và
+  giao dịch chạy lâu nhất, cache hit, tổng dung lượng database, tuổi XID (nguy cơ wraparound),
+  replica/replay lag, replication slot không hoạt động. Đĩa/RAM/CPU/load của **máy chủ** thì SQL
+  không biết — khai `Metrics URLs` (node_exporter) trong cấu hình server là đo được, dùng chung
+  bộ đọc với Kafka (`lib/hostMetrics.ts`). Tổng quan có thanh chỉ số tô màu theo đúng luật của
+  Monitor, mục máy chủ và danh sách phiên đang chạy. Thiếu quyền ở truy vấn nào thì chỉ số đó
+  vắng mặt, không làm hỏng cả lần đo.
+
 ### Fixed
 
 - **Tab Git: project vừa là repo vừa chứa repo con giờ hiện ĐỦ, không chỉ mỗi root.**

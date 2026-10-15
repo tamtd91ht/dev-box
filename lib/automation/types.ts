@@ -454,7 +454,7 @@ export interface AutomationRule {
 // ── Infrastructure watches (the `infra` source) ────────────────────────────
 
 /** Stacks the probe layer can poll — all reuse the DevBox connection registries. */
-export type InfraStack = 'mongo' | 'redis' | 'es' | 'kafka' | 'rabbit' | 'pg';
+export type InfraStack = 'mongo' | 'redis' | 'es' | 'kafka' | 'rabbit' | 'pg' | 'minio';
 
 /**
  * How serious a breach of this watch is. PURE METADATA: it travels on the event

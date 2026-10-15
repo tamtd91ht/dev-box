@@ -1,7 +1,7 @@
 'use client';
 
 // DevBox Monitor — bảng giám sát toàn bộ hạ tầng đã cấu hình (Redis · Kafka ·
-// RabbitMQ · MongoDB · Elastic · PostgreSQL).
+// RabbitMQ · MongoDB · Elastic · PostgreSQL · MinIO).
 //
 // Hai cách xem:
 //   • Ô (mặc định): mỗi tài nguyên một ô màu, gom theo loại (hoặc theo dự án) —
@@ -434,7 +434,7 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
             <div className="mon-empty-ico">📡</div>
             <p><strong>Chưa có kết nối nào để giám sát.</strong></p>
             <p className="mon-faint">
-              Thêm kết nối ở các tab Redis · Kafka · RabbitMQ · MongoDB · Elastic · PostgreSQL —
+              Thêm kết nối ở các tab Redis · Kafka · RabbitMQ · MongoDB · Elastic · PostgreSQL · MinIO —
               Monitor tự nhận ngay ở lần đo kế tiếp. Tab công cụ bị tắt (<code>*_TOOL_ENABLED</code>) thì không hiện ở đây.
             </p>
           </div>

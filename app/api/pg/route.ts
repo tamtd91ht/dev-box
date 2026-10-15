@@ -3,6 +3,8 @@
 //   POST { action, ... }  where action is one of:
 //     'test'       { host, port, database, username, password?, tls? } → { ok, result: PgTestResult }
 //     'ping'       { connectionId }                        → { ok, result: { latencyMs } }
+//     'stats'      { connectionId, sessions? }             → { ok, result: PgStats }
+//     'hostMetrics' { connectionId }                       → { ok, result: HostMetrics[] }
 //     'databases'  { connectionId }                        → { ok, result: PgDatabaseInfo[] }
 //     'tables'     { connectionId, db }                    → { ok, result: PgTableInfo[] }
 //     'columns'    { connectionId, db, schema, table }     → { ok, result: PgColumnInfo[] }
@@ -24,6 +26,8 @@ import {
   PG_ENABLED,
   testConnection,
   ping,
+  stats,
+  hostMetrics,
   listDatabases,
   listTables,
   listColumns,
@@ -84,6 +88,12 @@ export async function POST(req: NextRequest) {
         break;
       case 'info': // version + latency of the SAVED connection (Overview)
         result = await testConnection(conn);
+        break;
+      case 'stats': // sức khoẻ server bằng SQL (+ danh sách phiên đang chạy khi sessions=true)
+        result = await stats(conn, { sessions: !!body.sessions });
+        break;
+      case 'hostMetrics': // node_exporter RAM/đĩa/CPU/load (tuỳ chọn, theo connection)
+        result = await hostMetrics(conn);
         break;
       case 'databases':
         result = await listDatabases(conn);

@@ -33,7 +33,7 @@ export const LEVEL_LABEL: Record<Level, string> = {
 
 export const worst = (a: Level, b: Level): Level => (LEVEL_RANK[b] > LEVEL_RANK[a] ? b : a);
 
-export const STACK_ORDER: InfraStack[] = ['redis', 'kafka', 'rabbit', 'mongo', 'es', 'pg'];
+export const STACK_ORDER: InfraStack[] = ['redis', 'kafka', 'rabbit', 'mongo', 'es', 'pg', 'minio'];
 
 export const STACK_META: Record<InfraStack, { label: string; /** Nhãn ngắn cho nút lọc trên thanh. */ short: string; icon: string; tab: string }> = {
   redis: { label: 'Redis', short: 'Redis', icon: '◆', tab: 'redis' },
@@ -42,6 +42,7 @@ export const STACK_META: Record<InfraStack, { label: string; /** Nhãn ngắn ch
   mongo: { label: 'MongoDB', short: 'Mongo', icon: '🍃', tab: 'mongo' },
   es: { label: 'Elastic', short: 'ES', icon: '🔍', tab: 'es' },
   pg: { label: 'PostgreSQL', short: 'Postgre', icon: '🐘', tab: 'pg' },
+  minio: { label: 'MinIO', short: 'MinIO', icon: '🪣', tab: 'minio' },
 };
 
 /**
@@ -136,6 +137,33 @@ export const RULES: Record<InfraStack, Rule[]> = {
   ],
   pg: [
     { metric: 'latencyMs', label: 'Độ trễ (SELECT 1)', unit: 'ms', dir: 'gt', warn: 500, crit: 2000, why: 'Server phản hồi chậm bất thường.' },
+    { metric: 'wraparoundPct', label: 'Tuổi XID (wraparound)', unit: '%', dir: 'gt', warn: 40, crit: 70, why: 'Chạm 100% Postgres tự dừng ghi để chống wraparound — autovacuum không theo kịp hoặc bị giao dịch dài/slot chặn.' },
+    { metric: 'connectionsUsedPct', label: 'Kết nối đã dùng', unit: '%', dir: 'gt', warn: 80, crit: 90, why: 'Gần chạm max_connections — ứng dụng sắp nhận "too many clients".' },
+    { metric: 'lockWaiters', label: 'Phiên đang chờ lock', unit: '', dir: 'gt', warn: 5, crit: 20, why: 'Có giao dịch giữ lock lâu, các phiên khác xếp hàng chờ.' },
+    { metric: 'idleInTx', label: 'Phiên idle in transaction', unit: '', dir: 'gt', warn: 10, crit: 50, why: 'Ứng dụng mở giao dịch rồi để đó — giữ lock và chặn vacuum.' },
+    { metric: 'longestTxSec', label: 'Giao dịch mở lâu nhất', unit: 's', dir: 'gt', warn: 600, crit: 3600, why: 'Giao dịch dài chặn autovacuum, bảng phình dần.' },
+    { metric: 'longestQuerySec', label: 'Query chạy lâu nhất', unit: 's', dir: 'gt', warn: 300, crit: 1800, why: 'Query treo hoặc thiếu index đang ngốn tài nguyên.' },
+    { metric: 'cacheHitPct', label: 'Cache hit', unit: '%', dir: 'lt', warn: 90, crit: 80, why: 'Dữ liệu nóng không vừa bộ nhớ — server đọc đĩa nhiều.' },
+    { metric: 'replayLagSec', label: 'Replay lag (standby)', unit: 's', dir: 'gt', warn: 30, crit: 300, why: 'Standby tụt sau primary — failover lúc này sẽ mất dữ liệu.' },
+    { metric: 'replicaLagMb', label: 'Replica tụt sau', unit: 'MB', dir: 'gt', warn: 512, crit: 4096, why: 'Replica chậm nhất chưa replay lượng WAL này.' },
+    { metric: 'inactiveSlots', label: 'Replication slot không hoạt động', unit: '', dir: 'gt', warn: 0, why: 'Slot không có ai nối vẫn giữ WAL — im lặng làm đầy đĩa primary.' },
+    { metric: 'hostsDown', label: 'Host mất exporter', unit: '', dir: 'gt', warn: 0, why: 'node_exporter không trả lời — không đo được đĩa/RAM/CPU máy chủ.' },
+    { metric: 'hostDiskUsedPct', label: 'Đĩa máy chủ đầy nhất', unit: '%', dir: 'gt', warn: 80, crit: 90, why: 'Đầy đĩa là Postgres ngừng ghi (WAL/dữ liệu) và có thể không khởi động lại được.' },
+    { metric: 'hostMemUsedPct', label: 'RAM máy chủ', unit: '%', dir: 'gt', warn: 90, crit: 95, why: 'Cạn RAM thì OOM killer có thể giết tiến trình postgres.' },
+    { metric: 'hostCpuPct', label: 'CPU máy chủ', unit: '%', dir: 'gt', warn: 85, crit: 95 },
+    { metric: 'hostLoad1PerCore', label: 'Load/core máy chủ', unit: '', dir: 'gt', warn: 1.5, crit: 3 },
+  ],
+  minio: [
+    { metric: 'clusterDown', label: 'Quorum ghi', unit: '', dir: 'gt', crit: 0, say: (v) => (v ? 'thiếu' : 'đủ'), why: 'Cụm không đủ ổ/node để ghi — upload object sẽ lỗi.' },
+    { metric: 'nodesOffline', label: 'Node offline', unit: '', dir: 'gt', warn: 0, crit: 1, why: 'Một node MinIO đã dừng — cụm giảm dự phòng.' },
+    { metric: 'drivesOffline', label: 'Ổ đĩa offline', unit: '', dir: 'gt', warn: 0, why: 'Có ổ đĩa mất kết nối — erasure coding còn chịu được nhưng đã bớt dự phòng.' },
+    { metric: 'diskUsedPct', label: 'Dung lượng đã dùng', unit: '%', dir: 'gt', warn: 80, crit: 90, why: 'Gần đầy — MinIO sẽ từ chối ghi object mới.' },
+    { metric: 'latencyMs', label: 'Độ trễ API', unit: 'ms', dir: 'gt', warn: 1000, crit: 3000, why: 'Server phản hồi chậm bất thường.' },
+    { metric: 'hostsDown', label: 'Host mất exporter', unit: '', dir: 'gt', warn: 0, why: 'node_exporter không trả lời — không đo được đĩa/RAM/CPU máy chủ.' },
+    { metric: 'hostDiskUsedPct', label: 'Đĩa máy chủ đầy nhất', unit: '%', dir: 'gt', warn: 80, crit: 90, why: 'Đĩa máy chủ đầy là MinIO ngừng ghi object.' },
+    { metric: 'hostMemUsedPct', label: 'RAM máy chủ', unit: '%', dir: 'gt', warn: 90, crit: 95 },
+    { metric: 'hostCpuPct', label: 'CPU máy chủ', unit: '%', dir: 'gt', warn: 85, crit: 95 },
+    { metric: 'hostLoad1PerCore', label: 'Load/core máy chủ', unit: '', dir: 'gt', warn: 1.5, crit: 3 },
   ],
 };
 
@@ -244,7 +272,16 @@ const KPI_METRICS: Record<InfraStack, { metric: string; label: string; unit: Uni
     { metric: 'heapPct', label: 'heap', unit: '%' },
     { metric: 'diskUsedPct', label: 'đĩa', unit: '%' },
   ],
-  pg: [{ metric: 'latencyMs', label: 'latency', unit: 'ms' }],
+  pg: [
+    { metric: 'connectionsUsedPct', label: 'kết nối', unit: '%' },
+    { metric: 'cacheHitPct', label: 'cache hit', unit: '%' },
+    { metric: 'hostDiskUsedPct', label: 'đĩa', unit: '%' },
+  ],
+  minio: [
+    { metric: 'diskUsedPct', label: 'dung lượng', unit: '%' },
+    { metric: 'buckets', label: 'bucket', unit: '' },
+    { metric: 'latencyMs', label: 'latency', unit: 'ms' },
+  ],
 };
 
 /** Chỉ số vẽ sparkline mặc định trên thẻ. */
@@ -254,7 +291,8 @@ export const SPARK_METRIC: Record<InfraStack, string> = {
   rabbit: 'messagesReady',
   mongo: 'connectionsUsedPct',
   es: 'heapPct',
-  pg: 'latencyMs',
+  pg: 'connectionsUsedPct',
+  minio: 'latencyMs',
 };
 
 /** Một chỉ số vi phạm luật mức nào (ok nếu không vi phạm / không có ngưỡng). */
@@ -362,6 +400,19 @@ const EXTRA_LABELS: Record<string, { label: string; unit: Unit }> = {
   fdUsed: { label: 'FD đang dùng', unit: '' },
   fdTotal: { label: 'FD tối đa', unit: '' },
   latencyMs: { label: 'Độ trễ', unit: 'ms' },
+  buckets: { label: 'Số bucket', unit: '' },
+  maxConnections: { label: 'max_connections', unit: '' },
+  activeQueries: { label: 'Query đang chạy', unit: '' },
+  dbSizeGb: { label: 'Tổng dung lượng database', unit: 'GB' },
+  sharedBuffersMb: { label: 'shared_buffers', unit: 'MB' },
+  uptimeSec: { label: 'Thời gian chạy', unit: 's' },
+  isStandby: { label: 'Vai trò', unit: '' },
+  replicas: { label: 'Replica đang nối', unit: '' },
+  slotRetainedMb: { label: 'WAL bị slot giữ lại', unit: 'MB' },
+  deadlocks: { label: 'Deadlock (tích luỹ)', unit: '' },
+  objects: { label: 'Tổng object', unit: '' },
+  nodesOnline: { label: 'Node online', unit: '' },
+  drivesOnline: { label: 'Ổ đĩa online', unit: '' },
 };
 
 export function describeMetric(stack: InfraStack, metric: string, ov?: Overrides): { label: string; unit: Unit; say?: (v: number) => string; rule?: Rule } {

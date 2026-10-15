@@ -23,11 +23,12 @@ export default function ConnectionForm({ initial, onCancel, onSaved, onError }: 
   const [username, setUsername] = useState(initial?.username ?? '');
   const [password, setPassword] = useState('');
   const [tls, setTls] = useState(initial?.tls ?? false);
+  const [metricsUrls, setMetricsUrls] = useState(initial?.metricsUrls?.join(', ') ?? '');
   const [readOnly, setReadOnly] = useState(initial ? initial.readOnly : true);
   const [busy, setBusy] = useState(false);
   const [testMsg, setTestMsg] = useState<string | null>(null);
 
-  const bodyOf = () => ({ name, project, host, port, database, username, password, tls, readOnly });
+  const bodyOf = () => ({ name, project, host, port, database, username, password, tls, metricsUrls, readOnly });
   const canTest = !!host.trim() && !!username.trim();
 
   return (
@@ -40,10 +41,12 @@ export default function ConnectionForm({ initial, onCancel, onSaved, onError }: 
         <input className="input" value={project} onChange={(e) => setProject(e.target.value)} placeholder="vn" />
       </label>
       <div className="pg-form-row">
-        <label className="pg-field" style={{ flex: 1 }}><span>Host</span>
-          <input className="input mono" value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.2.85" />
+        <label className="pg-field" style={{ flex: 1 }}><span>Host <em style={{ fontStyle: 'normal', color: 'var(--muted)' }}>(cluster: ngăn cách bằng dấu phẩy)</em></span>
+          <input className="input mono" value={host} onChange={(e) => setHost(e.target.value)}
+            placeholder="192.168.2.85  hoặc  pg1:5432,pg2:5432,pg3"
+            title="Một node, hoặc cả cluster: host1[:port],host2[:port],… — node không ghi port dùng port bên cạnh. Tự chọn node PRIMARY." />
         </label>
-        <label className="pg-field" style={{ flex: '0 0 100px' }}><span>Port</span>
+        <label className="pg-field" style={{ flex: '0 0 100px' }}><span>Port {host.includes(',') ? '(mặc định)' : ''}</span>
           <input className="input" type="number" min={1} max={65535} value={port}
             onChange={(e) => setPort(Number(e.target.value) || 5432)} />
         </label>
@@ -62,6 +65,11 @@ export default function ConnectionForm({ initial, onCancel, onSaved, onError }: 
           <input type="checkbox" checked={tls} onChange={(e) => setTls(e.target.checked)} /> ssl
         </label>
       </div>
+      <label className="pg-field">
+        <span>Metrics URLs <em style={{ fontStyle: 'normal', color: 'var(--muted)' }}>(tuỳ chọn — node_exporter của máy chạy Postgres, để Monitor đo đĩa/RAM/CPU)</em></span>
+        <input className="input mono" value={metricsUrls} onChange={(e) => setMetricsUrls(e.target.value)}
+          placeholder="http://192.168.2.85:9100/metrics" />
+      </label>
 
       <label className={`pg-check pg-readonly-toggle${readOnly ? '' : ' armed'}`}>
         <input type="checkbox" checked={readOnly} onChange={(e) => setReadOnly(e.target.checked)} />
@@ -80,7 +88,8 @@ export default function ConnectionForm({ initial, onCancel, onSaved, onError }: 
             setBusy(true); setTestMsg(null);
             try {
               const r = await testPgConnection({ host, port, database, username, password: password || undefined, tls });
-              setTestMsg(`OK · PostgreSQL ${r.version} · db ${r.database} · ${r.latencyMs}ms`);
+              setTestMsg(`OK · PostgreSQL ${r.version} · db ${r.database} · ${r.latencyMs}ms`
+                + (r.endpoint ? ` · ${r.role === 'primary' ? 'primary' : 'standby (không có primary)'} ${r.endpoint} (${r.nodes} node)` : ''));
             } catch (e) { setTestMsg(`Lỗi: ${(e as Error).message}`); }
             finally { setBusy(false); }
           }}
