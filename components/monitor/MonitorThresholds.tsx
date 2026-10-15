@@ -27,7 +27,7 @@ export default function MonitorThresholds({ overrides, onSave, onClose }: Props)
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const set = (rule: Rule, field: 'warn' | 'crit', raw: string) => {
+  const set = (rule: Rule, field: 'warn' | 'crit' | 'whenMin', raw: string) => {
     const k = overrideKey(stack, rule.metric);
     setDraft((d) => {
       const cur = { ...(d[k] ?? {}) };
@@ -70,7 +70,25 @@ export default function MonitorThresholds({ overrides, onSave, onClose }: Props)
                 const o = draft[overrideKey(stack, r.metric)] ?? {};
                 return (
                   <tr key={r.metric}>
-                    <td title={r.why}>{r.label}{r.unit ? <span className="mon-faint"> ({r.unit})</span> : null}</td>
+                    <td title={r.why}>
+                      {r.label}{r.unit ? <span className="mon-faint"> ({r.unit})</span> : null}
+                      {r.when && (
+                        <div className="mon-faint" style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+                          chỉ xét khi {r.when.label} ≥
+                          <input
+                            type="number"
+                            min={0}
+                            value={o.whenMin ?? ''}
+                            placeholder={String(r.when.min)}
+                            onChange={(e) => set(r, 'whenMin', e.target.value)}
+                            className={o.whenMin !== undefined ? 'custom' : ''}
+                            style={{ width: 70 }}
+                            title="Dưới mức này thì bỏ qua luật (0 = luôn xét). Để trống = mặc định."
+                          />
+                          {r.when.unit}
+                        </div>
+                      )}
+                    </td>
                     <td className="mon-faint">{dirText(r)}</td>
                     <td>
                       <input

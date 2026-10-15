@@ -6,7 +6,7 @@
 import { useEffect, useMemo } from 'react';
 import type { Row } from '@/lib/monitor/useMonitor';
 import {
-  LEVEL_LABEL, STACK_META, ago, describeMetric, fmtDuration, fmtNum, fmtValue, levelOf,
+  LEVEL_LABEL, STACK_META, ago, describeMetric, fmtDuration, fmtNum, fmtValue, gatedOff, levelOf,
   type Overrides,
 } from '@/lib/monitor/status';
 import { Spark, Timeline } from './Spark';
@@ -132,7 +132,7 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
               {keys.map((k) => {
                 const d = describeMetric(res.stack, k, overrides);
                 const v = metrics[k];
-                const lv = d.rule ? levelOf(d.rule, v) : 'ok';
+                const lv = d.rule && !gatedOff(d.rule, metrics) ? levelOf(d.rule, v) : 'ok';
                 const series = st.samples.map((s) => s.metrics[k]).filter((x): x is number => typeof x === 'number');
                 const thr = d.rule
                   ? [d.rule.warn !== undefined ? `vàng ${d.rule.dir === 'gt' ? '>' : '<'} ${fmtValue(d.rule.warn, d.unit)}` : '',

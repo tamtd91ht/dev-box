@@ -78,6 +78,14 @@ export interface Rule {
   say?: (value: number) => string;
   /** Câu giải thích NGUYÊN NHÂN khi vi phạm (thêm vào sau "label = value"). */
   why?: string;
+  /**
+   * Điều kiện ĐỂ luật có nghĩa: chỉ đánh giá khi chỉ số `metric` đạt tối thiểu `min`.
+   * Dùng cho các tỉ lệ vô nghĩa khi tải quá nhỏ — vd phân mảnh Redis = RSS/dữ liệu:
+   * instance mới triển khai (dữ liệu vài MB trên máy cấp 4GB) luôn ra tỉ lệ rất cao
+   * vì overhead cố định của tiến trình, dù không có phân mảnh thật. Chỉ số cổng vắng
+   * mặt thì KHÔNG chặn (không có cơ sở để bỏ qua).
+   */
+  when?: { metric: string; min: number; label: string; unit: Unit };
 }
 
 const ES_STATUS_TEXT = ['green', 'yellow', 'red'];
@@ -90,7 +98,7 @@ const ES_STATUS_TEXT = ['green', 'yellow', 'red'];
 export const RULES: Record<InfraStack, Rule[]> = {
   redis: [
     { metric: 'memUsedPct', label: 'RAM đã dùng', unit: '%', dir: 'gt', warn: 80, crit: 90, why: 'Gần chạm maxmemory — sắp evict key hoặc từ chối ghi.' },
-    { metric: 'fragmentation', label: 'Phân mảnh bộ nhớ', unit: '', dir: 'gt', warn: 1.8, crit: 3, why: 'RSS lớn hơn nhiều so với dữ liệu thật.' },
+    { metric: 'fragmentation', label: 'Phân mảnh bộ nhớ', unit: '', dir: 'gt', warn: 1.8, crit: 3, why: 'RSS lớn hơn nhiều so với dữ liệu thật.', when: { metric: 'memUsedMb', min: 256, label: 'RAM đã dùng', unit: 'MB' } },
     { metric: 'hitRatePct', label: 'Hit rate', unit: '%', dir: 'lt', warn: 50, why: 'Phần lớn truy vấn trượt cache.' },
     { metric: 'clients', label: 'Client đang kết nối', unit: '', dir: 'gt', warn: 5000, crit: 9000, why: 'Gần chạm maxclients.' },
   ],
@@ -168,7 +176,7 @@ export const RULES: Record<InfraStack, Rule[]> = {
 };
 
 /** Ghi đè ngưỡng: khoá `stack.metric` → {warn?, crit?} (undefined = giữ mặc định, null = bỏ ngưỡng đó). */
-export type Overrides = Record<string, { warn?: number | null; crit?: number | null }>;
+export type Overrides = Record<string, { warn?: number | null; crit?: number | null; /** Ghi đè ngưỡng cổng `Rule.when.min` (0 = luôn xét). */ whenMin?: number }>;
 
 export const overrideKey = (stack: InfraStack, metric: string): string => `${stack}.${metric}`;
 
@@ -178,7 +186,10 @@ export function effectiveRule(stack: InfraStack, rule: Rule, ov?: Overrides): Ru
   if (!o) return rule;
   const pick = (own: number | null | undefined, base: number | undefined): number | undefined =>
     own === null ? undefined : own === undefined ? base : own;
-  return { ...rule, warn: pick(o.warn, rule.warn), crit: pick(o.crit, rule.crit) };
+  const when = rule.when && typeof o.whenMin === 'number' && o.whenMin >= 0
+    ? { ...rule.when, min: o.whenMin }
+    : rule.when;
+  return { ...rule, warn: pick(o.warn, rule.warn), crit: pick(o.crit, rule.crit), when };
 }
 
 // ── Định dạng ──────────────────────────────────────────────────────────────
@@ -304,6 +315,13 @@ export function levelOf(rule: Rule, value: number): 'ok' | 'warn' | 'crit' {
   return 'ok';
 }
 
+/** Luật bị tắt vì tải quá nhỏ (Rule.when)? Chỉ số cổng vắng mặt thì KHÔNG tắt. */
+export function gatedOff(rule: Rule, metrics: Record<string, number | undefined>): boolean {
+  if (!rule.when) return false;
+  const gate = metrics[rule.when.metric];
+  return typeof gate === 'number' && gate < rule.when.min;
+}
+
 const cmp = (dir: Rule['dir']): string => (dir === 'gt' ? '>' : '<');
 
 function reasonText(rule: Rule, value: number, lv: 'warn' | 'crit'): string {
@@ -345,6 +363,7 @@ export function evaluate(stack: InfraStack, probe: ProbeResult | undefined, ov?:
   for (const rule of rules) {
     const v = m[rule.metric];
     if (typeof v !== 'number') continue; // vắng mặt = không đánh giá
+    if (gatedOff(rule, m)) continue; // tải quá nhỏ thì tỉ lệ này vô nghĩa (xem Rule.when)
     const lv = levelOf(rule, v);
     if (lv === 'ok') continue;
     reasons.push({ level: lv, metric: rule.metric, label: rule.label, value: fmtValue(v, rule.unit, rule.say), text: reasonText(rule, v, lv), why: rule.why });

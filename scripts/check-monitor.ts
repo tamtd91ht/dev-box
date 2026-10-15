@@ -60,6 +60,19 @@ const kp = evaluate('redis', probe({ memUsedPct: 95, opsPerSec: 100, clients: 10
 check(kp.kpis.find((k) => k.metric === 'memUsedPct')?.level === 'crit', 'KPI RAM đỏ');
 check(kp.kpis.find((k) => k.metric === 'opsPerSec')?.level === 'ok', 'KPI không có luật → ok');
 
+// ── Cổng điều kiện (Rule.when): phân mảnh Redis chỉ có nghĩa khi dữ liệu đủ lớn ──
+check(evaluate('redis', probe({ fragmentation: 9.4, memUsedMb: 12 })).level === 'ok', 'phân mảnh 9.4 nhưng chỉ dùng 12MB → bỏ qua (instance mới)');
+check(evaluate('redis', probe({ fragmentation: 9.4, memUsedMb: 2048 })).level === 'crit', 'phân mảnh 9.4 với 2GB dữ liệu → crit');
+check(evaluate('redis', probe({ fragmentation: 9.4 })).level === 'crit', 'không có chỉ số cổng → vẫn đánh giá (không có cơ sở bỏ qua)');
+check(evaluate('redis', probe({ fragmentation: 9.4, memUsedMb: 12, memUsedPct: 95 })).level === 'crit', 'bỏ qua phân mảnh không làm mất luật khác (RAM 95% vẫn đỏ)');
+
+// ── Ghi đè ngưỡng cổng ──
+const fragRule = RULES.redis.find((r) => r.metric === 'fragmentation')!;
+check(fragRule.when?.min === 256, 'mặc định cổng phân mảnh = 256MB');
+check(evaluate('redis', probe({ fragmentation: 9.4, memUsedMb: 12 }), { 'redis.fragmentation': { whenMin: 0 } }).level === 'crit', 'whenMin=0 → luôn xét phân mảnh');
+check(evaluate('redis', probe({ fragmentation: 9.4, memUsedMb: 500 }), { 'redis.fragmentation': { whenMin: 1024 } }).level === 'ok', 'whenMin=1024 → 500MB vẫn bị bỏ qua');
+check(effectiveRule('redis', fragRule, { 'redis.fragmentation': { warn: 5 } }).when?.min === 256, 'ghi đè warn không đụng tới cổng');
+
 // ── Ghi đè ngưỡng ──
 const ov: Overrides = { 'redis.memUsedPct': { warn: 40, crit: 60 } };
 check(evaluate('redis', probe({ memUsedPct: 50 }), ov).level === 'warn', 'ghi đè hạ ngưỡng → 50% thành warn');
