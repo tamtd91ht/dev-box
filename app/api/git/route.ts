@@ -37,6 +37,9 @@ import {
   push,
   mergeBranch,
   abortMerge,
+  deleteBranch,
+  renameBranch,
+  revertHead,
 } from '@/lib/gitCore';
 import { getProject, allowedRoots, listProjects } from '@/lib/gitProjects';
 import { recordRepo } from '@/lib/gitManifest';
@@ -288,7 +291,26 @@ export async function POST(req: NextRequest) {
         // `branch` nhận cả remote ref ("origin/feat") — lúc đó server dựng branch
         // local cùng tên và track nó, xem checkout() trong lib/gitCore.
         const res = await checkout(repo, String(body.branch ?? ''), !!body.create, body.startPoint);
-        return NextResponse.json({ ...res, status: await status(repo), branches: await branches(repo) });
+        const [st, br] = await Promise.all([status(repo), branches(repo)]);
+        return NextResponse.json({ ...res, status: st, branches: br });
+      }
+
+      case 'delete-branch': {
+        const output = await deleteBranch(repo, body.branch, !!body.force);
+        const [st, br] = await Promise.all([status(repo), branches(repo)]);
+        return NextResponse.json({ output: output.trim(), status: st, branches: br });
+      }
+
+      case 'rename-branch': {
+        const output = await renameBranch(repo, body.branch, body.newName);
+        const [st, br] = await Promise.all([status(repo), branches(repo)]);
+        return NextResponse.json({ output: output.trim(), status: st, branches: br });
+      }
+
+      case 'revert-head': {
+        const output = await revertHead(repo);
+        const [st, br] = await Promise.all([status(repo), branches(repo)]);
+        return NextResponse.json({ output: output.trim(), status: st, branches: br });
       }
 
       case 'fetch': {

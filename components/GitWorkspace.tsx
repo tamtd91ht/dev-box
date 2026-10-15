@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, memo, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchGitProjects,
   mutateGitProject,
@@ -225,6 +225,11 @@ export default function GitWorkspace() {
   // all-repos panel. Keyed by repo path. Populated lazily on dropdown open / check.
   const [overview, setOverview] = useState<Record<string, RepoOverview>>({});
   const [overviewLoading, setOverviewLoading] = useState(false);
+  // Bấm đúp vào một repo → chỉ hiện repo đó trong sidebar, nhường chỗ cho danh
+  // sách branch/hành động bên dưới thay vì phải cuộn qua cả đống repo.
+  const [focusRepo, setFocusRepo] = useState(false);
+  /** Tên thao tác git đang chạy — hiện vòng xoay ngay trên thanh công cụ. */
+  const [runningOp, setRunningOp] = useState<string | null>(null);
 
   const repoRef = useRef(repo);
   repoRef.current = repo;
@@ -304,6 +309,7 @@ export default function GitWorkspace() {
       /* ignore */
     }
     setOverview({}); // overview is per-project — clear on switch
+    setFocusRepo(false);
     loadRepos(activeProjectId);
   }, [activeProjectId, loadRepos]);
 
@@ -488,6 +494,7 @@ export default function GitWorkspace() {
   async function run(label: string, fn: () => Promise<{ output?: string; status?: RepoStatus }>) {
     if (busy) return;
     setBusy(true);
+    setRunningOp(label);
     setError(null);
     try {
       const res = await fn();
@@ -499,6 +506,7 @@ export default function GitWorkspace() {
       setError(`${label} failed: ${(e as Error).message}`);
     } finally {
       setBusy(false);
+      setRunningOp(null);
     }
   }
 
@@ -596,6 +604,7 @@ export default function GitWorkspace() {
       const target = repoRef.current;
       if (!target) throw new Error('chưa chọn repo');
       setBusy(true);
+      setRunningOp('Checkout');
       setError(null);
       try {
         const res = await gitAction<CheckoutResult>('checkout', {
@@ -622,6 +631,7 @@ export default function GitWorkspace() {
         return res;
       } finally {
         setBusy(false);
+        setRunningOp(null);
       }
     },
     [flash],
@@ -634,6 +644,73 @@ export default function GitWorkspace() {
     },
     [doCheckout],
   );
+
+  // ── Menu chuột phải trên branch ──────────────────────────────────────────────
+  const [branchMenu, setBranchMenu] = useState<{ name: string; remote: boolean; x: number; y: number } | null>(null);
+  /** Hộp nhập tên nhỏ (Electron không có window.prompt) cho "tạo từ đây" / "đổi tên". */
+  const [nameAsk, setNameAsk] = useState<{ kind: 'create' | 'rename'; branch: string; value: string } | null>(null);
+
+  useEffect(() => {
+    if (!branchMenu) return;
+    const close = () => setBranchMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close, true);
+    window.addEventListener('blur', close);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close, true);
+      window.removeEventListener('blur', close);
+    };
+  }, [branchMenu]);
+
+  /** Thao tác branch trả về { output, status, branches } — cập nhật cả hai một lần. */
+  async function branchOp(label: string, action: string, payload: Record<string, unknown>) {
+    if (busy || !repo) return;
+    setBusy(true);
+    setRunningOp(label);
+    setError(null);
+    try {
+      const res = await gitAction<{ output?: string; status: RepoStatus; branches: BranchInfo }>(action, { repo, ...payload });
+      if (repoRef.current === repo) {
+        setStatus(res.status);
+        setBranchInfo(res.branches);
+      }
+      const out = (res.output ?? '').trim();
+      flash(out ? `${label}: ${out.split('\n')[0]}` : `${label} ✓`);
+    } catch (e) {
+      setError(`${label} failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+      setRunningOp(null);
+    }
+  }
+
+  async function menuDelete(name: string) {
+    if (!window.confirm(`Xoá branch local "${name}"?`)) return;
+    await branchOp('Xoá branch', 'delete-branch', { branch: name });
+  }
+
+  async function menuRevertHead() {
+    if (!window.confirm(`Revert commit mới nhất của "${curBranch}"?\nSẽ tạo thêm một commit đảo ngược, không viết lại lịch sử.`)) return;
+    await branchOp('Revert', 'revert-head', {});
+    if (view === 'history') void loadLog(repo);
+  }
+
+  async function submitNameAsk() {
+    if (!nameAsk) return;
+    const name = nameAsk.value.trim();
+    if (!name) return;
+    const a = nameAsk;
+    if (a.kind === 'create') {
+      if (!window.confirm(`Tạo branch mới "${name}" từ "${a.branch}" và chuyển sang nó?`)) return;
+      setNameAsk(null);
+      doCheckout(name, true, a.branch).catch((e) => setError(`Checkout failed: ${(e as Error).message}`));
+    } else {
+      if (!window.confirm(`Đổi tên branch "${a.branch}" thành "${name}"?`)) return;
+      setNameAsk(null);
+      await branchOp('Đổi tên branch', 'rename-branch', { branch: a.branch, newName: name });
+    }
+  }
 
   /**
    * Merge the selected branch INTO the branch currently checked out — the
@@ -802,14 +879,15 @@ export default function GitWorkspace() {
       {/* ── Thanh công cụ kiểu SmartGit: icon lớn + nhãn ─────────────────────── */}
       <div className="sg-toolbar" role="toolbar" aria-label="Git">
         <ToolBtn icon="↓" label="Pull" title="git pull --ff-only"
-          disabled={!canAct || !repo} onClick={() => run('Pull', () => gitAction('pull', { repo }))}
+          disabled={!canAct || !repo} running={runningOp === 'Pull'} onClick={() => run('Pull', () => gitAction('pull', { repo }))}
           badge={status && status.behind > 0 ? status.behind : 0} />
         <ToolBtn icon="↑" label="Push" title="git push"
           disabled={!canAct || !repo || (!!status && status.ahead === 0 && !!status.upstream)}
+          running={runningOp === 'Push'}
           onClick={() => run('Push', () => gitAction('push', { repo }))}
           badge={status && status.ahead > 0 ? status.ahead : 0} />
         <ToolBtn icon="⟳" label="Fetch" title="git fetch --prune — cập nhật branch remote"
-          disabled={!canAct || !repo}
+          disabled={!canAct || !repo} running={runningOp === 'Fetch'}
           onClick={() => run('Fetch', async () => {
             const res = await gitAction<FetchResult>('fetch', { repo });
             if (repoRef.current === repo) setBranchInfo(res.branches);
@@ -839,6 +917,7 @@ export default function GitWorkspace() {
               : status.upstream ? `branch hiện tại · upstream ${status.upstream}` : 'branch hiện tại · chưa có upstream'}
           >
             ⎇ {status.detached ? '(detached)' : status.branch}
+            <SyncMark status={status} />
           </span>
         )}
         <ToolBtn icon="⚙" label="Quản lý" title="Project, tất cả repo, clone / tạo repo"
@@ -966,32 +1045,25 @@ export default function GitWorkspace() {
           <div className="sg-sec">
             <span>Repositories</span>
             <span className="sg-sec-n">{repos.length}</span>
+            {focusRepo && (
+              <button className="ghost sm sg-sec-btn" onClick={() => setFocusRepo(false)}
+                title="Hiện lại tất cả repo của project">↩ Tất cả</button>
+            )}
             <button className="ghost sm sg-sec-btn" onClick={loadOverview} disabled={overviewLoading}
               title="Kiểm tra trạng thái (↓ cần pull, ↑ cần push, ✎ đang sửa) của tất cả repo">
               {overviewLoading ? '…' : '⟳'}
             </button>
           </div>
-          <div className="sg-list">
-            {repos.map((r) => {
-              const ov = overview[r.path];
-              const gl = repoGlyph(ov);
-              return (
-                <button
-                  key={r.path}
-                  type="button"
-                  className={`sg-item${r.path === repo ? ' active' : ''}`}
-                  onClick={() => r.path !== repo && setRepo(r.path)}
-                  disabled={busy}
-                  title={r.path}
-                >
-                  <span className="sg-ico" style={{ color: gl.color }} title={gl.title}>{gl.ch}</span>
-                  <span className="sg-name">{r.self ? `${r.name} (gốc)` : r.name}</span>
-                  {ov && ov.behind > 0 && <span className="sg-cnt warn">↓{ov.behind}</span>}
-                  {ov && ov.ahead > 0 && <span className="sg-cnt">↑{ov.ahead}</span>}
-                </button>
-              );
-            })}
-          </div>
+          <RepoPicker
+            key={activeProjectId}
+            repos={repos}
+            overview={overview}
+            active={repo}
+            focus={focusRepo}
+            busy={busy}
+            onSelect={setRepo}
+            onFocus={setFocusRepo}
+          />
 
           <div className="sg-sec">
             <span>Branches</span>
@@ -1011,10 +1083,12 @@ export default function GitWorkspace() {
                 className={`sg-item${b === curBranch ? ' cur' : ''}${b === sideBranch ? ' active' : ''}`}
                 onClick={() => setSideBranch(b)}
                 onDoubleClick={() => b !== curBranch && canAct && doCheckoutInline(b, false)}
+                onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setSideBranch(b); setBranchMenu({ name: b, remote: false, x: e.clientX, y: e.clientY }); }}
                 title={b === curBranch ? 'branch hiện tại' : `${b}\nBấm đúp để checkout`}
               >
                 <span className="sg-ico">{b === curBranch ? '●' : '⎇'}</span>
                 <span className="sg-name">{b}</span>
+                {b === curBranch && <SyncMark status={status} />}
               </button>
             ))}
             {branchInfo && branchInfo.remotes.length > 0 && (
@@ -1027,6 +1101,7 @@ export default function GitWorkspace() {
                     className={`sg-item${b === sideBranch ? ' active' : ''}`}
                     onClick={() => setSideBranch(b)}
                     onDoubleClick={() => canAct && doCheckoutInline(b, false)}
+                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setSideBranch(b); setBranchMenu({ name: b, remote: true, x: e.clientX, y: e.clientY }); }}
                     title={`${b}\nBấm đúp để checkout (tạo branch local theo dõi nó)`}
                   >
                     <span className="sg-ico">☁</span>
@@ -1054,12 +1129,33 @@ export default function GitWorkspace() {
               </label>
             </div>
           )}
+          {nameAsk && (
+            <div className="sg-newbranch sg-nameask">
+              <div className="small">{nameAsk.kind === 'create' ? `Branch mới từ “${nameAsk.branch}”` : `Đổi tên “${nameAsk.branch}”`}</div>
+              <input
+                type="text"
+                autoFocus
+                value={nameAsk.value}
+                onChange={(e) => setNameAsk({ ...nameAsk, value: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void submitNameAsk();
+                  if (e.key === 'Escape') setNameAsk(null);
+                }}
+                placeholder="Tên branch (Enter xác nhận, Esc huỷ)"
+              />
+            </div>
+          )}
           <div className="sg-newbranch">
             <input
               type="text"
               value={newBranch}
               onChange={(e) => setNewBranch(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && newBranch.trim() && doCheckoutInline(newBranch.trim(), true)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' || !newBranch.trim()) return;
+                const name = newBranch.trim();
+                if (!window.confirm(`Tạo branch mới "${name}" từ "${curBranch || 'HEAD'}" và chuyển sang nó?`)) return;
+                doCheckoutInline(name, true);
+              }}
               placeholder="+ branch mới (Enter)"
               disabled={!canAct}
             />
@@ -1070,6 +1166,24 @@ export default function GitWorkspace() {
               <pre className="code" style={{ margin: 0, maxHeight: 140, overflow: 'auto' }}>{mergeConflicts.join('\n')}</pre>
             </div>
           )}
+          {branchMenu && (() => {
+            const m = branchMenu;
+            const isCur = !m.remote && m.name === curBranch;
+            const close = () => setBranchMenu(null);
+            return (
+              <div className="sg-menu" style={{ left: m.x, top: m.y }} onClick={(e) => e.stopPropagation()}>
+                <button disabled={!canAct || isCur} onClick={() => { close(); doCheckoutInline(m.name, false); }}>⎇ Checkout</button>
+                <button disabled={!canAct || isCur || !!status?.detached || !!branchInfo?.merging}
+                  onClick={() => { close(); void doMerge(m.name); }}>⤵ Merge vào {curBranch || 'HEAD'}</button>
+                <button disabled={!canAct} onClick={() => { close(); setNameAsk({ kind: 'create', branch: m.name, value: '' }); }}>＋ Tạo branch mới từ đây…</button>
+                {!m.remote && <button disabled={!canAct} onClick={() => { close(); setNameAsk({ kind: 'rename', branch: m.name, value: m.name }); }}>✎ Đổi tên…</button>}
+                <hr />
+                {isCur && <button disabled={!canAct || !!branchInfo?.merging} onClick={() => { close(); void menuRevertHead(); }}>↶ Revert commit mới nhất</button>}
+                <button onClick={() => { close(); void navigator.clipboard?.writeText(m.name); flash(`Đã copy “${m.name}”`); }}>⧉ Copy tên</button>
+                {!m.remote && !isCur && <button className="danger" disabled={!canAct} onClick={() => { close(); void menuDelete(m.name); }}>🗑 Xoá branch</button>}
+              </div>
+            );
+          })()}
         </aside>
 
         <div className="sg-main">
@@ -3676,6 +3790,96 @@ function gitBadgeStyle(code: string): React.CSSProperties {
 
 // ── Toolbar kiểu SmartGit + glyph trạng thái repo ─────────────────────────────
 
+/**
+ * Dấu đồng bộ cạnh tên branch hiện tại: ↓N cần pull, ↑N cần push, ⇅ khi cả hai
+ * (không kèm số). Không hiện gì khi ahead = behind = 0.
+ */
+function SyncMark({ status }: { status: RepoStatus | null }) {
+  if (!status || status.detached) return null;
+  const { ahead, behind } = status;
+  if (ahead > 0 && behind > 0) {
+    return <span className="sg-sync both" title={`Lệch hai chiều: ${behind} commit cần pull, ${ahead} commit cần push`}>⇅</span>;
+  }
+  if (behind > 0) return <span className="sg-sync down" title={`${behind} commit cần pull`}>↓{behind}</span>;
+  if (ahead > 0) return <span className="sg-sync up" title={`${ahead} commit cần push`}>↑{ahead}</span>;
+  return null;
+}
+
+/**
+ * Danh sách repo + ô tìm kiếm, TÁCH khỏi GitWorkspace có chủ đích: ô tìm giữ state
+ * `query` riêng ở đây, nên mỗi phím gõ chỉ render lại danh sách này chứ không kéo
+ * theo cả GitWorkspace (hàng nghìn dòng JSX: diff, history, modal…) — gõ/xoá chữ
+ * khi project có nhiều repo mới hết giật. `useDeferredValue` để việc lọc/vẽ lại
+ * danh sách không chặn ô nhập.
+ */
+interface RepoPickerProps {
+  repos: RepoInfo[];
+  overview: Record<string, RepoOverview>;
+  active: string;
+  focus: boolean;
+  busy: boolean;
+  onSelect: (path: string) => void;
+  onFocus: (v: boolean) => void;
+}
+
+const RepoPicker = memo(function RepoPicker({ repos, overview, active, focus, busy, onSelect, onFocus }: RepoPickerProps) {
+  const [query, setQuery] = useState('');
+  const deferred = useDeferredValue(query);
+  const q = deferred.trim().toLowerCase();
+  // Tên thường hoá một lần cho cả danh sách, không tính lại ở mỗi lần lọc.
+  const lowered = useMemo(() => repos.map((r) => r.name.toLowerCase()), [repos]);
+  const visible = useMemo(() => {
+    if (focus) return repos.filter((r) => r.path === active);
+    if (!q) return repos;
+    return repos.filter((_, i) => lowered[i].includes(q));
+  }, [repos, lowered, focus, active, q]);
+
+  return (
+    <>
+      {!focus && repos.length > 5 && (
+        <div className="sg-search">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setQuery('');
+              if (e.key === 'Enter' && visible[0]) onSelect(visible[0].path);
+            }}
+            placeholder="🔍 Tìm repo… (Enter: mở, Esc: xoá)"
+          />
+        </div>
+      )}
+      <div className="sg-list">
+        {!focus && q && visible.length === 0 && <div className="sg-empty">Không có repo nào khớp “{deferred.trim()}”</div>}
+        {visible.map((r) => {
+          const ov = overview[r.path];
+          const gl = repoGlyph(ov);
+          return (
+            <button
+              key={r.path}
+              type="button"
+              className={`sg-item${r.path === active ? ' active' : ''}`}
+              onClick={() => r.path !== active && onSelect(r.path)}
+              onDoubleClick={() => {
+                if (r.path !== active) onSelect(r.path);
+                onFocus(true);
+              }}
+              disabled={busy}
+              title={`${r.path}\nBấm đúp để chỉ hiện repo này`}
+            >
+              <span className="sg-ico" style={{ color: gl.color }} title={gl.title}>{gl.ch}</span>
+              <span className="sg-name">{r.self ? `${r.name} (gốc)` : r.name}</span>
+              {ov && ov.behind > 0 && <span className="sg-cnt warn">↓{ov.behind}</span>}
+              {ov && ov.ahead > 0 && <span className="sg-cnt">↑{ov.ahead}</span>}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+});
+
 interface ToolBtnProps {
   icon: string;
   label: string;
@@ -3690,7 +3894,7 @@ interface ToolBtnProps {
 
 function ToolBtn({ icon, label, title, onClick, disabled, badge = 0, running, active }: ToolBtnProps) {
   return (
-    <button type="button" className={`sg-tb${active ? ' on' : ''}`} onClick={onClick} disabled={disabled} title={title}>
+    <button type="button" className={`sg-tb${active ? ' on' : ''}${running ? ' run' : ''}`} onClick={onClick} disabled={disabled} title={title}>
       <span className="sg-tb-ico" aria-hidden>
         {running ? <span className="spinner" /> : icon}
         {badge > 0 && <span className="sg-tb-badge">{badge}</span>}

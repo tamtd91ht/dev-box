@@ -10015,6 +10015,9 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .sg-noff { display: flex; align-items: center; gap: 4px; margin: 0; text-transform: none; letter-spacing: 0; }
 .sg-newbranch { margin-top: 8px; }
 .sg-newbranch input { width: 100%; font-family: var(--mono); font-size: 12px; }
+.sg-search { margin: 0 0 6px; }
+.sg-search input { width: 100%; font-size: 12px; }
+.sg-empty { padding: 6px 8px; font-size: 12px; color: var(--muted); }
 .gf-check { flex: none; margin: 0; cursor: pointer; }
 
 @media (max-width: 900px) {
@@ -10311,3 +10314,30 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 @media (prefers-reduced-motion: reduce) {
   .mon-tile, .mon-alert, .mon-banner-dot, .mon-dot, .mon-spin, .mon-tile.busy::after, .modeswitch .ms-mon.bad { animation: none !important; transition: none; }
 }
+
+/* Menu chuột phải trên branch (tab Git) */
+.sg-menu {
+  position: fixed; z-index: 60; min-width: 210px;
+  background: #3c3f41; border: 1px solid #5e6060; border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); padding: 4px; display: flex; flex-direction: column;
+}
+.sg-menu button {
+  display: block; width: 100%; text-align: left; padding: 6px 12px;
+  background: transparent; border: 0; border-radius: 5px;
+  color: #a9b7c6; font-size: 12.5px; cursor: pointer;
+}
+.sg-menu button:hover:not(:disabled) { background: #2d5177; color: #fff; }
+.sg-menu button.danger:hover:not(:disabled) { background: #6e2b2b; }
+.sg-menu button:disabled { opacity: .4; cursor: default; }
+.sg-menu hr { border: 0; border-top: 1px solid #515151; margin: 4px 6px; }
+.sg-nameask input { width: 100%; font-family: var(--mono); font-size: 12px; margin-top: 4px; }
+
+/* Nút đang chạy (Pull/Push/Fetch…): giữ nguyên độ sáng để vòng xoay nhìn rõ dù nút bị disable */
+.sg-tb.run:disabled { opacity: 1; cursor: progress; }
+.sg-tb.run .sg-tb-ico { color: var(--accent, #6c8cff); }
+
+/* Dấu pull/push cạnh tên branch hiện tại */
+.sg-sync { margin-left: 6px; font-size: 11px; font-weight: 700; white-space: nowrap; flex: none; }
+.sg-sync.down { color: var(--warn, #d29922); }
+.sg-sync.up { color: var(--accent, #6c8cff); }
+.sg-sync.both { color: var(--err, #f85149); }

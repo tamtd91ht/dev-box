@@ -116,32 +116,6 @@ async function isGitRepo(dir: string): Promise<boolean> {
 }
 
 /**
- * True khi `dir` là GỐC của working tree, không phải một thư mục con nằm trong
- * repo. `--is-inside-work-tree` trả true cho cả `repo/src/lib`, nên nó KHÔNG
- * dùng được cho câu hỏi "root của project có phải chính là một repo không":
- * trỏ project vào `omicx/some-service/src` sẽ đỗ, rồi mọi lệnh git sau đó chạy
- * trên repo cha với đường dẫn hiển thị sai. `--show-toplevel` trả về gốc thật,
- * so lại với `dir` mới kết luận được.
- *
- * So sánh sau khi resolve + hạ chữ thường trên Windows: git in ra `E:/vihat/...`
- * (forward slash) còn `dir` là `E:\vihat\...`, và ổ đĩa có thể khác hoa/thường.
- */
-async function isRepoRoot(dir: string): Promise<boolean> {
-  let top: string;
-  try {
-    top = (await git(dir, ['rev-parse', '--show-toplevel'])).trim();
-  } catch {
-    return false;
-  }
-  if (!top) return false;
-  const norm = (v: string) => {
-    const abs = path.resolve(v);
-    return process.platform === 'win32' ? abs.toLowerCase() : abs;
-  };
-  return norm(top) === norm(dir);
-}
-
-/**
  * The repo's `origin` remote URL, or null when it has none (a repo created with
  * `git init` and never pushed). Never throws — callers treat "no remote" as data,
  * not an error.
@@ -160,12 +134,34 @@ export async function remoteUrl(repo: string): Promise<string | null> {
  * một repo chứ không phải vào thư mục chứa nhiều repo. Xem detectRepos.
  */
 export async function isSelfRepo(root: string = GIT_ROOT): Promise<boolean> {
+  return looksLikeRepoRoot(path.resolve(root));
+}
+
+/**
+ * Nhận diện gốc repo CHỈ bằng đọc file — không spawn `git`. Trên Windows mỗi lần
+ * spawn tốn 50–100ms; quét một project có hàng chục repo con bằng `git rev-parse`
+ * từng cái là nguyên nhân tab Git load rất lâu. `.git` ngay tại `dir` nghĩa là
+ * `dir` chính là gốc working tree (thư mục con của repo không có `.git` riêng):
+ *  - thư mục `.git` hợp lệ có file `HEAD`;
+ *  - worktree/submodule: `.git` là file bắt đầu bằng `gitdir:`.
+ * Việc xác thực thật vẫn do lệnh git đầu tiên khi người dùng mở repo (authorizeRepo).
+ */
+async function looksLikeRepoRoot(dir: string): Promise<boolean> {
+  const dotGit = path.join(dir, '.git');
   try {
-    await fs.access(path.join(path.resolve(root), '.git'));
+    const st = await fs.stat(dotGit);
+    if (st.isDirectory()) {
+      await fs.access(path.join(dotGit, 'HEAD'));
+      return true;
+    }
+    if (st.isFile()) {
+      const head = await fs.readFile(dotGit, 'utf8');
+      return head.trimStart().startsWith('gitdir:');
+    }
   } catch {
-    return false;
+    /* không có .git / không đọc được */
   }
-  return isRepoRoot(path.resolve(root));
+  return false;
 }
 
 /**
@@ -215,13 +211,8 @@ export async function detectRepos(root: string = GIT_ROOT): Promise<RepoInfo[]> 
   const found = await Promise.all(
     entries.sort().map(async (name): Promise<RepoInfo | null> => {
       const full = path.join(rootAbs, name);
-      // Fast pre-check: a .git entry (dir or file for worktrees/submodules).
-      try {
-        await fs.access(path.join(full, '.git'));
-      } catch {
-        return null;
-      }
-      return (await isGitRepo(full)) ? { path: full, name } : null;
+      // Chỉ đọc file, không spawn git — xem looksLikeRepoRoot.
+      return (await looksLikeRepoRoot(full)) ? { path: full, name } : null;
     }),
   );
   for (const r of found) if (r) repos.push(r);
@@ -1441,6 +1432,38 @@ export async function mergeBranch(
 export async function abortMerge(repo: string): Promise<string> {
   if (!(await isMerging(repo))) throw new Error('không có merge nào đang dở dang');
   return git(repo, ['merge', '--abort'], { withStderr: true });
+}
+
+/** Xoá branch LOCAL. Không `force` thì git từ chối branch chưa merge — để lỗi đó
+ *  hiện ra cho người dùng quyết định, không tự ép. Không xoá được branch đang đứng. */
+export async function deleteBranch(repo: string, branch: unknown, force = false): Promise<string> {
+  const name = validateRefName(branch);
+  const st = await status(repo);
+  if (st.branch === name) throw new Error('không thể xoá branch đang checkout — chuyển sang branch khác trước');
+  if (!(await localBranchExists(repo, name))) throw new Error(`không có branch local "${name}"`);
+  return git(repo, ['branch', force ? '-D' : '-d', '--', name], { withStderr: true });
+}
+
+/** Đổi tên branch local. */
+export async function renameBranch(repo: string, branch: unknown, newName: unknown): Promise<string> {
+  const from = validateRefName(branch);
+  const to = validateRefName(newName, 'tên mới');
+  if (!(await localBranchExists(repo, from))) throw new Error(`không có branch local "${from}"`);
+  if (await localBranchExists(repo, to)) throw new Error(`branch "${to}" đã tồn tại`);
+  return git(repo, ['branch', '-m', '--', from, to], { withStderr: true });
+}
+
+/** Revert commit mới nhất của branch hiện tại bằng một commit đảo ngược (an toàn:
+ *  không viết lại lịch sử). Cần working tree sạch; conflict thì huỷ revert dở. */
+export async function revertHead(repo: string): Promise<string> {
+  const st = await status(repo);
+  if (st.files.length > 0) throw new Error('working tree đang có thay đổi — commit hoặc bỏ chúng trước khi revert');
+  try {
+    return await git(repo, ['revert', '--no-edit', 'HEAD'], { withStderr: true });
+  } catch (e) {
+    await git(repo, ['revert', '--abort']).catch(() => undefined);
+    throw new Error(`revert thất bại (đã huỷ, repo giữ nguyên): ${(e as Error).message}`);
+  }
 }
 
 export async function push(repo: string): Promise<string> {
