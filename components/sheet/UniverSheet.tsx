@@ -42,7 +42,6 @@ import '@univerjs/preset-sheets-data-validation/lib/index.css';
 import '@univerjs/preset-sheets-hyper-link/lib/index.css';
 import '@univerjs/preset-sheets-note/lib/index.css';
 
-const isDark = () => document.documentElement.getAttribute('data-theme') !== 'light';
 
 /** Những gì khung bao ngoài (UniverPane) cần từ Univer để hiện "N thay đổi" và lưu. */
 export interface UniverHandle {
@@ -97,7 +96,8 @@ export default function UniverSheet({ workbook, onReady, onEdited }: {
     // Dữ liệu từ server là JSON thuần đúng hình IWorkbookData; typings của Univer
     // đòi enum nên ép kiểu ở đây thay vì kéo enum vào code server.
     const wb = univerAPI.createWorkbook(workbook as never);
-    univerAPI.toggleDarkMode(isDark());
+    // Luôn nền sáng như Microsoft Excel (ô trắng, viền xám) — không theo theme tối của app.
+    univerAPI.toggleDarkMode(false);
 
     // MỐC so sánh = bản chụp của chính Univer ngay sau khi nạp (không phải dữ liệu server
     // gửi xuống) — cùng một cách biểu diễn nên không sinh thay đổi giả.
@@ -113,13 +113,8 @@ export default function UniverSheet({ workbook, onReady, onEdited }: {
       if (cmd.id.startsWith('sheet.mutation.')) editedRef.current();
     });
 
-    // Đổi theme app (html[data-theme]) thì Univer đổi theo.
-    const mo = new MutationObserver(() => univerAPI.toggleDarkMode(isDark()));
-    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-
     return () => {
       sub.dispose();
-      mo.disconnect();
       univer.dispose();
     };
   }, [workbook]);

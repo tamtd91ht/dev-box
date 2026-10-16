@@ -13,7 +13,7 @@
 // Tính năng Excel nào Univer chưa có (Draw, Format as Table, indent…) thì nút
 // vẫn hiện cho đúng bố cục nhưng mờ đi, tooltip nói rõ là chưa hỗ trợ.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Children, Fragment, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { createUniver } from '@univerjs/presets';
 import { ColorPicker } from '../SheetFormatBar';
 
@@ -283,6 +283,74 @@ function StyleBtn({ s, onPick, disabled }: { s: StyleDef; onPick: (s: StyleDef) 
         fontSize: s.fs ? Math.min(14, s.fs) : undefined, fontFamily: s.ff,
         borderBottom: line(bottom), borderTop: line(top), borderLeft: line(side), borderRight: line(side),
       }}>{s.label}</button>
+  );
+}
+
+/** Tách fragment `<>…</>` của một tab thành danh sách nhóm (key tự sinh theo thứ tự, ổn định vì bố cục mỗi tab cố định). */
+const toItems = (node: ReactNode): ReactNode[] =>
+  Children.toArray(isValidElement(node) && node.type === Fragment ? (node.props as { children?: ReactNode }).children : node);
+
+const MORE_W = 40;      // nút "…"
+const COLLAPSE_W = 30;  // nút ⌃ thu ribbon
+
+/** Ribbon MỘT dòng như Excel: đo chiều rộng thật của từng nhóm, nhóm nào không
+ *  đủ chỗ thì giấu vào nút "…" ở cuối (bấm ra menu xếp dọc các nhóm đó). Chiều
+ *  rộng từng nhóm nhớ theo tab; nhóm chưa đo thì hiện hết một lượt để đo rồi cắt
+ *  (chạy trong layout effect nên không nháy). */
+function Ribbon({ label, items, onCollapse }: { label: string; items: ReactNode[]; onCollapse: () => void }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const cache = useRef<Record<string, number[]>>({});
+  const [cut, setCut] = useState(items.length);
+  const [, bump] = useState(0);
+  const [more, setMore] = useState(false);
+  const closeMore = useCallback(() => setMore(false), []);
+  const moreRef = useOutside(more, closeMore);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => bump((n) => n + 1));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const widths = (cache.current[label] ??= []);
+    itemRefs.current.forEach((n, i) => { if (n) widths[i] = n.offsetWidth; });
+    const fit = (avail: number) => {
+      let total = 0;
+      for (let i = 0; i < items.length; i++) {
+        if (widths[i] == null) return items.length; // chưa đo → hiện hết để đo
+        total += widths[i];
+        if (total > avail) return i;
+      }
+      return items.length;
+    };
+    const avail = el.clientWidth - COLLAPSE_W;
+    let next = fit(avail);
+    if (next < items.length) next = fit(avail - MORE_W);
+    if (next !== cut) setCut(next);
+  });
+
+  itemRefs.current = [];
+  return (
+    <div className="xl-ribbon" role="toolbar" aria-label={`${label} ribbon`} ref={ref}>
+      {items.slice(0, cut).map((it, i) => (
+        <div key={i} className="xl-item" ref={(n) => { itemRefs.current[i] = n; }}>{it}</div>
+      ))}
+      {cut < items.length && (
+        <div className="xl-drop xl-more-wrap" ref={moreRef}>
+          <button type="button" className={`xl-btn xl-more${more ? ' on' : ''}`} onMouseDown={keep} onClick={() => setMore((o) => !o)}
+            title="More commands">…</button>
+          {more && <div className="xl-menu xl-more-menu" role="menu">{items.slice(cut)}</div>}
+        </div>
+      )}
+      <span style={{ flex: 1 }} />
+      <button type="button" className="xl-collapse" onClick={onCollapse} title="Collapse the Ribbon (Ctrl+F1)">⌃</button>
+    </div>
   );
 }
 
@@ -1089,11 +1157,7 @@ export default function ExcelRibbon({
           </div>
         </div>
       ) : !collapsed && (
-        <div className="xl-ribbon" role="toolbar" aria-label={`${tab} ribbon`}>
-          {body[tab]}
-          <span style={{ flex: 1 }} />
-          <button type="button" className="xl-collapse" onClick={toggleCollapsed} title="Collapse the Ribbon (Ctrl+F1)">⌃</button>
-        </div>
+        <Ribbon label={tab} items={toItems(body[tab])} onCollapse={toggleCollapsed} />
       )}
       {collapsed && tab !== 'File' && (
         <button type="button" className="xl-expand" onClick={toggleCollapsed} title="Show the Ribbon">⌄ Show ribbon</button>
