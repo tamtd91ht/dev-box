@@ -230,6 +230,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
    *  Map thưa 1-based — chỉ chứa cột/dòng có kích thước riêng, còn lại mặc định. */
   const [colWW, setColWW] = useState<Map<number, number>[]>([]);
   const [rowHW, setRowHW] = useState<Map<number, number>[]>([]);
+  /** Freeze panes LÀM VIỆC per-sheet (seed từ file): số dòng trên / cột trái cố định. */
+  const [freezeW, setFreezeW] = useState<{ rows: number; cols: number }[]>([]);
 
   // ── Undo / Redo (Ctrl+Z / Ctrl+Y) ─────────────────────────────────────────
   // Mọi thao tác sửa đều đụng NHIỀU state cùng lúc (grids + ops + merges +
@@ -243,6 +245,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     merges: WireMerge[][];
     colW: Map<number, number>[];
     rowH: Map<number, number>[];
+    freeze: { rows: number; cols: number }[];
     styles: WireStyle[][];
     active: number;
     sel: Pos | null;
@@ -353,8 +356,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   // ── Undo/Redo: chụp & khôi phục ───────────────────────────────────────────
   // Đọc state qua ref để snapshot() không phải nhận cả tá tham số và không bị
   // stale trong các callback đã memo hóa.
-  const liveRef = useRef({ grids, ops, mergesW, colWW, rowHW, active, sel, selRange });
-  liveRef.current = { grids, ops, mergesW, colWW, rowHW, active, sel, selRange };
+  const liveRef = useRef({ grids, ops, mergesW, colWW, rowHW, freezeW, active, sel, selRange });
+  liveRef.current = { grids, ops, mergesW, colWW, rowHW, freezeW, active, sel, selRange };
 
   const takeSnapshot = useCallback((): Snapshot => {
     const s = liveRef.current;
@@ -366,6 +369,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       merges: s.mergesW.map((l) => l.map((m) => ({ ...m }))),
       colW: s.colWW.map((m) => new Map(m)),
       rowH: s.rowHW.map((m) => new Map(m)),
+      freeze: s.freezeW.map((f) => ({ ...f })),
       // Bảng style là append-only nên slice() là đủ để "quay lại độ dài cũ".
       styles: styleRef.current.map((t) => t.slice()),
       active: s.active,
@@ -389,6 +393,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     setMergesW(s.merges);
     setColWW(s.colW);
     setRowHW(s.rowH);
+    setFreezeW(s.freeze);
     styleRef.current = s.styles;
     // Bảng tra style phải dựng lại cho khớp — nếu không, style bị undo bỏ đi
     // vẫn còn trong map và lần định dạng sau sẽ trả về index đã biến mất.
@@ -505,6 +510,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       return m;
     });
     setMergesW(res.sheets.map((s) => (s.merges ?? []).map((m) => ({ ...m }))));
+    setFreezeW(res.sheets.map((s) => ({ rows: s.freeze?.rows ?? 0, cols: s.freeze?.cols ?? 0 })));
     // Kích thước từ file → map thưa 1-based (bỏ qua ô null = dùng mặc định).
     // CSV không mang độ rộng: lưới giờ là table-layout fixed nên phải tự ước
     // lượng theo nội dung, kẻo mọi cột đều 96px và text dài bị cắt hết.
@@ -917,6 +923,23 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const removeSplitRef = useRef(removeSplit);
   removeSplitRef.current = removeSplit;
 
+  /* ── Cố định khung (Freeze Panes) ─────────────────────────────────────
+     Dòng 1..rows và cột 1..cols đứng yên khi cuộn — vẽ bằng position:sticky
+     ngay trong lưới (không tách bảng), nên chọn ô / sửa / kéo fill qua ranh
+     giới cố định chạy y như phần còn lại. Với .xlsx thành op 'freeze' và được
+     lưu vào file (Excel mở ra cũng thấy cố định); CSV chỉ áp khi đang xem.
+     Như Excel: cố định và chia khung loại trừ nhau. */
+  const curFreeze = freezeW[active] ?? { rows: 0, cols: 0 };
+  const frozen = curFreeze.rows > 0 || curFreeze.cols > 0;
+  const [frzOpen, setFrzOpen] = useState(false);
+  const frzRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!frzOpen) return;
+    const away = (e: MouseEvent) => { if (!frzRef.current?.contains(e.target as Node)) setFrzOpen(false); };
+    window.addEventListener('mousedown', away);
+    return () => window.removeEventListener('mousedown', away);
+  }, [frzOpen]);
+
   // Đo chiều cao thật của một dòng mặc định (padding + font + viền) để phần
   // đệm khớp, thanh cuộn không "trượt" khi cuộn xa.
   useLayoutEffect(() => {
@@ -929,6 +952,13 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       return;
     }
   }, [vwin, vwinT, hasFile, active, baseRowPx]);
+
+  /** Chiều cao thật của hàng tiêu đề cột — mốc `top` cho các dòng bị cố định. */
+  const [headH, setHeadH] = useState(26);
+  useLayoutEffect(() => {
+    const h = splitWrapRef.current?.querySelector('thead')?.getBoundingClientRect().height;
+    if (h && Math.abs(h - headH) > 0.5) setHeadH(h);
+  });
 
   /** Thống kê vùng chọn — Sum/Avg/Count như status bar Excel. */
   const rangeStats = useMemo(() => {
@@ -1114,6 +1144,28 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   }, [active]);
 
   /** Ghi op đổi kích thước (chỉ .xlsx — CSV không lưu được kích thước). */
+  const applyFreeze = useCallback((rows: number, cols: number) => {
+    if (!file) return;
+    setFrzOpen(false);
+    const cur = liveRef.current.freezeW[active] ?? { rows: 0, cols: 0 };
+    if (cur.rows === rows && cur.cols === cols) return;
+    pushHistory();
+    setFreezeW((fw) => fw.map((f, i) => (i === active ? { rows, cols } : f)));
+    if (file.kind === 'xlsx') {
+      // Chỉ trạng thái cuối mới có nghĩa → thay op freeze cũ của sheet thay vì cộng dồn.
+      setOps((os) => os.map((o, i) => (i !== active ? o : [...o.filter((x) => x.op !== 'freeze'), { op: 'freeze', rows, cols }])));
+    }
+    // Bỏ chia khung (Excel cũng vậy) và về đầu sheet: phần cố định là dòng/cột
+    // ĐẦU của sheet, đang cuộn giữa chừng thì ranh giới nhìn sẽ khó hiểu.
+    setSplitX(0); setSplitY(0);
+    activatePane('br');
+    pendingScroll.current = { br: { top: 0, left: 0 } };
+    for (const el of Object.values(paneEls.current)) if (el) { el.scrollTop = 0; el.scrollLeft = 0; }
+    flash(rows || cols
+      ? `Đã cố định ${rows ? `${rows} dòng trên` : ''}${rows && cols ? ' và ' : ''}${cols ? `${cols} cột trái` : ''}.`
+      : 'Đã bỏ cố định khung.');
+  }, [file, active, pushHistory, activatePane, flash]);
+
   const pushSizeOp = useCallback((kind: 'col' | 'row', idx: number, px: number | null) => {
     if (file?.kind !== 'xlsx') {
       // CSV là text thuần: kéo vẫn đổi được để dễ đọc, nhưng chỉ trong phiên
@@ -2124,7 +2176,30 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           title="Mở file bằng ứng dụng mặc định (Excel / WPS / LibreOffice…) để làm việc nặng. Sửa xong Lưu bên đó, quay lại đây app tự nạp lại.">
           ↗ Mở bằng Excel
         </button>
-        <button className={`ghost sm${hasTop || hasLeft ? ' on' : ''}`} onClick={toggleSplit} disabled={busy}
+        <div className="sheet-fmt-dd" ref={frzRef}>
+          <button className={`ghost sm${frozen ? ' on' : ''}`} disabled={busy} onClick={() => setFrzOpen((o) => !o)}
+            title={frozen
+              ? `Đang cố định ${curFreeze.rows} dòng trên · ${curFreeze.cols} cột trái — bấm để đổi / bỏ`
+              : 'Cố định khung như Excel (Freeze Panes): giữ dòng tiêu đề / cột đầu đứng yên khi cuộn'}>
+            ❄ {frozen ? 'Đang cố định' : 'Cố định'} ▾
+          </button>
+          {frzOpen && (
+            <div className="sheet-fmt-menu" style={{ minWidth: 250 }}>
+              <button onMouseDown={(e) => e.preventDefault()}
+                disabled={!sel || (sel.r <= 1 && sel.c <= 1)}
+                onClick={() => sel && applyFreeze(sel.r - 1, sel.c - 1)}
+                title="Cố định mọi dòng PHÍA TRÊN và mọi cột BÊN TRÁI ô đang chọn">
+                ❄ Cố định khung tại {sel ? `${colLetter(sel.c - 1)}${sel.r}` : 'ô đang chọn'}
+                {sel && (sel.r > 1 || sel.c > 1) ? ` (${sel.r - 1} dòng · ${sel.c - 1} cột)` : ''}
+              </button>
+              <button onMouseDown={(e) => e.preventDefault()} onClick={() => applyFreeze(1, 0)}>▤ Cố định dòng đầu</button>
+              <button onMouseDown={(e) => e.preventDefault()} onClick={() => applyFreeze(0, 1)}>▥ Cố định cột đầu</button>
+              <button onMouseDown={(e) => e.preventDefault()} disabled={!frozen} onClick={() => applyFreeze(0, 0)}>✕ Bỏ cố định</button>
+            </div>
+          )}
+        </div>
+        <button className={`ghost sm${hasTop || hasLeft ? ' on' : ''}`}
+          onClick={() => { if (frozen) applyFreeze(0, 0); toggleSplit(); }} disabled={busy}
           title={hasTop || hasLeft
             ? 'Bỏ chia khung (hoặc double-click / kéo thanh chia ra sát mép)'
             : 'Chia khung như Excel (View → Split): chia ngay trên-trái ô đang chọn thành 2–4 vùng cuộn độc lập — xem hai chỗ xa nhau của sheet cùng lúc. Kéo thanh chia để dời.'}>
@@ -2298,10 +2373,36 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           title="Kéo để dời chỗ chia · double-click hoặc kéo ra mép để bỏ" />
       )}
       {panes.map((pane) => {
-        const { rs, re, padTopPx, padBotPx } = pane.top ? winT : winB;
+        const { rs, re } = pane.top ? winT : winB;
         const colHead = pane.top || !hasTop;
         const rowHead = pane.left || !hasLeft;
         const isActivePane = pane.id === activePane;
+        // Cố định khung: dòng 1..fr LUÔN được vẽ (cuộn ảo không được bỏ chúng
+        // khi cuộn xa) rồi mới tới đệm + cửa sổ dòng; cột 1..fc dính trái.
+        const fr = Math.min(curFreeze.rows, dispRows);
+        const fc = Math.min(curFreeze.cols, dispCols);
+        const s2 = Math.max(rs, fr + 1);
+        const drawRows: (number | 'pad')[] = [];
+        for (let r = 1; r <= fr; r++) drawRows.push(r);
+        drawRows.push('pad');
+        for (let r = s2; r <= re; r++) drawRows.push(r);
+        const padTopPx = rowOffsets[s2 - 1] - rowOffsets[fr];
+        const padBotPx = rowOffsets[dispRows] - rowOffsets[Math.max(re, fr)];
+        const rowHeadW = rowHead ? ROWHEAD_PX : 0;
+        const colLeft: number[] = [];
+        for (let c = 1, x = rowHeadW; c <= fc; c++) { colLeft[c] = x; x += hiddenColSet.has(c) ? 0 : colPx(c); }
+        const frozenW = fc ? colLeft[fc] + (hiddenColSet.has(fc) ? 0 : colPx(fc)) - rowHeadW : 0;
+        /** style dính cho ô ở vùng cố định (null = ô thường). */
+        const stick = (r: number, c: number): CSSProperties | null => {
+          const inR = r <= fr; const inC = c >= 1 && c <= fc;
+          if (!inR && !inC) return null;
+          return {
+            position: 'sticky',
+            ...(inR ? { top: (colHead ? headH : 0) + rowOffsets[r - 1] } : {}),
+            ...(inC ? { left: colLeft[c] } : {}),
+            zIndex: inR && inC ? 3 : inR ? 2 : 1,
+          };
+        };
         return (
       <div
         key={pane.id}
@@ -2315,6 +2416,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
         style={{
           gridColumn: hasLeft && !pane.left ? 3 : 1,
           gridRow: hasTop && !pane.top ? 3 : 1,
+          // Ô chọn bị cuộn tới thì canh cho khỏi chui xuống dưới vùng cố định.
+          ...(fr || fc ? { scrollPaddingTop: (colHead ? headH : 0) + rowOffsets[fr], scrollPaddingLeft: rowHeadW + frozenW } : {}),
         }}
         ref={(el) => { paneEls.current[pane.id] = el; syncGridRef(); }}
         tabIndex={0}
@@ -2357,7 +2460,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                   <th
                     key={ci}
                     data-c={c}
-                    className={`sheet-colhead${inSel ? ' on' : ''}`}
+                    className={`sheet-colhead${inSel ? ' on' : ''}${c === fc ? ' frz-r' : ''}`}
+                    style={c <= fc ? { left: colLeft[c], zIndex: 4 } : undefined}
                     onMouseDown={(e) => onHeadMouseDown('col', c, e)}
                     onMouseEnter={() => onHeadMouseEnter('col', c)}
                     onContextMenu={(e) => {
@@ -2392,11 +2496,13 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
             </tr>
           </thead>}
           <tbody>
-            {padTopPx > 0 && (
-              <tr className="sheet-vpad" aria-hidden style={{ height: padTopPx }}><td colSpan={dispCols + 2} /></tr>
-            )}
-            {Array.from({ length: re - rs + 1 }, (_, ri) => {
-              const r = rs + ri;
+            {drawRows.map((item) => {
+              if (item === 'pad') {
+                return padTopPx > 0
+                  ? <tr key="vpad-top" className="sheet-vpad" aria-hidden style={{ height: padTopPx }}><td colSpan={dispCols + 2} /></tr>
+                  : null;
+              }
+              const r = item;
               const rh = rowHW[active]?.get(r) ?? null;
               return (
                 <tr
@@ -2408,7 +2514,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                   }}
                 >
                   {rowHead && <th
-                    className={`sheet-rownum${(selRange ? r >= selRange.r1 && r <= selRange.r2 : sel?.r === r) ? ' sel' : ''}`}
+                    className={`sheet-rownum${(selRange ? r >= selRange.r1 && r <= selRange.r2 : sel?.r === r) ? ' sel' : ''}${r === fr ? ' frz-b' : ''}`}
+                    style={r <= fr ? { top: (colHead ? headH : 0) + rowOffsets[r - 1], zIndex: 4 } : undefined}
                     onMouseDown={(e) => onHeadMouseDown('row', r, e)}
                     onMouseEnter={() => onHeadMouseEnter('row', r)}
                     onContextMenu={(e) => {
@@ -2466,7 +2573,11 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                       <td
                         key={c}
                         {...(span ? { rowSpan: span.rs, colSpan: span.cs } : {})}
-                        style={cellCss(cell.s !== undefined ? styleTable?.[cell.s] : undefined, cell.nc)}
+                        style={(() => {
+                          const base = cellCss(cell.s !== undefined ? styleTable?.[cell.s] : undefined, cell.nc);
+                          const st = stick(r, c);
+                          return st ? { ...base, ...st } : base;
+                        })()}
                         className={[
                           'sheet-cell',
                           cell.d ? 'sheet-cell-dirty' : '',
@@ -2482,6 +2593,9 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                           inRange && c === selRange.c1 ? 'rng-l' : '',
                           inRange && cEnd === selRange.c2 ? 'rng-r' : '',
                           inFill ? 'frng' : '',
+                          r <= fr || c <= fc ? 'frz' : '',
+                          fr && rEnd === fr ? 'frz-b' : '',
+                          fc && cEnd === fc ? 'frz-r' : '',
                         ].filter(Boolean).join(' ')}
                         onMouseDown={(e) => { if (!isEditing) onCellMouseDown(r, c, e); }}
                         onMouseEnter={() => onCellMouseEnter(r, c)}
@@ -2770,6 +2884,10 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                 if (n('unmerge') > 0) parts.push(`${n('unmerge')} vùng bỏ trộn`);
                 if (n('colWidth') > 0) parts.push(`${n('colWidth')} cột đổi rộng`);
                 if (n('rowHeight') > 0) parts.push(`${n('rowHeight')} dòng đổi cao`);
+                if (n('freeze') > 0) {
+                  const f = freezeW[i];
+                  parts.push(f && (f.rows || f.cols) ? `cố định ${f.rows} dòng · ${f.cols} cột` : 'bỏ cố định khung');
+                }
                 return <li key={s.name}><b>{s.name}</b>: {parts.join(' · ')}</li>;
               })}
             </ul>

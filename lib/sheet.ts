@@ -138,6 +138,8 @@ export interface WireSheet {
   /** Dòng/cột ẩn (1-based) trong cửa sổ hiển thị. */
   hiddenRows?: number[];
   hiddenCols?: number[];
+  /** Freeze panes trong file: số dòng trên / cột trái đang cố định. */
+  freeze?: { rows: number; cols: number };
 }
 
 export interface SheetOpenResult {
@@ -166,7 +168,9 @@ export type SheetOp =
   /** Đổi độ rộng cột / chiều cao dòng (px trên màn hình) — chỉ .xlsx.
    *  px = null → trả về mặc định của Excel. */
   | { op: 'colWidth'; c: number; px: number | null }
-  | { op: 'rowHeight'; r: number; px: number | null };
+  | { op: 'rowHeight'; r: number; px: number | null }
+  /** Cố định (freeze panes) `rows` dòng trên + `cols` cột trái; 0/0 = bỏ cố định. */
+  | { op: 'freeze'; rows: number; cols: number };
 
 // ── Kích thước dòng/cột: px trên màn hình ↔ đơn vị của Excel ────────────────
 // Excel đo cột theo "số ký tự" của font mặc định (≈7px/ký tự + 5px padding) và

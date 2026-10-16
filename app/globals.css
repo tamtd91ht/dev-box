@@ -4280,6 +4280,16 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
 .sheet-splitbar.v { cursor: col-resize; }
 .sheet-splitbar.h { cursor: row-resize; }
 .sheet-splitbar:hover { background: var(--accent); }
+/* Cố định khung (Freeze Panes): ô dính phải có nền đặc, không thì nội dung
+   cuộn bên dưới lộ qua. Ranh giới vẽ bằng pseudo-element để khỏi đổi độ dày
+   viền (đổi viền là đổi chiều cao dòng → lệch mốc sticky). */
+/* :where — đặc hiệu thấp để màu vùng chọn / ô đã sửa vẫn đè lên được (paper vốn đã nền trắng). */
+.sheet-grid :where(td.frz) { background: var(--bg-1, var(--bg)); }
+.sheet-grid .frz-b::after, .sheet-grid .frz-r::before {
+  content: ""; position: absolute; pointer-events: none; background: #8792a2;
+}
+.sheet-grid .frz-b::after { left: 0; right: 0; bottom: -1px; height: 2px; }
+.sheet-grid .frz-r::before { top: 0; bottom: 0; right: -1px; width: 2px; }
 .sheet-table { border-collapse: collapse; font-size: 12.5px; font-family: var(--mono); }
 /* KHÔNG dùng `width: max-content; min-width: 100%`: khi bảng hẹp hơn khung
    nhìn, min-width kéo giãn bảng và `table-layout: fixed` CHIA LẠI phần dư cho
