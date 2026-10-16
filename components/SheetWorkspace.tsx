@@ -2112,15 +2112,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
 
   if (univerOn) {
     return (
-      <div className="panel sheet-panel">
-        <div className="sheet-toolbar">
-          <span className="picker-cwd small" title={file.path}>{file.path}</span>
-          <span className="badge">{file.kind === 'csv' ? 'CSV' : 'XLSX'}</span>
-          <span className="badge">{fmtBytes(file.sizeBytes)}</span>
-          <button className="ghost sm" onClick={() => toggleUniver(false)} title="Quay về lưới cũ">← Lưới cũ</button>
-          <button className="ghost sm" onClick={() => void openExternally()} title="Mở bằng ứng dụng mặc định (Excel / WPS / LibreOffice…)">↗ Mở bằng Excel</button>
-          <button className="ghost sm" onClick={() => setPickerOpen(true)} title="Mở file khác">📂 File khác</button>
-        </div>
+      <div className="panel sheet-panel xl-mode">
         {extChanged && (
           <div className="sheet-extbar" role="alert">
             File đã bị chương trình khác sửa trên đĩa{univerDirty > 0 ? `, trong khi bạn có ${univerDirty} thay đổi chưa lưu — lưu từ app sẽ bị từ chối cho tới khi tải lại` : ''}.
@@ -2133,6 +2125,10 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           path={file.path}
           version={file.mtimeMs}
           allowWrite={allowWrite}
+          onExit={() => toggleUniver(false)}
+          onOpenExternal={() => void openExternally()}
+          onOpenFile={() => setPickerOpen(true)}
+          onReload={reload}
           onDirty={setUniverDirty}
           onSaved={(r) => {
             // Cập nhật mtime/dung lượng để lần focus kế không tưởng file bị sửa ngoài app.

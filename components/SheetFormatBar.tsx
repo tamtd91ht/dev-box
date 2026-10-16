@@ -130,7 +130,7 @@ function loadRecentColors(): string[] {
   } catch { return []; }
 }
 
-function ColorPicker({ kind, current, disabled, rangeLabel, onPick, onClear }: {
+export function ColorPicker({ kind, current, disabled, rangeLabel, onPick, onClear }: {
   kind: 'fc' | 'bg';
   /** Màu hiện có của ô đang chọn (để đánh dấu ô màu trùng). */
   current?: string;

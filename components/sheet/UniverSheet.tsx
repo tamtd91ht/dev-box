@@ -13,23 +13,23 @@
 // ngay lúc import nên không thể render ở server.
 
 import { useEffect, useRef } from 'react';
-import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
+import { createUniver, greenTheme, LocaleType, mergeLocales } from '@univerjs/presets';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
-import coreVi from '@univerjs/preset-sheets-core/locales/vi-VN';
+import coreEn from '@univerjs/preset-sheets-core/locales/en-US';
 import { UniverSheetsFilterPreset } from '@univerjs/preset-sheets-filter';
-import filterVi from '@univerjs/preset-sheets-filter/locales/vi-VN';
+import filterEn from '@univerjs/preset-sheets-filter/locales/en-US';
 import { UniverSheetsSortPreset } from '@univerjs/preset-sheets-sort';
-import sortVi from '@univerjs/preset-sheets-sort/locales/vi-VN';
+import sortEn from '@univerjs/preset-sheets-sort/locales/en-US';
 import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace';
-import findVi from '@univerjs/preset-sheets-find-replace/locales/vi-VN';
+import findEn from '@univerjs/preset-sheets-find-replace/locales/en-US';
 import { UniverSheetsConditionalFormattingPreset } from '@univerjs/preset-sheets-conditional-formatting';
-import cfVi from '@univerjs/preset-sheets-conditional-formatting/locales/vi-VN';
+import cfEn from '@univerjs/preset-sheets-conditional-formatting/locales/en-US';
 import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
-import dvVi from '@univerjs/preset-sheets-data-validation/locales/vi-VN';
+import dvEn from '@univerjs/preset-sheets-data-validation/locales/en-US';
 import { UniverSheetsHyperLinkPreset } from '@univerjs/preset-sheets-hyper-link';
-import linkVi from '@univerjs/preset-sheets-hyper-link/locales/vi-VN';
+import linkEn from '@univerjs/preset-sheets-hyper-link/locales/en-US';
 import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
-import noteVi from '@univerjs/preset-sheets-note/locales/vi-VN';
+import noteEn from '@univerjs/preset-sheets-note/locales/en-US';
 import type { UWorkbook } from '@/lib/sheetUniver';
 import { diffSnapshots, snapshotToGrid, type DiffResult, type Snapshot } from '@/lib/sheetUniverDiff';
 
@@ -52,6 +52,8 @@ export interface UniverHandle {
   grid(): string[][];
   /** Coi trạng thái hiện tại là mốc mới — gọi sau khi lưu thành công. */
   rebase(): void;
+  /** Facade API của Univer — ribbon kiểu Excel gọi lệnh qua đây. */
+  api: ReturnType<typeof createUniver>['univerAPI'];
 }
 
 export default function UniverSheet({ workbook, onReady, onEdited }: {
@@ -72,12 +74,16 @@ export default function UniverSheet({ workbook, onReady, onEdited }: {
     if (!host) return;
 
     const { univer, univerAPI } = createUniver({
-      locale: LocaleType.VI_VN,
+      // Giao diện mô phỏng Microsoft Excel → chữ tiếng Anh như Excel, tông xanh lá
+      // của Excel (viền ô chọn, nút chính). Ribbon gốc của Univer tắt (toolbar:false)
+      // — thay bằng ExcelRibbon; thanh công thức + tab sheet vẫn của Univer.
+      locale: LocaleType.EN_US,
       locales: {
-        [LocaleType.VI_VN]: mergeLocales(coreVi, filterVi, sortVi, findVi, cfVi, dvVi, linkVi, noteVi),
+        [LocaleType.EN_US]: mergeLocales(coreEn, filterEn, sortEn, findEn, cfEn, dvEn, linkEn, noteEn),
       },
+      theme: greenTheme,
       presets: [
-        UniverSheetsCorePreset({ container: host }),
+        UniverSheetsCorePreset({ container: host, toolbar: false }),
         UniverSheetsFilterPreset(),
         UniverSheetsSortPreset(),
         UniverSheetsFindReplacePreset(),
@@ -101,6 +107,7 @@ export default function UniverSheet({ workbook, onReady, onEdited }: {
       diff: () => diffSnapshots(base, snap()),
       grid: () => snapshotToGrid(snap()),
       rebase: () => { base = snap(); },
+      api: univerAPI,
     });
     const sub = wb.onCommandExecuted((cmd) => {
       if (cmd.id.startsWith('sheet.mutation.')) editedRef.current();

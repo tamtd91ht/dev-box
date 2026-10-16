@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { openUniverSheet, saveUniverSheet, fmtBytes, type UniverOpened } from '@/lib/sheet';
 import type { DiffResult } from '@/lib/sheetUniverDiff';
 import type { UniverHandle } from './UniverSheet';
+import ExcelRibbon from './ExcelRibbon';
 
 // Univer chạm DOM/canvas ngay lúc import → chỉ nạp ở client, và chỉ khi thật sự cần
 // (người dùng bật chế độ này) để không tăng dung lượng tải của các tab khác.
@@ -27,11 +28,19 @@ const UniverSheet = dynamic(() => import('./UniverSheet'), {
 const EMPTY: DiffResult = { patch: { sheets: [] }, changed: 0, otherChanges: 0, blockers: [], warnings: [] };
 
 export default function UniverPane({
-  path, version, allowWrite, onDirty, onSaved,
+  path, version, allowWrite, onDirty, onSaved, onExit, onOpenExternal, onOpenFile, onReload,
 }: {
   path: string;
   version: number;
   allowWrite: boolean;
+  /** Về lưới cũ. */
+  onExit: () => void;
+  /** Mở bằng Excel/WPS trên máy. */
+  onOpenExternal: () => void;
+  /** Chọn file khác. */
+  onOpenFile: () => void;
+  /** Đọc lại file từ đĩa. */
+  onReload: () => void;
   /** Số thay đổi chưa lưu (ô + khác) — cha dùng để cảnh báo khi tải lại / đóng. */
   onDirty: (n: number) => void;
   /** Đã lưu xong: cha cập nhật mtime để không tưởng là file bị sửa ngoài app. */
@@ -46,6 +55,8 @@ export default function UniverPane({
   const [note, setNote] = useState<string | null>(null);
 
   const handle = useRef<UniverHandle | null>(null);
+  /** Facade API của Univer cho ribbon — state (không phải ref) để ribbon bật nút khi sẵn sàng. */
+  const [api, setApi] = useState<UniverHandle['api'] | null>(null);
   /** mtime mà file đang có theo hiểu biết của pane (đổi sau mỗi lần lưu). */
   const mtime = useRef(0);
   /** mtime do chính lần lưu của ta tạo ra — để effect tải bỏ qua. */
@@ -72,6 +83,7 @@ export default function UniverPane({
     if (ownMtime.current === version) return; // version vừa do chính ta lưu ra
     let alive = true;
     setState({ kind: 'loading' });
+    setApi(null);
     setDiff(EMPTY); onDirty(0); setErr(null);
     openUniverSheet(path)
       .then((doc) => { if (alive) { mtime.current = doc.mtimeMs; setState({ kind: 'ready', doc }); } })
@@ -113,45 +125,46 @@ export default function UniverPane({
     }
   };
 
-  if (state.kind === 'loading') {
-    return <div className="univer-state"><span className="spinner" aria-hidden /> Đang đọc file…</div>;
-  }
-  if (state.kind === 'error') {
-    return <div className="univer-state"><pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{state.message}</pre></div>;
-  }
-
-  const { doc } = state;
+  const doc = state.kind === 'ready' ? state.doc : null;
   const blocked = diff.blockers.length > 0;
+  const fileName = path.split(/[\\/]/).pop() ?? path;
   return (
     <div className="univer-wrap">
-      <div className="sheet-banner univer-banner">
-        🧪 <b>Giao diện Excel mới (beta).</b>{' '}
-        {doc.cells.toLocaleString('vi')} ô · {fmtBytes(doc.sizeBytes)}
-        {doc.truncated && <b style={{ color: 'var(--err)' }}> · file quá lớn, đã bỏ bớt phần cuối</b>}
-        {' — '}Lưu ghi vào file: <b>giá trị, công thức, màu/font/viền/căn lề, số, gộp ô, kích thước, freeze</b>.
-        Conditional formatting, data validation, ghi chú, hyperlink, biểu đồ <b>chưa được ghi</b> vào file.
-        <span style={{ flex: 1 }} />
-        {dirty > 0 && (
-          <span className="badge sheet-dirty-badge" title={`${diff.changed} ô + ${diff.otherChanges} thay đổi khác`}>● {dirty} thay đổi</span>
-        )}
-        <button
-          className="sm"
-          onClick={() => void save()}
-          disabled={saving || dirty === 0 || blocked || !allowWrite}
-          title={!allowWrite
-            ? 'Ghi file đang tắt — đặt OFFICE_ALLOW_WRITE=true trong .env.local'
-            : blocked ? diff.blockers.join(' ') : dirty === 0 ? 'Chưa có thay đổi nào' : 'Ghi đè file (backup .bak trước)'}
-        >
-          {saving ? <span className="spinner" aria-hidden /> : '💾'} Lưu (ghi đè)
-        </button>
-      </div>
+      <ExcelRibbon
+        api={api}
+        fileName={fileName}
+        kind={doc?.kind ?? (/\.csv$/i.test(path) ? 'csv' : 'xlsx')}
+        dirty={dirty}
+        saving={saving}
+        canSave={!saving && dirty > 0 && !blocked && allowWrite && !!doc}
+        saveTitle={!allowWrite
+          ? 'Saving is disabled — set OFFICE_ALLOW_WRITE=true in .env.local'
+          : blocked ? diff.blockers.join(' ') : dirty === 0 ? 'No changes to save' : `Save (Ctrl+S) — overwrite the file, original backed up as .bak`}
+        onSave={() => void save()}
+        onExit={onExit}
+        onOpenExternal={onOpenExternal}
+        onOpenFile={onOpenFile}
+        onReload={onReload}
+        info={doc ? (
+          <>
+            <p>{doc.cells.toLocaleString('vi')} ô · {fmtBytes(doc.sizeBytes)}
+              {doc.truncated && <b style={{ color: 'var(--err)' }}> · file quá lớn, đã bỏ bớt phần cuối</b>}</p>
+            <p>Lưu ghi vào file: <b>giá trị, công thức, màu/font/viền/căn lề, số, gộp ô, kích thước, freeze</b>.</p>
+            <p>Conditional formatting, data validation, ghi chú, hyperlink, biểu đồ <b>chưa được ghi</b> vào file.</p>
+          </>
+        ) : null}
+      />
+      {state.kind === 'loading' && <div className="univer-state"><span className="spinner" aria-hidden /> Đang đọc file…</div>}
+      {state.kind === 'error' && <div className="univer-state"><pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{state.message}</pre></div>}
       {blocked && <div className="sheet-extbar" role="alert">{diff.blockers.join(' ')}</div>}
       {diff.warnings.length > 0 && !blocked && <div className="sheet-extbar" role="status">⚠ {diff.warnings.join(' ')}</div>}
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: 0 }}>{err}</pre>}
       {note && <div className="badge" style={{ color: 'var(--ok)', alignSelf: 'flex-start' }}>{note}</div>}
-      <div className="univer-body">
-        <UniverSheet workbook={doc.workbook} onReady={(h) => { handle.current = h; }} onEdited={scheduleRefresh} />
-      </div>
+      {doc && (
+        <div className="univer-body">
+          <UniverSheet workbook={doc.workbook} onReady={(h) => { handle.current = h; setApi(() => h.api); }} onEdited={scheduleRefresh} />
+        </div>
+      )}
     </div>
   );
 }

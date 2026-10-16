@@ -9958,6 +9958,132 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .univer-host { position: absolute; inset: 0; }
 .univer-state { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
 .univer-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+/* ── Giao diện kiểu Microsoft Excel cho Univer (components/sheet/ExcelRibbon) ──
+   Thanh tiêu đề + dải tab xanh Excel, ribbon xám nhạt có nhãn nhóm ở đáy. Màu
+   lấy theo Excel Office 2019; nền tối đổi tông ribbon nhưng giữ xanh đặc trưng. */
+.xl-mode { padding: 0; gap: 0; overflow: hidden; }
+.xl-mode .univer-wrap { gap: 0; }
+.xl-mode .univer-body { border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0; }
+.xl-shell {
+  --xl-green: #217346; --xl-green-hover: #2e8b57;
+  --xl-rib: #f3f3f3; --xl-rib-brd: #d4d4d4; --xl-text: #262626; --xl-muted: #616161;
+  --xl-hover: #dcdcdc; --xl-press: #c6c6c6; --xl-on: #c5c5c5; --xl-menu: #ffffff; --xl-field: #ffffff;
+  flex: none; display: flex; flex-direction: column; font: 12px/1.3 "Segoe UI", system-ui, sans-serif; color: var(--xl-text);
+  user-select: none;
+}
+:root:not([data-theme="light"]) .xl-shell {
+  --xl-green: #185c37; --xl-green-hover: #237a4a;
+  --xl-rib: #2b2b2b; --xl-rib-brd: #3f3f3f; --xl-text: #e8e8e8; --xl-muted: #a8a8a8;
+  --xl-hover: #3d3d3d; --xl-press: #4a4a4a; --xl-on: #505050; --xl-menu: #2f2f2f; --xl-field: #1f1f1f;
+}
+.xl-shell svg { width: 16px; height: 16px; display: block; }
+.xl-shell button { font: inherit; color: inherit; }
+.xl-shell button:disabled { opacity: .45; cursor: default; }
+
+/* Thanh tiêu đề */
+.xl-title { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; background: var(--xl-green); color: #fff; }
+.xl-qat { display: flex; gap: 2px; }
+.xl-qbtn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; border: 0; background: transparent; border-radius: 2px; cursor: pointer; color: #fff !important; }
+.xl-qbtn:hover:not(:disabled) { background: var(--xl-green-hover); }
+.xl-title-name { flex: 1; text-align: center; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xl-title-right { display: flex; align-items: center; gap: 8px; }
+.xl-dirty { font-size: 11px; background: rgba(255, 255, 255, .18); padding: 1px 8px; border-radius: 10px; }
+.xl-title-btn { background: #fff; color: var(--xl-green) !important; border: 0; border-radius: 2px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+.xl-title-btn:hover { background: #e9f3ee; }
+
+/* Dải tab */
+.xl-tabs { display: flex; align-items: flex-end; height: 30px; padding: 0 4px; background: var(--xl-green); color: #fff; }
+.xl-tab { border: 0; background: transparent; color: #fff !important; padding: 0 12px; height: 28px; cursor: pointer; font-size: 13px; border-radius: 2px 2px 0 0; }
+.xl-tab:hover { background: var(--xl-green-hover); }
+.xl-tab.file { padding: 0 14px; }
+.xl-tab.on { background: var(--xl-rib); color: var(--xl-green) !important; font-weight: 600; }
+:root:not([data-theme="light"]) .xl-tab.on { color: #7fd1a4 !important; }
+.xl-tell { position: relative; display: flex; align-items: center; gap: 6px; margin-left: 14px; height: 28px; }
+.xl-tell input { width: 230px; border: 0; background: transparent; color: #fff; font: inherit; font-size: 13px; outline: none; }
+.xl-tell input::placeholder { color: rgba(255, 255, 255, .85); }
+.xl-tell .xl-menu { top: 100%; left: 18px; }
+.xl-save { display: inline-flex; align-items: center; gap: 6px; height: 24px; margin-bottom: 3px; padding: 0 10px; border: 1px solid rgba(255, 255, 255, .7); background: transparent; color: #fff !important; border-radius: 2px; cursor: pointer; }
+.xl-save:hover:not(:disabled) { background: var(--xl-green-hover); }
+
+/* Ribbon */
+.xl-ribbon { display: flex; align-items: stretch; min-height: 96px; background: var(--xl-rib); border-bottom: 1px solid var(--xl-rib-brd); overflow-x: auto; overflow-y: hidden; }
+.xl-group { display: flex; flex-direction: column; padding: 3px 4px 0; border-right: 1px solid var(--xl-rib-brd); flex: none; }
+.xl-group-body { flex: 1; display: flex; align-items: flex-start; gap: 2px; }
+.xl-group-label { position: relative; text-align: center; color: var(--xl-muted); font-size: 11px; padding: 2px 14px 3px; white-space: nowrap; }
+.xl-launch { position: absolute; right: 0; bottom: 2px; width: 14px; height: 14px; padding: 0; border: 0; background: transparent; font-size: 9px !important; color: var(--xl-muted) !important; cursor: pointer; line-height: 1; }
+.xl-launch:hover { background: var(--xl-hover); }
+.xl-rows { display: flex; flex-direction: column; gap: 4px; padding-top: 2px; }
+.xl-row { display: flex; align-items: center; gap: 1px; height: 24px; }
+.xl-col { display: flex; flex-direction: column; gap: 1px; }
+.xl-col .xl-btn { justify-content: flex-start; }
+.xl-vsep { width: 1px; height: 18px; background: var(--xl-rib-brd); margin: 0 3px; }
+.xl-btn {
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; min-width: 24px; padding: 0 4px;
+  border: 1px solid transparent; border-radius: 2px; background: transparent; cursor: pointer; white-space: nowrap;
+}
+.xl-btn:hover:not(:disabled) { background: var(--xl-hover); }
+.xl-btn:active:not(:disabled) { background: var(--xl-press); }
+.xl-btn.on { background: var(--xl-on); border-color: color-mix(in srgb, var(--xl-text) 25%, transparent); }
+.xl-btn .xl-ico { display: inline-flex; color: var(--xl-text); }
+.xl-btn.big { flex-direction: column; justify-content: flex-start; height: 72px; min-width: 44px; max-width: 86px; padding: 2px 4px; gap: 2px; }
+.xl-btn.big .xl-ico svg { width: 32px; height: 32px; }
+.xl-btn.big .xl-lbl { white-space: normal; text-align: center; line-height: 1.2; }
+.xl-caret { margin-left: 2px; font-size: 10px; opacity: .8; }
+.xl-btn.big .xl-caret { display: block; margin: 0 auto; }
+/* B I U S đúng kiểu chữ */
+.xl-row > .xl-btn[title^="Bold"] .xl-lbl { font-weight: 700; }
+.xl-row > .xl-btn[title^="Italic"] .xl-lbl { font-style: italic; font-family: Georgia, serif; }
+.xl-row > .xl-btn[title^="Underline"] .xl-lbl { text-decoration: underline; }
+.xl-row > .xl-btn[title^="Strikethrough"] .xl-lbl { text-decoration: line-through; }
+.xl-select { height: 22px; border: 1px solid var(--xl-rib-brd); background: var(--xl-field); color: var(--xl-text); font: inherit; border-radius: 0; padding: 0 2px; }
+.xl-select.font { width: 128px; }
+.xl-select.size { width: 48px; margin-right: 2px; }
+
+/* Nút có menu */
+.xl-drop { position: relative; display: inline-flex; }
+.xl-drop.split > .xl-btn:first-child { padding-right: 2px; }
+.xl-drop.split:has(> .xl-btn.big) { flex-direction: column; }
+.xl-drop.split > .xl-btn.big:first-child { height: 52px; }
+.xl-drop.split:has(> .xl-btn.big) > .xl-dd { height: 18px; width: 100%; justify-content: center; }
+.xl-dd { min-width: 14px; padding: 0 1px; font-size: 10px; }
+.xl-menu {
+  position: absolute; top: calc(100% + 2px); left: 0; z-index: 60; min-width: 190px; max-height: 60vh; overflow: auto;
+  display: flex; flex-direction: column; padding: 3px 0; background: var(--xl-menu); color: var(--xl-text);
+  border: 1px solid var(--xl-rib-brd); box-shadow: 0 6px 18px rgba(0, 0, 0, .22);
+}
+.xl-menu button { display: flex; align-items: center; gap: 8px; text-align: left; border: 0; background: transparent; padding: 5px 12px 5px 6px; cursor: pointer; white-space: nowrap; font-size: 12px; }
+.xl-menu button:hover:not(:disabled) { background: var(--xl-hover); }
+.xl-menu-ico { width: 20px; display: inline-flex; justify-content: center; }
+.xl-menu-ico svg { width: 18px; height: 18px; }
+.xl-menu-sep { height: 1px; margin: 3px 0; background: var(--xl-rib-brd); }
+
+/* Bảng màu dùng lại từ ribbon cũ — chỉnh cho khớp nền ribbon */
+.xl-shell .sheet-fmt-colorpick { align-items: center; }
+.xl-shell .sheet-fmt-color { min-height: 22px; padding: 1px 4px; color: var(--xl-text); border-radius: 2px; }
+.xl-shell .sheet-fmt-color:hover { background: var(--xl-hover); border-color: transparent; }
+.xl-shell .sheet-fmt-color-dd { height: 22px; border: 0; background: transparent; cursor: pointer; border-radius: 2px; }
+.xl-shell .sheet-fmt-color-dd:hover { background: var(--xl-hover); }
+.xl-shell .sheet-palette { background: var(--xl-menu); color: var(--xl-text); }
+
+/* Gallery Styles */
+.xl-styles { display: grid; grid-template-columns: repeat(2, 104px); gap: 3px 4px; padding: 3px 4px; border: 1px solid var(--xl-rib-brd); background: var(--xl-field); height: max-content; }
+.xl-style { height: 24px; text-align: left; padding: 0 6px; border: 1px solid #c8c8c8; background: #fff; color: #000 !important; cursor: pointer; font-size: 12px !important; }
+.xl-style:hover:not(:disabled) { outline: 2px solid #f2b84b; outline-offset: -1px; }
+
+.xl-empty { align-self: center; padding: 0 16px; color: var(--xl-muted); font-size: 12px; }
+.xl-collapse { align-self: flex-end; border: 0; background: transparent; cursor: pointer; padding: 2px 8px; color: var(--xl-muted) !important; }
+.xl-collapse:hover { background: var(--xl-hover); }
+.xl-expand { align-self: flex-end; margin: 0 6px; border: 0; background: transparent; cursor: pointer; color: var(--xl-muted) !important; font-size: 11px !important; }
+
+/* Trang File (backstage) */
+.xl-backstage { display: flex; min-height: 200px; max-height: 50vh; background: var(--xl-rib); border-bottom: 1px solid var(--xl-rib-brd); }
+.xl-bs-menu { display: flex; flex-direction: column; width: 200px; background: var(--xl-green); padding: 8px 0; }
+.xl-bs-menu button { text-align: left; border: 0; background: transparent; color: #fff !important; padding: 9px 22px; cursor: pointer; font-size: 13px !important; }
+.xl-bs-menu button:hover:not(:disabled) { background: var(--xl-green-hover); }
+.xl-bs-info { flex: 1; padding: 16px 28px; overflow: auto; user-select: text; }
+.xl-bs-info h3 { margin: 0 0 10px; font-size: 22px; font-weight: 300; }
+.xl-bs-file { font-size: 14px; margin-bottom: 8px; }
+.xl-bs-kind { font-size: 11px; color: var(--xl-muted); border: 1px solid var(--xl-rib-brd); padding: 0 6px; margin-left: 6px; }
 
 /* Word: ảnh trong đoạn (hiển thị) */
 .word-img { display: block; max-width: 100%; height: auto; margin: 4px auto; }
