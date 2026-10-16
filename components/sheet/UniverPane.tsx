@@ -150,7 +150,7 @@ export default function UniverPane({
             <p>{doc.cells.toLocaleString('vi')} ô · {fmtBytes(doc.sizeBytes)}
               {doc.truncated && <b style={{ color: 'var(--err)' }}> · file quá lớn, đã bỏ bớt phần cuối</b>}</p>
             <p>Lưu ghi vào file: <b>giá trị, công thức, màu/font/viền/căn lề, số, gộp ô, kích thước, freeze</b>.</p>
-            <p>Conditional formatting, data validation, ghi chú, hyperlink, biểu đồ <b>chưa được ghi</b> vào file.</p>
+            <p>Conditional formatting, data validation (checkbox, dropdown), ghi chú, hyperlink, bảo vệ vùng, biểu đồ <b>chưa được ghi</b> vào file.</p>
           </>
         ) : null}
       />

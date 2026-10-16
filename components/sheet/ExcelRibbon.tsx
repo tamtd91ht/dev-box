@@ -41,6 +41,50 @@ const CELL_STYLES = [
   { label: 'Good', bg: '#c6efce', fc: '#006100' },
   { label: 'Neutral', bg: '#ffeb9c', fc: '#9c5700' },
 ] as const;
+/** Một kiểu ô trong gallery Cell Styles đầy đủ của Excel. Màu/viền đúng bộ theme Office. */
+interface StyleDef {
+  label: string; bg?: string; fc?: string; bold?: boolean; italic?: boolean; fs?: number; ff?: string;
+  border?: { type: 'top' | 'bottom' | 'all'; style: number; color: string }[];
+  /** Kiểu "Number Format" (Comma, Currency, Percent…): chỉ đổi định dạng số, giữ font/màu. */
+  numfmt?: string;
+}
+const ACCENTS = [
+  ['#4472c4', '#d9e1f2', '#b4c6e7', '#8ea9db'], ['#ed7d31', '#fce4d6', '#f8cbad', '#f4b084'],
+  ['#a5a5a5', '#ededed', '#dbdbdb', '#c9c9c9'], ['#ffc000', '#fff2cc', '#ffe699', '#ffd966'],
+  ['#5b9bd5', '#ddebf7', '#bdd7ee', '#9bc2e6'], ['#70ad47', '#e2efda', '#c6e0b4', '#a9d08e'],
+];
+const STYLE_GALLERY: { section: string; items: StyleDef[] }[] = [
+  { section: 'Good, Bad and Neutral', items: CELL_STYLES.map((s) => ({ label: s.label, bg: s.bg ?? undefined, fc: s.fc ?? undefined })) },
+  { section: 'Data and Model', items: [
+    { label: 'Calculation', bg: '#f2f2f2', fc: '#fa7d00', bold: true, border: [{ type: 'all', style: 1, color: '#7f7f7f' }] },
+    { label: 'Check Cell', bg: '#a5a5a5', fc: '#ffffff', bold: true, border: [{ type: 'all', style: 7, color: '#3f3f3f' }] },
+    { label: 'Explanatory Text', fc: '#7f7f7f', italic: true },
+    { label: 'Input', bg: '#ffcc99', fc: '#3f3f76', border: [{ type: 'all', style: 1, color: '#7f7f7f' }] },
+    { label: 'Linked Cell', fc: '#fa7d00', border: [{ type: 'bottom', style: 7, color: '#ff8001' }] },
+    { label: 'Note', bg: '#ffffcc', border: [{ type: 'all', style: 1, color: '#b2b2b2' }] },
+    { label: 'Output', bg: '#f2f2f2', fc: '#3f3f3f', bold: true, border: [{ type: 'all', style: 1, color: '#3f3f3f' }] },
+    { label: 'Warning Text', fc: '#ff0000' },
+  ] },
+  { section: 'Titles and Headings', items: [
+    { label: 'Heading 1', fc: '#1f4e79', bold: true, fs: 15, border: [{ type: 'bottom', style: 13, color: '#4472c4' }] },
+    { label: 'Heading 2', fc: '#1f4e79', bold: true, fs: 13, border: [{ type: 'bottom', style: 13, color: '#a1b8e1' }] },
+    { label: 'Heading 3', fc: '#1f4e79', bold: true, border: [{ type: 'bottom', style: 8, color: '#8eaadb' }] },
+    { label: 'Heading 4', fc: '#1f4e79', bold: true },
+    { label: 'Title', fc: '#1f4e79', bold: true, fs: 18, ff: 'Calibri Light' },
+    { label: 'Total', bold: true, border: [{ type: 'top', style: 1, color: '#4472c4' }, { type: 'bottom', style: 7, color: '#4472c4' }] },
+  ] },
+  { section: 'Themed Cell Styles', items: [
+    ...[1, 2, 3].flatMap((tint) => ACCENTS.map((a, i) => ({ label: `${tint * 20}% - Accent${i + 1}`, bg: a[tint] }))),
+    ...ACCENTS.map((a, i) => ({ label: `Accent${i + 1}`, bg: a[0], fc: '#ffffff' })),
+  ] },
+  { section: 'Number Format', items: [
+    { label: 'Comma', numfmt: '_(* #,##0.00_);_(* (#,##0.00);_(* "-"??_);_(@_)' },
+    { label: 'Comma [0]', numfmt: '_(* #,##0_);_(* (#,##0);_(* "-"_);_(@_)' },
+    { label: 'Currency', numfmt: '_("$"* #,##0.00_);_("$"* (#,##0.00);_("$"* "-"??_);_(@_)' },
+    { label: 'Currency [0]', numfmt: '_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)' },
+    { label: 'Percent', numfmt: '0%' },
+  ] },
+];
 const TABS = ['File', 'Home', 'Insert', 'Draw', 'Page Layout', 'Formulas', 'Data', 'Review', 'View', 'Help'] as const;
 type Tab = typeof TABS[number];
 const COLLAPSE_KEY = 'sheet.xl.ribbonCollapsed';
@@ -66,6 +110,26 @@ const colName = (c: number) => {
   return s;
 };
 const a1 = (r: number, c: number) => `${colName(c)}${r + 1}`;
+
+// Hình dữ liệu Univer dùng ở đây (khai tay thay vì import @univerjs/core — xem ghi chú enum trên).
+interface Rect { startRow: number; startColumn: number; endRow: number; endColumn: number }
+interface UCell { v?: unknown; f?: string | null; si?: string | null; p?: { body?: { dataStream?: string } } | null; s?: unknown }
+const rectLabel = (r: Rect) => (r.startRow === r.endRow && r.startColumn === r.endColumn
+  ? a1(r.startRow, r.startColumn) : `${a1(r.startRow, r.startColumn)}:${a1(r.endRow, r.endColumn)}`);
+const isBlankCell = (c: UCell | null | undefined) => !c || ((c.v == null || c.v === '') && !c.f && !c.si && !c.p);
+/** Giới hạn số ô quét một lần cho Go To Special / Remove Duplicates (bảng lớn thì bắt chọn vùng nhỏ hơn). */
+const MAX_SCAN_CELLS = 400_000;
+const MAX_SELECT_RANGES = 2_000;
+
+type DialogKind = 'goto' | 'special' | 'dedupe';
+const SPECIALS = [
+  { id: 'constants', label: 'Constants', hint: 'Cells with values but no formula' },
+  { id: 'formulas', label: 'Formulas', hint: 'Cells containing a formula' },
+  { id: 'blanks', label: 'Blanks', hint: 'Empty cells' },
+  { id: 'region', label: 'Current region', hint: 'The block of data around the active cell' },
+  { id: 'last', label: 'Last cell', hint: 'The last used cell on the sheet' },
+] as const;
+type SpecialKind = typeof SPECIALS[number]['id'];
 
 /* ── Icon (vẽ tay, currentColor + vài điểm nhấn màu như Office) ─────────── */
 const I = {
@@ -114,6 +178,10 @@ const I = {
   rows: <svg viewBox="0 0 32 32"><rect x="5" y="5" width="22" height="22" fill="#fff" stroke="#8a8a8a" /><rect x="5" y="13" width="22" height="6" fill="#c9daf8" /><path d="M16 14v4m-2-2h4" stroke="#2b7bd6" strokeWidth="1.6" /></svg>,
   cols: <svg viewBox="0 0 32 32"><rect x="5" y="5" width="22" height="22" fill="#fff" stroke="#8a8a8a" /><rect x="13" y="5" width="6" height="22" fill="#c9daf8" /><path d="M16 14v4m-2-2h4" stroke="#2b7bd6" strokeWidth="1.6" /></svg>,
   sheet: <svg viewBox="0 0 32 32"><path d="M7 4h13l6 6v18H7z" fill="#fff" stroke="#8a8a8a" /><path d="M11 14h11M11 18h11M11 22h11" stroke="#217346" /></svg>,
+  dedupe: <svg viewBox="0 0 32 32"><rect x="4" y="5" width="24" height="22" fill="#fff" stroke="#8a8a8a" /><path d="M4 11h24M4 16.5h24M4 22h24" stroke="#bdbdbd" /><rect x="5" y="12" width="22" height="4" fill="#c9daf8" /><rect x="5" y="17.5" width="22" height="4" fill="#c9daf8" /><path d="m19 14 7 7m0-7-7 7" stroke="#d13438" strokeWidth="2" /></svg>,
+  checkbox: <svg viewBox="0 0 32 32"><rect x="5" y="5" width="22" height="22" rx="3" fill="#fff" stroke="#8a8a8a" strokeWidth="1.5" /><path d="m10 16 5 5 8-10" fill="none" stroke="#217346" strokeWidth="3" /></svg>,
+  dropdown: <svg viewBox="0 0 32 32"><rect x="3" y="8" width="26" height="12" rx="2" fill="#fff" stroke="#8a8a8a" /><path d="M7 14h10" stroke="#8a8a8a" strokeWidth="2" /><path d="m21 12 3 3 3-3" fill="none" stroke="#2b7bd6" strokeWidth="2" /><path d="M7 24h18M7 28h12" stroke="#bdbdbd" strokeWidth="2" /></svg>,
+  lock: <svg viewBox="0 0 32 32"><rect x="7" y="14" width="18" height="14" rx="2" fill="#f0b24a" stroke="#8a6d2b" /><path d="M11 14V9a5 5 0 0 1 10 0v5" fill="none" stroke="#6b6b6b" strokeWidth="2.4" /><circle cx="16" cy="21" r="2" fill="#6b4f10" /></svg>,
 };
 
 function useOutside(open: boolean, close: () => void) {
@@ -186,6 +254,38 @@ function Btn({ icon, label, big, on, disabled, title, run }: {
   );
 }
 
+/** Hộp thoại nhỏ kiểu Excel (Go To, Remove Duplicates…) neo dưới ribbon — in-app, không dùng prompt/confirm native. */
+function Dialog({ title, onClose, children, foot, width }: {
+  title: string; onClose: () => void; children: ReactNode; foot: ReactNode; width?: number;
+}) {
+  const ref = useOutside(true, onClose);
+  return (
+    <div className="xl-dialog" ref={ref} role="dialog" aria-label={title} style={width ? { width } : undefined}>
+      <div className="xl-dialog-title">{title}<button type="button" onClick={onClose} title="Close (Esc)">✕</button></div>
+      <div className="xl-dialog-body">{children}</div>
+      <div className="xl-dialog-foot">{foot}</div>
+    </div>
+  );
+}
+
+/** Nút kiểu ô trong gallery Styles — xem trước đúng màu/viền của kiểu. */
+function StyleBtn({ s, onPick, disabled }: { s: StyleDef; onPick: (s: StyleDef) => void; disabled?: boolean }) {
+  const bottom = s.border?.find((b) => b.type === 'bottom' || b.type === 'all');
+  const top = s.border?.find((b) => b.type === 'top' || b.type === 'all');
+  const side = s.border?.find((b) => b.type === 'all');
+  const line = (b?: NonNullable<StyleDef['border']>[number]) =>
+    b ? `${b.style === 7 ? '3px double' : b.style === 13 ? '3px solid' : b.style === 8 ? '2px solid' : '1px solid'} ${b.color}` : undefined;
+  return (
+    <button type="button" className="xl-style" disabled={disabled} onMouseDown={keep} onClick={() => onPick(s)}
+      title={s.label === 'Normal' ? 'Normal — clear formatting' : `${s.label} cell style`}
+      style={{
+        background: s.bg ?? '#fff', color: s.fc ?? '#000', fontWeight: s.bold ? 700 : 400, fontStyle: s.italic ? 'italic' : undefined,
+        fontSize: s.fs ? Math.min(14, s.fs) : undefined, fontFamily: s.ff,
+        borderBottom: line(bottom), borderTop: line(top), borderLeft: line(side), borderRight: line(side),
+      }}>{s.label}</button>
+  );
+}
+
 function Group({ label, children, launcher }: { label: string; children: ReactNode; launcher?: () => void }) {
   return (
     <div className="xl-group">
@@ -230,13 +330,27 @@ export default function ExcelRibbon({
   const shellRef = useRef<HTMLDivElement | null>(null);
   const saveRef = useRef({ onSave, canSave });
   saveRef.current = { onSave, canSave };
+  // Các phím tắt khác của Excel (gán ở dưới, sau khi có hàm): Ctrl+F1 thu ribbon,
+  // Alt+= AutoSum, Shift+F3 Insert Function, Ctrl+G Go To.
+  const keysRef = useRef<Record<string, () => void>>({});
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
-        if (!shellRef.current || shellRef.current.offsetParent === null) return;
-        e.preventDefault();
-        if (saveRef.current.canSave) saveRef.current.onSave();
-      }
+      if (!shellRef.current || shellRef.current.offsetParent === null) return;
+      const ctrl = e.ctrlKey || e.metaKey;
+      let act: string | null = null;
+      if (ctrl && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') act = 'save';
+      else if (ctrl && !e.shiftKey && !e.altKey && e.key === 'F1') act = 'collapse';
+      else if (e.altKey && !ctrl && !e.shiftKey && e.key === '=') act = 'autosum';
+      else if (e.shiftKey && !ctrl && !e.altKey && e.key === 'F3') act = 'fx';
+      else if (ctrl && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'g') act = 'goto';
+      if (!act) return;
+      // Đang gõ trong ô nhập của chính ribbon/hộp thoại (không phải lưới) thì để yên.
+      const t = e.target as HTMLElement | null;
+      if (act !== 'save' && t?.closest?.('.xl-shell') && /^(INPUT|TEXTAREA)$/.test(t.tagName)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (act === 'save') { if (saveRef.current.canSave) saveRef.current.onSave(); return; }
+      keysRef.current[act]?.();
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
@@ -293,7 +407,7 @@ export default function ExcelRibbon({
     r.setBackgroundColor(s.bg);
     r.setFontColor(s.fc);
   };
-  const border = (type: string, style = BORDER_THIN) => run('sheet.command.set-border-basic', { value: { type, style, color: '#000000' } });
+  const border = (type: string, style = BORDER_THIN, color = '#000000') => run('sheet.command.set-border-basic', { value: { type, style, color } });
 
   /** AutoSum như Excel: chọn vùng → công thức ngay dưới mỗi cột; một ô → gộp
    *  dãy số liền phía trên (không có thì bên trái) vào công thức tại ô đó. */
@@ -319,6 +433,191 @@ export default function ExcelRibbon({
     if (!ws?.zoom) return;
     const z = d === 0 ? 1 : Math.min(4, Math.max(0.1, Math.round(((ws.getZoom?.() ?? 1) + d) * 10) / 10));
     ws.zoom(z);
+  };
+
+  /** Gallery Cell Styles: Normal = xoá định dạng; kiểu Number Format chỉ đổi định dạng số; còn lại thay cả bộ. */
+  const applyStyleDef = (d: StyleDef) => {
+    const r = range();
+    if (!r) return;
+    if (d.numfmt) { r.setNumberFormat(d.numfmt); return; }
+    run('sheet.command.clear-selection-format');
+    if (d.bg) r.setBackgroundColor(d.bg);
+    if (d.fc) r.setFontColor(d.fc);
+    if (d.bold) r.setFontWeight('bold');
+    if (d.italic) r.setFontStyle('italic');
+    if (d.fs) r.setFontSize(d.fs);
+    if (d.ff) r.setFontFamily(d.ff);
+    d.border?.forEach((b) => border(b.type, b.style, b.color));
+  };
+  const [galOpen, setGalOpen] = useState(false);
+  const closeGal = useCallback(() => setGalOpen(false), []);
+  const galRef = useOutside(galOpen, closeGal);
+
+  /* ── Hộp thoại Go To / Go To Special / Remove Duplicates ── */
+  const [dlg, setDlg] = useState<DialogKind | null>(null);
+  const [dlgMsg, setDlgMsg] = useState('');
+  const [gotoRef, setGotoRef] = useState('');
+  const [gotoHist, setGotoHist] = useState<string[]>([]);
+  const [special, setSpecial] = useState<SpecialKind>('constants');
+  const [ddRect, setDdRect] = useState<Rect | null>(null);
+  const [ddHeader, setDdHeader] = useState(true);
+  const [ddCols, setDdCols] = useState<boolean[]>([]);
+  const [ddNames, setDdNames] = useState<string[]>([]);
+  const [ddDone, setDdDone] = useState(false);
+  const closeDlg = useCallback(() => { setDlg(null); setDlgMsg(''); }, []);
+
+  /** Ô quanh ô (row, col) không bị ngăn bởi dòng/cột trống — "current region" của Excel (Ctrl+A / Ctrl+*). */
+  const currentRegion = (row: number, col: number): Rect => {
+    const ws = sheet();
+    const one = { startRow: row, startColumn: col, endRow: row, endColumn: col };
+    if (!ws) return one;
+    const dr = ws.getDataRange().getRange() as Rect;
+    if (row < dr.startRow || row > dr.endRow || col < dr.startColumn || col > dr.endColumn) return one;
+    if ((dr.endRow - dr.startRow + 1) * (dr.endColumn - dr.startColumn + 1) > MAX_SCAN_CELLS) return one;
+    const cells = ws.getRange(dr).getCellDatas() as (UCell | null)[][];
+    const blank = (r: number, c: number) => isBlankCell(cells[r - dr.startRow]?.[c - dr.startColumn]);
+    const rowHas = (r: number, c0: number, c1: number) => { for (let c = Math.max(c0, dr.startColumn); c <= Math.min(c1, dr.endColumn); c++) if (!blank(r, c)) return true; return false; };
+    const colHas = (c: number, r0: number, r1: number) => { for (let r = Math.max(r0, dr.startRow); r <= Math.min(r1, dr.endRow); r++) if (!blank(r, c)) return true; return false; };
+    let top = row, bottom = row, left = col, right = col;
+    for (;;) {
+      let grew = false;
+      if (top > dr.startRow && rowHas(top - 1, left - 1, right + 1)) { top--; grew = true; }
+      if (bottom < dr.endRow && rowHas(bottom + 1, left - 1, right + 1)) { bottom++; grew = true; }
+      if (left > dr.startColumn && colHas(left - 1, top - 1, bottom + 1)) { left--; grew = true; }
+      if (right < dr.endColumn && colHas(right + 1, top - 1, bottom + 1)) { right++; grew = true; }
+      if (!grew) break;
+    }
+    return { startRow: top, startColumn: left, endRow: bottom, endColumn: right };
+  };
+
+  /** Chọn nhiều vùng một lúc (kết quả Go To Special) rồi cuộn tới vùng đầu. */
+  const selectRects = (rects: Rect[]) => {
+    const wb = api?.getActiveWorkbook(); const ws = sheet();
+    if (!wb || !ws || !rects.length) return;
+    const p = rects[0];
+    run('sheet.operation.set-selections', {
+      unitId: wb.getId(), subUnitId: ws.getSheetId(),
+      selections: rects.map((r, i) => ({
+        range: { ...r, rangeType: 0 },
+        primary: i === 0 ? { ...p, endRow: p.startRow, endColumn: p.startColumn, actualRow: p.startRow, actualColumn: p.startColumn, isMerged: false, isMergedMainCell: false } : null,
+        style: null,
+      })),
+    });
+    run('sheet.command.scroll-to-cell', { range: { ...p, rangeType: 0 } });
+  };
+
+  /** Go To: A1, B2:D9, A:A, 3:3, Sheet2!C4 — trả về thông báo lỗi nếu không hiểu. */
+  const goTo = (text: string): string | null => {
+    const wb = api?.getActiveWorkbook();
+    if (!wb) return null;
+    let ws = wb.getActiveSheet();
+    let ref = text.trim().replace(/\$/g, '');
+    const bang = ref.lastIndexOf('!');
+    if (bang > 0) {
+      const name = ref.slice(0, bang).replace(/^'(.*)'$/, '$1');
+      const s = wb.getSheetByName(name);
+      if (!s) return `Sheet "${name}" was not found.`;
+      ws = s; ref = ref.slice(bang + 1);
+    }
+    ref = ref.toUpperCase();
+    if (!/^([A-Z]{1,3}\d{1,7}(:[A-Z]{1,3}\d{1,7})?|[A-Z]{1,3}:[A-Z]{1,3}|\d{1,7}:\d{1,7})$/.test(ref)) return 'Reference is not valid.';
+    try {
+      ws.activate();
+      const r = ws.getRange(ref);
+      r.activate();
+      run('sheet.command.scroll-to-cell', { range: r.getRange() });
+    } catch { return 'Reference is not valid.'; }
+    setGotoHist((h) => [text.trim(), ...h.filter((x) => x !== text.trim())].slice(0, 8));
+    return null;
+  };
+
+  const goToSpecial = (kind: SpecialKind): string | null => {
+    const ws = sheet(); const r = range();
+    if (!ws || !r) return null;
+    if (kind === 'last') { const dr = ws.getDataRange().getRange(); ws.getRange(dr.endRow, dr.endColumn).activate(); run('sheet.command.scroll-to-cell', { range: { startRow: dr.endRow, endRow: dr.endRow, startColumn: dr.endColumn, endColumn: dr.endColumn } }); return null; }
+    if (kind === 'region') { selectRects([currentRegion(r.getRow(), r.getColumn())]); return null; }
+    // Phạm vi quét: vùng đang chọn (nếu >1 ô), không thì cả phần có dữ liệu của sheet.
+    const rect: Rect = r.getHeight() * r.getWidth() > 1 ? (r.getRange() as Rect) : (ws.getDataRange().getRange() as Rect);
+    const h = rect.endRow - rect.startRow + 1, w = rect.endColumn - rect.startColumn + 1;
+    if (h * w > MAX_SCAN_CELLS) return `The area is too large (${(h * w).toLocaleString('en')} cells). Select a smaller range first.`;
+    const cells = ws.getRange(rect).getCellDatas() as (UCell | null)[][];
+    const match = (c: UCell | null | undefined) => {
+      const blank = isBlankCell(c);
+      if (kind === 'blanks') return blank;
+      const formula = !!(c?.f || c?.si);
+      return kind === 'formulas' ? formula : !blank && !formula;
+    };
+    const rects: Rect[] = []; let count = 0;
+    for (let c = 0; c < w; c++) {
+      let runStart = -1;
+      for (let rr = 0; rr <= h; rr++) {
+        const ok = rr < h && match(cells[rr]?.[c]);
+        if (ok) { count++; if (runStart < 0) runStart = rr; }
+        else if (runStart >= 0) {
+          rects.push({ startRow: rect.startRow + runStart, endRow: rect.startRow + rr - 1, startColumn: rect.startColumn + c, endColumn: rect.startColumn + c });
+          runStart = -1;
+          if (rects.length > MAX_SELECT_RANGES) return 'Too many matching cells to select at once. Select a smaller range first.';
+        }
+      }
+    }
+    if (!count) return 'No cells were found.';
+    selectRects(rects);
+    return null;
+  };
+
+  const openDialog = (k: DialogKind) => {
+    setDlgMsg('');
+    if (k === 'dedupe') {
+      const r = range(); const ws = sheet();
+      if (!r || !ws) return;
+      const rect = r.getHeight() * r.getWidth() > 1 ? (r.getRange() as Rect) : currentRegion(r.getRow(), r.getColumn());
+      const w = rect.endColumn - rect.startColumn + 1;
+      const head = ws.getRange(rect.startRow, rect.startColumn, 1, w).getValues() as unknown[][];
+      const hasHeader = (head[0] ?? []).every((v) => typeof v === 'string' && v !== '');
+      setDdRect(rect); setDdHeader(hasHeader); setDdCols(Array(w).fill(true));
+      setDdNames((head[0] ?? []).map((v) => (v == null || v === '' ? '' : String(v))));
+      setDdDone(false);
+    }
+    setDlg(k);
+  };
+  const ddLabel = (i: number) => (ddHeader && ddNames[i] ? ddNames[i] : `Column ${colName((ddRect?.startColumn ?? 0) + i)}`);
+
+  /** Remove Duplicates như Excel: so các cột đã tick (không phân biệt hoa/thường), bỏ dòng trùng, dồn lên. */
+  const removeDuplicates = () => {
+    const ws = sheet();
+    if (!ws || !ddRect) return;
+    const { startRow: r0, startColumn: c0 } = ddRect;
+    const h = ddRect.endRow - r0 + 1, w = ddRect.endColumn - c0 + 1;
+    if (h * w > MAX_SCAN_CELLS) { setDlgMsg(`The range is too large (${(h * w).toLocaleString('en')} cells). Select a smaller range first.`); return; }
+    const cols = ddCols.map((on, i) => (on ? i : -1)).filter((i) => i >= 0);
+    if (!cols.length) { setDlgMsg('Select at least one column.'); return; }
+    const rng = ws.getRange(r0, c0, h, w);
+    const data = rng.getCellDatas() as (UCell | null)[][];
+    const key = (c: UCell | null | undefined) => {
+      if (!c) return '';
+      const v = c.p?.body?.dataStream ?? c.v;
+      return v == null ? '' : String(v).replace(/\r\n$/, '').trim().toLowerCase();
+    };
+    const seen = new Set<string>(); const keep: (UCell | null)[][] = []; let removed = 0;
+    for (let i = ddHeader ? 1 : 0; i < h; i++) {
+      const row = data[i] ?? [];
+      const k = cols.map((c) => key(row[c])).join('\u0001');
+      if (seen.has(k)) removed++; else { seen.add(k); keep.push(row); }
+    }
+    if (!removed) { setDlgMsg('No duplicate values found.'); setDdDone(true); return; }
+    const out = (ddHeader ? [data[0] ?? []] : []).concat(keep)
+      .map((row) => Array.from({ length: w }, (_, c) => row[c] ?? null));
+    rng.clear();
+    ws.getRange(r0, c0, out.length, w).setValues(out as never);
+    setDlgMsg(`${removed} duplicate value${removed > 1 ? 's' : ''} found and removed; ${keep.length} unique value${keep.length > 1 ? 's' : ''} remain.`);
+    setDdDone(true);
+  };
+
+  keysRef.current = {
+    collapse: toggleCollapsed,
+    autosum: () => autoSum('SUM'),
+    fx: () => run('formula-ui.operation.more-functions'),
+    goto: () => openDialog('goto'),
   };
 
   const fmtLabel = NUM_FORMATS.find((f) => f.pattern === (cell.pattern ?? ''))?.label ?? (cell.pattern ? 'Custom' : 'General');
@@ -371,13 +670,20 @@ export default function ExcelRibbon({
     { label: 'Replace', run: () => run('ui.operation.open-replace-dialog') },
     { label: 'Conditional Formatting', run: () => run('sheet.operation.open.conditional.formatting.panel') },
     { label: 'Data Validation', run: () => run('data-validation.operation.open-validation-panel') },
-    { label: 'Insert Function', run: () => run('formula-ui.operation.insert-function') },
+    { label: 'Insert Function', run: () => run('formula-ui.operation.more-functions') },
     { label: 'Insert Link', run: () => run('sheet.operation.insert-hyper-link-toolbar') },
     { label: 'New Note', run: () => run('sheet.operation.add-note-popup') },
     { label: 'Text to Columns', run: () => run('sheet.command.split-text-to-columns') },
     { label: 'Gridlines', run: () => run('sheet.command.toggle-gridlines') },
     { label: 'Full Screen', run: () => run('base-ui.operation.toggle-fullscreen') },
     { label: 'Keyboard Shortcuts', run: () => run('base-ui.operation.toggle-shortcut-panel') },
+    { label: 'Go To', run: () => openDialog('goto') },
+    { label: 'Go To Special', run: () => openDialog('special') },
+    { label: 'Remove Duplicates', run: () => openDialog('dedupe') },
+    { label: 'Checkbox', run: () => run('data-validation.command.insert-quick-rule', { rule: { type: 'checkbox' } }) },
+    { label: 'Dropdown List', run: () => run('data-validation.command.addRuleAndOpen', { rule: { type: 'list', formula1: 'Option 1,Option 2,Option 3' } }) },
+    { label: 'Protect Range', run: () => run('sheet.command.add-range-protection-from-toolbar') },
+    ...STYLE_GALLERY.flatMap((s) => s.items).map((s) => ({ label: `Cell Style: ${s.label}`, run: () => applyStyleDef(s) })),
     ...sortItems.filter((x) => !x.sep),
     ...autoSumItems.map((x) => ({ ...x, label: `AutoSum: ${x.label}` })),
     ...freezeItems,
@@ -510,13 +816,29 @@ export default function ExcelRibbon({
         <Btn big icon={I.cond} label="Conditional Formatting" disabled={off}
           run={() => run('sheet.operation.open.conditional.formatting.panel')} />
         <Btn big icon={I.table} label="Format as Table" disabled title={`Format as Table — ${NA}`} />
-        <div className="xl-styles" role="listbox" aria-label="Cell Styles">
-          {CELL_STYLES.map((s) => (
-            <button key={s.label} type="button" className={`xl-style ${s.label.toLowerCase()}`} disabled={off}
-              onMouseDown={keep} onClick={() => applyCellStyle(s)}
-              title={s.label === 'Normal' ? 'Normal — clear formatting' : `${s.label} cell style`}
-              style={s.bg ? { background: s.bg, color: s.fc } : undefined}>{s.label}</button>
-          ))}
+        <div className="xl-styles-wrap" ref={galRef}>
+          <div className="xl-styles" role="listbox" aria-label="Cell Styles">
+            {CELL_STYLES.map((s) => (
+              <button key={s.label} type="button" className={`xl-style ${s.label.toLowerCase()}`} disabled={off}
+                onMouseDown={keep} onClick={() => applyCellStyle(s)}
+                title={s.label === 'Normal' ? 'Normal — clear formatting' : `${s.label} cell style`}
+                style={s.bg ? { background: s.bg, color: s.fc } : undefined}>{s.label}</button>
+            ))}
+          </div>
+          <button type="button" className={`xl-btn xl-gal-more${galOpen ? ' on' : ''}`} disabled={off} onMouseDown={keep}
+            onClick={() => setGalOpen((o) => !o)} title="Cell Styles — all styles">⌄</button>
+          {galOpen && (
+            <div className="xl-gallery" role="listbox" aria-label="All cell styles">
+              {STYLE_GALLERY.map((sec) => (
+                <div key={sec.section}>
+                  <h5>{sec.section}</h5>
+                  <div className="xl-gallery-grid">
+                    {sec.items.map((s) => <StyleBtn key={s.label} s={s} onPick={(d) => { setGalOpen(false); applyStyleDef(d); }} />)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </Group>
 
@@ -572,6 +894,13 @@ export default function ExcelRibbon({
           items={[
             { label: 'Find…', run: () => run('ui.operation.open-find-dialog') },
             { label: 'Replace…', run: () => run('ui.operation.open-replace-dialog') },
+            { label: 'Go To…', title: 'Ctrl+G', run: () => openDialog('goto') },
+            { label: 'Go To Special…', run: () => openDialog('special') },
+            { sep: true, label: '' },
+            { label: 'Formulas', run: () => { const m = goToSpecial('formulas'); if (m) { setSpecial('formulas'); setDlgMsg(m); setDlg('special'); } } },
+            { label: 'Constants', run: () => { const m = goToSpecial('constants'); if (m) { setSpecial('constants'); setDlgMsg(m); setDlg('special'); } } },
+            { label: 'Blanks', run: () => { const m = goToSpecial('blanks'); if (m) { setSpecial('blanks'); setDlgMsg(m); setDlg('special'); } } },
+            { sep: true, label: '' },
             { label: 'Select All', run: () => run('sheet.command.select-all') },
           ]} />
       </Group>
@@ -600,8 +929,14 @@ export default function ExcelRibbon({
         <Group label="Comments">
           <Btn big icon={I.note} label="Note" disabled={off} title="New Note" run={() => run('sheet.operation.add-note-popup')} />
         </Group>
+        <Group label="Controls">
+          <Btn big icon={I.checkbox} label="Checkbox" disabled={off} title="Insert a checkbox in each selected cell"
+            run={() => run('data-validation.command.insert-quick-rule', { rule: { type: 'checkbox' } })} />
+          <Btn big icon={I.dropdown} label="Dropdown" disabled={off} title="Insert a dropdown list in the selected cells"
+            run={() => run('data-validation.command.addRuleAndOpen', { rule: { type: 'list', formula1: 'Option 1,Option 2,Option 3' } })} />
+        </Group>
         <Group label="Functions">
-          <Btn big icon={I.fx} label="Function" disabled={off} title="Insert Function (Shift+F3)" run={() => run('formula-ui.operation.insert-function')} />
+          <Btn big icon={I.fx} label="Function" disabled={off} title="Insert Function (Shift+F3)" run={() => run('formula-ui.operation.more-functions')} />
         </Group>
       </>
     ),
@@ -617,7 +952,7 @@ export default function ExcelRibbon({
     Formulas: (
       <>
         <Group label="Function Library">
-          <Btn big icon={I.fx} label="Insert Function" disabled={off} run={() => run('formula-ui.operation.insert-function')} />
+          <Btn big icon={I.fx} label="Insert Function" disabled={off} run={() => run('formula-ui.operation.more-functions')} />
           <Drop big icon={I.sigma} label="AutoSum" disabled={off} items={autoSumItems} />
           <Btn big icon={I.fx} label="More Functions" disabled={off} run={() => run('formula-ui.operation.more-functions')} />
         </Group>
@@ -640,6 +975,8 @@ export default function ExcelRibbon({
         </Group>
         <Group label="Data Tools">
           <Btn big icon={I.text2col} label="Text to Columns" disabled={off} run={() => run('sheet.command.split-text-to-columns')} />
+          <Btn big icon={I.dedupe} label="Remove Duplicates" disabled={off} title="Delete duplicate rows from the selected range"
+            run={() => openDialog('dedupe')} />
           <Btn big icon={I.valid} label="Data Validation" disabled={off} run={() => run('data-validation.operation.open-validation-panel')} />
         </Group>
       </>
@@ -652,6 +989,12 @@ export default function ExcelRibbon({
         <Group label="Find">
           <Btn big icon={I.find} label="Find" disabled={off} run={() => run('ui.operation.open-find-dialog')} />
           <Btn big icon={I.find} label="Replace" disabled={off} run={() => run('ui.operation.open-replace-dialog')} />
+        </Group>
+        <Group label="Protect">
+          <Btn big icon={I.lock} label="Protect Range" disabled={off} title="Protect the selected range from editing"
+            run={() => run('sheet.command.add-range-protection-from-toolbar')} />
+          <Btn big icon={I.lock} label="Permissions" disabled={off} title="View protected ranges and sheets"
+            run={() => run('sheet.command.view-sheet-permission-from-context-menu')} />
         </Group>
       </>
     ),
@@ -754,6 +1097,77 @@ export default function ExcelRibbon({
       )}
       {collapsed && tab !== 'File' && (
         <button type="button" className="xl-expand" onClick={toggleCollapsed} title="Show the Ribbon">⌄ Show ribbon</button>
+      )}
+
+      {/* ── Hộp thoại kiểu Excel ── */}
+      {dlg === 'goto' && (
+        <Dialog title="Go To" onClose={closeDlg} width={340}
+          foot={<>
+            <span className="msg">{dlgMsg}</span>
+            <button type="button" onClick={() => { setDlg('special'); setDlgMsg(''); }}>Special…</button>
+            <button type="button" className="primary" onClick={() => { const m = goTo(gotoRef); if (m) setDlgMsg(m); else closeDlg(); }}>OK</button>
+            <button type="button" onClick={closeDlg}>Cancel</button>
+          </>}>
+          <div>Go to:</div>
+          <div className="xl-dialog-list" style={{ minHeight: 60 }}>
+            {gotoHist.length === 0 && <div className="xl-dialog-hint">Recent references appear here.</div>}
+            {gotoHist.map((h) => <button key={h} type="button" onClick={() => setGotoRef(h)} onDoubleClick={() => { if (!goTo(h)) closeDlg(); }}>{h}</button>)}
+          </div>
+          <label>Reference:
+            <input type="text" value={gotoRef} autoFocus spellCheck={false} placeholder="e.g. B12, A1:C5, Sheet2!D4"
+              onFocus={(e) => e.target.select()}
+              onChange={(e) => { setGotoRef(e.target.value); setDlgMsg(''); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { const m = goTo(gotoRef); if (m) setDlgMsg(m); else closeDlg(); } }} />
+          </label>
+        </Dialog>
+      )}
+      {dlg === 'special' && (
+        <Dialog title="Go To Special" onClose={closeDlg} width={340}
+          foot={<>
+            <span className="msg">{dlgMsg}</span>
+            <button type="button" className="primary" onClick={() => { const m = goToSpecial(special); if (m) setDlgMsg(m); else closeDlg(); }}>OK</button>
+            <button type="button" onClick={closeDlg}>Cancel</button>
+          </>}>
+          <div>Select:</div>
+          <div className="xl-dialog-list">
+            {SPECIALS.map((s) => (
+              <label key={s.id} title={s.hint}>
+                <input type="radio" name="xl-special" checked={special === s.id} onChange={() => { setSpecial(s.id); setDlgMsg(''); }} />
+                {s.label}<span className="xl-dialog-hint">{s.hint}</span>
+              </label>
+            ))}
+          </div>
+          <div className="xl-dialog-hint">Searches the selection, or the whole sheet when only one cell is selected.</div>
+        </Dialog>
+      )}
+      {dlg === 'dedupe' && ddRect && (
+        <Dialog title="Remove Duplicates" onClose={closeDlg} width={380}
+          foot={<>
+            <span className="msg">{dlgMsg}</span>
+            {ddDone
+              ? <button type="button" className="primary" onClick={closeDlg}>Close</button>
+              : <>
+                <button type="button" className="primary" onClick={removeDuplicates}>OK</button>
+                <button type="button" onClick={closeDlg}>Cancel</button>
+              </>}
+          </>}>
+          <div>To delete duplicate values, select one or more columns that contain duplicates.</div>
+          <div className="xl-dialog-hint">Range: <b>{rectLabel(ddRect)}</b></div>
+          <div className="xl-dialog-row">
+            <button type="button" disabled={ddDone} onClick={() => setDdCols(ddCols.map(() => true))}>Select All</button>
+            <button type="button" disabled={ddDone} onClick={() => setDdCols(ddCols.map(() => false))}>Unselect All</button>
+            <span style={{ flex: 1 }} />
+            <label><input type="checkbox" checked={ddHeader} disabled={ddDone} onChange={(e) => setDdHeader(e.target.checked)} />My data has headers</label>
+          </div>
+          <div className="xl-dialog-list">
+            {ddCols.map((on, i) => (
+              <label key={i}>
+                <input type="checkbox" checked={on} disabled={ddDone} onChange={(e) => setDdCols(ddCols.map((v, j) => (j === i ? e.target.checked : v)))} />
+                {ddLabel(i)}
+              </label>
+            ))}
+          </div>
+        </Dialog>
       )}
     </div>
   );
