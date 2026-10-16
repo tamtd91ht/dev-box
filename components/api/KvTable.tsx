@@ -6,22 +6,30 @@
 import type { ApiHeader } from '@/lib/api';
 
 export default function KvTable({
-  rows, onChange, keyPlaceholder = 'Key', valuePlaceholder = 'Value', addLabel = '＋ Thêm dòng',
+  rows, onChange, keyPlaceholder = 'Key', valuePlaceholder = 'Value', addLabel = '＋ Thêm dòng', nameSuggestions,
 }: {
   rows: ApiHeader[];
   onChange: (rows: ApiHeader[]) => void;
   keyPlaceholder?: string;
   valuePlaceholder?: string;
   addLabel?: string;
+  /** Có prop này thì hiện thêm cột "Name" (nhãn dev/stg…) — dùng cho bảng Biến. */
+  nameSuggestions?: string[];
 }) {
   const set = (i: number, patch: Partial<ApiHeader>) =>
     onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   return (
     <div className="api-kv">
+      {nameSuggestions && <datalist id="api-kv-names">{nameSuggestions.map((n) => <option key={n} value={n} />)}</datalist>}
       {rows.map((r, i) => (
         <div key={i} className="api-kv-row">
           <input type="checkbox" checked={r.on !== false} onChange={(e) => set(i, { on: e.target.checked })}
             title="Bật/tắt dòng này" />
+          {nameSuggestions && (
+            <input className="input api-kv-name" placeholder="Name" list="api-kv-names" value={r.name ?? ''}
+              title="Nhãn của giá trị (vd dev, stg). Cùng tên biến có thể khai nhiều dòng với name khác nhau; để trống = dùng cho mọi name."
+              onChange={(e) => set(i, { name: e.target.value })} />
+          )}
           <input className="input" placeholder={keyPlaceholder} value={r.key} onChange={(e) => set(i, { key: e.target.value })} />
           <input className="input" placeholder={valuePlaceholder} value={r.value} onChange={(e) => set(i, { value: e.target.value })} />
           <button className="ghost sm" onClick={() => onChange(rows.filter((_, j) => j !== i))} title="Xoá dòng">✕</button>

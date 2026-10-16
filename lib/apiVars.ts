@@ -5,7 +5,7 @@
 //   · splitQuery / joinQuery — bảng Params ⇄ query string của URL
 //   · basicAuthValue — giá trị header Authorization: Basic …
 
-import type { ApiAuth, ApiHeader } from './api';
+import type { ApiAuth, ApiHeader, ApiVar } from './api';
 
 // ── Biến động ─────────────────────────────────────────────────────────────
 
@@ -39,6 +39,43 @@ export function dynamicVar(name: string): string | null {
 }
 
 const VAR_RE = /\{\{\s*(\$?[\w.-]+)\s*\}\}/g;
+
+/**
+ * Gộp các tầng biến (chung → dự án, tầng sau ghi đè) thành bản đồ key → value.
+ *
+ * Trong MỘT tầng, cùng key có thể khai nhiều dòng với `name` khác nhau; chọn theo
+ * `active`: dòng name = active, không có thì dòng không name, không có nữa thì dòng
+ * đầu tiên. Tầng sau chỉ ghi đè khi nó có dòng bật cho key đó.
+ */
+export function buildVarMap(
+  layers: (ApiVar[] | undefined)[],
+  active = '',
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const layer of layers) {
+    const byKey = new Map<string, ApiVar[]>();
+    for (const v of layer ?? []) {
+      const k = v.key.trim();
+      if (!k || v.on === false) continue;
+      const list = byKey.get(k);
+      if (list) list.push(v); else byKey.set(k, [v]);
+    }
+    for (const [k, rows] of byKey) {
+      const pick = (active ? rows.find((r) => (r.name ?? '') === active) : undefined)
+        ?? rows.find((r) => !(r.name ?? ''))
+        ?? rows[0];
+      out[k] = pick.value;
+    }
+  }
+  return out;
+}
+
+/** Mọi name đã dùng trong các tầng biến, theo thứ tự xuất hiện. */
+export function varNames(layers: (ApiVar[] | undefined)[]): string[] {
+  const s = new Set<string>();
+  for (const layer of layers) for (const v of layer ?? []) { const n = (v.name ?? '').trim(); if (n) s.add(n); }
+  return [...s];
+}
 
 /** Thay {{tên}} bằng giá trị trong `env`, hoặc biến động. Biến lạ giữ nguyên chữ. */
 export function resolveVars(text: string, env: Record<string, string>): string {

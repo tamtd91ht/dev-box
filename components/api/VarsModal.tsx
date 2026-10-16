@@ -7,14 +7,14 @@
 
 import { useMemo, useState } from 'react';
 import { apiSaveGlobals, apiSaveProjectVars, type ApiData, type ApiHeader } from '@/lib/api';
-import { DYNAMIC_VARS } from '@/lib/apiVars';
+import { DYNAMIC_VARS, varNames } from '@/lib/apiVars';
 import KvTable from './KvTable';
 
 /** Khoá phạm vi: '' = biến chung. */
 const GLOBAL = '';
 
 const rowsOf = (vars: ApiData['globalVars']): ApiHeader[] =>
-  (vars ?? []).map((v) => ({ key: v.key, value: v.value, on: v.on !== false }));
+  (vars ?? []).map((v) => ({ key: v.key, value: v.value, on: v.on !== false, name: v.name ?? '' }));
 
 export default function VarsModal({
   data, projects, initialScope, onSaved, onClose,
@@ -48,6 +48,10 @@ export default function VarsModal({
     return rows.filter((r) => r.key.trim()).length;
   };
   const dirty = Object.keys(edits).length > 0;
+  // Gợi ý name: gom từ mọi phạm vi (đã lưu + đang sửa) để gõ lại cho đồng nhất.
+  const nameList = useMemo(() => varNames([
+    data.globalVars, ...Object.values(data.projectVars ?? {}), ...Object.values(edits),
+  ]), [data.globalVars, data.projectVars, edits]);
 
   const save = async () => {
     setBusy(true); setErr(null);
@@ -104,9 +108,9 @@ export default function VarsModal({
               {scope === GLOBAL
                 ? 'Biến chung — dùng được ở mọi dự án. Biến của dự án cùng tên sẽ ghi đè.'
                 : <>Biến của dự án <b>{scope}</b> — chỉ áp cho request thuộc dự án này, và ghi đè biến chung cùng tên.</>}
-              {' '}Dùng bằng <code>{'{{tên}}'}</code> trong URL, header, body, auth.
+              {' '}Dùng bằng <code>{'{{tên}}'}</code> trong URL, header, body, auth. Cột <b>Name</b>: cùng một tên biến khai nhiều dòng với name khác nhau (vd base_url — dev / stg), khi gửi dùng dòng khớp name đang chọn.
             </p>
-            <KvTable rows={current} onChange={setCurrent} keyPlaceholder="Tên biến" valuePlaceholder="Giá trị" addLabel="＋ Thêm biến" />
+            <KvTable rows={current} onChange={setCurrent} keyPlaceholder="Tên biến" valuePlaceholder="Giá trị" addLabel="＋ Thêm biến" nameSuggestions={nameList} />
           </div>
         </div>
 

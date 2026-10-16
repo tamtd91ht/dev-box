@@ -6507,6 +6507,7 @@ iframe.tools-view-box { background: #fff; }
 .api-kv { display: flex; flex-direction: column; gap: 4px; padding: 6px 2px; }
 .api-kv-row { display: flex; gap: 6px; align-items: center; }
 .api-kv-row .input { flex: 1; }
+.api-kv-row .api-kv-name { flex: 0 0 22%; min-width: 0; }
 .api-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; padding: 6px 2px; }
 .api-bodytype { display: flex; gap: 14px; align-items: center; font-size: 12px; }
 /* resize:vertical = kéo tay ở góc dưới-phải khi muốn khác mặc định. */

@@ -1,6 +1,6 @@
 // Client helpers + types cho tab API (Postman-like). Browser-safe.
 
-export interface ApiHeader { key: string; value: string; on?: boolean }
+export interface ApiHeader { key: string; value: string; on?: boolean; /** Chỉ dùng ở bảng Biến: nhãn (dev/stg…) để cùng một tên biến có nhiều giá trị. */ name?: string }
 
 /**
  * Kiểu body, đặt tên theo đúng content-type sẽ gửi đi:
@@ -38,8 +38,10 @@ export interface ApiFormField {
   fileType?: string;
 }
 
-/** Một biến {{key}}. `on:false` = tắt tạm mà không phải xoá. */
-export interface ApiVar { key: string; value: string; on?: boolean }
+/** Một biến {{key}}. `on:false` = tắt tạm mà không phải xoá.
+ *  `name` = nhãn của giá trị (vd "dev", "stg"): cùng `key` khai nhiều dòng với name khác nhau,
+ *  lúc gửi lấy dòng có name = `activeVarName`. Để trống = dùng cho mọi name. */
+export interface ApiVar { key: string; value: string; on?: boolean; name?: string }
 
 export type ApiAuthType = 'none' | 'bearer' | 'basic' | 'apikey';
 
@@ -94,6 +96,8 @@ export interface ApiData {
   /** Cũ — còn trong file để không mất dữ liệu, UI không dùng nữa (xem globalVars). */
   environments: ApiEnvironment[];
   activeEnvId?: string;
+  /** Name đang dùng để chọn giá trị biến khi gửi (xem ApiVar.name). Rỗng = chỉ dòng không name. */
+  activeVarName?: string;
   /** Biến chung cho mọi dự án. */
   globalVars?: ApiVar[];
   /** Biến theo dự án (khoá = tên dự án = `folder` của request). Ghi đè biến chung. */
@@ -132,6 +136,7 @@ export const apiRemoveRequest = (id: string) => store('removeRequest', { id });
 export const apiSaveEnv = (e: Partial<ApiEnvironment> & { name: string }) => store('saveEnv', { ...e });
 export const apiRemoveEnv = (id: string) => store('removeEnv', { id });
 export const apiSetActiveEnv = (id: string | null) => store('setActiveEnv', { id });
+export const apiSetActiveVarName = (name: string) => store('setActiveVarName', { name });
 export const apiSaveGlobals = (vars: ApiVar[]) => store('saveGlobals', { vars });
 export const apiSaveProjectVars = (project: string, vars: ApiVar[]) => store('saveProjectVars', { project, vars });
 

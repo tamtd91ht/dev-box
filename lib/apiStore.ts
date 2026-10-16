@@ -25,7 +25,7 @@ export interface ApiFormField {
   fileType?: string;
 }
 
-export interface ApiVar { key: string; value: string; on?: boolean }
+export interface ApiVar { key: string; value: string; on?: boolean; name?: string }
 
 export interface ApiAuth {
   type: 'none' | 'bearer' | 'basic' | 'apikey';
@@ -69,6 +69,7 @@ interface ApiData {
   /** Cũ: giữ nguyên trong file, không còn dùng (xem globalVars). */
   environments: ApiEnvironment[];
   activeEnvId?: string;
+  activeVarName?: string;
   globalVars: ApiVar[];
   projectVars: Record<string, ApiVar[]>;
 }
@@ -88,6 +89,7 @@ async function readAll(): Promise<ApiData> {
       requests: Array.isArray(d.requests) ? d.requests : [],
       environments,
       activeEnvId: d.activeEnvId,
+      activeVarName: typeof d.activeVarName === 'string' ? d.activeVarName : undefined,
       globalVars: Array.isArray(d.globalVars)
         ? d.globalVars
         : (legacy?.vars ?? []).map((v) => ({ key: v.key, value: v.value, on: true })),
@@ -167,6 +169,14 @@ export async function setActiveEnv(id: string | null): Promise<ApiData> {
   return data;
 }
 
+export async function setActiveVarName(name: unknown): Promise<ApiData> {
+  const data = await readAll();
+  const n = String(name ?? '').trim();
+  data.activeVarName = n || undefined;
+  await writeAll(data);
+  return data;
+}
+
 /** Danh sách biến sạch: bỏ dòng không có key, trim key. */
 function cleanVars(vars: unknown): ApiVar[] {
   if (!Array.isArray(vars)) return [];
@@ -174,7 +184,8 @@ function cleanVars(vars: unknown): ApiVar[] {
   for (const v of vars as Partial<ApiVar>[]) {
     const key = String(v?.key ?? '').trim();
     if (!key) continue;
-    out.push({ key, value: String(v?.value ?? ''), on: v?.on === false ? false : true });
+    const name = String(v?.name ?? '').trim();
+    out.push({ key, value: String(v?.value ?? ''), on: v?.on === false ? false : true, ...(name ? { name } : {}) });
   }
   return out;
 }

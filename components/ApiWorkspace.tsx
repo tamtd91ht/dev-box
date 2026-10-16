@@ -17,13 +17,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  apiGet, apiSaveRequest, apiRemoveRequest, apiSend,
+  apiGet, apiSaveRequest, apiRemoveRequest, apiSend, apiSetActiveVarName,
   stripFiles, FILE_LIMIT,
   type ApiData, type ApiRequest, type ApiHeader, type HttpResult,
   type ApiBodyType, type ApiFormField, type ApiAuth, type ApiSendOpts,
 } from '@/lib/api';
 import { parseCurl, looksLikeCurl, buildCurl } from '@/lib/curlParse';
-import { resolveVars, findVarNames, splitQuery, joinQuery, applyAuth } from '@/lib/apiVars';
+import { resolveVars, findVarNames, buildVarMap, varNames, splitQuery, joinQuery, applyAuth } from '@/lib/apiVars';
 import { pushHistory } from '@/lib/apiHistory';
 import { formatText } from '@/lib/format';
 import { looksLikeJson } from '@/lib/jsonEdit';
@@ -281,14 +281,15 @@ export default function ApiWorkspace() {
   // biến dự án ghi đè khi trùng tên. Dòng bị tắt (on:false) không tính.
   const project = (draft.folder ?? '').trim();
   /** Biến hiệu lực của MỘT dự án — cũng dùng cho request ở rail (copy curl). */
-  const varsFor = useCallback((proj: string) => {
-    const m: Record<string, string> = {};
-    for (const v of data.globalVars ?? []) if (v.key.trim() && v.on !== false) m[v.key.trim()] = v.value;
-    for (const v of (proj ? data.projectVars?.[proj] : undefined) ?? []) {
-      if (v.key.trim() && v.on !== false) m[v.key.trim()] = v.value;
-    }
-    return m;
-  }, [data.globalVars, data.projectVars]);
+  const activeName = data.activeVarName ?? '';
+  const varsFor = useCallback((proj: string) =>
+    buildVarMap([data.globalVars, proj ? data.projectVars?.[proj] : undefined], activeName),
+  [data.globalVars, data.projectVars, activeName]);
+  /** Các name có thể chọn: của biến chung + biến dự án hiện tại. */
+  const nameOptions = useMemo(
+    () => varNames([data.globalVars, project ? data.projectVars?.[project] : undefined]),
+    [data.globalVars, data.projectVars, project],
+  );
   const vars = useMemo(() => varsFor(project), [varsFor, project]);
   const envMap = vars; // tên cũ — phần còn lại của file vẫn gọi envMap
 
@@ -802,6 +803,18 @@ export default function ApiWorkspace() {
                     </button>
                   ))}
                   <span style={{ flex: 1 }} />
+                  {nameOptions.length > 0 && (
+                    <select className="input sm" value={activeName} style={{ width: 'auto' }}
+                      title="Name đang dùng — biến khai nhiều giá trị theo name sẽ lấy giá trị ứng với name này khi Send"
+                      onChange={(e) => {
+                        const n = e.target.value;
+                        setData((d) => ({ ...d, activeVarName: n || undefined }));
+                        void apiSetActiveVarName(n).then(setData).catch(() => {});
+                      }}>
+                      <option value="">(không name)</option>
+                      {nameOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  )}
                   <button className="ghost sm" onClick={() => setVarsOpen({ scope: project })}
                     title={project ? `Biến của dự án “${project}” + biến chung` : 'Biến chung (request chưa thuộc dự án nào)'}>
                     🔣 {Object.keys(vars).length}{project ? ` · ${project}` : ''}

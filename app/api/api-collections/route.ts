@@ -6,12 +6,13 @@
 //     'saveEnv'      { ...ApiEnvironment } → ApiData
 //     'removeEnv'    { id }            → ApiData
 //     'setActiveEnv' { id | null }     → ApiData
+//     'setActiveVarName' { name }      → ApiData   (name đang dùng của biến)
 //     'saveGlobals'  { vars }          → ApiData   (biến chung)
 //     'saveProjectVars' { project, vars } → ApiData (biến theo dự án)
 
 import { NextResponse, type NextRequest } from 'next/server';
 import {
-  getData, saveRequest, removeRequest, saveEnv, removeEnv, setActiveEnv, saveGlobals, saveProjectVars,
+  getData, saveRequest, removeRequest, saveEnv, removeEnv, setActiveEnv, setActiveVarName, saveGlobals, saveProjectVars,
 } from '@/lib/apiStore';
 
 export const runtime = 'nodejs';
@@ -30,6 +31,7 @@ export async function POST(req: NextRequest) {
       case 'saveEnv': result = await saveEnv(body as never); break;
       case 'removeEnv': result = await removeEnv(String(body.id ?? '')); break;
       case 'setActiveEnv': result = await setActiveEnv((body.id as string) ?? null); break;
+      case 'setActiveVarName': result = await setActiveVarName(body.name); break;
       case 'saveGlobals': result = await saveGlobals(body.vars); break;
       case 'saveProjectVars': result = await saveProjectVars(String(body.project ?? ''), body.vars); break;
       default: return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
