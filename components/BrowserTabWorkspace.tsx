@@ -9,10 +9,10 @@
 // Tách khỏi tab Links (Links = bookmark tài liệu có tổ chức, dự án/tags).
 // Viewer tái dùng LinkViewer (webview + fill login + save session).
 
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  bmList, bmAdd, bmAddFolder, bmUpdate, bmMove, bmRemove,
+  bmList, bmAdd, bmAddFolder, bmMove, bmRemove, bmReassign, bmUpdate,
   normalizeUrl, bmPartition, bmTree, type Bookmark, type BmNode,
 } from '@/lib/bookmarks';
 import BrowserExtensions from './BrowserExtensions';
@@ -305,7 +305,23 @@ export default function BrowserTabWorkspace() {
   }, [activeId]);
 
   const currentProfile = findProfile(profiles, profile);
+  /** Hồ sơ hiện tại cho các callback nghe sự kiện từ NGOÀI (link từ Zalo,
+   *  popup extension…) — đọc qua ref để khỏi đăng ký lại listener mỗi lần đổi
+   *  hồ sơ. Gán ngay trong render nên luôn là giá trị mới nhất. */
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
   const labelOf = useCallback((ref?: string) => findProfile(profiles, ref).name, [profiles]);
+
+  /** Dấu trang CỦA HỒ SƠ ĐANG DÙNG — như Chrome, mỗi hồ sơ một bộ riêng; đổi
+   *  hồ sơ là đổi cả thanh dấu trang. So theo id qua findProfile để ref cũ gõ
+   *  tay ('Work A') vẫn khớp hồ sơ 'work-a'. `bookmarks` vẫn giữ đủ mọi hồ sơ
+   *  vì store trả về cả danh sách sau mỗi thao tác. */
+  const marks = useMemo(
+    () => bookmarks.filter((b) => findProfile(profiles, b.profile).id === currentProfile.id),
+    [bookmarks, profiles, currentProfile.id],
+  );
+  /** Ref của hồ sơ đang dùng — gắn vào dấu trang/thư mục tạo mới. */
+  const curRef = refOf(currentProfile);
 
   // Nhớ các trang gần nhất (tối đa MAX_RESTORE) của từng hồ sơ có tab đang mở —
   // để lần sau chuyển về hồ sơ đó còn biết mở lại những trang nào. Hồ sơ không
@@ -379,15 +395,12 @@ export default function BrowserTabWorkspace() {
 
   const deleteProfile = async (p: BrowserProfile) => {
     if (p.id === DEFAULT_PROFILE_ID) return;
-    if (!window.confirm(`Xoá hồ sơ "${p.name}"? Toàn bộ phiên đăng nhập của nó bị xoá và các tab đang dùng nó bị đóng. Dấu trang đang gắn hồ sơ này sẽ về hồ sơ Mặc định.`)) return;
+    if (!window.confirm(`Xoá hồ sơ "${p.name}"? Toàn bộ phiên đăng nhập của nó bị xoá và các tab đang dùng nó bị đóng. Dấu trang của hồ sơ này sẽ chuyển sang hồ sơ Mặc định.`)) return;
     setProfiles((cur) => cur.filter((x) => x.id !== p.id));
     if (slugOf(profile) === p.id) setProfile('');
-    // Dấu trang trỏ vào hồ sơ vừa xoá → về Mặc định, khỏi mở ra một phiên trắng không tên.
-    try {
-      for (const b of bookmarks.filter((x) => x.kind === 'link' && slugOf(x.profile) === p.id)) {
-        setBookmarks(await bmUpdate(b.id, { profile: '' }));
-      }
-    } catch (e) { setErr((e as Error).message); }
+    // Bộ dấu trang của hồ sơ vừa xoá → gộp sang Mặc định (giữ nguyên cây thư
+    // mục), khỏi mất trắng và khỏi mở ra một phiên trắng không tên.
+    try { setBookmarks(await bmReassign(p.id, '')); } catch (e) { setErr((e as Error).message); }
     clearLastPages(p.id);
     await wipeProfile(p);
   };
@@ -452,7 +465,16 @@ export default function BrowserTabWorkspace() {
   // Link bấm trong tin nhắn Zalo/Telegram đã chọn "Mở trong Browser của app".
   // OpenLinkDialog phát event hai lần (lo tab vừa mount chưa kịp nghe); cú thứ
   // hai bị openTab nhận diện là tiếng vọng (recentOpenRef) nên vô hại.
-  useEffect(() => onOpenUrl('browser', (u) => openTab(u)), [openTab]);
+  //
+  // Mở bằng HỒ SƠ ĐANG DÙNG — như Chrome nhận link từ app khác vào cửa sổ
+  // đang mở, chứ không phải lúc nào cũng hồ sơ Mặc định. Chỉ đăng ký SAU KHI
+  // nạp xong hồ sơ: link bấm lúc Browser chưa mount nằm chờ trong openTarget,
+  // nếu nghe ngay ở lượt mount thì nó bị mở bằng '' trước khi kịp đọc hồ sơ
+  // đã lưu. Chờ thêm không mất gì — yêu cầu chờ vẫn còn đó.
+  useEffect(() => {
+    if (!profLoaded) return;
+    return onOpenUrl('browser', (u) => openTab(u, { profile: profileRef.current }));
+  }, [openTab, profLoaded]);
 
   // Link target=_blank / window.open bấm TRONG một tab → tab MỚI ngay ở đây,
   // như trình duyệt thật (main.cjs, nhánh BROWSER_PARTITION). Mở nền: trang
@@ -572,7 +594,7 @@ export default function BrowserTabWorkspace() {
     const url = normalizeUrl(rawUrl);
     if (!url) return;
     const cur = activeRef.current;
-    if (!cur) { openTab(url); return; }
+    if (!cur) { openTab(url, { profile: profileRef.current }); return; }
     setTabs((list) => {
       const i = list.findIndex((t) => t.id === cur);
       if (i < 0) return list;
@@ -587,7 +609,7 @@ export default function BrowserTabWorkspace() {
 
   // Popup extension goi chrome.tabs.create → mo tab moi that.
   useEffect(() => {
-    const off = window.browserExt?.onOpenTab?.((url: string) => openTab(url));
+    const off = window.browserExt?.onOpenTab?.((url: string) => openTab(url, { profile: profileRef.current }));
     return () => { off?.(); };
   }, [openTab]);
 
@@ -731,7 +753,7 @@ export default function BrowserTabWorkspace() {
     let pid = parentId;
     let list: Bookmark[] = [];
     for (const part of parts) {
-      list = await bmAddFolder(part, pid);
+      list = await bmAddFolder(part, pid, curRef);
       // bmAddFolder trả về CẢ danh sách, thư mục vừa tạo là mục có order lớn
       // nhất trong cha đó — dùng làm cha cho cấp kế tiếp.
       const made = list
@@ -742,7 +764,7 @@ export default function BrowserTabWorkspace() {
     }
     if (list.length) setBookmarks(list);
     return pid;
-  }, []);
+  }, [curRef]);
 
   // Dùng cờ `popup` chứ không phải `modal`: mấy hộp thoại này nhỏ, giữ được
   // thanh tab và thanh dấu trang phía sau thì người dùng còn thấy mình đang ở
@@ -776,10 +798,10 @@ export default function BrowserTabWorkspace() {
       if (moveId) setBookmarks(await bmMove(moveId, deepest));
       else if (pendingUrl) {
         const url = normalizeUrl(pendingUrl);
-        if (url) setBookmarks(await bmAdd(url, { parentId: deepest, name: hostOf(url) }));
+        if (url) setBookmarks(await bmAdd(url, { parentId: deepest, name: hostOf(url), profile: curRef }));
       }
     } catch (e) { setErr((e as Error).message); }
-  }, [folderAsk, createFolders]);
+  }, [folderAsk, createFolders, curRef]);
 
   /** Kéo thả: chuyển một mục sang thư mục khác / đổi vị trí. */
   const moveBookmarkTo = useCallback(async (id: string, parentId?: string, beforeId?: string) => {
@@ -798,7 +820,7 @@ export default function BrowserTabWorkspace() {
     const url = normalizeUrl(rawUrl);
     if (!url) return;
     try {
-      const list = await bmAdd(url, { parentId, name: hostOf(url) });
+      const list = await bmAdd(url, { parentId, name: hostOf(url), profile: curRef });
       if (!beforeId) { setBookmarks(list); return; }
       // Mục vừa thêm là mục có order lớn nhất trong thư mục đích.
       const added = list
@@ -806,15 +828,15 @@ export default function BrowserTabWorkspace() {
         .reduce<Bookmark | null>((m, b) => (!m || b.order > m.order ? b : m), null);
       setBookmarks(added ? await bmMove(added.id, parentId, beforeId) : list);
     } catch (e) { setErr((e as Error).message); }
-  }, []);
+  }, [curRef]);
 
   /** Một chip dấu trang — click mở tại chỗ, chuột phải ra menu (tab mới…). */
   const markChip = (b: Bookmark) => (
-    <span key={b.id} className="bt-mark" title={`${b.url}${b.profile ? ` · ${labelOf(b.profile)}` : ''} — chuột phải để mở trong tab mới`}
+    <span key={b.id} className="bt-mark" title={`${b.url} — chuột phải để mở trong tab mới`}
       onContextMenu={(ev) => openCtx(ev, b)}>
       <button className="bt-mark-go" onClick={() => openBookmark(b)}
         onAuxClick={(ev) => { if (ev.button === 1) { ev.preventDefault(); openBookmark(b, true); } }}>
-        🔖 {b.name}{b.profile && <span className="bt-mark-prof">{labelOf(b.profile)}</span>}
+        🔖 {b.name}
       </button>
       <button className="bt-mark-act" onClick={() => setEdit(structuredClone(b))} title="Sửa">✎</button>
       <button className="bt-mark-act" onClick={() => void removeBookmark(b)} title="Xóa">✕</button>
@@ -832,7 +854,7 @@ export default function BrowserTabWorkspace() {
    * Nay đi theo cây: mỗi thư mục là một NHÓM có tiêu đề, link ở gốc nằm trong
    * nhóm "không thư mục" đầu tiên. Lồng sâu thì thụt vào theo cấp.
    */
-  const marksList = bookmarks.length > 0 && (
+  const marksList = marks.length > 0 && (
     <div className="bt-home-marks-tree">
       <div className="small" style={{ color: 'var(--muted)', marginBottom: 4 }}>
         Dấu trang <span style={{ color: 'var(--faint)' }}>— chuột phải: mở trong tab mới</span>
@@ -862,7 +884,7 @@ export default function BrowserTabWorkspace() {
             walk(d.children, depth + 1);
           }
         };
-        walk(bmTree(bookmarks), 0);
+        walk(bmTree(marks), 0);
         return rows;
       })()}
     </div>
@@ -992,7 +1014,7 @@ export default function BrowserTabWorkspace() {
       {/* Thanh dấu trang — cây thư mục như Chrome. Bật/tắt từ menu ⋯. */}
       {showMarks && (
         <BookmarkBar
-          bookmarks={bookmarks}
+          bookmarks={marks}
           onOpen={(b, background) => openBookmark(b, background)}
           onEdit={(b) => setEdit(structuredClone(b))}
           onRemove={(b) => void removeBookmark(b)}
@@ -1137,7 +1159,7 @@ export default function BrowserTabWorkspace() {
               <span className="bt-menu-check" />⧉ Nhân đôi tab
             </button>
             <div className="bt-menu-sep" />
-            <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t?.profile ?? '', kind: 'link', order: 0, addedAt: '' }); setMenuOpen(false); }}>
+            <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t ? (t.profile ?? '') : curRef, kind: 'link', order: 0, addedAt: '' }); setMenuOpen(false); }}>
               <span className="bt-menu-check" />☆ Lưu trang hiện tại…
             </button>
             <button onClick={() => { setMarks(true); setMenuOpen(false); void dropUrl(tabs.find((x) => x.id === activeId)?.url ?? ''); }}>
@@ -1301,7 +1323,7 @@ export default function BrowserTabWorkspace() {
             <input className="input" placeholder="Tên hiển thị (mặc định: hostname)" value={edit.name}
               onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
             <ProfileSelect profiles={profiles} value={edit.profile ?? ''} style={{ width: '100%' }}
-              title="Hồ sơ (phiên đăng nhập) mà dấu trang này mở bằng"
+              title="Hồ sơ sở hữu dấu trang này (mỗi hồ sơ một bộ dấu trang riêng, mở bằng phiên đăng nhập của hồ sơ đó). Đổi hồ sơ = chuyển dấu trang sang bộ của hồ sơ kia."
               onChange={(v) => setEdit({ ...edit, profile: v })} />
             <div className="glink-meta-pair">
               <input className="input" placeholder="Username (optional)" value={edit.username ?? ''}

@@ -2,14 +2,15 @@
 //   POST { action, ... }:
 //     'list'      {}                                            → Bookmark[]
 //     'add'       { url, name?, parentId?, profile?, username?, password? } → Bookmark[]
-//     'addFolder' { name, parentId? }                            → Bookmark[]
+//     'addFolder' { name, parentId?, profile? }                  → Bookmark[]
 //     'update'    { id, ...meta }                                → Bookmark[]
 //     'move'      { id, parentId?, beforeId? }                   → Bookmark[]
 //     'remove'    { id }   (folder = xoá cả nhánh)               → Bookmark[]
+//     'reassign'  { from, to? }  (chuyển cả bộ dấu trang của hồ sơ) → Bookmark[]
 
 import { NextResponse, type NextRequest } from 'next/server';
 import {
-  listBookmarks, addBookmark, addFolder, updateBookmark, moveBookmark, removeBookmark,
+  listBookmarks, addBookmark, addFolder, updateBookmark, moveBookmark, removeBookmark, reassignProfile,
   type BookmarkMeta,
 } from '@/lib/bookmarkStore';
 
@@ -33,13 +34,18 @@ export async function POST(req: NextRequest) {
     switch (action) {
       case 'list': result = await listBookmarks(); break;
       case 'add': result = await addBookmark({ url: String(body.url ?? ''), ...metaFrom(body) }); break;
-      case 'addFolder': result = await addFolder(String(body.name ?? ''), body.parentId ? String(body.parentId) : undefined); break;
+      case 'addFolder': result = await addFolder(
+        String(body.name ?? ''),
+        body.parentId ? String(body.parentId) : undefined,
+        typeof body.profile === 'string' ? body.profile : undefined,
+      ); break;
       case 'update': result = await updateBookmark(String(body.id ?? ''), metaFrom(body)); break;
       case 'move': result = await moveBookmark(
         String(body.id ?? ''),
         body.parentId ? String(body.parentId) : undefined,
         body.beforeId ? String(body.beforeId) : undefined,
       ); break;
+      case 'reassign': result = await reassignProfile(String(body.from ?? ''), typeof body.to === 'string' ? body.to : undefined); break;
       case 'remove': result = await removeBookmark(String(body.id ?? '')); break;
       default: return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
     }

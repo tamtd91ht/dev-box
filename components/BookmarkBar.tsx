@@ -318,7 +318,7 @@ export default function BookmarkBar(props: BookmarkBarProps) {
         onDragLeave={() => { if (hoverId.current === node.id) clearHover(); }}
         onDrop={(e) => handleDrop(e, { at: 'into', id: node.id }, tree)}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setLevels([]); setCtx({ node, x: e.clientX, y: e.clientY }); }}
-        title={node.kind === 'folder' ? node.name : `${node.url}${node.profile ? ` · ${node.profile}` : ''}`}
+        title={node.kind === 'folder' ? node.name : node.url}
       >
         <button
           className="bmk-chip-btn"
@@ -338,7 +338,6 @@ export default function BookmarkBar(props: BookmarkBarProps) {
         >
           <span aria-hidden>{node.kind === 'folder' ? '📁' : '🔖'}</span>
           <span className="bmk-chip-name">{node.name}</span>
-          {node.profile && <span className="bmk-prof">{node.profile}</span>}
         </button>
       </span>
     );
@@ -403,11 +402,10 @@ export default function BookmarkBar(props: BookmarkBarProps) {
                 }
               }}
               onClick={() => { if (c.kind !== 'folder') { onOpen(c); closeAll(); } }}
-              title={c.kind === 'folder' ? c.name : `${c.url}${c.profile ? ` · ${c.profile}` : ''}`}
+              title={c.kind === 'folder' ? c.name : c.url}
             >
               <span aria-hidden>{c.kind === 'folder' ? '📁' : '🔖'}</span>
               <span className="bmk-menu-name">{c.name}</span>
-              {c.profile && <span className="bmk-prof">{c.profile}</span>}
               {c.kind === 'folder' && <span className="bmk-menu-arrow" aria-hidden>›</span>}
             </div>
           );

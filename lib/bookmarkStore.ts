@@ -31,7 +31,9 @@ export interface Bookmark {
   parentId?: string;
   /** Thứ tự trong cùng một thư mục, nhỏ hơn đứng trước. */
   order: number;
-  /** Profile session — cùng profile chung cookie đăng nhập trong viewer. */
+  /** Hồ sơ SỞ HỮU mục này (như Chrome: mỗi hồ sơ một bộ dấu trang riêng) —
+   *  cũng là phiên đăng nhập dùng khi mở. undefined = hồ sơ Mặc định. Áp cho
+   *  CẢ thư mục: con luôn cùng hồ sơ với thư mục cha (xem profKey). */
   profile?: string;
   /** Tài khoản site (optional) — nút 🔑 tự điền form login. */
   username?: string;
@@ -87,6 +89,26 @@ export function normalizeUrl(raw: string): string {
   return `${defaultScheme(bare.split(/[/?#]/)[0])}://${bare}`;
 }
 
+/**
+ * Khoá so sánh hồ sơ. Ref lưu trong file có thể là id ('p-abc123'), tên gõ tay
+ * từ trước ('Work A') hoặc rỗng — quy về cùng slug như findProfile phía client
+ * để 'Work A' và 'work-a' là một hồ sơ; '' và 'default' đều là Mặc định.
+ */
+function profKey(ref?: string): string {
+  const s = (ref ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return s === 'default' ? '' : s;
+}
+
+/** Đổi hồ sơ của một mục và CẢ NHÁNH bên dưới nó — thư mục mà con nằm ở hồ sơ
+ *  khác thì con bị mồ côi: hồ sơ cũ không thấy cha, hồ sơ mới không thấy con. */
+function setProfileDeep(list: Bookmark[], b: Bookmark, profile?: string): void {
+  b.profile = profile;
+  if (b.kind === 'folder') for (const id of descendants(list, b.id)) {
+    const c = list.find((x) => x.id === id);
+    if (c) c.profile = profile;
+  }
+}
+
 /** Số thứ tự kế tiếp trong một thư mục — mục mới xuống cuối. */
 function nextOrder(list: Bookmark[], parentId?: string): number {
   const sib = list.filter((b) => b.parentId === parentId);
@@ -108,10 +130,12 @@ export async function addBookmark(input: { url: string } & BookmarkMeta): Promis
   const list = await readAll();
   const parentId = validParent(list, input.parentId);
   const name = (input.name ?? '').trim() || (() => { try { return new URL(url).hostname; } catch { return url; } })();
+  // Nằm trong thư mục thì theo hồ sơ của thư mục — không để con lệch cha.
+  const parent = parentId ? list.find((b) => b.id === parentId) : undefined;
   list.push({
     id: randomUUID(), name, url, kind: 'link', parentId,
     order: nextOrder(list, parentId),
-    profile: (input.profile ?? '').trim() || undefined,
+    profile: parent ? parent.profile : (input.profile ?? '').trim() || undefined,
     username: (input.username ?? '').trim() || undefined,
     password: input.password || undefined,
     addedAt: new Date().toISOString(),
@@ -120,14 +144,16 @@ export async function addBookmark(input: { url: string } & BookmarkMeta): Promis
   return list;
 }
 
-export async function addFolder(name: string, parentId?: string): Promise<Bookmark[]> {
+export async function addFolder(name: string, parentId?: string, profile?: string): Promise<Bookmark[]> {
   const n = name.trim();
   if (!n) throw new Error('Tên thư mục không được để trống.');
   const list = await readAll();
   const pid = validParent(list, parentId);
+  const parent = pid ? list.find((b) => b.id === pid) : undefined;
   list.push({
     id: randomUUID(), name: n, url: '', kind: 'folder', parentId: pid,
     order: nextOrder(list, pid),
+    profile: parent ? parent.profile : (profile ?? '').trim() || undefined,
     addedAt: new Date().toISOString(),
   });
   await writeAll(list);
@@ -140,7 +166,13 @@ export async function updateBookmark(id: string, patch: BookmarkMeta): Promise<B
   if (!b) throw new Error('Không tìm thấy dấu trang.');
   if (patch.name !== undefined) b.name = patch.name.trim() || b.name;
   if (patch.url !== undefined && patch.url.trim() && b.kind === 'link') b.url = normalizeUrl(patch.url);
-  if (patch.profile !== undefined) b.profile = patch.profile.trim() || undefined;
+  if (patch.profile !== undefined && profKey(patch.profile) !== profKey(b.profile)) {
+    // Chuyển sang hồ sơ khác = chuyển sang BỘ dấu trang khác: rời thư mục cũ
+    // (thư mục đó thuộc hồ sơ cũ) và xuống cuối gốc của hồ sơ mới.
+    setProfileDeep(list, b, patch.profile.trim() || undefined);
+    b.parentId = undefined;
+    b.order = nextOrder(list.filter((x) => x.id !== b.id), undefined);
+  }
   if (patch.username !== undefined) b.username = patch.username.trim() || undefined;
   if (patch.password !== undefined) b.password = patch.password || undefined;
   await writeAll(list);
@@ -180,6 +212,10 @@ export async function moveBookmark(id: string, parentId?: string, beforeId?: str
   }
 
   b.parentId = pid;
+  // Thả vào thư mục thì nhận hồ sơ của thư mục (giao diện chỉ hiện một hồ sơ
+  // nên thường đã trùng — đây là chốt chặn cho dữ liệu sửa tay/gọi API thẳng).
+  const parent = pid ? list.find((x) => x.id === pid) : undefined;
+  if (parent && profKey(parent.profile) !== profKey(b.profile)) setProfileDeep(list, b, parent.profile);
 
   // Đánh lại số thứ tự cho cả thư mục đích: chèn `b` vào đúng chỗ rồi cấp số
   // 0,1,2… Cách này tránh hẳn chuyện số trùng nhau sau nhiều lần kéo thả.
@@ -199,4 +235,17 @@ export async function removeBookmark(id: string): Promise<Bookmark[]> {
   const next = list.filter((b) => !kill.has(b.id));
   await writeAll(next);
   return next;
+}
+
+/** Chuyển TOÀN BỘ dấu trang của một hồ sơ sang hồ sơ khác (giữ nguyên cây) —
+ *  dùng khi xoá hồ sơ, để dấu trang không mất theo. Đổi đồng loạt trong một lần
+ *  ghi chứ không gọi updateBookmark từng mục: update tách mục khỏi thư mục cha
+ *  khi cha còn ở hồ sơ cũ, làm từng mục là cả cây bị dàn phẳng. */
+export async function reassignProfile(from: string, to?: string): Promise<Bookmark[]> {
+  const list = await readAll();
+  const k = profKey(from);
+  const target = (to ?? '').trim() || undefined;
+  for (const b of list) if (profKey(b.profile) === k) b.profile = target;
+  await writeAll(list);
+  return list;
 }

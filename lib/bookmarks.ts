@@ -62,12 +62,15 @@ async function bmAction(action: string, params: Record<string, unknown> = {}): P
 
 export const bmList = () => bmAction('list');
 export const bmAdd = (url: string, meta: BookmarkMeta = {}) => bmAction('add', { url, ...meta });
-export const bmAddFolder = (name: string, parentId?: string) => bmAction('addFolder', { name, parentId });
+/** Thư mục ở gốc thuộc `profile`; thư mục con tự theo hồ sơ của cha. */
+export const bmAddFolder = (name: string, parentId?: string, profile?: string) => bmAction('addFolder', { name, parentId, profile });
 export const bmUpdate = (id: string, patch: BookmarkMeta) => bmAction('update', { id, ...patch });
 /** Chuyển sang thư mục khác và/hoặc chèn trước `beforeId` (bỏ trống = xuống cuối). */
 export const bmMove = (id: string, parentId?: string, beforeId?: string) => bmAction('move', { id, parentId, beforeId });
 /** Xoá — với thư mục là xoá cả nhánh bên trong. */
 export const bmRemove = (id: string) => bmAction('remove', { id });
+/** Chuyển cả bộ dấu trang của hồ sơ `from` sang `to` ('' = Mặc định), giữ cây. */
+export const bmReassign = (from: string, to = '') => bmAction('reassign', { from, to });
 
 /** Scheme mặc định khi người dùng gõ thiếu: máy nội bộ / mạng riêng gần như
  *  không bao giờ có TLS, ép https vào chỉ nhận ERR_SSL_PROTOCOL_ERROR rồi phải
