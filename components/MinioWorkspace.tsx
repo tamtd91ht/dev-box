@@ -28,6 +28,7 @@ import BrowserView from './minio/BrowserView';
 import ConsoleView from './minio/ConsoleView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { onInfraFocus } from '@/lib/infraFocus';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 import { useConnRailCollapse, CollapsedConnRail } from './ConnRailCollapse';
@@ -111,6 +112,17 @@ export default function MinioWorkspace() {
   useEffect(() => {
     if (activeId) writeLocal(LAST_CONN_KEY, activeId);
   }, [activeId]);
+
+  // Monitor bấm "↗ Mở …" → chọn ĐÚNG CỤM đang báo và mục liên quan (lib/infraFocus).
+  // Chỉ nghe khi đã có danh sách kết nối, để biết id đó còn tồn tại.
+  useEffect(() => {
+    if (!connections.length) return;
+    return onInfraFocus('minio', (f) => {
+      if (!connections.some((c) => c.id === f.connId)) return;
+      setActiveId(f.connId);
+      if (f.view && SUB_VIEWS.some((v) => v.key === f.view)) setSubView(f.view as SubView);
+    });
+  }, [connections]);
 
   useEffect(() => {
     setInfo(null); setBuckets([]); setMetrics(null); setHosts([]); setJumpBucket(undefined);

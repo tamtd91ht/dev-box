@@ -66,7 +66,7 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
         <button className="mon-btn" onClick={onRefresh} disabled={st.busy} title="Đo lại ngay (Kafka: kèm lag + host)">
           {st.busy ? '⟳ Đang đo…' : '⟳ Đo lại'}
         </button>
-        <button className="mon-btn" onClick={() => onOpenTab(meta.tab)} title={`Mở tab ${meta.label}`}>
+        <button className="mon-btn" onClick={() => onOpenTab(meta.tab)} title={`Mở tab ${meta.label} — chọn sẵn cụm ${res.name} và mục liên quan tới cảnh báo`}>
           ↗ Mở {meta.label}
         </button>
         <button className="mon-btn icon" onClick={onClose} aria-label="Đóng">✕</button>

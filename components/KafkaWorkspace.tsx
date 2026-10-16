@@ -43,6 +43,7 @@ import {
 
 /** localStorage key remembering the last-selected connection. */
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { onInfraFocus, type InfraFocus } from '@/lib/infraFocus';
 import SessionHistory from './SessionHistory';
 import { recordSession, type KafkaSession } from '@/lib/sessionHistory';
 import { useSplit } from '@/lib/useSplit';
@@ -545,6 +546,34 @@ export default function KafkaWorkspace() {
     },
     [activeId],
   );
+
+  /* ── Mở từ Monitor ─────────────────────────────────────────────────────
+     Cảnh báo "kafka-01 lag" → chọn đúng cụm kafka-01, mở Consumer groups với
+     group đang lag nhất mở sẵn chi tiết (hoặc màn Lag quét cả cụm khi Monitor
+     chưa có số liệu từng group). Làm HAI NHỊP: nhịp 1 đổi cụm + mục; nhịp 2
+     (effect dưới, đứng SAU effect reset theo cụm ở trên nên chạy sau nó trong
+     cùng lượt commit) mới nạp group / quét lag — làm ngay ở nhịp 1 thì effect
+     reset xoá mất kết quả, và selectGroup còn gọi bằng cụm CŨ. */
+  const [focusReq, setFocusReq] = useState<InfraFocus | null>(null);
+  useEffect(() => {
+    if (!connections.length) return;
+    return onInfraFocus('kafka', (f) => {
+      if (!connections.some((c) => c.id === f.connId)) return;
+      setActiveId(f.connId);
+      setSubView(f.view === 'groups' || f.view === 'lag' ? f.view : 'topics');
+      setFocusReq({ ...f });
+    });
+  }, [connections]);
+  useEffect(() => {
+    if (!focusReq || focusReq.connId !== activeId) return;
+    setFocusReq(null);
+    if (focusReq.view === 'groups') {
+      void loadGroups();
+      if (focusReq.group) void selectGroup(focusReq.group);
+    } else if (focusReq.view === 'lag') {
+      void runLagCheck();
+    }
+  }, [focusReq, activeId, loadGroups, selectGroup, runLagCheck]);
 
   // ── Connection test (badge) ─────────────────────────────────────────────────
   const doTest = useCallback(async (conn: PublicKafkaConnection) => {

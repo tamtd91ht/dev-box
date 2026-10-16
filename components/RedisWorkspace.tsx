@@ -30,6 +30,7 @@ import { recordSession, short, type RedisSession } from '@/lib/sessionHistory';
 
 /** localStorage key remembering the last-selected connection. */
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { onInfraFocus } from '@/lib/infraFocus';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 import { useConnRailCollapse, CollapsedConnRail, RailHideButton } from './ConnRailCollapse';
@@ -342,6 +343,16 @@ export default function RedisWorkspace() {
     setDb(0);
     // The DB reset below (db → 0) also clears the browsing panel, so nothing else here.
   }, [activeId]);
+
+  // Monitor bấm "↗ Mở …" → chọn ĐÚNG CỤM đang báo (lib/infraFocus).
+  // Chỉ nghe khi đã có danh sách kết nối, để biết id đó còn tồn tại.
+  useEffect(() => {
+    if (!connections.length) return;
+    return onInfraFocus('redis', (f) => {
+      if (!connections.some((c) => c.id === f.connId)) return;
+      setActiveId(f.connId);
+    });
+  }, [connections]);
 
   // ── Ping a connection (on the currently-selected DB) ─────────────────────────
   const doPing = useCallback(

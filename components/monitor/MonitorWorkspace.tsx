@@ -20,6 +20,8 @@ import {
 import type { InfraStack } from '@/lib/automation/types';
 import { Spark } from './Spark';
 import MonitorDetail from './MonitorDetail';
+import { emitInfraFocus } from '@/lib/infraFocus';
+import { focusFromRow } from '@/lib/monitor/focus';
 import MonitorThresholds from './MonitorThresholds';
 
 type View = 'tiles' | 'table';
@@ -579,7 +581,13 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
             overrides={overrides}
             onClose={() => setSelected(null)}
             onRefresh={() => refreshOne(selectedRow.res.key)}
-            onOpenTab={(t) => { setSelected(null); onOpenTab?.(t); }}
+            onOpenTab={(t) => {
+              // Báo tab đích chọn ĐÚNG CỤM + mục liên quan tới cảnh báo, rồi mới
+              // chuyển tab (yêu cầu nằm chờ nếu tab đó chưa mount).
+              emitInfraFocus(focusFromRow(selectedRow));
+              setSelected(null);
+              onOpenTab?.(t);
+            }}
           />
         </>
       )}
