@@ -4239,7 +4239,15 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
 .sheet-toolbar .picker-cwd { flex: 0 1 auto; max-width: 42%; }
 .sheet-dirty-badge { color: var(--warn); font-weight: 700; }
 
-.sheet-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--glass-brd); padding-bottom: 6px; }
+/* Thanh sheet ở đáy (như Excel): một hàng, cuộn ngang, ◀ ▶ khi tràn. */
+.sheet-tabbar { flex: none; display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sheet-tabs {
+  flex: 1; min-width: 0; display: flex; gap: 4px; flex-wrap: nowrap;
+  overflow-x: auto; scrollbar-width: none;
+}
+.sheet-tabs::-webkit-scrollbar { display: none; }
+.sheet-tab { flex: none; white-space: nowrap; }
+.sheet-cfg-toggle { padding: 2px 8px; }
 .sheet-tab {
   display: inline-flex; align-items: center; gap: 6px;
   background: transparent; border: 1px solid var(--glass-brd); border-radius: 8px;

@@ -248,6 +248,34 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   /** Đổi để ép render lại khi stack thay đổi (nút Hoàn tác bật/tắt theo nó). */
   const [histTick, setHistTick] = useState(0);
 
+  // Thu gọn phần cấu hình (thanh công cụ + ribbon) để lưới được cao hơn. Nhớ qua
+  // localStorage — try/catch vì có thể bị chặn.
+  const [cfgCollapsed, setCfgCollapsed] = useState(false);
+  useEffect(() => {
+    try { setCfgCollapsed(localStorage.getItem('sheet.cfgCollapsed') === '1'); } catch { /* bỏ qua */ }
+  }, []);
+  const toggleCfg = useCallback(() => {
+    setCfgCollapsed((v) => {
+      try { localStorage.setItem('sheet.cfgCollapsed', v ? '0' : '1'); } catch { /* bỏ qua */ }
+      return !v;
+    });
+  }, []);
+
+  // Thanh sheet ở đáy: MỘT hàng cuộn ngang, nút ◀ ▶ cuộn khi có nhiều sheet.
+  const tabsRef = useRef<HTMLDivElement | null>(null);
+  const [tabScroll, setTabScroll] = useState({ left: false, right: false });
+  const measureTabs = useCallback(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    const left = el.scrollLeft > 1;
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setTabScroll((t) => (t.left === left && t.right === right ? t : { left, right }));
+  }, []);
+  const scrollTabs = useCallback((dir: -1 | 1) => {
+    const el = tabsRef.current;
+    if (el) el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: 'smooth' });
+  }, []);
+
   /** Đang kéo mép cột/dòng — vẽ đường dóng và cập nhật kích thước theo chuột. */
   const [resizing, setResizing] = useState<
     { kind: 'col'; idx: number; px: number } | { kind: 'row'; idx: number; px: number } | null
@@ -1916,6 +1944,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     /* data-hist: undo/redo stack nằm trong ref (không kích hoạt render), nên
        histTick là thứ ép render lại để hai nút Hoàn tác/Làm lại bật-tắt đúng. */
     <div className="panel sheet-panel" data-hist={histTick}>
+      {!cfgCollapsed && (<>
       <div className="sheet-toolbar">
         <span className="picker-cwd small" title={file.path}>{file.path}</span>
         <span className="badge" title={file.kind === 'csv' ? `delimiter "${file.csv?.delimiter}"` : undefined}>
@@ -2023,9 +2052,14 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           </span>
         </div>
       )}
+      </>)}
 
       {/* ── Name box + thanh giá trị (kiểu Excel) ── */}
       <div className="sheet-fxbar">
+        <button className="ghost sm sheet-cfg-toggle" onClick={toggleCfg}
+          title={cfgCollapsed ? 'Mở rộng thanh công cụ + định dạng' : 'Thu gọn thanh công cụ + định dạng để lưới cao hơn'}>
+          {cfgCollapsed ? '▸' : '▾'}
+        </button>
         <span className="sheet-namebox" title="Ô đang chọn">
           {sel ? `${colLetter(sel.c - 1)}${sel.r}` : '—'}
         </span>
@@ -2056,18 +2090,17 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
             </span>
           </>
         )}
-      </div>
-
-      {file.sheets.length > 1 && (
-        <div className="sheet-tabs">
-          {file.sheets.map((s, i) => (
-            <button key={s.name} className={`sheet-tab${i === active ? ' on' : ''}`} onClick={() => switchSheet(i)}>
-              {s.name}
-              {(ops[i]?.length ?? 0) > 0 && <span className="sheet-tab-dot" title={`${ops[i].length} thay đổi`}>●</span>}
+        {cfgCollapsed && (
+          <>
+            <span className="picker-cwd small" style={{ maxWidth: 220 }} title={file.path}>{file.path.split(/[\\/]/).pop()}</span>
+            {dirtyCount > 0 && <span className="badge sheet-dirty-badge">● {dirtyCount}</span>}
+            <button className="sm" onClick={() => setSaveOpen(true)}
+              disabled={busy || dirtyCount === 0 || !allowWrite} title="Lưu (ghi đè, backup .bak trước)">
+              💾 Lưu
             </button>
-          ))}
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
       {sheet?.truncated && (
         <div className="sheet-banner">
@@ -2337,6 +2370,20 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
         </div>
       )}
 
+      {/* Thanh sheet ở ĐÁY như Excel: một hàng, quá nhiều thì cuộn bằng ◀ ▶. */}
+      {file.sheets.length > 1 && (
+        <SheetTabBar
+          names={file.sheets.map((x) => x.name)}
+          dirty={file.sheets.map((_, i) => ops[i]?.length ?? 0)}
+          active={active}
+          onSwitch={switchSheet}
+          tabsRef={tabsRef}
+          scroll={tabScroll}
+          onMeasure={measureTabs}
+          onScroll={scrollTabs}
+        />
+      )}
+
       {/* Status bar kiểu Excel: có vùng chọn là thấy Sum/Avg/Count + nút Copy.
           Hiện cả khi vùng chọn TOÀN Ô TRỐNG — nút Copy phải luôn với tới được,
           và đó cũng là chỗ người dùng nhìn để biết mình đang chọn cái gì. */}
@@ -2543,6 +2590,48 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+/** Thanh sheet ở đáy: một hàng cuộn ngang + ◀ ▶; sheet đang chọn luôn được cuộn vào tầm nhìn. */
+function SheetTabBar({ names, dirty, active, onSwitch, tabsRef, scroll, onMeasure, onScroll }: {
+  names: string[];
+  dirty: number[];
+  active: number;
+  onSwitch: (i: number) => void;
+  tabsRef: React.MutableRefObject<HTMLDivElement | null>;
+  scroll: { left: boolean; right: boolean };
+  onMeasure: () => void;
+  onScroll: (dir: -1 | 1) => void;
+}) {
+  useEffect(() => {
+    const el = tabsRef.current;
+    el?.querySelector<HTMLElement>('.sheet-tab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    onMeasure();
+  }, [active, names.length, tabsRef, onMeasure]);
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(onMeasure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [tabsRef, onMeasure]);
+
+  return (
+    <div className="sheet-tabbar">
+      <button className="ghost sm" disabled={!scroll.left} onClick={() => onScroll(-1)} title="Cuộn sang trái">◀</button>
+      <button className="ghost sm" disabled={!scroll.right} onClick={() => onScroll(1)} title="Cuộn sang phải">▶</button>
+      <div className="sheet-tabs" ref={tabsRef} onScroll={onMeasure}
+        onWheel={(e) => { if (tabsRef.current && Math.abs(e.deltaY) > Math.abs(e.deltaX)) tabsRef.current.scrollLeft += e.deltaY; }}>
+        {names.map((n, i) => (
+          <button key={n} className={`sheet-tab${i === active ? ' on' : ''}`} onClick={() => onSwitch(i)} title={n}>
+            {n}
+            {dirty[i] > 0 && <span className="sheet-tab-dot" title={`${dirty[i]} thay đổi`}>●</span>}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
