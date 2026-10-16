@@ -4266,6 +4266,20 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
 /* min-width:0 đi kèm min-height:0: thiếu nó thì flex item không được co dưới bề
    ngang nội dung, nên bảng rộng đẩy cả pane ra thay vì tự cuộn trong khung. */
 .sheet-scroll { flex: 1; min-height: 0; min-width: 0; overflow: auto; border: 1px solid var(--glass-brd); border-radius: 10px; }
+/* Chia khung (Split): khung ngoài giữ viền/bo góc, các vùng bên trong là lưới
+   CSS 1-4 ô + thanh chia. Không chia thì chỉ có một vùng, trông y như cũ. */
+.sheet-split { flex: 1; min-height: 0; min-width: 0; display: grid; overflow: hidden; border: 1px solid var(--glass-brd); border-radius: 10px; }
+.sheet-split > .sheet-pane { border: 0; border-radius: 0; min-height: 0; min-width: 0; }
+.sheet-split.on > .sheet-pane.active { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+/* Excel chỉ có thanh cuộn dọc ở dải phải và thanh ngang ở dải dưới. Vùng
+   kia ẩn hẳn chiều đó (con lăn do onPaneWheel chuyển tay, cuộn bằng code vẫn
+   ăn với overflow hidden). */
+.sheet-split > .sheet-pane.no-vbar { overflow-y: hidden; }
+.sheet-split > .sheet-pane.no-hbar { overflow-x: hidden; }
+.sheet-splitbar { background: color-mix(in srgb, var(--muted) 45%, var(--bg-1, var(--bg))); z-index: 4; }
+.sheet-splitbar.v { cursor: col-resize; }
+.sheet-splitbar.h { cursor: row-resize; }
+.sheet-splitbar:hover { background: var(--accent); }
 .sheet-table { border-collapse: collapse; font-size: 12.5px; font-family: var(--mono); }
 /* KHÔNG dùng `width: max-content; min-width: 100%`: khi bảng hẹp hơn khung
    nhìn, min-width kéo giãn bảng và `table-layout: fixed` CHIA LẠI phần dư cho
@@ -7285,8 +7299,33 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   width: 15px; height: 4px; border-radius: 2px;
   border: 1px solid color-mix(in srgb, var(--text) 22%, transparent);
 }
+.sheet-fmt-color:disabled { opacity: .38; cursor: default; background: transparent; border-color: transparent; }
 .sheet-fmt-color input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .sheet-fmt-color.off input { cursor: default; }
+/* Nút màu tách đôi như Excel: [A▁] áp màu gần nhất · [▾] mở bảng màu. */
+.sheet-fmt-colorpick { align-items: stretch; gap: 0; }
+.sheet-fmt-colorpick > .sheet-fmt-color { background: transparent; font: inherit; }
+.sheet-fmt-color-dd { padding-left: 2px; padding-right: 2px; min-width: 0; }
+.sheet-palette { min-width: 0; width: max-content; gap: 2px; padding: 8px; }
+.sheet-palette-h { font-size: 11px; color: var(--muted); margin: 6px 0 3px; }
+.sheet-palette-grid { display: grid; grid-template-columns: repeat(10, 18px); gap: 3px; }
+.sheet-palette-grid.shades { gap: 0 3px; margin-top: 4px; }
+.sheet-palette-grid.shades .sheet-swatch { border-radius: 0; }
+.sheet-fmt-menu .sheet-swatch, .sheet-swatch {
+  width: 18px; height: 18px; padding: 0; border-radius: 3px; cursor: pointer; display: inline-block; flex: none;
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+}
+.sheet-swatch:hover { outline: 2px solid var(--accent); outline-offset: 0; z-index: 1; position: relative; }
+.sheet-swatch.on { outline: 2px solid var(--accent); outline-offset: 1px; position: relative; z-index: 1; }
+.sheet-swatch.none { background: linear-gradient(to top right, transparent 45%, #e5484d 45%, #e5484d 55%, transparent 55%), #fff; }
+.sheet-fmt-menu .sheet-palette-row, .sheet-palette-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  text-align: left; background: transparent; border: 0; border-radius: 6px; cursor: pointer;
+  color: var(--muted); font-size: 12px; padding: 5px 6px;
+}
+.sheet-palette-row:hover { background: var(--glass-2); color: var(--text); }
+.sheet-palette-row.more { position: relative; margin-top: 6px; border-top: 1px solid var(--glass-brd); border-radius: 0 0 6px 6px; padding-top: 8px; }
+.sheet-palette-row.more input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
 /* Dropdown chọn kiểu viền */
 .sheet-fmt-dd { position: relative; display: inline-flex; }
 .sheet-fmt-menu {

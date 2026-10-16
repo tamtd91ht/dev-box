@@ -84,6 +84,11 @@ const RECENT_KEY = 'sheet.recent';
 // cao các dòng không vẽ, nên thanh cuộn vẫn phản ánh cả sheet.
 const VIRT_OVERSCAN_PX = 800; // vẽ dư trên/dưới khung nhìn, cuộn nhanh khỏi chớp trắng
 const VIRT_CHUNK = 20;        // cửa sổ nhảy theo bội số → không render lại mỗi pixel cuộn
+// Chia khung (View → Split như Excel): tối đa 4 vùng cuộn độc lập.
+type PaneId = 'tl' | 'tr' | 'bl' | 'br';
+const SPLIT_BAR_PX = 5;       // độ dày thanh chia
+const SPLIT_MIN_PX = 28;      // kéo thanh chia sát mép hơn mức này = bỏ chia
+const ROWHEAD_PX = 44;        // cột số dòng — khớp <col> đầu tiên của lưới
 const MIN_COLS = 12;     // lưới trống tối thiểu — như mở Excel mới
 const MIN_ROWS = 30;
 const PAD_COLS = 4;      // ô trống đệm quanh vùng dữ liệu
@@ -306,13 +311,41 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const [editing, setEditing] = useState<Editing | null>(null);
   /** Cửa sổ dòng đang vẽ [s, e] (1-based, gồm 2 đầu) — xem VIRT_*. */
   const [vwin, setVwin] = useState({ s: 1, e: 60 });
+  /** Cửa sổ dòng của DẢI TRÊN khi chia khung — dải dưới dùng `vwin`. */
+  const [vwinT, setVwinT] = useState({ s: 1, e: 60 });
   /** Chiều cao thật của một dòng mặc định, đo từ DOM (ước lượng ban đầu). */
   const [baseRowPx, setBaseRowPx] = useState(DEFAULT_ROW_PX + 1);
   /** Lưới nở thêm khi đi tới mép (giữ cảm giác "vô tận" của Excel). */
   const [padR, setPadR] = useState(0);
   const [padC, setPadC] = useState(0);
 
+  /** Vùng lưới ĐANG HOẠT ĐỘNG (nhận phím, focus, cuộn theo ô chọn). Không chia
+   *  khung thì chỉ có một vùng ('br'); chia rồi thì là vùng vừa bấm vào. */
   const gridRef = useRef<HTMLDivElement | null>(null);
+
+  /* ── Chia khung (Split) ────────────────────────────────────────────────
+     splitX/splitY = vị trí thanh chia tính bằng px từ mép trái/trên khung lưới;
+     0 = không chia theo chiều đó. Bốn vùng đặt tên theo góc: tl tr / bl br.
+     Vùng CÙNG HÀNG chung cuộn dọc, CÙNG CỘT chung cuộn ngang — đúng như Excel.
+     'br' luôn tồn tại và chính là lưới khi không chia, nên tắt chia là quay về
+     y nguyên lưới cũ. */
+  const [splitX, setSplitX] = useState(0);
+  const [splitY, setSplitY] = useState(0);
+  const [activePane, setActivePane] = useState<PaneId>('br');
+  const activePaneRef = useRef<PaneId>('br');
+  const paneEls = useRef<Partial<Record<PaneId, HTMLDivElement | null>>>({});
+  const splitWrapRef = useRef<HTMLDivElement | null>(null);
+  /** Cuộn cần đặt cho từng vùng NGAY SAU lần render chia khung kế tiếp. */
+  const pendingScroll = useRef<Partial<Record<PaneId, { top: number; left: number }>> | null>(null);
+  const syncGridRef = useCallback(() => {
+    gridRef.current = paneEls.current[activePaneRef.current] ?? paneEls.current.br ?? null;
+  }, []);
+  const activatePane = useCallback((id: PaneId) => {
+    if (activePaneRef.current === id) return;
+    activePaneRef.current = id;
+    syncGridRef();
+    setActivePane(id);
+  }, [syncGridRef]);
 
   /** flash() khai báo phía dưới — undo/redo gọi qua ref để khỏi xáo thứ tự. */
   const flashRef = useRef<((m: string) => void) | null>(null);
@@ -439,7 +472,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     // Mở file/đổi sheet là chọn sẵn A1 như Excel — ribbon định dạng dùng được ngay.
     setSel({ r: 1, c: 1 }); setSelRange(null); setSelKind('cells');
     setEditing(null); setPadR(0); setPadC(0);
-    if (gridRef.current) gridRef.current.scrollTop = 0;
+    for (const el of Object.values(paneEls.current)) if (el) { el.scrollTop = 0; el.scrollLeft = 0; }
     setCtx(null);
   }, []);
 
@@ -723,9 +756,10 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     return off;
   }, [dispRows, rowHW, active, hiddenRowSet, baseRowPx]);
 
-  /** Tính lại cửa sổ dòng từ vị trí cuộn hiện tại. */
-  const syncWin = useCallback(() => {
-    const el = gridRef.current;
+  /** Tính lại cửa sổ dòng của một dải (trên/dưới) từ vị trí cuộn hiện tại.
+   *  Hai vùng cùng dải chung scrollTop nên đo một vùng là đủ. */
+  const syncWin = useCallback((band: 't' | 'b' = 'b') => {
+    const el = band === 't' ? paneEls.current.tr : paneEls.current.br;
     if (!el) return;
     const off = rowOffsets;
     const n = off.length - 1;
@@ -739,34 +773,149 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     const e0 = rowAtY(el.scrollTop + el.clientHeight + VIRT_OVERSCAN_PX);
     const s = Math.max(1, Math.floor((s0 - 1) / VIRT_CHUNK) * VIRT_CHUNK + 1);
     const e = Math.min(n, Math.ceil(e0 / VIRT_CHUNK) * VIRT_CHUNK);
-    setVwin((p) => (p.s === s && p.e === e ? p : { s, e }));
+    (band === 't' ? setVwinT : setVwin)((p) => (p.s === s && p.e === e ? p : { s, e }));
   }, [rowOffsets]);
 
-  useLayoutEffect(() => { syncWin(); }, [syncWin]);
+  const hasTop = splitY > 0;
+  const hasLeft = splitX > 0;
+  useLayoutEffect(() => { syncWin('b'); if (hasTop) syncWin('t'); }, [syncWin, hasTop]);
   // Khung nhìn đổi cỡ (kéo cửa sổ, đóng/mở panel) → vẽ đủ dòng cho chiều cao mới.
   const syncWinRef = useRef(syncWin);
   syncWinRef.current = syncWin;
   const hasFile = !!file;
   useEffect(() => {
-    const el = gridRef.current;
-    if (!el) return;
-    syncWinRef.current();
-    const ro = new ResizeObserver(() => syncWinRef.current());
-    ro.observe(el);
+    const els = Object.values(paneEls.current).filter((x): x is HTMLDivElement => !!x);
+    if (!els.length) return;
+    const all = () => { syncWinRef.current('b'); if (paneEls.current.tr) syncWinRef.current('t'); };
+    all();
+    const ro = new ResizeObserver(all);
+    for (const el of els) ro.observe(el);
     return () => ro.disconnect();
-  }, [hasFile]);
+  }, [hasFile, hasTop, hasLeft]);
 
   // Cửa sổ thực vẽ: kẹp theo dispRows (có thể vừa co lại) rồi nới ra để không
   // cắt ngang vùng merge — ô master nằm ngoài cửa sổ thì các ô bị nó che trong
   // cửa sổ sẽ không được vẽ, lưới lệch cột.
-  let rs = Math.min(vwin.s, dispRows);
-  let re = Math.min(Math.max(vwin.e, rs), dispRows);
-  if (!structShifted) {
-    for (const m of sheetMerges) if (m.r1 < rs && m.r2 >= rs) rs = m.r1;
-    for (const m of sheetMerges) if (m.r1 >= rs && m.r1 <= re && m.r2 > re) re = Math.min(dispRows, m.r2);
-  }
-  const padTopPx = rowOffsets[rs - 1];
-  const padBotPx = rowOffsets[dispRows] - rowOffsets[re];
+  const rowWin = (v: { s: number; e: number }) => {
+    let rs = Math.min(v.s, dispRows);
+    let re = Math.min(Math.max(v.e, rs), dispRows);
+    if (!structShifted) {
+      for (const m of sheetMerges) if (m.r1 < rs && m.r2 >= rs) rs = m.r1;
+      for (const m of sheetMerges) if (m.r1 >= rs && m.r1 <= re && m.r2 > re) re = Math.min(dispRows, m.r2);
+    }
+    return { rs, re, padTopPx: rowOffsets[rs - 1], padBotPx: rowOffsets[dispRows] - rowOffsets[re] };
+  };
+  const winB = rowWin(vwin);
+  const winT = rowWin(vwinT);
+
+  /** Các vùng đang có, theo góc. Tiêu đề cột chỉ vẽ ở dải trên cùng, số dòng
+   *  chỉ ở dải trái cùng — như Excel. */
+  const panes: { id: PaneId; top: boolean; left: boolean }[] = [
+    ...(hasTop && hasLeft ? [{ id: 'tl' as const, top: true, left: true }] : []),
+    ...(hasTop ? [{ id: 'tr' as const, top: true, left: false }] : []),
+    ...(hasLeft ? [{ id: 'bl' as const, top: false, left: true }] : []),
+    { id: 'br' as const, top: false, left: false },
+  ];
+
+  /** Cuộn một vùng → kéo vùng cùng hàng (dọc) và cùng cột (ngang) theo. Đặt
+   *  lại đúng giá trị đang có thì trình duyệt không bắn scroll nữa → không lặp. */
+  const onPaneScroll = useCallback((id: PaneId) => {
+    const el = paneEls.current[id];
+    if (!el) return;
+    for (const [pid, other] of Object.entries(paneEls.current) as [PaneId, HTMLDivElement | null][]) {
+      if (!other || pid === id) continue;
+      if (pid[0] === id[0] && other.scrollTop !== el.scrollTop) other.scrollTop = el.scrollTop;
+      if (pid[1] === id[1] && other.scrollLeft !== el.scrollLeft) other.scrollLeft = el.scrollLeft;
+    }
+    syncWin(id[0] === 't' ? 't' : 'b');
+  }, [syncWin]);
+
+  // Áp vị trí cuộn đã tính cho bố cục chia mới (sau khi các vùng đã mount).
+  useLayoutEffect(() => {
+    const want = pendingScroll.current;
+    pendingScroll.current = null;
+    syncGridRef();
+    if (!want) return;
+    for (const [id, v] of Object.entries(want) as [PaneId, { top: number; left: number }][]) {
+      const el = paneEls.current[id];
+      if (el) { el.scrollTop = v.top; el.scrollLeft = v.left; }
+    }
+    syncWin('b'); if (hasTop) syncWin('t');
+  }, [hasTop, hasLeft, syncGridRef, syncWin]);
+
+  /**
+   * Bật/tắt chia khung. Bật = chia ngay TRÊN-TRÁI ô đang chọn như Excel; ô
+   * chọn là A1 (hoặc nằm sát mép) thì chia giữa khung. Các vùng mới được cuộn
+   * sao cho nhìn liền mạch với lưới trước khi chia — nội dung không nhảy.
+   */
+  const toggleSplit = useCallback(() => {
+    const wrap = splitWrapRef.current;
+    const main = paneEls.current.br;
+    if (!wrap || !main) return;
+    if (hasTop || hasLeft) {
+      // Bỏ chia: lưới còn lại giữ chỗ đang xem của vùng dưới-phải.
+      pendingScroll.current = { br: { top: main.scrollTop, left: main.scrollLeft } };
+      setSplitX(0); setSplitY(0);
+      activatePane('br');
+      return;
+    }
+    const box = wrap.getBoundingClientRect();
+    const headH = main.querySelector('thead')?.getBoundingClientRect().height ?? 0;
+    const cellBox = main.querySelector('.sheet-cell.selc')?.getBoundingClientRect();
+    let x = cellBox ? cellBox.left - box.left : 0;
+    let y = cellBox ? cellBox.top - box.top : 0;
+    const okX = x > ROWHEAD_PX + SPLIT_MIN_PX && x < box.width - SPLIT_MIN_PX;
+    const okY = y > headH + SPLIT_MIN_PX && y < box.height - SPLIT_MIN_PX;
+    if (!okX && !okY) { x = box.width / 2; y = box.height / 2; }
+    else { if (!okX) x = 0; if (!okY) y = 0; }
+    x = Math.round(x); y = Math.round(y);
+    const st = main.scrollTop, sl = main.scrollLeft;
+    // Vùng dưới không có tiêu đề cột, vùng phải không có cột số dòng → bù lại
+    // để hàng/cột ngay dưới/phải thanh chia đúng là hàng/cột đang thấy ở đó.
+    const bTop = y ? st + y + SPLIT_BAR_PX - headH : st;
+    const rLeft = x ? sl + x + SPLIT_BAR_PX - ROWHEAD_PX : sl;
+    pendingScroll.current = {
+      tl: { top: st, left: sl }, tr: { top: st, left: rLeft },
+      bl: { top: bTop, left: sl }, br: { top: bTop, left: rLeft },
+    };
+    setSplitX(x); setSplitY(y);
+  }, [hasTop, hasLeft, activatePane]);
+
+  /** Kéo thanh chia. Thả sát mép (hoặc vượt khung) = bỏ chia theo chiều đó. */
+  const startSplitDrag = useCallback((axis: 'x' | 'y', e: React.MouseEvent) => {
+    e.preventDefault();
+    const wrap = splitWrapRef.current;
+    if (!wrap) return;
+    const box = wrap.getBoundingClientRect();
+    const size = axis === 'x' ? box.width : box.height;
+    const origin = axis === 'x' ? box.left : box.top;
+    const set = axis === 'x' ? setSplitX : setSplitY;
+    let last = axis === 'x' ? splitX : splitY;
+    const move = (ev: MouseEvent) => {
+      last = Math.round((axis === 'x' ? ev.clientX : ev.clientY) - origin);
+      set(Math.min(Math.max(last, 1), size - SPLIT_BAR_PX));
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      if (last < SPLIT_MIN_PX || last > size - SPLIT_MIN_PX) removeSplitRef.current(axis);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }, [splitX, splitY]);
+
+  /** Bỏ chia theo một chiều (double-click thanh chia, như Excel). Vùng còn lại
+   *  giữ chỗ đang xem của vùng dưới-phải. */
+  const removeSplit = useCallback((axis: 'x' | 'y') => {
+    const main = paneEls.current.br;
+    if (main) pendingScroll.current = { br: { top: main.scrollTop, left: main.scrollLeft }, ...(axis === 'x'
+      ? { tr: { top: paneEls.current.tr?.scrollTop ?? 0, left: main.scrollLeft } }
+      : { bl: { top: main.scrollTop, left: paneEls.current.bl?.scrollLeft ?? 0 } }) };
+    (axis === 'x' ? setSplitX : setSplitY)(0);
+    activatePane('br');
+  }, [activatePane]);
+  const removeSplitRef = useRef(removeSplit);
+  removeSplitRef.current = removeSplit;
 
   // Đo chiều cao thật của một dòng mặc định (padding + font + viền) để phần
   // đệm khớp, thanh cuộn không "trượt" khi cuộn xa.
@@ -779,7 +928,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       if (h > 0 && Math.abs(h - baseRowPx) > 0.5) setBaseRowPx(h);
       return;
     }
-  }, [vwin, hasFile, active, baseRowPx]);
+  }, [vwin, vwinT, hasFile, active, baseRowPx]);
 
   /** Thống kê vùng chọn — Sum/Avg/Count như status bar Excel. */
   const rangeStats = useMemo(() => {
@@ -1000,15 +1149,18 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     const min = kind === 'col' ? MIN_COL_PX : MIN_ROW_PX;
     const max = kind === 'col' ? MAX_COL_PX : MAX_ROW_PX;
     // Node được sửa trực tiếp: <col> điều khiển cả cột, <tr> cả dòng.
-    const target: HTMLElement | null = kind === 'col'
-      ? gridRef.current?.querySelector(`col[data-c="${idx}"]`) ?? null
-      : gridRef.current?.querySelector(`tr[data-r="${idx}"]`) ?? null;
+    // Chia khung thì cột/dòng ấy có mặt ở nhiều vùng — sửa hết để các vùng
+    // không lệch nhau trong lúc kéo.
+    const targets = Array.from(splitWrapRef.current?.querySelectorAll<HTMLElement>(
+      kind === 'col' ? `col[data-c="${idx}"]` : `tr[data-r="${idx}"]`,
+    ) ?? []);
+    const target: HTMLElement | null = targets[0] ?? null;
     // Mốc kéo lấy từ kích thước ĐANG HIỂN THỊ, không lấy từ state: dòng/cột
     // chưa có kích thước riêng thì state chỉ có giá trị mặc định ước lượng,
     // lệch vài px so với thực tế → nét kéo đầu tiên bị "nhảy".
     // <col> không có hộp riêng nên đo qua ô đầu cột tương ứng.
     const measured = kind === 'col'
-      ? gridRef.current?.querySelectorAll('th.sheet-colhead')[idx - 1]?.getBoundingClientRect().width
+      ? splitWrapRef.current?.querySelector(`th.sheet-colhead[data-c="${idx}"]`)?.getBoundingClientRect().width
       : (target as HTMLElement | null)?.getBoundingClientRect().height;
     const startPx = Math.round(measured ?? (kind === 'col' ? colPx(idx) : rowPx(idx)));
     const start = kind === 'col' ? e.clientX : e.clientY;
@@ -1016,9 +1168,9 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     let frame = 0;
     const paint = () => {
       frame = 0;
-      if (target) {
-        if (kind === 'col') target.style.width = `${lastPx}px`;
-        else target.style.height = `${lastPx}px`;
+      for (const t of targets) {
+        if (kind === 'col') t.style.width = `${lastPx}px`;
+        else t.style.height = `${lastPx}px`;
       }
       // Đọc ref ở đây chứ không phải lúc mousedown: badge số đo chỉ mount SAU
       // khi setResizing render xong, lúc bắt đầu kéo nó còn chưa tồn tại.
@@ -1972,6 +2124,12 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           title="Mở file bằng ứng dụng mặc định (Excel / WPS / LibreOffice…) để làm việc nặng. Sửa xong Lưu bên đó, quay lại đây app tự nạp lại.">
           ↗ Mở bằng Excel
         </button>
+        <button className={`ghost sm${hasTop || hasLeft ? ' on' : ''}`} onClick={toggleSplit} disabled={busy}
+          title={hasTop || hasLeft
+            ? 'Bỏ chia khung (hoặc double-click / kéo thanh chia ra sát mép)'
+            : 'Chia khung như Excel (View → Split): chia ngay trên-trái ô đang chọn thành 2–4 vùng cuộn độc lập — xem hai chỗ xa nhau của sheet cùng lúc. Kéo thanh chia để dời.'}>
+          ⊞ {hasTop || hasLeft ? 'Bỏ chia khung' : 'Chia khung'}
+        </button>
         <button className="ghost sm" onClick={() => toggleUniver(true)} disabled={busy}
           title="Thử giao diện bảng tính kiểu Excel (beta): freeze, lọc, sắp xếp, Ctrl+F, file lớn, sửa và lưu.">
           🧪 Giao diện Excel mới
@@ -2120,13 +2278,59 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '6px 0' }}>{notice}</div>}
 
       <div
-        className={`sheet-scroll${resizing ? ' resizing' : ''}${filling ? ' filling' : ''}`}
-        ref={gridRef}
+        className={`sheet-split${hasTop || hasLeft ? ' on' : ''}`}
+        ref={splitWrapRef}
+        style={{
+          gridTemplateColumns: hasLeft ? `${splitX}px ${SPLIT_BAR_PX}px minmax(0, 1fr)` : 'minmax(0, 1fr)',
+          gridTemplateRows: hasTop ? `${splitY}px ${SPLIT_BAR_PX}px minmax(0, 1fr)` : 'minmax(0, 1fr)',
+        }}
+      >
+      {hasLeft && (
+        <div className="sheet-splitbar v" style={{ gridColumn: 2, gridRow: '1 / -1' }}
+          role="separator" aria-orientation="vertical"
+          onMouseDown={(e) => startSplitDrag('x', e)} onDoubleClick={() => removeSplit('x')}
+          title="Kéo để dời chỗ chia · double-click hoặc kéo ra mép để bỏ" />
+      )}
+      {hasTop && (
+        <div className="sheet-splitbar h" style={{ gridRow: 2, gridColumn: '1 / -1' }}
+          role="separator" aria-orientation="horizontal"
+          onMouseDown={(e) => startSplitDrag('y', e)} onDoubleClick={() => removeSplit('y')}
+          title="Kéo để dời chỗ chia · double-click hoặc kéo ra mép để bỏ" />
+      )}
+      {panes.map((pane) => {
+        const { rs, re, padTopPx, padBotPx } = pane.top ? winT : winB;
+        const colHead = pane.top || !hasTop;
+        const rowHead = pane.left || !hasLeft;
+        const isActivePane = pane.id === activePane;
+        return (
+      <div
+        key={pane.id}
+        className={[
+          'sheet-scroll', 'sheet-pane',
+          resizing ? 'resizing' : '', filling ? 'filling' : '',
+          // Thanh cuộn như Excel: dọc chỉ ở dải phải, ngang chỉ ở dải dưới.
+          hasLeft && pane.left ? 'no-vbar' : '', hasTop && pane.top ? 'no-hbar' : '',
+          (hasTop || hasLeft) && isActivePane ? 'active' : '',
+        ].filter(Boolean).join(' ')}
+        style={{
+          gridColumn: hasLeft && !pane.left ? 3 : 1,
+          gridRow: hasTop && !pane.top ? 3 : 1,
+        }}
+        ref={(el) => { paneEls.current[pane.id] = el; syncGridRef(); }}
         tabIndex={0}
+        onMouseDownCapture={() => activatePane(pane.id)}
+        onFocus={() => activatePane(pane.id)}
         onKeyDown={onGridKeyDown}
         onCopy={onGridCopy}
         onPaste={onGridPaste}
-        onScroll={syncWin}
+        onScroll={() => onPaneScroll(pane.id)}
+        onWheel={(e) => {
+          // Chiều bị ẩn thanh cuộn (overflow hidden) thì con lăn không tự cuộn —
+          // tự cộng vào; sự kiện scroll sau đó kéo vùng anh em theo.
+          const el = e.currentTarget;
+          if (hasLeft && pane.left && e.deltaY && !e.shiftKey) el.scrollTop += e.deltaY;
+          if (hasTop && pane.top && (e.deltaX || (e.shiftKey && e.deltaY))) el.scrollLeft += e.deltaX || e.deltaY;
+        }}
       >
         {/* xlsx: nền "giấy trắng" như Excel thật — màu chữ/nền của file vốn
             thiết kế cho giấy trắng, render trên dark theme sẽ chìm nghỉm. */}
@@ -2134,7 +2338,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           {/* Độ rộng cột đang dùng (file + user kéo) — cột ẩn → width 0.
               table-layout fixed cho cả CSV để kéo cột cũng ăn. */}
           <colgroup>
-            <col style={{ width: 44 }} />
+            {rowHead && <col style={{ width: ROWHEAD_PX }} />}
             {Array.from({ length: dispCols }, (_, ci) => (
               // data-c: chỗ neo để lúc kéo sửa thẳng width, khỏi render lại lưới.
               <col key={ci} data-c={ci + 1} style={{ width: hiddenColSet.has(ci + 1) ? 0 : colPx(ci + 1) }} />
@@ -2143,15 +2347,16 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                 thứ khiến nó nuốt phần dư thay vì chia đều cho các cột thật. */}
             <col />
           </colgroup>
-          <thead>
+          {colHead && <thead>
             <tr>
-              <th className="sheet-rownum-h">#</th>
+              {rowHead && <th className="sheet-rownum-h">#</th>}
               {Array.from({ length: dispCols }, (_, ci) => {
                 const c = ci + 1;
                 const inSel = selRange ? c >= selRange.c1 && c <= selRange.c2 : sel?.c === c;
                 return (
                   <th
                     key={ci}
+                    data-c={c}
                     className={`sheet-colhead${inSel ? ' on' : ''}`}
                     onMouseDown={(e) => onHeadMouseDown('col', c, e)}
                     onMouseEnter={() => onHeadMouseEnter('col', c)}
@@ -2185,7 +2390,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
               {/* Ô đệm: nuốt chỗ trống bên phải (xem .sheet-grid trong CSS). */}
               <th className="sheet-filler" aria-hidden />
             </tr>
-          </thead>
+          </thead>}
           <tbody>
             {padTopPx > 0 && (
               <tr className="sheet-vpad" aria-hidden style={{ height: padTopPx }}><td colSpan={dispCols + 2} /></tr>
@@ -2202,7 +2407,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                     ...(hiddenRowSet.has(r) ? { display: 'none' } : {}),
                   }}
                 >
-                  <th
+                  {rowHead && <th
                     className={`sheet-rownum${(selRange ? r >= selRange.r1 && r <= selRange.r2 : sel?.r === r) ? ' sel' : ''}`}
                     onMouseDown={(e) => onHeadMouseDown('row', r, e)}
                     onMouseEnter={() => onHeadMouseEnter('row', r)}
@@ -2228,7 +2433,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                       onDoubleClick={(e) => { e.stopPropagation(); autoFitRow(r); }}
                       title={`Kéo để đổi chiều cao dòng ${r} · double-click để về mặc định`}
                     />
-                  </th>
+                  </th>}
                   {Array.from({ length: dispCols }, (_, ci) => {
                     const c = ci + 1;
                     // Ô bị merge che → không render (ô master span qua).
@@ -2236,7 +2441,9 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                     const span = mergeInfo.master.get(`${r}:${c}`);
                     const cell = cellAt(r, c);
                     const isSel = sel?.r === r && sel?.c === c;
-                    const isEditing = editing?.r === r && editing?.c === c;
+                    // Ô đang sửa có thể hiện ở nhiều vùng — chỉ vùng đang hoạt động
+                    // dựng ô nhập, kẻo hai <input autoFocus> giành focus của nhau.
+                    const isEditing = editing?.r === r && editing?.c === c && isActivePane;
                     const inRef = pointRange
                       && r >= pointRange.r1 && r <= pointRange.r2
                       && c >= pointRange.c1 && c <= pointRange.c2;
@@ -2357,6 +2564,9 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
             )}
           </tbody>
         </table>
+      </div>
+        );
+      })}
       </div>
 
       {/* Đang kéo mép: hiện số đo như Excel ("Độ rộng: 128 px").
