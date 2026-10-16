@@ -39,6 +39,7 @@ export const historyList = (q = '', limit = 200) => hAction<HistoryEntry[]>('lis
 export const historyRemove = (url: string) => hAction<unknown>('remove', { url });
 export const historyRemoveHost = (host: string) => hAction<unknown>('remove', { host });
 export const historyClear = () => hAction<unknown>('clear');
+export const webSuggest = (q: string) => hAction<string[]>('web-suggest', { q });
 
 /**
  * Gợi ý cho ô địa chỉ, CHỐNG GÕ DỒN.

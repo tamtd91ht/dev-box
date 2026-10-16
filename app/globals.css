@@ -9552,6 +9552,10 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .addr-sug-row:hover .addr-sug-x, .addr-sug-row.on .addr-sug-x { opacity: 1; }
 .addr-sug-x:hover { background: var(--err-bg); color: var(--err); }
+/* Dòng "chữ đang gõ" (tìm Google / mở URL) — luôn đứng đầu, ngăn với lịch sử. */
+.addr-sug-typed { border-bottom: 1px solid var(--glass-2); border-radius: 7px 7px 0 0; margin-bottom: 2px; }
+.addr-sug-typed:hover { background: var(--glass-2); }
+.addr-sug-title b, .addr-sug-url b { font-weight: 700; color: var(--text); }
 
 /* ── Bảng Lịch sử (components/BrowserHistory.tsx) ──
    Cùng khung modal với trình quản lý mật khẩu (.mail-compose + .pw-list), chỉ

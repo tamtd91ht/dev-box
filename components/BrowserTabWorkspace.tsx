@@ -632,11 +632,10 @@ export default function BrowserTabWorkspace() {
 
   /** Ô địa chỉ trang new-tab: gợi ý theo lịch sử đã xem.
    *
-   *  Cho phép cả khi ô còn TRỐNG (khác ô trong tab): trang new-tab đang trống
-   *  trơn, hiện ngay các trang vào gần đây là đúng thứ người dùng cần — chẳng
-   *  che mất gì cả. */
+   *  Ô TRỐNG thì không gợi ý gì (minChars: 1): new-tab là trang trắng như
+   *  Chrome, chỉ hiện gợi ý khi người dùng gõ (↓ vẫn xem được "gần đây"). */
   const [addrFocus, setAddrFocus] = useState(false);
-  const addrSug = useAddressSuggest({ query: addr, onPick: goSuggest, enabled: addrFocus });
+  const addrSug = useAddressSuggest({ query: addr, onPick: goSuggest, enabled: addrFocus, minChars: 1 });
 
   /** Mở dấu trang. background = chuột phải → "Mở trong tab mới": thêm tab
    *  nhưng giữ nguyên trang đang xem.
@@ -878,7 +877,7 @@ export default function BrowserTabWorkspace() {
       <div className="bt-addr-wrap">
         <input className="input bt-addr-input" placeholder="Gõ địa chỉ web hoặc từ khóa tìm Google rồi Enter…"
           value={addrSug.preview ?? addr} autoFocus onChange={(e) => setAddr(e.target.value)}
-          onFocus={() => setAddrFocus(true)}
+          onFocus={(e) => { setAddrFocus(true); e.currentTarget.select(); }}
           // Xem ghi chú ở ô địa chỉ của LinkViewer: KHÔNG đóng danh sách tại
           // onBlur, vì bấm vào một dòng cũng làm ô mất focus.
           onBlur={() => setAddrFocus(false)}
@@ -987,7 +986,6 @@ export default function BrowserTabWorkspace() {
       {hasTabs && newTabOpen && (
         <div className="bt-newtab-panel">
           {addressForm}
-          {marksList}
         </div>
       )}
 
@@ -1049,11 +1047,7 @@ export default function BrowserTabWorkspace() {
         // closeTab/closeAllTabs đã tắt cờ, nhưng chặn ở đây thì mọi đường dẫn
         // tới trạng thái đó đều an toàn.
         (hasTabs && newTabOpen) ? (
-          <div className="bt-home">
-            <p className="small" style={{ color: 'var(--muted)' }}>
-              Tab mới — gõ địa chỉ ở ô phía trên rồi Enter.
-            </p>
-          </div>
+          <div className="bt-home" />
         ) : (
           <div className="bt-home">
             <div className="bt-home-title">🌐 Mở một trang web</div>

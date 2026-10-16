@@ -7,6 +7,7 @@
 //     'title'      { url, title }        → {}
 //     'remove'     { url } | { host }    → {}
 //     'clear'      {}                    → {}
+//     'web-suggest' { q }                → string[]  (gợi ý tìm kiếm của Google)
 
 import { NextResponse, type NextRequest } from 'next/server';
 import {
@@ -15,6 +16,23 @@ import {
 } from '@/lib/historyStore';
 
 export const runtime = 'nodejs';
+
+/** Gợi ý tìm kiếm của Google — gọi từ server vì trình duyệt bị CORS chặn. Lỗi /
+ *  chậm thì trả rỗng: gợi ý web chỉ là phần thêm, không được làm hỏng ô địa chỉ. */
+async function webSuggest(q: string): Promise<string[]> {
+  const s = q.trim();
+  if (!s || s.length > 100) return [];
+  try {
+    const r = await fetch(
+      `https://suggestqueries.google.com/complete/search?client=firefox&q=${encodeURIComponent(s)}`,
+      { signal: AbortSignal.timeout(1500), cache: 'no-store' },
+    );
+    if (!r.ok) return [];
+    const data = await r.json() as unknown;
+    const arr = Array.isArray(data) && Array.isArray(data[1]) ? data[1] as unknown[] : [];
+    return arr.filter((x): x is string => typeof x === 'string').slice(0, 6);
+  } catch { return []; }
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null) as Record<string, unknown> | null;
@@ -38,6 +56,7 @@ export async function POST(req: NextRequest) {
         else await removeHistory(str('url'));
         break;
       case 'clear': await clearHistory(); break;
+      case 'web-suggest': result = await webSuggest(str('q')); break;
       default: return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
     }
     return NextResponse.json({ ok: true, result });

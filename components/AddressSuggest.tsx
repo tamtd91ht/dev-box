@@ -12,8 +12,9 @@
 // Nhờ vậy không phải đụng vào logic điều hướng/URL đã có ở hai nơi.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { makeSuggester, historyRemove, type HistoryEntry } from '@/lib/browserHistory';
+import { makeSuggester, historyRemove, webSuggest, type HistoryEntry } from '@/lib/browserHistory';
 import { usePopupOverWebview } from '@/lib/useOverWebview';
+import { normalizeUrl } from '@/lib/bookmarks';
 
 interface Props {
   /** Chữ đang gõ trong ô địa chỉ. */
@@ -54,8 +55,16 @@ export function useAddressSuggest(opts: {
   onPick: (url: string) => void;
   /** Đang được phép hiện (ô có focus). Mặc định true. */
   enabled?: boolean;
+  /** Chữ gõ ngắn hơn mức này thì KHÔNG gợi ý (0 = ô trống vẫn hiện "gần đây").
+   *  Ô trang new-tab đặt 1: trang trắng, chỉ gợi ý khi người dùng gõ. ↓ vẫn
+   *  mở được danh sách gần đây, như Chrome. */
+  minChars?: number;
+  /** Alt+Enter: mở đích trong TAB MỚI (không truyền = Alt+Enter như Enter thường). */
+  onPickNewTab?: (url: string) => void;
 }) {
-  const { query, onPick, enabled = true } = opts;
+  const { query, onPick, enabled = true, minChars = 0, onPickNewTab } = opts;
+  /** Gợi ý tìm kiếm của Google cho câu đang gõ. */
+  const [web, setWeb] = useState<string[]>([]);
   const [list, setList] = useState<HistoryEntry[]>([]);
   const [sel, setSel] = useState(-1);   // -1 = chưa chọn dòng nào (giữ chữ đang gõ)
   const [open, setOpen] = useState(false);
@@ -66,6 +75,26 @@ export function useAddressSuggest(opts: {
 
   const onPickRef = useRef(onPick);
   onPickRef.current = onPick;
+  const newTabRef = useRef(onPickNewTab);
+  newTabRef.current = onPickNewTab;
+
+  // Gợi ý web: hoãn 150ms, bỏ kết quả về muộn. Chỉ hỏi khi chữ giống TỪ KHÓA —
+  // có scheme / không dấu cách mà có dấu chấm (URL, host) thì không gửi lên Google.
+  useEffect(() => {
+    const q = query.trim();
+    const looksUrl = /^[a-z]+:\/\//i.test(q) || (!/\s/.test(q) && /[./:]/.test(q));
+    if (!enabled || q.length < Math.max(1, minChars) || looksUrl) { setWeb([]); return; }
+    let live = true;
+    const t = setTimeout(() => {
+      void webSuggest(q).then((r) => { if (live) setWeb(r.filter((x) => x.toLowerCase() !== q.toLowerCase())); })
+        .catch(() => { if (live) setWeb([]); });
+    }, 150);
+    return () => { live = false; clearTimeout(t); };
+  }, [query, enabled, minChars]);
+  const total = list.length + web.length;
+  /** Dòng thứ i: lịch sử (url) rồi tới gợi ý web (chữ tìm kiếm). */
+  const textAt = (i: number): string | null =>
+    i < 0 ? null : i < list.length ? list[i].url : (web[i - list.length] ?? null);
 
   // Một suggester cho cả vòng đời component — nó tự chống gõ dồn và tự bỏ
   // những kết quả về muộn hơn lần gõ mới nhất.
@@ -82,10 +111,15 @@ export function useAddressSuggest(opts: {
 
   useEffect(() => {
     if (!enabled) { setOpen(false); sugRef.current?.cancel(); return; }
+    if (query.trim().length < minChars) {
+      sugRef.current?.cancel();
+      setList([]); setSel(-1); setOpen(false);
+      return;
+    }
     if (dismissedRef.current === query) { setOpen(false); return; }
     sugRef.current?.query(query, LIMIT);
     setOpen(true);
-  }, [query, enabled]);
+  }, [query, enabled, minChars]);
 
   // Câu đang gõ ĐÃ đổi so với lúc Esc → cho phép danh sách hiện lại.
   useEffect(() => {
@@ -115,21 +149,45 @@ export function useAddressSuggest(opts: {
     void historyRemove(url).catch(() => {});
   }, []);
 
-  const visible = open && list.length > 0;
+  // Dòng "chữ đang gõ" luôn đứng đầu như Chrome (tìm Google / mở URL) nên danh
+  // sách hiện cả khi lịch sử không khớp gì.
+  const typed = query.trim().length > 0;
+  const visible = open && (total > 0 || typed);
 
   /**
    * @returns true nếu phím đã được danh sách gợi ý xử lý.
    */
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>): boolean => {
+    // Alt+Enter = tab mới, như Chrome. Đích là dòng đang chọn, không chọn gì thì
+    // là chữ đang gõ (URL hoặc tìm Google).
+    if (e.key === 'Enter' && e.altKey && newTabRef.current) {
+      const raw = (sel >= 0 ? textAt(sel) : null) ?? e.currentTarget.value;
+      const target = normalizeUrl(raw);
+      if (target) {
+        e.preventDefault();
+        close();
+        newTabRef.current(target);
+        return true;
+      }
+    }
     if (!visible) {
       // Danh sách đang tắt: ↓ mở lại (như Chrome — bấm ↓ ở ô địa chỉ trống là
       // xem lại các trang gần đây).
-      if (e.key === 'ArrowDown' && list.length > 0) {
-        e.preventDefault();
-        dismissedRef.current = null;
-        setOpen(true);
-        setSel(0);
-        return true;
+      if (e.key === 'ArrowDown') {
+        if (total > 0) {
+          e.preventDefault();
+          dismissedRef.current = null;
+          setOpen(true);
+          setSel(0);
+          return true;
+        }
+        // Ô trống dưới ngưỡng minChars: chưa có danh sách → nạp "gần đây" rồi mở.
+        if (enabled && query.trim().length < minChars) {
+          e.preventDefault();
+          sugRef.current?.query(query, LIMIT);
+          setOpen(true);
+          return true;
+        }
       }
       return false;
     }
@@ -137,20 +195,20 @@ export function useAddressSuggest(opts: {
     switch (e.key) {
       case 'ArrowDown':
         e.preventDefault();
-        setSel((i) => (i + 1 >= list.length ? -1 : i + 1)); // qua cuối → về lại chữ đang gõ
+        setSel((i) => (i + 1 >= total ? -1 : i + 1)); // qua cuối → về lại chữ đang gõ
         return true;
       case 'ArrowUp':
         e.preventDefault();
-        setSel((i) => (i <= -1 ? list.length - 1 : i - 1));
+        setSel((i) => (i <= -1 ? total - 1 : i - 1));
         return true;
       case 'Enter':
-        if (sel >= 0 && list[sel]) { e.preventDefault(); pick(list[sel].url); return true; }
+        if (sel >= 0 && textAt(sel)) { e.preventDefault(); pick(sel < list.length ? list[sel].url : normalizeUrl(textAt(sel)!)); return true; }
         // Không chọn dòng nào → để chủ khung đi tới đúng chữ đã gõ.
         close();
         return false;
       case 'Tab':
         // Tab = điền gợi ý đầu vào ô nhưng CHƯA đi — đúng như trình duyệt.
-        if (list[0]) { e.preventDefault(); setSel(0); return true; }
+        if (total > 0) { e.preventDefault(); setSel(0); return true; }
         return false;
       case 'Escape':
         e.preventDefault();
@@ -164,14 +222,14 @@ export function useAddressSuggest(opts: {
       default:
         return false;
     }
-  }, [visible, list, sel, pick, close, drop]);
+  }, [visible, list, web, sel, pick, close, drop, enabled, query, minChars]);
 
   /** URL của dòng đang chọn — chủ khung hiện nó trong ô nhập cho giống Chrome. */
-  const preview = sel >= 0 && list[sel] ? list[sel].url : null;
+  const preview = textAt(sel);
 
   const listProps = useMemo(() => ({
-    rows: list, sel, visible, onPick: pick, onHover: setSel, onDrop: drop, onClose: close,
-  }), [list, sel, visible, pick, drop, close]);
+    rows: list, web, sel, visible, query, onPick: pick, onHover: setSel, onDrop: drop, onClose: close,
+  }), [list, web, sel, visible, query, pick, drop, close]);
 
   return { onKeyDown, listProps, close, visible, preview };
 }
@@ -183,7 +241,7 @@ type ListProps = ReturnType<typeof useAddressSuggest>['listProps'] & {
 
 /** Danh sách gợi ý. Đặt trong một khung `position: relative` của chủ khung. */
 export default function AddressSuggest({
-  rows, sel, visible, onPick, onHover, onDrop, onClose, above, overWebview,
+  rows, web, sel, visible, query, onPick, onHover, onDrop, onClose, above, overWebview,
 }: ListProps) {
   // Danh sách của ô địa chỉ trong tab nằm ngay trên <webview>: không bật cờ thì
   // trang web (vẽ ở tầng native) che kín, bấm vào là bấm vào trang.
@@ -208,8 +266,34 @@ export default function AddressSuggest({
 
   if (!visible) return null;
 
+  const q = query.trim();
+  const target = q ? normalizeUrl(q) : '';
+  const isSearch = target.startsWith('https://www.google.com/search?q=');
+  // Tô đậm phần khớp với chữ đang gõ — mắt quét nhanh hơn nhiều.
+  const mark = (text: string) => {
+    if (!q) return text;
+    const i = text.toLowerCase().indexOf(q.toLowerCase());
+    if (i < 0) return text;
+    return <>{text.slice(0, i)}<b>{text.slice(i, i + q.length)}</b>{text.slice(i + q.length)}</>;
+  };
+
   return (
     <div ref={boxRef} className={`addr-sug${above ? ' addr-sug--above' : ''}`} role="listbox">
+      {q && (
+        <div
+          className="addr-sug-row addr-sug-typed"
+          role="option"
+          aria-selected={false}
+          onMouseDown={(ev) => { ev.preventDefault(); onPick(target); }}
+          title={target}
+        >
+          <span className="addr-sug-ico" aria-hidden>{isSearch ? '🔍' : '🌐'}</span>
+          <span className="addr-sug-text">
+            <span className="addr-sug-title">{q}</span>
+            <span className="addr-sug-url">{isSearch ? 'Tìm trên Google' : 'Mở địa chỉ'}</span>
+          </span>
+        </div>
+      )}
       {rows.map((e, i) => (
         <div
           key={e.url}
@@ -225,8 +309,8 @@ export default function AddressSuggest({
         >
           <span className="addr-sug-ico" aria-hidden>🕘</span>
           <span className="addr-sug-text">
-            <span className="addr-sug-title">{e.title || e.host || shortUrl(e.url)}</span>
-            <span className="addr-sug-url">{shortUrl(e.url)}</span>
+            <span className="addr-sug-title">{mark(e.title || e.host || shortUrl(e.url))}</span>
+            <span className="addr-sug-url">{mark(shortUrl(e.url))}</span>
           </span>
           {e.visitCount > 1 && <span className="addr-sug-n" title={`Đã vào ${e.visitCount} lần`}>{e.visitCount}</span>}
           <button
@@ -238,6 +322,25 @@ export default function AddressSuggest({
           </button>
         </div>
       ))}
+      {web.map((w, j) => {
+        const i = rows.length + j;
+        return (
+          <div
+            key={`w:${w}`}
+            className={`addr-sug-row${i === sel ? ' on' : ''}`}
+            role="option"
+            aria-selected={i === sel}
+            onMouseDown={(ev) => { ev.preventDefault(); onPick(normalizeUrl(w)); }}
+            onMouseEnter={() => onHover(i)}
+            title={w}
+          >
+            <span className="addr-sug-ico" aria-hidden>🔍</span>
+            <span className="addr-sug-text">
+              <span className="addr-sug-title">{mark(w)}</span>
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -441,6 +441,7 @@ export default function LinkViewer({
   const sug = useAddressSuggest({
     query: draft ?? '',
     onPick: (u) => navigate(u),
+    onPickNewTab: onOpenNewTab ? (u) => onOpenNewTab(u) : undefined,
     enabled: !!trackHistory && omniFocus && draft !== null,
   });
 
