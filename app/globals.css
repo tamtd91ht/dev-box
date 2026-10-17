@@ -10787,3 +10787,43 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   border: 1px solid var(--glass-brd); box-shadow: none; transform: none;
 }
 button.qtr-tag:hover { border-color: var(--accent); }
+
+/* Nút thu gọn bảng dịch — chỗ duy nhất (cùng Ctrl+Shift+Y) làm bảng ẩn đi. */
+.qtr-collapse {
+  padding: 3px 10px; border-radius: 7px; font-size: 12px; font-weight: 600;
+  background: transparent; color: var(--muted); border: 1px solid var(--glass-brd);
+  box-shadow: none; transform: none;
+}
+.qtr-collapse:hover { color: var(--text); border-color: var(--accent); }
+
+/* ── Trang bảng dịch nổi (app/translate-float, trong WebContentsView riêng) ──
+   Viewport của trang CHÍNH LÀ khung view — mọi kích thước theo vw/vh ở đây sẽ
+   tự quay vòng (bảng 52px → view 52px → bảng 52px…), nên bảng dùng px cố định
+   và main kẹp theo cửa sổ. Nền trong suốt để bo góc / bóng đổ không ra khung. */
+html.tf-page, html.tf-page body { background: transparent !important; min-height: 0; overflow: hidden; }
+html.tf-page body::before, html.tf-page body::after { display: none; }
+/* Nút báo lỗi của Next (chỉ có ở dev) đè kín view 52px — bấm chấm không ăn. */
+html.tf-page nextjs-portal { display: none !important; }
+.tf-root {
+  position: fixed; inset: 0;
+  display: flex; justify-content: flex-end; align-items: flex-end;
+}
+.tf-root.flip-x { justify-content: flex-start; }
+.tf-root.flip-y { align-items: flex-start; }
+.tf-wrap {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  box-sizing: border-box;
+}
+.tf-root.flip-x .tf-wrap { align-items: flex-start; }
+.tf-root.flip-y .tf-wrap { flex-direction: column-reverse; }
+.qtr-dot.tf-dot { position: static; flex: none; opacity: 1; }
+.qtr-dot.tf-dot:hover, .qtr-dot.tf-dot.on { transform: none; }
+.qtr-panel.tf-panel {
+  position: static; width: 680px; max-height: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+}
+.qtr-panel.tf-panel.more { width: 760px; }
+/* Kéo bảng nổi bằng chỗ trống trên thanh tiêu đề. */
+.tf-panel .qtr-head { cursor: grab; }
+.tf-panel .qtr-head:active { cursor: grabbing; }
+.tf-panel .qtr-head button, .tf-panel .qtr-head select { cursor: pointer; }

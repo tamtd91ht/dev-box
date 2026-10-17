@@ -1044,7 +1044,6 @@ function appShortcutOf(input) {
   if (!input.shift && input.code === 'Backquote') return 'quickTabs';
   if (!input.shift && input.key === 'Tab') return 'prevTab';
   if (input.shift && input.code === 'KeyU') return 'ultraView';
-  if (input.shift && input.code === 'KeyY') return 'translate';
   return null;
 }
 
@@ -1357,6 +1356,8 @@ function wireWebviewHardening(win) {
         else requestEmbeddedDevTools(win, guest);
         return;
       }
+      // Dịch nhanh: main tự bật bảng nổi (và lấy chữ đang bôi đen trong trang này).
+      if (isTranslateKey(input)) { event.preventDefault(); if (!win.isDestroyed()) void tfToggle(win, guest); return; }
       const shortcut = appShortcutOf(input);
       if (!shortcut) return;
       event.preventDefault(); // guest không nhận phím này nữa
@@ -2087,6 +2088,191 @@ async function loadAppWithRetry(win) {
   );
 }
 
+// ── Dịch nhanh nổi (WebContentsView) ─────────────────────────────────────
+//
+// Chấm 文 + bảng dịch KHÔNG nằm trong DOM của trang chính: <webview> (Zalo,
+// Browser…) vẽ ở tầng native, đè mọi HTML, nên muốn nổi lên trên webview thì
+// trước đây phải đẩy cả webview ra ngoài màn hình — đang chat Zalo mà mở bảng
+// dịch là Zalo biến mất. Ở đây bảng là một WebContentsView riêng chồng lên
+// cửa sổ, kích thước ĐÚNG bằng phần đang vẽ (thu gọn = chỉ cái chấm), nên phần
+// còn lại của cửa sổ vẫn bấm/gõ bình thường. Bấm vào bảng thì gõ vào bảng, bấm
+// sang Zalo thì gõ vào Zalo; bảng chỉ ẩn khi bấm thu gọn (hoặc Ctrl+Shift+Y).
+//
+// Trang trong view: app/translate-float (components/TranslateFloat.tsx). Nó báo
+// kích thước cần dùng qua 'tf:size'; main neo view theo khoảng cách tới mép
+// PHẢI/DƯỚI của chấm (resize cửa sổ vẫn bám góc) và báo ngược lại hướng bung
+// (flipX/flipY) để trang đặt chấm đúng góc khi chấm bị kéo sang nửa trái/trên.
+
+const TF_DOT = 52; // chấm 38px + chỗ cho bóng đổ
+const tfState = new WeakMap(); // BrowserWindow → state
+
+function tfLayout(win) {
+  const st = tfState.get(win);
+  if (!st || win.isDestroyed()) return;
+  const [cw, ch] = win.getContentSize();
+  const w = Math.min(Math.max(st.open ? st.w : TF_DOT, TF_DOT), cw);
+  const h = Math.min(Math.max(st.open ? st.h : TF_DOT, TF_DOT), ch);
+  // Điểm neo = góc ngoài của chấm. Chấm ở nửa phải → view bung sang TRÁI; ở
+  // nửa dưới → bung LÊN. Kẹp trong vùng nội dung cửa sổ.
+  const right = Math.min(Math.max(st.right, 0), cw - TF_DOT);
+  const bottom = Math.min(Math.max(st.bottom, 0), ch - TF_DOT);
+  const dotX = cw - right - TF_DOT;
+  const dotY = ch - bottom - TF_DOT;
+  const flipX = dotX + TF_DOT / 2 < cw / 2; // chấm ở nửa trái → bung sang phải
+  const flipY = dotY + TF_DOT / 2 < ch / 2; // chấm ở nửa trên → bung xuống
+  let x = flipX ? dotX : dotX + TF_DOT - w;
+  let y = flipY ? dotY : dotY + TF_DOT - h;
+  x = Math.min(Math.max(x, 0), cw - w);
+  y = Math.min(Math.max(y, 0), ch - h);
+  st.view.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) });
+  // Báo trang khi hướng bung hoặc khung cửa sổ đổi (trang kẹp bảng theo khung).
+  if (st.flipX !== flipX || st.flipY !== flipY || st.cw !== cw || st.ch !== ch) {
+    st.flipX = flipX;
+    st.flipY = flipY;
+    st.cw = cw;
+    st.ch = ch;
+    tfSend(win);
+  }
+}
+
+function tfSend(win, extra) {
+  const st = tfState.get(win);
+  if (!st || st.view.webContents.isDestroyed()) return;
+  st.view.webContents.send('tf:state', tfPublic(st, extra));
+}
+
+function tfPublic(st, extra) {
+  return { open: st.open, flipX: !!st.flipX, flipY: !!st.flipY, maxW: st.cw || 0, maxH: st.ch || 0, ...(extra || {}) };
+}
+
+/** Đưa view lên trên cùng (view thêm sau vẽ đè view thêm trước — vd DevTools dock). */
+function tfRaise(win) {
+  const st = tfState.get(win);
+  if (!st || win.isDestroyed()) return;
+  try {
+    win.contentView.removeChildView(st.view);
+    win.contentView.addChildView(st.view);
+  } catch { /* đang đóng */ }
+}
+
+/** Mở/đóng bảng. `source` = webContents nơi bấm phím tắt: lấy chữ đang bôi đen ở đó điền sẵn. */
+async function tfToggle(win, source) {
+  const st = tfState.get(win);
+  if (!st) return;
+  st.open = !st.open;
+  let prefill = '';
+  if (st.open && source && !source.isDestroyed() && source !== st.view.webContents) {
+    try {
+      prefill = String(await source.executeJavaScript('String(window.getSelection ? window.getSelection() : "")', true) || '')
+        .trim().slice(0, 2000);
+    } catch { /* trang không cho chạy script — bỏ qua */ }
+  }
+  tfLayout(win);
+  tfSend(win, prefill ? { prefill } : undefined);
+  if (st.open) st.view.webContents.focus();
+  else if (!win.isDestroyed()) win.webContents.focus();
+}
+
+/** Ctrl+Shift+Y ở đâu cũng là bật/tắt dịch nhanh — trang chính, webview, chính bảng dịch. */
+const isTranslateKey = (input) =>
+  input.type === 'keyDown' && input.control && input.shift && !input.alt && !input.meta && input.code === 'KeyY';
+
+function attachTranslateFloat(win) {
+  if (tfState.has(win)) return;
+  const view = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      additionalArguments: ['--ws-config=' + JSON.stringify(CONFIG)],
+    },
+  });
+  view.setBackgroundColor('#00000000'); // trong suốt: bo góc/bóng đổ không ra khung đen
+  const st = { view, open: false, right: 22, bottom: 64, w: TF_DOT, h: TF_DOT, flipX: false, flipY: false, drag: null };
+  tfState.set(win, st);
+  win.contentView.addChildView(view);
+  tfLayout(win);
+
+  const PAGE = `${APP_URL}/translate-float`;
+  const load = () => view.webContents.loadURL(PAGE).catch(() => {});
+  load();
+  // Server chưa lên lúc view nạp (khởi động nguội) → nạp lại khi UI chính đã nạp.
+  win.webContents.on('did-finish-load', () => {
+    if (!win.webContents.getURL().startsWith(APP_URL)) return;
+    if (!view.webContents.getURL().startsWith(PAGE) || view.webContents.isCrashed()) load();
+  });
+  view.webContents.on('did-fail-load', (_e, code, _desc, _url, isMain) => {
+    if (isMain && code !== -3) setTimeout(() => { if (!win.isDestroyed()) load(); }, 3000);
+  });
+  view.webContents.on('before-input-event', (e, input) => {
+    if (isTranslateKey(input)) { e.preventDefault(); void tfToggle(win, view.webContents); }
+  });
+  win.webContents.on('before-input-event', (e, input) => {
+    if (isTranslateKey(input)) { e.preventDefault(); void tfToggle(win, win.webContents); }
+  });
+  // Bảng dịch không được điều hướng đi trang khác hay mở cửa sổ mới.
+  view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  view.webContents.on('will-navigate', (e, url) => { if (!url.startsWith(PAGE)) e.preventDefault(); });
+
+  for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
+    win.on(ev, () => tfLayout(win));
+  }
+  win.on('closed', () => { try { view.webContents.close(); } catch { /* đã đóng */ } });
+}
+
+/** IPC từ trang trong view — chỉ nhận đúng view của một cửa sổ. */
+function tfFromSender(evt) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    const st = tfState.get(win);
+    if (st && st.view.webContents === evt.sender) return { win, st };
+  }
+  return null;
+}
+
+ipcMain.handle('tf:init', (evt, pos) => {
+  const t = tfFromSender(evt);
+  if (!t) return null;
+  if (pos && Number.isFinite(pos.right) && Number.isFinite(pos.bottom)) {
+    t.st.right = Number(pos.right);
+    t.st.bottom = Number(pos.bottom);
+  }
+  tfLayout(t.win);
+  return tfPublic(t.st);
+});
+ipcMain.on('tf:size', (evt, w, h) => {
+  const t = tfFromSender(evt);
+  if (!t || !Number.isFinite(w) || !Number.isFinite(h)) return;
+  t.st.w = Math.ceil(w);
+  t.st.h = Math.ceil(h);
+  tfLayout(t.win);
+});
+ipcMain.on('tf:open', (evt, open) => {
+  const t = tfFromSender(evt);
+  if (!t || t.st.open === !!open) return;
+  void tfToggle(t.win, null);
+});
+// Kéo chấm: trang gửi độ dời theo toạ độ MÀN HÌNH (view chạy theo con trỏ nên
+// toạ độ trong view vô dụng); main dời điểm neo rồi xếp lại.
+ipcMain.on('tf:dragStart', (evt) => {
+  const t = tfFromSender(evt);
+  if (t) t.st.drag = { right: t.st.right, bottom: t.st.bottom };
+});
+ipcMain.on('tf:dragMove', (evt, dx, dy) => {
+  const t = tfFromSender(evt);
+  if (!t || !t.st.drag || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+  const [cw, ch] = t.win.getContentSize();
+  t.st.right = Math.min(Math.max(t.st.drag.right - dx, 0), cw - TF_DOT);
+  t.st.bottom = Math.min(Math.max(t.st.drag.bottom - dy, 0), ch - TF_DOT);
+  tfLayout(t.win);
+});
+ipcMain.handle('tf:dragEnd', (evt) => {
+  const t = tfFromSender(evt);
+  if (!t) return null;
+  t.st.drag = null;
+  return { right: t.st.right, bottom: t.st.bottom };
+});
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
@@ -2224,6 +2410,8 @@ function createWindow() {
       log('OpenFile', abs);
     }, 400);
   });
+
+  attachTranslateFloat(win);
 
   void loadAppWithRetry(win);
   return win;
@@ -2569,6 +2757,7 @@ ipcMain.handle('devtools:open', (evt, targetId, rect, point) => {
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
     win.contentView.addChildView(view);
+    tfRaise(win); // bảng dịch nổi luôn nằm trên DevTools dock
     applyDevToolsBounds(view, rect);
 
     // Chuột phải trong frontend phải ra menu — xem SOFT_MENU_SCRIPT.

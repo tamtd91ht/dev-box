@@ -191,7 +191,7 @@ export interface WorkspaceBridge {
   /** Phím tắt khung app bấm khi con trỏ đang ở TRONG một <webview> (đang chat
    *  Zalo chẳng hạn): phím không bubble ra host page, main process bắt hộ rồi
    *  chuyển về đây. Trả về hàm hủy đăng ký. Optional: preload cũ chưa expose. */
-  onShortcut?(cb: (name: 'quickTabs' | 'prevTab' | 'ultraView' | 'translate') => void): () => void;
+  onShortcut?(cb: (name: 'quickTabs' | 'prevTab' | 'ultraView') => void): () => void;
   /** Chuột phải một file trong Explorer → "Open with → VHS DevBox". Main
    *  process gửi đường dẫn tuyệt đối xuống, app tự chọn tab theo đuôi file
    *  (xem openLocalPath trong app/page.tsx). Optional: preload cũ chưa expose. */
@@ -199,6 +199,9 @@ export interface WorkspaceBridge {
   /** Đường dẫn thật của một File kéo thả từ Explorer ('' nếu không có). Thay
    *  cho `File.path` mà Electron ≥ 32 đã bỏ. Optional: preload cũ chưa expose. */
   pathForFile?(file: File): string;
+  /** Dịch nhanh nổi (WebContentsView riêng) — chỉ trang /translate-float dùng.
+   *  Có mặt ⇒ bản desktop: trang chính KHÔNG tự vẽ widget dịch nữa. */
+  translateFloat?: TranslateFloatApi;
   /** Niêm phong mật khẩu bằng safeStorage (DPAPI) trước khi ghi xuống đĩa.
    *  error='unavailable' khi OS không hỗ trợ → caller lưu plaintext + cảnh báo.
    *  Optional: preload cũ chưa expose. */
@@ -304,3 +307,25 @@ declare global {
 // drive the rest imperatively through a WebviewElement ref.
 
 export {};
+
+export interface TranslateFloatState {
+  open: boolean;
+  /** Chấm ở nửa trái / nửa trên cửa sổ → bảng bung sang phải / xuống dưới. */
+  flipX: boolean;
+  flipY: boolean;
+  /** Kích thước vùng nội dung cửa sổ — bảng không được to hơn. */
+  maxW: number;
+  maxH: number;
+  /** Chữ đang bôi đen nơi bấm Ctrl+Shift+Y (kể cả trong webview). */
+  prefill?: string;
+}
+
+export interface TranslateFloatApi {
+  init(pos?: { right: number; bottom: number }): Promise<TranslateFloatState | null>;
+  setSize(w: number, h: number): void;
+  setOpen(open: boolean): void;
+  dragStart(): void;
+  dragMove(dx: number, dy: number): void;
+  dragEnd(): Promise<{ right: number; bottom: number } | null>;
+  onState(cb: (st: TranslateFloatState) => void): () => void;
+}

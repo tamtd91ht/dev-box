@@ -138,6 +138,22 @@ contextBridge.exposeInMainWorld('workspace', {
   pathForFile: (file) => {
     try { return webUtils.getPathForFile(file) || ''; } catch { return ''; }
   },
+  /** Dịch nhanh nổi — CHỈ trang /translate-float (nằm trong WebContentsView
+   *  riêng, xem attachTranslateFloat trong main.cjs) dùng; main bỏ qua mọi
+   *  tin tf:* không đến từ đúng view đó. */
+  translateFloat: {
+    init: (pos) => ipcRenderer.invoke('tf:init', pos),
+    setSize: (w, h) => ipcRenderer.send('tf:size', w, h),
+    setOpen: (open) => ipcRenderer.send('tf:open', !!open),
+    dragStart: () => ipcRenderer.send('tf:dragStart'),
+    dragMove: (dx, dy) => ipcRenderer.send('tf:dragMove', dx, dy),
+    dragEnd: () => ipcRenderer.invoke('tf:dragEnd'),
+    onState: (cb) => {
+      const handler = (_evt, st) => cb(st);
+      ipcRenderer.on('tf:state', handler);
+      return () => ipcRenderer.removeListener('tf:state', handler);
+    },
+  },
   onOpenLocalFile: (cb) => {
     const handler = (_evt, filePath) => cb(filePath);
     ipcRenderer.on('desktop:openLocalFile', handler);
