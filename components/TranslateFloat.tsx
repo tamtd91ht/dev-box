@@ -17,7 +17,7 @@
 // trái/trên cửa sổ. Kéo: gửi độ dời theo toạ độ MÀN HÌNH, vì cả view chạy theo
 // con trỏ nên toạ độ trong trang không dùng được.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import TranslatePanel from '@/components/translate/TranslatePanel';
 import { DEFAULT_PAIRS, shortLang, type LangPair } from '@/lib/translate';
 import type { TranslateFloatState } from '@/lib/workspace/types';
@@ -62,6 +62,15 @@ export default function TranslateFloat() {
       if (s.prefill) setPrefill((p) => ({ text: s.prefill!, n: (p?.n ?? 0) + 1 }));
     });
   }, [api]);
+
+  // Mở/thu gọn: báo kích thước NGAY sau khi React vẽ xong — không chờ
+  // ResizeObserver. RO chạy theo nhịp vẽ của trình duyệt, mà cửa sổ đang bị che
+  // (visibilityState=hidden) thì không có nhịp vẽ nào: view kẹt ở cỡ cái chấm,
+  // bảng đã mở mà không hiện ra.
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (el && api) api.setSize(el.offsetWidth, el.offsetHeight);
+  }, [api, st.open, st.flipX, st.flipY, st.maxW, st.maxH]);
 
   // Báo kích thước phần đang vẽ mỗi khi nó đổi (gõ dài, mở gợi ý, "Xem thêm"…).
   useEffect(() => {

@@ -1302,6 +1302,14 @@ function wireWebviewHardening(win) {
     // both so the forwarding can't silently go dark again.
     guest.on('console-message', (...args) => {
       const ev = args[0];
+      // Nút "文 Dịch" cạnh vùng chọn (TF_SELECTION_SCRIPT) báo chữ cần dịch.
+      const tr = [ev && ev.message, args[2], args[1]].find(
+        (v) => typeof v === 'string' && v.startsWith(TF_MARK),
+      );
+      if (tr) {
+        try { tfOpenWith(win, JSON.parse(tr.slice(TF_MARK.length))); } catch { /* dòng giả / hỏng */ }
+        return;
+      }
       const msg = [ev && ev.message, args[2], args[1]].find(
         (v) => typeof v === 'string' && v.startsWith('[ws-'),
       );
@@ -1330,6 +1338,8 @@ function wireWebviewHardening(win) {
     // the gesture out to the host page and drift the whole DevBox frame.
     guest.on('dom-ready', () => {
       guest.insertCSS('html,body{overscroll-behavior:none}').catch(() => {});
+      // Nút "文 Dịch" khi bôi đen chữ — isolated world, trang không đụng tới được.
+      guest.executeJavaScriptInIsolatedWorld(TF_WORLD, [{ code: TF_SELECTION_SCRIPT }]).catch(() => {});
     });
 
     // DevTools cho guest — debug trang đang xem (Network/Console/Elements):
@@ -1372,6 +1382,8 @@ function wireWebviewHardening(win) {
     });
     guest.on('context-menu', (_e, params) => {
       const menu = Menu.buildFromTemplate([
+        // Bôi đen chữ (vd tin nhắn Zalo) → đổ vào bảng dịch nổi.
+        ...tfMenuItems(win, params.selectionText),
         { label: 'Cắt', role: 'cut', enabled: params.editFlags.canCut },
         { label: 'Sao chép', role: 'copy', enabled: params.editFlags.canCopy },
         { label: 'Dán', role: 'paste', enabled: params.editFlags.canPaste },
@@ -2110,8 +2122,11 @@ function tfLayout(win) {
   const st = tfState.get(win);
   if (!st || win.isDestroyed()) return;
   const [cw, ch] = win.getContentSize();
-  const w = Math.min(Math.max(st.open ? st.w : TF_DOT, TF_DOT), cw);
-  const h = Math.min(Math.max(st.open ? st.h : TF_DOT, TF_DOT), ch);
+  // Vừa mở mà trang chưa kịp báo cỡ mới (vẫn là cỡ cái chấm) → dùng cỡ lần mở trước.
+  const openW = st.w > TF_DOT ? st.w : st.openW || st.w;
+  const openH = st.w > TF_DOT ? st.h : st.openH || st.h;
+  const w = Math.min(Math.max(st.open ? openW : TF_DOT, TF_DOT), cw);
+  const h = Math.min(Math.max(st.open ? openH : TF_DOT, TF_DOT), ch);
   // Điểm neo = góc ngoài của chấm. Chấm ở nửa phải → view bung sang TRÁI; ở
   // nửa dưới → bung LÊN. Kẹp trong vùng nội dung cửa sổ.
   const right = Math.min(Math.max(st.right, 0), cw - TF_DOT);
@@ -2173,6 +2188,101 @@ async function tfToggle(win, source) {
   else if (!win.isDestroyed()) win.webContents.focus();
 }
 
+/** Chuột phải → "Dịch": mở bảng (đang mở thì giữ nguyên) và đổ đoạn chữ vào ô
+ *  dịch — dịch luôn với cặp ngôn ngữ đang chọn trong bảng. */
+function tfOpenWith(win, text) {
+  const st = tfState.get(win);
+  const t = String(text || '').trim().slice(0, 2000);
+  if (!st || win.isDestroyed() || !t) return;
+  st.open = true;
+  tfLayout(win);
+  tfSend(win, { prefill: t });
+  st.view.webContents.focus();
+}
+
+/** Mục "Dịch" cho menu chuột phải khi đang bôi đen chữ ([] nếu không có gì để dịch). */
+function tfMenuItems(win, selectionText) {
+  const t = String(selectionText || '').replace(/\s+/g, ' ').trim();
+  if (!t || !tfState.has(win)) return [];
+  const short = t.length > 32 ? `${t.slice(0, 32)}…` : t;
+  return [{ label: `文 Dịch “${short}”`, click: () => tfOpenWith(win, selectionText) }, { type: 'separator' }];
+}
+
+/**
+ * Nút "文 Dịch" nổi cạnh đoạn chữ vừa bôi đen — chèn vào MỌI webview.
+ *
+ * Vì sao không dựa vào menu chuột phải: Zalo (và nhiều web app) tự chặn chuột
+ * phải để vẽ menu riêng (trả lời, chuyển tiếp…), Chromium không bao giờ phát
+ * 'context-menu' nên mục "Dịch" của app không có chỗ hiện. Nút cạnh vùng chọn
+ * thì trang nào cũng dùng được, không đụng menu của trang (kiểu Google Dịch).
+ *
+ * Chạy trong isolated world (TF_WORLD): JS của trang không thấy/không sửa được
+ * biến và listener ở đây; nút nằm trong shadow root đóng nên CSS của trang
+ * không làm méo nó. Webview không có preload → báo về main bằng một dòng
+ * console có tiền tố TF_MARK (xem guest.on('console-message')). Trang tự in
+ * dòng giả cũng chỉ làm bảng dịch mở với chữ đó — vô hại.
+ */
+const TF_WORLD = 1771;
+const TF_MARK = '[devbox-translate]';
+const TF_SELECTION_SCRIPT = `(() => {
+  if (window.__devboxTranslateBubble) return;
+  window.__devboxTranslateBubble = true;
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;';
+  const root = host.attachShadow({ mode: 'closed' });
+  root.innerHTML = '<style>button{all:initial;position:fixed;display:none;box-sizing:border-box;'
+    + 'font:600 12px/1 system-ui,"Segoe UI",sans-serif;color:#fff;cursor:pointer;user-select:none;white-space:nowrap;'
+    + 'padding:6px 10px;border-radius:999px;background:linear-gradient(135deg,#6366f1,#0ea5e9);'
+    + 'box-shadow:0 4px 14px rgba(0,0,0,.3)}button:hover{filter:brightness(1.12)}</style>'
+    + '<button type="button" title="Dịch đoạn đang bôi đen (Ctrl+Shift+Y)">文 Dịch</button>';
+  const btn = root.querySelector('button');
+  let text = '';
+  const hide = () => { btn.style.display = 'none'; text = ''; };
+  /** Chữ đang chọn + ô chữ nhật để neo nút. Ô nhập (input/textarea) không lộ
+   *  vùng chọn qua getSelection() nên đọc thẳng selectionStart/End. */
+  const current = () => {
+    const el = document.activeElement;
+    if (el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && /^(text|search|url|email)?$/i.test(el.type || '')))) {
+      const s = el.selectionStart, e = el.selectionEnd;
+      if (s == null || e == null || s === e) return null;
+      return { t: el.value.slice(s, e), r: el.getBoundingClientRect() };
+    }
+    const sel = getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    const rects = range.getClientRects();
+    return { t: String(sel), r: rects.length ? rects[rects.length - 1] : range.getBoundingClientRect() };
+  };
+  const show = () => {
+    const c = current();
+    const t = c && c.t.trim();
+    if (!t || !c.r || (!c.r.width && !c.r.height)) return hide();
+    if (!host.isConnected) (document.body || document.documentElement).appendChild(host);
+    text = t;
+    btn.style.display = 'block';
+    const w = btn.offsetWidth || 64, h = btn.offsetHeight || 24;
+    const x = Math.max(4, Math.min(c.r.right + 6, innerWidth - w - 4));
+    const y = c.r.bottom + 6 + h > innerHeight - 4 ? Math.max(4, c.r.top - h - 6) : c.r.bottom + 6;
+    btn.style.left = x + 'px';
+    btn.style.top = y + 'px';
+  };
+  (document.body || document.documentElement).appendChild(host);
+  const fromBubble = (e) => e.composedPath && e.composedPath().includes(host);
+  document.addEventListener('mouseup', (e) => { if (!fromBubble(e) && e.button === 0) setTimeout(show, 0); }, true);
+  document.addEventListener('keyup', (e) => { if (e.shiftKey || e.key === 'Shift' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a')) setTimeout(show, 0); }, true);
+  document.addEventListener('mousedown', (e) => { if (!fromBubble(e)) hide(); }, true);
+  document.addEventListener('scroll', hide, true);
+  document.addEventListener('selectionchange', () => { if (text && !current()) hide(); });
+  // Giữ nguyên vùng chọn khi bấm nút (mousedown mặc định sẽ xoá nó).
+  btn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (text) console.log(${JSON.stringify(TF_MARK)} + JSON.stringify(text));
+    hide();
+  });
+})();`;
+
 /** Ctrl+Shift+Y ở đâu cũng là bật/tắt dịch nhanh — trang chính, webview, chính bảng dịch. */
 const isTranslateKey = (input) =>
   input.type === 'keyDown' && input.control && input.shift && !input.alt && !input.meta && input.code === 'KeyY';
@@ -2189,7 +2299,8 @@ function attachTranslateFloat(win) {
     },
   });
   view.setBackgroundColor('#00000000'); // trong suốt: bo góc/bóng đổ không ra khung đen
-  const st = { view, open: false, right: 22, bottom: 64, w: TF_DOT, h: TF_DOT, flipX: false, flipY: false, drag: null };
+  // openW/openH: cỡ bảng lần mở trước (mặc định ~ bảng 680px + đệm) — xem 'tf:size'.
+  const st = { view, open: false, right: 22, bottom: 64, w: TF_DOT, h: TF_DOT, openW: 694, openH: 230, flipX: false, flipY: false, drag: null };
   tfState.set(win, st);
   win.contentView.addChildView(view);
   tfLayout(win);
@@ -2210,6 +2321,21 @@ function attachTranslateFloat(win) {
   });
   win.webContents.on('before-input-event', (e, input) => {
     if (isTranslateKey(input)) { e.preventDefault(); void tfToggle(win, win.webContents); }
+  });
+  // Trang chính chưa có menu chuột phải nào: chỉ bật khi đang bôi đen chữ. Vùng
+  // tự có menu riêng (Monaco, bảng tính, terminal) chặn contextmenu trong trang
+  // nên Chromium không phát sự kiện này — không bị đè.
+  win.webContents.on('context-menu', (_e, params) => {
+    const items = tfMenuItems(win, params.selectionText);
+    if (!items.length) return;
+    Menu.buildFromTemplate([
+      ...items,
+      { label: 'Sao chép', role: 'copy', enabled: params.editFlags.canCopy },
+      ...(params.isEditable ? [
+        { label: 'Cắt', role: 'cut', enabled: params.editFlags.canCut },
+        { label: 'Dán', role: 'paste', enabled: params.editFlags.canPaste },
+      ] : []),
+    ]).popup({ window: win });
   });
   // Bảng dịch không được điều hướng đi trang khác hay mở cửa sổ mới.
   view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -2245,6 +2371,9 @@ ipcMain.on('tf:size', (evt, w, h) => {
   if (!t || !Number.isFinite(w) || !Number.isFinite(h)) return;
   t.st.w = Math.ceil(w);
   t.st.h = Math.ceil(h);
+  // Cỡ lúc bảng MỞ được nhớ riêng: lần mở sau dùng ngay, không phải đợi trang
+  // vẽ xong mới báo (cửa sổ bị che thì trang có thể chậm báo).
+  if (t.st.open && t.st.w > TF_DOT) { t.st.openW = t.st.w; t.st.openH = t.st.h; }
   tfLayout(t.win);
 });
 ipcMain.on('tf:open', (evt, open) => {
