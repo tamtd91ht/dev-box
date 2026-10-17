@@ -5,7 +5,7 @@
 // on, nodeIntegration off). The effective config is passed in via an
 // additionalArguments flag from the main process (see electron/main.cjs).
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 /** Parse the `--ws-config=<json>` flag the main process injected. */
 function readConfig() {
@@ -132,6 +132,12 @@ contextBridge.exposeInMainWorld('workspace', {
    *  chuyển đường dẫn xuống đây, renderer mở nó ở tab Office / tab Tools tuỳ
    *  đuôi file. Bắn cả lúc khởi động nguội lẫn khi app đang chạy (qua
    *  'second-instance'). Trả về hàm hủy đăng ký. */
+  /** Kéo thả file từ Explorer vào app: đường dẫn THẬT của một File trong
+   *  dataTransfer. Electron ≥ 32 bỏ `File.path`, chỉ còn webUtils ở preload.
+   *  Trả '' khi File không đến từ đĩa (vd kéo ảnh từ trang web). */
+  pathForFile: (file) => {
+    try { return webUtils.getPathForFile(file) || ''; } catch { return ''; }
+  },
   onOpenLocalFile: (cb) => {
     const handler = (_evt, filePath) => cb(filePath);
     ipcRenderer.on('desktop:openLocalFile', handler);

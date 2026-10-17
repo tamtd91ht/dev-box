@@ -46,6 +46,7 @@ import QuickTabs, { type TabInfo } from '@/components/QuickTabs';
 import UltraBar from '@/components/UltraBar';
 import TabVisibilityBar from '@/components/TabVisibilityBar';
 import * as recentTabs from '@/lib/recentTabs';
+import { classifyFile, droppedFiles, isFileDrag, onOpenPathRequest, openDropped } from '@/lib/fileDrop';
 import * as ultraView from '@/lib/ultraView';
 import * as hiddenTabs from '@/lib/hiddenTabs';
 import { notices } from '@/lib/noticeStore';
@@ -375,8 +376,10 @@ export default function Home() {
   const onOfficeReady = useCallback((api: OfficeApi) => { officeApi.current = api; }, []);
   const onToolsReady = useCallback((api: ToolsApi) => { toolsApi.current = api; }, []);
 
-  useEffect(() => window.workspace?.onOpenLocalFile?.((filePath) => {
-    const office = /\.(xlsx|xlsm|csv|docx)$/i.test(filePath);
+  /** Mở một file trên đĩa ở đúng view theo đuôi file. Đường chung cho "Open
+   *  with" từ Explorer và kéo thả (lib/fileDrop.ts). */
+  const openLocalPath = useCallback((filePath: string) => {
+    const office = classifyFile(filePath)?.target === 'office';
     const target = office ? 'office' : 'tools';
     // Chuyển tab TRƯỚC khi mở: pane chỉ mount lần đầu được ghé thăm (xem
     // `visited`), chưa vào tab Tools lần nào thì ToolsWorkspace còn chưa tồn
@@ -393,7 +396,77 @@ export default function Home() {
       if (++tries < 40) setTimeout(tick, 50); // bỏ cuộc sau ~2s
     };
     tick();
-  }), []);
+  }, []);
+
+  useEffect(() => window.workspace?.onOpenLocalFile?.(openLocalPath), [openLocalPath]);
+  useEffect(() => onOpenPathRequest(openLocalPath), [openLocalPath]);
+
+  // ── Kéo thả file từ Explorer ─────────────────────────────────────────────
+  //
+  // Rê file vào cửa sổ → nút menu Office/Tools sáng lên báo "thả vào đây được".
+  // Thả lên nút: mở luôn (thả nhầm nút vẫn vào đúng view — bộ định tuyến chọn
+  // theo đuôi file). Giữ file trên nút một lúc mà chưa thả: chuyển sang tab
+  // đó, để thả tiếp vào vùng làm việc bên trong như kéo lên taskbar Windows.
+  const [fileDragging, setFileDragging] = useState(false);
+  const [dropHover, setDropHover] = useState<string | null>(null);
+  const [dropMsg, setDropMsg] = useState<string | null>(null);
+  const springTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dropMsgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showDropMsg = useCallback((m: string) => {
+    setDropMsg(m || null);
+    if (dropMsgTimer.current) clearTimeout(dropMsgTimer.current);
+    if (m) dropMsgTimer.current = setTimeout(() => setDropMsg(null), 6000);
+  }, []);
+  useEffect(() => {
+    // dragenter/dragleave bắn cả khi rê qua phần tử con — đếm mới biết con trỏ
+    // đã thật sự rời cửa sổ hay chưa.
+    let depth = 0;
+    const enter = (e: DragEvent) => { if (isFileDrag(e.dataTransfer)) { depth++; setFileDragging(true); } };
+    const leave = (e: DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
+      if (--depth <= 0) { depth = 0; setFileDragging(false); }
+    };
+    const end = () => { depth = 0; setFileDragging(false); setDropHover(null); };
+    window.addEventListener('dragenter', enter, true);
+    window.addEventListener('dragleave', leave, true);
+    window.addEventListener('drop', end, true);
+    window.addEventListener('dragend', end, true);
+    return () => {
+      window.removeEventListener('dragenter', enter, true);
+      window.removeEventListener('dragleave', leave, true);
+      window.removeEventListener('drop', end, true);
+      window.removeEventListener('dragend', end, true);
+    };
+  }, []);
+  useEffect(() => {
+    if (springTimer.current) clearTimeout(springTimer.current);
+    if (!dropHover) return;
+    const key = dropHover;
+    springTimer.current = setTimeout(() => setMode(key), 700);
+    return () => { if (springTimer.current) clearTimeout(springTimer.current); };
+  }, [dropHover]);
+
+  /** Props kéo thả cho nút menu `key` — chỉ Office/Tools nhận file. */
+  const menuDropProps = (key: string) => (key !== 'office' && key !== 'tools' ? {} : {
+    onDragOver: (e: React.DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      if (dropHover !== key) setDropHover(key);
+    },
+    // Rê qua icon/chữ bên trong nút cũng bắn dragleave — chỉ tính khi ra hẳn
+    // khỏi nút, không thì hẹn giờ chuyển tab bị đặt lại liên tục.
+    onDragLeave: (e: React.DragEvent) => {
+      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+      setDropHover((h) => (h === key ? null : h));
+    },
+    onDrop: (e: React.DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
+      e.preventDefault();
+      setDropHover(null);
+      showDropMsg(openDropped(droppedFiles(e.dataTransfer)));
+    },
+  });
 
   /** Chỗ đặt pane `key`: Ultra View thì theo cột, không thì theo tab đang chọn.
    *  Mọi <main> bên dưới đều đi qua đây nên hai chế độ dùng CHUNG một cây pane
@@ -631,8 +704,12 @@ export default function Home() {
                 // Mail đến chưa đọc — nháy khi đang ở tab khác.
                 t.key === 'mail' && mailUnread > 0 && !shown('mail') ? 'ms-alert' : '',
                 nUnread > 0 && !shown(t.key) ? 'ms-alert' : '',
+                // Đang rê file: sáng các nút nhận được file, đậm nút đang trỏ vào.
+                fileDragging && (t.key === 'office' || t.key === 'tools') ? 'ms-droppable' : '',
+                dropHover === t.key ? 'ms-drophover' : '',
               ].filter(Boolean).join(' ')}
               onClick={(e) => pickTab(t.key, e)}
+              {...menuDropProps(t.key)}
             >
               <span className="ms-ico" aria-hidden>{t.icon}</span>
               {t.label}
@@ -758,6 +835,11 @@ export default function Home() {
           <ThemeToggle />
         </div>
       </header>
+      )}
+
+      {/* File kéo thả mà không mở được (loại lạ / không có đường dẫn). */}
+      {dropMsg && (
+        <div className="drop-toast" role="status" onClick={() => setDropMsg(null)}>{dropMsg}</div>
       )}
 
       {/* Màn hình tiếp cận nhanh (Ctrl+`) — nổi trên mọi workspace. */}

@@ -51,6 +51,7 @@ import ReplacePanel from './ReplacePanel';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
+import { classifyFile, droppedFiles, isFileDrag as isFileDragDt, requestOpenPath } from '@/lib/fileDrop';
 
 const KINDS: { key: FormatKind; label: string }[] = [
   { key: 'json', label: 'JSON' },
@@ -218,8 +219,7 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
   const dragDepth = useRef(0);
 
   /** Chỉ nhận khi rê FILE (không phải bôi đen chữ trong editor). */
-  const isFileDrag = (e: React.DragEvent) =>
-    Array.from(e.dataTransfer?.types ?? []).includes('Files');
+  const isFileDrag = (e: React.DragEvent) => isFileDragDt(e.dataTransfer);
 
 
   /** Bàn phím: ←/→ dịch 2%, Home/End về biên, Enter/đúp về 50/50. */
@@ -415,13 +415,27 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
     e.preventDefault();
     dragDepth.current = 0;
     setDropping(false);
-    const f = e.dataTransfer?.files?.[0];
+    const all = droppedFiles(e.dataTransfer);
+    const f = all[0]?.file;
     if (!f) return;
 
-    // Electron/Chromium cho biết đường dẫn thật → mở qua server như 📂 Mở file…
-    // (đọc được cả file lớn, biết đường dẫn để 💾 Lưu ghi đè lại chính nó).
-    const realPath = (f as File & { path?: string }).path;
-    if (realPath) { await openLocalFile(realPath); return; }
+    // Electron cho biết đường dẫn thật → đi qua bộ định tuyến chung: file của
+    // Tools mở ở đây như 📂 Mở file… (biết đường dẫn để 💾 Lưu ghi đè), còn
+    // .xlsx/.docx thả nhầm vào đây thì sang Office.
+    if (all.some((d) => d.path)) {
+      const known = all.filter((d) => d.path && classifyFile(d.name));
+      // Loại lạ nhưng chỉ thả một file → vẫn thử mở dạng text như trước.
+      if (!known.length && all.length === 1) { await openLocalFile(all[0].path); return; }
+      // Editor chỉ giữ một file: nhiều file Tools thì mở file đầu, file Office mở hết.
+      let toolsTaken = false;
+      for (const d of known) {
+        if (classifyFile(d.name)!.target === 'office') requestOpenPath(d.path);
+        else if (!toolsTaken) { toolsTaken = true; await openLocalFile(d.path); }
+      }
+      const skipped = all.filter((d) => !classifyFile(d.name)).map((d) => d.name);
+      if (skipped.length) setErr(`Chưa có view mở được: ${skipped.join(', ')}`);
+      return;
+    }
 
     // Trình duyệt thường: không có đường dẫn → đọc thẳng nội dung. Mở được để
     // xem/sửa nhưng KHÔNG có file tham chiếu, nên lưu phải chọn đích.

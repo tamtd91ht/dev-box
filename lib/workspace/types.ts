@@ -196,6 +196,9 @@ export interface WorkspaceBridge {
    *  process gửi đường dẫn tuyệt đối xuống, app tự chọn tab theo đuôi file
    *  (xem openLocalPath trong app/page.tsx). Optional: preload cũ chưa expose. */
   onOpenLocalFile?(cb: (filePath: string) => void): () => void;
+  /** Đường dẫn thật của một File kéo thả từ Explorer ('' nếu không có). Thay
+   *  cho `File.path` mà Electron ≥ 32 đã bỏ. Optional: preload cũ chưa expose. */
+  pathForFile?(file: File): string;
   /** Niêm phong mật khẩu bằng safeStorage (DPAPI) trước khi ghi xuống đĩa.
    *  error='unavailable' khi OS không hỗ trợ → caller lưu plaintext + cảnh báo.
    *  Optional: preload cũ chưa expose. */
