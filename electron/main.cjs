@@ -1044,6 +1044,7 @@ function appShortcutOf(input) {
   if (!input.shift && input.code === 'Backquote') return 'quickTabs';
   if (!input.shift && input.key === 'Tab') return 'prevTab';
   if (input.shift && input.code === 'KeyU') return 'ultraView';
+  if (input.shift && input.code === 'KeyY') return 'translate';
   return null;
 }
 

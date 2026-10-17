@@ -191,7 +191,7 @@ export interface WorkspaceBridge {
   /** Phím tắt khung app bấm khi con trỏ đang ở TRONG một <webview> (đang chat
    *  Zalo chẳng hạn): phím không bubble ra host page, main process bắt hộ rồi
    *  chuyển về đây. Trả về hàm hủy đăng ký. Optional: preload cũ chưa expose. */
-  onShortcut?(cb: (name: 'quickTabs' | 'prevTab' | 'ultraView') => void): () => void;
+  onShortcut?(cb: (name: 'quickTabs' | 'prevTab' | 'ultraView' | 'translate') => void): () => void;
   /** Chuột phải một file trong Explorer → "Open with → VHS DevBox". Main
    *  process gửi đường dẫn tuyệt đối xuống, app tự chọn tab theo đuôi file
    *  (xem openLocalPath trong app/page.tsx). Optional: preload cũ chưa expose. */

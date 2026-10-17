@@ -40,6 +40,7 @@ import WorkWorkspaceRaw from '@/components/WorkWorkspace';
 import WorkAlertHost from '@/components/WorkAlertHost';
 import ConvertHost from '@/components/ConvertHost';
 import StockTickerHost, { StockHeaderButton } from '@/components/StockTickerHost';
+import QuickTranslate from '@/components/QuickTranslate';
 import OpenLinkDialog from '@/components/OpenLinkDialog';
 import NotificationCenter from '@/components/NotificationCenter';
 import QuickTabs, { type TabInfo } from '@/components/QuickTabs';
@@ -1044,6 +1045,8 @@ export default function Home() {
       {/* Bảng giá cổ phiếu thu nhỏ ở góc màn hình — MẶC ĐỊNH TẮT, bật ở nút 📈
           trên header. Sống ngoài mọi pane nên đổi tab vẫn thấy giá. */}
       <StockTickerHost />
+      {/* Chấm dịch nhanh — nổi ở mọi view (Ctrl+Shift+Y). */}
+      <QuickTranslate />
 
       {/* Bấm link trong tin nhắn Zalo/Telegram → hỏi mở ở tab Links hay tab
           Browser. Cửa sổ Zalo không bị đụng tới, vẫn nguyên khung chat. setMode
