@@ -11,7 +11,7 @@
 // giữ focus trong suốt quá trình chọn, và handler Enter của chính ô đó (đóng
 // ngoặc + format) không chạy chồng lên — nó kiểm tra `defaultPrevented`.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import type { Match, Token } from '@/lib/mongoSuggest';
 
 export interface JsonSuggestPick {
@@ -28,9 +28,11 @@ export interface JsonSuggestProps {
   /** Token dưới con trỏ — chỉ dùng để nhớ "đã Esc bỏ qua chữ nào". */
   token: Token | null;
   onPick: (r: JsonSuggestPick) => void;
+  /** Toạ độ đặt bảng (theo khung bọc relative) — thường là ngay dưới con trỏ. Vắng = dưới đáy ô. */
+  pos?: { top: number; left: number } | null;
 }
 
-export default function JsonSuggest({ matches, token, onPick }: JsonSuggestProps) {
+export default function JsonSuggest({ matches, token, onPick, pos }: JsonSuggestProps) {
   const [active, setActive] = useState(0);
   /** Chữ vừa bị Esc bỏ qua — gõ tiếp chữ khác là bảng hiện lại. */
   const [dismissed, setDismissed] = useState('');
@@ -39,6 +41,13 @@ export default function JsonSuggest({ matches, token, onPick }: JsonSuggestProps
   const shown = word && word === dismissed ? [] : matches;
 
   useEffect(() => { setActive(0); }, [word]);
+
+  // Danh sách dài hơn khung → mục đang chọn bằng ↑↓ phải tự cuộn vào tầm nhìn.
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = boxRef.current?.children[active] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [active]);
 
   useEffect(() => {
     if (shown.length === 0) return;
@@ -65,7 +74,8 @@ export default function JsonSuggest({ matches, token, onPick }: JsonSuggestProps
   if (shown.length === 0) return null;
 
   return (
-    <div className="json-suggest" role="listbox">
+    <div className="json-suggest" role="listbox" ref={boxRef}
+      style={pos ? { top: pos.top, left: pos.left, marginTop: 0 } : undefined}>
       {shown.map((m, i) => (
         <button
           key={m.label}

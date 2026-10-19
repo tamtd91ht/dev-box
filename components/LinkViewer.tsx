@@ -105,6 +105,9 @@ const hostOf = (u: string): string => { try { return new URL(u).host; } catch { 
 /** Tiền tố console mà guest dùng để báo "mở URL này ở tab mới" về host. */
 const NEWTAB_PREFIX = '[dbx-newtab] ';
 
+/** Tự điền mật khẩu: chờ form login hiện ra tối đa bao lâu sau khi trang tải xong. */
+const FILL_WAIT_MS = 15_000;
+
 export default function LinkViewer({
   name, url, partition, onClose, onSaveLink, hidden, creds, passwordManager, profile,
   addressBar, history: trackHistory, onOpenNewTab, onUrlChange, opener,
@@ -585,9 +588,11 @@ export default function LinkViewer({
 
   /** Điền user/pass vào form login trong guest.
    *  force=true (bấm 🔑) ghi đè cả khi ô mật khẩu đang có chữ.
+   *  waitMs > 0: chưa có ô mật khẩu thì NGỒI CHỜ ngay trong trang (theo dõi DOM
+   *  + quét thưa) tới khi form hiện ra hoặc hết giờ — cho trang vẽ form muộn.
    *  Trả 'ok' | 'kept' (đang có chữ, không đụng) | 'no-form'. */
-  const injectFill = useCallback(async (username: string, password: string, force = false) => {
-    const code = `(() => {
+  const injectFill = useCallback(async (username: string, password: string, force = false, waitMs = 0) => {
+    const code = `(() => new Promise((resolve) => {
       ${FIELD_JS}
       const setVal = (el, v) => {
         if (!el || v == null) return;
@@ -596,15 +601,40 @@ export default function LinkViewer({
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       };
-      const pw = pwEl();
-      if (!pw) return 'no-form';
-      // Người dùng đã tự gõ mật khẩu → KHÔNG ghi đè (autofill tự động không
-      // được đạp lên thứ đang gõ; bấm 🔑 thì force=true nên vẫn điền).
-      if (pw.value && !${JSON.stringify(Boolean(force))}) return 'kept';
-      setVal(userEl(pw), ${JSON.stringify(username)});
-      setVal(pw, ${JSON.stringify(password)});
-      return 'ok';
-    })()`;
+      const tryFill = () => {
+        const pw = pwEl();
+        if (!pw) return null;
+        // Người dùng đã tự gõ mật khẩu → KHÔNG ghi đè (autofill tự động không
+        // được đạp lên thứ đang gõ; bấm 🔑 thì force=true nên vẫn điền).
+        if (pw.value && !${JSON.stringify(Boolean(force))}) return 'kept';
+        setVal(userEl(pw), ${JSON.stringify(username)});
+        setVal(pw, ${JSON.stringify(password)});
+        return 'ok';
+      };
+      const first = tryFill();
+      const WAIT = ${Math.max(0, Math.floor(waitMs))};
+      if (first || WAIT <= 0) { resolve(first || 'no-form'); return; }
+      let done = false, queued = false;
+      const finish = (r) => {
+        if (done) return;
+        done = true; mo.disconnect(); clearInterval(iv); clearTimeout(to); resolve(r);
+      };
+      const check = () => { const r = tryFill(); if (r) finish(r); };
+      // MutationObserver bắt lúc form được MOUNT; gộp một cụm mutation vào một
+      // lượt quét (trễ 50ms) để trang React re-render dồn dập không tốn CPU.
+      const mo = new MutationObserver(() => {
+        if (queued || done) return;
+        queued = true;
+        setTimeout(() => { queued = false; if (!done) check(); }, 50);
+      });
+      mo.observe(document.documentElement, {
+        childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'hidden', 'type'],
+      });
+      // Quét thưa bù cho thứ observer không thấy: form trong shadow root, hoặc
+      // ô bị ẩn rồi hiện bằng CSS của phần tử cha (không đổi thuộc tính ô).
+      const iv = setInterval(check, 500);
+      const to = setTimeout(() => finish('no-form'), WAIT);
+    }))()`;
     // Điền vào frame NÀO CÓ form. Frame không có ô password trả 'no-form' —
     // vô hại, ta chỉ quan tâm frame nào làm được việc. Ưu tiên 'ok' (đã điền),
     // rồi 'kept' (người dùng đang gõ dở → dừng, không đạp lên), cuối cùng mới
@@ -800,17 +830,16 @@ export default function LinkViewer({
         const best: CredentialOpen | undefined = hits[0];
         if (!best) return;
 
-        // Form login của SPA thường mount SAU sự kiện điều hướng (Rancher render
-        // xong mới có <input type=password>), nên lần điền đầu hay trả 'no-form'.
-        // Thử lại vài nhịp thưa dần rồi thôi — 'kept' cũng dừng: người dùng đang
-        // gõ dở, không đạp lên.
-        for (const wait of [0, 300, 800, 1500]) {
-          if (wait) await new Promise((r) => setTimeout(r, wait));
-          if (!alive) return;
-          const r = await injectFill(best.username, best.password);
-          if (r === 'ok') { if (best.id) void pwTouch(best.id); return; }
-          if (r === 'kept') return;
-        }
+        // Form login của SPA thường mount SAU sự kiện điều hướng (Rancher, app
+        // Next.js như hr.omicrm.io render xong mới có <input type=password>).
+        // Trước đây thử lại theo mốc cố định 0/0.3/0.8/1.5s rồi bỏ — trang vẽ
+        // form chậm hơn ~2.6s là trượt, và chỉ "ăn may" được khi trang tự đổi
+        // URL thêm một lần (did-navigate-in-page kéo thêm một vòng). Giờ đoạn
+        // điền tự CHỜ trong trang tới khi ô mật khẩu xuất hiện (tối đa
+        // FILL_WAIT_MS). 'kept' = người dùng đang gõ dở, không đạp lên.
+        const r = await injectFill(best.username, best.password, false, FILL_WAIT_MS);
+        if (!alive) return;
+        if (r === 'ok' && best.id) void pwTouch(best.id);
       })();
     };
 

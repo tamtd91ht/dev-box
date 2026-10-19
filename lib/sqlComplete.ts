@@ -58,12 +58,27 @@ const KEYWORDS = [
   'DISTINCT', 'UNION', 'UNION ALL', 'EXISTS', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
   'ASC', 'DESC', 'WITH', 'INSERT INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE FROM',
   'RETURNING', 'COALESCE', 'NULLIF', 'CAST',
+  // Ít dùng hơn — đứng SAU để không chen lên trên các từ phổ biến (xem `_ord`).
+  'NOT IN', 'NOT LIKE', 'NOT ILIKE', 'IS DISTINCT FROM', 'IS NOT DISTINCT FROM', 'SIMILAR TO', 'ANY', 'ALL',
+  'LEFT OUTER JOIN', 'CROSS JOIN', 'LATERAL', 'USING', 'INTERSECT', 'EXCEPT',
+  'OVER', 'PARTITION BY', 'WINDOW', 'ROWS BETWEEN', 'UNBOUNDED PRECEDING', 'CURRENT ROW', 'FILTER',
+  'NULLS FIRST', 'NULLS LAST', 'FETCH FIRST', 'INTERVAL', 'TRUE', 'FALSE', 'NULL',
+  'CURRENT_DATE', 'CURRENT_TIMESTAMP', 'EXPLAIN', 'EXPLAIN ANALYZE',
+  'ON CONFLICT', 'DO NOTHING', 'DO UPDATE SET',
 ];
 
 /** Hàm tổng hợp — tách khỏi KEYWORDS để gắn sẵn cặp ngoặc khi nhận. */
 const FUNCTIONS = [
   'count', 'sum', 'avg', 'min', 'max', 'now', 'date_trunc', 'to_char',
   'to_timestamp', 'extract', 'length', 'lower', 'upper', 'trim', 'json_agg',
+  // Bổ sung — cũng xếp sau nhóm phổ biến.
+  'string_agg', 'array_agg', 'jsonb_agg', 'json_build_object', 'jsonb_build_object', 'to_jsonb',
+  'jsonb_array_elements', 'jsonb_extract_path_text', 'jsonb_each', 'row_number', 'rank', 'dense_rank',
+  'lag', 'lead', 'first_value', 'last_value', 'ntile', 'percentile_cont', 'bool_and', 'bool_or',
+  'greatest', 'least', 'round', 'ceil', 'floor', 'abs', 'concat', 'concat_ws', 'substring', 'replace',
+  'split_part', 'position', 'left', 'right', 'lpad', 'rpad', 'regexp_replace', 'regexp_matches',
+  'date_part', 'age', 'to_date', 'make_interval', 'generate_series', 'unnest', 'array_length',
+  'cardinality', 'md5', 'gen_random_uuid', 'format',
 ];
 
 /**
@@ -164,7 +179,9 @@ function predicateAppend(dataType: string): { append: string; caretBack: number 
  */
 export function completeSql(ctx: CompleteCtx): SqlSuggestion[] {
   const { text, caret } = ctx;
-  const limit = ctx.limit ?? 12;
+  // Bảng gợi ý tự cuộn — 12 cũ quá ít: cột, bảng, từ khoá, hàm chen nhau nên
+  // cột của bảng nhiều cột hay bị đẩy khỏi danh sách.
+  const limit = ctx.limit ?? 40;
   const { word, start } = wordAt(text, caret);
   const prev = prevKeyword(text, start);
 

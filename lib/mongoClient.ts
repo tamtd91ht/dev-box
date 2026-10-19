@@ -499,9 +499,15 @@ export interface FieldInfo {
 }
 
 /** How many documents to sample, and how deep/wide to walk them. */
-const FIELD_SAMPLE_DOCS = 60;
-const FIELD_MAX_DEPTH = 4;
-const FIELD_MAX_PATHS = 400;
+// Cũ: 60 document ĐẦU (thứ tự tự nhiên) · sâu 4 · tối đa 400 path · mảng chỉ xét
+// phần tử đầu → field chỉ có ở document mới / hiếm / phần tử sau của mảng biến
+// mất khỏi gợi ý. Giờ: 200 document đầu + 500 document NGẪU NHIÊN ($sample).
+const FIELD_SAMPLE_DOCS = 200;
+const FIELD_RANDOM_DOCS = 500;
+const FIELD_MAX_DEPTH = 8;
+const FIELD_MAX_PATHS = 5000;
+/** Số phần tử object trong một mảng được duyệt để lấy hình dạng. */
+const FIELD_ARRAY_ELEMS = 20;
 
 function bsonTypeOf(v: unknown): string {
   if (v === null || v === undefined) return 'null';
@@ -531,9 +537,15 @@ function collectPaths(doc: Document, out: Map<string, FieldInfo>, prefix = '', d
     else out.set(path, { path, type: bsonTypeOf(value), seen: 1 });
 
     if (Array.isArray(value)) {
-      // Descend into the first object element only — enough to expose the shape.
-      const el = value.find((x) => x && typeof x === 'object' && !Array.isArray(x) && !(x as { _bsontype?: string })._bsontype);
-      if (el) collectPaths(el as Document, out, path, depth + 1);
+      // Duyệt vài phần tử object đầu — phần tử sau có thể mang field mà phần tử đầu không có.
+      let n = 0;
+      for (const el of value) {
+        if (n >= FIELD_ARRAY_ELEMS) break;
+        if (el && typeof el === 'object' && !Array.isArray(el) && !(el as { _bsontype?: string })._bsontype) {
+          collectPaths(el as Document, out, path, depth + 1);
+          n++;
+        }
+      }
     } else if (value && typeof value === 'object' && bsonTypeOf(value) === 'object') {
       collectPaths(value as Document, out, path, depth + 1);
     }
@@ -545,13 +557,17 @@ export async function sampleFields(conn: MongoConnection, dbName: string, collNa
   const db = requireName(dbName, 'database');
   const coll = requireName(collName, 'collection');
   const client = await getClient(conn);
-  const rows = await client
-    .db(db)
-    .collection(coll)
-    .find({}, { limit: FIELD_SAMPLE_DOCS, maxTimeMS: MAX_TIME_FIND_MS })
-    .toArray();
+  const c = client.db(db).collection(coll);
+  const rows = await c.find({}, { limit: FIELD_SAMPLE_DOCS, maxTimeMS: MAX_TIME_FIND_MS }).toArray();
+  // $sample: chọn ngẫu nhiên khắp collection (bộ đếm ngẫu nhiên, không quét
+  // toàn bộ khi mẫu nhỏ so với collection). View/collection không hỗ trợ thì bỏ qua.
+  const random = await c
+    .aggregate([{ $sample: { size: FIELD_RANDOM_DOCS } }], { maxTimeMS: MAX_TIME_FIND_MS })
+    .toArray()
+    .catch(() => [] as Document[]);
   const out = new Map<string, FieldInfo>();
   for (const row of rows) collectPaths(row, out);
+  for (const row of random) collectPaths(row, out);
   return [...out.values()].sort((a, b) => b.seen - a.seen || a.path.localeCompare(b.path));
 }
 

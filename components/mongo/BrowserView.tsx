@@ -700,21 +700,20 @@ function BrowserViewInner({
 
       {/* ── Query + results ───────────────────────────────────────────── */}
       <div className="mongo-main">
-        <QueryTabBar
-          tabs={tabs.tabs}
-          activeId={activeId}
-          onSelect={tabs.select}
-          onOpen={() => tabs.open({ openDb })}
-          onClose={tabs.close}
-          onRename={tabs.rename}
-        />
-        {!selected ? (
-          <p className="empty" style={{ margin: 'auto' }}>Chọn một collection ở cây bên trái để truy vấn.</p>
-        ) : (
-          <>
-            <div className="status-line" style={{ justifyContent: 'space-between' }}>
-              <strong className="mongo-ns">{selected.db}.{selected.coll}</strong>
-              <div className="mongo-subnav">
+        {/* MỘT hàng: tab truy vấn · db.coll · Documents/Indexes/Stats (trước là hai hàng chồng). */}
+        <div className="qtabs-line">
+          <QueryTabBar
+            tabs={tabs.tabs}
+            activeId={activeId}
+            onSelect={tabs.select}
+            onOpen={() => tabs.open({ openDb })}
+            onClose={tabs.close}
+            onRename={tabs.rename}
+          />
+          {selected && (
+            <div className="qtabs-line-end">
+              <strong className="mongo-ns" title={`${selected.db}.${selected.coll}`}>{selected.db}.{selected.coll}</strong>
+              <div className="mongo-subnav subnav-sm">
                 <button className={collTab === 'docs' ? 'on' : ''} onClick={() => setCollTab('docs')}>Documents</button>
                 <button className={collTab === 'indexes' ? 'on' : ''} onClick={() => { setCollTab('indexes'); void loadIndexes(); }}>
                   Indexes{indexes.length > 0 ? ` (${indexes.length})` : ''}
@@ -722,6 +721,12 @@ function BrowserViewInner({
                 <button className={collTab === 'stats' ? 'on' : ''} onClick={() => { setCollTab('stats'); void loadStats(); }}>Stats</button>
               </div>
             </div>
+          )}
+        </div>
+        {!selected ? (
+          <p className="empty" style={{ margin: 'auto' }}>Chọn một collection ở cây bên trái để truy vấn.</p>
+        ) : (
+          <>
 
             {error && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{error}</pre>}
             {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
@@ -736,7 +741,7 @@ function BrowserViewInner({
 
                   {queryMode === 'find' ? (
                     <>
-                      <label className="mongo-field">
+                      <label className="mongo-field grow">
                         <span className="mongo-field-head">
                           <span>Filter (JSON/EJSON — hỗ trợ {'{"$oid"}, {"$date"}'})</span>
                           <span className="mongo-field-tools">
@@ -752,6 +757,7 @@ function BrowserViewInner({
                           ref={filterRef}
                           className="input mono mongo-json-input"
                           rows={4}
+                          onScroll={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
                           value={filter}
                           onChange={(e) => { setFilter(e.target.value); setCaret(e.target.selectionStart); setJsonError(null); }}
                           onFocus={(e) => { setFocusBox('filter'); setCaret(e.target.selectionStart); }}
@@ -776,6 +782,7 @@ function BrowserViewInner({
                             value={filter}
                             caret={caret}
                             onPick={(r) => applyPick('filter', r)}
+                            textareaRef={filterRef}
                           />
                         )}
                       </label>
@@ -823,7 +830,7 @@ function BrowserViewInner({
                     </>
                   ) : (
                     <>
-                      <label className="mongo-field">
+                      <label className="mongo-field grow">
                         <span className="mongo-field-head">
                           <span>Pipeline (JSON array — $out/$merge bị chặn, tự thêm $limit 500)</span>
                           <span className="mongo-field-tools">
@@ -839,6 +846,7 @@ function BrowserViewInner({
                           ref={pipelineRef}
                           className="input mono mongo-json-input"
                           rows={8}
+                          onScroll={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
                           value={pipeline}
                           onChange={(e) => { setPipeline(e.target.value); setCaret(e.target.selectionStart); setJsonError(null); }}
                           onFocus={(e) => { setFocusBox('pipeline'); setCaret(e.target.selectionStart); }}
@@ -857,6 +865,7 @@ function BrowserViewInner({
                             value={pipeline}
                             caret={caret}
                             onPick={(r) => applyPick('pipeline', r)}
+                            textareaRef={pipelineRef}
                           />
                         )}
                       </label>

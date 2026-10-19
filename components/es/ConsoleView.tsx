@@ -236,7 +236,7 @@ function ensureConsoleSetup(monaco: Monaco) {
       // ── Trong body JSON ──────────────────────────────────────────────────
       const bodyStart = model.getOffsetAt({ lineNumber: owner!.startLine + 1, column: 1 });
       const ctx = esQueryContext(text.slice(bodyStart), offset - bodyStart);
-      const suggestions = esBodySuggestions(ctx, fieldsOf(pathIndex(owner!.path)));
+      const suggestions = esBodySuggestions(ctx, fieldsOf(pathIndex(owner!.path)), text.slice(bodyStart));
       if (suggestions.length === 0) return { suggestions: [] };
 
       const start = model.getPositionAt(bodyStart + ctx.replaceStart);

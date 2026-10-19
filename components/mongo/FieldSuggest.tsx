@@ -11,7 +11,8 @@
 // scripts/check-mongo-query.ts soát), phần danh sách + phím ở JsonSuggest
 // (dùng chung với ô sắp xếp của màn xuất ES).
 
-import { useMemo } from 'react';
+import { useMemo, type RefObject } from 'react';
+import { caretPopupPos } from '@/lib/caretCoords';
 import type { FieldInfo } from '@/lib/mongo';
 import { buildMatches, tokenAt } from '@/lib/mongoSuggest';
 import JsonSuggest, { type JsonSuggestPick } from '../JsonSuggest';
@@ -30,10 +31,14 @@ export interface FieldSuggestProps {
   onPick: (replacement: JsonSuggestPick) => void;
   /** Rendered under the box; hidden when there is nothing to offer. */
   disabled?: boolean;
+  /** Textarea đang gõ — có thì bảng gợi ý nổi ngay dưới con trỏ thay vì dưới đáy ô. */
+  textareaRef?: RefObject<HTMLTextAreaElement | null>;
 }
 
-export default function FieldSuggest({ fields, value, caret, onPick, disabled }: FieldSuggestProps) {
+export default function FieldSuggest({ fields, value, caret, onPick, disabled, textareaRef }: FieldSuggestProps) {
   const token = disabled ? null : tokenAt(value, caret);
   const matches = useMemo(() => buildMatches(fields, value, token), [fields, value, token]);
-  return <JsonSuggest matches={matches} token={token} onPick={onPick} />;
+  const ta = textareaRef?.current;
+  const pos = matches.length && ta ? caretPopupPos(ta, caret, 360) : null;
+  return <JsonSuggest matches={matches} token={token} onPick={onPick} pos={pos} />;
 }

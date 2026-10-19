@@ -11,13 +11,13 @@
 // Chỉ hiện phiên của CONNECTION đang chọn: phiên của cụm khác lẫn vào đây thì
 // bấm nhầm sẽ query sai cụm.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   loadSessions, removeSession, clearSessionsFor, fmtSessionTime,
   type SessionScope, type WorkSession,
 } from '@/lib/sessionHistory';
 
-export default function SessionHistory({ scope, connectionId, onRestore, reloadKey }: {
+export default function SessionHistory({ scope, connectionId, onRestore, reloadKey, popover = false }: {
   scope: SessionScope;
   /** Connection đang chọn — lọc danh sách. Rỗng = chưa chọn, không hiện gì. */
   connectionId: string;
@@ -29,12 +29,25 @@ export default function SessionHistory({ scope, connectionId, onRestore, reloadK
    * state giữa hai component.
    */
   reloadKey?: number;
+  /** Danh sách mở dạng popover nổi (không đẩy bố cục xuống) — cho thanh chật như hàng tab ES. */
+  popover?: boolean;
 }) {
   const [list, setList] = useState<WorkSession[]>([]);
   /** Mặc định thu gọn — danh sách là thứ tra khi cần, không phải thứ chiếm chỗ. */
   const [open, setOpen] = useState(false);
 
   useEffect(() => { setList(loadSessions(scope)); }, [scope, reloadKey]);
+
+  // Popover: bấm ra ngoài / Esc thì đóng.
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!popover || !open) return;
+    const down = (e: MouseEvent) => { if (!boxRef.current?.contains(e.target as Node)) setOpen(false); };
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', down);
+    document.addEventListener('keydown', key);
+    return () => { document.removeEventListener('mousedown', down); document.removeEventListener('keydown', key); };
+  }, [popover, open]);
 
   const mine = list.filter((s) => s.connectionId === connectionId);
 
@@ -55,18 +68,18 @@ export default function SessionHistory({ scope, connectionId, onRestore, reloadK
   if (!connectionId || mine.length === 0) return null;
 
   return (
-    <div className="sess-hist">
+    <div className={`sess-hist${popover ? ' pop' : ''}`} ref={boxRef}>
       <button className="sess-hist-head" onClick={() => setOpen((v) => !v)}
         title={open ? 'Thu gọn' : 'Mở danh sách phiên đã làm gần đây'}>
         <span className="sess-hist-caret" aria-hidden>{open ? '▾' : '▸'}</span>
         ⏱ Phiên gần đây <span className="sess-hist-n">{mine.length}</span>
       </button>
       {open && (
-        <>
+        <div className={popover ? 'sess-hist-pop' : 'sess-hist-inline'}>
           <div className="sess-hist-list">
             {mine.map((s) => (
               <div key={s.id} className="sess-item">
-                <button className="sess-item-open" onClick={() => onRestore(s.state)}
+                <button className="sess-item-open" onClick={() => { onRestore(s.state); if (popover) setOpen(false); }}
                   title="Điền lại phiên này vào form (không tự chạy)">
                   <span className="sess-item-label">{s.label}</span>
                   <span className="sess-item-time">{fmtSessionTime(s.at)}</span>
@@ -76,7 +89,7 @@ export default function SessionHistory({ scope, connectionId, onRestore, reloadK
             ))}
           </div>
           <button className="ghost sm sess-hist-clear" onClick={clearAll}>✕ Xóa hết</button>
-        </>
+        </div>
       )}
     </div>
   );

@@ -15,6 +15,7 @@
 // server-side (size ≤200, from+size ≤10k, 15s timeout, scripting rejected).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   listEsIndices,
   esMapping,
@@ -151,6 +152,9 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialIndex]);
 
+  /** Ô trên hàng tab nhận thanh điều khiển của tab đang xem (portal). */
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+
   return (
     <div className="es-dtabs-wrap">
       <div className="es-dtabs" role="tablist">
@@ -174,14 +178,17 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
         ))}
         <button className="chip-btn es-dtab-add" title="Mở thêm một tab index khác"
           onClick={() => addTab()}>+</button>
+        {/* Điều khiển của tab ĐANG XEM (☰ · chọn index · ⧉ · Documents/Mapping/Info)
+            được portal vào đây — một hàng thay cho ba hàng xếp chồng trước kia. */}
+        <span className="es-dtabs-slot" ref={setSlot} />
+        <SessionHistory
+          scope="es"
+          connectionId={connectionId}
+          reloadKey={sessBump}
+          onRestore={restoreSession}
+          popover
+        />
       </div>
-
-      <SessionHistory
-        scope="es"
-        connectionId={connectionId}
-        reloadKey={sessBump}
-        onRestore={restoreSession}
-      />
 
       {idxError && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{idxError}</pre>}
 
@@ -200,6 +207,7 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
             onOpenInNewTab={addTab}
             restoreBody={restore && restore.tabId === t.id ? restore : null}
             onRecordSession={() => setSessBump((n) => n + 1)}
+            toolbarSlot={t.id === activeId ? slot : null}
           />
         </div>
       ))}
@@ -222,13 +230,15 @@ interface BrowserSessionProps {
   restoreBody: { body: string; seq: number } | null;
   /** Báo lên cha là vừa ghi một phiên, để danh sách đọc lại. */
   onRecordSession: () => void;
+  /** Chỗ trên hàng tab để đặt thanh điều khiển (chỉ tab đang xem có; null = vẽ tại chỗ). */
+  toolbarSlot: HTMLElement | null;
 }
 
 /** Một phiên truy vấn: index + body + kết quả + mapping của riêng một tab. */
 function BrowserSession({
   connectionId, tabId, index: selected, onPickIndex,
   indices, idxLoading, onReloadIndices, onOpenInNewTab,
-  restoreBody, onRecordSession,
+  restoreBody, onRecordSession, toolbarSlot,
 }: BrowserSessionProps) {
   /** Tiền tố khoá model Monaco cho mọi khung JSON của phiên này. Gồm cả index
    *  vì đổi index là nội dung khác hẳn, đừng dùng lại model cũ.
@@ -394,23 +404,26 @@ function BrowserSession({
           <p className="empty" style={{ margin: 'auto' }}>Chọn một index ở danh sách bên trái để truy vấn.</p>
         ) : (
           <>
-            <div className="status-line" style={{ justifyContent: 'space-between', gap: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
-                <button
-                  className="chip-btn"
-                  title={treeVisible ? 'Ẩn danh sách indices' : 'Hiện danh sách indices'}
-                  onClick={() => setShowTree((v) => !v)}
-                >☰</button>
-                <IndexPicker indices={indices} value={selected} onPick={selectIndex} />
-                <button className="chip-btn" title="Mở index này ở một tab mới để so sánh"
-                  onClick={() => onOpenInNewTab(selected)}>⧉ tab mới</button>
-              </div>
-              <div className="es-subnav">
-                <button className={idxTab === 'docs' ? 'on' : ''} onClick={() => setIdxTab('docs')}>Documents</button>
-                <button className={idxTab === 'mapping' ? 'on' : ''} onClick={() => { setIdxTab('mapping'); if (!mapping) void loadMapping(); }}>Mapping</button>
-                <button className={idxTab === 'info' ? 'on' : ''} onClick={() => setIdxTab('info')}>Info</button>
-              </div>
-            </div>
+            {(() => {
+              const bar = (
+                <div className="es-sess-bar">
+                  <button
+                    className="chip-btn"
+                    title={treeVisible ? 'Ẩn danh sách indices' : 'Hiện danh sách indices'}
+                    onClick={() => setShowTree((v) => !v)}
+                  >☰</button>
+                  <IndexPicker indices={indices} value={selected} onPick={selectIndex} />
+                  <button className="chip-btn" title="Mở index này ở một tab mới để so sánh"
+                    onClick={() => onOpenInNewTab(selected)}>⧉</button>
+                  <div className="es-subnav es-subnav-sm">
+                    <button className={idxTab === 'docs' ? 'on' : ''} onClick={() => setIdxTab('docs')}>Documents</button>
+                    <button className={idxTab === 'mapping' ? 'on' : ''} onClick={() => { setIdxTab('mapping'); if (!mapping) void loadMapping(); }}>Mapping</button>
+                    <button className={idxTab === 'info' ? 'on' : ''} onClick={() => setIdxTab('info')}>Info</button>
+                  </div>
+                </div>
+              );
+              return toolbarSlot ? createPortal(bar, toolbarSlot) : bar;
+            })()}
 
             {error && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{error}</pre>}
             {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
@@ -420,6 +433,7 @@ function BrowserSession({
                 <div className="es-querybar">
                   <QueryEditor
                     mode="body"
+                    fill
                     value={body}
                     onChange={setBody}
                     onRun={() => void runSearch()}

@@ -395,21 +395,20 @@ function BrowserViewInner({
 
       {/* ── SQL + results ─────────────────────────────────────────────── */}
       <div className="pg-main">
-        <QueryTabBar
-          tabs={tabs.tabs}
-          activeId={activeId}
-          onSelect={tabs.select}
-          onOpen={() => tabs.open({ openDb })}
-          onClose={tabs.close}
-          onRename={tabs.rename}
-        />
-        {!selected ? (
-          <p className="empty" style={{ margin: 'auto' }}>Chọn một table ở cây bên trái để truy vấn.</p>
-        ) : (
-          <>
-            <div className="status-line" style={{ justifyContent: 'space-between' }}>
-              <strong className="pg-ns">{selected.db} › {selected.schema}.{selected.table}</strong>
-              <div className="pg-subnav">
+        {/* MỘT hàng: tab truy vấn · db › schema.table · Rows/Columns/Indexes (trước là hai hàng chồng). */}
+        <div className="qtabs-line">
+          <QueryTabBar
+            tabs={tabs.tabs}
+            activeId={activeId}
+            onSelect={tabs.select}
+            onOpen={() => tabs.open({ openDb })}
+            onClose={tabs.close}
+            onRename={tabs.rename}
+          />
+          {selected && (
+            <div className="qtabs-line-end">
+              <strong className="pg-ns" title={`${selected.db} › ${selected.schema}.${selected.table}`}>{selected.db} › {selected.schema}.{selected.table}</strong>
+              <div className="pg-subnav subnav-sm">
                 <button className={tab === 'rows' ? 'on' : ''} onClick={() => patch({ tab: 'rows' })}>Rows</button>
                 <button className={tab === 'columns' ? 'on' : ''} onClick={() => { patch({ tab: 'columns' }); if (columns.length === 0) void loadColumns(); }}>
                   Columns{columns.length > 0 ? ` (${columns.length})` : ''}
@@ -417,6 +416,12 @@ function BrowserViewInner({
                 <button className={tab === 'indexes' ? 'on' : ''} onClick={() => { patch({ tab: 'indexes' }); void loadIndexes(); }}>Indexes</button>
               </div>
             </div>
+          )}
+        </div>
+        {!selected ? (
+          <p className="empty" style={{ margin: 'auto' }}>Chọn một table ở cây bên trái để truy vấn.</p>
+        ) : (
+          <>
 
             {error && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{error}</pre>}
             {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
@@ -428,7 +433,7 @@ function BrowserViewInner({
                       mọi cú bấm bên trong nó sang control của nó, nên bấm chuột
                       vào một dòng gợi ý sẽ bị lái thành "focus lại textarea" và
                       gợi ý không bao giờ nhận được bằng chuột. */}
-                  <div className="pg-field">
+                  <div className="pg-field grow">
                     <span>SQL (chạy trong transaction READ ONLY · timeout 15s · trần 500 dòng — Ctrl+Enter để chạy · Ctrl+Space gợi ý)</span>
                     {/* Gợi ý lấy CỘT của bảng đang chọn + BẢNG của database đang
                         mở — đều là dữ liệu đã nạp sẵn cho cây bên trái và tab

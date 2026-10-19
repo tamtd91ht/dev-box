@@ -20,19 +20,73 @@
 import type { FieldInfo } from './mongo';
 
 /** Query operators worth suggesting once the user types a `$`. */
-export const OPERATORS = [
+export const QUERY_OPERATORS = [
   '$eq', '$ne', '$gt', '$gte', '$lt', '$lte', '$in', '$nin',
   '$and', '$or', '$nor', '$not', '$exists', '$type', '$regex', '$options',
   '$elemMatch', '$all', '$size', '$mod', '$expr', '$text',
 ];
+
+/** Stage của aggregation pipeline — khuôn value [text, vị trí con trỏ]. */
+export const STAGE_TEMPLATES: Record<string, [string, number]> = {
+  $match: ['{}', 1],
+  $group: ['{"_id": "$"}', 10],
+  $sort: ['{"": -1}', 2],
+  $limit: ['10', 0],
+  $skip: ['0', 0],
+  $project: ['{"": 1}', 2],
+  $addFields: ['{"": ""}', 2],
+  $set: ['{"": ""}', 2],
+  $unset: ['""', 1],
+  $unwind: ['"$"', 2],
+  $lookup: ['{"from": "", "localField": "", "foreignField": "", "as": ""}', 10],
+  $count: ['"total"', 1],
+  $facet: ['{"": []}', 2],
+  $bucket: ['{"groupBy": "$", "boundaries": [], "default": "other"}', 14],
+  $bucketAuto: ['{"groupBy": "$", "buckets": 5}', 14],
+  $sortByCount: ['"$"', 2],
+  $replaceRoot: ['{"newRoot": "$"}', 14],
+  $replaceWith: ['"$"', 2],
+  $sample: ['{"size": 10}', 9],
+  $densify: ['{"field": "", "range": {"step": 1, "bounds": "full"}}', 11],
+  $fill: ['{"output": {}}', 12],
+};
+
+/** Accumulator (dùng trong $group / $bucket / $setWindowFields). */
+export const ACCUMULATORS = [
+  '$sum', '$avg', '$min', '$max', '$first', '$last', '$push', '$addToSet', '$count',
+  '$stdDevPop', '$stdDevSamp', '$top', '$bottom', '$firstN', '$lastN', '$mergeObjects',
+];
+
+/** Toán tử biểu thức hay dùng trong $project / $addFields / $expr. */
+export const EXPRESSION_OPERATORS = [
+  '$cond', '$ifNull', '$switch', '$concat', '$substr', '$substrCP', '$toLower', '$toUpper', '$trim', '$split',
+  '$strLenCP', '$regexMatch', '$toString', '$toInt', '$toLong', '$toDouble', '$toDecimal', '$toDate', '$toObjectId',
+  '$convert', '$dateToString', '$dateFromString', '$dateTrunc', '$dateAdd', '$dateDiff', '$year', '$month',
+  '$dayOfMonth', '$dayOfWeek', '$hour', '$minute', '$week', '$add', '$subtract', '$multiply', '$divide', '$round',
+  '$floor', '$ceil', '$abs', '$arrayElemAt', '$filter', '$map', '$reduce', '$in', '$isArray', '$concatArrays',
+  '$slice', '$reverseArray', '$objectToArray', '$arrayToObject', '$literal', '$getField', '$let',
+  '$eq', '$ne', '$gt', '$gte', '$lt', '$lte', '$and', '$or', '$not', '$size', '$type',
+];
+
+/** Mọi toán tử gợi ý khi gõ `$` (trùng tên giữ một bản). */
+export const OPERATORS = [...new Set([
+  ...QUERY_OPERATORS, ...Object.keys(STAGE_TEMPLATES), ...ACCUMULATORS, ...EXPRESSION_OPERATORS,
+])];
+
+const OP_KIND = new Map<string, string>([
+  ...EXPRESSION_OPERATORS.map((o) => [o, 'expr'] as [string, string]),
+  ...ACCUMULATORS.map((o) => [o, 'accumulator'] as [string, string]),
+  ...QUERY_OPERATORS.map((o) => [o, 'operator'] as [string, string]),
+  ...Object.keys(STAGE_TEMPLATES).map((o) => [o, 'stage'] as [string, string]),
+]);
 
 /** Toán tử nhận MẢNG làm toán hạng — chèn `[]` thay vì `""`. */
 const ARRAY_OPERATORS = new Set(['$in', '$nin', '$and', '$or', '$nor', '$all']);
 /** Toán tử nhận giá trị boolean. */
 const BOOL_OPERATORS = new Set(['$exists']);
 
-/** Số gợi ý hiện cùng lúc. */
-const MAX_MATCHES = 8;
+/** Số gợi ý hiện cùng lúc — bảng tự cuộn, nên cho nhiều để không "mất" field. */
+const MAX_MATCHES = 50;
 
 export interface Token {
   word: string;
@@ -157,7 +211,15 @@ export function valueTemplate(type: string): [string, number] {
 
 /** Khuôn value cho một toán tử `$…`. */
 export function operatorTemplate(op: string): [string, number] {
-  if (ARRAY_OPERATORS.has(op)) return ['[]', 1];
+  if (STAGE_TEMPLATES[op]) return STAGE_TEMPLATES[op];
+  if (op === '$count' || op === '$literal') return ['{}', 1];
+  if (ARRAY_OPERATORS.has(op) || ['$concat', '$add', '$subtract', '$multiply', '$divide', '$cond', '$ifNull',
+    '$concatArrays', '$arrayElemAt', '$slice'].includes(op)) return ['[]', 1];
+  if (['$sum', '$avg', '$min', '$max', '$first', '$last', '$push', '$addToSet', '$toString', '$toInt', '$toLong',
+    '$toDouble', '$toDate', '$toObjectId', '$toLower', '$toUpper', '$year', '$month', '$dayOfMonth',
+    '$isArray', '$abs', '$floor', '$ceil'].includes(op)) return ['"$"', 2];
+  // So sánh ($eq, $gte…) và $size giữ khuôn `""` như ô filter — dạng mảng của
+  // biểu thức pipeline thì người dùng tự gõ `[`.
   if (BOOL_OPERATORS.has(op)) return ['true', 0];
   return ['""', 1];
 }
@@ -238,8 +300,20 @@ export function buildMatches(fields: FieldInfo[], value: string, token: Token | 
   const slot = slotAt(value, token);
 
   if (w.startsWith('$')) {
-    return OPERATORS.filter((o) => o.startsWith(w)).slice(0, MAX_MATCHES)
-      .map((o) => buildMatch(token, slot, o, 'operator', ...operatorTemplate(o)));
+    const lw = w.toLowerCase();
+    const ops = OPERATORS
+      .filter((o) => o.toLowerCase().includes(lw))
+      .sort((a, b) => Number(b.toLowerCase().startsWith(lw)) - Number(a.toLowerCase().startsWith(lw)))
+      .map((o) => buildMatch(token, slot, o, OP_KIND.get(o) ?? 'operator', ...operatorTemplate(o)));
+    // Ở chỗ đặt GIÁ TRỊ trong pipeline, `"$ten` thường là THAM CHIẾU field
+    // (`"_id": "$tenant_id"`) — gợi ý field kèm `$` phía trước.
+    const refs = slot.bare && w.length > 1
+      ? fields
+        .filter((f) => f.path.toLowerCase().includes(w.slice(1)))
+        .sort((a, b) => Number(b.path.toLowerCase().startsWith(w.slice(1))) - Number(a.path.toLowerCase().startsWith(w.slice(1))))
+        .map((f) => buildMatch(token, slot, `$${f.path}`, f.type, '', 0))
+      : [];
+    return [...refs, ...ops].slice(0, MAX_MATCHES);
   }
 
   return fields
