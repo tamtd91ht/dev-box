@@ -1275,7 +1275,10 @@ export default function WorkWorkspace() {
                     ].filter(Boolean).join(' · ') + ' — double-click để thêm công việc'}
                   >
                     <span className="wk-day-num">
-                      {cell.day}{dls.length > 0 && <span className="wk-day-dl" title={`${dls.length} deadline`}>⏰</span>}
+                      {/* Mùng 1 dương: ghi kèm tháng + màu nổi bật — thấy ngay ranh giới tháng ở các ô mờ đầu/cuối lịch. */}
+                      {cell.day === 1
+                        ? <span className="wk-day-m1">{cell.day}/{Number(cell.date.slice(5, 7))}</span>
+                        : cell.day}{dls.length > 0 && <span className="wk-day-dl" title={`${dls.length} deadline`}>⏰</span>}
                       <LunarTag date={cell.date} onHover={lunar.set} />
                     </span>
                     <span className="wk-day-chips">
