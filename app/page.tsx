@@ -231,7 +231,9 @@ type NavPos = 'top' | 'left' | 'right';
 const NAV_KEY = 'devbox.navPos';
 
 export default function Home() {
-  const [mode, setMode] = useState<Mode>('git');
+  // Mở app là vào thẳng Công việc (lịch + việc trong ngày). Nếu người dùng đã
+  // ẩn tab này thì effect fallback bên dưới tự chuyển sang tab hiện khác.
+  const [mode, setMode] = useState<Mode>('work');
 
   // Kéo "nút tìm nhanh" (preset Redis/Kafka/Mongo/ES/PG) từ configs/presets.json
   // về localStorage một lần lúc khởi động. Chạy ở đây — gốc cây — để tab nào mở
