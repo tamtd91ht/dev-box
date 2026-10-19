@@ -164,9 +164,9 @@ export const canChiYear = (y: number) => `${CAN[(y + 6) % 10]} ${CHI[(y + 8) % 1
 export const canChiMonth = (l: LunarDate) => `${CAN[(l.year * 12 + l.month + 3) % 10]} ${CHI[(l.month + 1) % 12]}`;
 export const canChiDay = (jd: number) => `${CAN[(jd + 9) % 10]} ${CHI[(jd + 1) % 12]}`;
 
-/** Nhãn ngắn trong ô lịch: mùng 1 ghi 'ngày-tháng' (vd '1-9', thêm 'N' nếu nhuận), còn lại chỉ số ngày. */
+/** Nhãn ngắn trong ô lịch: mùng 1 ghi 'ngày/tháng' (vd '1/9', thêm 'N' nếu nhuận), còn lại chỉ số ngày. */
 export function lunarShort(l: LunarDate): string {
-  return l.day === 1 ? `${l.day}-${l.month}${l.leap ? 'N' : ''}` : String(l.day);
+  return l.day === 1 ? `${l.day}/${l.month}${l.leap ? 'N' : ''}` : String(l.day);
 }
 
 /** Lễ âm lịch của ngày (null nếu không có). Tính cả Giao thừa (ngày cuối tháng Chạp). */
