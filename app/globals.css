@@ -7455,7 +7455,7 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-day.today .wk-day-num { color: var(--ok); }
 .wk-day-dl { font-size: 10px; }
 .wk-day-num > .wk-lunar { margin-left: auto; }
-/* Ngày âm lịch: dạng ngày-tháng, màu riêng --lunar; mùng 1 đậm + nền, rằm đậm; ngày lễ âm đỏ + chấm. */
+/* Ngày âm lịch: dạng ngày-tháng, màu riêng --lunar; mùng 1 màu đỏ, rằm đậm; ngày lễ âm đỏ + chấm. */
 .wk-lunar {
   display: inline-flex; align-items: center; gap: 3px;
   font-size: 10px; font-weight: 600; color: var(--lunar);
@@ -7463,12 +7463,8 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .wk-lunar:hover { background: color-mix(in srgb, var(--lunar) 16%, transparent); }
 .wk-lunar.key { font-weight: 700; }
-/* Mùng 1: đậm + nền nhạt để thấy ngay đầu tháng âm. */
-.wk-lunar.m1 {
-  font-size: 10.5px; font-weight: 800;
-  background: color-mix(in srgb, var(--lunar) 18%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lunar) 45%, transparent);
-}
+/* Mùng 1: chỉ đổi sang màu đỏ, cỡ/độ đậm như ngày thường. */
+.wk-lunar.m1 { color: var(--err); }
 .wk-lunar.holiday { color: var(--err); font-weight: 700; }
 .wk-lunar-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--err); }
 .wk-side-lunar { font-weight: 500; white-space: nowrap; }
@@ -7523,7 +7519,6 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-lunar-check { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .wk-lunar-alert { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .wk-lunar-alert select { width: 140px; }
-.wk-lunar-repeat { display: flex; flex-direction: column; gap: 6px; }
 .wk-lunar-del { color: var(--err); }
 .wk-day-chips { display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow: hidden; }
 .wk-chip {

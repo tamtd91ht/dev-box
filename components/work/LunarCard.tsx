@@ -33,7 +33,7 @@ export function useLunarHover() {
 export function LunarTag({ date, onHover, full }: { date: string; onHover: (h: LunarHover | null) => void; full?: boolean }) {
   const l = lunarOf(date);
   const holiday = lunarHoliday(date);
-  const cls = ['wk-lunar', l.day === 1 || l.day === 15 ? 'key' : '', l.day === 1 ? 'm1' : '', holiday ? 'holiday' : ''].filter(Boolean).join(' ');
+  const cls = ['wk-lunar', l.day === 15 ? 'key' : '', l.day === 1 ? 'm1' : '', holiday ? 'holiday' : ''].filter(Boolean).join(' ');
   return (
     <span
       className={cls}
@@ -126,10 +126,10 @@ export function LunarCard({ hover, reminders, onKeep, onLeave, onAdd, onEdit }: 
   );
 }
 
-const REPEAT_OPTS: { v: LunarReminder['repeat']; icon: string; label: string }[] = [
-  { v: 'none', icon: '1️⃣', label: 'Không lặp' },
-  { v: 'monthly', icon: '🔁', label: 'Hằng tháng' },
-  { v: 'yearly', icon: '📆', label: 'Hằng năm' },
+const REPEAT_OPTS: { v: LunarReminder['repeat']; label: string }[] = [
+  { v: 'none', label: 'Không lặp' },
+  { v: 'monthly', label: 'Hằng tháng' },
+  { v: 'yearly', label: 'Hằng năm' },
 ];
 
 export interface LunarReminderInput {
@@ -140,10 +140,7 @@ export interface LunarReminderInput {
   alert: { daysBefore: number; time: string } | null;
 }
 
-/**
- * Form thêm/sửa lời nhắc âm lịch. Hai bước: nhập nội dung + cấu hình nhắc →
- * bấm Lưu thì HỎI lặp lại (một lần / hằng tháng / hằng năm) rồi mới ghi.
- */
+/** Form thêm/sửa lời nhắc âm lịch — một màn: nội dung, lặp lại, cấu hình nhắc. */
 export function LunarReminderForm({ date, initial, busy, err, onSave, onRemove, onClose }: {
   /** Ngày dương được chọn khi thêm mới; bản sửa giữ nguyên ngày gốc của nó. */
   date: string;
@@ -158,25 +155,18 @@ export function LunarReminderForm({ date, initial, busy, err, onSave, onRemove, 
   const l = lunarOf(anchorDate);
   const [title, setTitle] = useState(initial?.title ?? '');
   const [note, setNote] = useState(initial?.note ?? '');
+  const [repeat, setRepeat] = useState<LunarReminder['repeat']>(initial?.repeat ?? 'none');
   const [alertOn, setAlertOn] = useState(initial ? initial.alert !== null : true);
   const [daysBefore, setDaysBefore] = useState(initial?.alert?.daysBefore ?? 0);
   const [time, setTime] = useState(initial?.alert?.time ?? '08:00');
-  const [step, setStep] = useState<'edit' | 'repeat'>('edit');
-  const [repeat, setRepeat] = useState<LunarReminder['repeat']>(initial?.repeat ?? 'none');
   const [localErr, setLocalErr] = useState<string | null>(null);
 
-  const next = () => {
+  const save = () => {
     if (!title.trim()) { setLocalErr('Nhập tiêu đề trước đã.'); return; }
     if (alertOn && !/^\d{2}:\d{2}$/.test(time)) { setLocalErr('Chọn giờ nhắc.'); return; }
     setLocalErr(null);
-    setStep('repeat');
+    onSave({ anchorDate, title: title.trim(), note, repeat, alert: alertOn ? { daysBefore, time } : null });
   };
-  const save = () => onSave({
-    anchorDate, title: title.trim(), note, repeat,
-    alert: alertOn ? { daysBefore, time } : null,
-  });
-  const repeatHint = (v: LunarReminder['repeat']) =>
-    repeatText({ lDay: l.day, lMonth: l.month, lYear: l.year, leap: l.leap, repeat: v });
 
   return (
     <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && !busy && onClose()}>
@@ -188,64 +178,49 @@ export function LunarReminderForm({ date, initial, busy, err, onSave, onRemove, 
           <button className="ghost sm" onClick={onClose} disabled={busy}>✕</button>
         </div>
 
-        {step === 'edit' ? (
-          <>
-            <label className="wk-field"><span>Tiêu đề *</span>
-              <input className="input" autoFocus value={title} onChange={(e) => setTitle(e.target.value)}
-                placeholder="VD: Giỗ ông nội, mùng 1 thắp hương, đóng tiền nhà…"
-                onKeyDown={(e) => { if (e.key === 'Enter') next(); }} />
-            </label>
-            <label className="wk-field"><span>Ghi chú</span>
-              <textarea className="input" rows={4} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Chi tiết (tùy chọn)" />
-            </label>
-            <div className="wk-field">
-              <span>Thông báo nhắc</span>
-              <label className="wk-lunar-check">
-                <input type="checkbox" checked={alertOn} onChange={(e) => setAlertOn(e.target.checked)} /> Bật nhắc
-              </label>
-              {alertOn && (
-                <div className="wk-lunar-alert">
-                  <select className="input" value={daysBefore} onChange={(e) => setDaysBefore(Number(e.target.value))}>
-                    <option value={0}>Đúng ngày</option>
-                    {[1, 2, 3, 5, 7, 10, 15, 30].map((n) => <option key={n} value={n}>Trước {n} ngày</option>)}
-                  </select>
-                  <span className="small" style={{ color: 'var(--muted)' }}>lúc</span>
-                  <input className="input" type="time" value={time} onChange={(e) => setTime(e.target.value)} />
-                </div>
-              )}
+        <label className="wk-field"><span>Tiêu đề *</span>
+          <input className="input" autoFocus value={title} onChange={(e) => setTitle(e.target.value)}
+            placeholder="VD: Giỗ ông nội, mùng 1 thắp hương, đóng tiền nhà…"
+            onKeyDown={(e) => { if (e.key === 'Enter') save(); }} />
+        </label>
+        <label className="wk-field"><span>Ghi chú</span>
+          <textarea className="input" rows={4} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Chi tiết (tùy chọn)" />
+        </label>
+        <label className="wk-field"><span>Lặp lại</span>
+          <select className="input" value={repeat} onChange={(e) => setRepeat(e.target.value as LunarReminder['repeat'])}>
+            {REPEAT_OPTS.map((o) => (
+              <option key={o.v} value={o.v}>
+                {o.label} — {repeatText({ lDay: l.day, lMonth: l.month, lYear: l.year, leap: l.leap, repeat: o.v }).split(' — ')[1]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="wk-field">
+          <span>Thông báo nhắc</span>
+          <label className="wk-lunar-check">
+            <input type="checkbox" checked={alertOn} onChange={(e) => setAlertOn(e.target.checked)} /> Bật nhắc
+          </label>
+          {alertOn && (
+            <div className="wk-lunar-alert">
+              <select className="input" value={daysBefore} onChange={(e) => setDaysBefore(Number(e.target.value))}>
+                <option value={0}>Đúng ngày</option>
+                {[1, 2, 3, 5, 7, 10, 15, 30].map((n) => <option key={n} value={n}>Trước {n} ngày</option>)}
+              </select>
+              <span className="small" style={{ color: 'var(--muted)' }}>lúc</span>
+              <input className="input" type="time" value={time} onChange={(e) => setTime(e.target.value)} />
             </div>
-            {(localErr || err) && <div className="wk-move-err">{localErr || err}</div>}
-            <div className="status-line" style={{ marginTop: 12, gap: 8 }}>
-              {initial && (
-                <button className="ghost sm wk-lunar-del" disabled={busy}
-                  onClick={() => { if (window.confirm(`Xoá "${initial.title}"?`)) onRemove(initial); }}>🗑 Xoá</button>
-              )}
-              <span style={{ flex: 1 }} />
-              <button className="ghost sm" onClick={onClose} disabled={busy}>Huỷ</button>
-              <button className="sm" onClick={next} disabled={busy}>Lưu…</button>
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="small" style={{ margin: '0 0 8px' }}>Có lặp lại <b>{title.trim()}</b> không?</p>
-            <div className="wk-lunar-repeat" role="radiogroup" aria-label="Lặp lại">
-              {REPEAT_OPTS.map((o) => (
-                <button key={o.v} role="radio" aria-checked={repeat === o.v}
-                  className={`wk-kindtab${repeat === o.v ? ' on' : ''}`} onClick={() => setRepeat(o.v)} disabled={busy}>
-                  <b>{o.icon} {o.label}</b>
-                  <span className="small">{repeatHint(o.v)}</span>
-                </button>
-              ))}
-            </div>
-            <p className="small" style={{ color: 'var(--muted)', margin: '8px 0 0' }}>{alertText(alertOn ? { daysBefore, time } : null)}</p>
-            {err && <div className="wk-move-err">{err}</div>}
-            <div className="status-line" style={{ marginTop: 12, gap: 8 }}>
-              <button className="ghost sm" onClick={() => setStep('edit')} disabled={busy}>‹ Quay lại</button>
-              <span style={{ flex: 1 }} />
-              <button className="sm" onClick={save} disabled={busy}>{busy ? 'Đang lưu…' : '✓ Lưu'}</button>
-            </div>
-          </>
-        )}
+          )}
+        </div>
+        {(localErr || err) && <div className="wk-move-err">{localErr || err}</div>}
+        <div className="status-line" style={{ marginTop: 12, gap: 8 }}>
+          {initial && (
+            <button className="ghost sm wk-lunar-del" disabled={busy}
+              onClick={() => { if (window.confirm(`Xoá "${initial.title}"?`)) onRemove(initial); }}>🗑 Xoá</button>
+          )}
+          <span style={{ flex: 1 }} />
+          <button className="ghost sm" onClick={onClose} disabled={busy}>Huỷ</button>
+          <button className="sm" onClick={save} disabled={busy}>{busy ? 'Đang lưu…' : '✓ Lưu'}</button>
+        </div>
       </div>
     </div>
   );
