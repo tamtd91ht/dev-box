@@ -41,7 +41,7 @@ const SCHEME = 'es-query';
  */
 export type QueryEditorMode = 'query' | 'body';
 
-const SUGGEST_BY_MODE: Record<QueryEditorMode, (ctx: EsQueryContext, fields: EsField[]) => EsSuggestion[]> = {
+const SUGGEST_BY_MODE: Record<QueryEditorMode, (ctx: EsQueryContext, fields: EsField[], text: string) => EsSuggestion[]> = {
   query: esSuggestions,
   body: esBodySuggestions,
 };
@@ -83,7 +83,7 @@ function ensureEsSetup(monaco: Monaco) {
 
       const text = model.getValue();
       const ctx = esQueryContext(text, model.getOffsetAt(position));
-      const items = SUGGEST_BY_MODE[meta.mode](ctx, meta.fields);
+      const items = SUGGEST_BY_MODE[meta.mode](ctx, meta.fields, text);
       if (items.length === 0) return { suggestions: [] };
 
       const start = model.getPositionAt(ctx.replaceStart);
@@ -129,9 +129,11 @@ export interface QueryEditorProps {
   placeholder?: string;
   /** Ô nhập phần `query` (mặc định) hay nguyên `body` _search. */
   mode?: QueryEditorMode;
+  /** Giãn ô soạn hết chiều cao khung cha (cột trái tab Dữ liệu) thay vì cao theo số dòng. */
+  fill?: boolean;
 }
 
-export default function QueryEditor({ value, onChange, onRun, fields = [], label, placeholder, mode = 'query' }: QueryEditorProps) {
+export default function QueryEditor({ value, onChange, onRun, fields = [], label, placeholder, mode = 'query', fill = false }: QueryEditorProps) {
   const theme = useEsTheme();
   const editorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null);
   const [modelPath] = useState(() => `${SCHEME}:/browser/q-${++seq}.json`);
@@ -170,7 +172,7 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
   }, [onChange]);
 
   return (
-    <div className="es-qed">
+    <div className={`es-qed${fill ? ' fill' : ''}`}>
       <div className="es-qed-bar">
         <span className="es-qed-label">
           {label ?? 'Query DSL — chỉ phần "query" (trống = match_all)'}
@@ -186,7 +188,7 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
         <button className="chip-btn" title="Xoá nội dung" disabled={!value} onClick={() => { onChange(''); setFormatErr(null); }}>✕</button>
       </div>
 
-      <div className="es-qed-box" style={{ height }}>
+      <div className="es-qed-box" style={fill ? undefined : { height }}>
         <Editor
           path={modelPath}
           language="json"

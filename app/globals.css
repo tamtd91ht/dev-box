@@ -2800,7 +2800,7 @@ pre.kafka-drawer-body {
  * trống nửa dưới màn hình.
  */
 .es-workspace-main {
-  display: flex; flex-direction: column; gap: 10px;
+  display: flex; flex-direction: column; gap: 6px;
   min-width: 0; min-height: 0; align-self: stretch; height: 100%;
 }
 
@@ -2905,7 +2905,7 @@ pre.kafka-drawer-body {
  * nên chuỗi flex phải xuyên qua wrapper → pane → .es-browser, cứ thiếu một mắt
  * min-height:0 là vùng kết quả phình ra đẩy tràn trang thay vì cuộn trong khung.
  */
-.es-dtabs-wrap { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.es-dtabs-wrap { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; }
 .es-dtab-pane { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .es-dtab-pane[hidden] { display: none; }
 
@@ -2928,6 +2928,12 @@ pre.kafka-drawer-body {
 }
 .es-dtab-x:hover { color: var(--err); }
 .es-dtab-add { padding: 3px 9px; }
+/* Một hàng duy nhất: tab index · [thanh điều khiển tab đang xem] · phiên gần đây. */
+.es-dtabs-slot { display: contents; }
+.es-sess-bar { display: flex; align-items: center; gap: 6px; flex: 1 1 420px; min-width: 0; margin-left: 6px; }
+.es-sess-bar .es-ixpick { flex: 0 1 300px; }
+.es-sess-bar .es-subnav { margin-left: auto; flex-wrap: nowrap; }
+.es-subnav-sm button { padding: 3px 10px; font-size: 12px; }
 
 /* ── Data browser: tree + main ─────────────────────────────────────────── */
 .es-browser {
@@ -3009,6 +3015,14 @@ pre.kafka-drawer-body {
 .es-qed-box:focus-within { border-color: color-mix(in srgb, var(--accent) 60%, var(--glass-brd)); }
 .es-qed-err { margin: 0; font-size: 11.5px; color: var(--err); font-family: var(--mono); word-break: break-word; }
 .es-qed-hint { font-size: 11px; }
+/* fill: ô soạn ăn hết chiều cao còn lại của cột trái (tab Dữ liệu) — truy vấn
+   + aggs dài đọc trọn, không bị bóp 18 dòng trong khi bên dưới trống trơn. */
+.es-querybar:has(> .es-qed.fill) { min-height: 0; }
+.es-qed.fill { flex: 1 1 auto; min-height: 0; }
+.es-qed.fill .es-qed-box { flex: 1 1 0; min-height: 220px; position: relative; }
+/* Wrapper <section> của @monaco-editor/react để height:100% inline — % trên
+   flex item lồng nhau không chắc ra số; ghim tuyệt đối vào khung cho chắc. */
+.es-qed.fill .es-qed-box > section { position: absolute !important; inset: 0; height: auto !important; }
 
 /* ── Tab Console (Dev Tools): editor | kết quả | lịch sử ───────────────── */
 /*
@@ -7741,6 +7755,16 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   border: 1px solid var(--glass-brd); border-radius: 8px; padding: 4px;
 }
 .sess-hist-clear { align-self: flex-start; font-size: 10px; }
+.sess-hist-inline { display: contents; }
+/* Biến thể popover: nổi dưới nút, không đẩy bố cục (hàng tab ES). */
+.sess-hist.pop { position: relative; flex: none; }
+.sess-hist-pop {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 40;
+  width: min(420px, 80vw); display: flex; flex-direction: column; gap: 4px; padding: 6px;
+  background: var(--panel, var(--bg)); border: 1px solid var(--glass-brd-hover); border-radius: 10px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / .35);
+}
+.sess-hist-pop .sess-hist-list { max-height: 50vh; border: none; padding: 0; }
 .sess-item { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .sess-item-open {
   flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; text-align: left;
@@ -9762,6 +9786,23 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* ── Thanh tab query (Mongo · Postgres) ──────────────────────────────────────
    Xem components/QueryTabBar + lib/queryTabs: mỗi tab là một điểm làm việc đầy
    đủ (db/bảng + câu query + kết quả), nhớ theo từng connection. */
+/* Hàng tab truy vấn (Mongo/PG) gộp chung với tên db.coll + tab con: một hàng thay vì hai. */
+.qtabs-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.qtabs-line > .qtabs { flex: 1 1 260px; min-width: 0; }
+.qtabs-line-end { display: flex; align-items: center; gap: 8px; margin-left: auto; min-width: 0; }
+.qtabs-line-end > strong { font-size: 12px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subnav-sm { flex-wrap: nowrap; }
+.subnav-sm button { padding: 3px 10px !important; font-size: 12px !important; }
+
+/* Ô soạn query/pipeline (Mongo) và SQL (PG) giãn hết chiều cao cột trái. */
+.cs-split-left .mongo-field.grow { flex: 1 1 auto; min-height: 0; }
+.cs-split-left .mongo-field.grow > textarea { flex: 1 1 auto; min-height: 180px; resize: none; }
+.cs-split-left .pg-querybar > .pg-field.grow { flex: 1 1 auto; min-height: 0; }
+.cs-split-left .pg-field.grow > .sqled { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.cs-split-left .pg-field.grow > .sqled > textarea { flex: 1 1 auto; min-height: 200px; resize: none; }
+/* Bảng gợi ý định vị theo con trỏ (style inline) — bỏ khoảng hở của kiểu "dưới đáy ô". */
+.sqled-pop[style] { margin-top: 0; }
+
 .qtabs {
   flex: none; display: flex; align-items: center; gap: 3px;
   padding-bottom: 5px; border-bottom: 1px solid var(--glass-brd);

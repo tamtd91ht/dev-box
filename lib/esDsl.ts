@@ -749,12 +749,27 @@ export const ES_SEARCH_BODY_KEYS: { name: string; detail: string; body: string }
   opt('timeout', 'giới hạn thời gian phía ES', '"${1:10s}"'),
 ];
 
-/** Các loại aggregation hay dùng. */
+/** Mọi loại aggregation (bucket + metric + pipeline) — gợi ý khi đặt agg mới. */
 export const ES_AGG_TYPES: { name: string; detail: string; body: string }[] = [
+  // ── Bucket ──
   opt('terms', 'gom nhóm theo giá trị field', '{ "field": "${1:field}", "size": ${2:10} }'),
   opt('date_histogram', 'gom nhóm theo mốc thời gian', '{ "field": "${1:createdAt}", "calendar_interval": "${2:1d}" }'),
   opt('histogram', 'gom nhóm theo khoảng số', '{ "field": "${1:field}", "interval": ${2:10} }'),
-  opt('range', 'gom nhóm theo khoảng tự định nghĩa', '{ "field": "${1:field}", "ranges": [{ "to": 10 }, { "from": 10 }] }'),
+  opt('range', 'gom nhóm theo khoảng tự định nghĩa', '{ "field": "${1:field}", "ranges": [{ "to": ${2:10} }, { "from": ${2:10} }] }'),
+  opt('date_range', 'gom nhóm theo khoảng ngày', '{ "field": "${1:createdAt}", "ranges": [{ "from": "${2:now-7d/d}", "to": "${3:now/d}" }] }'),
+  opt('filter', 'lọc trước khi thống kê', '{ "term": { "${1:field}": "${2:value}" } }'),
+  opt('filters', 'nhiều nhóm, mỗi nhóm một điều kiện', '{ "filters": { "${1:nhom_a}": { "term": { "${2:field}": "${3:value}" } } } }'),
+  opt('composite', 'gom nhóm nhiều field + phân trang (after)', '{ "size": ${1:100}, "sources": [{ "${2:ten}": { "terms": { "field": "${3:field}" } } }] }'),
+  opt('multi_terms', 'gom nhóm theo tổ hợp nhiều field', '{ "terms": [{ "field": "${1:field_a}" }, { "field": "${2:field_b}" }] }'),
+  opt('significant_terms', 'giá trị nổi bật bất thường', '{ "field": "${1:field}" }'),
+  opt('rare_terms', 'giá trị hiếm', '{ "field": "${1:field}", "max_doc_count": ${2:1} }'),
+  opt('auto_date_histogram', 'tự chọn mốc thời gian theo số bucket', '{ "field": "${1:createdAt}", "buckets": ${2:10} }'),
+  opt('missing', 'document thiếu field', '{ "field": "${1:field}" }'),
+  opt('nested', 'thống kê trong field nested', '{ "path": "${1:parent}" }'),
+  opt('reverse_nested', 'thoát khỏi nested về document gốc', '{}'),
+  opt('global', 'bỏ qua query, tính trên cả index', '{}'),
+  opt('sampler', 'chỉ tính trên mẫu document điểm cao', '{ "shard_size": ${1:200} }'),
+  // ── Metric ──
   opt('cardinality', 'đếm số giá trị khác nhau', '{ "field": "${1:field}" }'),
   opt('value_count', 'đếm số giá trị', '{ "field": "${1:field}" }'),
   opt('avg', 'trung bình', '{ "field": "${1:field}" }'),
@@ -762,60 +777,253 @@ export const ES_AGG_TYPES: { name: string; detail: string; body: string }[] = [
   opt('min', 'nhỏ nhất', '{ "field": "${1:field}" }'),
   opt('max', 'lớn nhất', '{ "field": "${1:field}" }'),
   opt('stats', 'min/max/avg/sum/count một lượt', '{ "field": "${1:field}" }'),
-  opt('percentiles', 'phân vị', '{ "field": "${1:field}" }'),
-  opt('filter', 'lọc trước khi thống kê', '{ "term": { "${1:field}": "${2:value}" } }'),
-  opt('nested', 'thống kê trong field nested', '{ "path": "${1:parent}" }'),
+  opt('extended_stats', 'stats + phương sai, độ lệch chuẩn', '{ "field": "${1:field}" }'),
+  opt('percentiles', 'phân vị', '{ "field": "${1:field}", "percents": [${2:50, 95, 99}] }'),
+  opt('percentile_ranks', 'giá trị nằm ở phân vị bao nhiêu', '{ "field": "${1:field}", "values": [${2:100}] }'),
+  opt('median_absolute_deviation', 'độ lệch tuyệt đối trung vị', '{ "field": "${1:field}" }'),
+  opt('weighted_avg', 'trung bình có trọng số', '{ "value": { "field": "${1:field}" }, "weight": { "field": "${2:weight}" } }'),
   opt('top_hits', 'vài document tiêu biểu mỗi nhóm', '{ "size": ${1:1} }'),
+  opt('top_metrics', 'giá trị field của document đứng đầu', '{ "metrics": { "field": "${1:field}" }, "sort": { "${2:createdAt}": "desc" } }'),
+  // ── Pipeline (tính trên kết quả agg khác) ──
+  opt('bucket_sort', 'sắp xếp / cắt bucket của agg cha', '{ "sort": [{ "${1:_count}": { "order": "desc" } }], "size": ${2:10} }'),
+  opt('bucket_selector', 'lọc bucket theo điều kiện (script bị chặn)', '{ "buckets_path": { "${1:c}": "${2:_count}" }, "script": "params.${1:c} > ${3:0}" }'),
+  opt('avg_bucket', 'trung bình qua các bucket', '{ "buckets_path": "${1:agg_cha>metric}" }'),
+  opt('sum_bucket', 'tổng qua các bucket', '{ "buckets_path": "${1:agg_cha>metric}" }'),
+  opt('max_bucket', 'bucket lớn nhất', '{ "buckets_path": "${1:agg_cha>metric}" }'),
+  opt('min_bucket', 'bucket nhỏ nhất', '{ "buckets_path": "${1:agg_cha>metric}" }'),
+  opt('stats_bucket', 'stats qua các bucket', '{ "buckets_path": "${1:agg_cha>metric}" }'),
+  opt('cumulative_sum', 'cộng dồn (trong histogram)', '{ "buckets_path": "${1:metric}" }'),
+  opt('derivative', 'chênh lệch so với bucket trước', '{ "buckets_path": "${1:metric}" }'),
 ];
 
 const AGG_TYPE_NAMES = new Set(ES_AGG_TYPES.map((a) => a.name));
 const AGG_CONTAINERS = new Set(['aggs', 'aggregations']);
 
+const FIELD_OPT = (detail = 'field áp dụng') => opt('field', detail, '"${1:field}"');
+const MISSING_OPT = opt('missing', 'giá trị thay cho document thiếu field', '"${1:0}"');
+const METRIC_OPTS = [FIELD_OPT(), MISSING_OPT, opt('format', 'định dạng kết quả (vd 0.00)', '"${1:0.00}"')];
+const BUCKETS_PATH_OPTS = [
+  opt('buckets_path', 'đường tới metric (agg>metric, _count)', '"${1:_count}"'),
+  opt('gap_policy', 'xử lý bucket rỗng', '"${1:skip}"'),
+  opt('format', 'định dạng kết quả', '"${1:0.00}"'),
+];
+const TERMS_LIKE = [
+  FIELD_OPT('field để gom nhóm (nên là keyword)'),
+  opt('size', 'số nhóm trả về', '${1:10}'),
+  opt('order', 'thứ tự nhóm (_count / _key / agg con)', '{ "${1:_count}": "${2:desc}" }'),
+  opt('min_doc_count', 'bỏ nhóm quá ít document', '${1:1}'),
+  opt('shard_size', 'số nhóm mỗi shard trả về (chính xác hơn)', '${1:100}'),
+  opt('missing', 'giá trị thay cho document thiếu field', '"${1:N/A}"'),
+  opt('include', 'chỉ lấy giá trị khớp (regex / mảng)', '"${1:.*}"'),
+  opt('exclude', 'bỏ giá trị khớp (regex / mảng)', '"${1:}"'),
+  opt('execution_hint', 'map / global_ordinals', '"${1:map}"'),
+  opt('collect_mode', 'breadth_first / depth_first', '"${1:breadth_first}"'),
+  opt('show_term_doc_count_error', 'hiện sai số đếm', 'true'),
+];
+
 const AGG_OPTIONS: Record<string, OptionSpec[]> = {
-  terms: [
-    opt('field', 'field để gom nhóm (nên là keyword)', '"${1:field}"'),
-    opt('size', 'số nhóm trả về', '${1:10}'),
-    opt('order', 'thứ tự nhóm', '{ "_count": "desc" }'),
-    opt('min_doc_count', 'bỏ nhóm quá ít document', '${1:1}'),
-    opt('missing', 'giá trị thay cho document thiếu field', '"${1:N/A}"'),
+  terms: TERMS_LIKE,
+  significant_terms: [FIELD_OPT(), opt('size', 'số giá trị', '${1:10}'), opt('min_doc_count', 'tối thiểu document', '${1:3}'),
+    opt('background_filter', 'tập nền để so sánh', '{ "term": { "${1:field}": "${2:value}" } }')],
+  rare_terms: [FIELD_OPT(), opt('max_doc_count', 'tối đa document để coi là hiếm', '${1:1}'), opt('include', 'chỉ lấy giá trị khớp', '"${1:.*}"'), opt('exclude', 'bỏ giá trị khớp', '"${1:}"'), MISSING_OPT],
+  multi_terms: [
+    opt('terms', 'danh sách field', '[{ "field": "${1:field_a}" }, { "field": "${2:field_b}" }]'),
+    opt('size', 'số nhóm', '${1:10}'), opt('order', 'thứ tự nhóm', '{ "${1:_count}": "${2:desc}" }'), opt('min_doc_count', 'tối thiểu document', '${1:1}'),
   ],
   date_histogram: [
-    opt('field', 'field kiểu date', '"${1:createdAt}"'),
+    FIELD_OPT('field kiểu date'),
     opt('calendar_interval', 'mốc theo lịch (1d, 1M, 1y)', '"${1:1d}"'),
     opt('fixed_interval', 'mốc cố định (30m, 12h)', '"${1:1h}"'),
     opt('time_zone', 'múi giờ khi chia mốc', '"${1:+07:00}"'),
     opt('format', 'định dạng nhãn mốc', '"${1:yyyy-MM-dd}"'),
     opt('min_doc_count', 'giữ cả mốc rỗng khi = 0', '${1:0}'),
+    opt('extended_bounds', 'ép đủ mốc từ…đến (kèm min_doc_count 0)', '{ "min": "${1:now-30d/d}", "max": "${2:now/d}" }'),
+    opt('hard_bounds', 'chỉ lấy mốc trong khoảng', '{ "min": "${1:now-30d/d}", "max": "${2:now/d}" }'),
+    opt('order', 'thứ tự mốc', '{ "${1:_key}": "${2:asc}" }'),
+    opt('offset', 'dời mốc (vd +6h)', '"${1:+6h}"'),
+    opt('keyed', 'trả bucket dạng object', 'true'),
+    MISSING_OPT,
   ],
+  auto_date_histogram: [FIELD_OPT('field kiểu date'), opt('buckets', 'số bucket mong muốn', '${1:10}'),
+    opt('time_zone', 'múi giờ', '"${1:+07:00}"'), opt('format', 'định dạng nhãn', '"${1:yyyy-MM-dd}"'), opt('minimum_interval', 'mốc nhỏ nhất', '"${1:minute}"')],
+  histogram: [
+    FIELD_OPT('field kiểu số'), opt('interval', 'độ rộng mỗi khoảng', '${1:10}'), opt('min_doc_count', 'giữ cả khoảng rỗng khi = 0', '${1:0}'),
+    opt('extended_bounds', 'ép đủ khoảng từ…đến', '{ "min": ${1:0}, "max": ${2:100} }'),
+    opt('offset', 'dời mốc', '${1:0}'), opt('order', 'thứ tự', '{ "${1:_key}": "${2:asc}" }'), opt('keyed', 'trả bucket dạng object', 'true'), MISSING_OPT,
+  ],
+  range: [FIELD_OPT('field kiểu số'), opt('ranges', 'các khoảng', '[{ "to": ${1:10} }, { "from": ${1:10}, "to": ${2:100} }, { "from": ${2:100} }]'),
+    opt('keyed', 'trả bucket dạng object', 'true'), MISSING_OPT],
+  date_range: [FIELD_OPT('field kiểu date'), opt('ranges', 'các khoảng ngày', '[{ "from": "${1:now-7d/d}", "to": "${2:now/d}" }]'),
+    opt('format', 'định dạng ngày', '"${1:yyyy-MM-dd}"'), opt('time_zone', 'múi giờ', '"${1:+07:00}"'), opt('keyed', 'trả bucket dạng object', 'true'), MISSING_OPT],
+  filters: [opt('filters', 'các nhóm điều kiện', '{ "${1:nhom_a}": { "term": { "${2:field}": "${3:value}" } } }'),
+    opt('other_bucket', 'thêm nhóm "còn lại"', 'true'), opt('other_bucket_key', 'tên nhóm còn lại', '"${1:_other_}"')],
+  composite: [opt('sources', 'các nguồn gom nhóm', '[{ "${1:ten}": { "terms": { "field": "${2:field}" } } }]'),
+    opt('size', 'số bucket mỗi trang', '${1:100}'), opt('after', 'trang sau — after_key của lần trước', '{ "${1:ten}": "${2:value}" }')],
+  missing: [FIELD_OPT()],
+  nested: [opt('path', 'field kiểu nested', '"${1:parent}"')],
+  reverse_nested: [opt('path', 'về nested cha (trống = gốc)', '"${1:}"')],
+  sampler: [opt('shard_size', 'số document mẫu mỗi shard', '${1:200}')],
+  cardinality: [FIELD_OPT(), opt('precision_threshold', 'ngưỡng đếm chính xác (≤ 40000)', '${1:3000}'), MISSING_OPT],
+  value_count: [FIELD_OPT()],
+  avg: METRIC_OPTS, sum: METRIC_OPTS, min: METRIC_OPTS, max: METRIC_OPTS, stats: METRIC_OPTS,
+  median_absolute_deviation: METRIC_OPTS,
+  extended_stats: [...METRIC_OPTS, opt('sigma', 'số sigma cho std_deviation_bounds', '${1:2}')],
+  percentiles: [FIELD_OPT(), opt('percents', 'các phân vị', '[${1:50, 95, 99}]'), opt('keyed', 'trả dạng object', 'false'), MISSING_OPT],
+  percentile_ranks: [FIELD_OPT(), opt('values', 'các giá trị cần xếp hạng', '[${1:100}]'), opt('keyed', 'trả dạng object', 'false'), MISSING_OPT],
+  weighted_avg: [opt('value', 'field giá trị', '{ "field": "${1:field}" }'), opt('weight', 'field trọng số', '{ "field": "${1:weight}" }')],
+  top_hits: [
+    opt('size', 'số document mỗi nhóm', '${1:1}'), opt('from', 'bỏ qua bao nhiêu', '${1:0}'),
+    opt('sort', 'sắp xếp document trong nhóm', '[{ "${1:createdAt}": "${2:desc}" }]'),
+    opt('_source', 'chọn field trả về', '["${1:field}"]'),
+  ],
+  top_metrics: [opt('metrics', 'field cần lấy giá trị', '{ "field": "${1:field}" }'), opt('sort', 'document nào đứng đầu', '{ "${1:createdAt}": "${2:desc}" }'), opt('size', 'số document', '${1:1}')],
+  bucket_sort: [opt('sort', 'sắp xếp bucket', '[{ "${1:_count}": { "order": "desc" } }]'), opt('size', 'giữ bao nhiêu bucket', '${1:10}'), opt('from', 'bỏ qua bao nhiêu', '${1:0}'), opt('gap_policy', 'xử lý bucket rỗng', '"${1:skip}"')],
+  bucket_selector: [opt('buckets_path', 'biến dùng trong script', '{ "${1:c}": "${2:_count}" }'), opt('script', 'điều kiện (script có thể bị chặn)', '"params.${1:c} > ${2:0}"'), opt('gap_policy', 'xử lý bucket rỗng', '"${1:skip}"')],
+  avg_bucket: BUCKETS_PATH_OPTS, sum_bucket: BUCKETS_PATH_OPTS, max_bucket: BUCKETS_PATH_OPTS, min_bucket: BUCKETS_PATH_OPTS,
+  stats_bucket: BUCKETS_PATH_OPTS, cumulative_sum: BUCKETS_PATH_OPTS, derivative: BUCKETS_PATH_OPTS,
 };
-const AGG_OPTIONS_DEFAULT: OptionSpec[] = [
-  opt('field', 'field áp dụng', '"${1:field}"'),
-  opt('missing', 'giá trị thay cho document thiếu field', '"${1:0}"'),
+const AGG_OPTIONS_DEFAULT: OptionSpec[] = [FIELD_OPT(), MISSING_OPT];
+
+/** Enum cho giá trị của key bên trong một agg. */
+const AGG_ENUMS: Record<string, string[]> = {
+  calendar_interval: ['1m', '1h', '1d', '1w', '1M', '1q', '1y'],
+  fixed_interval: ['30s', '1m', '5m', '15m', '30m', '1h', '3h', '6h', '12h', '1d', '7d'],
+  time_zone: ['+07:00', 'Asia/Ho_Chi_Minh', 'UTC'],
+  execution_hint: ['map', 'global_ordinals'],
+  collect_mode: ['breadth_first', 'depth_first'],
+  gap_policy: ['skip', 'insert_zeros', 'keep_values'],
+  minimum_interval: ['second', 'minute', 'hour', 'day', 'month', 'year'],
+  format: ['yyyy-MM-dd', 'yyyy-MM-dd HH:mm', 'yyyy-MM', 'dd/MM/yyyy', 'epoch_millis'],
+};
+
+// Kiểu field hợp với từng nhóm agg — gợi ý field đúng loại lên trước (không có
+// field nào hợp thì vẫn trả hết, để không bao giờ "mất" field).
+const NUMERIC = new Set(['long', 'integer', 'short', 'byte', 'double', 'float', 'half_float', 'scaled_float', 'unsigned_long']);
+const DATE = new Set(['date', 'date_nanos']);
+const NOT_AGGREGATABLE = new Set(['text', 'object', 'nested', 'unknown', 'match_only_text', 'binary']);
+const AGG_FIELD_KIND: Record<string, (t: string) => boolean> = {
+  date_histogram: (t) => DATE.has(t),
+  auto_date_histogram: (t) => DATE.has(t),
+  date_range: (t) => DATE.has(t),
+  histogram: (t) => NUMERIC.has(t),
+  range: (t) => NUMERIC.has(t) || DATE.has(t),
+  avg: (t) => NUMERIC.has(t), sum: (t) => NUMERIC.has(t), stats: (t) => NUMERIC.has(t),
+  extended_stats: (t) => NUMERIC.has(t), percentiles: (t) => NUMERIC.has(t), percentile_ranks: (t) => NUMERIC.has(t),
+  median_absolute_deviation: (t) => NUMERIC.has(t),
+  min: (t) => NUMERIC.has(t) || DATE.has(t), max: (t) => NUMERIC.has(t) || DATE.has(t),
+  nested: (t) => t === 'nested', reverse_nested: (t) => t === 'nested',
+};
+
+function aggFieldItems(fields: EsField[], aggType: string | null, wrap: (f: EsField) => string): EsSuggestion[] {
+  const fit = aggType ? AGG_FIELD_KIND[aggType] ?? ((t: string) => !NOT_AGGREGATABLE.has(t)) : null;
+  const good = fit ? fields.filter((f) => fit(f.type)) : fields;
+  return fieldItems(good.length ? good : fields, wrap);
+}
+
+/** Agg gần nhất (tên loại) chứa con trỏ — đi ngược path. */
+function enclosingAggType(path: string[]): string | null {
+  for (let i = path.length - 1; i >= 1; i--) {
+    if (AGG_TYPE_NAMES.has(path[i]) && AGG_CONTAINERS.has(path[i - 2] ?? '')) return path[i];
+  }
+  return null;
+}
+
+/**
+ * Tên các agg con kiểu METRIC trong text — dùng làm khoá sort cho `order` của
+ * terms (`{"order": {"tong_tien": "desc"}}`). Agg nhiều giá trị (stats…) đưa ra
+ * dạng `ten.avg` như ES yêu cầu.
+ */
+function metricAggNames(text: string): string[] {
+  const out = new Set<string>();
+  const re = /"([^"\\]+)"\s*:\s*\{\s*"(avg|sum|min|max|cardinality|value_count|median_absolute_deviation|weighted_avg|stats|extended_stats|percentiles)"/g;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const [, name, type] = m;
+    if (type === 'stats' || type === 'extended_stats') for (const k of ['avg', 'min', 'max', 'sum', 'count']) out.add(`${name}.${k}`);
+    else if (type === 'percentiles') { out.add(`${name}.50`); out.add(`${name}.95`); out.add(`${name}.99`); }
+    else out.add(name);
+  }
+  return [...out];
+}
+
+/** Key cấp cao nhất của body `_search` — bổ sung các key ít dùng hơn. */
+const ES_SEARCH_BODY_EXTRA: { name: string; detail: string; body: string }[] = [
+  opt('post_filter', 'lọc SAU khi tính aggs (aggs không bị ảnh hưởng)', '{\n  $0\n}'),
+  opt('fields', 'lấy field từ mapping (kể cả runtime)', '["${1:field}"]'),
+  opt('docvalue_fields', 'lấy field từ doc values', '["${1:field}"]'),
+  opt('stored_fields', 'lấy stored field', '["${1:field}"]'),
+  opt('terminate_after', 'dừng sau N document mỗi shard', '${1:1000}'),
+  opt('explain', 'giải thích cách tính điểm', 'true'),
+  opt('version', 'trả kèm _version', 'true'),
+  opt('seq_no_primary_term', 'trả kèm _seq_no / _primary_term', 'true'),
+  opt('track_scores', 'vẫn tính điểm khi sort theo field', 'true'),
+  opt('profile', 'đo thời gian từng phần truy vấn', 'true'),
+  opt('indices_boost', 'tăng điểm theo index', '[{ "${1:index}": ${2:1.5} }]'),
+];
+
+const HIGHLIGHT_OPTIONS: OptionSpec[] = [
+  opt('fields', 'field cần tô', '{ "${1:field}": {} }'),
+  opt('pre_tags', 'thẻ mở', '["${1:<em>}"]'),
+  opt('post_tags', 'thẻ đóng', '["${1:</em>}"]'),
+  opt('fragment_size', 'độ dài mỗi đoạn', '${1:150}'),
+  opt('number_of_fragments', 'số đoạn tối đa (0 = cả field)', '${1:3}'),
+  opt('type', 'unified / plain / fvh', '"${1:unified}"'),
+  opt('require_field_match', 'chỉ tô field có trong query', 'false'),
+];
+const COLLAPSE_OPTIONS: OptionSpec[] = [
+  opt('field', 'field gộp (keyword / số)', '"${1:field}"'),
+  opt('inner_hits', 'document trong mỗi nhóm', '{ "name": "${1:top}", "size": ${2:3} }'),
+  opt('max_concurrent_group_searches', 'giới hạn song song', '${1:4}'),
+];
+const SOURCE_OPTIONS: OptionSpec[] = [
+  opt('includes', 'field lấy', '["${1:field}"]'),
+  opt('excludes', 'field bỏ', '["${1:field}"]'),
 ];
 
 /**
  * Gợi ý cho body `_search` đầy đủ. Nhận đúng ngữ cảnh mà `esQueryContext` trả
  * về, nhưng hiểu thêm tầng ngoài (size/sort/aggs…) trước khi rơi xuống các
- * clause của Query DSL.
+ * clause của Query DSL. `text` (tuỳ chọn) = toàn bộ body — để gợi ý tên agg con
+ * cho `order` của terms.
  */
-export function esBodySuggestions(ctx: EsQueryContext, fields: EsField[]): EsSuggestion[] {
-  return finish(ctx, esBodySuggestionsRaw(ctx, fields));
+export function esBodySuggestions(ctx: EsQueryContext, fields: EsField[], text = ''): EsSuggestion[] {
+  return finish(ctx, esBodySuggestionsRaw(ctx, fields, text));
 }
 
-function esBodySuggestionsRaw(ctx: EsQueryContext, fields: EsField[]): EsSuggestion[] {
+function esBodySuggestionsRaw(ctx: EsQueryContext, fields: EsField[], text: string): EsSuggestion[] {
   const { path, expecting, inArray, valueKey } = ctx;
   const last = path.length ? path[path.length - 1] : null;
   const parent = path.length > 1 ? path[path.length - 2] : null;
+  const grand = path.length > 2 ? path[path.length - 3] : null;
 
   // Đang ở TRONG "sort": [...] (kể cả sort của top_hits) → bộ gợi ý sort riêng.
-  // Bỏ qua khi "sort" chỉ là TÊN FIELD trong một clause (vd. {"term": {"sort": …}}).
+  // Bỏ qua khi "sort" chỉ là TÊN FIELD trong một clause (vd. {"term": {"sort": …}}),
+  // và với sort của bucket_sort (khoá là _count/_key/tên agg, không phải field).
   const si = path.lastIndexOf('sort');
-  if (si !== -1 && (si === 0 || !FIELD_KEYED.has(path[si - 1]))) {
+  if (si !== -1 && (si === 0 || !FIELD_KEYED.has(path[si - 1])) && path[si - 1] !== 'bucket_sort') {
     return esSortSuggestionsRaw({ ...ctx, path: path.slice(si + 1) }, fields);
   }
 
+  // `order` của terms / histogram…: khoá = _count | _key | tên agg con metric.
+  const aggOfOrder = last === 'order' && parent && AGG_TYPE_NAMES.has(parent) ? parent : null;
+  const orderKeys = () => {
+    const keys = ['_count', '_key', ...metricAggNames(text)];
+    return keys.map((k, n) => ({
+      label: k, kind: (k.startsWith('_') ? 'option' : 'field') as EsSuggestion['kind'],
+      detail: k === '_count' ? 'theo số document' : k === '_key' ? 'theo giá trị nhóm' : 'theo agg con',
+      insert: `"${snipLit(k)}": "\${1:${k === '_key' ? 'asc' : 'desc'}}"`,
+      sort: `0${String(n).padStart(3, '0')}`,
+    }));
+  };
+
   if (expecting === 'key') {
-    if (path.length === 0) return optionItems(ES_SEARCH_BODY_KEYS);
+    if (path.length === 0) {
+      return [...optionItems(ES_SEARCH_BODY_KEYS), ...optionItems(ES_SEARCH_BODY_EXTRA).map((s) => ({ ...s, sort: `5${s.sort}` }))];
+    }
+    if (aggOfOrder) return orderKeys();
+    if (path.length === 1 && last === 'highlight') return optionItems(HIGHLIGHT_OPTIONS);
+    if (path.length === 2 && parent === 'highlight' && last === 'fields') return fieldItems(fields, (f) => `"${f.path}": {}`);
+    if (path.length === 1 && last === 'collapse') return optionItems(COLLAPSE_OPTIONS);
+    if (path.length === 1 && last === '_source') return optionItems(SOURCE_OPTIONS);
 
     // `"aggs": {│}` — key ở đây là TÊN agg do người dùng đặt.
     if (last && AGG_CONTAINERS.has(last)) {
@@ -837,21 +1045,66 @@ function esBodySuggestionsRaw(ctx: EsQueryContext, fields: EsField[]): EsSuggest
           insert: `"${a.name}": ${a.body}`,
           sort: `0${String(n).padStart(3, '0')}`,
         })),
-        ...optionItems([opt('aggs', 'agg con lồng bên trong', '{\n  $0\n}')]).map((s) => ({ ...s, sort: '1000' })),
+        ...optionItems([
+          opt('aggs', 'agg con lồng bên trong', '{\n  $0\n}'),
+          opt('meta', 'ghi chú tuỳ ý trả kèm kết quả', '{ "${1:note}": "${2:}" }'),
+        ]).map((s) => ({ ...s, sort: `1${s.sort}` })),
       ];
     }
+    // Agg `filter` / bộ lọc trong `filters.filters.<tên>` → bên trong là một query.
+    if (last === 'filter' && parent && AGG_CONTAINERS.has(grand ?? '')) return esSuggestionsRaw({ ...ctx, path: [] }, fields);
+    if (parent === 'filters' && grand === 'filters') return esSuggestionsRaw({ ...ctx, path: [] }, fields);
+    if (last === 'post_filter' && path.length === 1) return esSuggestionsRaw({ ...ctx, path: [] }, fields);
+    // Nguồn của composite: `"sources": [{ "ten": {│} }]` → loại nguồn.
+    if (parent === 'sources') {
+      return optionItems([
+        opt('terms', 'theo giá trị field', '{ "field": "${1:field}" }'),
+        opt('date_histogram', 'theo mốc thời gian', '{ "field": "${1:createdAt}", "calendar_interval": "${2:1d}" }'),
+        opt('histogram', 'theo khoảng số', '{ "field": "${1:field}", "interval": ${2:10} }'),
+      ]);
+    }
     // `"aggs": {"ten": {"terms": {│}}}` — tuỳ chọn của loại agg đó.
-    if (last && AGG_TYPE_NAMES.has(last) && path.length >= 2) {
+    // grand phải là aggs: `bool.filter`, query `range`/`terms`/`nested` trùng tên loại agg.
+    if (last && AGG_TYPE_NAMES.has(last) && AGG_CONTAINERS.has(grand ?? '')) {
       return optionItems(AGG_OPTIONS[last] ?? AGG_OPTIONS_DEFAULT);
     }
     return esSuggestionsRaw(ctx, fields);
   }
 
   // ── expecting === 'value' ──────────────────────────────────────────────────
-  if (valueKey === 'track_total_hits') return valueItems(['true', 'false'], false);
-  if (valueKey === 'size' || valueKey === 'from' || valueKey === 'min_score') return [];
-  if (valueKey === '_source' && inArray) return fieldItems(fields, (f) => `"${f.path}"`);
-  if (valueKey === 'calendar_interval') return valueItems(['1m', '1h', '1d', '1w', '1M', '1q', '1y'], true);
+  if (path.length === 0) {
+    if (valueKey === 'track_total_hits' || valueKey === 'explain' || valueKey === 'version'
+      || valueKey === 'seq_no_primary_term' || valueKey === 'track_scores' || valueKey === 'profile') {
+      return valueItems(['true', 'false'], false);
+    }
+    if (valueKey === 'size' || valueKey === 'from' || valueKey === 'min_score' || valueKey === 'terminate_after') return [];
+    if (inArray && (valueKey === '_source' || valueKey === 'fields' || valueKey === 'docvalue_fields' || valueKey === 'stored_fields')) {
+      return fieldItems(fields, (f) => `"${f.path}"`);
+    }
+    if (valueKey === 'timeout') return valueItems(['10s', '30s', '1m'], true);
+  }
+  // `_source: { includes: [│] }`
+  if (inArray && (valueKey === 'includes' || valueKey === 'excludes')) return fieldItems(fields, (f) => `"${f.path}"`);
+  if (last === 'highlight' && valueKey === 'type') return valueItems(['unified', 'plain', 'fvh'], true);
+
+  // Giá trị trong `order: { "_count": │ }` hoặc `"order": │`.
+  if (last === 'order' && valueKey && (parent ? AGG_TYPE_NAMES.has(parent) : false)) return valueItems(['desc', 'asc'], true);
+  const aggType = enclosingAggType(path);
+  if (valueKey === 'order' && last && AGG_TYPE_NAMES.has(last)) {
+    return [
+      ...orderKeys().map((o, n) => ({ ...o, label: `{ ${o.label} }`, insert: `{ ${o.insert} }`, sort: `0${String(n).padStart(3, '0')}` })),
+      { label: '[ nhiều tiêu chí ]', kind: 'clause' as const, detail: 'sort nhiều khoá theo thứ tự',
+        insert: '[{ "${1:_count}": "${2:desc}" }, { "${3:_key}": "${4:asc}" }]', sort: '0900' },
+    ];
+  }
+  if (aggType && valueKey && AGG_ENUMS[valueKey]) return valueItems(AGG_ENUMS[valueKey], true);
+  if (aggType && valueKey && ['keyed', 'other_bucket', 'show_term_doc_count_error'].includes(valueKey)) return valueItems(['true', 'false'], false);
+  // `"field": │` trong agg → field đúng kiểu của loại agg lên trước.
+  if (aggType && (valueKey === 'field' || valueKey === 'path')) {
+    return aggFieldItems(fields, valueKey === 'path' ? 'nested' : aggType, (f) => `"${f.path}"`);
+  }
+  if (valueKey === 'calendar_interval') return valueItems(AGG_ENUMS.calendar_interval, true);
+  if (valueKey === 'post_filter' && path.length === 0) return esSuggestionsRaw({ ...ctx, valueKey: 'query' }, fields);
   return esSuggestionsRaw(ctx, fields);
 }
 
@@ -925,7 +1178,10 @@ export function needsLeadingComma(ctx: EsQueryContext): boolean {
 
 // ── Mapping → danh sách field ────────────────────────────────────────────────
 
-const MAX_FIELDS = 500;
+// Index lớn (vd my_omicrm_contact_v1) dễ vượt vài trăm field. Trần cũ 500 cắt
+// theo THỨ TỰ MAPPING (không phải A→Z) nên field nằm sau — tenant_id… — biến mất
+// khỏi gợi ý dù gõ đúng tên. Trần này chỉ còn để chặn mapping bệnh hoạn.
+const MAX_FIELDS = 20_000;
 
 interface MappingNode {
   type?: string;

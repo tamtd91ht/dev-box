@@ -16,6 +16,7 @@
 // dựng lại từ đầu và luôn thiếu một góc nào đó.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { caretPopupPos } from '@/lib/caretCoords';
 import {
   applySuggestion, completeSql,
   type SqlColumnRef, type SqlSuggestion, type SqlTableRef,
@@ -47,6 +48,11 @@ export default function SqlEditor({ value, onChange, onRun, columns, tables, row
    */
   const pendingCaret = useRef<number | null>(null);
 
+  // Bảng gợi ý đặt ngay dưới CON TRỎ (ô giờ cao hết khung — đáy ô có thể rất xa
+  // dòng đang gõ). Tính lại khi chữ/con trỏ/cuộn đổi.
+  const [scrollTick, setScrollTick] = useState(0);
+  const popRef = useRef<HTMLDivElement | null>(null);
+
   const list = useMemo(
     () => (open ? completeSql({ text: value, caret, columns, tables }) : []),
     [open, value, caret, columns, tables],
@@ -55,6 +61,11 @@ export default function SqlEditor({ value, onChange, onRun, columns, tables, row
   // Danh sách đổi thì con trỏ chọn phải về đầu, nếu không nó trỏ vào mục cũ đã
   // biến mất và Enter nhận nhầm thứ người dùng không nhìn thấy.
   useEffect(() => { setSel(0); }, [list.length, value]);
+  // ↑↓ qua mục nằm ngoài khung cuộn của bảng → cuộn nó vào tầm nhìn.
+  useEffect(() => {
+    const el = popRef.current?.children[sel] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [sel]);
 
   useEffect(() => {
     if (pendingCaret.current == null) return;
@@ -150,9 +161,12 @@ export default function SqlEditor({ value, onChange, onRun, columns, tables, row
         // Bấm ra ngoài thì đóng — nhưng CHẬM một nhịp, nếu không cú click vào
         // chính một dòng gợi ý bị blur nuốt mất trước khi onMouseDown chạy.
         onBlur={() => setTimeout(() => setOpen(false), 120)}
+        onScroll={() => setScrollTick((n) => n + 1)}
       />
       {open && list.length > 0 && (
-        <div className="sqled-pop" role="listbox" aria-label="Gợi ý SQL">
+        <div className="sqled-pop" role="listbox" aria-label="Gợi ý SQL" ref={popRef}
+          data-tick={scrollTick}
+          style={ref.current ? caretPopupPos(ref.current, caret, 320) : undefined}>
           {list.map((s, i) => (
             <button
               type="button"
