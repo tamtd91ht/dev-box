@@ -22,6 +22,7 @@
   --ok: #34d399;
   --ok-bg: rgba(52, 211, 153, 0.12);
   --warn: #fbbf24;
+  --lunar: #fb923c;
   --warn-bg: rgba(251, 191, 36, 0.1);
   --err: #fb7185;
   --err-bg: rgba(251, 113, 133, 0.12);
@@ -65,6 +66,7 @@
   --ok: #059669;
   --ok-bg: rgba(5, 150, 105, 0.12);
   --warn: #b45309;
+  --lunar: #c2410c;
   --warn-bg: rgba(180, 83, 9, 0.1);
   --err: #e11d48;
   --err-bg: rgba(225, 29, 72, 0.1);
@@ -7453,15 +7455,21 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-day.today .wk-day-num { color: var(--ok); }
 .wk-day-dl { font-size: 10px; }
 .wk-day-num > .wk-lunar { margin-left: auto; }
-/* Ngày âm lịch: nhỏ, mờ; mùng 1 / rằm đậm màu accent; ngày lễ âm có chấm đỏ. */
+/* Ngày âm lịch: dạng ngày-tháng, màu riêng --lunar; mùng 1 đậm + nền, rằm đậm; ngày lễ âm đỏ + chấm. */
 .wk-lunar {
   display: inline-flex; align-items: center; gap: 3px;
-  font-size: 10px; font-weight: 500; color: var(--muted); opacity: .85;
+  font-size: 10px; font-weight: 600; color: var(--lunar);
   padding: 0 4px; border-radius: 5px; cursor: help;
 }
-.wk-lunar:hover { opacity: 1; background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.wk-lunar.key { color: var(--accent); font-weight: 700; opacity: 1; }
-.wk-lunar.holiday { color: var(--err); font-weight: 700; opacity: 1; }
+.wk-lunar:hover { background: color-mix(in srgb, var(--lunar) 16%, transparent); }
+.wk-lunar.key { font-weight: 700; }
+/* Mùng 1: đậm + nền nhạt để thấy ngay đầu tháng âm. */
+.wk-lunar.m1 {
+  font-size: 10.5px; font-weight: 800;
+  background: color-mix(in srgb, var(--lunar) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lunar) 45%, transparent);
+}
+.wk-lunar.holiday { color: var(--err); font-weight: 700; }
 .wk-lunar-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--err); }
 .wk-side-lunar { font-weight: 500; white-space: nowrap; }
 .wk-side-lunar .wk-lunar { font-size: 11.5px; }
@@ -7493,6 +7501,30 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .wk-lunar-warn { color: var(--warn); font-size: 11px; }
+/* Thẻ hover có nút nên phải nhận chuột (khác tooltip thường). */
+.wk-lunar-card { pointer-events: auto; max-height: calc(100vh - 16px); overflow-y: auto; }
+.wk-lunar-rem {
+  display: flex; flex-direction: column; align-items: stretch; gap: 1px; width: 100%;
+  padding: 5px 8px; border-radius: 8px; text-align: left; cursor: pointer; color: var(--text);
+  background: color-mix(in srgb, var(--lunar) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lunar) 28%, transparent);
+}
+.wk-lunar-rem:hover { border-color: var(--lunar); }
+.wk-lunar-rem-t { font-weight: 600; font-size: 12px; }
+.wk-lunar-rem-s { font-size: 10.5px; color: var(--muted); }
+.wk-lunar-rem-n { font-size: 11px; color: var(--muted); white-space: pre-wrap; max-height: 4.2em; overflow: hidden; }
+.wk-lunar-add { align-self: flex-start; }
+.wk-chip.lunar {
+  color: var(--lunar); cursor: pointer;
+  background: color-mix(in srgb, var(--lunar) 14%, transparent);
+}
+.wk-lunar-form { width: min(460px, calc(100vw - 32px)); }
+.wk-lunar-form .wk-field { margin-bottom: 8px; }
+.wk-lunar-check { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.wk-lunar-alert { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.wk-lunar-alert select { width: 140px; }
+.wk-lunar-repeat { display: flex; flex-direction: column; gap: 6px; }
+.wk-lunar-del { color: var(--err); }
 .wk-day-chips { display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow: hidden; }
 .wk-chip {
   font-size: 10px; line-height: 1.3; padding: 1px 5px; border-radius: 5px;

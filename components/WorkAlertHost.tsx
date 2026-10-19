@@ -17,10 +17,9 @@ const POLL_MS = 60_000;
 const SEEN_KEY = 'work.alerts.lastAt';
 
 interface AlertItem {
-  kind: 'start' | 'deadline';
+  kind: 'start' | 'deadline' | 'lunar';
   message: string;
   at: number;
-  task: { name: string; project: string };
 }
 
 interface WorkWatchSnapshot {
@@ -48,8 +47,9 @@ export default function WorkAlertHost() {
         const fresh = (snap.alerts ?? []).filter((a) => a.at > seenAt.current).sort((a, b) => a.at - b.at);
         if (!fresh.length) return;
         for (const a of fresh) {
-          const title = a.kind === 'deadline' ? '⏰ Sắp tới deadline' : '📋 Công việc bắt đầu hôm nay';
-          const level = a.kind === 'deadline' ? 'urgent' : 'warn';
+          const title = a.kind === 'deadline' ? '⏰ Sắp tới deadline'
+            : a.kind === 'lunar' ? '🌙 Nhắc âm lịch' : '📋 Công việc bắt đầu hôm nay';
+          const level = a.kind === 'deadline' || a.kind === 'lunar' ? 'urgent' : 'warn';
           automation.systemNotify(level, title, a.message, 'công việc');
           notices.add({ tab: 'work', level, title, body: a.message, source: 'công việc' });
         }

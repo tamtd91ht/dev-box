@@ -41,7 +41,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import ConnectionForm from './mongo/ConnectionForm';
 import NotesPanel from './work/NotesPanel';
 import FocusPanel from './work/FocusPanel';
-import { LunarTag, LunarCard, type LunarHover } from './work/LunarCard';
+import { LunarTag, LunarCard, LunarReminderForm, useLunarHover, type LunarReminderInput } from './work/LunarCard';
+import { occursOn, alertText, repeatText, type LunarReminder } from '@/lib/lunarReminderCore';
 import type { PublicMongoConnection } from '@/lib/mongo';
 
 // ── Types (khớp lib/workTasks) ───────────────────────────────────────────────
@@ -720,7 +721,12 @@ export default function WorkWorkspace() {
   /** Ô đang hover trong lúc kéo — chỉ để tô sáng đích sắp thả. */
   const [dragOver, setDragOver] = useState<string | null>(null);
   /** Nhãn âm lịch đang hover → thẻ chi tiết (null = ẩn). */
-  const [lunarHover, setLunarHover] = useState<LunarHover | null>(null);
+  const lunar = useLunarHover();
+  /** Ghi chú / lời nhắc âm lịch. null = chưa tải được (ẩn phần nhắc trên thẻ). */
+  const [reminders, setReminders] = useState<LunarReminder[] | null>(null);
+  /** Form thêm/sửa lời nhắc: date = ngày dương đang thao tác. */
+  const [lunarForm, setLunarForm] = useState<{ date: string; r: LunarReminder | null } | null>(null);
+  const [lunarErr, setLunarErr] = useState<string | null>(null);
   /** Popup xác nhận sau khi thả (null = không có gì đang chờ). */
   const [move, setMove] = useState<
     { task: WorkTask; fromDate: string; toDate: string; at: { x: number; y: number } } | null
@@ -746,6 +752,10 @@ export default function WorkWorkspace() {
       setTasks(r.tasks);
       setErr(null);
     } catch (e) { setErr((e as Error).message); }
+    // Lời nhắc âm lịch tải riêng — lỗi ở đây không được che mất danh sách task.
+    workAction<{ reminders: LunarReminder[] }>('lunar-list')
+      .then((r) => setReminders(r.reminders))
+      .catch(() => setReminders(null));
   }, []);
 
   useEffect(() => {
@@ -809,6 +819,18 @@ export default function WorkWorkspace() {
     }
     return out;
   }, [ym]);
+
+  /** Lời nhắc âm lịch rơi vào từng ngày đang hiển thị (42 ô). */
+  const remByDate = useMemo(() => {
+    const m = new Map<string, LunarReminder[]>();
+    if (!reminders?.length) return m;
+    for (const row of weeks) for (const cell of row) {
+      const hit = reminders.filter((r) => occursOn(r, cell.date));
+      if (hit.length) m.set(cell.date, hit);
+    }
+    return m;
+  }, [weeks, reminders]);
+  const remindersOn = (date: string) => remByDate.get(date) ?? (reminders ?? []).filter((r) => occursOn(r, date));
 
   /** 3 nhóm của ngày đang chọn: bắt đầu hôm nay · đang chạy · deadline hôm nay. */
   const dayTasks = useMemo(() => {
@@ -880,6 +902,28 @@ export default function WorkWorkspace() {
   }, [filterActive, kw, range, statusSel, kindSel, tasks]);
 
   // ── Mutations ──────────────────────────────────────────────────────────────
+  const openLunarForm = (date: string, r: LunarReminder | null) => {
+    lunar.close(); setLunarErr(null); setLunarForm({ date, r });
+  };
+  const saveLunar = async (v: LunarReminderInput) => {
+    if (!lunarForm) return;
+    setBusy(true); setLunarErr(null);
+    try {
+      if (lunarForm.r) await workAction('lunar-update', { id: lunarForm.r.id, ...v });
+      else await workAction('lunar-add', { ...v });
+      setLunarForm(null);
+      await loadTasks();
+    } catch (e) { setLunarErr((e as Error).message); } finally { setBusy(false); }
+  };
+  const removeLunar = async (r: LunarReminder) => {
+    setBusy(true); setLunarErr(null);
+    try {
+      await workAction('lunar-remove', { id: r.id });
+      setLunarForm(null);
+      await loadTasks();
+    } catch (e) { setLunarErr((e as Error).message); } finally { setBusy(false); }
+  };
+
   const saveTask = async (fields: Record<string, unknown>) => {
     setBusy(true); setFormErr(null);
     try {
@@ -1232,9 +1276,20 @@ export default function WorkWorkspace() {
                   >
                     <span className="wk-day-num">
                       {cell.day}{dls.length > 0 && <span className="wk-day-dl" title={`${dls.length} deadline`}>⏰</span>}
-                      <LunarTag date={cell.date} onHover={setLunarHover} />
+                      <LunarTag date={cell.date} onHover={lunar.set} />
                     </span>
                     <span className="wk-day-chips">
+                      {(remByDate.get(cell.date) ?? []).slice(0, 2).map((r) => (
+                        <span
+                          key={r.id}
+                          className="wk-chip lunar"
+                          onClick={(e) => { e.stopPropagation(); setSelDate(cell.date); openLunarForm(cell.date, r); }}
+                          title={`🌙 ${r.title} — ${repeatText(r)} · ${alertText(r.alert)} · bấm để sửa`}
+                        >{r.alert ? '🔔' : '🌙'} {r.title}</span>
+                      ))}
+                      {(remByDate.get(cell.date)?.length ?? 0) > 2 && (
+                        <span className="wk-chip more">+{remByDate.get(cell.date)!.length - 2} nhắc AL</span>
+                      )}
                       {starts.slice(0, 3).map((t) => (
                         // Việc có deadline: đã xong / đã hủy đều gạch ngang, hover cho
                         // biết trạng thái nào. Việc trong ngày KHÔNG có trạng thái —
@@ -1289,7 +1344,7 @@ export default function WorkWorkspace() {
           <div className="group-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ flex: 1 }}>
               Ngày {selDate.split('-').reverse().join('/')}{' '}
-              <span className="wk-side-lunar">🌙 <LunarTag date={selDate} onHover={setLunarHover} full /></span>
+              <span className="wk-side-lunar">🌙 <LunarTag date={selDate} onHover={lunar.set} full /></span>
             </span>
             <button className="ghost sm" onClick={() => { setFormErr(null); setForm({ task: null }); }} title={`Thêm công việc bắt đầu ngày ${selDate}`}>＋</button>
           </div>
@@ -1303,6 +1358,25 @@ export default function WorkWorkspace() {
           {dayTasks.running.map((t) => renderTaskRow(t, `từ ${t.startDate.split('-').reverse().join('/')}`))}
           {dayTasks.dls.length > 0 && <div className="group-title" style={{ marginTop: 8 }}>Deadline ngày này</div>}
           {dayTasks.dls.map((t) => renderTaskRow(t, 'deadline'))}
+
+          {reminders && (
+            <>
+              <div className="group-title" style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ flex: 1 }}>🌙 Ghi chú âm lịch</span>
+                <button className="ghost sm" onClick={() => openLunarForm(selDate, null)} title="Thêm ghi chú / lời nhắc theo ngày âm này">＋</button>
+              </div>
+              {remindersOn(selDate).length === 0 && (
+                <p className="small" style={{ color: 'var(--muted)', margin: 0 }}>Chưa có — bấm ＋ hoặc rê chuột vào ngày âm để thêm.</p>
+              )}
+              {remindersOn(selDate).map((r) => (
+                <button key={r.id} className="wk-lunar-rem" onClick={() => openLunarForm(selDate, r)} title="Bấm để sửa">
+                  <span className="wk-lunar-rem-t">{r.alert ? '🔔' : '📝'} {r.title}</span>
+                  <span className="wk-lunar-rem-s">{repeatText(r)} · {alertText(r.alert)}</span>
+                  {r.note && <span className="wk-lunar-rem-n">{r.note}</span>}
+                </button>
+              ))}
+            </>
+          )}
 
           {upcoming.length > 0 && (
             <>
@@ -1336,7 +1410,28 @@ export default function WorkWorkspace() {
         />
       )}
 
-      {lunarHover && <LunarCard hover={lunarHover} />}
+      {lunar.hover && !lunarForm && (
+        <LunarCard
+          hover={lunar.hover}
+          reminders={reminders ? remindersOn(lunar.hover.date) : null}
+          onKeep={lunar.keep}
+          onLeave={() => lunar.set(null)}
+          onAdd={(d) => openLunarForm(d, null)}
+          onEdit={(r) => openLunarForm(lunar.hover!.date, r)}
+        />
+      )}
+
+      {lunarForm && (
+        <LunarReminderForm
+          date={lunarForm.date}
+          initial={lunarForm.r}
+          busy={busy}
+          err={lunarErr}
+          onSave={(v) => void saveLunar(v)}
+          onRemove={(r) => void removeLunar(r)}
+          onClose={() => setLunarForm(null)}
+        />
+      )}
 
       {move && (
         <MoveTaskPopup

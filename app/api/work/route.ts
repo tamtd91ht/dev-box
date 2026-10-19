@@ -25,6 +25,12 @@
 //     'note-update'  { id, name, tags, body }    → { note }
 //     'note-remove'  { id }                      → { ok }
 //
+// GHI CHÚ / LỜI NHẮC ÂM LỊCH (lib/lunarReminders, collection 'devbox_lunar_reminders'):
+//     'lunar-list'   {}                                         → { reminders }
+//     'lunar-add'    { anchorDate, title, note, repeat, alert }  → { reminder }  (quét nhắc ngay)
+//     'lunar-update' { id, ...như add }                          → { reminder }
+//     'lunar-remove' { id }                                      → { ok }
+//
 // NHIỆM VỤ TRỌNG TÂM (lib/workFocus) — KHÔNG bị cổng Mongo chặn: có Mongo đã cấu
 // hình thì lưu Mongo, không thì lưu file local:
 //     'focus-list'          {}                    → { items, storage:{mode,label}, localPending }
@@ -43,6 +49,7 @@ import {
 } from '@/lib/workTasks';
 import { listNotes, addNote, updateNote, removeNote } from '@/lib/workNotes';
 import { ensureWorkWatch, getWorkWatchState, runWorkWatchNow } from '@/lib/workWatch';
+import { listLunarReminders, addLunarReminder, updateLunarReminder, removeLunarReminder } from '@/lib/lunarReminders';
 import { listFocus, addFocus, updateFocus, removeFocus, importLocalFocus } from '@/lib/workFocus';
 
 export const runtime = 'nodejs';
@@ -134,6 +141,22 @@ export async function POST(req: NextRequest) {
         break;
       case 'note-remove':
         await removeNote(body.id);
+        result = { ok: true };
+        break;
+      // ── Lời nhắc âm lịch ───────────────────────────────────────────────────
+      case 'lunar-list':
+        result = { reminders: await listLunarReminders() };
+        break;
+      case 'lunar-add':
+        result = { reminder: await addLunarReminder(body) };
+        void runWorkWatchNow();
+        break;
+      case 'lunar-update':
+        result = { reminder: await updateLunarReminder(body.id, body) };
+        void runWorkWatchNow();
+        break;
+      case 'lunar-remove':
+        await removeLunarReminder(body.id);
         result = { ok: true };
         break;
       default:
