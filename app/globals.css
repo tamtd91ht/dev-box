@@ -2887,6 +2887,17 @@ pre.kafka-drawer-body {
 }
 .es-table th:first-child, .es-table td:first-child { text-align: left; }
 .es-table tbody tr:hover { background: var(--glass-bg); }
+/* Tiêu đề cột bấm được để sort — mũi tên ngay cạnh tên cột. */
+.es-th-sort {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+  font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit;
+}
+.es-th-sort:hover { color: var(--text); }
+.es-th-sort.on { color: var(--accent); }
+.es-th-arrow { font-size: 9px; opacity: .45; }
+.es-th-sort.on .es-th-arrow { opacity: 1; }
+.es-th-sort:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.es-ix-search { flex: 0 1 420px; min-width: 160px; }
 
 /* ── Data browser: nhiều tab index ─────────────────────────────────────── */
 /*
