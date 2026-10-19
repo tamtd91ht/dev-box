@@ -41,6 +41,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import ConnectionForm from './mongo/ConnectionForm';
 import NotesPanel from './work/NotesPanel';
 import FocusPanel from './work/FocusPanel';
+import { LunarTag, LunarCard, type LunarHover } from './work/LunarCard';
 import type { PublicMongoConnection } from '@/lib/mongo';
 
 // ── Types (khớp lib/workTasks) ───────────────────────────────────────────────
@@ -718,6 +719,8 @@ export default function WorkWorkspace() {
   const [drag, setDrag] = useState<{ task: WorkTask; fromDate: string } | null>(null);
   /** Ô đang hover trong lúc kéo — chỉ để tô sáng đích sắp thả. */
   const [dragOver, setDragOver] = useState<string | null>(null);
+  /** Nhãn âm lịch đang hover → thẻ chi tiết (null = ẩn). */
+  const [lunarHover, setLunarHover] = useState<LunarHover | null>(null);
   /** Popup xác nhận sau khi thả (null = không có gì đang chờ). */
   const [move, setMove] = useState<
     { task: WorkTask; fromDate: string; toDate: string; at: { x: number; y: number } } | null
@@ -1227,7 +1230,10 @@ export default function WorkWorkspace() {
                       dls.length ? `${dls.length} deadline` : '',
                     ].filter(Boolean).join(' · ') + ' — double-click để thêm công việc'}
                   >
-                    <span className="wk-day-num">{cell.day}{dls.length > 0 && <span className="wk-day-dl" title={`${dls.length} deadline`}>⏰</span>}</span>
+                    <span className="wk-day-num">
+                      {cell.day}{dls.length > 0 && <span className="wk-day-dl" title={`${dls.length} deadline`}>⏰</span>}
+                      <LunarTag date={cell.date} onHover={setLunarHover} />
+                    </span>
                     <span className="wk-day-chips">
                       {starts.slice(0, 3).map((t) => (
                         // Việc có deadline: đã xong / đã hủy đều gạch ngang, hover cho
@@ -1281,7 +1287,10 @@ export default function WorkWorkspace() {
         {/* ── Panel ngày đang chọn + sắp đến hạn ── */}
         <aside className="wk-side">
           <div className="group-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ flex: 1 }}>Ngày {selDate.split('-').reverse().join('/')}</span>
+            <span style={{ flex: 1 }}>
+              Ngày {selDate.split('-').reverse().join('/')}{' '}
+              <span className="wk-side-lunar">🌙 <LunarTag date={selDate} onHover={setLunarHover} full /></span>
+            </span>
             <button className="ghost sm" onClick={() => { setFormErr(null); setForm({ task: null }); }} title={`Thêm công việc bắt đầu ngày ${selDate}`}>＋</button>
           </div>
           {dayTasks.starts.length === 0 && dayTasks.running.length === 0 && dayTasks.dls.length === 0 && (
@@ -1326,6 +1335,8 @@ export default function WorkWorkspace() {
           onClose={() => setForm(null)}
         />
       )}
+
+      {lunarHover && <LunarCard hover={lunarHover} />}
 
       {move && (
         <MoveTaskPopup
