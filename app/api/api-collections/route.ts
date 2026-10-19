@@ -9,10 +9,14 @@
 //     'setActiveVarName' { name }      → ApiData   (name đang dùng của biến)
 //     'saveGlobals'  { vars }          → ApiData   (biến chung)
 //     'saveProjectVars' { project, vars } → ApiData (biến theo dự án)
+//     'importBundle' { requests, projectVars?, globalVars?, mode, prefix } → { data, result }
+//                    (client đã quy mọi loại file — DevBox/Postman — về dạng này, lib/apiTransfer)
+//     'renameFolder' { from, to }      → ApiData   (kéo theo thư mục con + biến dự án)
 
 import { NextResponse, type NextRequest } from 'next/server';
 import {
   getData, saveRequest, removeRequest, saveEnv, removeEnv, setActiveEnv, setActiveVarName, saveGlobals, saveProjectVars,
+  importBundle, renameFolder,
 } from '@/lib/apiStore';
 
 export const runtime = 'nodejs';
@@ -34,6 +38,8 @@ export async function POST(req: NextRequest) {
       case 'setActiveVarName': result = await setActiveVarName(body.name); break;
       case 'saveGlobals': result = await saveGlobals(body.vars); break;
       case 'saveProjectVars': result = await saveProjectVars(String(body.project ?? ''), body.vars); break;
+      case 'importBundle': result = await importBundle(body as unknown as Parameters<typeof importBundle>[0]); break;
+      case 'renameFolder': result = await renameFolder(body.from, body.to); break;
       default: return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
     }
     return NextResponse.json({ ok: true, result });

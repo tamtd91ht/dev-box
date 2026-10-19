@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  apiGet, apiSaveRequest, apiRemoveRequest, apiSend, apiSetActiveVarName,
+  apiGet, apiSaveRequest, apiRemoveRequest, apiSend, apiSetActiveVarName, apiRenameFolder,
   stripFiles, FILE_LIMIT,
   type ApiData, type ApiRequest, type ApiHeader, type HttpResult,
   type ApiBodyType, type ApiFormField, type ApiAuth, type ApiSendOpts,
@@ -38,6 +38,9 @@ import KvTable from './api/KvTable';
 import VarsModal from './api/VarsModal';
 import HistoryPopover from './api/HistoryPopover';
 import SendOptsPopover from './api/SendOptsPopover';
+import CollectionRail, { allFolderPaths } from './api/CollectionRail';
+import ApiTransferModal from './api/ApiTransferModal';
+import { automation } from '@/lib/automation/runtime';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 /** Draft rỗng — hàm chứ không phải hằng dùng chung: mỗi tab phải có mảng
@@ -141,6 +144,12 @@ export default function ApiWorkspace() {
   const [curlResolve, setCurlResolve] = useState(false);
   /** Menu ⋯ / chuột phải của một request ở rail (toạ độ fixed). */
   const [railMenu, setRailMenu] = useState<{ x: number; y: number; req: ApiRequest } | null>(null);
+  /** Menu ⋯ / chuột phải của một THƯ MỤC ở rail. */
+  const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; path: string } | null>(null);
+  /** Hộp đổi tên thư mục (kéo theo thư mục con + biến dự án). */
+  const [folderEdit, setFolderEdit] = useState<{ from: string; to: string } | null>(null);
+  /** Hộp export/import collection. */
+  const [transfer, setTransfer] = useState<{ tab: 'export' | 'import'; scope: string } | null>(null);
   /** Hộp sửa tên/dự án của request đã lưu. */
   const [railEdit, setRailEdit] = useState<{ req: ApiRequest; name: string; folder: string } | null>(null);
   /** Hộp quản lý biến: null = đóng; scope '' = biến chung, hoặc tên dự án. */
@@ -279,17 +288,18 @@ export default function ApiWorkspace() {
   //
   // Hợp của biến CHUNG và biến của DỰ ÁN mà request đang thuộc về (draft.folder),
   // biến dự án ghi đè khi trùng tên. Dòng bị tắt (on:false) không tính.
+  // Thư mục lồng nhau ("admin/call-export") thừa kế biến của MỌI thư mục cha:
+  // chung → admin → admin/call-export, lớp sâu hơn ghi đè lớp nông hơn.
   const project = (draft.folder ?? '').trim();
-  /** Biến hiệu lực của MỘT dự án — cũng dùng cho request ở rail (copy curl). */
   const activeName = data.activeVarName ?? '';
-  const varsFor = useCallback((proj: string) =>
-    buildVarMap([data.globalVars, proj ? data.projectVars?.[proj] : undefined], activeName),
-  [data.globalVars, data.projectVars, activeName]);
-  /** Các name có thể chọn: của biến chung + biến dự án hiện tại. */
-  const nameOptions = useMemo(
-    () => varNames([data.globalVars, project ? data.projectVars?.[project] : undefined]),
-    [data.globalVars, data.projectVars, project],
-  );
+  const layersFor = useCallback((proj: string) => {
+    const parts = proj.split('/').map((x) => x.trim()).filter(Boolean);
+    return [data.globalVars, ...parts.map((_, i) => data.projectVars?.[parts.slice(0, i + 1).join('/')])];
+  }, [data.globalVars, data.projectVars]);
+  /** Biến hiệu lực của MỘT dự án — cũng dùng cho request ở rail (copy curl). */
+  const varsFor = useCallback((proj: string) => buildVarMap(layersFor(proj), activeName), [layersFor, activeName]);
+  /** Các name có thể chọn: của biến chung + biến của dự án hiện tại (kể cả thư mục cha). */
+  const nameOptions = useMemo(() => varNames(layersFor(project)), [layersFor, project]);
   const vars = useMemo(() => varsFor(project), [varsFor, project]);
   const envMap = vars; // tên cũ — phần còn lại của file vẫn gọi envMap
 
@@ -561,6 +571,17 @@ export default function ApiWorkspace() {
     } catch (e) { setErr((e as Error).message); }
   };
 
+  const saveFolderEdit = async () => {
+    if (!folderEdit) return;
+    try {
+      const to = folderEdit.to.trim();
+      setData(await apiRenameFolder(folderEdit.from, to));
+      // Thư mục đang thu gọn đổi tên theo, khỏi bung ra bất ngờ.
+      setClosedProj((c) => c.map((x) => (x === folderEdit.from || x.startsWith(`${folderEdit.from}/`) ? to + x.slice(folderEdit.from.length) : x)));
+      setFolderEdit(null);
+    } catch (e) { setErr((e as Error).message); }
+  };
+
   const duplicateRequest = async (r: ApiRequest) => {
     try {
       setData(await apiSaveRequest({ ...r, id: undefined, name: `${r.name} (copy)` }));
@@ -576,12 +597,6 @@ export default function ApiWorkspace() {
     });
   };
 
-  // Gom request theo folder cho rail.
-  const grouped = useMemo(() => {
-    const g: Record<string, ApiRequest[]> = {};
-    for (const r of data.requests) (g[r.folder || ''] ||= []).push(r);
-    return Object.entries(g).sort((a, b) => (a[0] || '~').localeCompare(b[0] || '~'));
-  }, [data.requests]);
 
   const setHeader = (i: number, patch: Partial<ApiHeader>) =>
     setDraft((d) => ({ ...d, headers: d.headers.map((h, j) => (j === i ? { ...h, ...patch } : h)) }));
@@ -663,65 +678,28 @@ export default function ApiWorkspace() {
         {rail.collapsed ? (
           <CollapsedRail label="Collection" count={data.requests.length} onShow={rail.show} />
         ) : (
-        <aside className="g-rail api-rail">
-          <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', gap: 6 }}>
-            <span style={{ flex: 1 }}>Dự án</span>
-            <button className="ghost sm" onClick={() => openSession(blankDraft())} title="Request mới (tab mới)">＋</button>
-            {(grouped.length > 1 || grouped.some(([f]) => f)) && (
-              closedProj.length === 0
-                ? <button className="ghost sm" onClick={() => setClosedProj(grouped.map(([f]) => f))} title="Thu gọn tất cả dự án">⊟</button>
-                : <button className="ghost sm" onClick={() => setClosedProj([])} title="Mở rộng tất cả dự án">⊞</button>
-            )}
-            <button className="ghost sm" onClick={() => void reload()} title="Tải lại">↻</button>
-            <RailHideButton onHide={rail.hide} className="ghost sm"
-              title="Thu gọn cột collection — nhường chỗ cho request đang dựng" />
-          </div>
-          {grouped.map(([folder, reqs]) => {
-            // Có ≥2 nhóm thì mới cần tiêu đề; chỉ một nhóm "chưa phân dự án" thì
-            // bày thẳng danh sách, khỏi một dòng tiêu đề thừa không thu gọn được.
-            const hasHead = !!folder || grouped.length > 1;
-            const closed = hasHead && closedProj.includes(folder);
-            return (
-              <div key={folder || '_'}>
-                {hasHead && (
-                  <button className="api-folder api-proj" aria-expanded={!closed}
-                    onClick={() => setClosedProj((c) => (c.includes(folder) ? c.filter((x) => x !== folder) : [...c, folder]))}
-                    title={closed ? 'Mở rộng dự án' : 'Thu gọn dự án'}>
-                    <span aria-hidden>{closed ? '▸' : '▾'}</span>
-                    <span>📁 {folder || 'Chưa phân dự án'}</span>
-                    <span className="api-proj-n">{reqs.length}</span>
-                  </button>
-                )}
-                {!closed && reqs.map((r) => (
-                  <div key={r.id} className={`g-root${draft.id === r.id ? ' on' : ''}`}
-                    onContextMenu={(e) => { e.preventDefault(); openRailMenu(e.clientX, e.clientY, r); }}>
-                    <button className="g-root-btn" onClick={() => openRequest(r)}
-                      title={sessions.some((s) => s.draft.id === r.id) ? `${r.url}\n(đang mở — bấm để nhảy tới tab)` : r.url}>
-                      <span className={methodClass(r.method)}>{r.method}</span>
-                      <span className="g-root-name">{r.name}</span>
-                    </button>
-                    <button className="ghost sm g-root-act" title="Sửa / nhân bản / copy curl / xóa (hoặc chuột phải)"
-                      aria-haspopup="menu"
-                      onClick={(e) => {
-                        const b = e.currentTarget.getBoundingClientRect();
-                        openRailMenu(b.right - 220, b.bottom + 2, r);
-                      }}>⋯</button>
-                  </div>
-                ))}
-              </div>
-            );
+        <CollectionRail
+          data={data}
+          activeId={draft.id}
+          openIds={new Set(sessions.map((x) => x.draft.id).filter((x): x is string => !!x))}
+          closed={closedProj}
+          onToggle={(path) => setClosedProj((c) => (c.includes(path) ? c.filter((x) => x !== path) : [...c, path]))}
+          onCollapseAll={() => setClosedProj(allFolderPaths(data.requests))}
+          onExpandAll={() => setClosedProj([])}
+          onNew={(folder) => openSession({ ...blankDraft(), folder })}
+          onOpen={openRequest}
+          onRequestMenu={openRailMenu}
+          onFolderMenu={(x, y, path) => setFolderMenu({
+            x: Math.max(6, Math.min(x, window.innerWidth - 230)),
+            y: Math.max(6, Math.min(y, window.innerHeight - 200)),
+            path,
           })}
-          {data.requests.length === 0 && <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px' }}>Chưa có request. Dựng rồi 💾, hoặc dán lệnh curl vào ô URL.</p>}
-
-          <div className="group-title" style={{ margin: '14px 4px 6px', display: 'flex', gap: 6 }}>
-            <span style={{ flex: 1 }}>Biến</span>
-            <button className="ghost sm" onClick={() => setVarsOpen({ scope: '' })} title="Quản lý biến chung và biến theo dự án">🔣 Quản lý</button>
-          </div>
-          <p className="small" style={{ color: 'var(--muted)', margin: '2px 6px' }}>
-            {(data.globalVars ?? []).filter((v) => v.key.trim()).length} biến chung
-            {' · '}{Object.keys(data.projectVars ?? {}).length} dự án có biến riêng
-          </p>
-        </aside>
+          onReload={() => void reload()}
+          onHide={rail.hide}
+          onImport={() => setTransfer({ tab: 'import', scope: '' })}
+          onExport={(scope) => setTransfer({ tab: 'export', scope })}
+          onVars={() => setVarsOpen({ scope: '' })}
+        />
         )}
 
         {/* ── Builder + response ── */}
@@ -1058,6 +1036,65 @@ export default function ApiWorkspace() {
         document.body,
       )}
 
+      {/* Menu ⋯ / chuột phải của thư mục ở rail */}
+      {folderMenu && typeof document !== 'undefined' && createPortal(
+        <>
+          <div className="bt-menu-backdrop" onMouseDown={() => setFolderMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setFolderMenu(null); }} />
+          <div className="bt-menu bt-menu-fixed" role="menu" style={{ left: folderMenu.x, top: folderMenu.y }}
+            onMouseDown={(e) => e.stopPropagation()}>
+            {(() => {
+              const path = folderMenu.path;
+              const close = () => setFolderMenu(null);
+              return (
+                <>
+                  <button onClick={() => { close(); openSession({ ...blankDraft(), folder: path }); }}>＋ Request mới ở đây</button>
+                  <button onClick={() => { close(); setFolderEdit({ from: path, to: path }); }}>✎ Đổi tên / chuyển thư mục…</button>
+                  <button onClick={() => { close(); setVarsOpen({ scope: path }); }}>🔣 Biến của thư mục</button>
+                  <div className="bt-menu-sep" />
+                  <button onClick={() => { close(); setTransfer({ tab: 'export', scope: path }); }}>⤒ Export thư mục này…</button>
+                  <button onClick={() => { close(); setTransfer({ tab: 'import', scope: path }); }}>⤓ Import…</button>
+                </>
+              );
+            })()}
+          </div>
+        </>,
+        document.body,
+      )}
+
+      {folderEdit && (
+        <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && setFolderEdit(null)}>
+          <div className="mail-compose panel" style={{ width: 'min(480px, 92vw)' }}>
+            <div className="mail-compose-head"><b>✎ Đổi tên thư mục</b><span style={{ flex: 1 }} />
+              <button className="ghost sm" onClick={() => setFolderEdit(null)}>✕</button></div>
+            <p className="small" style={{ color: 'var(--muted)', margin: 0 }}>
+              Dùng dấu / để lồng thư mục (vd <code>admin/call-export</code>). Thư mục con và biến của thư mục đi theo.
+            </p>
+            <input className="input" autoFocus value={folderEdit.to}
+              onChange={(e) => setFolderEdit({ ...folderEdit, to: e.target.value })}
+              onKeyDown={(e) => e.key === 'Enter' && void saveFolderEdit()} />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => void saveFolderEdit()}>💾 Lưu</button>
+              <button className="ghost" onClick={() => setFolderEdit(null)}>Hủy</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {transfer && (
+        <ApiTransferModal
+          data={data}
+          initialTab={transfer.tab}
+          initialScope={transfer.tab === 'export' ? transfer.scope : ''}
+          onImported={(d, r) => {
+            setData(d);
+            automation.systemNotify('info', '⤓ Đã import collection',
+              `${r.added} thêm mới · ${r.overwritten} ghi đè · ${r.skipped} bỏ qua`, 'api');
+          }}
+          onClose={() => setTransfer(null)}
+        />
+      )}
+
       {/* Sửa tên / dự án của request đã lưu */}
       {railEdit && (
         <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && setRailEdit(null)}>
@@ -1085,7 +1122,7 @@ export default function ApiWorkspace() {
       {varsOpen && (
         <VarsModal
           data={data}
-          projects={[...new Set(data.requests.map((r) => r.folder).filter((f): f is string => !!f))]}
+          projects={allFolderPaths(data.requests)}
           initialScope={varsOpen.scope}
           onSaved={setData}
           onClose={() => setVarsOpen(null)}

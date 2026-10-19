@@ -139,6 +139,13 @@ export const apiSetActiveEnv = (id: string | null) => store('setActiveEnv', { id
 export const apiSetActiveVarName = (name: string) => store('setActiveVarName', { name });
 export const apiSaveGlobals = (vars: ApiVar[]) => store('saveGlobals', { vars });
 export const apiSaveProjectVars = (project: string, vars: ApiVar[]) => store('saveProjectVars', { project, vars });
+export type ApiImportMode = 'overwrite' | 'skip' | 'duplicate';
+export interface ApiImportResult { added: number; overwritten: number; skipped: number }
+export const apiImportBundle = (b: {
+  requests: ApiRequest[]; projectVars?: Record<string, ApiVar[]>; globalVars?: ApiVar[];
+  mode: ApiImportMode; prefix: string;
+}) => call<{ data: ApiData; result: ApiImportResult }>('/api/api-collections', { action: 'importBundle', ...b });
+export const apiRenameFolder = (from: string, to: string) => store('renameFolder', { from, to });
 
 /** Gửi một request qua proxy server (né CORS).
  *  `bodyType`/`form` để server tự dựng urlencoded hoặc multipart (kèm file);

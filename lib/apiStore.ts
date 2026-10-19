@@ -209,3 +209,105 @@ export async function saveProjectVars(project: string, vars: unknown): Promise<A
   await writeAll(data);
   return data;
 }
+
+// ── Import / đổi tên thư mục ────────────────────────────────────────────────
+
+export type ImportMode = 'overwrite' | 'skip' | 'duplicate';
+
+export interface ImportInput {
+  requests: unknown;
+  projectVars?: unknown;
+  globalVars?: unknown;
+  /** Xử lý request trùng id: ghi đè / bỏ qua / thêm bản sao id mới. */
+  mode?: unknown;
+  /** Đặt tất cả vào dưới thư mục này (rỗng = giữ nguyên cây của file). */
+  prefix?: unknown;
+}
+
+export interface ImportResult { added: number; overwritten: number; skipped: number }
+
+const joinFolder = (prefix: string, folder: string | undefined) =>
+  [prefix, folder ?? ''].map((s) => s.trim().replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/') || undefined;
+
+/** Gộp biến theo key: key mới thêm vào; key trùng thì ghi đè khi overwrite. */
+function mergeVars(cur: ApiVar[], incoming: ApiVar[], overwrite: boolean): ApiVar[] {
+  const out = cur.map((v) => ({ ...v }));
+  for (const v of incoming) {
+    const i = out.findIndex((x) => x.key === v.key && (x.name ?? '') === (v.name ?? ''));
+    if (i < 0) out.push(v);
+    else if (overwrite) out[i] = v;
+  }
+  return out;
+}
+
+export async function importBundle(input: ImportInput): Promise<{ data: ApiData; result: ImportResult }> {
+  const mode: ImportMode = input.mode === 'skip' || input.mode === 'duplicate' ? input.mode : 'overwrite';
+  const prefix = String(input.prefix ?? '').trim();
+  const list = Array.isArray(input.requests) ? (input.requests as Partial<ApiRequest>[]) : [];
+  if (!list.length) throw new Error('File không có request nào.');
+  const data = await readAll();
+  const result: ImportResult = { added: 0, overwritten: 0, skipped: 0 };
+  const now = new Date().toISOString();
+
+  for (const r of list) {
+    if (!r || typeof r !== 'object') continue;
+    const rec: ApiRequest = {
+      id: String(r.id ?? '') || randomUUID(),
+      name: String(r.name ?? '').trim() || 'Untitled request',
+      folder: joinFolder(prefix, r.folder),
+      method: String(r.method ?? 'GET').toUpperCase(),
+      url: String(r.url ?? ''),
+      headers: Array.isArray(r.headers) ? r.headers : [],
+      body: String(r.body ?? ''),
+      bodyType: (['none', 'raw', 'form', 'multipart'] as const).includes(r.bodyType as ApiBodyType) ? r.bodyType as ApiBodyType : 'none',
+      form: Array.isArray(r.form) ? r.form.map((f) => (f.kind === 'file' ? { ...f, fileB64: undefined } : f)) : undefined,
+      params: Array.isArray(r.params) ? r.params : undefined,
+      auth: r.auth && r.auth.type !== 'none' ? r.auth : undefined,
+      opts: r.opts,
+      updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : now,
+    };
+    const i = data.requests.findIndex((x) => x.id === rec.id);
+    if (i < 0) { data.requests.push(rec); result.added++; continue; }
+    if (mode === 'skip') { result.skipped++; continue; }
+    if (mode === 'duplicate') { data.requests.push({ ...rec, id: randomUUID() }); result.added++; continue; }
+    data.requests[i] = rec;
+    result.overwritten++;
+  }
+
+  // Biến: key mới luôn thêm; key trùng chỉ ghi đè ở chế độ overwrite.
+  const ow = mode === 'overwrite';
+  if (input.projectVars && typeof input.projectVars === 'object') {
+    for (const [k, vars] of Object.entries(input.projectVars as Record<string, unknown>)) {
+      const key = joinFolder(prefix, k);
+      const clean = cleanVars(vars);
+      if (!key || !clean.length) continue;
+      data.projectVars[key] = mergeVars(data.projectVars[key] ?? [], clean, ow);
+    }
+  }
+  const g = cleanVars(input.globalVars);
+  if (g.length) data.globalVars = mergeVars(data.globalVars, g, ow);
+
+  await writeAll(data);
+  return { data, result };
+}
+
+/** Đổi tên (hoặc chuyển) thư mục `from` → `to`, kéo theo thư mục con và biến dự án. */
+export async function renameFolder(fromRaw: unknown, toRaw: unknown): Promise<ApiData> {
+  const from = String(fromRaw ?? '').trim();
+  const to = String(toRaw ?? '').trim().replace(/^\/+|\/+$/g, '');
+  if (!from) throw new Error('Thiếu thư mục cần đổi tên.');
+  if (!to) throw new Error('Tên mới không được rỗng.');
+  if (from === to) return readAll();
+  const move = (f: string | undefined) =>
+    f === from ? to : f?.startsWith(`${from}/`) ? `${to}${f.slice(from.length)}` : f;
+  const data = await readAll();
+  for (const r of data.requests) r.folder = move(r.folder);
+  const pv: Record<string, ApiVar[]> = {};
+  for (const [k, v] of Object.entries(data.projectVars)) {
+    const nk = move(k) ?? k;
+    pv[nk] = pv[nk] ? mergeVars(pv[nk], v, false) : v;
+  }
+  data.projectVars = pv;
+  await writeAll(data);
+  return data;
+}

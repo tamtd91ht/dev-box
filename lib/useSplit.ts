@@ -75,6 +75,7 @@ export function useSplit({ varName, min, max, gap, step = 16 }: SplitOptions) {
 
   const boxRef = useRef<HTMLElement | null>(null);
   const roRef = useRef<ResizeObserver | null>(null);
+  const moRef = useRef<MutationObserver | null>(null);
 
   const measure = useCallback(() => {
     const box = boxRef.current;
@@ -94,16 +95,33 @@ export function useSplit({ varName, min, max, gap, step = 16 }: SplitOptions) {
   const ref = useCallback((el: HTMLElement | null) => {
     roRef.current?.disconnect();
     roRef.current = null;
+    moRef.current?.disconnect();
+    moRef.current = null;
     boxRef.current = el;
     if (!el) return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    let watched = el.firstElementChild;
+    if (watched) ro.observe(watched);
     roRef.current = ro;
+    // Cột trái có thể bị THAY bằng phần tử khác (thu gọn ↔ mở rail, đổi
+    // component) — ResizeObserver vẫn bám phần tử cũ đã rời DOM, `rail` đứng
+    // im ở số cũ (hoặc 0) và thanh kéo lệch chỗ / bị giấu. Theo dõi con trực
+    // tiếp của khung: đổi phần tử đầu thì bám phần tử mới và đo lại.
+    const mo = new MutationObserver(() => {
+      const first = el.firstElementChild;
+      if (first === watched) return;
+      if (watched) ro.unobserve(watched);
+      watched = first;
+      if (first) ro.observe(first);
+      measure();
+    });
+    mo.observe(el, { childList: true });
+    moRef.current = mo;
     measure();
   }, [measure]);
 
-  useEffect(() => () => roRef.current?.disconnect(), []);
+  useEffect(() => () => { roRef.current?.disconnect(); moRef.current?.disconnect(); }, []);
 
   /** Kẹp lại theo khung THẬT lúc này: ô phải luôn còn ít nhất `min` để không
    *  ai kéo cho nó biến mất, và giá trị cũ không bao giờ vượt khung hiện tại. */

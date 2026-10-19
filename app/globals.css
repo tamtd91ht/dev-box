@@ -9874,6 +9874,63 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .api-proj:hover { background: var(--glass-2); color: var(--text); }
 .api-proj-n { margin-left: auto; font-weight: 400; opacity: .7; }
 
+/* ── Rail Collection kiểu Postman (components/api/CollectionRail) ─────────
+   Gọn, chữ nhỏ, không viền từng dòng; nút thao tác chỉ hiện khi rê chuột. */
+.api-rail.cr { gap: 0; font-size: 12px; padding-right: 2px; }
+/* Rail không còn viền từng dòng → vạch chia rail | builder phải LUÔN thấy (mờ),
+   rê vào thì đậm màu accent như mọi thanh kéo khác. */
+.api-root > .split-grip .split-grip-line { background: var(--glass-brd); }
+.api-root > .split-grip:hover .split-grip-line,
+.api-root > .split-grip.on .split-grip-line { background: var(--accent); }
+.cr-head { display: flex; align-items: center; gap: 1px; padding: 0 2px 6px 4px; }
+.cr-title { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.cr-ib, .cr-act {
+  all: unset; box-sizing: border-box; cursor: pointer; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 5px; font-size: 12px; color: var(--muted);
+}
+.cr-ib:hover, .cr-act:hover { background: var(--glass-2); color: var(--text); }
+.cr-ib:focus-visible, .cr-act:focus-visible, .cr-main:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.cr-search {
+  box-sizing: border-box; width: calc(100% - 4px); margin: 0 2px 6px; padding: 4px 8px;
+  font: inherit; font-size: 11.5px; color: var(--text);
+  background: var(--glass-bg); border: 1px solid var(--glass-brd); border-radius: 6px; outline: none;
+}
+.cr-search:focus { border-color: var(--accent); }
+.cr-tree { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.cr-row { display: flex; align-items: center; gap: 0; min-height: 24px; border-radius: 5px; padding-right: 2px; }
+.cr-row:hover { background: var(--glass-2); }
+.cr-row.on { background: color-mix(in srgb, var(--accent) 13%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
+.cr-main {
+  all: unset; box-sizing: border-box; cursor: pointer; flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 6px; padding: 3px 4px; color: var(--text);
+}
+.cr-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cr-req .cr-name { color: color-mix(in srgb, var(--text) 88%, transparent); }
+.cr-row.on .cr-name { color: var(--text); font-weight: 600; }
+.cr-m { flex: none; width: 36px; font-size: 9.5px; font-weight: 700; letter-spacing: .02em; text-align: right; }
+.cr-folder .cr-name { font-weight: 600; }
+.cr-caret { flex: none; width: 10px; font-size: 9px; color: var(--muted); text-align: center; }
+.cr-ficon { flex: none; font-size: 11px; }
+.cr-n { flex: none; font-size: 10.5px; color: var(--faint, var(--muted)); }
+/* Nút thao tác ẩn tới khi hover dòng (hoặc đang focus bằng bàn phím). */
+.cr-row .cr-act { opacity: 0; width: 20px; height: 20px; }
+.cr-row:hover .cr-act, .cr-row:focus-within .cr-act { opacity: 1; }
+.cr-sep {
+  margin: 8px 6px 2px; font-size: 10px; font-weight: 700; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--muted);
+}
+.cr-empty { margin: 6px; font-size: 11.5px; color: var(--muted); }
+.cr-foot {
+  all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 6px;
+  margin-top: 6px; padding: 6px 6px; border-top: 1px solid var(--glass-brd); font-size: 11.5px; color: var(--muted);
+}
+.cr-foot:hover { color: var(--text); }
+.cr-foot .cr-n { margin-left: auto; }
+/* Modal export/import collection */
+.atf-body { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.atf-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+
 /* ── Tab API: biến, popover, Auth, bảng response ────────────────────────── */
 .api-urlbar { flex-wrap: wrap; position: relative; }
 .api-vline { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 11.5px; margin-top: -2px; }
