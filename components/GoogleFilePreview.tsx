@@ -27,13 +27,16 @@ interface Props {
   name: string;
   /** webViewLink gốc — editUrl dựng theo account THỰC SỰ đọc được (authuser). */
   webViewLink?: string;
+  /** Tab này có đang được xem không — xem GoogleDocViewer: mọi tab mount song
+   *  song để giữ nội dung đã tải, chỉ tab đang xem hiện ra và nhận Esc. */
+  active?: boolean;
   onClose: () => void;
   /** Mở editor thật NGAY TRONG APP (webview) — cần phiên nhúng đã đăng nhập
    *  Google (nút Ⓖ trong viewer). Absent khi chạy browser thường. */
   onOpenWeb?: (editUrl: string) => void;
 }
 
-export default function GoogleFilePreview({ accountId, accounts, fileId, name, webViewLink, onClose, onOpenWeb }: Props) {
+export default function GoogleFilePreview({ accountId, accounts, fileId, name, webViewLink, active = true, onClose, onOpenWeb }: Props) {
   const [preview, setPreview] = useState<GPreview | null>(null);
   const [err, setErr] = useState<string | null>(null);
   /** Account thực sự đọc được file (có thể khác account đang chọn). */
@@ -80,10 +83,11 @@ export default function GoogleFilePreview({ accountId, accounts, fileId, name, w
 
   // Esc đóng panel.
   useEffect(() => {
+    if (!active) return;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [active, onClose]);
 
   const title = preview?.name ?? name;
   const usedAcc = accounts.find((a) => a.id === usedId);
@@ -91,7 +95,9 @@ export default function GoogleFilePreview({ accountId, accounts, fileId, name, w
   const editUrl = webViewLink ? withAuthuser(webViewLink, usedAcc?.email) : undefined;
 
   return (
-    <div className="g-viewer">
+    /* `hidden` chứ không unmount: nội dung đã tải qua API (sheet vài MB, PDF)
+       giữ nguyên, quay lại tab là thấy ngay chứ không tải lại. */
+    <div className="g-viewer" hidden={!active}>
       <div className="ws-view" style={{ display: 'flex' }}>
         <div className="ws-toolbar">
           <div className="ws-title">

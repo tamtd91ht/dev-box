@@ -12,6 +12,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import {
   GIT_ENABLED,
   detectRepos,
+  isSelfRepo,
   authorizeRepo,
   status,
   statusAll,
@@ -31,10 +32,14 @@ import {
   cloneRepo,
   commit,
   checkout,
+  fetchBranches,
   pull,
   push,
   mergeBranch,
   abortMerge,
+  deleteBranch,
+  renameBranch,
+  revertHead,
 } from '@/lib/gitCore';
 import { getProject, allowedRoots, listProjects } from '@/lib/gitProjects';
 import { recordRepo } from '@/lib/gitManifest';
@@ -73,6 +78,21 @@ async function resolveRootRequired(projectId: unknown): Promise<string> {
  * (lib/gitManifest khớp project theo name, vì id/root là thứ riêng từng máy).
  */
 async function resolveTargetProject(projectId: unknown): Promise<{ name: string; root: string }> {
+  const picked = await pickTargetProject(projectId);
+  // KHÔNG cho clone vào một project mà root chính là repo: thư mục đích sẽ nằm
+  // BÊN TRONG working tree đang mở, nên repo mới hiện ra thành file lạ của repo
+  // cha (hoặc bị .gitignore ăn mất) chứ không thành một repo ngang hàng. UI đã
+  // ẩn hai nút này, guard ở đây chặn cả request gọi trực tiếp.
+  if (await isSelfRepo(picked.root)) {
+    throw new Error(
+      `project "${picked.name}" chính là một repo (${picked.root}) — không clone thêm repo vào bên trong được. ` +
+        'Thêm một project trỏ tới thư mục CHỨA các repo rồi clone vào đó.',
+    );
+  }
+  return picked;
+}
+
+async function pickTargetProject(projectId: unknown): Promise<{ name: string; root: string }> {
   if (typeof projectId === 'string' && projectId) {
     const project = await getProject(projectId);
     if (!project) throw new Error(`unknown project: ${projectId}`);
@@ -112,7 +132,11 @@ export async function POST(req: NextRequest) {
     // default root when no projectId is supplied).
     if (action === 'repos') {
       const root = await resolveRoot(body.projectId);
-      return NextResponse.json({ repos: await detectRepos(root) });
+      // `selfRepo`: project được trỏ THẲNG vào một repo (không phải thư mục chứa
+      // nhiều repo). Client cần biết để ẩn Clone/Tạo repo — clone vào bên trong
+      // một repo đang làm việc là sai, xem guard ở action 'clone'.
+      const [repos, selfRepo] = await Promise.all([detectRepos(root), isSelfRepo(root)]);
+      return NextResponse.json({ repos, selfRepo });
     }
     if (action === 'status-all') {
       const root = await resolveRoot(body.projectId);
@@ -200,7 +224,7 @@ export async function POST(req: NextRequest) {
 
       case 'log': {
         const limit = typeof body.limit === 'number' ? body.limit : 30;
-        return NextResponse.json({ commits: await log(repo, limit) });
+        return NextResponse.json({ commits: await log(repo, limit, !!body.all) });
       }
 
       case 'diff': {
@@ -264,8 +288,36 @@ export async function POST(req: NextRequest) {
       }
 
       case 'checkout': {
-        const out = await checkout(repo, String(body.branch ?? ''), !!body.create);
-        return NextResponse.json({ output: out, status: await status(repo), branches: await branches(repo) });
+        // `branch` nhận cả remote ref ("origin/feat") — lúc đó server dựng branch
+        // local cùng tên và track nó, xem checkout() trong lib/gitCore.
+        const res = await checkout(repo, String(body.branch ?? ''), !!body.create, body.startPoint);
+        const [st, br] = await Promise.all([status(repo), branches(repo)]);
+        return NextResponse.json({ ...res, status: st, branches: br });
+      }
+
+      case 'delete-branch': {
+        const output = await deleteBranch(repo, body.branch, !!body.force);
+        const [st, br] = await Promise.all([status(repo), branches(repo)]);
+        return NextResponse.json({ output: output.trim(), status: st, branches: br });
+      }
+
+      case 'rename-branch': {
+        const output = await renameBranch(repo, body.branch, body.newName);
+        const [st, br] = await Promise.all([status(repo), branches(repo)]);
+        return NextResponse.json({ output: output.trim(), status: st, branches: br });
+      }
+
+      case 'revert-head': {
+        const output = await revertHead(repo);
+        const [st, br] = await Promise.all([status(repo), branches(repo)]);
+        return NextResponse.json({ output: output.trim(), status: st, branches: br });
+      }
+
+      case 'fetch': {
+        // `git fetch --prune` — cập nhật refs/remotes để branch người khác vừa push
+        // hiện ra trong cửa sổ chọn branch. Không đụng vào working tree.
+        const res = await fetchBranches(repo);
+        return NextResponse.json({ ...res, status: await status(repo) });
       }
 
       case 'merge': {

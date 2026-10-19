@@ -5,6 +5,8 @@
 //     'open'   { path }                        → { ok, result: WordOpenResult }
 //     'create' { dir, name }                   → { ok, result: WordOpenResult }
 //     'save'   { path, mtimeMs, ops: WordOp[] } → { ok, result: WordSaveResult }
+//     'stat'   { path }                        → { ok, result: { mtimeMs, sizeBytes } }   (dò file bị sửa ngoài app)
+//     'openExternal' { path }                  → { ok, result: { path } }   (mở bằng ứng dụng mặc định của OS)
 //
 // 'open' unzips the .docx and ships the body as an ordered list of blocks
 // (paragraphs + read-only tables). 'create' makes a NEW blank .docx
@@ -23,6 +25,8 @@ import {
   openDocx,
   createDocx,
   saveDocx,
+  statDocx,
+  openDocxExternal,
 } from '@/lib/wordClient';
 
 export const runtime = 'nodejs';
@@ -50,6 +54,10 @@ export async function POST(req: NextRequest) {
         });
       case 'open':
         return NextResponse.json({ ok: true, result: await openDocx(body.path) });
+      case 'stat':
+        return NextResponse.json({ ok: true, result: await statDocx(body.path) });
+      case 'openExternal':
+        return NextResponse.json({ ok: true, result: await openDocxExternal(body.path) });
       case 'create': {
         try {
           const result = await createDocx({ dir: body.dir, name: body.name, template: body.template });

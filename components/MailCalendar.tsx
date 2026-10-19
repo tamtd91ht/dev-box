@@ -18,6 +18,7 @@ import {
 } from '@/lib/cal';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
 /** Màu của lịch, fallback theo màu nhấn của app. */
 const calColor = (c?: CalCollection) => c?.color || 'var(--acc, #4a9eff)';
@@ -211,6 +212,8 @@ function CalUrlModal({ account, current, onClose, onSaved }: {
 export default function MailCalendar({ account }: { account: MailAccountPub }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--gp-rail', min: 170, max: 520, gap: 12 });
+  // Thu gọn cột lịch — nhường chỗ cho khung tháng/tuần.
+  const rail = useRailCollapse('mail-calendar', '--gp-rail');
   const [calendars, setCalendars] = useState<CalCollection[] | null>(null);
   const [root, setRoot] = useState('');
   const [hidden, setHidden] = useState<Set<string>>(() => new Set()); // lịch đang tắt
@@ -291,10 +294,14 @@ export default function MailCalendar({ account }: { account: MailAccountPub }) {
   }
 
   return (
-    <div className="g-projects" ref={railSplit.ref} style={railSplit.style}>
+    <div className="g-projects" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+      {rail.collapsed ? (
+        <CollapsedRail label="Lịch" count={calendars.length} onShow={rail.show} />
+      ) : (
       <aside className="g-rail">
         <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ flex: 1 }}>Lịch</span>
+          <RailHideButton onHide={rail.hide} className="ghost sm" />
           <button className="ghost sm" onClick={() => setUrlModal(true)} title={`Địa chỉ CalDAV: ${root}`}>⚙</button>
           <button className="ghost sm" onClick={() => void loadCalendars()} title="Tải lại danh sách lịch">↻</button>
         </div>
@@ -320,6 +327,7 @@ export default function MailCalendar({ account }: { account: MailAccountPub }) {
           <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px' }}>Chưa thấy lịch nào.</p>
         )}
       </aside>
+      )}
 
       <div className="g-main">
         <div className="g-crumbs">
@@ -430,7 +438,7 @@ export default function MailCalendar({ account }: { account: MailAccountPub }) {
           onSaved={() => { setUrlModal(false); void loadCalendars(); }}
         />
       )}
-      <Splitter {...railSplit.grip} />
+      {!rail.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

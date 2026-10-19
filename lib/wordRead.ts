@@ -331,7 +331,58 @@ function isPageBreakOnly(p: XEl): boolean {
   return hasBreak && !hasText;
 }
 
-function readParaBlock(p: XEl, nums: NumKinds): ParaBlock {
+// ── Ảnh (chỉ để hiển thị) ────────────────────────────────────────────────────
+
+/** Relationship id → data URL của ảnh. */
+export type ImageMap = Map<string, string>;
+
+const IMG_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp' };
+const MAX_IMG_BYTES = 4 * 1024 * 1024;
+const MAX_IMG_TOTAL = 24 * 1024 * 1024;
+
+/**
+ * Nạp các ảnh nhúng của tài liệu thành data URL để client hiển thị. Ảnh quá lớn (tổng
+ * hoặc từng ảnh) hoặc định dạng lạ (emf, wmf, tiff…) bị bỏ qua — đoạn vẫn hiện, chỉ
+ * thiếu hình, và vẫn nguyên vẹn trong file.
+ */
+export async function readImages(zip: JSZip): Promise<ImageMap> {
+  const out: ImageMap = new Map();
+  let total = 0;
+  for (const [id, target] of await readRels(zip)) {
+    if (!target.startsWith('media/')) continue;
+    const mime = IMG_MIME[target.split('.').pop()?.toLowerCase() ?? ''];
+    const entry = mime ? zip.file(`word/${target}`) : null;
+    if (!mime || !entry) continue;
+    const buf = await entry.async('nodebuffer');
+    if (buf.length > MAX_IMG_BYTES || total + buf.length > MAX_IMG_TOTAL) continue;
+    total += buf.length;
+    out.set(id, `data:${mime};base64,${buf.toString('base64')}`);
+  }
+  return out;
+}
+
+/** Ảnh inline/anchor trong một đoạn → danh sách để vẽ. */
+function readParaImages(p: XEl, images: ImageMap): NonNullable<ParaBlock['imgs']> {
+  const out: NonNullable<ParaBlock['imgs']> = [];
+  walk(p, (e) => {
+    if (local(e) !== 'drawing') return undefined;
+    const blip = findDeep(e, 'blip');
+    const rid = blip
+      ? (blip as unknown as { getAttributeNS(ns: string, n: string): string | null }).getAttributeNS(R_NS, 'embed')
+      : null;
+    const src = rid ? images.get(rid) : undefined;
+    if (src) {
+      const ext = findDeep(e, 'extent');
+      const cx = numAttr(ext, 'cx'); const cy = numAttr(ext, 'cy');
+      // EMU → point (1pt = 12700 EMU). Thiếu extent thì để 0 và client tự co theo ảnh.
+      out.push({ src, w: cx ? cx / 12700 : 0, h: cy ? cy / 12700 : 0 });
+    }
+    return false;
+  });
+  return out;
+}
+
+function readParaBlock(p: XEl, nums: NumKinds, images?: ImageMap): ParaBlock {
   const pPr = findChild(p, 'pPr');
   let fmt: ParaFormat | undefined;
   if (pPr) {
@@ -343,6 +394,10 @@ function readParaBlock(p: XEl, nums: NumKinds): ParaBlock {
   if (fmt) block.fmt = fmt;
   const reason = lockReason(p);
   if (reason) { block.locked = true; block.lockReason = reason; }
+  if (images && images.size > 0) {
+    const imgs = readParaImages(p, images);
+    if (imgs.length > 0) block.imgs = imgs;
+  }
   return block;
 }
 
@@ -416,11 +471,11 @@ export function collectBlockEls(body: XEl): XEl[] {
   });
 }
 
-export function readBlocks(els: XEl[], nums: NumKinds): WordBlock[] {
+export function readBlocks(els: XEl[], nums: NumKinds, images?: ImageMap): WordBlock[] {
   return els.map((el): WordBlock => {
     if (local(el) === 'tbl') return readTableBlock(el, nums);
     if (isPageBreakOnly(el)) return { kind: 'br' };
-    return readParaBlock(el, nums);
+    return readParaBlock(el, nums, images);
   });
 }
 

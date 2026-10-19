@@ -57,6 +57,14 @@ export interface ZaloStoredMessage {
    * dùng bấm vào chỗ chắc chắn thất bại.
    */
   zMsgId?: string;
+  /**
+   * cliMsgId của Zalo. Đi CẶP với zMsgId khi TRẢ LỜI: Zalo cần cả id server lẫn
+   * id client của tin gốc, thiếu một cái thì nhận request rồi im lặng gửi thành
+   * tin rời không có khối trích dẫn.
+   */
+  zCliMsgId?: string;
+  /** Tin GỐC mà tin này trả lời — để vẽ khối trích dẫn phía trên bong bóng. */
+  quote?: { msgId: string; fromName: string; text: string };
 }
 
 export interface ZaloApiFlags {
@@ -112,12 +120,43 @@ export function zaloApiSendMessage(params: {
   text: string;
   group?: boolean;
   styles?: ZaloTextStyle[];
+  /** Tag (@) người trong tin NHÓM — server nối dòng "→ @A @B" + mentionInfo;
+   *  text rỗng + mentions = tin CHỈ ĐỂ TAG (thân tin là chuỗi "@A @B"). */
+  mentions?: { uid: string; name: string }[];
+  /**
+   * TRẢ LỜI một tin đã có (khối trích dẫn hiện phía trên tin mới).
+   *
+   * Cần hai id THẬT của Zalo — lấy từ `zMsgId`/`zCliMsgId` của tin gốc, KHÔNG
+   * phải `id` nội bộ (id đó có thể do ta tự sinh và Zalo tra không ra). Tin gửi
+   * lạc quan chưa có id thật thì chưa trả lời được.
+   */
+  quote?: { msgId: string; cliMsgId?: string; ownerId?: string; ts?: number; text?: string };
+  /** Tên người gửi tin gốc — chỉ để VẼ khối trích dẫn trong màn chat của ta. */
+  quoteFrom?: string;
 }): Promise<ZaloSendResult> {
   return call<ZaloSendResult>('send', params);
 }
 
 export function zaloApiLogout(accountKey: string): Promise<{ dropped: boolean }> {
   return call<{ dropped: boolean }>('logout', { accountKey });
+}
+
+/** Gửi FILE đính kèm (mọi loại, ≤100MB): upload asyncfile rồi gửi tin file.
+ *  Cần listener đang chạy (route tự bật) — fileUrl về qua WebSocket. */
+export function zaloApiSendFile(params: {
+  accountKey: string;
+  threadId?: string;
+  group?: boolean;
+  dataBase64: string;
+  fileName: string;
+}): Promise<ZaloSendResult> {
+  return call<ZaloSendResult>('sendFile', params);
+}
+
+/** Người từng xuất hiện trong tin nhắn của tài khoản (uid + tên, mới nhắn lên
+ *  đầu) — gợi ý cho danh bạ mention của bảng phân công tag. */
+export function zaloApiPeople(accountKey: string): Promise<{ uid: string; name: string }[]> {
+  return call<{ uid: string; name: string }[]>('people', { accountKey });
 }
 
 /** Một tin listener nhận được — khớp IncomingMessage của server (đã bỏ raw). */

@@ -24,7 +24,7 @@ import {
   gStatus, gAuthUrl, gLogout, gRoots, gRootAdd, gRootRemove, gBrowse, gList,
   mimeIcon, fmtRel, withAuthuser, gDownload, gCanDownload, G_MIME,
   gDocLinks, gDocResolve, gDocLinkRemove, gDocLinkRename, gDocLinkPin, gDocLinkTouch, gDocDownload,
-  gDrives, gCreate,
+  gDrives, gCreate, isReauthError,
   type GFile, type GList as GListT, type GoogleAccount, type GoogleStatus, type GRoot, type GDocLink,
   type GDriveRoot,
 } from '@/lib/google';
@@ -34,12 +34,48 @@ import GoogleFilePreview from './GoogleFilePreview';
 import GoogleAuthWindow from './GoogleAuthWindow';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
-/** What the in-app viewer is currently showing (desktop shell only). */
-interface ViewerTarget { name: string; url: string }
+/**
+ * Liên kết Google chết được PHÁT HIỆN ở tầng sâu (một lệnh browse/list bất kỳ
+ * trong view con), nhưng nút sửa nằm ở banner trên toolbar — nơi biết danh sách
+ * tài khoản. Cầu nối là event này: view con chỉ cần báo "có ca reauth", component
+ * gốc nghe được thì refresh status để cờ `invalid` (server vừa ghi lúc refresh
+ * thất bại) hiện thành banner ngay, không phải chờ người dùng F5.
+ *
+ * Dùng event của window thay vì thread callback qua 4 view × chục chỗ catch: các
+ * view con không cần biết gì về khái niệm "liên kết lại".
+ */
+const REAUTH_EVENT = 'devbox:google-reauth';
 
-/** File đang xem bằng API-preview (GoogleFilePreview). */
-interface PreviewTarget { fileId: string; name: string; webViewLink?: string }
+/**
+ * Lỗi để hiện trong các view con. Khi liên kết Google đã chết thì KHÔNG in lại
+ * cả câu dài ở đây: banner "🔗 Liên kết lại" trên toolbar đã nói rõ và có nút
+ * sửa, in hai lần chỉ làm người đọc tưởng là hai vấn đề khác nhau.
+ */
+const gErrText = (e: unknown) => {
+  if (!isReauthError(e)) return (e as Error).message;
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(REAUTH_EVENT));
+  return 'Liên kết Google đã hết hiệu lực — bấm "🔗 Liên kết lại" ở thanh trên.';
+};
+
+/**
+ * MỘT tài liệu đang mở — mỗi cái là một tab riêng trên thanh tab tài liệu.
+ *
+ * Hai kiểu, khác nhau ở chỗ nội dung đến từ đâu:
+ *   · 'preview' — server tải/export nội dung bằng token OAuth rồi render trong
+ *     app (GoogleFilePreview). Đường mặc định khi bấm một file: chạy được với
+ *     file private, không cần đăng nhập gì trong webview.
+ *   · 'viewer'  — editor/Drive thật của Google trong <webview> (GoogleDocViewer),
+ *     desktop-only. Dùng khi cần SỬA, hoặc khi mở một THƯ MỤC Drive.
+ *
+ * `key` là danh tính cố định của tab: fileId đổi kiểu (preview → "sửa trong
+ * app") vẫn là cùng một tab đang mở, còn cùng một file mở hai lần thì nhảy tới
+ * tab cũ thay vì đẻ thêm — cả hai đều dò theo key này.
+ */
+type DocTab =
+  | { key: string; kind: 'preview'; name: string; fileId: string; webViewLink?: string }
+  | { key: string; kind: 'viewer'; name: string; url: string };
 
 /** Mở THƯ MỤC Drive bằng URL: desktop → webview (giao diện Drive đầy đủ);
  *  browser thường → tab mới. */
@@ -52,6 +88,18 @@ type OpenFile = (f: GFile) => void;
 type Section = 'projects' | 'shared' | 'docs' | 'sheets';
 
 const ACTIVE_ACCOUNT_KEY = 'google.activeAccount';
+/** Danh sách section đang mở (mảng Section) — nhớ qua phiên. */
+const OPEN_SECTIONS_KEY = 'google.openSections';
+
+/**
+ * MỘT section đang mở. Section giống nhau mở được nhiều lần (hai tab 📝 Docs để
+ * so hai kết quả tìm khác nhau), nên danh tính tab là `key` chứ không phải
+ * `sec` — cùng `sec` mà khác `key` là hai bàn làm việc độc lập.
+ */
+interface SecTab { key: string; sec: Section }
+
+let secSeq = 0;
+const newSecTab = (sec: Section): SecTab => ({ key: `s${++secSeq}`, sec });
 
 const SECTIONS: { key: Section; icon: string; label: string; hint: string }[] = [
   { key: 'projects', icon: '📁', label: 'Drive', hint: 'duyệt cây · tạo mới' },
@@ -125,7 +173,7 @@ function KindList({ accountId, kind, onOpen }: { accountId: string; kind: 'docs'
       setFiles((cur) => (opts.append ? [...cur, ...res.files] : res.files));
       setNext(res.nextPageToken);
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setLoading(false);
     }
@@ -261,6 +309,8 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
 }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--gp-rail', min: 170, max: 520, gap: 12 });
+  // Thu gọn cột Drive/dự án — nhường chỗ cho danh sách file + xem trước.
+  const rail = useRailCollapse('google', '--gp-rail');
   const [drives, setDrives] = useState<GDriveRoot[]>([]);
   const [roots, setRoots] = useState<GRoot[]>([]);
   /** Gốc đang duyệt — một Drive, hoặc một lối tắt đã đăng ký. */
@@ -279,7 +329,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
   const [showAdd, setShowAdd] = useState(false);
 
   const reloadRoots = useCallback(() => {
-    gRoots(accountId).then(setRoots).catch((e) => setErr((e as Error).message));
+    gRoots(accountId).then(setRoots).catch((e) => setErr(gErrText(e)));
   }, [accountId]);
   useEffect(() => { reloadRoots(); }, [reloadRoots]);
 
@@ -302,7 +352,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
         return at >= 0 ? t.slice(0, at + 1) : [...t, { id, name }];
       });
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setLoading(false);
     }
@@ -323,7 +373,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
         const my = d[0];
         if (my) void openFolder(my.id, my.name, { key: `drive:${my.id}`, name: my.name });
       })
-      .catch((e) => { if (alive) setErr((e as Error).message); });
+      .catch((e) => { if (alive) setErr(gErrText(e)); });
     return () => { alive = false; };
   }, [accountId, openFolder]);
 
@@ -340,7 +390,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
         ? { files: [...prev.files, ...res.files], nextPageToken: res.nextPageToken }
         : res);
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setLoading(false);
     }
@@ -372,7 +422,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
         if (f.webViewLink) onOpenUrl(f.name, withAuthuser(f.webViewLink, accountEmail));
       }
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setCreating(false);
     }
@@ -386,7 +436,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
       setRoots(list);
       setAddUrl(''); setAddName('');
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setAdding(false);
     }
@@ -399,7 +449,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
       setRoots(await gRoots(accountId));
       if (activeRoot?.key === `root:${r.id}`) { setActiveRoot(null); setListing(null); setTrail([]); }
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     }
   };
 
@@ -407,11 +457,15 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
   const files = listing?.files.filter((f) => f.mimeType !== G_MIME.folder) ?? [];
 
   return (
-    <div className="g-projects" ref={railSplit.ref} style={railSplit.style}>
+    <div className="g-projects" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+      {rail.collapsed ? (
+        <CollapsedRail label="Drive" count={drives.length} onShow={rail.show} />
+      ) : (
       <aside className="g-rail">
         {/* Cụm 1: cây thật của tài khoản. Không cần đăng ký gì cũng có. */}
         <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ flex: 1 }}>Drive của tài khoản</span>
+          <RailHideButton onHide={rail.hide} className="ghost sm" />
         </div>
         {drives.map((d) => {
           const key = `drive:${d.id}`;
@@ -481,6 +535,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
           </div>
         )}
       </aside>
+      )}
 
       <div className="g-main">
         {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
@@ -582,7 +637,7 @@ function ProjectsView({ accountId, accountEmail, canWrite, onGrantWrite, onOpen,
           </>
         )}
       </div>
-      <Splitter {...railSplit.grip} />
+      {!rail.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }
@@ -602,7 +657,7 @@ function SharedView({ accountId, onOpen }: { accountId: string; onOpen: OpenFile
   const [editing, setEditing] = useState<string | null>(null);
 
   useEffect(() => {
-    gDocLinks().then(setLinks).catch((e) => setErr((e as Error).message));
+    gDocLinks().then(setLinks).catch((e) => setErr(gErrText(e)));
   }, []);
 
   /** Dán link → nhận diện + lưu + MỞ LUÔN (dán là để xem, không phải để lưu). */
@@ -616,7 +671,7 @@ function SharedView({ accountId, onOpen }: { accountId: string; onOpen: OpenFile
       setNote(`Mở "${res.file.name}" bằng ${res.usedBy}.`);
       onOpen({ id: res.file.id, name: res.file.name, mimeType: res.file.mimeType, webViewLink: res.file.webViewLink });
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     } finally {
       setBusy(false);
     }
@@ -628,7 +683,7 @@ function SharedView({ accountId, onOpen }: { accountId: string; onOpen: OpenFile
   };
 
   const act = async (fn: () => Promise<GDocLink[]>) => {
-    try { setLinks(await fn()); } catch (e) { setErr((e as Error).message); }
+    try { setLinks(await fn()); } catch (e) { setErr(gErrText(e)); }
   };
 
   const remove = (l: GDocLink) => {
@@ -741,16 +796,66 @@ export default function GoogleWorkspace() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [st, setSt] = useState<GoogleStatus | null>(null);
   const [activeId, setActiveId] = useState<string>('');
-  const [section, setSection] = useState<Section>('projects');
+  /**
+   * Các section đang mở + section đang xem. Trước đây chỉ có ĐÚNG MỘT section:
+   * đang duyệt sâu trong cây Drive mà ghé qua 📝 Docs một cái là quay lại phải
+   * bò xuống lại từ My Drive, vì view bị unmount sạch. Giờ mỗi section là một
+   * tab giữ nguyên state của nó (thư mục đang đứng, từ khoá tìm, trang đã tải).
+   */
+  const [secTabs, setSecTabs] = useState<SecTab[]>(() => [newSecTab('projects')]);
+  const [activeSec, setActiveSec] = useState<string>(() => secTabs[0]?.key ?? '');
   const [err, setErr] = useState<string | null>(null);
   const [waiting, setWaiting] = useState(false);
   const [authUrl, setAuthUrl] = useState<string | null>(null); // consent trong app
-  /** Đang consent để CẤP THÊM QUYỀN cho tài khoản này (không phải thêm mới) —
-   *  quyết định poll theo cờ canWrite thay vì theo số lượng tài khoản. */
-  const [pendingWriteId, setPendingWriteId] = useState<string | null>(null);
-  const [viewer, setViewer] = useState<ViewerTarget | null>(null);
-  const [preview, setPreview] = useState<PreviewTarget | null>(null);
+  /**
+   * Đang consent LẠI cho một tài khoản ĐÃ CÓ (cấp thêm quyền ghi, hoặc liên kết
+   * lại khi token hết hạn) — không phải thêm tài khoản mới. Số tài khoản không
+   * đổi nên phải poll theo cờ của chính nó (`until`), lấy số lượng làm mốc thì
+   * poll chạy hết lượt rồi im và người dùng tưởng treo.
+   */
+  const [pendingReconsent, setPendingReconsent] =
+    useState<{ id: string; until: 'write' | 'valid' } | null>(null);
+  /** Tài liệu đang mở (mỗi cái một tab) + tab đang xem. Rỗng = không che gì,
+   *  thấy danh sách file bên dưới. */
+  const [docs, setDocs] = useState<DocTab[]>([]);
+  const [activeDoc, setActiveDoc] = useState<string | null>(null);
+  /** Bản mới nhất của hai danh sách tab, để các hàm đóng/mở tính tab kế tiếp
+   *  mà không phải làm việc đó bên trong updater (xem closeDoc). */
+  const docsRef = useRef(docs);
+  docsRef.current = docs;
+  const secTabsRef = useRef(secTabs);
+  secTabsRef.current = secTabs;
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  /**
+   * Mở một tab tài liệu — hoặc nhảy tới tab đã mở sẵn cùng `key`.
+   *
+   * Mở lại thứ đang mở KHÔNG được tạo tab trùng: bấm hai lần vào một file trong
+   * danh sách là chuyện thường, và tab thứ hai vừa vô ích vừa phải tải lại nội
+   * dung từ đầu. Bấm lại = nhảy về tab cũ, giữ nguyên chỗ đang đọc.
+   */
+  const openDoc = useCallback((tab: DocTab) => {
+    setDocs((cur) => (cur.some((d) => d.key === tab.key) ? cur : [...cur, tab]));
+    setActiveDoc(tab.key);
+  }, []);
+
+  /**
+   * Đóng một tab tài liệu; đóng đúng tab đang xem thì nhảy sang tab kế bên
+   * (bên phải trước, hết thì bên trái) — như trình duyệt.
+   *
+   * Đọc danh sách qua ref chứ không tính trong updater của setDocs: đặt
+   * setActiveDoc bên trong updater là side effect ở render-phase, StrictMode
+   * gọi updater hai lần nên nó chạy hai lượt. Ref cho phép tính tab kế tiếp
+   * TRƯỚC, rồi phát hai lệnh set độc lập.
+   */
+  const closeDoc = useCallback((key: string) => {
+    const cur = docsRef.current;
+    const i = cur.findIndex((d) => d.key === key);
+    if (i < 0) return;
+    const left = cur.filter((d) => d.key !== key);
+    setDocs(left);
+    setActiveDoc((a) => (a === key ? (left[i] ?? left[i - 1])?.key ?? null : a));
+  }, []);
 
   const openInApp = useCallback<OpenInApp>((name, url) => {
     // Route link Google về đúng tài khoản đang chọn trong DevBox — phiên
@@ -758,15 +863,18 @@ export default function GoogleWorkspace() {
     // Docs/Sheets mở bằng account mặc định (có thể sai → "không thể mở tệp").
     const email = st?.accounts.find((a) => a.id === activeId)?.email;
     const target = withAuthuser(url, email);
-    if (typeof window !== 'undefined' && window.workspace?.isDesktop) setViewer({ name, url: target });
-    else window.open(target, '_blank'); // plain browser — <webview> không tồn tại
-  }, [st, activeId]);
+    if (typeof window !== 'undefined' && window.workspace?.isDesktop) {
+      // key theo URL GỐC (chưa gắn authuser): cùng một thư mục/tài liệu mở lại
+      // là cùng một tab, dù account đang chọn lúc đó có khác.
+      openDoc({ key: `v:${url}`, kind: 'viewer', name, url: target });
+    } else window.open(target, '_blank'); // plain browser — <webview> không tồn tại
+  }, [st, activeId, openDoc]);
 
   /** Mở FILE — API-preview (đọc); editUrl do panel tự dựng theo account
    *  THỰC SỰ đọc được file (multi-account fallback). */
   const openFile = useCallback<OpenFile>((f) => {
-    setPreview({ fileId: f.id, name: f.name, webViewLink: f.webViewLink });
-  }, []);
+    openDoc({ key: `f:${f.id}`, kind: 'preview', name: f.name, fileId: f.id, webViewLink: f.webViewLink });
+  }, [openDoc]);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -780,16 +888,93 @@ export default function GoogleWorkspace() {
       return s;
     } catch (e) {
       if ((e as Error & { status?: number }).status === 403) setEnabled(false);
-      else { setEnabled(true); setErr((e as Error).message); }
+      else { setEnabled(true); setErr(gErrText(e)); }
       return null;
     }
   }, []);
 
   useEffect(() => { void refreshStatus(); }, [refreshStatus]);
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  // Một view con vừa ăn lỗi "liên kết hết hiệu lực" → đọc lại status để cờ
+  // `invalid` server vừa ghi hiện thành banner có nút "🔗 Liên kết lại".
+  useEffect(() => {
+    const onReauth = () => { void refreshStatus(); };
+    window.addEventListener(REAUTH_EVENT, onReauth);
+    return () => window.removeEventListener(REAUTH_EVENT, onReauth);
+  }, [refreshStatus]);
   useEffect(() => {
     if (activeId && typeof window !== 'undefined') window.localStorage.setItem(ACTIVE_ACCOUNT_KEY, activeId);
   }, [activeId]);
+
+  /**
+   * Mở section thành tab — hoặc nhảy tới tab CÙNG section đã mở.
+   *
+   * Bấm 📝 Docs khi đã có tab Docs là nhảy về nó, không đẻ tab trùng: một cú
+   * bấm ở subnav phải cho kết quả đoán được (giống mọi thanh nav khác). Muốn
+   * hai tab cùng section thì có nút ＋ trên chính tab đó.
+   */
+  const openSection = useCallback((sec: Section) => {
+    const found = secTabsRef.current.find((t) => t.sec === sec);
+    if (found) { setActiveSec(found.key); return; }
+    const t = newSecTab(sec);
+    setSecTabs((cur) => [...cur, t]);
+    setActiveSec(t.key);
+  }, []);
+
+  /** Nhân bản một section thành tab thứ hai — hai bàn làm việc độc lập trên
+   *  cùng loại (hai nhánh Drive khác nhau, hai từ khoá tìm khác nhau). */
+  const dupSection = useCallback((sec: Section) => {
+    const t = newSecTab(sec);
+    setSecTabs((cur) => [...cur, t]);
+    setActiveSec(t.key);
+  }, []);
+
+  /** Đóng một tab section. Tab CUỐI CÙNG không đóng được: còn đúng một tab mà
+   *  đóng nữa thì vùng chính trống trơn, không có đường nào mở lại view.
+   *  (Tính qua ref, cùng lý do như closeDoc.) */
+  const closeSection = useCallback((key: string) => {
+    const cur = secTabsRef.current;
+    if (cur.length <= 1) return;
+    const i = cur.findIndex((t) => t.key === key);
+    if (i < 0) return;
+    const left = cur.filter((t) => t.key !== key);
+    setSecTabs(left);
+    setActiveSec((a) => (a === key ? (left[i] ?? left[i - 1]).key : a));
+  }, []);
+
+  /**
+   * Danh sách tab section nhớ qua localStorage — đóng app mở lại vẫn còn đúng
+   * bộ view đang dùng. Chỉ nhớ LOẠI section, không nhớ state bên trong: thư mục
+   * đang đứng và kết quả tìm phải gọi lại API mới có, khôi phục nửa vời còn dễ
+   * gây tưởng là dữ liệu thật.
+   *
+   * `hydrated` là state chứ không phải ref — dùng ref thì effect ghi chạy cùng
+   * lượt commit với effect nạp, còn nắm secTabs mặc định, và đè lên đúng thứ
+   * vừa khôi phục.
+   */
+  const [secHydrated, setSecHydrated] = useState(false);
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(OPEN_SECTIONS_KEY);
+      const secs = raw ? (JSON.parse(raw) as unknown) : null;
+      const ok = Array.isArray(secs)
+        ? secs.filter((x): x is Section => SECTIONS.some((d) => d.key === x))
+        : [];
+      if (ok.length) {
+        const tabs = ok.map(newSecTab);
+        setSecTabs(tabs);
+        setActiveSec(tabs[0].key);
+      }
+    } catch { /* localStorage hỏng/khoá → dùng mặc định */ }
+    setSecHydrated(true);
+  }, []);
+  useEffect(() => {
+    if (!secHydrated) return;
+    try {
+      window.localStorage.setItem(OPEN_SECTIONS_KEY, JSON.stringify(secTabs.map((t) => t.sec)));
+    } catch { /* không lưu được thì thôi, không phải lỗi người dùng cần biết */ }
+  }, [secHydrated, secTabs]);
 
   /** Poll status tới khi thấy tài khoản mới — dùng cho cả luồng trong app lẫn
    *  luồng mở trình duyệt ngoài. */
@@ -815,21 +1000,23 @@ export default function GoogleWorkspace() {
   };
 
   /**
-   * Chờ MỘT tài khoản đã có được cấp thêm quyền ghi.
+   * Chờ MỘT tài khoản đã có consent lại xong.
    *
    * Khác `pollForNewAccount`: consent lại cho tài khoản CŨ không làm số tài
-   * khoản tăng, nên điều kiện dừng phải là cờ `canWrite` của chính nó đổi —
-   * lấy số lượng làm mốc thì poll chạy hết 60 lượt rồi im, người dùng tưởng treo.
+   * khoản tăng, nên điều kiện dừng phải là cờ của chính nó đổi —
+   *   'write' → `canWrite` bật (vừa cấp quyền tạo file),
+   *   'valid' → `invalid` tắt (liên kết đã sống lại).
    */
-  const pollForWriteScope = (accountId: string) => {
+  const pollForReconsent = (accountId: string, until: 'write' | 'valid') => {
     setWaiting(true);
     if (pollRef.current) clearInterval(pollRef.current);
     let tries = 0;
     pollRef.current = setInterval(async () => {
       tries += 1;
       const s = await refreshStatus();
-      const granted = s?.accounts.find((a) => a.id === accountId)?.canWrite === true;
-      if (granted || tries > 60) {
+      const a = s?.accounts.find((x) => x.id === accountId);
+      const done = until === 'write' ? a?.canWrite === true : a?.invalid !== true;
+      if (done || tries > 60) {
         if (pollRef.current) clearInterval(pollRef.current);
         setWaiting(false);
       }
@@ -837,25 +1024,32 @@ export default function GoogleWorkspace() {
   };
 
   /**
-   * Cấp thêm quyền tạo file cho tài khoản đang chọn.
+   * Consent LẠI cho một tài khoản đã đăng nhập — dùng cho cả hai việc:
+   *   · cấp thêm quyền tạo file (`until: 'write'`),
+   *   · liên kết lại khi refresh_token hết hạn/bị thu hồi (`until: 'valid'`).
+   *
+   * Cùng một luồng vì `exchangeCode` upsert THEO EMAIL: consent lại cùng email
+   * chỉ thay token của bản ghi cũ, giữ nguyên accountId → mọi lối tắt 📁 và link
+   * đã ghim theo accountId vẫn còn. Đó là lý do tồn tại của nút này: không phải
+   * gỡ tài khoản rồi thêm lại từ đầu.
    *
    * `login_hint` = email của chính nó, để Google khỏi bắt chọn lại tài khoản và
-   * để chắc chắn quyền được gắn vào ĐÚNG tài khoản đang xem (không có hint thì
-   * người dùng dễ chọn nhầm sang account khác, cấp quyền xong vẫn báo thiếu).
+   * để chắc chắn token mới gắn vào ĐÚNG tài khoản đang xem (không có hint thì
+   * người dùng dễ chọn nhầm sang account khác, xác thực xong vẫn báo lỗi cũ).
    */
-  const grantWrite = async (a: GoogleAccount) => {
+  const reconsent = async (a: GoogleAccount, until: 'write' | 'valid') => {
     setErr(null);
     try {
       const { url } = await gAuthUrl(a.email);
       if (typeof window !== 'undefined' && window.workspace?.isDesktop) {
-        setPendingWriteId(a.id);
+        setPendingReconsent({ id: a.id, until });
         setAuthUrl(url);
         return;
       }
       window.open(url, '_blank', 'noopener');
-      pollForWriteScope(a.id);
+      pollForReconsent(a.id, until);
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     }
   };
 
@@ -873,7 +1067,7 @@ export default function GoogleWorkspace() {
       window.open(url, '_blank', 'noopener');
       pollForNewAccount();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     }
   };
 
@@ -886,7 +1080,7 @@ export default function GoogleWorkspace() {
       if (ext) await ext(url); else window.open(url, '_blank', 'noopener');
       pollForNewAccount();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     }
   };
 
@@ -896,7 +1090,7 @@ export default function GoogleWorkspace() {
       await gLogout(a.id);
       await refreshStatus();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(gErrText(e));
     }
   };
 
@@ -982,15 +1176,23 @@ export default function GoogleWorkspace() {
   // ── Signed in (≥1 account) ──────────────────────────────────────────────────
 
   const active = st.accounts.find((a) => a.id === activeId) ?? st.accounts[0];
+  const curSec = secTabs.find((t) => t.key === activeSec) ?? secTabs[0];
+  const curDoc = docs.find((d) => d.key === activeDoc) ?? null;
 
   return (
     <div className="panel sheet-panel">
       <div className="sheet-toolbar">
         <div className="office-subnav" role="tablist" aria-label="Google sections" style={{ flex: 1 }}>
           {SECTIONS.map((s) => (
-            <button key={s.key} role="tab" aria-selected={section === s.key}
-              className={`office-subnav-btn${section === s.key ? ' on' : ''}`}
-              onClick={() => setSection(s.key)}>
+            <button key={s.key} role="tab" aria-selected={curSec?.sec === s.key}
+              /* `on` = đang xem; `open` = có tab nhưng đang xem cái khác (dấu mờ
+                 hơn) — nhìn subnav là biết những gì mình đã mở. */
+              className={`office-subnav-btn${curSec?.sec === s.key ? ' on' : ''}${
+                curSec?.sec !== s.key && secTabs.some((t) => t.sec === s.key) ? ' open' : ''}`}
+              onClick={() => openSection(s.key)}
+              title={secTabs.some((t) => t.sec === s.key)
+                ? `${s.label} — đang mở, bấm để nhảy tới tab`
+                : `Mở ${s.label} thành một tab mới`}>
               <span className="office-subnav-ico" aria-hidden>{s.icon}</span>
               <span className="office-subnav-text">
                 {s.label}
@@ -1003,9 +1205,12 @@ export default function GoogleWorkspace() {
         {/* Account switcher — một chip mỗi tài khoản, ✕ trên chip đang chọn. */}
         <div className="g-accounts" role="tablist" aria-label="Google accounts">
           {st.accounts.map((a) => (
-            <span key={a.id} className={`g-acc${a.id === active.id ? ' on' : ''}`} title={a.email ?? a.id}>
+            <span key={a.id} className={`g-acc${a.id === active.id ? ' on' : ''}${a.invalid ? ' bad' : ''}`}
+              title={a.invalid ? `${a.email ?? a.id} — liên kết hết hiệu lực, cần "Liên kết lại"` : (a.email ?? a.id)}>
               <button className="g-acc-btn" role="tab" aria-selected={a.id === active.id} onClick={() => setActiveId(a.id)}>
-                Ⓖ {accLabel(a, st.accounts)}
+                {/* Chấm ⚠ để thấy tài khoản chết NGAY trên chip, không phải chọn
+                    vào mới biết — có nhiều tài khoản thì đó là khác biệt lớn. */}
+                {a.invalid ? '⚠' : 'Ⓖ'} {accLabel(a, st.accounts)}
               </button>
               {a.id === active.id && (
                 <button className="g-acc-x" onClick={() => void removeAccount(a)} title={`Đăng xuất ${a.email ?? a.id}`}>✕</button>
@@ -1019,73 +1224,170 @@ export default function GoogleWorkspace() {
       </div>
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '6px 0' }}>{err}</pre>}
 
+      {/* LIÊN KẾT HẾT HIỆU LỰC — refresh_token bị Google từ chối (hết hạn, bị thu
+          hồi ở myaccount.google.com, hoặc đổi mật khẩu). Trước đây chỗ này chỉ đổ
+          ra "invalid_grant Token has been expired or revoked" và cách duy nhất là
+          gỡ tài khoản rồi thêm lại — mất luôn lối tắt đã ghim. Nút dưới đây
+          consent lại vào ĐÚNG tài khoản đó nên mọi thứ đã ghim vẫn còn. */}
+      {active.invalid && (
+        <div className="g-scope-warn">
+          <span aria-hidden>🔗</span>
+          <span style={{ flex: 1 }}>
+            Liên kết Google với <b>{active.email ?? active.id}</b> đã hết hiệu lực — cần xác thực lại
+            để lấy token mới. Lối tắt và link đã ghim <b>vẫn giữ nguyên</b>, không cần gỡ tài khoản.
+            {active.invalidReason && (
+              <>
+                {' '}
+                <span className="small" style={{ color: 'var(--muted)' }}>
+                  (Google: {active.invalidReason})
+                </span>
+              </>
+            )}
+          </span>
+          <button className="sm" onClick={() => void reconsent(active, 'valid')} disabled={waiting}
+            title={`Xác thực lại ${active.email ?? active.id} — token mới, giữ nguyên mọi thứ đã ghim`}>
+            {waiting ? <span className="spinner" aria-hidden /> : '🔗'} Liên kết lại
+          </button>
+        </div>
+      )}
+
       {/* Token KHÔNG có quyền Drive nào: mọi thứ bên dưới sẽ chết bằng
           "insufficient authentication scopes". Nói trước ở đây, kèm nút sửa —
           để lỗi tự hiện ra lúc duyệt thì không ai đoán được là do đăng nhập. */}
-      {active.canRead === false && active.canWrite === false && (
+      {!active.invalid && active.canRead === false && active.canWrite === false && (
         <div className="g-scope-warn">
           <span aria-hidden>⚠️</span>
           <span style={{ flex: 1 }}>
             <b>{active.email ?? active.id}</b> chưa được cấp quyền Drive — duyệt hay tạo file đều sẽ lỗi.
             Đăng nhập lại và <b>tick các ô quyền Google Drive</b> ở màn hình Google trước khi bấm Tiếp tục.
           </span>
-          <button className="sm" onClick={() => void grantWrite(active)} disabled={waiting}>
+          <button className="sm" onClick={() => void reconsent(active, 'write')} disabled={waiting}>
             {waiting ? <span className="spinner" aria-hidden /> : '🔓'} Cấp quyền lại
           </button>
         </div>
       )}
 
-      {/* key=account id → đổi tài khoản là remount sạch dữ liệu của account đó */}
-      <div className="office-body">
-        {section === 'projects' && (
-          <ProjectsView
-            key={`p-${active.id}`}
-            accountId={active.id}
-            accountEmail={active.email}
-            canWrite={active.canWrite === true}
-            onGrantWrite={() => void grantWrite(active)}
-            onOpen={openFile}
-            onOpenUrl={openInApp}
-          />
-        )}
-        {/* Không key theo account: link được share vốn không thuộc riêng
-            tài khoản nào — danh sách dùng chung, viewer tự dò quyền. */}
-        {section === 'shared' && <SharedView accountId={active.id} onOpen={openFile} />}
-        {section === 'docs' && <KindList key={`d-${active.id}`} accountId={active.id} kind="docs" onOpen={openFile} />}
-        {section === 'sheets' && <KindList key={`s-${active.id}`} accountId={active.id} kind="sheets" onOpen={openFile} />}
-      </div>
-
-      {preview && (
-        <GoogleFilePreview
-          accountId={active.id}
-          accounts={st.accounts}
-          fileId={preview.fileId}
-          name={preview.name}
-          webViewLink={preview.webViewLink}
-          onClose={() => setPreview(null)}
-          onOpenWeb={
-            typeof window !== 'undefined' && window.workspace?.isDesktop
-              ? (editUrl) => {
-                  // Chuyển sang editor webview — cần phiên nhúng đã login (Ⓖ).
-                  const p = preview;
-                  setPreview(null);
-                  setViewer({ name: p.name, url: editUrl });
-                }
-              : undefined
-          }
-        />
+      {/* Thanh tab SECTION — nhiều view mở song song. Chỉ hiện khi có >1 tab:
+          một tab thì subnav ngay trên đã nói rõ đang ở đâu, thêm một hàng nữa
+          chỉ để nhắc lại là ăn mất chiều cao của vùng chính. */}
+      {secTabs.length > 1 && (
+        <div className="api-wintabs g-shrink" role="tablist" aria-label="Google views đang mở">
+          {secTabs.map((t) => {
+            const def = SECTIONS.find((d) => d.key === t.sec)!;
+            return (
+              <div key={t.key} className={`api-wintab${t.key === curSec.key ? ' on' : ''}`}
+                onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeSection(t.key); } }}>
+                <button className="api-wintab-btn" role="tab" aria-selected={t.key === curSec.key}
+                  onClick={() => setActiveSec(t.key)} title={`${def.label} — ${def.hint}`}>
+                  <span aria-hidden>{def.icon}</span>
+                  <span className="api-wintab-name">{def.label}</span>
+                </button>
+                <button className="api-wintab-x" onClick={() => closeSection(t.key)}
+                  title="Đóng view (chuột giữa cũng được)">✕</button>
+              </div>
+            );
+          })}
+          <button className="ghost sm" onClick={() => dupSection(curSec.sec)}
+            title={`Mở thêm một ${SECTIONS.find((d) => d.key === curSec.sec)!.label} nữa — hai bàn làm việc độc lập`}>
+            ＋
+          </button>
+        </div>
       )}
 
-      {viewer && (
-        <GoogleDocViewer
-          name={viewer.name}
-          url={viewer.url}
-          onClose={() => setViewer(null)}
-          // 💾 trong viewer lưu vào registry của tab Links (dùng chung toàn app).
-          onSaveLink={async (name, url) => {
-            await lAdd(url, { name });
-          }}
-        />
+      {/* MỌI tab section đều mount, tab không xem thì `hidden` — chuyển tab
+          không được làm mất thư mục đang đứng hay kết quả tìm (đó chính là lý
+          do có thanh tab này). Chỉ ẩn đi, không unmount.
+
+          key=account id → đổi tài khoản là remount sạch dữ liệu của account đó */}
+      <div className="office-body">
+        {secTabs.map((t) => (
+          <div key={t.key} className="g-secpane" hidden={t.key !== curSec.key}>
+            {t.sec === 'projects' && (
+              <ProjectsView
+                key={`p-${active.id}`}
+                accountId={active.id}
+                accountEmail={active.email}
+                canWrite={active.canWrite === true}
+                onGrantWrite={() => void reconsent(active, 'write')}
+                onOpen={openFile}
+                onOpenUrl={openInApp}
+              />
+            )}
+            {/* Không key theo account: link được share vốn không thuộc riêng
+                tài khoản nào — danh sách dùng chung, viewer tự dò quyền. */}
+            {t.sec === 'shared' && <SharedView accountId={active.id} onOpen={openFile} />}
+            {t.sec === 'docs' && <KindList key={`d-${active.id}`} accountId={active.id} kind="docs" onOpen={openFile} />}
+            {t.sec === 'sheets' && <KindList key={`s-${active.id}`} accountId={active.id} kind="sheets" onOpen={openFile} />}
+          </div>
+        ))}
+      </div>
+
+      {/* ── Tài liệu đang mở ──────────────────────────────────
+          Lớp phủ kín vùng chính (như trước), nhưng giờ chứa NHIỀU tài liệu:
+          thanh tab ở trên, bên dưới là các panel mount song song. Mở file thứ
+          hai không còn phải đóng file thứ nhất — <webview> đang soạn dở và nội
+          dung sheet vài MB đã tải đều còn nguyên khi chuyển qua lại. */}
+      {docs.length > 0 && (
+        <div className="g-docs">
+          <div className="api-wintabs g-doctabs g-shrink" role="tablist" aria-label="Tài liệu đang mở">
+            {docs.map((d) => (
+              <div key={d.key} className={`api-wintab${d.key === curDoc?.key ? ' on' : ''}`}
+                onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeDoc(d.key); } }}>
+                <button className="api-wintab-btn" role="tab" aria-selected={d.key === curDoc?.key}
+                  onClick={() => setActiveDoc(d.key)}
+                  title={`${d.name}${d.kind === 'viewer' ? ' — editor/Drive thật' : ' — xem qua API, chỉ đọc'}`}>
+                  <span aria-hidden>{d.kind === 'viewer' ? '✏️' : '👁'}</span>
+                  <span className="api-wintab-name">{d.name}</span>
+                </button>
+                <button className="api-wintab-x" onClick={() => closeDoc(d.key)}
+                  title="Đóng tài liệu (chuột giữa cũng được)">✕</button>
+              </div>
+            ))}
+            <span style={{ flex: 1 }} />
+            <button className="ghost sm" onClick={() => { setDocs([]); setActiveDoc(null); }}
+              title="Đóng hết tài liệu, về danh sách file">✕ Đóng hết</button>
+          </div>
+
+          <div className="g-docpanes">
+            {docs.map((d) => (d.kind === 'preview' ? (
+              <GoogleFilePreview
+                key={d.key}
+                active={d.key === curDoc?.key}
+                accountId={active.id}
+                accounts={st.accounts}
+                fileId={d.fileId}
+                name={d.name}
+                webViewLink={d.webViewLink}
+                onClose={() => closeDoc(d.key)}
+                onOpenWeb={
+                  typeof window !== 'undefined' && window.workspace?.isDesktop
+                    ? (editUrl) => {
+                        // Chuyển sang editor webview — cần phiên nhúng đã login (Ⓖ).
+                        // THAY TẠI CHỖ, giữ nguyên key và vị trí trên thanh tab:
+                        // "sửa trong app" là đổi cách xem CÙNG tài liệu, không
+                        // phải mở thêm một tài liệu thứ hai.
+                        setDocs((cur) => cur.map((x) => (x.key === d.key
+                          ? { key: x.key, kind: 'viewer', name: d.name, url: editUrl }
+                          : x)));
+                      }
+                    : undefined
+                }
+              />
+            ) : (
+              <GoogleDocViewer
+                key={d.key}
+                active={d.key === curDoc?.key}
+                name={d.name}
+                url={d.url}
+                onClose={() => closeDoc(d.key)}
+                // 💾 trong viewer lưu vào registry của tab Links (dùng chung toàn app).
+                onSaveLink={async (name, url) => {
+                  await lAdd(url, { name });
+                }}
+              />
+            )))}
+          </div>
+        </div>
       )}
 
       {/* Consent Google trong app — "＋ Tài khoản" (thêm mới) và "Cấp quyền tạo
@@ -1094,10 +1396,12 @@ export default function GoogleWorkspace() {
         <GoogleAuthWindow url={authUrl}
           onDone={() => {
             setAuthUrl(null);
-            if (pendingWriteId) { pollForWriteScope(pendingWriteId); setPendingWriteId(null); }
-            else pollForNewAccount();
+            if (pendingReconsent) {
+              pollForReconsent(pendingReconsent.id, pendingReconsent.until);
+              setPendingReconsent(null);
+            } else pollForNewAccount();
           }}
-          onCancel={() => { setAuthUrl(null); setPendingWriteId(null); }} />
+          onCancel={() => { setAuthUrl(null); setPendingReconsent(null); }} />
       )}
     </div>
   );

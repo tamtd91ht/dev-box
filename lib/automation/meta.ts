@@ -17,8 +17,35 @@ import { AGG_LABEL, metricDef, metricLabel, type FieldDef } from './catalog';
  *
  * Quy ước cho bot: KHÔNG có marker bọc. Bot tách metadata bằng cách tìm trong
  * tin nhắn dòng/đoạn JSON bắt đầu bằng `{"schemaVersion":` rồi JSON.parse.
+ *
+ * v2: thêm `consumers?: AlertMetaConsumer[]` — Kafka maxConsumerLag liệt kê đích
+ *     danh các consumer group vượt ngưỡng (bổ sung, tương thích ngược).
+ * v3: thêm `hosts?: AlertMetaHost[]` — Kafka chỉ số HOST broker (đĩa/RAM/CPU/
+ *     load/mất exporter, đọc từ node_exporter) liệt kê đích danh máy nào
+ *     (bổ sung, tương thích ngược).
+ * v4: thêm `brokers?: AlertMetaBroker[]` + `diagnosis?: string` — Kafka MẤT KẾT
+ *     NỐI: bắt tay TCP tới TỪNG seed broker, nên cảnh báo nói được node nào
+ *     chết thay vì chỉ "0/1", kèm một câu kết luận hướng xử lý (bổ sung, tương
+ *     thích ngược).
+ * v6: thêm `rate?: AlertMetaRate` — cảnh báo TỐC ĐỘ TĂNG TRƯỞNG. Bot PHẢI kiểm
+ *     `rate` trước khi diễn giải `current`/`threshold`: với cảnh báo tốc độ,
+ *     `threshold` là ngưỡng đặt trên MỨC THAY ĐỔI (hoặc số GIỜ còn lại khi
+ *     `rate.mode === 'eta'`), KHÔNG phải trên giá trị chỉ số — đọc nhầm sẽ ra
+ *     kết luận ngược hẳn ("đĩa mới 6" trong khi thực ra đĩa 92% và cạn sau 6
+ *     giờ). Vắng `rate` = cảnh báo ngưỡng tĩnh như mọi phiên bản trước.
+ * v5: thêm `dns?: AlertMetaDns` — Kafka MẤT KẾT NỐI với địa chỉ dạng hostname:
+ *     DevBox phân giải tên bằng NAMESERVER NÀO và ra IP gì. Cần vì trên
+ *     container/VPN resolver của DevBox thường khác máy người đọc cảnh báo, nên
+ *     "không phân giải được" mà không nói DNS nào thì không tra tiếp được. Mỗi
+ *     tên đo HAI đường (`system` = getaddrinfo, đường kafkajs đi · `nameserver`
+ *     = hỏi thẳng DNS, bỏ qua hosts file) và gắn cờ `hostsFileOverride` khi hai
+ *     đường lệch nhau (bổ sung, tương thích ngược). `dns` LUÔN có mặt ở ca Kafka
+ *     mất kết nối: khi địa chỉ toàn IP thuần thì `hosts` rỗng kèm `noNames:true`
+ *     — "không có gì để phân giải" là một KẾT LUẬN, còn vắng `dns` hẳn thì mới
+ *     là chưa đo. v5 chưa từng phát ra bản không có `noNames` nên không bot nào
+ *     phải sửa.
  */
-export const META_SCHEMA_VERSION = 1;
+export const META_SCHEMA_VERSION = 6;
 
 /** Ký hiệu người đọc của phép so sánh — dùng chung cho description, text và meta. */
 export const OP_TEXT: Record<InfraWatch['op'], string> = {
@@ -63,8 +90,13 @@ export interface DescriptionInput {
   threshold: number;
   everySec: number;
   forSec?: number;
+  /** Kafka: danh sách consumer group được giới hạn (nếu có) — vào mô tả cảnh báo. */
+  groupFilter?: string[];
   /** Ghi chú nghiệp vụ của watch — phần ngữ cảnh catalog không thể biết. */
   note?: string;
+  /** 'rate' đổi hẳn câu mô tả: cảnh báo nói về XU HƯỚNG, không phải mức hiện tại. */
+  kind?: InfraWatch['kind'];
+  rate?: InfraWatch['rate'];
 }
 
 /**
@@ -82,20 +114,107 @@ export function buildDescription(w: DescriptionInput): string {
   const agg = md?.agg ? `, ${AGG_LABEL[md.agg]}` : '';
   const hold = (w.forSec ?? 0) > 0 ? ` liên tục ≥ ${w.forSec}s` : ' (báo ngay khi chạm ngưỡng)';
   const note = (w.note ?? '').trim();
+  // Kafka có giới hạn group: nói rõ chỉ xét các consumer nào, để cảnh báo tự
+  // giải thích "vì sao chỉ mấy consumer này". Nhiều thì cắt bớt cho gọn tin.
+  const gf = (w.groupFilter ?? []).filter(Boolean);
+  const scope = gf.length
+    ? ` Chỉ xét ${gf.length} consumer group: ${gf.slice(0, 8).join(', ')}${gf.length > 8 ? `… (+${gf.length - 8})` : ''}.`
+    : '';
+  // Watch TỐC ĐỘ đo một thứ khác hẳn, nên câu mô tả cũng phải khác — nếu vẫn
+  // viết "phát khi giá trị > 10" thì một con bot AI đọc mô tả sẽ hiểu sai hoàn
+  // toàn bản chất cảnh báo (tưởng đĩa mới 10% trong khi thực ra đang 92% và
+  // sắp đầy).
+  const rateText = describeRate(w);
   return (
     `${label} — ${meaning} ` +
     `DevBox đo bằng ${probe} mỗi ${w.everySec}s${agg}. ` +
-    `Cảnh báo phát khi giá trị ${OP_TEXT[w.op] ?? w.op} ${w.threshold}${hold}.` +
+    (rateText || `Cảnh báo phát khi giá trị ${OP_TEXT[w.op] ?? w.op} ${w.threshold}${hold}.`) +
+    scope +
     (note ? ` Ghi chú: ${note}` : '')
   );
 }
 
-/** "340" → "5 phút 40 giây" — cho recovery.downText. */
+/** Cửa sổ đọc thành lời — giữ chung một cách nói với UI và với text cảnh báo. */
+const fmtWindow = (sec: number): string =>
+  sec % 3600 === 0 ? `${sec / 3600} giờ` : sec % 60 === 0 ? `${sec / 60} phút` : `${sec} giây`;
+
+/**
+ * Mô tả cơ chế của một watch TỐC ĐỘ. Rỗng khi đây là watch thường.
+ *
+ * Nói đủ ba thứ mà người đọc (hoặc bot) cần để đánh giá đúng: đo theo cách
+ * nào, trên những cửa sổ nào, và — quan trọng nhất — rằng cảnh báo này nói về
+ * XU HƯỚNG chứ không phải mức hiện tại.
+ */
+function describeRate(w: DescriptionInput): string {
+  if (w.kind !== 'rate' || !w.rate) return '';
+  const op = OP_TEXT[w.op] ?? w.op;
+  const wins = w.rate.windows.map((x) => `${op} ${x.threshold} trong ${fmtWindow(x.sec)}`).join(', hoặc ');
+  if (w.rate.mode === 'eta') {
+    return (
+      `Đây là cảnh báo DỰ BÁO CẠN, không phải ngưỡng tĩnh: DevBox lấy tốc độ tăng gần đây` +
+      ` chia cho phần dung lượng còn trống để ước tính còn bao lâu thì hết, rồi báo khi ${wins}.` +
+      ` Giá trị hiện tại có thể vẫn dưới mọi ngưỡng thông thường — điều đáng lo là ĐÀ đi tới.`
+    );
+  }
+  const how =
+    w.rate.mode === 'points'
+      ? 'chênh lệch tính bằng ĐIỂM phần trăm'
+      : w.rate.mode === 'relative'
+        ? 'chênh lệch tính bằng % so với chính giá trị đầu cửa sổ'
+        : 'chênh lệch tính theo đơn vị gốc của chỉ số';
+  return (
+    `Đây là cảnh báo TỐC ĐỘ THAY ĐỔI, không phải ngưỡng tĩnh: DevBox so giá trị đầu và cuối` +
+    ` mỗi cửa sổ (${how}) và báo khi ${wins}.` +
+    ` Vượt ở BẤT KỲ cửa sổ nào cũng phát — cửa sổ ngắn bắt đột biến, cửa sổ dài bắt rò rỉ chậm.`
+  );
+}
+
+/**
+ * Dựng khối `rate` của AlertMeta từ fields phẳng.
+ *
+ * `windows` đi qua event dưới dạng JSON (fields chỉ chứa string|number), nên
+ * chỗ này parse lại. JSON hỏng → mảng rỗng chứ không ném: một cảnh báo thiếu
+ * phần toàn cảnh vẫn tốt hơn một cảnh báo không gửi được.
+ */
+function buildRate(f: Record<string, string | number>): AlertMetaRate {
+  let windows: AlertMetaRateWindow[] = [];
+  try {
+    const parsed = JSON.parse(String(f.rateWindowsJson || '[]')) as unknown;
+    if (Array.isArray(parsed)) windows = parsed as AlertMetaRateWindow[];
+  } catch {
+    /* xem docstring */
+  }
+  const eta = f.etaSec;
+  return {
+    mode: String(f.rateMode ?? ''),
+    windowSec: Number(f.rateWindowSec) || 0,
+    from: Number(f.rateFrom) || 0,
+    to: Number(f.rateTo) || 0,
+    delta: Number(f.rateDelta) || 0,
+    perHour: Number(f.ratePerHour) || 0,
+    ...(typeof eta === 'number' && Number.isFinite(eta) ? { etaSec: eta } : {}),
+    samples: Number(f.rateSamples) || 0,
+    windows,
+  };
+}
+
+/**
+ * "340" → "5 phút 40 giây" — cho recovery.downText và tuổi message đang tắc.
+ *
+ * Có bậc NGÀY vì cảnh báo đứng im nay đọc tuổi thật từ log: một message kẹt cả
+ * tuần hiện thành "6 ngày 20 giờ", chứ "164 giờ" thì người đọc phải tự chia.
+ * Cắt ở hai đơn vị lớn nhất — "6 ngày 20 giờ" đủ để quyết định, thêm phút giây
+ * vào chỉ làm loãng.
+ */
 export function humanizeSec(total: number): string {
   const s = Number.isFinite(total) ? Math.max(0, Math.round(total)) : 0;
-  const h = Math.floor(s / 3600);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const r = s % 60;
+  // Từ một ngày trở lên thì cắt ở "ngày + giờ" — phút giây ở thang đó là nhiễu.
+  // Dưới một ngày giữ nguyên cách đọc cũ, để mọi chỗ đang dùng không đổi chữ.
+  if (d) return h ? `${d} ngày ${h} giờ` : `${d} ngày`;
   const parts: string[] = [];
   if (h) parts.push(`${h} giờ`);
   if (m) parts.push(`${m} phút`);
@@ -135,6 +254,40 @@ export interface AlertMetaDetection {
   aggregation?: string;
 }
 
+/** Một cửa sổ so sánh của cảnh báo tốc độ. */
+export interface AlertMetaRateWindow {
+  windowSec: number;
+  from: number;
+  to: number;
+  delta: number;
+  threshold: number;
+  breaching: boolean;
+  /** Chỉ mode 'eta': số giây còn lại đến khi cạn theo đà hiện tại. */
+  etaSec?: number;
+}
+
+/**
+ * Cảnh báo TỐC ĐỘ. Có mặt = cảnh báo này nói về XU HƯỚNG, không phải mức hiện
+ * tại — xem ghi chú v6 ở META_SCHEMA_VERSION trước khi diễn giải.
+ */
+export interface AlertMetaRate {
+  /** points (điểm %) · absolute (đơn vị gốc) · relative (% so với chính nó) · eta (giờ đến khi cạn). */
+  mode: string;
+  /** Cửa sổ đã kích hoạt cảnh báo (vượt nặng nhất). */
+  windowSec: number;
+  from: number;
+  to: number;
+  delta: number;
+  /** Tốc độ quy về một giờ — so sánh được giữa các cửa sổ khác độ dài. */
+  perHour: number;
+  /** Còn bao lâu thì cạn (giây). Vắng = không tăng, hoặc chỉ số không có trần. */
+  etaSec?: number;
+  /** Số mẫu đang giữ — ít mẫu nghĩa là kết luận mỏng. */
+  samples: number;
+  /** MỌI cửa sổ đã khai, kể cả cái không vượt — bot thấy được toàn cảnh xu hướng. */
+  windows: AlertMetaRateWindow[];
+}
+
 export interface AlertMetaRecovery {
   downSec: number;
   downText: string;
@@ -152,6 +305,98 @@ export interface AlertMetaAbsolute {
   unit: string;
   /** Bản chữ người đọc: "3.8 GB / 4.0 GB · còn 197 MB". */
   text: string;
+}
+
+/** Một HOST broker liên quan tới cảnh báo Kafka theo host — cho bot/hệ ngoài đọc. */
+/**
+ * Kết quả bắt tay TCP tới MỘT seed broker (Kafka mất kết nối). Chỉ TCP, không
+ * nói giao thức Kafka — trả lời đúng câu "cổng này có ai nghe không".
+ */
+export interface AlertMetaBroker {
+  /** Nguyên văn 'host:port' như trong cấu hình. */
+  addr: string;
+  host: string;
+  port: number;
+  reachable: boolean;
+  latencyMs?: number;
+  /** Mã lỗi Node khi hỏng: ECONNREFUSED · EHOSTUNREACH · ENOTFOUND · timeout 3s. */
+  error?: string;
+}
+
+/** Phân giải một hostname theo MỘT đường (getaddrinfo hoặc nameserver). */
+export interface AlertMetaDnsAnswer {
+  resolved: boolean;
+  /** IP nhận được khi phân giải thành công. */
+  addresses?: string[];
+  ms?: number;
+  /** ENOTFOUND = không có bản ghi · EAI_AGAIN/ETIMEOUT = DNS không trả lời. */
+  error?: string;
+}
+
+/**
+ * Phân giải một hostname trên máy DevBox theo CẢ HAI đường: getaddrinfo của OS
+ * (đường kafkajs thật sự đi, ăn theo /etc/hosts) và hỏi thẳng nameserver.
+ */
+export interface AlertMetaDnsHost {
+  host: string;
+  system: AlertMetaDnsAnswer;
+  /** Hỏi thẳng nameserver, BỎ QUA hosts file. Vắng khi không đọc được resolver. */
+  nameserver?: AlertMetaDnsAnswer;
+  /** true = hai đường khác nhau → tên bị /etc/hosts hoặc NSS can thiệp. */
+  hostsFileOverride?: boolean;
+}
+
+/** DevBox tra tên bằng DNS nào, ra IP gì (Kafka mất kết nối, địa chỉ có hostname). */
+export interface AlertMetaDns {
+  /** Nameserver tiến trình DevBox đang dùng (dns.getServers()). */
+  servers: string[];
+  hosts: AlertMetaDnsHost[];
+  /**
+   * true = không có hostname nào để tra (địa chỉ toàn IP thuần). `hosts` rỗng vì
+   * không có gì để phân giải, KHÔNG phải vì chưa đo.
+   */
+  noNames?: boolean;
+}
+
+export interface AlertMetaHost {
+  /** Hostname/IP của broker. */
+  host: string;
+  /** Ca đĩa: phần trăm đã dùng + dung lượng trống + mount chật nhất. */
+  diskUsedPct?: number;
+  diskFreeGb?: number;
+  mount?: string;
+  /** Ca RAM. */
+  memUsedPct?: number;
+  /** Ca CPU (vắng mặt ở vòng đo đầu tiên — cần hai vòng mới tính được). */
+  cpuPct?: number;
+  /** Ca load: load average 1 phút đã chia số core. */
+  load1PerCore?: number;
+  /** Ca mất số liệu: node_exporter không trả lời. */
+  unreachable?: boolean;
+  error?: string;
+}
+
+/** Một consumer group liên quan tới cảnh báo Kafka — cho bot/hệ ngoài đọc. */
+export interface AlertMetaConsumer {
+  group: string;
+  lag: number;
+  /** Topic lag nặng nhất của group (nếu probe đọc được). */
+  topic?: string;
+  topicLag?: number;
+  /** Ca đứng im: tuổi thật (giây) của message đang tắc. */
+  stalledSec?: number;
+  /** Ca đứng im: partition đang tắc ("topic:partition"). */
+  stalledAt?: string;
+  /** Ca đứng im: lag của RIÊNG partition đó — khác `lag` (tổng cả group). */
+  stalledLag?: number;
+  /** Ca đứng im: message đang tắc được ghi lúc nào (epoch ms). */
+  stalledSince?: number;
+  /** AKHQ vàng/xanh: true = còn consumer đang tiêu thụ (Stable + member). */
+  active?: boolean;
+  /** Ca rebalance / lag unknown / không active: trạng thái group. */
+  state?: string;
+  /** Số member đang chạy (0 = không consumer). */
+  members?: number;
 }
 
 /**
@@ -182,11 +427,37 @@ export interface AlertMeta {
   metric?: AlertMetaMetric;
   threshold?: AlertMetaThreshold;
   current?: number;
+  /** Có mặt = cảnh báo TỐC ĐỘ; đổi hẳn cách đọc `threshold`. Xem v6. */
+  rate?: AlertMetaRate;
   absolute?: AlertMetaAbsolute;
   watch?: AlertMetaWatch;
   detection?: AlertMetaDetection;
   description?: string;
   recovery?: AlertMetaRecovery;
+  /** Kafka (chỉ số theo group): đích danh group liên quan (lag/đứng im/mất member…). */
+  consumers?: AlertMetaConsumer[];
+  /** Kafka underReplicated/offline: topic bị ảnh hưởng. */
+  topics?: string[];
+  /** Kafka (chỉ số host): đích danh broker host liên quan (đĩa/RAM/CPU/mất exporter). */
+  hosts?: AlertMetaHost[];
+  /**
+   * Kafka MẤT KẾT NỐI: bắt tay TCP tới từng seed broker. Cho bot/người trực
+   * biết node nào chết thay vì chỉ "Kết nối được 0/1".
+   */
+  brokers?: AlertMetaBroker[];
+  /** Câu kết luận chẩn đoán đi kèm `brokers` (mất mạng / node chết / cụm chưa phục vụ). */
+  diagnosis?: string;
+  /**
+   * Kafka: advertised.listeners cụm trả về lúc chẩn đoán. Khác với địa chỉ
+   * DevBox đang gọi là nguyên nhân kinh điển của "kết nối được mà vẫn hỏng".
+   */
+  advertised?: string[];
+  /**
+   * Kafka MẤT KẾT NỐI: DNS DevBox dùng để phân giải hostname (seed khai bằng tên
+   * và/hoặc advertised.listeners) + kết quả từng tên. Vắng mặt khi mọi địa chỉ
+   * đều là IP — không có gì để phân giải.
+   */
+  dns?: AlertMetaDns;
 
   // ── social ──
   conversation?: string;
@@ -214,6 +485,121 @@ const n = (v: string | number | undefined): number => {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 };
+
+/** Parse field máy-đọc `consumersJson` → AlertMetaConsumer[]. An toàn với mọi rác. */
+function parseConsumers(raw: string | number | undefined): AlertMetaConsumer[] {
+  if (typeof raw !== 'string' || !raw) return [];
+  try {
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((c): c is Record<string, unknown> => !!c && typeof c === 'object' && typeof (c as { group?: unknown }).group === 'string')
+      .map((c) => ({
+        group: String(c.group),
+        lag: Number(c.lag) || 0,
+        ...(c.topic ? { topic: String(c.topic), topicLag: Number(c.topicLag) || 0 } : {}),
+        ...(c.stalledSec !== undefined ? { stalledSec: Number(c.stalledSec) || 0 } : {}),
+        ...(c.stalledAt !== undefined ? { stalledAt: String(c.stalledAt) } : {}),
+        ...(c.stalledLag !== undefined ? { stalledLag: Number(c.stalledLag) || 0 } : {}),
+        ...(c.stalledSince !== undefined ? { stalledSince: Number(c.stalledSince) || 0 } : {}),
+        ...(typeof c.active === 'boolean' ? { active: c.active } : {}),
+        ...(c.state !== undefined ? { state: String(c.state) } : {}),
+        ...(c.members !== undefined ? { members: Number(c.members) || 0 } : {}),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/** Parse field máy-đọc `dnsJson` → AlertMetaDns. An toàn với mọi rác. */
+function parseDns(raw: string | number | undefined): AlertMetaDns | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const o = JSON.parse(raw) as unknown;
+    if (!o || typeof o !== 'object') return undefined;
+    const rec = o as Record<string, unknown>;
+    const servers = Array.isArray(rec.servers) ? rec.servers.map(String) : [];
+    const hosts = (Array.isArray(rec.hosts) ? rec.hosts : [])
+      .filter((h): h is Record<string, unknown> => !!h && typeof h === 'object' && typeof (h as { host?: unknown }).host === 'string')
+      .map((h) => {
+        const out: AlertMetaDnsHost = { host: String(h.host), system: parseDnsAnswer(h.system) };
+        const ns = h.nameserver;
+        if (ns && typeof ns === 'object') out.nameserver = parseDnsAnswer(ns);
+        if (h.hostsFileOverride === true) out.hostsFileOverride = true;
+        return out;
+      });
+    const noNames = rec.noNames === true;
+    // Không nameserver, không hostname, và cũng không phải ca "toàn IP" → payload
+    // rỗng thật, không có gì để nói. Giữ lại khi có noNames: đó là một kết luận
+    // ("không có gì để phân giải"), không phải thiếu dữ liệu.
+    if (!servers.length && !hosts.length && !noNames) return undefined;
+    const out: AlertMetaDns = { servers, hosts };
+    if (noNames) out.noNames = true;
+    return out;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseDnsAnswer(raw: unknown): AlertMetaDnsAnswer {
+  if (!raw || typeof raw !== 'object') return { resolved: false };
+  const a = raw as Record<string, unknown>;
+  const out: AlertMetaDnsAnswer = { resolved: a.resolved === true };
+  if (Array.isArray(a.addresses) && a.addresses.length) out.addresses = a.addresses.map(String);
+  if (a.ms !== undefined) out.ms = Number(a.ms) || 0;
+  if (a.error !== undefined) out.error = String(a.error);
+  return out;
+}
+
+/** Parse field máy-đọc `brokerReachJson` → AlertMetaBroker[]. An toàn với mọi rác. */
+function parseBrokers(raw: string | number | undefined): AlertMetaBroker[] {
+  if (typeof raw !== 'string' || !raw) return [];
+  try {
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((b): b is Record<string, unknown> => !!b && typeof b === 'object' && typeof (b as { addr?: unknown }).addr === 'string')
+      .map((b) => {
+        const out: AlertMetaBroker = {
+          addr: String(b.addr),
+          host: String(b.host ?? ''),
+          port: Number(b.port) || 0,
+          reachable: b.reachable === true,
+        };
+        if (Number.isFinite(Number(b.latencyMs))) out.latencyMs = Number(b.latencyMs);
+        if (b.error !== undefined) out.error = String(b.error);
+        return out;
+      });
+  } catch {
+    return [];
+  }
+}
+
+/** Parse field máy-đọc `hostsJson` → AlertMetaHost[]. An toàn với mọi rác. */
+function parseHosts(raw: string | number | undefined): AlertMetaHost[] {
+  if (typeof raw !== 'string' || !raw) return [];
+  try {
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return [];
+    const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
+    return arr
+      .filter((h): h is Record<string, unknown> => !!h && typeof h === 'object' && typeof (h as { host?: unknown }).host === 'string')
+      .map((h) => {
+        const out: AlertMetaHost = { host: String(h.host) };
+        const d = num(h.diskUsedPct); if (d !== undefined) out.diskUsedPct = d;
+        const f = num(h.diskFreeGb); if (f !== undefined) out.diskFreeGb = f;
+        if (h.mount !== undefined) out.mount = String(h.mount);
+        const m = num(h.memUsedPct); if (m !== undefined) out.memUsedPct = m;
+        const c = num(h.cpuPct); if (c !== undefined) out.cpuPct = c;
+        const l = num(h.load1PerCore); if (l !== undefined) out.load1PerCore = l;
+        if (h.unreachable === true) out.unreachable = true;
+        if (h.error !== undefined) out.error = String(h.error);
+        return out;
+      });
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Dựng AlertMeta từ một event — dẫn xuất thuần tuý, không đụng I/O. Event cũ
@@ -251,6 +637,9 @@ export function buildAlertMeta(event: AutomationEvent): AlertMeta {
         value: n(f.threshold),
       },
       current: n(f.value),
+      // Cảnh báo TỐC ĐỘ: có mặt thì bot phải đọc threshold theo nghĩa khác hẳn
+      // (ngưỡng trên mức THAY ĐỔI, hoặc số GIỜ còn lại). Xem ghi chú v6.
+      ...(s(f.rateMode) ? { rate: buildRate(f) } : {}),
       // absText mang sẵn " · " đầu chuỗi (cho template) — bản trong meta bỏ đi.
       ...(typeof f.absTotal === 'number' && f.absTotal > 0
         ? {
@@ -282,6 +671,28 @@ export function buildAlertMeta(event: AutomationEvent): AlertMeta {
       },
       description: s(f.description),
     };
+    // Danh sách group liên quan (Kafka): parse từ field máy-đọc. Event cũ không
+    // có field này → bỏ qua, meta không có `consumers` (không vỡ).
+    const consumers = parseConsumers(f.consumersJson);
+    if (consumers.length) meta.consumers = consumers;
+    // Topic bị ảnh hưởng (Kafka under-replicated/offline).
+    const topics = s(f.topics).split(',').map((t) => t.trim()).filter((t) => t && !t.startsWith('…'));
+    if (topics.length) meta.topics = topics;
+    // Host broker liên quan (Kafka chỉ số host) — cùng lối với consumers.
+    const hosts = parseHosts(f.hostsJson);
+    if (hosts.length) meta.hosts = hosts;
+    // Kafka mất kết nối: từng seed broker + câu kết luận chẩn đoán. Chỉ có mặt
+    // ở ca 'up' nên vắng field này là bình thường, meta không vỡ.
+    const brokers = parseBrokers(f.brokerReachJson);
+    if (brokers.length) {
+      meta.brokers = brokers;
+      const diagnosis = s(f.reachSummary);
+      if (diagnosis) meta.diagnosis = diagnosis;
+      const adv = s(f.advertised).split(',').map((a) => a.trim()).filter(Boolean);
+      if (adv.length) meta.advertised = adv;
+      const dns = parseDns(f.dnsJson);
+      if (dns) meta.dns = dns;
+    }
     if (event.type === 'infra.recovered') {
       meta.recovery = { downSec: n(f.downSec), downText: humanizeSec(n(f.downSec)) };
     }

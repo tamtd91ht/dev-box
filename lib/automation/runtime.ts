@@ -20,6 +20,7 @@
 import { produceKafkaMessage } from '@/lib/kafka';
 import { sendToTargetGroup } from './wsSend';
 import { sendViaZaloApi } from './zaloApiSend';
+import { resolveMentions } from './mention';
 import { hasMark, stripMark } from './mark';
 import {
   createEngineState,
@@ -498,7 +499,12 @@ class AutomationRuntime {
           if (this.config.loopGuard && !plan.dryRun) {
             this.noteSentEcho(action.threadLabel ?? action.threadId ?? '', action.text);
           }
-          const res = await sendViaZaloApi(action, plan.dryRun);
+          // Tag người phụ trách theo bảng phân công — giải Ở ĐÂY vì đây là chỗ
+          // duy nhất còn giữ event; chỉ khi gửi NHÓM và action bật cờ.
+          const mentions = action.tagAssignees && action.group
+            ? resolveMentions(this.config, event)
+            : undefined;
+          const res = await sendViaZaloApi(action, plan.dryRun, mentions);
           this.noteSend(action.accountKey, res.sent);
           return { ...base, status: res.status, detail: res.detail };
         } catch (e) {

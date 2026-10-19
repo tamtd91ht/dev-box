@@ -6,7 +6,131 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Tab MinIO: quản lý bucket / object ngay trong DevBox, và Monitor giám sát luôn MinIO.**
+  Cấu hình server (endpoint dán URL cũng được, access/secret key, ssl, region) lưu local cùng
+  kiểu với Postgres; có export/import cấu hình và nút Test. Duyệt bucket → thư mục → object,
+  lọc, xem chi tiết + xem trước ảnh/văn bản, tải xuống (stream qua server, không lộ secret),
+  copy link tạm (presigned). Ghi (upload, xoá object/thư mục, tạo/xoá bucket) cần
+  `MINIO_ALLOW_WRITE=true` **và** bỏ chọn Read-only trên server đó; xoá thư mục/bucket bắt
+  gõ lại tên. Monitor có thêm loại **MinIO**: độ trễ, số bucket, quorum ghi
+  (`/minio/health/cluster`), dung lượng / node / ổ đĩa (Prometheus metrics) và đĩa/RAM/CPU máy
+  chủ (node_exporter); luật xanh/vàng/đỏ kiểm bằng `npm run check:monitor`. Bật bằng
+  `MINIO_TOOL_ENABLED=true`.
+  MinIO tách **S3 API** (cổng 9000) và **Console** (cổng 9001) nên mỗi server cấu hình riêng:
+  endpoint S3 API, địa chỉ Console (nút “Console ↗” mở nhanh), Metrics URL + token và
+  node_exporter. Mọi ô địa chỉ nhận cả `IP:port` lẫn domain/URL đầy đủ (thiếu scheme thì tự
+  thêm). Tổng quan có thanh dung lượng, ổ đĩa, node, tổng object, dung lượng từng bucket
+  (từ metrics, không phải quét) và mục máy chủ — thanh chỉ số dùng chung với PostgreSQL
+  (`components/health/Meters.tsx`) và tô màu theo đúng luật của Monitor.
+  Mục **🖥 Console** nhúng thẳng MinIO Console vào tab và đăng nhập sẵn: server đăng nhập hộ bằng
+  key đã lưu (secret không xuống trình duyệt, chỉ cookie phiên được nạp vào `<webview>`), nên
+  không phải gõ lại. Chỉ chạy ở app desktop; Console chỉ cho SSO/OIDC thì vẫn phải đăng nhập tay.
+- **Tab PostgreSQL: ô Host nhận cả cluster** (`pg1:5432,pg2:5433,pg3`) — tự chọn node primary.
+- **PostgreSQL có số liệu thật ở Monitor và tab Tổng quan** (trước đây chỉ đo mỗi `SELECT 1`).
+  Bằng SQL chỉ đọc: kết nối/`max_connections`, phiên chờ lock, `idle in transaction`, query và
+  giao dịch chạy lâu nhất, cache hit, tổng dung lượng database, tuổi XID (nguy cơ wraparound),
+  replica/replay lag, replication slot không hoạt động. Đĩa/RAM/CPU/load của **máy chủ** thì SQL
+  không biết — khai `Metrics URLs` (node_exporter) trong cấu hình server là đo được, dùng chung
+  bộ đọc với Kafka (`lib/hostMetrics.ts`). Tổng quan có thanh chỉ số tô màu theo đúng luật của
+  Monitor, mục máy chủ và danh sách phiên đang chạy. Thiếu quyền ở truy vấn nào thì chỉ số đó
+  vắng mặt, không làm hỏng cả lần đo.
+
+### Fixed
+
+- **Tab Git: project vừa là repo vừa chứa repo con giờ hiện ĐỦ, không chỉ mỗi root.**
+  Bố cục rất thật: một thư mục vừa là repo (tài liệu, script, manifest dùng chung) vừa chứa
+  các repo service bên trong. Bản trước ưu tiên root và **bỏ qua** repo con, với lập luận
+  “submodule có vòng đời riêng do repo cha quản lý” — nhưng lập luận đó coi mọi repo con đều
+  là submodule. Hậu quả: các repo con biến mất khỏi tool, không commit/push được, mà không có
+  lấy một dòng giải thích — đúng kiểu lỗi im lặng mà chính thay đổi đó đặt ra để tránh.
+  Giờ root đứng đầu danh sách kèm nhãn `(gốc)`, repo con xếp theo tên ngay sau; dòng mô tả
+  project nói rõ “project này là repo + N repo con”. Manifest cũng đối chiếu ĐỦ hai tầng:
+  cờ `self` lấy theo từng entry thay vì một cờ chung (cờ chung sẽ đánh dấu mọi repo con là
+  “self” và báo khống), root so theo “đã là repo hay chưa” còn repo con so theo tên.
+  Nút Clone/Tạo repo vẫn ẩn ở project loại này — lý do cũ không đổi: thư mục đích sẽ nằm bên
+  trong working tree đang mở.
+
+### Added
+
+- **Menu Monitor: dashboard giám sát toàn bộ hạ tầng đã cấu hình.** Một màn hình cho Redis ·
+  Kafka · RabbitMQ · MongoDB · Elastic · PostgreSQL. Mặc định xem dạng **ô**: mỗi kết nối một
+  ô xanh/vàng/đỏ, gom theo loại (hoặc theo dự án), có banner tổng quan, dải đếm theo loại và
+  khung “Cần chú ý” liệt kê mọi tài nguyên đang vàng/đỏ. **Hover** ô → nguyên nhân cụ thể
+  (“RAM đã dùng = 93% (đỏ khi > 90%)” kèm vì sao đáng lo, và đã ở trạng thái đó từ bao lâu);
+  **bấm** → ngăn chi tiết (toàn bộ chỉ số + đồ thị nhỏ, dải lịch sử trạng thái, consumer group
+  và host broker của Kafka, chẩn đoán TCP khi mất kết nối). Có dạng **bảng** sắp xếp được, lọc
+  theo mức/dự án/từ khoá, chu kỳ đo 10s–5 phút, tạm dừng, và hộp ⚙ chỉnh ngưỡng từng chỉ số.
+  Số liệu dùng lại đúng `probeStack()` của Automation — không thêm đường thu thập mới. Đo song
+  song tối đa 3 kết nối (renderer chỉ có 6 socket/host); Kafka chỉ quét lag/host mỗi 5 vòng.
+  Tab ẩn vẫn đo thưa hơn để nút menu hiện chấm đỏ/vàng. Luật ngưỡng ở `lib/monitor/status.ts`,
+  kiểm bằng `npm run check:monitor`.
+
+- **Tab PostgreSQL: ô SQL có gợi ý kiểu IDE.** Gõ `se` ra `SELECT`, gõ `WHERE ten` ra thẳng cột
+  `tenantId` của bảng đang chọn — nhận xong thành `WHERE tenantId = ''` với con trỏ nằm sẵn giữa
+  hai nháy, gõ tiếp giá trị là xong. `↑↓` chọn · `Tab`/`Enter` nhận · `Esc` đóng · `Ctrl+Space`
+  gọi lại · `Ctrl+Enter` vẫn chạy câu lệnh như cũ.
+  Gợi ý bám NGỮ CẢNH chứ không đổ một danh sách chung: sau `FROM`/`JOIN`/`UPDATE` thì tên BẢNG nổi
+  lên trước, sau `WHERE`/`AND`/`SELECT`/`ORDER BY` thì tên CỘT nổi lên trước — nếu không, gõ
+  `WHERE ten` sẽ ra từ khoá `THEN` đứng trên cột `tenantId`, đúng thứ người dùng không muốn.
+  Phần điền sẵn `= …` theo KIỂU cột: `text`/`uuid`/`timestamp` ra `= ''` (có nháy), số ra `= `,
+  boolean ra `= true` — thêm nháy vào cột số là câu lệnh sai ngay.
+  Khớp cả tiền tố lẫn rời rạc (`tid` vẫn ra `tenantId`), nhưng khớp tiền tố luôn xếp trên. Thứ tự
+  từ khoá trong bảng là ĐỘ PHỔ BIẾN và được dùng để xếp hạng: xếp theo bảng chữ cái hay độ dài thì
+  `se` ra `SET` trước `SELECT`.
+  Cột/bảng lấy từ dữ liệu đã nạp sẵn cho cây bên trái và tab Columns nên **không thêm một request
+  nào**. Chưa chọn bảng thì vẫn gợi ý từ khoá + tên bảng, chỉ thiếu phần cột — đúng bằng những gì
+  tool thực sự biết lúc đó.
+  Toàn bộ phần "nghĩ" nằm ở `lib/sqlComplete.ts` (hàm thuần) với
+  `npm run check:sql` phủ 34 ca — sai ở đây không ném lỗi, chỉ làm gợi ý "hơi ngu" nên không kiểm
+  tự động thì không ai phát hiện.
+
+- **Tab Git: project trỏ THẲNG vào một repo — bản thân project là repo, không cần repo con.**
+  Trước đây một project bắt buộc phải là thư mục CHỨA các repo: quét repo chỉ nhìn thư mục con
+  trực tiếp, mà một repo thì không chứa repo con nào, nên trỏ project vào chính repo (mono-repo,
+  hay một service lẻ như `dev-box`) là tab Git trắng trơn — không lỗi, không thông báo, không có
+  cách nào đoán ra là do trỏ sai kiểu. Giờ khi root chính là gốc working tree, danh sách repo trả
+  về đúng một mục là chính project đó, nên toàn bộ phần còn lại của tool (dropdown repo, kiểm tra
+  trạng thái tất cả, pull tất cả, commit/push, manifest) chạy y như một project có duy nhất một
+  repo con — không phải học thêm khái niệm nào.
+  Chi tiết đáng lưu ý:
+  - **Chỉ nhận GỐC repo, không nhận thư mục con.** `--is-inside-work-tree` trả true cho cả
+    `repo/src/lib`, nếu dùng nó thì trỏ project vào một subfolder cũng "đỗ" rồi mọi lệnh git
+    lặng lẽ chạy lên repo CHA với đường dẫn hiện ra sai. So `--show-toplevel` với root mới kết luận.
+  - **Ẩn Clone/Tạo repo ở project loại này** (và chặn cả ở server, không chỉ ẩn nút): thư mục đích
+    sẽ nằm BÊN TRONG working tree đang mở, repo mới hiện ra thành file lạ của repo cha chứ không
+    thành repo ngang hàng. Thông báo lỗi chỉ đúng việc cần làm: thêm project trỏ tới thư mục CHỨA repo.
+  - **Repo lồng repo** — root là repo VÀ có repo con bên trong: hiện ĐỦ CẢ HAI, root đứng đầu
+    (đánh dấu `(gốc)` trong dropdown) rồi tới các repo con theo tên.
+  - **Manifest không báo khống.** Với project-là-repo, tên folder khác nhau giữa các máy
+    (`dev-box` vs `vhs-dev-box`) mà vẫn là đúng repo đó; so theo tên sẽ báo cùng lúc "thiếu 1" và
+    "dư 1" trong khi chẳng thiếu gì, nên entry được đánh dấu `self` và đối chiếu theo "root đã là
+    repo hay chưa".
+  Kiểm bằng `npm run check:selfrepo` (repo thật dựng bằng `git init`, canh đủ 5 ca: thư mục chứa
+  repo, root là repo, thư mục con trong repo, repo lồng repo, thư mục rỗng/không tồn tại).
+
 ### Changed
+
+- **Desktop shell mặc định chạy server production (`next build` + `next start`) thay vì `next dev`
+  — RAM giảm ~2.5-3GB.** Đo thực tế: riêng tiến trình `next dev` chiếm ~3GB (cache biên dịch
+  webpack/HMR của mọi route, phình dần theo thời gian dùng), trong khi server production chỉ vài
+  trăm MB — giao diện không đổi một pixel, trang còn mở nhanh hơn vì không phải biên dịch lần đầu.
+  Cách hoạt động: lúc khởi động, shell so commit HEAD của repo với HEAD ghi lại ở lần build thành
+  công trước (`data/browser/build-info.json`); lệch (vừa bấm ⬇ Cập nhật, hoặc tự `git pull`) thì
+  tự `next build` lại — có splash "đang khởi động" trong lúc chờ, log build đổ vào Console trong
+  app. Build hỏng thì **fallback về `next dev`** để app vẫn dùng được (và log rõ lý do).
+  Ai đang sửa code và cần hot reload: `npm run desktop:dev` (đặt `DESKTOP_DEV=1`), hoặc cứ
+  `npm run dev` trước rồi mở app như trước giờ — thấy :3000 có người trả lời là shell dùng lại,
+  không build gì cả. Kéo theo: ở chế độ production, nút ⬇ Cập nhật đổi followUp `reload` thành
+  `restart` (F5 không đủ — server đang phục vụ bản build cũ, phải khởi động lại để shell build lại).
+  Kèm một fix build chặn đường: `next build` trên Windows chết `EPERM scandir 'C:\Users\<user>\
+  Application Data'` vì @vercel/nft tính tĩnh được `os.homedir()` trong lib/configSync.ts rồi glob
+  đệ quy cả thư mục home để gom "asset" (trên Linux/Docker home đọc được nên chưa bao giờ lộ).
+  next.config.js giờ loại home khỏi trace ở cả hai pha: `outputFileTracingExcludes` (pha
+  collect-build-traces) + đẩy pattern vào `TraceEntryPointsPlugin.traceIgnores` qua webpack hook
+  (pha compile — Next không có config chính thức cho pha này). Đã xác minh trên bản copy sạch:
+  build pass, `next start` phục vụ đúng trang + API.
 
 - **Tab Kafka — "⚡ Tìm nhanh" đổi mặc định thành 30 phút và chuyển lên thanh trên.**
   Khung thời gian mặc định khi chạy một chức năng đã lưu là **30 phút gần nhất** (trước là 15).
@@ -33,6 +157,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   age. Cờ này chỉ để tính năng không xuất hiện với người không dùng được nó.
 
 ### Added
+
+- **Tab Browser: nhân đôi tab, và chuột phải trên liên kết trong trang để mở ở tab mới — hai thao
+  tác quen tay của trình duyệt thật mà app còn thiếu.**
+  *Nhân đôi tab*: chuột phải lên một tab trên dải tab → **⧉ Nhân đôi tab** (cũng có trong menu ⋯
+  cho tab đang xem). Bản sao dùng CÙNG profile nên vẫn nguyên phiên đăng nhập, mở ra ngay **cạnh
+  tab gốc** (nhân đôi là để so hai bên — đặt ở cuối dải thì lại phải đi tìm), và nhân ra đúng
+  **trang đang xem** chứ không phải trang lúc mở tab: `LinkViewer` giờ báo mọi lần điều hướng lên
+  chủ khung (`onUrlChange`) để `tab.url` luôn mới — trước đó nó đứng ở địa chỉ khởi đầu, nên dò
+  "trang này đang mở sẵn chưa" cũng so với một địa chỉ đã cũ. Nhân đôi KHÔNG hỏi lại "trang đang
+  mở sẵn, chuyển tới hay mở thêm?" (trùng URL ở đây chính là mục đích), và KHÔNG chép `creds` của
+  dấu trang gốc sang bản sao — mật khẩu tự điền đã đi theo origin trong 🔑 Mật khẩu đã lưu, còn
+  chép `creds` thì một tab đã điều hướng sang site khác sẽ mang user/pass của dấu trang cũ đi theo.
+  Menu chuột phải trên tab có sẵn luôn **↻ Tải lại · ⧉ Copy địa chỉ · ☆ Lưu vào dấu trang ·
+  ✕ Đóng tab · ✕ Đóng các tab khác**.
+  *Chuột phải trên liên kết*: menu ngữ cảnh trong `<webview>` (menu native ở `electron/main.cjs`,
+  chỗ đang có Cắt/Sao chép/Dán/Inspect) thêm **⊞ Mở liên kết trong tab mới** và **↗ Mở liên kết
+  bằng trình duyệt ngoài**. Mục "tab mới" chỉ hiện ở tab **Browser** — đó là nơi duy nhất có dải
+  tab để mở thêm vào, hứa nó ở tab Links hay viewer Google là trỏ vào một chỗ không tồn tại. Đi
+  đúng kênh `workspace:openInBrowserTab` mà `target=_blank`/`window.open` đang dùng, nên mở thành
+  **tab nền**: trang đang đọc giữ nguyên. Trước đây muốn mở link ra tab khác phải Ctrl+click hoặc
+  chuột giữa — biết thì tiện, không biết thì không có đường nào khác.
 
 - **Nút ⬇ Cập nhật ở footer — app tự kéo bản mới của chính nó từ Git về.** Trước đây muốn có bản
   mới phải mở terminal, `cd` vào thư mục app, `git pull`, rồi tự đoán xem có phải chạy

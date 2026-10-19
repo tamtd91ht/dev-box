@@ -8,6 +8,7 @@ import {
   pingRedis,
   scanRedis,
   getRedisValue,
+  lookupRedisKey,
   setRedisTtl,
   setRedisValue,
   deleteRedisKey,
@@ -21,16 +22,36 @@ import {
   type RedisNode,
   type SetKeyInput,
 } from '@/lib/redis';
+import ConnTransferButton from './ConnTransferButton';
 import MonitorStrip from './redis/MonitorStrip';
+import QuickFindPanel from './redis/QuickFindPanel';
+import SessionHistory from './SessionHistory';
+import { recordSession, short, type RedisSession } from '@/lib/sessionHistory';
 
 /** localStorage key remembering the last-selected connection. */
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { onInfraFocus } from '@/lib/infraFocus';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useConnRailCollapse, CollapsedConnRail, RailHideButton } from './ConnRailCollapse';
 
 const LAST_CONN_KEY = 'redis.lastConn';
 /** Keys fetched per SCAN round. */
 const SCAN_COUNT = 300;
+/**
+ * Trần THỜI GIAN cho một lượt tìm tự động, không phải trần số vòng.
+ *
+ * Đếm vòng là sai cách: mỗi vòng chỉ soi ~SCAN_COUNT slot, nên bất kỳ con số
+ * cố định nào cũng quy ra một mốc keyspace cứng — DB lớn hơn mốc đó thì key
+ * nằm sau nó VĨNH VIỄN không tìm ra, và đó chính là lỗi được báo (guard 100
+ * vòng = 30k slot, DB 1 triệu key thì hụt 97%). Chặn theo thời gian thì giới
+ * hạn là "người dùng chờ bao lâu" — đúng thứ ta thật sự muốn giới hạn — và DB
+ * to cỡ nào cũng quét được xa nhất trong khoảng đó.
+ *
+ * Vẫn cần một trần vì vòng lặp này chạy trên UI thread; hết thời gian thì
+ * cuộn xuống (hoặc bấm "tải thêm") là tiếp tục từ đúng cursor đang dừng.
+ */
+const AUTO_SCAN_BUDGET_MS = 15_000;
 /**
  * Soft cap on auto-loaded keys. Infinite scroll keeps SCANning until the cursor is
  * exhausted OR this many keys are loaded — then it pauses and offers a manual
@@ -50,15 +71,47 @@ function escapeGlob(s: string): string {
 }
 
 /**
+ * Chuỗi này có chứa wildcard glob THẬT SỰ không (`*` `?` `[`)?
+ *
+ * Dùng để quyết định một mẫu Tìm nhanh là MỘT key cụ thể (tra thẳng) hay một
+ * DẢI key (phải scan). Ký tự đứng sau `\` là literal — `a\*b` là tên key có
+ * dấu sao, không phải mẫu khớp nhiều key — nên phải bỏ qua đúng như Redis
+ * hiểu, chứ không thể tìm `*` bằng includes().
+ */
+function hasGlobWildcard(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '\\') { i++; continue; } // ký tự kế tiếp là literal
+    if (ch === '*' || ch === '?' || ch === '[') return true;
+  }
+  return false;
+}
+
+/** Cách dịch ô tìm kiếm thành SCAN MATCH. */
+type MatchMode =
+  /** exact OFF — bọc `*` hai đầu: gõ `profile` là tìm `*profile*`. */
+  | 'contains'
+  /** exact ON — khớp đúng tên key, glob metachar bị escape. */
+  | 'exact'
+  /**
+   * Mẫu glob THÔ, không escape gì. Dùng cho Tìm nhanh: mẫu key của preset có
+   * thể chứa `*` cố ý (`callbot_listen:{{domain}}:*`) nên không được escape,
+   * mà cũng không được bọc thêm `*` hai đầu như chế độ contains.
+   */
+  | 'pattern';
+
+/**
  * Build the SCAN MATCH pattern from the search box, RedisInsight-style:
  *   • exact ON  → match the key verbatim (glob metachars escaped).
  *   • exact OFF → wildcard both sides: `*keyword*` (no need to type `*`).
+ *   • pattern   → dùng nguyên văn (Tìm nhanh).
  *   • empty box → `*` (browse everything).
  */
-function buildMatch(query: string, exact: boolean): string {
+function buildMatch(query: string, mode: MatchMode): string {
   const q = query.trim();
   if (!q) return '*';
-  return exact ? escapeGlob(q) : `*${escapeGlob(q)}*`;
+  if (mode === 'pattern') return q;
+  return mode === 'exact' ? escapeGlob(q) : `*${escapeGlob(q)}*`;
 }
 
 /** Small glyph per Redis type, shown in the key table. */
@@ -95,6 +148,8 @@ export default function RedisWorkspace() {
   const railSplit = useSplit({ varName: '--redis-rail', min: 180, max: 560, gap: 18 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [connections, setConnections] = useState<PublicRedisConnection[]>([]);
+  // Gập cột kết nối để nhường chỗ cho vùng làm việc (components/ConnRailCollapse).
+  const railCollapse = useConnRailCollapse('redis', connections.length);
   const [activeId, setActiveId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
   /** When set, a compact edit modal is open for this connection. */
@@ -110,8 +165,17 @@ export default function RedisWorkspace() {
   const [db, setDb] = useState(0); // logical DB index (0–15), chosen at browse time
   const [query, setQuery] = useState(''); // raw search box text (NOT a glob — see buildMatch)
   const [exact, setExact] = useState(false); // ON = match the key verbatim; OFF = *query* both sides
+  /**
+   * Bật khi key đến từ Tìm nhanh: mẫu dùng nguyên văn (giữ `*` cố ý trong
+   * preset). Tự tắt ngay khi người dùng gõ lại vào ô tìm, để ô tìm luôn hoạt
+   * động y như cũ.
+   */
+  const [rawPattern, setRawPattern] = useState(false);
   // The actual SCAN MATCH pattern fed to Redis — derived so downstream code is unchanged.
-  const match = useMemo(() => buildMatch(query, exact), [query, exact]);
+  const match = useMemo(
+    () => buildMatch(query, rawPattern ? 'pattern' : exact ? 'exact' : 'contains'),
+    [query, exact, rawPattern],
+  );
   const [keys, setKeys] = useState<ScannedKey[]>([]);
   const [cursor, setCursor] = useState('0');
   const [scanning, setScanning] = useState(false);
@@ -131,6 +195,9 @@ export default function RedisWorkspace() {
   // Delete confirmation modal state (typed-confirm).
   const [delKey, setDelKey] = useState<string | null>(null);
 
+  /** Tăng lên mỗi lần ghi một phiên — buộc SessionHistory đọc lại danh sách. */
+  const [sessBump, setSessBump] = useState(0);
+
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const dbRef = useRef(db);
@@ -146,8 +213,23 @@ export default function RedisWorkspace() {
   softLimitRef.current = softLimit;
   const matchRef = useRef(match);
   matchRef.current = match;
+  // "Đúng key" đổi hẳn CÁCH tra (lookup thay vì scan) nên runScan phải đọc được
+  // cả cờ này và nguyên văn ô tìm — qua ref, cùng lý do với matchRef: handler
+  // cuộn và vòng auto-continue gọi runScan ngoài closure hiện tại.
+  const exactRef = useRef(exact);
+  exactRef.current = exact;
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  const rawPatternRef = useRef(rawPattern);
+  rawPatternRef.current = rawPattern;
   /** The key list scroll container — watched for infinite-scroll. */
   const listRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * openKey qua ref: runScan cần mở value ngay khi tra chính xác ra đúng 1 key,
+   * nhưng openKey khai báo phía dưới. Ref tránh phải xáo thứ tự khai báo hoặc
+   * đưa openKey vào deps của runScan (deps rỗng là chủ ý — xem ghi chú ở đó).
+   */
+  const openKeyRef = useRef<((key: string) => Promise<void>) | null>(null);
 
   const activeConn = connections.find((c) => c.id === activeId) ?? null;
   const isClusterActive = activeConn?.mode === 'cluster';
@@ -156,6 +238,26 @@ export default function RedisWorkspace() {
     setNotice(msg);
     setTimeout(() => setNotice((n) => (n === msg ? null : n)), 3500);
   }, []);
+
+  /**
+   * Khôi phục một phiên cũ: ĐIỀN LẠI ô tìm + DB + chế độ khớp, KHÔNG tự quét.
+   * Người dùng thấy rõ sắp tra gì rồi mới bấm ↻ Làm mới — xem lib/sessionHistory.
+   *
+   * Đọc phòng thủ từng field: object đến từ localStorage, có thể do bản app cũ ghi.
+   */
+  const restoreSession = useCallback((raw: Record<string, unknown>) => {
+    const s = raw as Partial<RedisSession>;
+    const n = Number(s.db);
+    setDb(Number.isInteger(n) && n >= 0 && n <= 15 ? n : 0);
+    setQuery(typeof s.query === 'string' ? s.query : '');
+    setExact(s.exact === true);
+    setRawPattern(s.rawPattern === true);
+    setSelectedKey(null);
+    setKeys([]);
+    setScanStarted(false);
+    setCursor('0');
+    flash('Đã điền lại phiên — bấm ↻ Làm mới để quét.');
+  }, [flash]);
 
   // ── Load / refresh the connection list ──────────────────────────────────────
   const loadConnections = useCallback(async (preferId?: string) => {
@@ -242,6 +344,16 @@ export default function RedisWorkspace() {
     // The DB reset below (db → 0) also clears the browsing panel, so nothing else here.
   }, [activeId]);
 
+  // Monitor bấm "↗ Mở …" → chọn ĐÚNG CỤM đang báo (lib/infraFocus).
+  // Chỉ nghe khi đã có danh sách kết nối, để biết id đó còn tồn tại.
+  useEffect(() => {
+    if (!connections.length) return;
+    return onInfraFocus('redis', (f) => {
+      if (!connections.some((c) => c.id === f.connId)) return;
+      setActiveId(f.connId);
+    });
+  }, [connections]);
+
   // ── Ping a connection (on the currently-selected DB) ─────────────────────────
   const doPing = useCallback(
     async (id: string) => {
@@ -282,7 +394,17 @@ export default function RedisWorkspace() {
       setError(null);
       const from = fresh ? '0' : cursorRef.current;
       try {
-        const r = await scanRedis(connId, dbAtStart, matchRef.current.trim() || '*', from, SCAN_COUNT);
+        // "Đúng key" → TRA THẲNG bằng TYPE/TTL, không quét. SCAN phải đi hết
+        // keyspace mới kết luận được "không có", nên trên DB lớn một key nằm
+        // cuối keyspace sẽ không bao giờ tìm ra dù nó tồn tại. Áp cho cả single
+        // lẫn cluster (ioredis Cluster tự route theo hash slot của key).
+        //
+        // Ô tìm RỖNG thì vẫn scan: "đúng key" của chuỗi rỗng là vô nghĩa, còn
+        // hành vi mong đợi lúc đó là duyệt tất cả như bình thường.
+        const exactKey = exactRef.current ? queryRef.current.trim() : '';
+        const r = exactKey
+          ? await lookupRedisKey(connId, dbAtStart, exactKey)
+          : await scanRedis(connId, dbAtStart, matchRef.current.trim() || '*', from, SCAN_COUNT);
         // Discard the result if the operator switched connection/DB mid-scan.
         if (activeIdRef.current !== connId || dbRef.current !== dbAtStart) return null;
         let total = 0;
@@ -295,6 +417,29 @@ export default function RedisWorkspace() {
         setCursor(r.cursor);
         cursorRef.current = r.cursor;
         setScanStarted(true);
+        // Ghi PHIÊN — chỉ ở lượt `fresh` (một ý định tra mới). Các lượt nối
+        // tiếp của infinite-scroll là cùng một phiên, ghi lại sẽ đẻ ra hàng
+        // loạt dòng trùng nhau.
+        if (fresh) {
+          const state: RedisSession = {
+            db: dbAtStart,
+            query: queryRef.current,
+            exact: exactRef.current,
+            rawPattern: rawPatternRef.current,
+            selectedKey: null,
+          };
+          const q = queryRef.current.trim();
+          recordSession('redis', {
+            label: `DB${dbAtStart} · ${q ? short(q) : 'tất cả key'}${exactRef.current && q ? ' (đúng key)' : ''}`,
+            connectionId: connId,
+            state: state as unknown as Record<string, unknown>,
+          });
+          setSessBump((n) => n + 1);
+        }
+        // Tra CHÍNH XÁC chỉ có thể ra 0 hoặc 1 key — không có gì để chọn giữa,
+        // nên mở luôn value thay vì bắt bấm thêm một cái nữa vào đúng dòng duy
+        // nhất vừa hiện ra.
+        if (exactKey && r.keys.length === 1) void openKeyRef.current?.(r.keys[0].key);
         return { cursor: r.cursor, total };
       } catch (e) {
         setError((e as Error).message);
@@ -313,16 +458,26 @@ export default function RedisWorkspace() {
    * so the first screen fills even when a round returns few keys (sparse matches).
    * Infinite-scroll takes over once the list overflows. The running total comes from
    * runScan's return value — not a React-state mirror — so the soft cap is exact.
+   *
+   * Giới hạn là THỜI GIAN, không phải số vòng — xem AUTO_SCAN_BUDGET_MS. Trần
+   * đếm vòng cũ (100) quy ra ~30k slot, nên trên DB triệu key mà từ khoá chỉ
+   * khớp ở cuối thì UI dừng giữa đường và hiện "không có kết quả" trong khi key
+   * vẫn tồn tại — đúng lỗi được báo.
    */
   const maybeFillViewport = useCallback(
     async (startTotal: number) => {
       let total = startTotal;
-      let guard = 0;
-      while (guard++ < 100 && total < softLimitRef.current) {
+      const deadline = Date.now() + AUTO_SCAN_BUDGET_MS;
+      // Đang TÌM (có từ khoá) thì không dừng ở chỗ lấp đầy màn hình: người dùng
+      // cần biết CÓ BAO NHIÊU key khớp, mà kết quả khớp rải khắp keyspace. Chỉ
+      // chế độ duyệt-tất-cả mới dừng sớm, vì lúc đó cuộn xuống là tải thêm và
+      // quét tiếp cả DB ngay từ đầu là vô ích.
+      const searching = queryRef.current.trim() !== '';
+      while (total < softLimitRef.current && Date.now() < deadline) {
         // Let React paint the appended rows before measuring overflow.
         await new Promise((res) => setTimeout(res, 0));
         const el = listRef.current;
-        if (el && el.scrollHeight > el.clientHeight + 4) break; // now scrollable
+        if (!searching && el && el.scrollHeight > el.clientHeight + 4) break; // now scrollable
         const r = await runScan(false);
         if (r === null || r.cursor === '0') break;
         total = r.total;
@@ -351,8 +506,11 @@ export default function RedisWorkspace() {
       void startFresh();
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
+    // `exact` nằm trong deps vì nó đổi hẳn CÁCH tra (lookup vs scan), mà không
+    // luôn đổi `match`: ô tìm rỗng thì match='*' ở cả hai chế độ, thiếu nó thì
+    // bật/tắt "Đúng key" lúc đó sẽ không chạy lại.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, db, match]);
+  }, [activeId, db, match, exact]);
 
   // Infinite scroll: near the bottom → auto-load the next round (under the soft cap).
   const onListScroll = useCallback(() => {
@@ -392,6 +550,7 @@ export default function RedisWorkspace() {
       setValueLoading(false);
     }
   }, []);
+  openKeyRef.current = openKey;
 
   // ── Set TTL (bounded ≤ 30 days; enforced again server-side) ─────────────────
   async function applyTtl() {
@@ -461,6 +620,31 @@ export default function RedisWorkspace() {
     void startFresh();
   }
 
+  /**
+   * Ghi value đã sửa tay trong panel (đã qua modal xác nhận).
+   *
+   * GIỮ NGUYÊN TTL: setValue phía server DEL key cũ rồi ghi lại để đổi kiểu
+   * không còn phần tử rác — nghĩa là TTL cũ mất theo. Sửa một key đang có hạn mà
+   * biến nó thành vĩnh viễn thì vừa sai ý người dùng, vừa phạm luật "không có key
+   * vĩnh viễn" của tab này. Nên đọc ttl hiện tại rồi truyền lại. ttl = -1 (không
+   * hạn) thì để nguyên là không hạn.
+   */
+  async function handleEditSave(input: { type: SetKeyInput['type']; value: unknown }): Promise<void> {
+    const key = value?.key;
+    if (!key) return;
+    const keepTtl = value && value.ttl > 0 ? value.ttl : undefined;
+    // Throws on failure → modal xác nhận tự hiện lỗi và ở lại.
+    await setRedisValue(activeIdRef.current, dbRef.current, {
+      key,
+      type: input.type,
+      value: input.value,
+      ttl: keepTtl,
+      overwrite: true, // sửa key đang có thì đương nhiên là ghi đè
+    });
+    flash(`Đã lưu value của "${key}"`);
+    await openKey(key); // đọc lại từ Redis: thấy đúng thứ vừa ghi, không phải tin bản nháp
+  }
+
   // Connections grouped by project for the left rail.
   const grouped = useMemo(() => {
     const m = new Map<string, PublicRedisConnection[]>();
@@ -493,11 +677,20 @@ export default function RedisWorkspace() {
   }
 
   return (
-    <div className="redis-layout" ref={railSplit.ref} style={railSplit.style}>
-      {/* ── Left: connections grouped by project ─────────────────────────────── */}
+    <div className={`redis-layout${railCollapse.collapsed ? ' rail-collapsed' : ''}`} ref={railSplit.ref} style={railSplit.style}>
+      {/* ── Left: connections grouped by project (gập được — ConnRailCollapse) ── */}
+      {railCollapse.collapsed ? (
+        <CollapsedConnRail label="Redis" count={connections.length} onShow={railCollapse.show} />
+      ) : (
       <div className="panel redis-conn-rail">
         <div className="status-line">
           <h3 style={{ margin: 0, flex: 1 }}>Redis</h3>
+          <ConnTransferButton
+            kind="redis"
+            connections={connections}
+            onImported={(summary) => { void loadConnections(); flash(summary); }}
+            onError={setError}
+          />
           <button
             className={manageOpen ? 'sm' : 'ghost sm'}
             onClick={() => setManageOpen((o) => !o)}
@@ -505,6 +698,7 @@ export default function RedisWorkspace() {
           >
             {manageOpen ? '✕ Đóng' : '+ Thêm'}
           </button>
+          {connections.length > 0 && <RailHideButton onHide={railCollapse.hide} className="ghost sm" />}
         </div>
 
         {connections.length === 0 && !manageOpen && (
@@ -589,6 +783,7 @@ export default function RedisWorkspace() {
           />
         )}
       </div>
+      )}
 
       {/* ── Right: key browser ───────────────────────────────────────────────── */}
       <div className="panel redis-browser">
@@ -634,7 +829,8 @@ export default function RedisWorkspace() {
               <input
                 type="text"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                // Gõ tay → thoát chế độ mẫu thô của Tìm nhanh, ô tìm về hành vi thường.
+                onChange={(e) => { setQuery(e.target.value); setRawPattern(false); }}
                 placeholder={exact ? 'nhập đúng tên key' : 'nhập từ khoá (khớp mọi vị trí) — vd: profile'}
                 title={exact ? 'Khớp đúng tên key' : 'Khớp chứa từ khoá ở bất kỳ vị trí nào (không cần gõ *)'}
                 style={{ flex: '1 1 220px', minWidth: 180, fontFamily: 'var(--mono)', fontSize: 12 }}
@@ -644,9 +840,45 @@ export default function RedisWorkspace() {
                 style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--muted)', whiteSpace: 'nowrap', cursor: 'pointer' }}
                 title="Bật: khớp đúng tên key · Tắt: khớp chứa từ khoá (*từ khoá*)"
               >
-                <input type="checkbox" checked={exact} onChange={(e) => setExact(e.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={exact}
+                  onChange={(e) => { setExact(e.target.checked); setRawPattern(false); }}
+                />
                 Đúng key
               </label>
+              {/* Tìm nhanh: chỉ hiện khi đã có kết nối, vì preset nào cũng phải
+                  trỏ vào một cụm Redis + DB cụ thể. */}
+              {connections.length > 0 && (
+                <QuickFindPanel
+                  connections={connections}
+                  currentConnectionId={activeId}
+                  currentDb={db}
+                  onNotice={flash}
+                  onRun={({ connectionId, db: presetDb, key, presetName }) => {
+                    if (connectionId !== activeId) setActiveId(connectionId);
+                    if (presetDb !== db) setDb(presetDb);
+                    // Preset đã điền xong biến thì thường ra một tên key ĐẦY ĐỦ
+                    // — lúc đó tra thẳng (TYPE+TTL), không quét: nhanh tức thì
+                    // và không bao giờ bỏ sót dù DB lớn cỡ nào.
+                    // Chỉ khi mẫu CÒN wildcard (`callbot_listen:vhs.vn:*`) mới
+                    // phải scan, vì lúc đó nó là một dải key chứ không phải một
+                    // key cụ thể.
+                    const wild = hasGlobWildcard(key);
+                    setExact(!wild);
+                    setRawPattern(wild);
+                    setQuery(key);
+                    setSelectedKey(null);
+                    flash(`Tìm nhanh: ${presetName}`);
+                  }}
+                />
+              )}
+              <SessionHistory
+                scope="redis"
+                connectionId={activeId}
+                reloadKey={sessBump}
+                onRestore={restoreSession}
+              />
               <button className="ghost sm" onClick={() => void startFresh()} disabled={scanning} title="Quét lại từ đầu">
                 {scanning ? <span className="spinner" aria-hidden /> : '↻'} Làm mới
               </button>
@@ -655,9 +887,18 @@ export default function RedisWorkspace() {
               </button>
             </div>
             <div className="small" style={{ color: 'var(--muted)', marginTop: 6 }}>
-              Dùng <b>SCAN</b> cursor-based (không block instance) — tự tải thêm khi cuộn xuống.
-              {' '}Bỏ trống ô tìm để duyệt tất cả key.
-              {isClusterActive && ' Cluster: quét gộp toàn bộ master node.'}
+              {exact && query.trim() ? (
+                <>
+                  Đang tra <b>trực tiếp</b> đúng tên key (TYPE + TTL) — không quét keyspace,
+                  nên DB lớn cỡ nào cũng tức thì và không bỏ sót.
+                </>
+              ) : (
+                <>
+                  Dùng <b>SCAN</b> cursor-based (không block instance) — tự tải thêm khi cuộn xuống.
+                  {' '}Bỏ trống ô tìm để duyệt tất cả key.
+                  {isClusterActive && ' Cluster: quét gộp toàn bộ master node.'}
+                </>
+              )}
             </div>
 
             {error && <pre className="code" style={{ color: 'var(--err)', marginTop: 10, marginBottom: 0 }}>{error}</pre>}
@@ -667,9 +908,27 @@ export default function RedisWorkspace() {
             <div className="redis-split">
               <div className="redis-keys">
                 <div className="small" style={{ color: 'var(--muted)', margin: '10px 0 6px' }}>
-                  {scanStarted
-                    ? `${keys.length} key${scanExhausted ? ' (đã hết)' : atSoftCap ? ' (tạm dừng)' : '…'}`
-                    : 'Đang tải…'}
+                  {!scanStarted ? 'Đang tải…' : (
+                    <>
+                      {keys.length} key
+                      {scanExhausted ? ' (đã hết)' : atSoftCap ? ' (tạm dừng)' : '…'}
+                      {/* Không tìm thấy gì mà CHƯA quét hết keyspace là ca dễ
+                          hiểu sai nhất: "0 key" trông như không tồn tại. Nói rõ
+                          ra và chỉ đường sang cách tra chắc chắn. */}
+                      {keys.length === 0 && scanExhausted && !exact && query.trim() && (
+                        <span style={{ color: 'var(--warn)' }}>
+                          {' '}— không có key nào chứa “{query.trim()}”. Biết chính xác tên key
+                          thì bật <b>Đúng key</b> để tra trực tiếp.
+                        </span>
+                      )}
+                      {keys.length === 0 && exact && query.trim() && scanExhausted && (
+                        <span style={{ color: 'var(--warn)' }}>
+                          {' '}— key “{query.trim()}” không tồn tại ở DB {db}
+                          {isClusterActive ? ' (cluster)' : ''}.
+                        </span>
+                      )}
+                    </>
+                  )}
                 </div>
                 <div className="endpoint-list" ref={listRef} onScroll={onListScroll}>
                   {keys.map((k) => (
@@ -701,22 +960,43 @@ export default function RedisWorkspace() {
                   )}
                 </div>
 
-                {/* Soft-cap pause: keep going only when the operator asks. */}
-                {atSoftCap && (
+                {/* Tạm dừng — hoặc vì chạm trần số key (soft cap), hoặc vì hết
+                    thời gian quét tự động. Cả hai đều phải có đường đi tiếp:
+                    trước đây chỉ soft cap mới hiện nút, nên khi dừng vì hết
+                    thời gian mà chưa đủ key là người dùng kẹt, không biết còn
+                    keyspace chưa quét. */}
+                {scanStarted && !scanning && !scanExhausted && (
                   <button
                     className="ghost sm"
                     style={{ marginTop: 8, width: '100%' }}
                     onClick={loadMorePastCap}
-                    disabled={scanning}
-                    title={`Đã tải ${keys.length} key — tải thêm ${SOFT_LIMIT} nữa`}
+                    title={atSoftCap
+                      ? `Đã tải ${keys.length} key — tải thêm ${SOFT_LIMIT} nữa`
+                      : 'Còn keyspace chưa quét — quét tiếp từ chỗ đang dừng'}
                   >
-                    {scanning ? <span className="spinner" aria-hidden /> : '↓'} Tải thêm (đã dừng ở {keys.length})
+                    ↓ Quét tiếp {atSoftCap ? `(đã dừng ở ${keys.length})` : '(chưa quét hết keyspace)'}
                   </button>
                 )}
 
                 {scanStarted && !scanning && keys.length === 0 && (
                   <div className="empty" style={{ padding: '20px 8px' }}>
-                    <p className="small">Không có key nào khớp pattern.</p>
+                    {/* Nói ĐÚNG cái đã biết: "không có key nào khớp" chỉ đúng
+                        khi đã quét hết. Chưa hết mà nói vậy là sai — và đó là
+                        cách người dùng bị dẫn tới kết luận "key không tồn tại"
+                        trong khi nó vẫn nằm đâu đó phía sau. */}
+                    {exact && query.trim() ? (
+                      <p className="small">
+                        Key <code>{query.trim()}</code> không tồn tại ở DB {db}
+                        {isClusterActive ? ' (cluster)' : ''}.
+                      </p>
+                    ) : scanExhausted ? (
+                      <p className="small">Không có key nào khớp pattern.</p>
+                    ) : (
+                      <p className="small">
+                        Chưa thấy key nào khớp — <b>và chưa quét hết keyspace</b>.
+                        Bấm “Quét tiếp” ở trên, hoặc bật <b>Đúng key</b> nếu biết chính xác tên.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -734,11 +1014,13 @@ export default function RedisWorkspace() {
                   </div>
                 ) : value ? (
                   <ValuePanel
+                    key={value.key}
                     value={value}
                     ttlInput={ttlInput}
                     onTtlInput={setTtlInput}
                     onApplyTtl={applyTtl}
                     onDelete={() => setDelKey(value.key)}
+                    onSaveValue={handleEditSave}
                     busy={busy}
                   />
                 ) : (
@@ -780,7 +1062,8 @@ export default function RedisWorkspace() {
           onSaved={(next) => { applyChanged(next, editConn.id); setEditConn(null); }}
         />
       )}
-      <Splitter {...railSplit.grip} />
+      {/* Đã gập thì không còn gì để kéo — dải 34px là cố định. */}
+      {!railCollapse.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }
@@ -793,13 +1076,39 @@ interface ValuePanelProps {
   onTtlInput: (v: string) => void;
   onApplyTtl: () => void;
   onDelete: () => void;
+  /** Ghi value đã sửa tay. Throw để modal xác nhận hiện lỗi và ở lại. */
+  onSaveValue: (input: { type: EditableType; value: unknown }) => Promise<void>;
   busy: boolean;
 }
 
+/** Kiểu sửa được tại chỗ — đúng bằng những kiểu setValue() phía server nhận. */
+type EditableType = 'string' | 'list' | 'set' | 'hash';
+
+/**
+ * Key này sửa tay được không?
+ *
+ * zset cần cả score cho từng member và stream là append-only — setValue() không
+ * nhận hai kiểu đó, nên KHÔNG hiện nút Sửa thay vì để người dùng gõ xong rồi ăn
+ * lỗi "unsupported type" từ server. `truncated` cũng chặn: value đang bị cắt bớt
+ * cho vừa panel, lưu bản đang xem sẽ XOÁ những phần tử không được hiển thị.
+ */
+function editableTypeOf(v: ValueResult): EditableType | null {
+  if (v.truncated) return null;
+  return v.type === 'string' || v.type === 'list' || v.type === 'set' || v.type === 'hash'
+    ? v.type
+    : null;
+}
+
 /** Renders a key's value (type-aware), TTL, and the Set-TTL + Delete actions. */
-function ValuePanel({ value, ttlInput, onTtlInput, onApplyTtl, onDelete, busy }: ValuePanelProps) {
+function ValuePanel({ value, ttlInput, onTtlInput, onApplyTtl, onDelete, onSaveValue, busy }: ValuePanelProps) {
   const { key, type, ttl, truncated, size } = value;
   const isLock = /:lock:/i.test(key);
+  const editable = editableTypeOf(value);
+  /** Bản nháp đang sửa — null = đang ở chế độ chỉ đọc. */
+  const [draft, setDraft] = useState<string | null>(null);
+  /** Đã bấm Lưu → modal xác nhận. Không ghi gì trước khi xác nhận. */
+  const [confirming, setConfirming] = useState(false);
+
   return (
     <div>
       <div className="status-line">
@@ -824,9 +1133,55 @@ function ValuePanel({ value, ttlInput, onTtlInput, onApplyTtl, onDelete, busy }:
         {size !== undefined && <> · {size} phần tử{truncated ? ` (hiển thị tối đa)` : ''}</>}
       </div>
 
-      <pre className="code" style={{ marginTop: 6, maxHeight: '38vh', overflow: 'auto' }}>
-        {renderValue(value)}
-      </pre>
+      {/* Sửa tay ngay trong ô kết quả. Chỉ hiện nút khi kiểu này ghi lại được,
+          và LUÔN phải qua modal xác nhận trước khi ghi (nút Lưu chỉ mở modal). */}
+      {draft === null ? (
+        <>
+          {editable && (
+            <div className="redis-val-tools">
+              <button className="chip-btn" onClick={() => setDraft(valueToText(value))}
+                title="Sửa value ngay tại đây rồi lưu lại (có bước xác nhận)">
+                ✏️ Sửa
+              </button>
+            </div>
+          )}
+          <ValueBody value={value} />
+          {/* Nói rõ VÌ SAO không sửa được, thay vì chỉ im lặng thiếu cái nút. */}
+          {!editable && type !== 'none' && (
+            <p className="small" style={{ color: 'var(--muted)', margin: '6px 0 0' }}>
+              {truncated
+                ? 'Value đang bị cắt bớt để hiển thị nên không cho sửa tay — lưu bản đang xem sẽ làm mất những phần tử không hiện ra.'
+                : `Kiểu ${type} không sửa tay được ở đây (chỉ string, list, set, hash).`}
+            </p>
+          )}
+        </>
+      ) : (
+        <ValueEditor
+          type={editable ?? 'string'}
+          draft={draft}
+          onDraft={setDraft}
+          onCancel={() => setDraft(null)}
+          onSave={() => setConfirming(true)}
+          busy={busy}
+        />
+      )}
+
+      {/* Xác nhận trước khi ghi — bày rõ ghi vào key nào, kiểu gì, TTL ra sao. */}
+      {confirming && draft !== null && (
+        <SaveValueModal
+          keyName={key}
+          type={editable ?? 'string'}
+          ttl={ttl}
+          draft={draft}
+          onCancel={() => setConfirming(false)}
+          onConfirm={async () => {
+            await onSaveValue({ type: editable ?? 'string', value: textToValue(editable ?? 'string', draft) });
+            // Chỉ tới đây khi ghi THÀNH CÔNG (lỗi thì throw, modal ở lại).
+            setConfirming(false);
+            setDraft(null);
+          }}
+        />
+      )}
 
       {/* Set TTL — capped at 30 days; no PERSIST offered. */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
@@ -863,15 +1218,348 @@ function ValuePanel({ value, ttlInput, onTtlInput, onApplyTtl, onDelete, busy }:
   );
 }
 
-/** Pretty-print a value by shape. */
-function renderValue(v: ValueResult): string {
-  if (v.type === 'none') return '(không tồn tại)';
-  if (v.type === 'string') return v.value === null ? '(null)' : String(v.value);
-  try {
-    return JSON.stringify(v.value, null, 2);
-  } catch {
-    return String(v.value);
+/**
+ * Value hiện theo ĐÚNG KIỂU của key, thay vì đổ tất cả vào một khối JSON:
+ *  · string — nguyên văn; nếu nội dung LÀ json thì có nút Format bật/tắt.
+ *  · hash   — bảng field → value như RedisInsight, có ô lọc field.
+ *  · list/set/zset — bảng có số thứ tự (zset kèm score).
+ * Kiểu lạ thì vẫn rơi về JSON như cũ, không chặn đường đọc.
+ */
+function ValueBody({ value }: { value: ValueResult }) {
+  const { type } = value;
+  if (type === 'none') return <pre className="code redis-val">(không tồn tại)</pre>;
+  if (type === 'string') return <StringValue raw={value.value === null ? '(null)' : String(value.value)} />;
+  if (type === 'hash' && value.value && typeof value.value === 'object' && !Array.isArray(value.value)) {
+    return <HashValue map={value.value as Record<string, string>} />;
   }
+  if (type === 'zset' && Array.isArray(value.value)) {
+    return <ZsetValue items={value.value as { member: string; score: string }[]} />;
+  }
+  if ((type === 'list' || type === 'set') && Array.isArray(value.value)) {
+    return <ListValue items={(value.value as unknown[]).map(String)} ordered={type === 'list'} />;
+  }
+  return <pre className="code redis-val">{safeJson(value.value)}</pre>;
+}
+
+function safeJson(v: unknown): string {
+  try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+}
+
+// ── Sửa value tại chỗ: value ⇄ text ──────────────────────────────────────────
+//
+// Dùng ĐÚNG định dạng text của hộp "Thêm key" (string = nguyên văn, list/set =
+// mỗi dòng một phần tử, hash = `field=value` mỗi dòng). Hai chỗ nhập cùng một
+// kiểu dữ liệu mà bắt người dùng học hai cú pháp thì vô lý.
+
+/** Value đọc từ Redis → text để sửa. */
+function valueToText(v: ValueResult): string {
+  if (v.type === 'string') return v.value === null ? '' : String(v.value);
+  if (v.type === 'hash' && v.value && typeof v.value === 'object' && !Array.isArray(v.value)) {
+    return Object.entries(v.value as Record<string, string>)
+      .map(([f, val]) => `${f}=${val}`)
+      .join('\n');
+  }
+  if (Array.isArray(v.value)) return (v.value as unknown[]).map(String).join('\n');
+  return safeJson(v.value);
+}
+
+/** Text đã sửa → payload cho setValue(). Cùng luật với AddKeyModal.buildValue. */
+function textToValue(type: EditableType, text: string): unknown {
+  if (type === 'string') return text;
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (type === 'hash') {
+    return lines.map((line) => {
+      const idx = line.indexOf('=');
+      if (idx === -1) return { field: line, value: '' };
+      return { field: line.slice(0, idx).trim(), value: line.slice(idx + 1) };
+    });
+  }
+  return lines; // list / set → string[]
+}
+
+/** Đếm phần tử sắp ghi — modal xác nhận hiện con số này. */
+function countOf(type: EditableType, text: string): number {
+  if (type === 'string') return 1;
+  const v = textToValue(type, text);
+  return Array.isArray(v) ? v.length : 0;
+}
+
+/**
+ * Bản nháp có phần tử sẽ BỊ ĐỔI khi lưu không?
+ *
+ * Cú pháp "mỗi dòng một phần tử" trim hai đầu và bỏ dòng trống — điều đó có nghĩa
+ * một phần tử vốn là "  abc  " sẽ được ghi lại thành "abc", và phần tử rỗng thì
+ * mất hẳn. Lúc THÊM key mới thì không ai để ý, nhưng lúc SỬA key đang có thì đó
+ * là âm thầm làm sai dữ liệu — nên phải nói trước ở modal xác nhận.
+ * (Không tự ý bỏ trim: nó là cú pháp dùng chung với hộp Thêm key, và giữ khoảng
+ * trắng vô tình ở rìa còn hay gây lỗi hơn.)
+ */
+function lossyLines(type: EditableType, text: string): string[] {
+  if (type === 'string') return [];
+  const raw = text.split('\n');
+  const out: string[] = [];
+  for (const line of raw) {
+    if (line.trim() === '') {
+      if (line.length > 0) out.push('(dòng chỉ có khoảng trắng — sẽ bị bỏ)');
+      continue;
+    }
+    if (line !== line.trim()) out.push(line);
+  }
+  return out;
+}
+
+/** Ô sửa value: textarea + gợi ý cú pháp đúng theo kiểu, Lưu / Huỷ. */
+function ValueEditor({ type, draft, onDraft, onCancel, onSave, busy }: {
+  type: EditableType;
+  draft: string;
+  onDraft: (v: string) => void;
+  onCancel: () => void;
+  onSave: () => void;
+  busy: boolean;
+}) {
+  const hint =
+    type === 'string' ? 'Sửa nguyên văn giá trị string.'
+    : type === 'hash' ? 'Mỗi dòng một field: field=value'
+    : `Mỗi dòng một phần tử (${type}).`;
+  const empty = type !== 'string' && countOf(type, draft) === 0;
+  return (
+    <div className="redis-edit">
+      <div className="redis-val-tools">
+        <span className="badge warn">✏️ Đang sửa</span>
+        <span className="small" style={{ color: 'var(--muted)', flex: 1 }}>{hint}</span>
+      </div>
+      <textarea
+        className="input"
+        value={draft}
+        onChange={(e) => onDraft(e.target.value)}
+        spellCheck={false}
+        rows={12}
+        style={{ width: '100%', fontFamily: 'var(--mono)', fontSize: 12, resize: 'vertical' }}
+      />
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+        {/* Nút này KHÔNG ghi gì — nó mở modal xác nhận. */}
+        <button className="sm" onClick={onSave} disabled={busy || empty}
+          title="Xem lại rồi xác nhận trước khi ghi vào Redis">
+          💾 Lưu…
+        </button>
+        <button className="ghost sm" onClick={onCancel} disabled={busy}>Huỷ</button>
+        {empty && (
+          <span className="small" style={{ color: 'var(--warn)' }}>
+            Cần ít nhất một phần tử — {type} rỗng thì Redis không có key để giữ.
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Xác nhận ghi value.
+ *
+ * Đây là bước bắt buộc trước mọi lần ghi: ghi đè value của một key đang chạy
+ * thật là việc không hoàn tác được, nên phải bày ra ĐỦ thứ người dùng cần đối
+ * chiếu — key nào, kiểu gì, bao nhiêu phần tử, TTL sau khi lưu — rồi mới cho bấm.
+ */
+function SaveValueModal({ keyName, type, ttl, draft, onCancel, onConfirm }: {
+  keyName: string;
+  type: EditableType;
+  ttl: number;
+  draft: string;
+  onCancel: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const isLock = /:lock:/i.test(keyName);
+  const n = countOf(type, draft);
+  const lossy = lossyLines(type, draft);
+
+  const go = async () => {
+    setErr(null);
+    setBusy(true);
+    try {
+      await onConfirm();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={() => !busy && onCancel()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(560px, 94vw)' }}>
+        <div className="status-line" style={{ marginBottom: 10 }}>
+          <h3 style={{ margin: 0, flex: 1 }}>Ghi value mới?</h3>
+          {!busy && <button className="ghost sm" onClick={onCancel}>✕</button>}
+        </div>
+
+        <p className="small" style={{ margin: '0 0 8px' }}>
+          Ghi đè value của <code>{keyName}</code> (<b>{type}</b>
+          {type !== 'string' && <> · {n} phần tử</>}). Việc này <b>không hoàn tác được</b>.
+        </p>
+
+        {isLock && (
+          <div className="badge warn" style={{ marginBottom: 8 }}>
+            🔒 Đây là <b>lock key</b> — sửa value có thể làm rối lock của pod khác.
+          </div>
+        )}
+
+        <div className="badge info" style={{ marginBottom: 8 }}>
+          TTL: {ttl > 0
+            ? <>giữ nguyên <b>{humanizeTtl(ttl)}</b></>
+            : <>key không có hạn — vẫn để không hạn</>}
+        </div>
+
+        {/* Cú pháp "mỗi dòng một phần tử" trim hai đầu + bỏ dòng trống. Nói TRƯỚC
+            khi ghi, vì đây là lúc duy nhất còn quay lại được. */}
+        {lossy.length > 0 && (
+          <div className="badge warn" style={{ marginBottom: 8, whiteSpace: 'pre-wrap' }}>
+            ⚠️ {lossy.length} dòng sẽ bị cắt khoảng trắng ở hai đầu (hoặc bỏ hẳn nếu chỉ có
+            khoảng trắng). Muốn giữ nguyên khoảng trắng thì đổi key này sang <b>string</b> và
+            tự quản lý định dạng.
+          </div>
+        )}
+
+        {/* Xem lại đúng thứ sắp ghi. Cắt bớt phần hiển thị cho khỏi tràn màn
+            hình, nhưng ghi thì vẫn ghi trọn bản nháp. */}
+        <pre className="code redis-val" style={{ maxHeight: 220 }}>
+          {draft.length > 4000 ? `${draft.slice(0, 4000)}\n… (còn ${draft.length - 4000} ký tự nữa)` : draft}
+        </pre>
+
+        {err && <div className="badge err" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{err}</div>}
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+          <button className="sm" onClick={() => void go()} disabled={busy}
+            style={{ color: 'var(--warn)', borderColor: 'var(--warn)' }}>
+            {busy ? <span className="spinner" aria-hidden /> : '💾'} Xác nhận ghi
+          </button>
+          <button className="ghost sm" onClick={onCancel} disabled={busy}>Huỷ</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Thử parse JSON — trả về bản đã format, hoặc null nếu không phải JSON. */
+function tryFormatJson(raw: string): string | null {
+  const t = raw.trim();
+  // Chỉ thử khi trông đã giống JSON: tránh JSON.parse nuốt "123"/"true" thành
+  // số/boolean rồi "format" một chuỗi vốn không phải JSON.
+  if (!(t.startsWith('{') && t.endsWith('}')) && !(t.startsWith('[') && t.endsWith(']'))) return null;
+  try {
+    return JSON.stringify(JSON.parse(t), null, 2);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Value kiểu string. Rất nhiều key Redis chứa JSON — nhận ra thì bật sẵn bản
+ * format cho dễ đọc, kèm nút chuyển qua lại vì đôi khi cần đúng chuỗi thô
+ * (so sánh byte, copy nguyên văn).
+ */
+function StringValue({ raw }: { raw: string }) {
+  const pretty = useMemo(() => tryFormatJson(raw), [raw]);
+  const [formatted, setFormatted] = useState(true);
+  const show = pretty && formatted ? pretty : raw;
+  return (
+    <>
+      {pretty && (
+        <div className="redis-val-tools">
+          <button
+            className={'chip-btn' + (formatted ? ' on' : '')}
+            onClick={() => setFormatted((v) => !v)}
+            title={formatted ? 'Xem chuỗi gốc' : 'Format JSON cho dễ đọc'}
+          >{'{ }'} {formatted ? 'JSON đã format' : 'Chuỗi gốc'}</button>
+          <button className="chip-btn" title="Copy nội dung"
+            onClick={() => void navigator.clipboard?.writeText(show)}>⧉ Copy</button>
+        </div>
+      )}
+      <pre className="code redis-val">{show}</pre>
+    </>
+  );
+}
+
+/** Hash → bảng field/value như RedisInsight, kèm ô lọc khi hash to. */
+function HashValue({ map }: { map: Record<string, string> }) {
+  const [filter, setFilter] = useState('');
+  const rows = useMemo(() => {
+    const all = Object.entries(map);
+    const f = filter.trim().toLowerCase();
+    if (!f) return all;
+    return all.filter(([k, v]) => k.toLowerCase().includes(f) || String(v).toLowerCase().includes(f));
+  }, [map, filter]);
+  const total = Object.keys(map).length;
+  return (
+    <>
+      <div className="redis-val-tools">
+        <input
+          className="input"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="lọc field / value…"
+          style={{ flex: 1, minWidth: 120, fontFamily: 'var(--mono)', fontSize: 12 }}
+        />
+        <span className="small" style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+          {filter.trim() ? `${rows.length}/${total}` : `${total}`} field
+        </span>
+      </div>
+      <div className="redis-kv">
+        {rows.map(([k, v]) => (
+          <div className="redis-kv-row" key={k}>
+            <code className="redis-kv-k" title={k}>{k}</code>
+            <FieldValue raw={String(v)} />
+          </div>
+        ))}
+        {rows.length === 0 && <p className="empty" style={{ padding: '12px 8px' }}>Không có field nào khớp.</p>}
+      </div>
+    </>
+  );
+}
+
+/** Một value trong bảng — tự format khi nó là JSON lồng (rất hay gặp trong hash). */
+function FieldValue({ raw }: { raw: string }) {
+  const pretty = useMemo(() => tryFormatJson(raw), [raw]);
+  const [open, setOpen] = useState(false);
+  if (!pretty) return <code className="redis-kv-v" title={raw}>{raw}</code>;
+  return (
+    <code className="redis-kv-v redis-kv-json">
+      <button className="redis-kv-fmt" onClick={() => setOpen((v) => !v)}
+        title={open ? 'Thu gọn' : 'Format JSON'}>{open ? '▾' : '▸'} {'{ }'}</button>
+      {open ? <pre className="code redis-val" style={{ marginTop: 4 }}>{pretty}</pre> : <span title={raw}>{raw}</span>}
+    </code>
+  );
+}
+
+/** list/set → bảng có số thứ tự (list giữ thứ tự, set thì chỉ để đếm). */
+function ListValue({ items, ordered }: { items: string[]; ordered: boolean }) {
+  return (
+    <div className="redis-kv">
+      {items.map((v, i) => (
+        <div className="redis-kv-row" key={`${i}-${v}`}>
+          <code className="redis-kv-k redis-kv-idx" title={ordered ? `index ${i}` : undefined}>{i}</code>
+          <FieldValue raw={v} />
+        </div>
+      ))}
+      {items.length === 0 && <p className="empty" style={{ padding: '12px 8px' }}>(rỗng)</p>}
+    </div>
+  );
+}
+
+/** zset → member kèm score. */
+function ZsetValue({ items }: { items: { member: string; score: string }[] }) {
+  return (
+    <div className="redis-kv">
+      {items.map((it, i) => (
+        <div className="redis-kv-row" key={`${i}-${it.member}`}>
+          <code className="redis-kv-k redis-kv-score" title="score">{it.score}</code>
+          <FieldValue raw={it.member} />
+        </div>
+      ))}
+      {items.length === 0 && <p className="empty" style={{ padding: '12px 8px' }}>(rỗng)</p>}
+    </div>
+  );
 }
 
 // ── Delete confirmation modal (typed-confirm) ────────────────────────────────────
@@ -1127,6 +1815,8 @@ interface ConnectionFormProps {
   onBusy: (b: boolean) => void;
   /** Persist: returns the new list; the parent decides prefer-id + close. */
   onSaved: (next: PublicRedisConnection[], savedId?: string) => void;
+  /** Thoát không lưu — hiện nút Huỷ và bắt phím Esc khi có. */
+  onCancel?: () => void;
 }
 
 /**
@@ -1134,7 +1824,7 @@ interface ConnectionFormProps {
  * cluster(seed nodes) + password, with an inline "Test connection" probe.
  * Reused by both the add panel and the compact edit modal.
  */
-function ConnectionForm({ initial, editingId, busy, onBusy, onSaved }: ConnectionFormProps) {
+function ConnectionForm({ initial, editingId, busy, onBusy, onSaved, onCancel }: ConnectionFormProps) {
   const [form, setForm] = useState<ConnForm>(() => (initial ? formOf(initial) : { ...EMPTY_FORM }));
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<TestState>(null);
@@ -1200,7 +1890,7 @@ function ConnectionForm({ initial, editingId, busy, onBusy, onSaved }: Connectio
 
   return (
     <>
-      <div className="redis-form">
+      <div className="redis-form" onKeyDown={(e) => { if (e.key === 'Escape' && onCancel && !busy) onCancel(); }}>
         <input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Tên (vd: crm-cache)" disabled={busy} style={fInput} />
         <input value={form.project} onChange={(e) => set('project', e.target.value)} placeholder="Dự án (vd: vn / core)" disabled={busy} style={fInput} />
         <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--muted)' }}>
@@ -1247,6 +1937,7 @@ function ConnectionForm({ initial, editingId, busy, onBusy, onSaved }: Connectio
         <button className="ghost sm" onClick={runTest} disabled={!canTest} title="Thử kết nối với thông tin đang nhập">
           {testing ? <span className="spinner" aria-hidden /> : '⚡'} Test
         </button>
+        {onCancel && <button className="ghost sm" onClick={onCancel} disabled={busy} title="Thoát, không lưu (Esc)">Huỷ</button>}
         <button className="sm" onClick={submit} disabled={!canSubmit}>
           {busy ? '…' : editingId ? 'Lưu' : '+ Lưu'}
         </button>
@@ -1275,6 +1966,7 @@ function ConnectionManager({ connections, onChanged, onDone }: ConnectionManager
       <ConnectionForm
         busy={busy}
         onBusy={setBusy}
+        onCancel={onDone}
         onSaved={(next) => {
           const added = next.find((c) => !connections.some((q) => q.id === c.id));
           onChanged(next, added?.id);
@@ -1311,6 +2003,7 @@ function EditConnectionModal({ conn, onCancel, onSaved }: EditConnectionModalPro
           editingId={conn.id}
           busy={busy}
           onBusy={setBusy}
+          onCancel={onCancel}
           onSaved={(next) => onSaved(next)}
         />
       </div>

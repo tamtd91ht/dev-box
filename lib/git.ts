@@ -51,9 +51,35 @@ export interface MergeResult {
   branches: BranchInfo;
 }
 
+/** Response của action `checkout` — xem checkout() trong lib/gitCore. */
+export interface CheckoutResult {
+  output: string;
+  /** Branch THẬT SỰ đang đứng sau lệnh: bấm "origin/feat" thì ở đây là "feat". */
+  branch: string;
+  /** true khi branch local vừa được dựng trong lần này. */
+  created: boolean;
+  /** Remote ref đã dựng branch local từ đó ("origin/feat"), nếu có. */
+  trackedFrom?: string;
+  status: RepoStatus;
+  branches: BranchInfo;
+}
+
+/** Response của action `fetch` — `fetched=false` nghĩa là danh sách đang là bản local cũ. */
+export interface FetchResult {
+  fetched: boolean;
+  branches: BranchInfo;
+  status: RepoStatus;
+}
+
 export interface RepoInfo {
   path: string;
   name: string;
+  /**
+   * True khi entry này CHÍNH LÀ root của project — project vừa là repo vừa
+   * chứa repo con thì cả hai cùng nằm trong danh sách này. Xem detectRepos
+   * (lib/gitCore.ts); giữ đồng bộ với RepoInfo bên đó.
+   */
+  self?: boolean;
 }
 
 export interface CommitLog {
@@ -64,6 +90,7 @@ export interface CommitLog {
   relDate: string;
   subject: string;
   refs: string;
+  parents: string[];
 }
 
 /** One file touched by a commit — payload of the `commit-detail` action. */

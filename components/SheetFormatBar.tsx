@@ -94,6 +94,131 @@ export interface SheetFormatBarProps {
   onDeleteCol: () => void;
 }
 
+/* ── Bảng màu kiểu Excel ──────────────────────────────────────────────────
+   Hai cách chọn, như Excel: bấm các Ô MÀU ĐIỂN HÌNH (màu chủ đề Office + các
+   sắc độ đậm/nhạt, màu chuẩn, màu vừa dùng), hoặc "Màu khác…" = chọn điểm màu
+   tự do như trước. Nút chính áp lại màu dùng gần nhất — quét vùng khác rồi bấm
+   một phát là tô xong, khỏi mở bảng lần nữa. */
+
+/** Màu chủ đề Office (Excel 2013+): trắng, đen, xám, xanh xám, xanh, cam, xám,
+ *  vàng, xanh nhạt, xanh lá. */
+const THEME_BASE = ['#ffffff', '#000000', '#e7e6e6', '#44546a', '#4472c4', '#ed7d31', '#a5a5a5', '#ffc000', '#5b9bd5', '#70ad47'];
+const STANDARD = ['#c00000', '#ff0000', '#ffc000', '#ffff00', '#92d050', '#00b050', '#00b0f0', '#0070c0', '#002060', '#7030a0'];
+const RECENT_COLORS_KEY = 'sheet.recentColors';
+const MAX_RECENT_COLORS = 10;
+
+const hex2 = (n: number) => Math.round(Math.min(255, Math.max(0, n))).toString(16).padStart(2, '0');
+/** amt > 0: pha trắng (nhạt đi amt), amt < 0: pha đen (đậm thêm |amt|). */
+function shade(hex: string, amt: number): string {
+  const v = parseInt(hex.slice(1), 16);
+  const ch = [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  return '#' + ch.map((c) => hex2(amt > 0 ? c + (255 - c) * amt : c * (1 + amt))).join('');
+}
+/** 5 sắc độ dưới mỗi màu chủ đề, theo đúng cách Excel chia: màu thường nhạt
+ *  80/60/40% rồi đậm 25/50%; trắng chỉ đậm dần; đen chỉ nhạt dần. */
+function themeColumn(base: string): string[] {
+  if (base === '#ffffff') return [-0.05, -0.15, -0.25, -0.35, -0.5].map((a) => shade(base, a));
+  if (base === '#000000') return [0.5, 0.35, 0.25, 0.15, 0.05].map((a) => shade(base, a));
+  return [0.8, 0.6, 0.4, -0.25, -0.5].map((a) => shade(base, a));
+}
+const THEME_GRID = THEME_BASE.map((b) => [b, ...themeColumn(b)]);
+
+function loadRecentColors(): string[] {
+  try {
+    const a = JSON.parse(localStorage.getItem(RECENT_COLORS_KEY) ?? '[]');
+    return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string' && /^#[0-9a-f]{6}$/i.test(x)).slice(0, MAX_RECENT_COLORS) : [];
+  } catch { return []; }
+}
+
+export function ColorPicker({ kind, current, disabled, rangeLabel, onPick, onClear }: {
+  kind: 'fc' | 'bg';
+  /** Màu hiện có của ô đang chọn (để đánh dấu ô màu trùng). */
+  current?: string;
+  disabled: boolean;
+  rangeLabel: string;
+  /** live=true: đang kéo trong bộ chọn điểm màu — bên gọi tự gộp/hoãn. */
+  onPick: (color: string, live?: boolean) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [recent, setRecent] = useState<string[]>([]);
+  // Màu nút chính áp lại — mặc định như Excel: chữ đỏ, nền vàng.
+  const [last, setLast] = useState(kind === 'fc' ? '#ff0000' : '#ffff00');
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => { setRecent(loadRecentColors()); }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('mousedown', away);
+    window.addEventListener('keydown', esc);
+    return () => { window.removeEventListener('mousedown', away); window.removeEventListener('keydown', esc); };
+  }, [open]);
+
+  const remember = (c: string) => {
+    setLast(c);
+    const next = [c, ...loadRecentColors().filter((x) => x.toLowerCase() !== c.toLowerCase())].slice(0, MAX_RECENT_COLORS);
+    setRecent(next);
+    try { localStorage.setItem(RECENT_COLORS_KEY, JSON.stringify(next)); } catch { /* bỏ qua */ }
+  };
+  const choose = (c: string) => { remember(c); onPick(c); setOpen(false); };
+  const keepFocus = (e: React.MouseEvent) => e.preventDefault();
+  const cur = current?.toLowerCase();
+  const name = kind === 'fc' ? 'Màu chữ' : 'Màu nền';
+
+  const sw = (c: string, key: string, title?: string) => (
+    <button key={key} type="button" className={`sheet-swatch${cur === c.toLowerCase() ? ' on' : ''}`}
+      style={{ background: c }} title={title ?? c.toUpperCase()}
+      onMouseDown={keepFocus} onClick={() => choose(c)} />
+  );
+
+  return (
+    <div className={`sheet-fmt-dd sheet-fmt-colorpick${disabled ? ' off' : ''}`} ref={ref}>
+      <button type="button" className="sheet-fmt-color" disabled={disabled} onMouseDown={keepFocus}
+        onClick={() => { remember(last); onPick(last); }}
+        title={`${name} ${last.toUpperCase()} cho ${rangeLabel} — ▾ để chọn màu khác`}>
+        <span className="sheet-fmt-color-ico">{kind === 'fc' ? 'A' : '▩'}</span>
+        <span className="sheet-fmt-color-bar" style={{ background: last }} />
+      </button>
+      <button type="button" className={`sheet-fmt-btn tiny sheet-fmt-color-dd${open ? ' on' : ''}`} disabled={disabled}
+        onMouseDown={keepFocus} onClick={() => setOpen((o) => !o)} title={`Bảng ${name.toLowerCase()}`}>▾</button>
+      {open && (
+        <div className="sheet-fmt-menu sheet-palette" role="dialog" aria-label={`Bảng ${name.toLowerCase()}`}>
+          <button type="button" className="sheet-palette-row" onMouseDown={keepFocus}
+            onClick={() => { onClear(); setOpen(false); }}>
+            <span className={`sheet-swatch${kind === 'bg' ? ' none' : ''}`}
+              style={kind === 'fc' ? { background: '#000' } : undefined} aria-hidden />
+            {kind === 'fc' ? 'Tự động' : 'Không tô'}
+          </button>
+          <div className="sheet-palette-h">Màu chủ đề</div>
+          {/* Hàng đầu là 10 màu gốc, cách một khoảng rồi 5 hàng sắc độ — như Excel. */}
+          <div className="sheet-palette-grid">{THEME_GRID.map((col, i) => sw(col[0], `t${i}`))}</div>
+          <div className="sheet-palette-grid shades">
+            {[1, 2, 3, 4, 5].flatMap((row) => THEME_GRID.map((col, i) => sw(col[row], `t${i}-${row}`)))}
+          </div>
+          <div className="sheet-palette-h">Màu chuẩn</div>
+          <div className="sheet-palette-grid">{STANDARD.map((c, i) => sw(c, `s${i}`))}</div>
+          {recent.length > 0 && (
+            <>
+              <div className="sheet-palette-h">Màu gần đây</div>
+              <div className="sheet-palette-grid">{recent.map((c, i) => sw(c, `r${i}`))}</div>
+            </>
+          )}
+          {/* Chọn điểm màu tự do — input color trong suốt phủ lên dòng này. */}
+          <label className="sheet-palette-row more">
+            <span className="sheet-swatch" style={{ background: current ?? last }} aria-hidden />
+            🎨 Màu khác…
+            <input type="color" key={`${kind}:${current ?? ''}`} defaultValue={current ?? last}
+              onChange={(e) => onPick(e.target.value, true)}
+              onBlur={(e) => { if (e.target.value !== (current ?? last)) remember(e.target.value); }} />
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SheetFormatBar({
   style, disabled, rangeLabel, canMerge, canUnmerge, canDeleteRow, canDeleteCol,
   rowSpan, colSpan, onFormat, onMerge, onUnmerge,
@@ -102,8 +227,9 @@ export default function SheetFormatBar({
   // Kéo trong bảng màu bắn ra hàng chục event — chỉ áp sau khi tay dừng lại.
   const colorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (colorTimer.current) clearTimeout(colorTimer.current); }, []);
-  const pickColor = (key: 'fc' | 'bg', v: string) => {
+  const pickColor = (key: 'fc' | 'bg', v: string, live = false) => {
     if (colorTimer.current) clearTimeout(colorTimer.current);
+    if (!live) { onFormat({ [key]: v } as StylePatch); return; }
     colorTimer.current = setTimeout(() => onFormat({ [key]: v } as StylePatch), 120);
   };
 
@@ -194,23 +320,10 @@ export default function SheetFormatBar({
         <button className={btn(style?.st)} disabled={disabled} onMouseDown={keepFocus}
           onClick={() => toggle('st')} title="Gạch ngang"><s>S</s></button>
 
-        <label className={`sheet-fmt-color${disabled ? ' off' : ''}`} title={`Màu chữ cho ${rangeLabel}`}>
-          <span className="sheet-fmt-color-ico">A</span>
-          <span className="sheet-fmt-color-bar" style={{ background: style?.fc ?? 'var(--text)' }} />
-          <input type="color" disabled={disabled} key={`fc:${style?.fc ?? ''}`}
-            defaultValue={style?.fc ?? '#1f2933'} onChange={(e) => pickColor('fc', e.target.value)} />
-        </label>
-        <button className="sheet-fmt-btn tiny" disabled={disabled || !style?.fc} onMouseDown={keepFocus}
-          onClick={() => onFormat({ fc: null })} title="Bỏ màu chữ (về mặc định)">⌫</button>
-
-        <label className={`sheet-fmt-color${disabled ? ' off' : ''}`} title={`Màu nền ô cho ${rangeLabel}`}>
-          <span className="sheet-fmt-color-ico">▩</span>
-          <span className="sheet-fmt-color-bar" style={{ background: style?.bg ?? 'transparent' }} />
-          <input type="color" disabled={disabled} key={`bg:${style?.bg ?? ''}`}
-            defaultValue={style?.bg ?? '#ffff00'} onChange={(e) => pickColor('bg', e.target.value)} />
-        </label>
-        <button className="sheet-fmt-btn tiny" disabled={disabled || !style?.bg} onMouseDown={keepFocus}
-          onClick={() => onFormat({ bg: null })} title="Bỏ màu nền">⌫</button>
+        <ColorPicker kind="fc" current={style?.fc} disabled={disabled} rangeLabel={rangeLabel}
+          onPick={(c, live) => pickColor('fc', c, live)} onClear={() => onFormat({ fc: null })} />
+        <ColorPicker kind="bg" current={style?.bg} disabled={disabled} rangeLabel={rangeLabel}
+          onPick={(c, live) => pickColor('bg', c, live)} onClear={() => onFormat({ bg: null })} />
 
         <div className="sheet-fmt-dd" ref={bdRef}>
           <button className={`sheet-fmt-btn${bdOpen ? ' on' : ''}`} disabled={disabled} onMouseDown={keepFocus}

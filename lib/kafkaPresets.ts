@@ -9,7 +9,8 @@
 // (unlike connections, which the Next server owns). Browser-only module.
 
 /** localStorage key holding the preset array (JSON). */
-import { readLocal, writeLocal } from './localKeys';
+import { readLocal } from './localKeys';
+import { persistPresets } from './presetSync';
 
 const PRESETS_KEY = 'kafka.presets';
 
@@ -68,7 +69,10 @@ export function loadPresets(): KafkaPreset[] {
 /** Persist the full preset list. */
 function save(list: KafkaPreset[]): void {
   if (typeof window === 'undefined') return;
-  writeLocal(PRESETS_KEY, JSON.stringify(list));
+  // Ghi cache localStorage RỒI đẩy lên configs/presets.json — preset là
+  // dữ liệu người dùng tự dựng, phải sống sót qua dọn cache và đẩy được
+  // lên git như mọi config khác.
+  persistPresets(PRESETS_KEY, list);
 }
 
 /** A non-crypto id — presets are local bookmarks, collision-safety isn't critical. */

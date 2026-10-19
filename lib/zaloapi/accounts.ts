@@ -14,7 +14,19 @@ export interface ZaloApiAccount {
   instanceId: string;
   /** Nhãn hiển thị ở rail, sửa được. */
   label: string;
+  /**
+   * Tự kết nối lại khi mở app, nếu cookie trong partition còn hạn.
+   *
+   * Vắng mặt = BẬT: tài khoản lưu từ trước khi có cờ này vẫn tự kết nối, đúng
+   * hành vi người dùng mong đợi. Tắt cho tài khoản chỉ dùng để quét QR thử —
+   * Zalo chỉ cho MỘT kết nối mỗi tài khoản, nên tự nối một tài khoản không
+   * dùng là chiếm mất chỗ của phiên thật.
+   */
+  autoConnect?: boolean;
 }
+
+/** Cờ autoConnect đã chuẩn hoá — vắng mặt coi như bật (xem ghi chú ở trên). */
+export const zaloApiAutoConnect = (a: ZaloApiAccount): boolean => a.autoConnect !== false;
 
 const STORE_KEY = 'zaloapi:accounts';
 

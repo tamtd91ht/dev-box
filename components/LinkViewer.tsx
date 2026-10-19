@@ -15,6 +15,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WebviewElement } from '@/lib/workspace/types';
 import { pwMatch, pwSave, pwTouch, canEncrypt, type CredentialOpen } from '@/lib/passwords';
 import { normalizeUrl } from '@/lib/bookmarks';
+import { historyVisit, historyTitle } from '@/lib/browserHistory';
+import AddressSuggest, { useAddressSuggest } from './AddressSuggest';
 
 // Nhiều trang (Google sign-in, một số SSO) chặn "embedded browser" bằng cách
 // sniff UA có token Electron/app-name — trình mình đúng là Chrome bên dưới.
@@ -46,11 +48,53 @@ interface Props {
   /** Profile session của tab — phân biệt 2 tài khoản trên cùng một origin. */
   profile?: string;
   /** Hiện Ô ĐỊA CHỈ thật (URL hiện tại, gõ được để đi) thay cho dòng tiêu đề
-   *  chỉ-đọc. Tab Browser bật; tab Links/Google giữ tiêu đề gọn như cũ. */
+   *  chỉ-đọc. Tab Browser + tab Links bật; tab Google giữ tiêu đề gọn như cũ. */
   addressBar?: boolean;
+  /** GHI LỊCH SỬ trang đã xem + GỢI Ý theo lịch sử trong ô địa chỉ (như trình
+   *  duyệt thật). Tab Browser bật; tab Links/Google KHÔNG — ở đó địa chỉ đến từ
+   *  danh sách link có tổ chức sẵn, đổ thêm lịch sử vào chỉ làm rối, và những
+   *  khung đó cũng không phải nơi người dùng gõ địa chỉ tự do. */
+  history?: boolean;
   /** Link trong trang bấm "mở tab mới" (target=_blank / chuột giữa) → mở thành
    *  TAB MỚI trong app thay vì đẩy ra trình duyệt ngoài. */
-  onOpenNewTab?: (url: string) => void;
+  onOpenNewTab?: (url: string, opener?: TabOpener) => void;
+  /** Guest ĐÃ ĐIỀU HƯỚNG sang trang khác (bấm link trong trang, redirect SSO,
+   *  đổi route SPA) → báo URL mới về chủ khung.
+   *
+   *  Chủ khung cần biết vì prop `url` chỉ là trang KHỞI ĐẦU: không có kênh này
+   *  thì "nhân đôi tab" nhân ra trang lúc mở tab chứ không phải trang đang
+   *  xem, và dò tab trùng cũng so với một địa chỉ đã cũ.
+   *
+   *  Chủ khung ghi thẳng giá trị này trở lại prop `url` được: effect đồng bộ
+   *  prop→guest ở dưới có chốt `sameUrl(el.getURL(), url)` nên vòng "báo lên
+   *  rồi bị tải lại" không xảy ra. */
+  onUrlChange?: (url: string) => void;
+  /** TAB NÀY MỞ TỪ MỘT LIÊN KẾT TRONG TAB KHÁC — ngữ cảnh của tab cha, để dựng
+   *  lại thứ mà một tab mới toanh vốn không có.
+   *
+   *  Trình duyệt thật mở tab từ `window.open`/`target=_blank` thì tab con kế
+   *  thừa cả `window.opener`, `Referer`, và `sessionStorage` của tab cha. Ở đây
+   *  mỗi tab là một `<webview>` riêng nên tab con sinh ra TRỐNG RỖNG: trang
+   *  giữ bộ lọc/phân trang trong sessionStorage sẽ đọc ra `null` và trả kết quả
+   *  rỗng, hoặc coi là truy cập trực tiếp rồi đá về trang mặc định.
+   *
+   *  Hai thứ lấy lại được — và đã đo là đủ cho ca phân trang:
+   *    · `url`  → gửi làm `httpReferrer` của lần tải đầu;
+   *    · `session` → chép nguyên sessionStorage của tab cha.
+   *
+   *  `window.opener` thì KHÔNG: Electron 43 không cho gắn webContents của cửa
+   *  sổ con vào khung tab (`already attached to a window`), nên tab con buộc
+   *  phải là một guest độc lập. Trang nào thật sự cần opener (thường là popup
+   *  OAuth) vẫn phải mở bằng cửa sổ ngoài. */
+  opener?: TabOpener;
+}
+
+/** Ngữ cảnh tab cha truyền cho tab con — xem prop `opener`. */
+export interface TabOpener {
+  /** URL tab cha lúc bấm link → Referer của lần tải đầu. */
+  url: string;
+  /** sessionStorage của tab cha, dạng cặp [key, value]. */
+  session: [string, string][];
 }
 
 /** Thanh "Lưu mật khẩu?" — user/pass vừa bắt được ở form submit. */
@@ -63,9 +107,29 @@ const NEWTAB_PREFIX = '[dbx-newtab] ';
 
 export default function LinkViewer({
   name, url, partition, onClose, onSaveLink, hidden, creds, passwordManager, profile,
-  addressBar, onOpenNewTab,
+  addressBar, history: trackHistory, onOpenNewTab, onUrlChange, opener,
 }: Props) {
   const ref = useRef<WebviewElement | null>(null);
+  /** Callback báo URL mới — đọc qua ref vì effect gắn listener chạy MỘT lần
+   *  (deps []) nên closure sẽ giữ mãi bản đầu tiên. */
+  const onUrlChangeRef = useRef(onUrlChange);
+  onUrlChangeRef.current = onUrlChange;
+  /** Cùng lý do: effect gắn listener chạy một lần nên đọc cờ qua ref. */
+  const histRef = useRef(!!trackHistory);
+  histRef.current = !!trackHistory;
+  /** URL đã ghi vào lịch sử gần nhất — did-navigate-in-page bắn RẤT DÀY trên
+   *  SPA, không chốt lại thì một trang bị đếm thành hàng chục lần vào và nó
+   *  chiếm sạch đầu danh sách gợi ý. */
+  const loggedRef = useRef('');
+  /** ĐANG Ở BƯỚC WARM-UP của tab mở-từ-liên-kết: guest tạm đứng ở TRANG CHA để
+   *  bơm sessionStorage, chưa phải trang người dùng bấm (xem effect `opener`).
+   *
+   *  Phải bịt các kênh "báo trang đang xem" trong lúc đó, nếu không:
+   *    · lịch sử ghi thêm một lượt vào trang cha mà người dùng không hề mở;
+   *    · `onUrlChange` đẩy URL trang cha lên `tab.url` — "nhân đôi tab" sẽ nhân
+   *      ra trang cha, và dò tab trùng so nhầm địa chỉ.
+   *  Khởi tạo = có `opener`: bước warm-up bắt đầu ngay từ `<webview src>`. */
+  const warmingRef = useRef(false);
   const [status, setStatus] = useState<Status>('loading');
   const [failInfo, setFailInfo] = useState('');
   const [canBack, setCanBack] = useState(false);
@@ -91,7 +155,22 @@ export default function LinkViewer({
         // Ô địa chỉ bám URL THẬT của guest (sau redirect SSO / đổi trang trong
         // SPA). Đang gõ dở thì thôi — không giật chữ khỏi tay người dùng.
         const cur = el.getURL();
-        if (cur) setLiveUrl(cur);
+        // Warm-up (đang ở trang cha để bơm sessionStorage): chưa phải trang
+        // người dùng bấm — không ghi lịch sử, không báo lên chủ khung.
+        if (cur && !warmingRef.current) {
+          setLiveUrl(cur);
+          onUrlChangeRef.current?.(cur);
+          // Ghi lịch sử ngay khi biết URL thật (sau mọi redirect SSO). Tiêu đề
+          // lúc này thường chưa có — page-title-updated ở dưới bù sau.
+          if (histRef.current && cur !== loggedRef.current) {
+            loggedRef.current = cur;
+            let title = '';
+            try { title = el.getTitle?.() ?? ''; } catch { /* chưa attach */ }
+            // getTitle() trước khi có <title> trả về chính URL — ghi vào thì
+            // dòng gợi ý có "tiêu đề" là một URL dài, vô nghĩa.
+            historyVisit(cur, title && title !== cur ? title : '');
+          }
+        }
       } catch {
         /* not attached yet */
       }
@@ -129,6 +208,17 @@ export default function LinkViewer({
     // effect này gắn listener → không có gì tắt overlay. Hẹn giờ ngay từ mount.
     stuckTimer = setTimeout(done, 12_000);
 
+    // Tiêu đề đến SAU URL (trang phải parse xong <head>) → cập nhật riêng, để
+    // dòng gợi ý hiện "Kibana — Discover" chứ không phải một URL trần.
+    const onTitle = (e: Event) => {
+      if (!histRef.current) return;
+      const t = (e as unknown as { title?: string }).title ?? '';
+      let cur = '';
+      try { cur = el.getURL(); } catch { /* chưa attach */ }
+      if (cur && t && t !== cur) historyTitle(cur, t);
+    };
+
+    el.addEventListener('page-title-updated', onTitle as EventListener);
     el.addEventListener('did-start-loading', onStart);
     el.addEventListener('did-stop-loading', onStop);
     el.addEventListener('dom-ready', onDomReady);
@@ -137,6 +227,7 @@ export default function LinkViewer({
     el.addEventListener('did-fail-load', onFail as EventListener);
     return () => {
       clearStuck();
+      el.removeEventListener('page-title-updated', onTitle as EventListener);
       el.removeEventListener('did-start-loading', onStart);
       el.removeEventListener('did-stop-loading', onStop);
       el.removeEventListener('dom-ready', onDomReady);
@@ -144,6 +235,119 @@ export default function LinkViewer({
       el.removeEventListener('did-navigate-in-page', syncNav);
       el.removeEventListener('did-fail-load', onFail as EventListener);
     };
+  }, []);
+
+  /**
+   * TAB MỞ TỪ LIÊN KẾT: dựng lại ngữ cảnh tab cha rồi mới đi tới trang đích.
+   *
+   * Ba bước, đúng thứ tự — thứ tự là toàn bộ vấn đề:
+   *   1. `src` đã tải TRANG CHA (xem <webview src>) → guest đang đứng đúng
+   *      origin, `sessionStorage` ghi được;
+   *   2. chép sessionStorage của tab cha vào;
+   *   3. `loadURL(url, { httpReferrer })` sang trang đích.
+   *
+   * Vì sao không bơm thẳng ở trang đích cho gọn: đã đo bằng harness Electron —
+   * bơm ở `did-start-loading` của trang đích thì script của trang đã chạy
+   * trước, `sessionStorage.getItem` trả `null`, tức đúng cái lỗi cần sửa. Phải
+   * bơm khi guest CÒN ở trang cha.
+   *
+   * Chạy đúng một lần: sau bước 3 người dùng tự do điều hướng, bơm lại là ghi
+   * đè lên sessionStorage mà chính trang đó vừa dựng.
+   *
+   * Hỏng ở bất kỳ bước nào cũng vẫn phải tới được trang đích — thà mất bộ lọc
+   * còn hơn kẹt ở trang cha, vì lúc đó người dùng nhìn thấy MỘT TRANG KHÁC hẳn
+   * trang họ vừa bấm.
+   */
+  const openerDoneRef = useRef(false);
+  /**
+   * `src` CHỐT MỘT LẦN, không bám prop.
+   *
+   * VÌ SAO: `src` là thuộc tính DOM của <webview>. Mỗi lần React render lại mà
+   * giá trị khác với lần trước, nó ghi lại thuộc tính → guest TẢI LẠI TRANG TỪ
+   * ĐẦU. Trước đây `src={opener?.url || url}`, mà `url` là prop THEO DÕI địa
+   * chỉ thật của guest (trackUrl cập nhật mỗi lần điều hướng, kể cả pushState
+   * của SPA). Hệ quả đo được trên chatgpt.com: gõ xong Enter → ChatGPT đổi URL
+   * '/' → '/c/<id>' bằng pushState → prop `url` đổi → React ghi lại `src` →
+   * webview tải lại → câu trả lời đang render biến mất, nhìn y như F5 và
+   * KHÔNG hiện gì cả. Đúng triệu chứng người dùng báo.
+   *
+   * Điều hướng do prop đổi đã có đường riêng và AN TOÀN: effect `url` ở dưới
+   * gọi `loadURL` sau khi so với `el.getURL()`. `src` chỉ còn nhiệm vụ nạp lần
+   * đầu, nên chốt cứng giá trị lúc mount là đủ và không bao giờ tự tải lại.
+   */
+  const srcRef = useRef(opener?.url || url);
+  // Bật cờ warm-up NGAY khi dựng component (không đợi effect chạy): `<webview
+  // src>` đã bắt đầu tải trang cha từ lần render đầu, và `dom-ready` của nó có
+  // thể tới trước cả effect — lúc đó syncNav sẽ kịp ghi nhầm trang cha.
+  if (opener && !openerDoneRef.current) warmingRef.current = true;
+
+  useEffect(() => {
+    if (!opener || openerDoneRef.current) return;
+    openerDoneRef.current = true;
+    const el = ref.current;
+    // Không có guest thì không bao giờ có bước warm-up — gỡ cờ, nếu không
+    // lịch sử của tab này im lặng vĩnh viễn.
+    if (!el) { warmingRef.current = false; return; }
+    // Trang cha CHÍNH LÀ trang đích (bấm link tự trỏ về mình): `src` đã tải
+    // đúng chỗ rồi, chỉ cần bơm, không điều hướng thêm.
+    const same = sameUrl(opener.url, url);
+
+    const go = () => {
+      // Tắt cờ TRƯỚC khi điều hướng: từ đây trở đi mọi sự kiện đều thuộc về
+      // trang đích, phải được ghi lịch sử và báo lên chủ khung như thường.
+      warmingRef.current = false;
+      try {
+        void el.loadURL(url, { httpReferrer: opener.url }).catch(() => {});
+      } catch { /* guest vừa bị huỷ */ }
+    };
+
+    const onReady = () => {
+      el.removeEventListener('dom-ready', onReady);
+      const restore = async () => {
+        if (opener.session.length) {
+          try {
+            await el.executeJavaScript(
+              `(() => { try { for (const [k, v] of ${JSON.stringify(opener.session)}) `
+              + `sessionStorage.setItem(k, v); } catch { /* origin chặn storage */ } })()`,
+              false,
+            );
+          } catch { /* guest chưa sẵn sàng — vẫn phải đi tiếp */ }
+        }
+        // Cha ≡ đích: không điều hướng nữa, nhưng vẫn phải rời trạng thái
+        // warm-up — trang đang hiện CHÍNH LÀ trang người dùng bấm.
+        if (same) {
+          warmingRef.current = false;
+          // Không còn điều hướng nào nữa nên `syncNav` sẽ không tự bắn lại —
+          // tự báo một lần, nếu không tab này vắng mặt trong lịch sử.
+          try {
+            const cur = el.getURL();
+            if (cur) {
+              setLiveUrl(cur);
+              onUrlChangeRef.current?.(cur);
+              if (histRef.current && cur !== loggedRef.current) {
+                loggedRef.current = cur;
+                let t = '';
+                try { t = el.getTitle?.() ?? ''; } catch { /* chưa attach */ }
+                historyVisit(cur, t && t !== cur ? t : '');
+              }
+            }
+          } catch { /* guest vừa bị huỷ */ }
+        }
+        else go();
+      };
+      void restore();
+    };
+
+    // dom-ready của TRANG CHA. Có thể đã bắn trước khi effect kịp gắn listener
+    // (guest attach và tải rất nhanh với trang đã cache) → dò trạng thái hiện
+    // tại trước, đúng cách mà effect nav ở trên phòng cùng tình huống.
+    let already = false;
+    try { already = !!el.getURL() && !el.isLoading?.(); } catch { /* chưa attach */ }
+    if (already) onReady();
+    else el.addEventListener('dom-ready', onReady);
+    return () => el.removeEventListener('dom-ready', onReady);
+    // Chỉ mount: `url`/`opener` của một tab không đổi trong đời tab.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Electron bug: hủy <webview> đang giữ focus xong host vẫn tưởng guest giữ
@@ -227,6 +431,20 @@ export default function LinkViewer({
     try { void ref.current?.loadURL(target); } catch { /* guest chưa attach */ }
   }, []);
 
+  /** Gợi ý theo lịch sử — chỉ khi ô địa chỉ ĐANG GÕ (có draft) và đang focus.
+   *
+   *  Không bật khi draft === null: lúc đó ô hiện URL của trang đang xem, mà
+   *  người dùng chỉ vừa bấm vào ô cho sáng lên — đổ ngay một danh sách gợi ý
+   *  khớp với chính URL đó là che mất trang mà chẳng để làm gì. Bấm ↓ vẫn mở
+   *  được danh sách "gần đây" (onKeyDown của hook lo). */
+  const [omniFocus, setOmniFocus] = useState(false);
+  const sug = useAddressSuggest({
+    query: draft ?? '',
+    onPick: (u) => navigate(u),
+    onPickNewTab: onOpenNewTab ? (u) => onOpenNewTab(u) : undefined,
+    enabled: !!trackHistory && omniFocus && draft !== null,
+  });
+
   /** Chép URL đang xem — thao tác quen tay khi đã có thanh địa chỉ. */
   const [copied, setCopied] = useState(false);
   const copyUrl = useCallback(() => {
@@ -291,18 +509,76 @@ export default function LinkViewer({
   // và giữ giá trị bắt được trong ref của host (pendingRef) để sống sót qua
   // điều hướng, chỉ đem ra hỏi sau khi trang mới tải xong.
 
-  /** Đoạn JS tìm ô user/pass — dùng lại cho cả điền và bắt submit. */
+  /**
+   * Chạy `code` trong MỌI frame của guest và trả kết quả từng frame.
+   *
+   * webview.executeJavaScript() chỉ với tới MAIN FRAME. Rất nhiều trang đặt
+   * form login trong <iframe> (Keycloak/SSO nhúng khung con) — với những trang
+   * đó thì bẫy bắt mật khẩu và autofill không bao giờ thấy ô password, nên
+   * thanh "Lưu mật khẩu?" im lặng đúng ở chỗ cần nó nhất. Cầu execInFrames
+   * (main process, webFrameMain) chạy được cả trong frame khác origin.
+   *
+   * Thứ tự trả về: main frame trước, rồi các frame con — caller lấy kết quả
+   * "có nghĩa" đầu tiên, nên main frame vẫn được ưu tiên như trước.
+   *
+   * Preload cũ chưa có cầu này → tự lùi về executeJavaScript (main frame),
+   * tức đúng hành vi trước đây, không tệ hơn.
+   */
+  const execFrames = useCallback(async (code: string): Promise<unknown[]> => {
+    const bridge = typeof window !== 'undefined' ? window.workspace?.execInFrames : undefined;
+    // getWebContentsId ném lỗi khi guest chưa attach — đọc thẳng ở đây thay vì
+    // qua guestId() (khai báo ở dưới, dùng cho DevTools) để khỏi phải xáo thứ
+    // tự khai báo của cả component.
+    let id = -1;
+    try { id = ref.current?.getWebContentsId() ?? -1; } catch { /* chưa attach */ }
+    if (bridge && id > 0) {
+      try {
+        const res = await bridge(id, code);
+        if (res?.ok && res.frames) return res.frames.map((f) => f.value);
+      } catch { /* cầu lỗi → lùi về main frame bên dưới */ }
+    }
+    try {
+      const v = await ref.current?.executeJavaScript(code, true);
+      return [v];
+    } catch { return []; }
+  }, []);
+
+  /** Đoạn JS tìm ô user/pass — dùng lại cho cả điền và bắt submit.
+   *
+   *  QUÉT CẢ SHADOW DOM, không chỉ document.querySelectorAll: khá nhiều trang
+   *  quản trị (web component, Lightning, Ionic…) đặt form login trong shadow
+   *  root, và ở đó querySelectorAll của document trả về RỖNG. Đó là một trong
+   *  những lý do thanh "Lưu mật khẩu?" có trang hiện có trang không.
+   *
+   *  GIỚI HẠN còn lại — form login nằm trong <iframe> (SSO nhúng kiểu Keycloak
+   *  trong khung con): executeJavaScript của <webview> chỉ chạy ở main frame
+   *  nên không với tới được, và iframe khác origin thì script cũng bị chặn.
+   *  Những trang đó vẫn phải lưu tay qua 🔑. */
   const FIELD_JS = `
     const vis = (el) => el && el.offsetParent !== null && !el.disabled && !el.readOnly;
-    const pwEl = () => [...document.querySelectorAll('input[type=password]')].find(vis);
+    // Mọi <input> trong document VÀ trong mọi shadow root lồng nhau, giữ đúng
+    // thứ tự xuất hiện (userEl dựa vào thứ tự để đoán ô user trước ô password).
+    const allInputs = () => {
+      const out = [];
+      const walk = (root) => {
+        for (const el of root.querySelectorAll('*')) {
+          if (el.tagName === 'INPUT') out.push(el);
+          if (el.shadowRoot) walk(el.shadowRoot);
+        }
+      };
+      walk(document);
+      return out;
+    };
+    const pwEl = () => allInputs().find((i) => (i.type||'').toLowerCase() === 'password' && vis(i));
     const userEl = (pw) => {
-      const texts = [...document.querySelectorAll('input')].filter((i) =>
+      const all = allInputs();
+      const texts = all.filter((i) =>
         ['text','email','tel','','username'].includes((i.type||'').toLowerCase()) && vis(i));
       const named = texts.find((i) => /user|email|login|account|phone|tel|name/i.test(
         (i.name||'')+(i.id||'')+(i.placeholder||'')+(i.autocomplete||'')));
       if (named) return named;
       // Không có tên gợi ý → ô text NGAY TRƯỚC ô password trong DOM.
-      if (pw) { const all = [...document.querySelectorAll('input')]; const i = all.indexOf(pw);
+      if (pw) { const i = all.indexOf(pw);
         for (let k = i - 1; k >= 0; k--) if (texts.includes(all[k])) return all[k]; }
       return texts[0];
     };`;
@@ -329,16 +605,28 @@ export default function LinkViewer({
       setVal(pw, ${JSON.stringify(password)});
       return 'ok';
     })()`;
-    try { return (await ref.current?.executeJavaScript(code, true)) as string; }
-    catch { return 'no-form'; }
-  }, [FIELD_JS]);
+    // Điền vào frame NÀO CÓ form. Frame không có ô password trả 'no-form' —
+    // vô hại, ta chỉ quan tâm frame nào làm được việc. Ưu tiên 'ok' (đã điền),
+    // rồi 'kept' (người dùng đang gõ dở → dừng, không đạp lên), cuối cùng mới
+    // là 'no-form' nghĩa là cả trang không có form nào.
+    const rs = (await execFrames(code)) as string[];
+    if (rs.includes('ok')) return 'ok';
+    if (rs.includes('kept')) return 'kept';
+    return 'no-form';
+  }, [FIELD_JS, execFrames]);
 
   /** Gắn bẫy submit trong guest: lưu user/pass vừa gõ vào window.__dbxPwd để
    *  host đọc ra. Idempotent — gọi lại sau mỗi lần điều hướng là vô hại. */
   const armCapture = useCallback(async () => {
     const code = `(() => {
-      if (window.__dbxPwdArmed) return 'already';
-      window.__dbxPwdArmed = true;
+      // Bẫy gắn vào document. Điều hướng in-page giữ nguyên window NHƯNG một
+      // số SPA thay hẳn document (hoặc trang gỡ listener của mình), lúc đó cờ
+      // cũ vẫn true và ta sẽ không bao giờ cắm lại — thanh "Lưu mật khẩu?" im
+      // luôn cho tới khi F5. Neo cờ vào chính document đang sống, không phải
+      // window: document mới là document chưa có cờ, tự động cắm lại.
+      if (document.__dbxPwdArmed) return 'already';
+      document.__dbxPwdArmed = true;
+      window.__dbxPwdArmed = true; // giữ cho tương thích, không còn dùng để gác
       ${FIELD_JS}
       // Giá trị gõ gần nhất, ghi lại NGAY khi người dùng gõ. Đây là bản sao
       // sống sót: lúc submit thì SPA (Rancher, Argo…) đã kịp xóa/unmount form,
@@ -353,9 +641,12 @@ export default function LinkViewer({
         last.url = location.href;
       };
       // 'input' bắn SAU khi React commit value → đây là nguồn đáng tin nhất.
-      document.addEventListener('input', (e) => {
-        if (e.target instanceof HTMLInputElement) remember();
-      }, true);
+      // KHÔNG lọc theo e.target instanceof HTMLInputElement: event từ trong
+      // shadow root bị "retarget", e.target thành phần tử host (một web
+      // component, không phải INPUT) nên điều kiện đó loại sạch — và ta mất
+      // đúng những trang đặt form trong shadow DOM. remember() tự đi tìm ô
+      // password nên gọi thừa cũng chỉ tốn một lượt querySelector.
+      document.addEventListener('input', remember, true);
 
       const publish = () => {
         if (!last.password) return;
@@ -369,23 +660,41 @@ export default function LinkViewer({
       // rồi xóa form ngay), và pointerdown để bắt cả nút không nằm trong <form>.
       document.addEventListener('submit', grab, true);
       document.addEventListener('pointerdown', (e) => {
-        const t = e.target instanceof Element ? e.target.closest('button,input[type=submit],a') : null;
-        if (t) grab();
+        // Đi theo composedPath() chứ không phải e.target.closest(): với event
+        // phát từ trong shadow root, e.target đã bị retarget thành host nên
+        // closest() không bao giờ thấy cái <button> thật vừa bị bấm.
+        const path = typeof e.composedPath === 'function' ? e.composedPath() : [e.target];
+        const hit = path.some((n) => {
+          if (!(n instanceof Element)) return false;
+          if (n.tagName === 'BUTTON' || n.tagName === 'A') return true;
+          return n.tagName === 'INPUT' && (n.type || '').toLowerCase() === 'submit';
+        });
+        if (hit) grab();
       }, true);
       document.addEventListener('keydown', (e) => { if (e.key === 'Enter') grab(); }, true);
       return 'armed';
     })()`;
-    try { await ref.current?.executeJavaScript(code, true); } catch { /* guest chưa sẵn */ }
-  }, [FIELD_JS]);
+    // Cắm vào MỌI frame: form login có thể ở main frame hay trong iframe SSO,
+    // và cờ armed neo theo từng document nên frame nào cắm rồi thì tự bỏ qua.
+    await execFrames(code);
+  }, [FIELD_JS, execFrames]);
 
   /** Đọc user/pass guest vừa bắt được; xóa khỏi guest sau khi lấy. */
   const readCaptured = useCallback(async (): Promise<{ username: string; password: string; url: string } | null> => {
     const code = `(() => { const v = window.__dbxPwd; window.__dbxPwd = null; return v ? JSON.stringify(v) : null; })()`;
-    try {
-      const raw = (await ref.current?.executeJavaScript(code, true)) as string | null;
-      return raw ? JSON.parse(raw) : null;
-    } catch { return null; }
-  }, []);
+    // Mỗi frame có window riêng, nên thứ bắt được nằm ở frame CHỨA FORM — với
+    // SSO nhúng thì đó là iframe, không phải main frame. Lấy frame đầu tiên có
+    // mật khẩu (main frame vẫn được xét trước, đúng như cũ).
+    const raws = (await execFrames(code)) as (string | null)[];
+    for (const raw of raws) {
+      if (!raw) continue;
+      try {
+        const got = JSON.parse(raw) as { username: string; password: string; url: string };
+        if (got?.password) return got;
+      } catch { /* frame trả rác → thử frame sau */ }
+    }
+    return null;
+  }, [execFrames]);
 
   /** URL thật của guest (sau redirect SSO) — origin để tra mật khẩu. */
   const currentUrl = useCallback(() => {
@@ -405,8 +714,26 @@ export default function LinkViewer({
    *  niêm phong bằng safeStorage — âm thầm bơm plaintext sang sẽ làm nhãn
    *  `cipher` nói dối. Muốn nâng cấp thì bấm "Lưu" ở thanh hỏi mật khẩu. */
   const resolveCreds = useCallback(async (): Promise<CredentialOpen[]> => {
+    // Tra theo CẢ url main frame LẪN url của frame đang chứa ô password.
+    //
+    // Với SSO nhúng (form login trong iframe Keycloak), mật khẩu được lưu theo
+    // origin của FRAME — đó là origin thật của trang đăng nhập, và lần sau
+    // chính frame đó lại hiện ra. Nếu chỉ tra bằng url main frame thì bản ghi
+    // vừa lưu ở lượt trước không bao giờ khớp lại: lưu được mà không điền được.
+    const urls = [currentUrl()];
+    if (passwordManager) {
+      const found = (await execFrames(
+        `(() => { const vis = (el) => el && el.offsetParent !== null && !el.disabled && !el.readOnly;
+          const pw = [...document.querySelectorAll('input[type=password]')].find(vis);
+          return pw ? location.href : null; })()`,
+      )) as (string | null)[];
+      for (const u of found) if (u && !urls.includes(u)) urls.push(u);
+    }
     const hits = passwordManager
-      ? await pwMatch(currentUrl(), profile).catch(() => [])
+      ? (await Promise.all(urls.map((u) => pwMatch(u, profile).catch(() => []))))
+          .flat()
+          // Cùng một bản ghi có thể khớp cả hai url → giữ một bản.
+          .filter((c, i, all) => all.findIndex((o) => o.id === c.id && o.username === c.username) === i)
       : [];
     const linkCred = creds?.password || creds?.username
       ? [{ id: '', username: creds.username ?? '', password: creds.password ?? '', profile }]
@@ -414,7 +741,7 @@ export default function LinkViewer({
     // Vault đã có tài khoản CÙNG username → bỏ bản của link (vault mới hơn).
     const dup = new Set(hits.map((h) => h.username));
     return [...hits, ...linkCred.filter((c) => !dup.has(c.username))];
-  }, [passwordManager, profile, currentUrl, creds]);
+  }, [passwordManager, profile, currentUrl, creds, execFrames]);
 
   /** user/pass bắt được, chờ trang mới tải xong mới đem ra hỏi. Ref (không phải
    *  state) để sống sót qua điều hướng mà không kéo theo re-render. */
@@ -487,15 +814,59 @@ export default function LinkViewer({
       })();
     };
 
+    // BẪY PHẢI CẮM TRƯỚC MỌI THỨ KHÁC, và cắm sớm nhất có thể.
+    //
+    // Vì sao tách khỏi cycle(): cycle là một chuỗi await dài (readCaptured →
+    // considerSave → resolveCreds → vòng injectFill thưa dần tới 1.5s). Người
+    // dùng gõ nhanh rồi Enter trong khoảng đó là bẫy chưa kịp có mặt — mất
+    // trắng cặp user/pass, và thanh "Lưu mật khẩu?" không hiện. Đó chính là
+    // triệu chứng "có lúc hiện có lúc không": nó phụ thuộc vào việc người dùng
+    // gõ nhanh hay chậm hơn cái chuỗi await kia.
+    //
+    // `dom-ready` là mốc sớm nhất mà executeJavaScript chạy được — sớm hơn
+    // did-stop-loading (cái đó còn chờ ảnh/script/iframe tải xong, trên trang
+    // login nặng có thể là vài giây sau khi ô nhập đã bấm được).
+    const arm = () => { void armCapture(); };
+
+    el.addEventListener('dom-ready', arm);
     el.addEventListener('did-start-loading', onStart);
     el.addEventListener('did-stop-loading', cycle);
+    // Redirect SSO toàn trang bắn did-navigate; document mới nên phải cắm lại
+    // ngay, không đợi did-stop-loading.
+    el.addEventListener('did-navigate', arm);
     // Login SPA đổi URL mà không tải lại trang → cũng phải xét lưu + tra lại.
-    el.addEventListener('did-navigate-in-page', cycle);
+    //
+    // NHƯNG PHẢI GHÌM LẠI — đây là chỗ tốn CPU nhất của cả component: `cycle`
+    // là một chuỗi await dài (readCaptured → considerSave → resolveCreds → tới
+    // 4 lượt injectFill thưa dần 1.5s), mỗi lượt chạy vào MỌI khung. Mà
+    // `did-navigate-in-page` bắn theo từng `pushState`: ChatGPT/Gmail/Jira đổi
+    // route hàng chục lần mỗi phút, nhân với số tab đang mở — quạt kêu mà
+    // chẳng để làm gì, vì các lượt sau gần như luôn trả về cùng kết quả.
+    //
+    // Gộp 700ms: một cụm pushState (SPA thường bắn 2-3 cái liền nhau cho một
+    // thao tác) chỉ tốn MỘT vòng. Trang login SPA vẫn được tra đầy đủ — chỉ
+    // chậm hơn 0.7s, không ai nhận ra; còn lúc bình thường thì im hẳn.
+    let cycleTimer: ReturnType<typeof setTimeout> | null = null;
+    const cycleSoon = () => {
+      if (cycleTimer) clearTimeout(cycleTimer);
+      cycleTimer = setTimeout(() => { cycleTimer = null; cycle(); }, 700);
+    };
+    el.addEventListener('did-navigate-in-page', cycleSoon);
+
+    // Lần tải ĐẦU của tab: webview có thể đã bắn dom-ready TRƯỚC khi effect này
+    // kịp gắn listener (nhất là tab mở nền rồi mới chuyển sang). Cắm luôn một
+    // lần ở đây — armCapture idempotent nên trùng cũng vô hại, còn thiếu thì
+    // mất cả lần đăng nhập đầu tiên, đúng lúc người dùng cần nó nhất.
+    arm();
+
     return () => {
       alive = false;
+      el.removeEventListener('dom-ready', arm);
       el.removeEventListener('did-start-loading', onStart);
       el.removeEventListener('did-stop-loading', cycle);
-      el.removeEventListener('did-navigate-in-page', cycle);
+      el.removeEventListener('did-navigate', arm);
+      if (cycleTimer) clearTimeout(cycleTimer);
+      el.removeEventListener('did-navigate-in-page', cycleSoon);
     };
   }, [passwordManager, profile, armCapture, readCaptured, injectFill, resolveCreds]);
 
@@ -528,40 +899,107 @@ export default function LinkViewer({
     }
   }, [offer, profile]);
 
-  // Ctrl+click / chuột giữa trên <a> trong trang = "mở trong tab mới" theo thói
-  // quen trình duyệt. Chrome xử lý hai cử chỉ này ở tầng NGOÀI window.open nên
-  // setWindowOpenHandler bên main không thấy gì — phải chặn ngay trong guest.
-  // Nghe ở capture để chạy trước handler của trang, và preventDefault để guest
-  // không tự điều hướng; URL đẩy về host qua console.log có tiền tố riêng
-  // (guest bị sandbox, preload bị xóa nên không có kênh IPC nào khác).
+  // Ctrl+click / chuột giữa / Shift+click trên <a> trong trang = "mở tab mới"
+  // theo thói quen trình duyệt. Chrome xử lý các cử chỉ này ở tầng NGOÀI
+  // window.open nên setWindowOpenHandler bên main không thấy gì — phải chặn
+  // ngay trong guest. Nghe ở capture để chạy trước handler của trang, và
+  // preventDefault để guest không tự điều hướng; URL đẩy về host qua
+  // console.log có tiền tố riêng (guest bị sandbox, preload bị xoá nên không
+  // có kênh IPC nào khác).
+  //
+  // BỐN CHỖ TỪNG TRƯỢT, nay vá cùng một lượt — đều là "bấm mà không ăn gì":
+  //
+  //  1. CHỈ MAIN FRAME. `executeJavaScript` của <webview> chỉ chạy ở khung
+  //     chính, nên link trong <iframe> (form nhúng, trang lồng, SSO) ctrl+click
+  //     vô tác dụng. Nay đi qua `execFrames` — cầu execInFrames bên main chạy
+  //     vào MỌI khung http(s), kể cả khác origin (tối đa 12 khung, xem
+  //     main.cjs). Cầu hỏng/preload cũ thì tự lùi về main frame như trước.
+  //  2. CHỈ <a href>. SPA hay dựng "link" bằng <div onclick> / role="link" /
+  //     <button>. Nay dò thêm role="link" và các thuộc tính data-* hay chứa URL.
+  //  3. LỌC CỨNG http(s). `#fragment` và link tương đối bị ném đi im lặng. Nay
+  //     phân giải qua `new URL(raw, location.href)` rồi mới xét scheme, nên
+  //     link tương đối ("/bao-cao?p=2") ra URL tuyệt đối ĐÚNG — trước đây nó
+  //     rơi xuống normalizeUrl và biến thành một lượt tìm Google.
+  //  4. SHADOW DOM. `closest()` không xuyên shadow root. Nay đi ngược
+  //     composedPath() nên component web (shadow) cũng bắt được.
+  //
+  // KHÔNG đụng tới: bấm trái thường (trang tự điều hướng, đúng như Chrome) và
+  // `javascript:` (để trang tự chạy, chặn là hỏng nút của chính nó).
   const armNewTab = useCallback(async () => {
     if (!onOpenNewTab) return;
     const code = `(() => {
-      if (window.__dbxNewTabArmed) return;
-      window.__dbxNewTabArmed = true;
-      const href = (e) => {
-        const a = e.target instanceof Element ? e.target.closest('a[href]') : null;
-        if (!a) return null;
-        const u = a.href || '';
-        return /^https?:/i.test(u) ? u : null;
+      const install = (doc) => {
+        try {
+          if (!doc || doc.__dbxNewTabArmed) return;
+          doc.__dbxNewTabArmed = true;
+        } catch (_) { return; }
+        const abs = (raw, base) => {
+          try {
+            const u = new URL(String(raw || ''), base || doc.location.href);
+            return /^https?:$/i.test(u.protocol) ? u.href : null;
+          } catch (_) { return null; }
+        };
+        // URL "thật" của phần tử được bấm — đi ngược composedPath nên xuyên
+        // được shadow DOM, thứ mà closest() không làm được.
+        const urlOf = (e) => {
+          const path = (e.composedPath && e.composedPath()) || [];
+          const nodes = path.length ? path : (e.target ? [e.target] : []);
+          for (let i = 0; i < nodes.length && i < 12; i++) {
+            const el = nodes[i];
+            if (!el || el.nodeType !== 1) continue;
+            const tag = (el.tagName || '').toLowerCase();
+            if (tag === 'a' && el.hasAttribute('href')) {
+              // <a download>: Chrome TẢI VỀ chứ không mở tab. Trả null để thả
+              // cho guest xử lý — cướp lấy rồi mở thành tab là mất luôn thuộc
+              // tính download, tab mới hiện ra một đống ký tự nhị phân.
+              if (el.hasAttribute('download')) return null;
+              // getAttribute chứ không phải el.href: href rỗng/javascript: bị
+              // trình duyệt nở thành URL trang hiện tại, tưởng nhầm là link.
+              const raw = (el.getAttribute('href') || '').trim();
+              if (!raw || /^javascript:/i.test(raw)) return null;
+              // Neo trong trang (#muc-2): Chrome ctrl+click MỞ TAB MỚI thật,
+              // nhưng ở đây tab mới sẽ trùng URL tab cha và bị bộ khử trùng
+              // nuốt (xem openTab) → người dùng thấy "bấm không ăn gì". Thả cho
+              // guest tự cuộn, đúng thứ người ta thực sự muốn.
+              const here = doc.location.href.split('#')[0];
+              const dest = abs(raw);
+              if (dest && dest.split('#')[0] === here && raw.indexOf('#') === 0) return null;
+              return dest;
+            }
+            if (el.getAttribute && el.getAttribute('role') === 'link') {
+              const d = el.dataset || {};
+              for (const k in d) { const u = abs(d[k]); if (u) return u; }
+            }
+          }
+          return null;
+        };
+        const fire = (e, u) => {
+          e.preventDefault(); e.stopPropagation();
+          if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+          console.log(${JSON.stringify(NEWTAB_PREFIX)} + u);
+        };
+        doc.addEventListener('click', (e) => {
+          // Ctrl/Cmd+click VÀ Shift+click: Chrome mở cửa sổ mới cho Shift, ở
+          // đây quy về tab mới — app không có khái niệm cửa sổ web rời.
+          if (!(e.ctrlKey || e.metaKey || e.shiftKey) || e.button !== 0) return;
+          const u = urlOf(e);
+          if (u) fire(e, u);
+        }, true);
+        doc.addEventListener('auxclick', (e) => {
+          if (e.button !== 1) return;
+          const u = urlOf(e);
+          if (u) fire(e, u);
+        }, true);
       };
-      document.addEventListener('click', (e) => {
-        if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
-        const u = href(e);
-        if (!u) return;
-        e.preventDefault(); e.stopPropagation();
-        console.log(${JSON.stringify(NEWTAB_PREFIX)} + u);
-      }, true);
-      document.addEventListener('auxclick', (e) => {
-        if (e.button !== 1) return;
-        const u = href(e);
-        if (!u) return;
-        e.preventDefault(); e.stopPropagation();
-        console.log(${JSON.stringify(NEWTAB_PREFIX)} + u);
-      }, true);
+      install(document);
     })()`;
-    try { await ref.current?.executeJavaScript(code, true); } catch { /* guest chưa sẵn */ }
-  }, [onOpenNewTab]);
+    // execFrames CHỨ KHÔNG executeJavaScript: cái sau chỉ với tới MAIN FRAME,
+    // nên link trong <iframe> (form nhúng, trang lồng, SSO) ctrl+click không ăn
+    // gì — đúng triệu chứng người dùng gặp. Cầu execInFrames (main.cjs) chạy
+    // vào MỌI khung http(s), kể cả khác origin, nên khung con cũng được vá.
+    // Cầu hỏng/preload cũ thì nó tự lùi về main frame — không tệ hơn trước.
+    try { await execFrames(code); } catch { /* guest chưa sẵn */ }
+  }, [onOpenNewTab, execFrames]);
 
   useEffect(() => {
     if (!onOpenNewTab) return;
@@ -575,19 +1013,234 @@ export default function LinkViewer({
       const msg = [ev.message, ...(ev.args ?? [])].find(
         (v): v is string => typeof v === 'string' && v.startsWith(NEWTAB_PREFIX),
       );
-      if (msg) onOpenNewTab(msg.slice(NEWTAB_PREFIX.length));
+      if (!msg) return;
+      const target = msg.slice(NEWTAB_PREFIX.length);
+      // NGỮ CẢNH TAB CHA — thứ nhánh target=_blank đã có (main.cjs
+      // sendOpenInBrowserTab) mà nhánh ctrl+click/chuột giữa TRƯỚC ĐÂY KHÔNG:
+      // tab con mở ra mất Referer và sessionStorage, nên trang có bộ lọc/phân
+      // trang hiện ra rỗng hoặc bị đá về mặc định — đúng triệu chứng "mở liên
+      // kết liên quan không được". Đọc tại đây (lúc bấm) nên là trạng thái
+      // THẬT của tab cha, không phải `url` prop có thể đã cũ.
+      let openerUrl = '';
+      try { openerUrl = el.getURL() || ''; } catch { /* chưa attach */ }
+      void (async () => {
+        let session: [string, string][] = [];
+        try {
+          const raw = await el.executeJavaScript(
+            '(() => { try { return Object.entries(sessionStorage); } catch { return []; } })()',
+            false,
+          );
+          if (Array.isArray(raw)) session = raw as [string, string][];
+        } catch { /* origin chặn storage — mất bộ lọc còn hơn không mở được */ }
+        onOpenNewTab(target, openerUrl ? { url: openerUrl, session } : undefined);
+      })();
     };
-    const arm = () => { void armNewTab(); };
+    // TIẾT KIỆM CPU — cắm lại ÍT NHẤT CÓ THỂ.
+    //
+    // KHÔNG nghe `did-navigate-in-page`: sự kiện đó bắn theo mỗi `pushState`,
+    // mà SPA (ChatGPT, Gmail, Jira…) đổi route liên tục — hàng chục lần/phút
+    // trên MỘT tab. Trong khi listener đã cắm thì SỐNG QUA pushState (document
+    // không bị thay), nên mỗi lần cắm lại đó chỉ là chạy không rồi thoát ở cờ
+    // `__dbxNewTabArmed`. Với execFrames, "chạy không" ấy còn tốn một vòng IPC
+    // + tới 12 lượt executeJavaScript — nhân với số tab đang mở. Bỏ hẳn.
+    //
+    // `did-stop-loading` là đủ: chỉ nó mới nghĩa là document MỚI (điều hướng
+    // thật, F5, đổi origin) — đúng lúc cờ cũ mất và cần cắm lại thật.
+    //
+    // Thêm một chốt chống dội: trang nhiều iframe bắn did-stop-loading mỗi lần
+    // một khung con tải xong. Gộp trong 400ms để một lượt tải chỉ cắm một lần.
+    let armTimer: ReturnType<typeof setTimeout> | null = null;
+    const arm = () => {
+      if (armTimer) clearTimeout(armTimer);
+      armTimer = setTimeout(() => { armTimer = null; void armNewTab(); }, 400);
+    };
     el.addEventListener('console-message', onConsole as EventListener);
     el.addEventListener('did-stop-loading', arm);
-    el.addEventListener('did-navigate-in-page', arm);
-    arm();
+    void armNewTab(); // lượt đầu: cắm ngay, không đợi 400ms
     return () => {
+      if (armTimer) clearTimeout(armTimer);
       el.removeEventListener('console-message', onConsole as EventListener);
       el.removeEventListener('did-stop-loading', arm);
-      el.removeEventListener('did-navigate-in-page', arm);
     };
   }, [onOpenNewTab, armNewTab]);
+
+  // ── DevTools dock trong khung, như Chrome ────────────────────────────────
+  // `<webview>.openDevTools()` LUÔN bung cửa sổ rời (Electron ép 'detach' cho
+  // guest webview) — xem rất bất tiện. Frontend DevTools cũng chỉ là một trang
+  // web nên dock được — nhưng chỗ ở của nó KHÔNG thể là một <webview> khác
+  // (Chromium cấm guest view làm devtools, electron#14095): main process nuôi
+  // frontend trong một WebContentsView đặt ĐÈ lên cửa sổ, còn component này chỉ
+  // vẽ pane (nền + thanh kéo + nút ✕) rồi báo rect của nó cho main
+  // ('devtools:open' / 'devtools:bounds'). F12 / chuột phải → Inspect bấm TRONG
+  // guest đi đường main → 'devtools:request' → đúng viewer này claim rồi mở
+  // pane (xem requestEmbeddedDevTools trong electron/main.cjs).
+  const devtoolsBodyRef = useRef<HTMLDivElement | null>(null);
+  const [devtools, setDevtools] = useState(false);
+  const [devtoolsH, setDevtoolsH] = useState(340); // chiều cao khi neo ĐÁY
+  const [devtoolsW, setDevtoolsW] = useState(460); // bề rộng khi neo TRÁI/PHẢI
+  /** Vị trí neo DevTools như Chrome: đáy | trái | phải. Nhớ qua localStorage —
+   *  đây là sở thích cá nhân lặp lại mỗi lần mở, không phải trạng thái tạm. */
+  const [devtoolsDock, setDevtoolsDock] = useState<'bottom' | 'left' | 'right'>('bottom');
+  const [devtoolsDrag, setDevtoolsDrag] = useState(false);
+  const DEFAULT_H = 340;
+  const DEFAULT_W = 460;
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem('devbox.devtools.dock');
+      if (v === 'bottom' || v === 'left' || v === 'right') setDevtoolsDock(v);
+    } catch { /* localStorage bị chặn — giữ mặc định 'bottom' */ }
+  }, []);
+
+  const setDock = useCallback((d: 'bottom' | 'left' | 'right') => {
+    setDevtoolsDock(d);
+    try { localStorage.setItem('devbox.devtools.dock', d); } catch { /* bỏ qua */ }
+  }, []);
+  /** Bản sao dạng ref cho devtoolsDrag — devtoolsRect đọc nó để khỏi đổi danh
+   *  tính callback (interval trong effect giữ closure cũ). */
+  const devtoolsDragRef = useRef(false);
+  /** Toạ độ "Inspect element" chờ pane mount + frontend nối xong mới dùng được. */
+  const inspectAt = useRef<{ x: number; y: number } | null>(null);
+  // Preload cũ chưa có cầu devtools → giữ nguyên hành vi cửa sổ rời như trước.
+  // typeof-guard vì Next vẫn prerender component 'use client' trên server.
+  const canDock = typeof window !== 'undefined' && Boolean(window.workspace?.devtoolsOpen);
+
+  /** Id webContents của guest; -1 khi chưa attach (getWebContentsId ném lỗi). */
+  const guestId = useCallback(() => {
+    try { return ref.current?.getWebContentsId() ?? -1; } catch { return -1; }
+  }, []);
+
+  /** Rect chỗ ở DevTools trong toạ độ cửa sổ; null = view phải ẨN: tab nền bị
+   *  đẩy offscreen (left âm), popup/modal đang cần nổi trên vùng webview (view
+   *  là native layer, DOM không che nổi — cùng lý do với data-popup-over-webview
+   *  của .ws-webview), hoặc đang kéo chiều cao (view nuốt mất pointermove). */
+  const devtoolsRect = useCallback(() => {
+    const el = devtoolsBodyRef.current;
+    if (!el || devtoolsDragRef.current) return null;
+    const r = el.getBoundingClientRect();
+    if (r.width < 40 || r.height < 40 || r.left < 0 || r.top < 0) return null;
+    const html = document.documentElement;
+    if (html.hasAttribute('data-popup-over-webview') || html.hasAttribute('data-modal-over-webview')) return null;
+    return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
+  }, []);
+
+  const openDevtools = useCallback((point?: { x: number; y: number }) => {
+    if (!canDock) {
+      try { ref.current?.openDevTools(); } catch { /* guest chưa sẵn sàng */ }
+      return;
+    }
+    inspectAt.current = point ?? null;
+    setDevtools(true);
+  }, [canDock]);
+
+  /** Đóng = chỉ hạ cờ; effect dưới lo gọi devtoolsClose khi cờ tắt/unmount. */
+  const closeDevtools = useCallback(() => setDevtools(false), []);
+
+  // Pane vừa mount → nhờ main dựng WebContentsView tại rect của pane, rồi BÁM
+  // THEO layout: kéo chiều cao, resize cửa sổ, ẩn tab (đẩy offscreen), popup
+  // cần nổi lên… không có một sự kiện nào gộp đủ các trường hợp đó, nên poll
+  // rect — một lần đọc getBoundingClientRect mỗi nhịp, chỉ gửi IPC khi đổi.
+  useEffect(() => {
+    if (!devtools) return;
+    const id = guestId();
+    if (id < 0) { setDevtools(false); return; }
+    const point = inspectAt.current;
+    inspectAt.current = null;
+    void window.workspace?.devtoolsOpen?.(id, devtoolsRect(), point);
+    let last = '';
+    const timer = setInterval(() => {
+      const rect = devtoolsRect();
+      const key = JSON.stringify(rect);
+      if (key === last) return;
+      last = key;
+      window.workspace?.devtoolsBounds?.(id, rect);
+    }, 250);
+    return () => {
+      clearInterval(timer);
+      // Chạy cả khi cờ tắt lẫn khi unmount cả viewer (đóng tab) — main đã dọn
+      // rồi thì gọi lần nữa vô hại.
+      void window.workspace?.devtoolsClose?.(id);
+    };
+  }, [devtools, guestId, devtoolsRect]);
+
+  // Đổi vị trí neo → gửi rect mới NGAY, không chờ vòng poll 250ms (đổi dock mà
+  // view nhảy trễ nửa giây nhìn rất khựng). Không đụng lúc kéo — kéo tự quản.
+  useEffect(() => {
+    if (!devtools || devtoolsDragRef.current) return;
+    const id = guestId();
+    if (id >= 0) window.workspace?.devtoolsBounds?.(id, devtoolsRect());
+  }, [devtoolsDock, devtools, guestId, devtoolsRect]);
+
+  // Yêu cầu mở từ main (F12/Inspect trong guest) + tin DevTools đã đóng (nút ✕
+  // của chính frontend, hoặc guest chết) — chỉ nhận đúng guest của viewer này.
+  useEffect(() => {
+    const ws = window.workspace;
+    if (!ws?.onDevToolsRequest) return;
+    const offReq = ws.onDevToolsRequest((req) => {
+      if (req.id < 0 || req.id !== guestId()) return;
+      ws.devtoolsClaim?.(req.id);
+      openDevtools(
+        typeof req.x === 'number' && typeof req.y === 'number'
+          ? { x: req.x, y: req.y }
+          : undefined,
+      );
+    });
+    const offClosed = ws.onDevToolsClosed?.((id) => {
+      if (id >= 0 && id === guestId()) setDevtools(false);
+    });
+    return () => { offReq(); offClosed?.(); };
+  }, [guestId, openDevtools]);
+
+  /** Kéo mép trong của pane để đổi kích thước — có tấm phủ trong suốt lúc kéo,
+   *  không thì con trỏ rơi vào <webview> là chuột "mất tích" (xem Splitter).
+   *  View DevTools cũng phải ẨN suốt lúc kéo: nó là native layer, tấm phủ DOM
+   *  không chặn được chuột đi vào nó (devtoolsRect trả null khi dragRef bật;
+   *  gửi ngay một nhịp null để không phải đợi vòng poll).
+   *
+   *  Neo ĐÁY: kéo mép TRÊN đổi chiều cao. Neo TRÁI: kéo mép PHẢI đổi bề rộng.
+   *  Neo PHẢI: kéo mép TRÁI đổi bề rộng (chiều tăng ngược lại). */
+  const startDevtoolsDrag = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const dock = devtoolsDock;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startH = devtoolsH;
+    const startW = devtoolsW;
+    setDevtoolsDrag(true);
+    devtoolsDragRef.current = true;
+    const id = guestId();
+    if (id >= 0) window.workspace?.devtoolsBounds?.(id, null);
+    const move = (ev: PointerEvent) => {
+      if (dock === 'bottom') {
+        const max = Math.max(160, window.innerHeight - 220);
+        setDevtoolsH(Math.min(max, Math.max(120, startH + (startY - ev.clientY))));
+      } else {
+        const max = Math.max(280, window.innerWidth - 260);
+        const delta = dock === 'left' ? ev.clientX - startX : startX - ev.clientX;
+        setDevtoolsW(Math.min(max, Math.max(240, startW + delta)));
+      }
+    };
+    const up = () => {
+      setDevtoolsDrag(false);
+      devtoolsDragRef.current = false; // vòng poll kế tiếp tự hiện view ở rect mới
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, [devtoolsDock, devtoolsH, devtoolsW, guestId]);
+
+  // Guest nhường chỗ cho pane theo hướng neo: đáy → thụt `bottom`, trái → thụt
+  // `left`, phải → thụt `right`. (.ws-webview vốn inset:0, chỉ cần đè một cạnh.)
+  const dtInset = !devtools
+    ? undefined
+    : devtoolsDock === 'bottom'
+      ? { bottom: devtoolsH }
+      : devtoolsDock === 'left'
+        ? { left: devtoolsW }
+        : { right: devtoolsW };
+  const dtPaneStyle = devtoolsDock === 'bottom' ? { height: devtoolsH } : { width: devtoolsW };
+  const dtCursor = devtoolsDock === 'bottom' ? 'row-resize' : 'col-resize';
 
   const webviewAttrs: Record<string, string> = { allowpopups: 'true' };
   if (CHROME_UA) webviewAttrs.useragent = CHROME_UA;
@@ -609,20 +1262,60 @@ export default function LinkViewer({
                Esc trả về URL hiện tại. Click chọn hết chữ như trình duyệt. */
             <div className="ws-omni">
               <span className={`ws-dot ws-dot--${status === 'failed' ? 'loading' : status}`} />
+              {/* TAY CẦM ĐỂ KÉO — phải là phần tử RIÊNG, không phải chính
+                  <input>: kéo bên trong ô nhập là thao tác bôi chọn chữ, đặt
+                  draggable lên đó sẽ cướp mất.
+                  Bản trước dùng chính chấm trạng thái 8×8px làm tay cầm — quá
+                  nhỏ để trúng và không có dấu hiệu gì cho biết kéo được, nên
+                  thực tế không ai kéo nổi. Nay là một nút riêng có biểu tượng
+                  và vùng bấm đủ rộng. */}
+              {liveUrl && (
+                <span
+                  className="ws-omni-drag"
+                  draggable
+                  role="img"
+                  aria-label="Kéo để lưu dấu trang"
+                  title="Kéo xuống thanh dấu trang để lưu"
+                  onDragStart={(e) => {
+                    // Đủ cả hai kiểu: `text/uri-list` là chuẩn cho URL, còn
+                    // `text/plain` để thả được sang ô nhập/ứng dụng khác.
+                    e.dataTransfer.setData('text/uri-list', liveUrl);
+                    e.dataTransfer.setData('text/plain', liveUrl);
+                    // 'copyLink' KHÔNG chứa 'move'. Thanh dấu trang đặt
+                    // dropEffect theo nguồn kéo, nhưng để chắc chắn mọi đích
+                    // thả (kể cả ô nhập của trang khác) đều nhận được, khai
+                    // 'all' — nguồn hẹp hơn đích là cách nhanh nhất để một cú
+                    // thả bị huỷ im lặng, không có lỗi nào để lần ra.
+                    e.dataTransfer.effectAllowed = 'all';
+                  }}
+                >
+                  🔖
+                </span>
+              )}
               <input
                 className="ws-omni-input"
-                value={draft ?? liveUrl}
+                // Đang chọn một dòng gợi ý (↑↓) thì ô hiện URL của dòng đó, như
+                // trình duyệt — thấy trước mình sẽ đi đâu rồi mới Enter.
+                value={sug.preview ?? draft ?? liveUrl}
                 spellCheck={false}
                 placeholder="Gõ địa chỉ hoặc từ khóa tìm Google…"
                 title={liveUrl}
                 onChange={(e) => setDraft(e.target.value)}
-                onFocus={(e) => e.currentTarget.select()}
+                onFocus={(e) => { setOmniFocus(true); e.currentTarget.select(); }}
+                // Không đóng gợi ý ở onBlur: bấm vào một dòng cũng làm ô mất
+                // focus, đóng ở đây thì dòng biến mất trước khi cú bấm tới nó.
+                // AddressSuggest tự đóng khi bấm ra ngoài (mousedown ở document).
+                onBlur={() => setOmniFocus(false)}
                 onKeyDown={(e) => {
+                  // Gợi ý xử lý trước: ↑↓ chọn dòng, Enter đi tới dòng đang
+                  // chọn, Esc đóng danh sách. Trả false thì mới đến phím của ô.
+                  if (sug.onKeyDown(e)) return;
                   if (e.key === 'Enter') navigate(e.currentTarget.value);
                   else if (e.key === 'Escape') { e.stopPropagation(); setDraft(null); e.currentTarget.blur(); }
                 }}
               />
               <button className="ws-omni-copy" onClick={copyUrl} title="Chép địa chỉ">{copied ? '✓' : '⧉'}</button>
+              <AddressSuggest {...sug.listProps} overWebview />
             </div>
           ) : (
             <div className="ws-title">
@@ -656,8 +1349,8 @@ export default function LinkViewer({
               </button>
             )}
             <button
-              onClick={() => { try { ref.current?.openDevTools(); } catch { /* guest chưa sẵn sàng */ } }}
-              title="DevTools của trang đang xem (Network/Console/Elements) — hoặc F12 / chuột phải → Inspect ngay trong trang"
+              onClick={() => { if (devtools) closeDevtools(); else openDevtools(); }}
+              title="DevTools của trang đang xem, dock trong khung — hoặc F12 / chuột phải → Inspect ngay trong trang"
             >
               🔧
             </button>
@@ -690,27 +1383,65 @@ export default function LinkViewer({
         <div className="ws-canvas">
           {/* partition MUST be an initial attribute — it cannot change after
               attach; caller remounts (key) khi đổi profile. */}
+          {/* DevTools mở → guest nhường một cạnh khung cho pane (dtInset đè lên
+              inset:0 của .ws-webview theo hướng neo). Overlay tải trang cũng
+              dừng ở mép pane — điều hướng khi đang soi không che mất DevTools. */}
           <webview
             ref={ref as unknown as React.Ref<HTMLElement>}
             className="ws-webview"
-            src={url}
+            /* Có tab cha → tải trang CHA trước, không phải `url` đích.
+               sessionStorage chỉ ghi được khi guest đã ở ĐÚNG origin, mà
+               `src` là thứ chạy sớm nhất (attach là tải ngay, không kịp chen
+               vào). Nên lần đầu ta cố ý ghé qua trang cha để giành lấy origin,
+               bơm xong mới đi tiếp — xem effect `opener` ở trên. Đã đo: bơm ở
+               did-start-loading của chính trang đích là MUỘN, trang đọc
+               sessionStorage ra null. */
+            src={srcRef.current}
             partition={partition}
+            style={dtInset}
             {...webviewAttrs}
           />
           {status === 'loading' && (
-            <div className="ws-overlay">
+            <div className="ws-overlay" style={dtInset}>
               <div className="ws-spinner" />
               <p>Đang tải {name}…</p>
             </div>
           )}
           {status === 'failed' && (
-            <div className="ws-overlay">
+            <div className="ws-overlay" style={dtInset}>
               <div className="ws-overlay-ico">🔌</div>
               <h3>Không tải được</h3>
               <p className="ws-muted">{failInfo}</p>
               <button className="ws-retry" onClick={retry}>Thử lại</button>
             </div>
           )}
+          {devtools && (
+            <div className="ws-devtools" data-dock={devtoolsDock} style={dtPaneStyle}>
+              <div
+                className="ws-devtools-grip"
+                onPointerDown={startDevtoolsDrag}
+                onDoubleClick={() => (devtoolsDock === 'bottom' ? setDevtoolsH(DEFAULT_H) : setDevtoolsW(DEFAULT_W))}
+                title="Kéo để đổi kích thước · đúp chuột về mặc định"
+              />
+              <div className="ws-devtools-bar">
+                <span className="ws-devtools-title" title={liveUrl}>
+                  DevTools · {hostOf(liveUrl)}
+                </span>
+                {/* Chọn vị trí neo, như menu ⋮ của Chrome (Dock side). */}
+                <span className="ws-devtools-dock" role="group" aria-label="Vị trí neo DevTools">
+                  <button className={devtoolsDock === 'left' ? 'on' : ''} onClick={() => setDock('left')} title="Neo bên trái">◧</button>
+                  <button className={devtoolsDock === 'bottom' ? 'on' : ''} onClick={() => setDock('bottom')} title="Neo bên dưới">⬓</button>
+                  <button className={devtoolsDock === 'right' ? 'on' : ''} onClick={() => setDock('right')} title="Neo bên phải">◨</button>
+                </span>
+                <button className="ws-devtools-x" onClick={closeDevtools} title="Đóng DevTools (F12)">✕</button>
+              </div>
+              {/* Chỗ ở của frontend: main process đặt một WebContentsView đè
+                  đúng rect của div này (đo + gửi ở effect devtools phía trên).
+                  Div chỉ là nền lót — thấy nó tức là view đang ẩn/chưa nối. */}
+              <div ref={devtoolsBodyRef} className="ws-devtools-body" />
+            </div>
+          )}
+          {devtoolsDrag && <div className="ws-devtools-veil" aria-hidden style={{ cursor: dtCursor }} />}
         </div>
       </div>
     </div>

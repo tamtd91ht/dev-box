@@ -17,10 +17,12 @@
 // It knows NOTHING about Zalo specifically — plugins are declared in the
 // renderer (lib/workspace/plugins.ts). Nothing here is hardcoded per website.
 
-const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard, net } = require('electron');
+const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard, net, dialog, webContents, WebContentsView } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
+// `net` của Electron đã chiếm tên ở dòng trên — module net của Node vào tên khác.
+const nodeNet = require('net');
 const os = require('os');
 const path = require('path');
 
@@ -155,10 +157,27 @@ const DEFAULT_CONFIG = {
   keepAlive: true,
   allowDownload: true,
   enableDevTools: true,
+  // 'ask' = hỏi nơi lưu mỗi lần tải (như Chrome) · 'auto' = tự lưu, không hỏi.
+  downloadMode: 'ask',
+  // Thư mục cố định cho download; '' = Downloads của máy / chỗ lưu lần trước.
+  downloadDir: '',
 };
 
 // Web APIs a workspace guest is allowed to request. Everything else is denied.
 // (Screen capture, geolocation, HID/serial/USB, MIDI are NOT granted.)
+// Guest bị ẨN THÔNG BÁO theo cấu hình Workspace (🔕 toàn cục / từng tài khoản).
+// Renderer đẩy trạng thái xuống qua workspace:setNotifMuted; hai handler quyền
+// trong configurePartition hỏi lại MỖI LẦN trang xin/hiện notification — nên
+// bật/tắt ăn ngay, không cần nạp lại guest. Chỉ quản partition Workspace
+// (ws-*): browser/links/google không có nút 🔕, không bị đụng.
+const notifMuted = { all: false, parts: new Set() };
+const notifPartKey = (part) => String(part || '').replace(/^persist:/, '');
+function notifAllowed(part) {
+  const key = notifPartKey(part);
+  if (!key.startsWith('ws-')) return true;
+  return !notifMuted.all && !notifMuted.parts.has(key);
+}
+
 const ALLOWED_PERMISSIONS = new Set([
   'notifications',
   'media', // mic + camera for voice/video calls
@@ -222,6 +241,47 @@ const CONTROLLABLE_PARTITION = (p) =>
 const POPUP_STUB_TTL_MS = 10_000;
 
 /**
+ * Bao renderer mo URL thanh TAB MOI trong tab Browser, KEM NGU CANH TAB CHA.
+ *
+ * Vi sao khong gui moi URL tran: tab moi la mot <webview> hoan toan moi, nen no
+ * khong co gi cua tab cha — khong Referer, khong sessionStorage. Rat nhieu trang
+ * giu bo loc / so trang trong sessionStorage roi doc lai o trang sau; mat no thi
+ * bam sang trang 2 ra ket qua rong, hoac trang coi la truy cap truc tiep va da
+ * ve trang mac dinh. Doc san o day roi gui kem, LinkViewer dung lai truoc khi
+ * trang dich chay (xem prop `opener` cua LinkViewer).
+ *
+ * `sessionStorage` phai doc TAI DAY, luc guest cha con dang o dung trang do —
+ * mot nhip sau la nguoi dung co the da dieu huong di.
+ *
+ * Doc that bai (origin chan storage, guest vua chet) thi van gui URL: mat bo loc
+ * con hon khong mo duoc tab.
+ */
+function sendOpenInBrowserTab(win, guest, url) {
+  const openerUrl = (() => {
+    try { return guest.getURL() || ''; } catch { return ''; }
+  })();
+  const send = (session) => {
+    if (win.isDestroyed()) { shell.openExternal(url); return; }
+    win.webContents.send('workspace:openInBrowserTab', { url, opener: openerUrl, session });
+    log('OpenInBrowserTab', `${url} · ss=${session.length}`);
+  };
+  // `sessionStorage` la cua MAIN FRAME cua tab cha — link bam trong iframe van
+  // lay storage cua trang chu, dung nhu trinh duyet that.
+  //
+  // try/catch DONG BO bao ngoai .catch(): guest da bi huy thi executeJavaScript
+  // nem ngay tai cho, khong tra ve promise nao de bat — khong bao la ca cu mo
+  // tab im lang khong xay ra.
+  try {
+    guest
+      .executeJavaScript('(() => { try { return Object.entries(sessionStorage); } catch { return []; } })()', false)
+      .then((entries) => send(Array.isArray(entries) ? entries : []))
+      .catch(() => send([]));
+  } catch {
+    send([]);
+  }
+}
+
+/**
  * Hai host co cung "domain dang ky" (bo subdomain) → coi la CUNG MOT APP.
  * chat.zalo.me vs id.zalo.me → cung zalo.me. Tho nhung du: chi dung de phan biet
  * "URL cua chinh app nay" voi "link nguoi ta gui trong tin nhan".
@@ -260,10 +320,13 @@ function askOpenTarget(url) {
   log('OpenRequest', url);
 }
 
+/** Duong dan file cau hinh — dung chung boi loadConfig va IPC downloadPrefs:set. */
+const configFile = () => path.join(app.getPath('userData'), 'workspace.config.json');
+
 /** Merge userData/workspace.config.json over the defaults. Missing file = defaults. */
 function loadConfig() {
   try {
-    const file = path.join(app.getPath('userData'), 'workspace.config.json');
+    const file = configFile();
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     const cfg = raw && typeof raw === 'object' && raw.workspace ? raw.workspace : raw;
     log('ConfigLoaded', file);
@@ -448,6 +511,178 @@ const CLIENT_HINTS_PATCH = `
 })();
 `;
 
+
+// ── Chrome extension cho tab Browser ─────────────────────────────────────────
+//
+// CHI AP CHO `persist:browser-*`. Workspace (Zalo/Telegram), Links, Google
+// viewer, Zalo API deu KHONG nap extension: cac tab do la APP-TRONG-APP dang
+// dang nhap that, mot content script hong la hong phien lam viec cua nguoi
+// dung — con tab Browser thi von la trinh duyet, hong thi dong tab la xong.
+//
+// ELECTRON HO TRO DEN DAU (doc ky truoc khi ky vong):
+//   ✓ content script  — chen JS/CSS vao trang. Day la thu chay TOT NHAT, va la
+//     ly do chinh de co tinh nang nay.
+//   ✓ chrome.storage, chrome.runtime (messaging co ban), i18n
+//   ✓ MV3 service worker — ho tro MOT PHAN
+//   ✗ chrome.tabs, chrome.webRequest, declarativeNetRequest
+//   ✗ browser action / popup toolbar / options page / devtools page
+//
+// He qua: extension TU VIET dang content script chay ngon. Extension tai ve tu
+// Chrome Web Store (uBlock Origin, trinh quan ly mat khau...) phan lon KHONG
+// chay dung vi chung song bang chrome.tabs/webRequest va cai nut tren thanh
+// cong cu. Ta van nap, nhung bao truoc trong UI chu khong hua hen.
+//
+// CHI NAP THU MUC DA GIAI NEN. File .crx la zip da ky, Electron khong doc —
+// nguoi dung tu giai nen roi tro vao thu muc.
+//
+// NAP LAI MOI LAN CHAY: Electron khong nho extension qua cac lan khoi dong,
+// nen danh sach nam trong extensions.json va duoc nap lai khi partition duoc
+// cau hinh lan dau.
+
+/** Thu muc chua extension + file khai bao. Nam trong userData (gitignored). */
+const extDir = () => path.join(app.getPath('userData'), 'extensions');
+const extManifestFile = () => path.join(extDir(), 'extensions.json');
+
+/**
+ * Danh sach extension da dang ky: [{ id, path, name, version, enabled }].
+ * `id` la id do Electron cap luc nap — doi moi lan nap nen KHONG dung lam khoa
+ * ben vung; khoa that su la `path`.
+ */
+function readExtRegistry() {
+  try {
+    const raw = fs.readFileSync(extManifestFile(), 'utf8');
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list.filter((e) => e && typeof e.path === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeExtRegistry(list) {
+  try {
+    fs.mkdirSync(extDir(), { recursive: true });
+    fs.writeFileSync(extManifestFile(), JSON.stringify(list, null, 2), 'utf8');
+    return true;
+  } catch (err) {
+    log('ExtRegistryError', String((err && err.message) || err));
+    return false;
+  }
+}
+
+/**
+ * Chon icon hop nhat cho thanh cong cu: uu tien 32-48px (thanh cong cu nho),
+ * khong co thi lay cai nao cung duoc. Tra ve duong dan TUONG DOI trong
+ * extension — UI ghep voi chrome-extension://<id>/ de hien.
+ */
+function pickIcon(m) {
+  const a = m.action || m.browser_action || m.page_action || {};
+  const sets = [a.default_icon, m.icons].filter((x) => x && typeof x === 'object');
+  for (const set of sets) {
+    for (const size of ['32', '48', '16', '64', '128']) {
+      if (typeof set[size] === 'string') return set[size];
+    }
+    const first = Object.values(set).find((v) => typeof v === 'string');
+    if (first) return first;
+  }
+  // default_icon co the la mot chuoi don thay vi map.
+  if (typeof a.default_icon === 'string') return a.default_icon;
+  return '';
+}
+
+/**
+ * Doc manifest.json cua mot thu muc extension.
+ * Tra ve null neu khong phai extension hop le — UI dung cai nay de tu choi
+ * NGAY luc nguoi dung chon thu muc, thay vi de Electron nem loi kho hieu.
+ */
+function readExtManifest(dir) {
+  try {
+    const raw = fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8');
+    const m = JSON.parse(raw);
+    if (!m || typeof m !== 'object') return null;
+    return {
+      name: typeof m.name === 'string' ? m.name : path.basename(dir),
+      version: typeof m.version === 'string' ? m.version : '?',
+      manifestVersion: m.manifest_version === 2 ? 2 : 3,
+      // Cac field bao hieu extension se KHONG chay dung tren webview.
+      wantsTabs: JSON.stringify(m.permissions || []).includes('tabs'),
+      wantsWebRequest: /webRequest|declarativeNetRequest/.test(JSON.stringify(m.permissions || [])),
+      hasAction: !!(m.action || m.browser_action || m.page_action),
+      hasContentScripts: Array.isArray(m.content_scripts) && m.content_scripts.length > 0,
+      /** Cac mau URL extension nay chay tren — UI hien de nguoi dung biet phai
+       *  mo trang nao thi no moi lam gi. Thieu thong tin nay thi "cai xong khong
+       *  thay gi" trong nhu loi, du that ra chi la dang dung sai trang. */
+      matches: (Array.isArray(m.content_scripts) ? m.content_scripts : [])
+        .flatMap((c) => (Array.isArray(c && c.matches) ? c.matches : []))
+        .filter((x) => typeof x === 'string'),
+      // Thanh cong cu trong DevBox can 3 thu nay: trang popup, icon, tooltip.
+      popupPage: (() => {
+        const a = m.action || m.browser_action || m.page_action || {};
+        return typeof a.default_popup === 'string' ? a.default_popup : '';
+      })(),
+      actionTitle: (() => {
+        const a = m.action || m.browser_action || m.page_action || {};
+        return typeof a.default_title === 'string' ? a.default_title : '';
+      })(),
+      icon: pickIcon(m),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Cac session `persist:browser-*` da cau hinh — de nap/go extension nong. */
+const browserSessions = new Set();
+
+/**
+ * Nap mot extension vao MOT session. Nuot loi va tra ve ket qua thay vi nem:
+ * mot extension hong khong duoc phep lam chet ca tab Browser.
+ */
+async function loadExtInto(ses, entry) {
+  try {
+    const ext = await ses.extensions.loadExtension(entry.path, { allowFileAccess: false });
+    return { ok: true, id: ext.id, name: ext.name, version: ext.version };
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    log('ExtLoadError', `${entry.path} · ${msg}`);
+    return { ok: false, error: msg };
+  }
+}
+
+/** Nap moi extension dang bat vao mot session browser vua duoc tao. */
+async function loadEnabledExtensions(ses) {
+  const list = readExtRegistry().filter((e) => e.enabled !== false);
+  // Cai DA NAP roi thi bo qua — ham nay duoc goi lai moi lan mot guest browser
+  // gan vao (xem did-attach-webview), nen phai idempotent, khong duoc nap chong.
+  let already = new Set();
+  try {
+    already = new Set(ses.extensions.getAllExtensions().map((x) => path.resolve(x.path)));
+  } catch {
+    /* session moi tinh — chua co gi */
+  }
+  for (const entry of list) {
+    if (already.has(path.resolve(entry.path))) continue;
+    if (!fs.existsSync(entry.path)) {
+      log('ExtMissing', entry.path);
+      continue;
+    }
+    const r = await loadExtInto(ses, entry);
+    if (r.ok) log('ExtLoaded', `${r.name} ${r.version} · ${entry.path}`);
+  }
+}
+
+/** Go mot extension khoi moi session browser (theo duong dan thu muc). */
+function unloadExtEverywhere(dirPath) {
+  const target = path.resolve(dirPath);
+  for (const ses of browserSessions) {
+    try {
+      for (const ext of ses.extensions.getAllExtensions()) {
+        if (path.resolve(ext.path) === target) ses.extensions.removeExtension(ext.id);
+      }
+    } catch {
+      /* session da chet — bo qua */
+    }
+  }
+}
 function configurePartition(part) {
   if (!part || configuredPartitions.has(part)) return;
   configuredPartitions.add(part);
@@ -491,8 +726,12 @@ function configurePartition(part) {
     callback({ requestHeaders: details.requestHeaders });
   });
 
+  // `notifications` hỏi thêm notifAllowed(part): tài khoản đang 🔕 thì trang
+  // đọc được "denied" và Windows không hiện toast — đánh giá mỗi lần gọi nên
+  // đổi cờ là ăn ngay.
   ses.setPermissionRequestHandler((_wc, permission, callback) => {
-    const ok = ALLOWED_PERMISSIONS.has(permission);
+    const ok = ALLOWED_PERMISSIONS.has(permission)
+      && (permission !== 'notifications' || notifAllowed(part));
     if (!ok) log('PermissionDenied', `${part} · ${permission}`);
     callback(ok);
   });
@@ -500,20 +739,117 @@ function configurePartition(part) {
   // Synchronous permission CHECKS (e.g. Notification.permission, navigator
   // .storage.persisted()) must agree with the request handler, otherwise apps
   // read "denied" and never show notifications.
-  ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
+  ses.setPermissionCheckHandler((_wc, permission) =>
+    ALLOWED_PERMISSIONS.has(permission)
+      && (permission !== 'notifications' || notifAllowed(part)));
 
   wireDownloadPolicy(ses, part);
   wireSessionCookiePersistence(ses, part);
+
+  // Extension CHI cho tab Browser. Cac partition khac (Workspace/Links/Google/
+  // Zalo API) la app-trong-app dang dang nhap that — khong chen script la vao.
+  if (BROWSER_PARTITION.test(part)) {
+    browserSessions.add(ses);
+    void loadEnabledExtensions(ses);
+  }
+}
+
+/**
+ * Nhớ thư mục tải về giữa các lần chọn — userData/download-state.json.
+ *
+ * Chỉ một trường `lastDir`: lần sau hộp thoại Save mở đúng chỗ vừa lưu,
+ * không bắt người dùng lần mò lại cây thư mục. Lỗi ghi thì bỏ qua — không để việc
+ * lưu state làm chệch luồng tải file.
+ */
+const downloadStateFile = () => path.join(app.getPath('userData'), 'download-state.json');
+
+function readLastDownloadDir() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(downloadStateFile(), 'utf8'));
+    const dir = raw && typeof raw.lastDir === 'string' ? raw.lastDir : '';
+    if (dir && fs.existsSync(dir)) return dir;
+  } catch {
+    /* chưa có state / file hỏng — dùng mặc định */
+  }
+  return '';
+}
+
+function writeLastDownloadDir(dir) {
+  try {
+    fs.writeFileSync(downloadStateFile(), JSON.stringify({ lastDir: dir }, null, 2), 'utf8');
+  } catch (err) {
+    log('DownloadStateError', err && err.message);
+  }
+}
+
+/**
+ * Thư mục mặc định khi tải: `downloadDir` trong config → chỗ vừa lưu lần trước
+ * → Downloads của máy.
+ */
+function defaultDownloadDir() {
+  const configured = typeof CONFIG.downloadDir === 'string' ? CONFIG.downloadDir.trim() : '';
+  if (configured && fs.existsSync(configured)) return configured;
+  return readLastDownloadDir() || app.getPath('downloads');
+}
+
+/** Tên file không đạp file cũ: trùng thì đánh số " (n)". */
+function uniquePath(dir, file) {
+  const ext = path.extname(file);
+  const base = path.basename(file, ext);
+  let target = path.join(dir, file);
+  for (let i = 1; fs.existsSync(target); i++) target = path.join(dir, `${base} (${i})${ext}`);
+  return target;
+}
+
+/**
+ * BAO LOI TAI FILE CHO NGUOI DUNG THAY — khong chi ghi log terminal.
+ *
+ * VI SAO CAN: truoc day moi nhanh hong cua `will-download` deu ket thuc bang
+ * `item.cancel()` + mot dong `log(...)`. Log chay ra terminal, ma nguoi dung
+ * binh thuong KHONG mo terminal — nen bam nut tai file thi "khong co gi xay
+ * ra", khong biet tai sao, khong biet co phai minh bam hut khong. Dung mot
+ * trieu chung voi "mo lien ket khong duoc" da sua o tren: that bai im lang.
+ *
+ * Dung `dialog.showMessageBox` chu khong dung mot kenh toast rieng: main
+ * process chua co duong bao trang thai nao sang renderer (chi co cac kenh
+ * 'workspace:open*'), va dung dialog thi thong bao van hien ke ca khi renderer
+ * chua mount hay dang ket. Cung ly do da chon dialog cho Save o duoi.
+ *
+ * KHONG truyen cua so cha — cung ly do nhu `saveDialogOptions`: hop thoai modal
+ * gan vao cua so bi <webview> native che mat, ket phia sau va khong bam duoc.
+ */
+function notifyDownloadFailed(title, detail) {
+  try {
+    dialog.showMessageBox({
+      type: 'warning',
+      title: 'Tải file không thành công',
+      message: title,
+      detail,
+      buttons: ['Đóng'],
+      noLink: true,
+    }).catch(() => {});
+  } catch {
+    /* dialog khong dung duoc (app dang thoat) — da co log o noi goi */
+  }
 }
 
 /**
  * Download policy for ONE session — dùng chung cho session mặc định (UI DevBox,
  * vd nút ⬇ tab Google) lẫn partition của từng webview guest.
  *
- * LUÔN đặt savePath tường minh (tự lưu vào Downloads của máy, tên trùng thì
- * đánh số " (n)"): không đặt thì Electron bật hộp thoại Save native — download
- * không có handler/savePath từng làm app crash văng ra ngoài. Lưu xong mở
- * Explorer trỏ đúng file để người dùng biết nó nằm đâu.
+ * Mặc định HỎI NƠI LƯU như Chrome, bằng `dialog.showSaveDialog` của app. Khác
+ * với hộp thoại Save MẶC ĐỊNH của Electron (bật lên khi KHÔNG ai đặt savePath)
+ * — cái đó từng làm app crash văng ra ngoài.
+ *
+ * Lưu ý then chốt: `will-download` là ĐỒNG BỘ. Handler trả về mà chưa gọi
+ * `setSavePath` thì Electron đã tự chốt đường dẫn (Downloads) và bật hộp thoại
+ * Save riêng của nó — gọi `setSavePath` sau `await` là vô hiệu, `item.pause()`
+ * cũng không hoãn được quyết định đó. Nên luồng ở đây là: chốt ngay một file
+ * tạm trong userData/downloads-tmp, hỏi nơi lưu song song, rồi CHUYỂN file sang
+ * chỗ người dùng chọn khi tải xong. Bấm Cancel → `item.cancel()` + dọn file tạm.
+ *
+ * Đặt `downloadMode: "auto"` trong userData/workspace.config.json để quay về
+ * nếp cũ (tự lưu, không hỏi); `downloadDir` để chỉ định thư mục cố định.
  */
 const wiredDownloadSessions = new WeakSet();
 function wireDownloadPolicy(ses, label) {
@@ -521,27 +857,178 @@ function wireDownloadPolicy(ses, label) {
   wiredDownloadSessions.add(ses);
   ses.on('will-download', (_event, item) => {
     if (!CONFIG.allowDownload) {
-      log('DownloadBlocked', item.getFilename());
+      const blocked = item.getFilename() || 'file';
+      log('DownloadBlocked', blocked);
       item.cancel();
+      // Noi ro DANG TAT O DAU — nguoi dung tu bat lai duoc, khong phai di hoi.
+      notifyDownloadFailed(
+        `Tính năng tải file đang tắt nên "${blocked}" không được tải về.`,
+        'Bật lại: đặt "allowDownload": true trong userData/workspace.config.json rồi mở lại app.',
+      );
       return;
     }
+    const file = item.getFilename() || 'download';
+    const dir = defaultDownloadDir();
+
+    if (CONFIG.downloadMode === 'auto') {
+      try {
+        finishDownload(item, uniquePath(dir, file), label);
+      } catch (err) {
+        log('DownloadError', err && err.message);
+        item.cancel();
+        notifyDownloadFailed(
+          `Không lưu được "${file}".`,
+          `Thư mục tải về: ${dir}
+
+Lý do: ${(err && err.message) || 'không rõ'}`,
+        );
+      }
+      return;
+    }
+
+    // `will-download` la DONG BO: khi handler return ma chua goi setSavePath thi
+    // Electron da chot xong duong dan cua no (Downloads) va bat hop thoai Save
+    // mac dinh. `item.pause()` KHONG hoan quyet dinh do — setSavePath sau await
+    // la vo hieu. Vi vay: chot ngay mot file tam trong userData/downloads-tmp,
+    // hoi noi luu song song, roi CHUYEN file sang cho nguoi dung chon khi tai xong.
+    const stagePath = stageDownloadPath(file);
     try {
-      const dir = app.getPath('downloads');
-      const file = item.getFilename() || 'download';
-      const ext = path.extname(file);
-      const base = path.basename(file, ext);
-      let target = path.join(dir, file);
-      for (let i = 1; fs.existsSync(target); i++) target = path.join(dir, `${base} (${i})${ext}`);
-      item.setSavePath(target);
-      log('DownloadStarted', `${label || 'default'} · ${target}`);
-      item.once('done', (_e, state) => {
-        log('DownloadDone', `${path.basename(target)} · ${state}`);
-        if (state === 'completed') shell.showItemInFolder(target);
-      });
+      item.setSavePath(stagePath);
     } catch (err) {
       log('DownloadError', err && err.message);
       item.cancel();
+      notifyDownloadFailed(
+        `Không chuẩn bị được chỗ tải tạm cho "${file}".`,
+        `Thư mục tạm: ${path.dirname(stagePath)}
+
+Lý do: ${(err && err.message) || 'không rõ'}`,
+      );
+      return;
     }
+    log('DownloadStaged', `${label || 'default'} · ${file}`);
+
+    // Cho ca hai: nguoi dung chon cho luu, va file tai xong. Ai xong truoc cung duoc.
+    const asked = dialog.showSaveDialog(saveDialogOptions(dir, file));
+    const finished = new Promise((resolve) => item.once('done', (_e, state) => resolve(state)));
+
+    // KHONG truyen cua so cha — cung ly do nhu browserExt:pickDir: hop thoai
+    // modal gan vao cua so bi <webview> native (Zalo/Telegram/Links) giu input
+    // che mat, ket phia sau va khong bam duoc gi. Ma tai file thi gan nhu LUC
+    // NAO cung dang o trong mot webview. Dialog dung mot minh thi noi len tren.
+    asked.then(async ({ canceled, filePath }) => {
+      if (canceled || !filePath) {
+        log('DownloadCanceled', file);
+        item.cancel();
+        // Da tai xong roi thi khong huy duoc nua — don file tam cho sach.
+        await finished.catch(() => {});
+        removeQuietly(stagePath);
+        return;
+      }
+      writeLastDownloadDir(path.dirname(filePath));
+      const state = await finished;
+      if (state !== 'completed') {
+        log('DownloadDone', `${file} · ${state}`);
+        removeQuietly(stagePath);
+        // Nguoi dung DA chon cho luu roi moi hong — im lang o day la te nhat:
+        // ho se ra thu muc do tim mot file khong bao gio toi.
+        notifyDownloadFailed(
+          `Tải "${file}" không xong.`,
+          state === 'interrupted'
+            ? 'Kết nối bị ngắt giữa chừng. Thử tải lại.'
+            : `Trạng thái: ${state}`,
+        );
+        return;
+      }
+      try {
+        moveFile(stagePath, filePath);
+        log('DownloadDone', `${path.basename(filePath)} · completed`);
+        shell.showItemInFolder(filePath);
+      } catch (err) {
+        log('DownloadError', `${file} · ${err && err.message}`);
+        // File tai XONG nhung khong chuyen sang cho nguoi dung chon duoc (o dia
+        // day, khong co quyen ghi, file dang bi mo...). Bao ro — va giu file tam
+        // lai, khong `removeQuietly`, de con cuu duoc.
+        notifyDownloadFailed(
+          `Đã tải xong "${file}" nhưng không lưu được vào chỗ bạn chọn.`,
+          `Chỗ chọn: ${filePath}
+Bản tạm còn ở: ${stagePath}
+
+Lý do: ${(err && err.message) || 'không rõ'}`,
+        );
+      }
+    }).catch(async (err) => {
+      log('DownloadError', err && err.message);
+      item.cancel();
+      await finished.catch(() => {});
+      removeQuietly(stagePath);
+      notifyDownloadFailed(
+        `Không tải được "${file}".`,
+        `Lý do: ${(err && err.message) || 'không rõ'}`,
+      );
+    });
+  });
+}
+
+/** File tam khi dang cho nguoi dung chon noi luu — userData/downloads-tmp. */
+let stageSeq = 0;
+function stageDownloadPath(file) {
+  const dir = path.join(app.getPath('userData'), 'downloads-tmp');
+  fs.mkdirSync(dir, { recursive: true });
+  stageSeq += 1;
+  return path.join(dir, `${process.pid}-${stageSeq}-${path.basename(file)}`);
+}
+
+function removeQuietly(target) {
+  try {
+    if (target && fs.existsSync(target)) fs.rmSync(target, { force: true });
+  } catch {
+    /* file tam — xoa khong duoc thi thoi */
+  }
+}
+
+/** Don file tam sot lai tu lan chay truoc (app bi kill giua chung khi dang tai). */
+function purgeDownloadStage() {
+  try {
+    fs.rmSync(path.join(app.getPath('userData'), 'downloads-tmp'), { recursive: true, force: true });
+  } catch {
+    /* khong don duoc thi thoi — file tam khong chan luong nao */
+  }
+}
+
+/** rename() truoc; khac o dia thi copy roi xoa. */
+function moveFile(from, to) {
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  try {
+    fs.renameSync(from, to);
+  } catch (err) {
+    if (err && err.code !== 'EXDEV') throw err;
+    fs.copyFileSync(from, to);
+    fs.rmSync(from, { force: true });
+  }
+}
+
+/** Options của hộp thoại Save — lọc theo đuôi file đang tải cho dễ nhìn. */
+function saveDialogOptions(dir, file) {
+  const ext = path.extname(file).replace(/^\./, '');
+  const filters = ext
+    ? [{ name: `${ext.toUpperCase()} file`, extensions: [ext] }, { name: 'Tất cả file', extensions: ['*'] }]
+    : [{ name: 'Tất cả file', extensions: ['*'] }];
+  return {
+    title: 'Lưu file tải về',
+    defaultPath: path.join(dir, file),
+    buttonLabel: 'Lưu',
+    filters,
+    properties: ['createDirectory', 'showOverwriteConfirmation'],
+  };
+}
+
+/** Gắn savePath + log/mở Explorer khi xong. */
+function finishDownload(item, target, label) {
+  item.setSavePath(target);
+  log('DownloadStarted', `${label || 'default'} · ${target}`);
+  item.once('done', (_e, state) => {
+    log('DownloadDone', `${path.basename(target)} · ${state}`);
+    if (state === 'completed') shell.showItemInFolder(target);
   });
 }
 
@@ -566,7 +1053,20 @@ function wireWebviewHardening(win) {
 
   // Enforce safe webPreferences on every guest BEFORE it is created.
   wc.on('will-attach-webview', (_event, prefs, params) => {
+    // Renderer KHONG duoc tu chon preload cho guest — xoa sach roi main process
+    // tu quyet dinh. Ngoai le duy nhat: POPUP CUA EXTENSION.
+    //
+    // Popup nap bang chinh URL chrome-extension:// nen no o dung origin cua
+    // extension (chrome.storage/runtime la hang that). Nhung Electron khong
+    // cap chrome.tabs/chrome.cookies cho guest, ma popup song bang hai thu do.
+    // Preload nay va vao — duong dan do CHINH MAIN PROCESS dat, khong phai
+    // chuoi tu renderer, nen khong co gi de loi dung.
     delete prefs.preload;
+    const src = String(params.src || '');
+    if (/^chrome-extension:\/\//i.test(src) && BROWSER_PARTITION.test(String(params.partition || ''))) {
+      prefs.preload = path.join(__dirname, 'ext-popup-preload.cjs');
+      log('ExtPopupPreload', src.slice(0, 90));
+    }
     prefs.nodeIntegration = false;
     prefs.contextIsolation = true;
     prefs.sandbox = true;
@@ -586,6 +1086,56 @@ function wireWebviewHardening(win) {
     // reach it. A background webview cannot receive a trusted key from the
     // renderer's element-level sendInputEvent; the main process can focus this
     // webContents and inject the key regardless of which tab is showing.
+    // NAP LAI EXTENSION moi lan mot guest browser gan vao.
+    //
+    // configurePartition chi chay MOT LAN cho moi partition (co cai gac
+    // configuredPartitions o dau ham), nen neu chi dua vao no thi: dong het tab
+    // roi mo lai tab cung profile → partition da cau hinh → khong nap gi ca, va
+    // extension coi nhu bien mat. Dung trieu chung nguoi dung gap: "vao khong
+    // co, an nap lai cung khong co, phai mo tab khac moi co".
+    // loadEnabledExtensions da idempotent nen goi lai o day khong nap chong.
+    if (BROWSER_PARTITION.test(partition)) {
+      const ses = session.fromPartition(partition);
+      browserSessions.add(ses);
+      void loadEnabledExtensions(ses);
+    }
+
+    // POPUP EXTENSION KHONG BAO GIO TU DIEU HUONG.
+    //
+    // Popup la mot o nho treo duoi thanh cong cu — no phai day URL RA TAB
+    // BROWSER, khong duoc tu bien thanh trinh duyet trong chinh no. Nguoi dung
+    // gap dung canh do: bam Submit xong trang OMICALL hien ra BEN TRONG popup
+    // 420px, con tab Browser van nam o trang login cu.
+    //
+    // Chan o TANG DIEU HUONG chu khong chi va chrome.tabs: popup co the di
+    // bang <a href>, form submit, location.href hay meta refresh — va OTool
+    // dung mot trong nhung duong do chu khong phai chrome.tabs (da kiem chung:
+    // tabs.update khong he duoc goi). Chan o day thi moi duong deu quy ve mot
+    // moi.
+    // Nhan dien popup extension bang PARTITION + URL: luc did-attach-webview
+    // guest.getURL() co the con rong (chua tai xong), nen kiem tra ca trong
+    // handler thay vi chot mot lan o day.
+    if (BROWSER_PARTITION.test(partition)) {
+      guest.on('will-navigate', (e, url) => {
+        // Chi ap cho POPUP EXTENSION, khong dung toi tab web binh thuong —
+        // tab Browser phai duoc tu do dieu huong.
+        let from = '';
+        try { from = guest.getURL() || ''; } catch { from = ''; }
+        if (!from.startsWith('chrome-extension://')) return;
+        // Di trong chinh extension (doi trang popup, router noi bo) → cho phep.
+        if (url.startsWith('chrome-extension://')) return;
+        e.preventDefault();
+        if (/^https?:\/\//i.test(url)) {
+          const host = BrowserWindow.fromWebContents(guest.hostWebContents || guest)
+            || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+          if (host && !host.isDestroyed()) host.webContents.send('browserExt:navigate', url);
+          log('ExtPopupNavOut', url.slice(0, 100));
+        } else {
+          log('ExtPopupNavBlocked', url.slice(0, 100));
+        }
+      });
+    }
+
     if (partition) {
       guestByPartition.set(partition, guest);
       guest.on('destroyed', () => {
@@ -623,8 +1173,24 @@ function wireWebviewHardening(win) {
     // did-create-window) nen URL that khong he duoc request lan hai — quan trong
     // voi link dung mot lan / link xac nhan qua email — nhung PHAI SONG mot luc,
     // xem POPUP_STUB_TTL_MS.
-    guest.setWindowOpenHandler(({ url }) => {
-      if (!/^https?:\/\//i.test(url)) return { action: 'deny' };
+    guest.setWindowOpenHandler(({ url, disposition }) => {
+      if (!/^https?:\/\//i.test(url)) {
+        // mailto: / tel: / msteams: ... — Chrome giao cho HE DIEU HANH mo bang
+        // app tuong ung. Truoc day 'deny' tran o day nuot im lang: bam vao mot
+        // dia chi email trong trang thi KHONG CO GI xay ra, khong bao loi, dung
+        // trieu chung "mo lien ket khong duoc".
+        //
+        // Chan lai dung hai thu that su nguy hiem: javascript: (chay code trong
+        // ngu canh trang) va data: (duong quen de nhet HTML gia mao). Con lai
+        // day sang OS — no la ben quyet dinh mo bang gi, giong het Chrome.
+        if (!/^(javascript|data|blob|file):/i.test(url)) {
+          shell.openExternal(url).catch(() => {});
+          log('OpenExternalScheme', url.slice(0, 120));
+        } else {
+          log('OpenBlockedScheme', url.slice(0, 120));
+        }
+        return { action: 'deny' };
+      }
 
       if (isWorkspaceApp) {
         // URL CUA CHINH APP (zalo.me → zalo.me): day la app tu dieu huong, dien
@@ -651,9 +1217,40 @@ function wireWebviewHardening(win) {
         //
         // Gui thang 'workspace:openInBrowserTab' (khong qua askOpenTarget) vi
         // o day khong con gi de hoi: nguoi dung dang O TRONG tab Browser.
+        //
+        // GUI KEM URL CUA TAB CHA (`opener`) — khong phai URL tran nhu truoc.
+        // Tab moi o day la mot <webview> HOAN TOAN MOI: khong opener, khong
+        // Referer, khong sessionStorage cua tab cha. Rat nhieu trang co phan
+        // trang / bo loc giu trang thai o sessionStorage roi doc lai o trang
+        // sau; mat no thi bam sang trang 2 ra ket qua rong hoac bi da ve trang
+        // mac dinh. LinkViewer dung `opener` de dung lai hai thu lay lai duoc:
+        // Referer va sessionStorage (xem prop `opener` cua LinkViewer).
+        //
+        // window.opener THAT thi KHONG the giu: cua so con do window.open sinh
+        // ra co du opener + sessionStorage, nhung Electron 43 khong cho gan no
+        // vao khung tab — `new WebContentsView({ webContents })` luon nem
+        // "options.webContents is already attached to a window" (da do bang
+        // harness, ca khi tab la <webview> lan khi tab la WebContentsView).
+        // Duong duy nhat giu opener song la de no lam cua so OS rieng, tuc
+        // khong con la tab nua.
         if (!win.isDestroyed()) {
-          win.webContents.send('workspace:openInBrowserTab', url);
-          log('OpenInBrowserTab', url);
+          sendOpenInBrowserTab(win, guest, url);
+        } else {
+          shell.openExternal(url);
+        }
+      } else if (
+        disposition === 'background-tab' &&
+        (/^persist:links-/.test(partition) || partition === 'persist:ws-google-viewer')
+      ) {
+        // CTRL+CLICK / CHUỘT GIỮA trong tab Links hay viewer Google
+        // (disposition 'background-tab'): người dùng chủ ý muốn TAB MỚI TRONG
+        // APP, không phải trình duyệt ngoài — mở thành tab mới ở tab Links
+        // (viewer Google không có dải tab nên cũng gửi sang Links). Click
+        // target=_blank thường (foreground-tab/new-window) giữ luật cũ: ra
+        // trình duyệt ngoài.
+        if (!win.isDestroyed()) {
+          win.webContents.send('workspace:openInLinksTab', url);
+          log('OpenInLinksTab', url);
         } else {
           shell.openExternal(url);
         }
@@ -705,6 +1302,14 @@ function wireWebviewHardening(win) {
     // both so the forwarding can't silently go dark again.
     guest.on('console-message', (...args) => {
       const ev = args[0];
+      // Nút "文 Dịch" cạnh vùng chọn (TF_SELECTION_SCRIPT) báo chữ cần dịch.
+      const tr = [ev && ev.message, args[2], args[1]].find(
+        (v) => typeof v === 'string' && v.startsWith(TF_MARK),
+      );
+      if (tr) {
+        try { tfOpenWith(win, JSON.parse(tr.slice(TF_MARK.length))); } catch { /* dòng giả / hỏng */ }
+        return;
+      }
       const msg = [ev && ev.message, args[2], args[1]].find(
         (v) => typeof v === 'string' && v.startsWith('[ws-'),
       );
@@ -733,10 +1338,14 @@ function wireWebviewHardening(win) {
     // the gesture out to the host page and drift the whole DevBox frame.
     guest.on('dom-ready', () => {
       guest.insertCSS('html,body{overscroll-behavior:none}').catch(() => {});
+      // Nút "文 Dịch" khi bôi đen chữ — isolated world, trang không đụng tới được.
+      guest.executeJavaScriptInIsolatedWorld(TF_WORLD, [{ code: TF_SELECTION_SCRIPT }]).catch(() => {});
     });
 
     // DevTools cho guest — debug trang đang xem (Network/Console/Elements):
-    //   · F12 (hoặc Ctrl+Shift+I) NGAY TRONG webview → toggle DevTools của guest
+    //   · F12 (hoặc Ctrl+Shift+I) NGAY TRONG webview → DevTools của guest, DOCK
+    //     đáy khung như Chrome khi host có pane (LinkViewer); fallback cửa sổ
+    //     rời cho guest không có pane — xem requestEmbeddedDevTools.
     //     (phím trong guest không bubble ra host nên phải bắt ở before-input-event).
     //   · Chuột phải → menu Cut/Copy/Paste + "Inspect element" đúng vị trí click
     //     (webview mặc định không có context menu nào).
@@ -749,9 +1358,16 @@ function wireWebviewHardening(win) {
     guest.on('before-input-event', (event, input) => {
       if (input.type !== 'keyDown') return;
       if (input.key === 'F12' || (input.control && input.shift && (input.key === 'I' || input.key === 'i'))) {
-        guest.toggleDevTools();
+        // (F12 bấm khi con trỏ Ở TRONG frontend DevTools được bắt riêng trên
+        // webContents của view — xem 'devtools:open'; frontend không phải
+        // webview nên không đi qua handler này.)
+        if (closeDockedDevTools(guest)) return; // đang dock → F12 là đóng
+        if (guest.isDevToolsOpened()) guest.closeDevTools(); // đang mở RỜI (fallback cũ)
+        else requestEmbeddedDevTools(win, guest);
         return;
       }
+      // Dịch nhanh: main tự bật bảng nổi (và lấy chữ đang bôi đen trong trang này).
+      if (isTranslateKey(input)) { event.preventDefault(); if (!win.isDestroyed()) void tfToggle(win, guest); return; }
       const shortcut = appShortcutOf(input);
       if (!shortcut) return;
       event.preventDefault(); // guest không nhận phím này nữa
@@ -766,17 +1382,51 @@ function wireWebviewHardening(win) {
     });
     guest.on('context-menu', (_e, params) => {
       const menu = Menu.buildFromTemplate([
+        // Bôi đen chữ (vd tin nhắn Zalo) → đổ vào bảng dịch nổi.
+        ...tfMenuItems(win, params.selectionText),
         { label: 'Cắt', role: 'cut', enabled: params.editFlags.canCut },
         { label: 'Sao chép', role: 'copy', enabled: params.editFlags.canCopy },
         { label: 'Dán', role: 'paste', enabled: params.editFlags.canPaste },
         { type: 'separator' },
+        // CHUỘT PHẢI TRÊN MỘT LIÊN KẾT — như trình duyệt thật.
+        //
+        // "Mở trong tab mới" chỉ có ở tab BROWSER: đó là nơi duy nhất có dải
+        // tab để mở thêm vào. Tab Links / viewer Google không có dải tab riêng
+        // nên bỏ mục này đi, khỏi hứa một chỗ mở không tồn tại (Ctrl+click ở
+        // đó vẫn đi đường 'workspace:openInLinksTab' như cũ).
+        //
+        // Gửi thẳng 'workspace:openInBrowserTab' — cùng kênh mà
+        // target=_blank/window.open đang dùng (xem setWindowOpenHandler), nên
+        // renderer không phải học thêm đường nào: BrowserTabWorkspace mở tab
+        // NỀN, giữ nguyên trang đang đọc, đúng thói quen "mở ngầm đọc sau".
+        ...(params.linkURL && BROWSER_PARTITION.test(partition) ? [{
+          label: '⊞ Mở liên kết trong tab mới',
+          click: () => {
+            if (win.isDestroyed()) { shell.openExternal(params.linkURL); return; }
+            // Kem ngu canh tab cha nhu nhanh window.open o tren — chuot phai
+            // "mo trong tab moi" cung phai giu duoc bo loc/phan trang.
+            sendOpenInBrowserTab(win, guest, params.linkURL);
+          },
+        }] : []),
         ...(params.linkURL ? [{
+          label: '↗ Mở liên kết bằng trình duyệt ngoài',
+          click: () => { shell.openExternal(params.linkURL); },
+        }, {
           label: 'Sao chép địa chỉ liên kết',
           click: () => { require('electron').clipboard.writeText(params.linkURL); },
         }, { type: 'separator' }] : []),
         {
           label: '🔍 Inspect element (DevTools)',
-          click: () => { guest.inspectElement(params.x, params.y); },
+          click: () => {
+            // DevTools đang mở (dock hay rời) → nhảy thẳng tới element; chưa mở
+            // → nhờ host dock trong khung, toạ độ đi kèm để inspect sau khi attach.
+            // isDevToolsOpened() mù với frontend ngoài — dock phải tra map riêng.
+            if (dockedDevTools.has(guest.id) || guest.isDevToolsOpened()) {
+              try { guest.inspectElement(params.x, params.y); } catch { /* guest vừa chết */ }
+              return;
+            }
+            requestEmbeddedDevTools(win, guest, { x: params.x, y: params.y });
+          },
         },
       ]);
       menu.popup();
@@ -793,12 +1443,52 @@ function wireWebviewHardening(win) {
   });
 }
 
-// ── Dev server lifecycle ──────────────────────────────────────────────────
+// ── Next server lifecycle ─────────────────────────────────────────────────
 // So the user only needs ONE command (`npm run desktop`): if nothing is
-// serving the DevBox UI yet, start `next dev` ourselves and shut it down when
-// the app closes. If a dev server is already up (they ran `npm run dev`
+// serving the DevBox UI yet, start the Next server ourselves and shut it down
+// when the app closes. If a server is already up (they ran `npm run dev`
 // separately) we reuse it and start nothing.
+//
+// MẶC ĐỊNH CHẠY PRODUCTION (`next build` một lần + `next start`): dev server
+// giữ toàn bộ cache biên dịch webpack/HMR trong RAM (~3GB đo thực tế trên máy
+// này) trong khi server production chỉ tốn vài trăm MB — giao diện không khác
+// gì, còn mở trang nhanh hơn vì không phải biên dịch lần đầu. Ai sửa code và
+// cần hot reload thì đặt DESKTOP_DEV=1 (npm run desktop:dev) hoặc tự chạy
+// `npm run dev` trước rồi mở app (probe :3000 sẽ dùng lại server đó).
 let devServer = null;
+
+/** Cổng của APP_URL — cần để hỏi "cổng có trống không", việc mà probe HTTP không trả lời được. */
+function appPort() {
+  try {
+    const u = new URL(APP_URL);
+    return Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
+  } catch {
+    return 3000;
+  }
+}
+
+/**
+ * Cổng này có THẬT SỰ trống không.
+ *
+ * Khác hẳn probe(): probe hỏi "có ai trả lời HTTP không", còn đây hỏi "có ai
+ * đang giữ cổng không". Hai câu trả lời có thể ngược nhau, và đúng cái kẽ đó
+ * là chỗ app chết: một server cũ treo vẫn GIỮ cổng nhưng KHÔNG trả lời — probe
+ * bảo "trống, cứ dựng đi", rồi `next start` chết vì EADDRINUSE.
+ */
+function portFree(port) {
+  return new Promise((resolve) => {
+    const srv = nodeNet.createServer();
+    srv.once('error', () => resolve(false));
+    srv.once('listening', () => srv.close(() => resolve(true)));
+    try {
+      srv.listen(port, '0.0.0.0');
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Resolve true if something answers an HTTP GET on url within 1s. */
 function probe(url) {
@@ -888,7 +1578,275 @@ function forgetDevServerPid() {
 /** PID của server mà lần chạy TRƯỚC để lại và lần này dùng lại. */
 let adoptedPid = 0;
 
-async function ensureDevServer() {
+/**
+ * Dọn XÁC server DevBox để lại: cái còn giữ cổng nhưng đã thôi trả lời.
+ *
+ * Ca có thật, và là ca app không mở được: `next start` của lần chạy trước còn
+ * sống, socket vẫn LISTENING, nhưng tiến trình đã treo nên mọi request đều
+ * timeout. probe() thấy không ai trả lời → tưởng cổng trống → dựng server mới →
+ * EADDRINUSE → app mở ra mà không có backend, và lần nào bật cũng vậy.
+ *
+ * CHỈ giết tiến trình DevBox tự khởi động (pid nằm trong devserver.pid, đã
+ * kiểm còn sống và ghi sau lần boot gần nhất). Server `npm run dev` người dùng
+ * tự chạy trong terminal thì KHÔNG đụng tới — nó chỉ đang biên dịch lâu, giết
+ * đi là phá đúng thứ người ta đang chờ.
+ */
+async function reclaimStaleServer() {
+  const pid = adoptedDevServerPid();
+  if (!pid) return false;
+  log('DevServerStale', `cổng ${appPort()} không trả lời nhưng server lần trước (pid ${pid}) vẫn sống → dọn để lấy lại cổng`);
+  killDevServerTree(pid, null);
+  // taskkill / SIGTERM là bất đồng bộ: cổng chỉ trống sau khi tiến trình chết
+  // hẳn. Chờ tới 10s rồi mới chịu thua — dựng server mới lúc cổng chưa trống
+  // là quay lại đúng EADDRINUSE vừa gỡ.
+  for (let i = 0; i < 40; i++) {
+    if (await portFree(appPort())) return true;
+    await delay(250);
+  }
+  log('DevServerStaleStuck', `pid ${pid} không chết hẳn, cổng ${appPort()} vẫn bị giữ`);
+  return false;
+}
+
+// ── Log của Next server: ghi ra FILE, không qua ống ────────────────────────
+//
+// Trước đây stdout/stderr của server là hai `pipe` do Electron đọc. Server lại
+// được cố ý để sống lâu hơn app (còn phiên terminal thì không giết — xem
+// stopDevServer), nên có lúc nó chạy mà KHÔNG còn ai đọc ống. Ống đầy (~64KB
+// trên Windows) là lần ghi log tiếp theo của server block vĩnh viễn: tiến
+// trình đứng hình, cổng vẫn giữ, HTTP câm — đúng cái xác mà reclaimStaleServer
+// phải đi dọn.
+//
+// Ghi thẳng ra file thì server không bao giờ phụ thuộc vào việc có ai đọc hay
+// không. App còn sống thì tail file này vào Console trong app; app chết thì
+// server cứ ghi tiếp, và lần sau mở lên vẫn đọc lại được nó đã nói gì.
+
+const devServerLogFile = () => path.join(app.getPath('userData'), 'devserver.log');
+
+let tailTimer = null;
+let tailPos = 0;
+let tailAcc = '';
+
+/** Đọc phần mới của devserver.log rồi đẩy vào Console trong app, theo dòng. */
+function readServerLogChunk() {
+  let fd;
+  try {
+    const size = fs.statSync(devServerLogFile()).size;
+    // File nhỏ đi = server mới spawn đã ghi đè → đọc lại từ đầu.
+    if (size < tailPos) { tailPos = 0; tailAcc = ''; }
+    if (size === tailPos) return;
+    const len = size - tailPos;
+    const buf = Buffer.alloc(len);
+    fd = fs.openSync(devServerLogFile(), 'r');
+    const read = fs.readSync(fd, buf, 0, len, tailPos);
+    tailPos += read;
+    tailAcc += buf.subarray(0, read).toString('utf8');
+    let nl;
+    while ((nl = tailAcc.indexOf('\n')) !== -1) {
+      const line = tailAcc.slice(0, nl).replace(/\r$/, '');
+      tailAcc = tailAcc.slice(nl + 1);
+      if (line.trim()) pushLog('next', line);
+    }
+  } catch {
+    /* chưa có file, hoặc đang bị ghi dở — vòng sau đọc lại */
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* kệ */ } }
+  }
+}
+
+/** Bắt đầu theo dõi log server. `fromStart` = đọc cả phần server cũ đã ghi. */
+function startServerLogTail(fromStart) {
+  stopServerLogTail();
+  if (fromStart) { tailPos = 0; tailAcc = ''; }
+  readServerLogChunk();
+  tailTimer = setInterval(readServerLogChunk, 500);
+  if (tailTimer.unref) tailTimer.unref();
+}
+
+function stopServerLogTail() {
+  if (tailTimer) { clearInterval(tailTimer); tailTimer = null; }
+}
+
+/** Đổ một stream (stdout/stderr của tiến trình con) vào Console trong app, theo dòng. */
+function forwardStream(stream, source) {
+  if (!stream) return;
+  let acc = '';
+  stream.setEncoding('utf8');
+  stream.on('data', (chunk) => {
+    acc += chunk;
+    let nl;
+    while ((nl = acc.indexOf('\n')) !== -1) {
+      const line = acc.slice(0, nl).replace(/\r$/, '');
+      acc = acc.slice(nl + 1);
+      if (line.trim()) pushLog(source, line);
+    }
+  });
+  stream.on('end', () => {
+    if (acc.trim()) pushLog(source, acc.trimEnd());
+    acc = '';
+  });
+}
+
+// ── Production build ───────────────────────────────────────────────────────
+//
+// `next start` chỉ phục vụ được code ĐÃ build, nên trước khi start phải trả
+// lời được "build trong .next có phải code hiện tại không?". "Code hiện tại"
+// là CODE LOCAL TRÊN ĐĨA — không phải git HEAD: người dùng sửa dở chưa commit
+// thì app vẫn phải chạy đúng bản đang sửa. (Phiên bản đầu so HEAD với
+// build-info.json — bẫy kinh điển: sửa code mà app không đổi vì HEAD không
+// đổi.) Git chỉ còn một vai: badge nút "Cập nhật" báo có bản mới, người dùng
+// tự chọn kéo về; kéo xong file local đổi → fingerprint lệch → tự build lại.
+//
+// Cách trả lời: fingerprint = sha1 của (đường dẫn + size + mtime) mọi file
+// nguồn mà `next build` ăn vào, ghi lại lúc build thành công (build-info.json
+// cạnh devserver.pid), lần khởi động sau tính lại rồi so. Lệch là build lại.
+
+const buildInfoFile = () => path.join(app.getPath('userData'), 'build-info.json');
+
+// Nguồn vào của `next build`. KHÔNG gồm electron/ (vỏ desktop, không qua next
+// build) và public/monaco (bản copy từ node_modules — scripts/copy-monaco.cjs
+// tự lo, postinstall đã chạy nó nên đổi version monaco vẫn lộ ra qua mtime).
+const BUILD_SRC_DIRS = ['app', 'components', 'lib', 'public'];
+const BUILD_SRC_FILES = [
+  'package.json', 'package-lock.json', 'next.config.js', 'tsconfig.json',
+  '.env', '.env.local', '.env.production',
+];
+const BUILD_SRC_SKIP = new Set(['public/monaco']);
+
+/** Fingerprint code local: `<sha1>·<số file>`. `·0` nghĩa là không đọc được nguồn. */
+function buildFingerprint(appPath) {
+  const hash = require('crypto').createHash('sha1');
+  let files = 0;
+  const addFile = (abs, rel) => {
+    try {
+      const st = fs.statSync(abs);
+      hash.update(`${rel}|${st.size}|${Math.round(st.mtimeMs)}\n`);
+      files++;
+    } catch { /* file khai trong danh sách nhưng không có (.env tuỳ máy) — bỏ qua */ }
+  };
+  const walk = (dir, rel) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    entries.sort((a, b) => (a.name < b.name ? -1 : 1));
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      const r = `${rel}/${e.name}`;
+      if (e.isDirectory()) {
+        if (!BUILD_SRC_SKIP.has(r)) walk(path.join(dir, e.name), r);
+      } else if (e.isFile()) {
+        addFile(path.join(dir, e.name), r);
+      }
+    }
+  };
+  for (const d of BUILD_SRC_DIRS) walk(path.join(appPath, d), d);
+  for (const f of BUILD_SRC_FILES) addFile(path.join(appPath, f), f);
+  return `${hash.digest('hex')}·${files}`;
+}
+
+/** Commit HEAD hiện tại của repo app — đọc thẳng .git, không spawn git. '' nếu không đọc được. */
+function gitHead(appPath) {
+  try {
+    const gitDir = path.join(appPath, '.git');
+    const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+    const m = /^ref: (.+)$/.exec(head);
+    if (!m) return head; // detached HEAD — chính nó đã là hash
+    const refFile = path.join(gitDir, ...m[1].split('/'));
+    if (fs.existsSync(refFile)) return fs.readFileSync(refFile, 'utf8').trim();
+    // Ref đã bị pack (git gc) → tra trong packed-refs.
+    const packed = fs.readFileSync(path.join(gitDir, 'packed-refs'), 'utf8');
+    for (const raw of packed.split('\n')) {
+      const line = raw.trim();
+      if (line.endsWith(' ' + m[1])) return line.split(/\s+/)[0];
+    }
+  } catch {
+    /* không phải repo / thiếu quyền — coi như không biết */
+  }
+  return '';
+}
+
+function savedBuildFingerprint() {
+  try {
+    return String(JSON.parse(fs.readFileSync(buildInfoFile(), 'utf8')).fingerprint || '');
+  } catch {
+    return '';
+  }
+}
+
+function rememberBuild(fingerprint, head) {
+  try {
+    fs.mkdirSync(path.dirname(buildInfoFile()), { recursive: true });
+    // head chỉ để người debug liếc build-info.json biết build từ commit nào —
+    // quyết định build lại hay không dựa hoàn toàn vào fingerprint.
+    fs.writeFileSync(buildInfoFile(), JSON.stringify({ fingerprint, head, at: Date.now() }), 'utf8');
+  } catch (err) {
+    log('BuildInfoWriteError', err && err.message);
+  }
+}
+
+/**
+ * Chạy một script Node bằng Node đóng gói trong Electron (không phụ thuộc
+ * node/npm trên PATH), output đổ vào Console trong app. Trả về exit code
+ * (khác 0 khi lỗi hoặc quá timeoutMs).
+ */
+function runNode(appPath, args, timeoutMs, source) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, {
+      cwd: appPath,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    forwardStream(child.stdout, source);
+    forwardStream(child.stderr, source);
+    const timer = setTimeout(() => {
+      log('BuildTimeout', `${args[args.length - 1]} quá ${Math.round(timeoutMs / 60000)} phút — dừng`);
+      try {
+        // next build còn spawn worker con — giết cả cây, như killDevServerTree.
+        if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F']);
+        else child.kill('SIGKILL');
+      } catch {
+        /* đã chết rồi */
+      }
+    }, timeoutMs);
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      resolve(code == null ? 1 : code);
+    });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      log('BuildSpawnError', err && err.message);
+      resolve(1);
+    });
+  });
+}
+
+/** Đảm bảo .next chứa build production của ĐÚNG code local hiện tại. true = dùng được. */
+async function ensureProdBuild(appPath, nextBin) {
+  // BUILD_ID chỉ tồn tại sau `next build` — .next của `next dev` không có nó.
+  const hasBuild = fs.existsSync(path.join(appPath, '.next', 'BUILD_ID'));
+  // Fingerprint tính TRƯỚC khi build: nếu người dùng sửa code trong lúc build
+  // chạy thì lần khởi động sau vẫn thấy lệch và build lại — không nuốt mất sửa.
+  const fp = buildFingerprint(appPath);
+  if (hasBuild && fp.endsWith('·0')) return true; // không đọc được nguồn → đành tin build sẵn có
+  if (hasBuild && savedBuildFingerprint() === fp) return true;
+
+  log(
+    'BuildStarting',
+    `next build (${hasBuild ? 'file nguồn local đã đổi so với lần build trước' : 'chưa có build production'}) — có thể mất vài phút`,
+  );
+  // Hook `prebuild` của npm không chạy khi spawn thẳng next bin → tự gọi
+  // copy-monaco (idempotent, chỉ copy khi thiếu/đổi version).
+  await runNode(appPath, [path.join(appPath, 'scripts', 'copy-monaco.cjs')], 2 * 60_000, 'build');
+  const code = await runNode(appPath, [nextBin, 'build'], 15 * 60_000, 'build');
+  if (code === 0) {
+    rememberBuild(fp, gitHead(appPath));
+    log('BuildDone', 'build production sẵn sàng');
+    return true;
+  }
+  log('BuildFailed', `next build thoát mã ${code}`);
+  return false;
+}
+
+async function ensureServer() {
   // Pointed at an external server (prod/staging URL) → never auto-start.
   if (process.env.DESKTOP_URL) {
     log('DevServerSkip', `DESKTOP_URL set → dùng server ngoài (${APP_URL})`);
@@ -904,8 +1862,26 @@ async function ensureDevServer() {
         ? `${APP_URL} là server DevBox để lại lần trước (pid ${adoptedPid}) — dùng lại, vẫn giữ quyền dọn`
         : `${APP_URL} đã chạy sẵn — dùng lại, không tự khởi động`,
     );
+    // Server cũ vẫn ghi vào devserver.log — nối Console trong app vào đó.
+    if (adoptedPid) startServerLogTail(false);
     return;
   }
+
+  // Không ai TRẢ LỜI, nhưng chưa chắc cổng đã TRỐNG. Phải hỏi riêng câu đó
+  // trước khi spawn: nếu cứ dựng bừa thì `next start` chết vì EADDRINUSE và
+  // app mở ra không có backend — mà lỗi ấy chỉ nằm trong log, người dùng chỉ
+  // thấy màn hình chờ mãi không xong.
+  if (!(await portFree(appPort()))) {
+    if (!(await reclaimStaleServer())) {
+      log(
+        'PortBusy',
+        `cổng ${appPort()} đang bị một tiến trình KHÔNG phải của DevBox giữ (hoặc server cũ không chịu chết) và nó không trả lời HTTP. ` +
+          'DevBox chỉ tự dọn server do chính nó khởi động — hãy tắt tiến trình đang giữ cổng rồi mở lại app.',
+      );
+      return;
+    }
+  }
+
   const appPath = app.getAppPath();
   // Next's JS CLI entry — run it with Electron's bundled Node (no next.cmd /
   // PATH / path-with-spaces pitfalls).
@@ -914,11 +1890,44 @@ async function ensureDevServer() {
     log('DevServerMissing', `không thấy ${nextBin} — chạy \`npm install\` trước`);
     return;
   }
-  log('DevServerStarting', 'next dev — lần đầu biên dịch có thể mất ~10-30s');
-  devServer = spawn(process.execPath, [nextBin, 'dev'], {
+
+  // DESKTOP_DEV=1 → giữ hot reload cho người đang sửa code. Mặc định production.
+  const wantDev = /^(1|true)$/i.test(process.env.DESKTOP_DEV || '');
+  if (!wantDev) {
+    if (await ensureProdBuild(appPath, nextBin)) {
+      spawnNextServer(appPath, nextBin, 'start');
+      return;
+    }
+    // Build hỏng (code đang dở, lỗi type…) thì thà chạy dev còn hơn không có
+    // app — và log rõ để biết vì sao RAM cao trở lại.
+    log('BuildFallback', 'build thất bại → tạm chạy next dev để app vẫn dùng được');
+  }
+  spawnNextServer(appPath, nextBin, 'dev');
+}
+
+/** Spawn `next dev` hoặc `next start` với cùng một bộ luật vòng đời/pid/log. */
+function spawnNextServer(appPath, nextBin, mode) {
+  log(
+    'ServerStarting',
+    mode === 'dev'
+      ? 'next dev — lần đầu biên dịch có thể mất ~10-30s'
+      : 'next start — production, nhẹ RAM hơn hẳn dev',
+  );
+  // stdout/stderr ra FILE chứ không ra ống: server sống lâu hơn app là chuyện
+  // bình thường ở đây, mà ống không có ai đọc thì server treo cứng (xem khối
+  // ghi chú ở devServerLogFile). 'w' = mỗi lần dựng server là một log mới, khỏi
+  // phình vô hạn.
+  let outFd = 'ignore';
+  try {
+    fs.mkdirSync(path.dirname(devServerLogFile()), { recursive: true });
+    outFd = fs.openSync(devServerLogFile(), 'w');
+  } catch (err) {
+    log('DevServerLogOpenError', err && err.message);
+  }
+  devServer = spawn(process.execPath, [nextBin, mode], {
     cwd: appPath,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-    stdio: ['ignore', 'pipe', 'pipe'], // captured → in-app Console drawer
+    stdio: ['ignore', outFd, outFd], // → devserver.log, tail vào Console trong app
     // detached ở CẢ HAI nền tảng — không chỉ để có process group riêng trên
     // POSIX, mà còn để server SỐNG SÓT khi app thoát trong lúc còn phiên
     // terminal (xem stopDevServer). Trên Windows, con không detached nằm cùng
@@ -927,26 +1936,10 @@ async function ensureDevServer() {
     detached: true,
     windowsHide: true,
   });
-  // Split the streams into lines and mirror them into the in-app console.
-  const forwardStream = (stream) => {
-    let acc = '';
-    stream.setEncoding('utf8');
-    stream.on('data', (chunk) => {
-      acc += chunk;
-      let nl;
-      while ((nl = acc.indexOf('\n')) !== -1) {
-        const line = acc.slice(0, nl).replace(/\r$/, '');
-        acc = acc.slice(nl + 1);
-        if (line.trim()) pushLog('next', line);
-      }
-    });
-    stream.on('end', () => {
-      if (acc.trim()) pushLog('next', acc.trimEnd());
-      acc = '';
-    });
-  };
-  forwardStream(devServer.stdout);
-  forwardStream(devServer.stderr);
+  // Con đã giữ bản sao fd của nó rồi — cha đóng bản của mình, nếu không file
+  // vẫn bị Electron neo và không giải phóng được khi app thoát.
+  if (typeof outFd === 'number') { try { fs.closeSync(outFd); } catch { /* kệ */ } }
+  startServerLogTail(true);
   rememberDevServerPid(devServer.pid);
   devServer.on('exit', (code) => {
     log('DevServerExited', String(code));
@@ -1041,6 +2034,9 @@ function killDevServerTree(pid, child) {
  * nếu không tiến trình mồ côi sẽ tồn tại mãi.
  */
 function stopDevServer() {
+  // Dừng đọc log trước mọi nhánh: app đang thoát thì không còn Console nào để
+  // đổ vào nữa. Server (nếu được giữ lại) vẫn ghi tiếp vào file như thường.
+  stopServerLogTail();
   const pid = devServer && !devServer.killed ? devServer.pid : adoptedPid;
   if (!pid) return;
 
@@ -1049,12 +2045,11 @@ function stopDevServer() {
       'DevServerKept',
       `còn ${liveTerminals} phiên terminal đang chạy → giữ next dev (pid ${pid}) sống để không mất phiên`,
     );
-    // Cắt mọi thứ đang neo server vào tiến trình Electron: hai ống stdio đang
-    // được đọc (forwardStream) cũng giữ ref, không chỉ mình child handle.
+    // Cắt thứ duy nhất còn neo server vào tiến trình Electron: child handle.
+    // stdio giờ là file nên không còn ống nào để phải destroy — mà cũng chính
+    // vì thế server không thể treo khi không còn ai đọc.
     if (devServer) {
       try {
-        devServer.stdout?.destroy();
-        devServer.stderr?.destroy();
         devServer.unref();
       } catch { /* đang thoát — kệ */ }
     }
@@ -1069,8 +2064,21 @@ function stopDevServer() {
   adoptedPid = 0;
 }
 
+// Splash tĩnh hiện trong lúc server (và có thể cả `next build`) khởi động —
+// không có nó thì cửa sổ đen thui vài phút và người dùng tưởng app treo.
+const SPLASH_HTML = `<body style="margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#0b0e14;color:#9aa4b2;font:14px system-ui">
+  <div style="width:28px;height:28px;border:3px solid #2a3242;border-top-color:#7aa2f7;border-radius:50%;animation:s 1s linear infinite"></div>
+  <div>VHS DevBox đang khởi động…</div>
+  <div style="font-size:12px;color:#5c6773">Lần đầu hoặc ngay sau khi cập nhật có thể mất vài phút (đang build).</div>
+  <style>@keyframes s{to{transform:rotate(360deg)}}</style>
+</body>`;
+
 async function loadAppWithRetry(win) {
-  for (let i = 0; i < 120; i++) {
+  // loadURL thất bại thì Chromium GIỮ trang đang hiện, nên splash sống qua
+  // các lượt thử cho tới khi server trả lời.
+  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(SPLASH_HTML)).catch(() => {});
+  // 600 lượt × 1s: đủ trùm qua một lượt `next build` dài, không chỉ dev compile.
+  for (let i = 0; i < 600; i++) {
     try {
       await win.loadURL(APP_URL);
       log('AppLoaded', APP_URL);
@@ -1091,6 +2099,308 @@ async function loadAppWithRetry(win) {
       ),
   );
 }
+
+// ── Dịch nhanh nổi (WebContentsView) ─────────────────────────────────────
+//
+// Chấm 文 + bảng dịch KHÔNG nằm trong DOM của trang chính: <webview> (Zalo,
+// Browser…) vẽ ở tầng native, đè mọi HTML, nên muốn nổi lên trên webview thì
+// trước đây phải đẩy cả webview ra ngoài màn hình — đang chat Zalo mà mở bảng
+// dịch là Zalo biến mất. Ở đây bảng là một WebContentsView riêng chồng lên
+// cửa sổ, kích thước ĐÚNG bằng phần đang vẽ (thu gọn = chỉ cái chấm), nên phần
+// còn lại của cửa sổ vẫn bấm/gõ bình thường. Bấm vào bảng thì gõ vào bảng, bấm
+// sang Zalo thì gõ vào Zalo; bảng chỉ ẩn khi bấm thu gọn (hoặc Ctrl+Shift+Y).
+//
+// Trang trong view: app/translate-float (components/TranslateFloat.tsx). Nó báo
+// kích thước cần dùng qua 'tf:size'; main neo view theo khoảng cách tới mép
+// PHẢI/DƯỚI của chấm (resize cửa sổ vẫn bám góc) và báo ngược lại hướng bung
+// (flipX/flipY) để trang đặt chấm đúng góc khi chấm bị kéo sang nửa trái/trên.
+
+const TF_DOT = 52; // chấm 38px + chỗ cho bóng đổ
+const tfState = new WeakMap(); // BrowserWindow → state
+
+function tfLayout(win) {
+  const st = tfState.get(win);
+  if (!st || win.isDestroyed()) return;
+  const [cw, ch] = win.getContentSize();
+  // Vừa mở mà trang chưa kịp báo cỡ mới (vẫn là cỡ cái chấm) → dùng cỡ lần mở trước.
+  const openW = st.w > TF_DOT ? st.w : st.openW || st.w;
+  const openH = st.w > TF_DOT ? st.h : st.openH || st.h;
+  const w = Math.min(Math.max(st.open ? openW : TF_DOT, TF_DOT), cw);
+  const h = Math.min(Math.max(st.open ? openH : TF_DOT, TF_DOT), ch);
+  // Điểm neo = góc ngoài của chấm. Chấm ở nửa phải → view bung sang TRÁI; ở
+  // nửa dưới → bung LÊN. Kẹp trong vùng nội dung cửa sổ.
+  const right = Math.min(Math.max(st.right, 0), cw - TF_DOT);
+  const bottom = Math.min(Math.max(st.bottom, 0), ch - TF_DOT);
+  const dotX = cw - right - TF_DOT;
+  const dotY = ch - bottom - TF_DOT;
+  const flipX = dotX + TF_DOT / 2 < cw / 2; // chấm ở nửa trái → bung sang phải
+  const flipY = dotY + TF_DOT / 2 < ch / 2; // chấm ở nửa trên → bung xuống
+  let x = flipX ? dotX : dotX + TF_DOT - w;
+  let y = flipY ? dotY : dotY + TF_DOT - h;
+  x = Math.min(Math.max(x, 0), cw - w);
+  y = Math.min(Math.max(y, 0), ch - h);
+  st.view.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) });
+  // Báo trang khi hướng bung hoặc khung cửa sổ đổi (trang kẹp bảng theo khung).
+  if (st.flipX !== flipX || st.flipY !== flipY || st.cw !== cw || st.ch !== ch) {
+    st.flipX = flipX;
+    st.flipY = flipY;
+    st.cw = cw;
+    st.ch = ch;
+    tfSend(win);
+  }
+}
+
+function tfSend(win, extra) {
+  const st = tfState.get(win);
+  if (!st || st.view.webContents.isDestroyed()) return;
+  st.view.webContents.send('tf:state', tfPublic(st, extra));
+}
+
+function tfPublic(st, extra) {
+  return { open: st.open, flipX: !!st.flipX, flipY: !!st.flipY, maxW: st.cw || 0, maxH: st.ch || 0, ...(extra || {}) };
+}
+
+/** Đưa view lên trên cùng (view thêm sau vẽ đè view thêm trước — vd DevTools dock). */
+function tfRaise(win) {
+  const st = tfState.get(win);
+  if (!st || win.isDestroyed()) return;
+  try {
+    win.contentView.removeChildView(st.view);
+    win.contentView.addChildView(st.view);
+  } catch { /* đang đóng */ }
+}
+
+/** Mở/đóng bảng. `source` = webContents nơi bấm phím tắt: lấy chữ đang bôi đen ở đó điền sẵn. */
+async function tfToggle(win, source) {
+  const st = tfState.get(win);
+  if (!st) return;
+  st.open = !st.open;
+  let prefill = '';
+  if (st.open && source && !source.isDestroyed() && source !== st.view.webContents) {
+    try {
+      prefill = String(await source.executeJavaScript('String(window.getSelection ? window.getSelection() : "")', true) || '')
+        .trim().slice(0, 2000);
+    } catch { /* trang không cho chạy script — bỏ qua */ }
+  }
+  tfLayout(win);
+  tfSend(win, prefill ? { prefill } : undefined);
+  if (st.open) st.view.webContents.focus();
+  else if (!win.isDestroyed()) win.webContents.focus();
+}
+
+/** Chuột phải → "Dịch": mở bảng (đang mở thì giữ nguyên) và đổ đoạn chữ vào ô
+ *  dịch — dịch luôn với cặp ngôn ngữ đang chọn trong bảng. */
+function tfOpenWith(win, text) {
+  const st = tfState.get(win);
+  const t = String(text || '').trim().slice(0, 2000);
+  if (!st || win.isDestroyed() || !t) return;
+  st.open = true;
+  tfLayout(win);
+  tfSend(win, { prefill: t });
+  st.view.webContents.focus();
+}
+
+/** Mục "Dịch" cho menu chuột phải khi đang bôi đen chữ ([] nếu không có gì để dịch). */
+function tfMenuItems(win, selectionText) {
+  const t = String(selectionText || '').replace(/\s+/g, ' ').trim();
+  if (!t || !tfState.has(win)) return [];
+  const short = t.length > 32 ? `${t.slice(0, 32)}…` : t;
+  return [{ label: `文 Dịch “${short}”`, click: () => tfOpenWith(win, selectionText) }, { type: 'separator' }];
+}
+
+/**
+ * Nút "文 Dịch" nổi cạnh đoạn chữ vừa bôi đen — chèn vào MỌI webview.
+ *
+ * Vì sao không dựa vào menu chuột phải: Zalo (và nhiều web app) tự chặn chuột
+ * phải để vẽ menu riêng (trả lời, chuyển tiếp…), Chromium không bao giờ phát
+ * 'context-menu' nên mục "Dịch" của app không có chỗ hiện. Nút cạnh vùng chọn
+ * thì trang nào cũng dùng được, không đụng menu của trang (kiểu Google Dịch).
+ *
+ * Chạy trong isolated world (TF_WORLD): JS của trang không thấy/không sửa được
+ * biến và listener ở đây; nút nằm trong shadow root đóng nên CSS của trang
+ * không làm méo nó. Webview không có preload → báo về main bằng một dòng
+ * console có tiền tố TF_MARK (xem guest.on('console-message')). Trang tự in
+ * dòng giả cũng chỉ làm bảng dịch mở với chữ đó — vô hại.
+ */
+const TF_WORLD = 1771;
+const TF_MARK = '[devbox-translate]';
+const TF_SELECTION_SCRIPT = `(() => {
+  if (window.__devboxTranslateBubble) return;
+  window.__devboxTranslateBubble = true;
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;';
+  const root = host.attachShadow({ mode: 'closed' });
+  root.innerHTML = '<style>button{all:initial;position:fixed;display:none;box-sizing:border-box;'
+    + 'font:600 12px/1 system-ui,"Segoe UI",sans-serif;color:#fff;cursor:pointer;user-select:none;white-space:nowrap;'
+    + 'padding:6px 10px;border-radius:999px;background:linear-gradient(135deg,#6366f1,#0ea5e9);'
+    + 'box-shadow:0 4px 14px rgba(0,0,0,.3)}button:hover{filter:brightness(1.12)}</style>'
+    + '<button type="button" title="Dịch đoạn đang bôi đen (Ctrl+Shift+Y)">文 Dịch</button>';
+  const btn = root.querySelector('button');
+  let text = '';
+  const hide = () => { btn.style.display = 'none'; text = ''; };
+  /** Chữ đang chọn + ô chữ nhật để neo nút. Ô nhập (input/textarea) không lộ
+   *  vùng chọn qua getSelection() nên đọc thẳng selectionStart/End. */
+  const current = () => {
+    const el = document.activeElement;
+    if (el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && /^(text|search|url|email)?$/i.test(el.type || '')))) {
+      const s = el.selectionStart, e = el.selectionEnd;
+      if (s == null || e == null || s === e) return null;
+      return { t: el.value.slice(s, e), r: el.getBoundingClientRect() };
+    }
+    const sel = getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    const rects = range.getClientRects();
+    return { t: String(sel), r: rects.length ? rects[rects.length - 1] : range.getBoundingClientRect() };
+  };
+  const show = () => {
+    const c = current();
+    const t = c && c.t.trim();
+    if (!t || !c.r || (!c.r.width && !c.r.height)) return hide();
+    if (!host.isConnected) (document.body || document.documentElement).appendChild(host);
+    text = t;
+    btn.style.display = 'block';
+    const w = btn.offsetWidth || 64, h = btn.offsetHeight || 24;
+    const x = Math.max(4, Math.min(c.r.right + 6, innerWidth - w - 4));
+    const y = c.r.bottom + 6 + h > innerHeight - 4 ? Math.max(4, c.r.top - h - 6) : c.r.bottom + 6;
+    btn.style.left = x + 'px';
+    btn.style.top = y + 'px';
+  };
+  (document.body || document.documentElement).appendChild(host);
+  const fromBubble = (e) => e.composedPath && e.composedPath().includes(host);
+  document.addEventListener('mouseup', (e) => { if (!fromBubble(e) && e.button === 0) setTimeout(show, 0); }, true);
+  document.addEventListener('keyup', (e) => { if (e.shiftKey || e.key === 'Shift' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a')) setTimeout(show, 0); }, true);
+  document.addEventListener('mousedown', (e) => { if (!fromBubble(e)) hide(); }, true);
+  document.addEventListener('scroll', hide, true);
+  document.addEventListener('selectionchange', () => { if (text && !current()) hide(); });
+  // Giữ nguyên vùng chọn khi bấm nút (mousedown mặc định sẽ xoá nó).
+  btn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (text) console.log(${JSON.stringify(TF_MARK)} + JSON.stringify(text));
+    hide();
+  });
+})();`;
+
+/** Ctrl+Shift+Y ở đâu cũng là bật/tắt dịch nhanh — trang chính, webview, chính bảng dịch. */
+const isTranslateKey = (input) =>
+  input.type === 'keyDown' && input.control && input.shift && !input.alt && !input.meta && input.code === 'KeyY';
+
+function attachTranslateFloat(win) {
+  if (tfState.has(win)) return;
+  const view = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      additionalArguments: ['--ws-config=' + JSON.stringify(CONFIG)],
+    },
+  });
+  view.setBackgroundColor('#00000000'); // trong suốt: bo góc/bóng đổ không ra khung đen
+  // openW/openH: cỡ bảng lần mở trước (mặc định ~ bảng 680px + đệm) — xem 'tf:size'.
+  const st = { view, open: false, right: 22, bottom: 64, w: TF_DOT, h: TF_DOT, openW: 694, openH: 230, flipX: false, flipY: false, drag: null };
+  tfState.set(win, st);
+  win.contentView.addChildView(view);
+  tfLayout(win);
+
+  const PAGE = `${APP_URL}/translate-float`;
+  const load = () => view.webContents.loadURL(PAGE).catch(() => {});
+  load();
+  // Server chưa lên lúc view nạp (khởi động nguội) → nạp lại khi UI chính đã nạp.
+  win.webContents.on('did-finish-load', () => {
+    if (!win.webContents.getURL().startsWith(APP_URL)) return;
+    if (!view.webContents.getURL().startsWith(PAGE) || view.webContents.isCrashed()) load();
+  });
+  view.webContents.on('did-fail-load', (_e, code, _desc, _url, isMain) => {
+    if (isMain && code !== -3) setTimeout(() => { if (!win.isDestroyed()) load(); }, 3000);
+  });
+  view.webContents.on('before-input-event', (e, input) => {
+    if (isTranslateKey(input)) { e.preventDefault(); void tfToggle(win, view.webContents); }
+  });
+  win.webContents.on('before-input-event', (e, input) => {
+    if (isTranslateKey(input)) { e.preventDefault(); void tfToggle(win, win.webContents); }
+  });
+  // Trang chính chưa có menu chuột phải nào: chỉ bật khi đang bôi đen chữ. Vùng
+  // tự có menu riêng (Monaco, bảng tính, terminal) chặn contextmenu trong trang
+  // nên Chromium không phát sự kiện này — không bị đè.
+  win.webContents.on('context-menu', (_e, params) => {
+    const items = tfMenuItems(win, params.selectionText);
+    if (!items.length) return;
+    Menu.buildFromTemplate([
+      ...items,
+      { label: 'Sao chép', role: 'copy', enabled: params.editFlags.canCopy },
+      ...(params.isEditable ? [
+        { label: 'Cắt', role: 'cut', enabled: params.editFlags.canCut },
+        { label: 'Dán', role: 'paste', enabled: params.editFlags.canPaste },
+      ] : []),
+    ]).popup({ window: win });
+  });
+  // Bảng dịch không được điều hướng đi trang khác hay mở cửa sổ mới.
+  view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  view.webContents.on('will-navigate', (e, url) => { if (!url.startsWith(PAGE)) e.preventDefault(); });
+
+  for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
+    win.on(ev, () => tfLayout(win));
+  }
+  win.on('closed', () => { try { view.webContents.close(); } catch { /* đã đóng */ } });
+}
+
+/** IPC từ trang trong view — chỉ nhận đúng view của một cửa sổ. */
+function tfFromSender(evt) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    const st = tfState.get(win);
+    if (st && st.view.webContents === evt.sender) return { win, st };
+  }
+  return null;
+}
+
+ipcMain.handle('tf:init', (evt, pos) => {
+  const t = tfFromSender(evt);
+  if (!t) return null;
+  if (pos && Number.isFinite(pos.right) && Number.isFinite(pos.bottom)) {
+    t.st.right = Number(pos.right);
+    t.st.bottom = Number(pos.bottom);
+  }
+  tfLayout(t.win);
+  return tfPublic(t.st);
+});
+ipcMain.on('tf:size', (evt, w, h) => {
+  const t = tfFromSender(evt);
+  if (!t || !Number.isFinite(w) || !Number.isFinite(h)) return;
+  t.st.w = Math.ceil(w);
+  t.st.h = Math.ceil(h);
+  // Cỡ lúc bảng MỞ được nhớ riêng: lần mở sau dùng ngay, không phải đợi trang
+  // vẽ xong mới báo (cửa sổ bị che thì trang có thể chậm báo).
+  if (t.st.open && t.st.w > TF_DOT) { t.st.openW = t.st.w; t.st.openH = t.st.h; }
+  tfLayout(t.win);
+});
+ipcMain.on('tf:open', (evt, open) => {
+  const t = tfFromSender(evt);
+  if (!t || t.st.open === !!open) return;
+  void tfToggle(t.win, null);
+});
+// Kéo chấm: trang gửi độ dời theo toạ độ MÀN HÌNH (view chạy theo con trỏ nên
+// toạ độ trong view vô dụng); main dời điểm neo rồi xếp lại.
+ipcMain.on('tf:dragStart', (evt) => {
+  const t = tfFromSender(evt);
+  if (t) t.st.drag = { right: t.st.right, bottom: t.st.bottom };
+});
+ipcMain.on('tf:dragMove', (evt, dx, dy) => {
+  const t = tfFromSender(evt);
+  if (!t || !t.st.drag || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+  const [cw, ch] = t.win.getContentSize();
+  t.st.right = Math.min(Math.max(t.st.drag.right - dx, 0), cw - TF_DOT);
+  t.st.bottom = Math.min(Math.max(t.st.drag.bottom - dy, 0), ch - TF_DOT);
+  tfLayout(t.win);
+});
+ipcMain.handle('tf:dragEnd', (evt) => {
+  const t = tfFromSender(evt);
+  if (!t) return null;
+  t.st.drag = null;
+  return { right: t.st.right, bottom: t.st.bottom };
+});
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -1134,6 +2444,79 @@ function createWindow() {
     return { action: 'deny' };
   });
 
+  // ── CHOT CUOI: khung app KHONG BAO GIO duoc dieu huong di noi khac ─────────
+  //
+  // TRIEU CHUNG NGUOI DUNG GAP: bam mot lien ket thi "ca trang bi F5", moi tab
+  // Browser dang mo bien mat. Do la vi khung app (trang Next.js) bi dieu huong
+  // THAT sang URL do — React state mat sach, moi <webview> bi huy theo.
+  //
+  // VI SAO setWindowOpenHandler O TREN KHONG DU: no CHI bat window.open /
+  // target=_blank. Mot dieu huong TOP-LEVEL cung khung (`<a href>` khong co
+  // target, form submit, location.assign, keo tha mot URL vao cua so) khong he
+  // di qua no. Truoc chot nay khong co gi chan duong do — da do: win.webContents
+  // chi co dung mot handler 'did-finish-load'.
+  //
+  // Chot o TANG ELECTRON chu khong di vá tung `<a onClick preventDefault>` trong
+  // React: cac cho do da co san va van sot (vi du components/ResponseView.tsx
+  // `<a href={url}>audio</a>` khong target khong onClick). Vá tung cho la tro
+  // duoi bat, chi can mot cho moi quen la loi quay lai. Chan o day thi MOI
+  // duong deu quy ve mot moi — dung cung ly le da dung cho popup extension
+  // (xem guest.on('will-navigate') o tren).
+  //
+  // Dieu huong NOI BO cua chinh app (APP_URL) van cho qua: reload that, chuyen
+  // route, HardReloadButton... deu phai chay binh thuong.
+  // Chi CHINH APP moi duoc phep thay the khung. Moi thu khac deu bi chan:
+  // http(s) ra ngoai, va ca `file:` — keo tha mot FILE vao vung trong cua giao
+  // dien la Chromium dieu huong ca khung sang file do, mat sach app. Splash
+  // (`data:`) va `about:blank` la trang thai noi bo cua chinh khung nen cho qua.
+  const isAppUrl = (u) => {
+    const str = String(u || '');
+    if (/^about:blank/i.test(str) || /^data:/i.test(str)) return true;
+    try {
+      return new URL(str).origin === new URL(APP_URL).origin;
+    } catch {
+      // Khong phan giai duoc thi coi nhu khong phai app — chan cho chac.
+      return false;
+    }
+  };
+  const keepAppPut = (e, url) => {
+    if (isAppUrl(url)) return;
+    e.preventDefault();
+    // Khong nuot lien ket: day no vao dung duong ma window.open dang dung, nen
+    // nguoi dung van thay trang mo ra (tab Browser / tab Links theo
+    // defaultTargetFor), chi khac la khung app khong bi keo di.
+    if (/^https?:\/\//i.test(url)) {
+      try {
+        win.webContents.send('workspace:openInApp', url);
+        log('NavGuard', `chan dieu huong khung app → mo trong app: ${url.slice(0, 120)}`);
+      } catch {
+        shell.openExternal(url);
+        log('NavGuard', `chan dieu huong khung app → mo ngoai: ${url.slice(0, 120)}`);
+      }
+    } else if (/^(mailto|tel|sms|callto|msteams|zoommtg):/i.test(url)) {
+      // mailto:/tel:/... — Chrome giao cho HE DIEU HANH mo bang app tuong ung.
+      // Liet ke TUONG MINH chu khong phai "moi thu khong phai http": mot cu
+      // keo tha file vao cua so cung roi vao nhanh nay, va `shell.openExternal`
+      // mot duong dan `file:` bat ky la tu mo file tren may nguoi dung — viec
+      // ma mot cu tha nham khong duoc phep gay ra.
+      shell.openExternal(url).catch(() => {});
+      log('NavGuard', `chan dieu huong khung app → OS: ${url.slice(0, 120)}`);
+    } else {
+      // `file:` (keo tha file/thu muc vao vung trong), `blob:`, scheme la...
+      // Chan va KHONG lam gi them — khung app duoc giu nguyen, khong co file
+      // nao tu dung mo ra.
+      log('NavGuard', `chan dieu huong khung app (bo qua): ${url.slice(0, 120)}`);
+    }
+  };
+  win.webContents.on('will-navigate', keepAppPut);
+  // will-frame-navigate: iframe trong khung app (vi du form login nhung) cung
+  // khong duoc keo ca khung di. Electron >= 25; khong co thi bo qua.
+  try {
+    win.webContents.on('will-frame-navigate', (e) => {
+      if (e.isMainFrame) keepAppPut(e, e.url);
+    });
+  } catch { /* ban Electron cu khong co su kien nay */ }
+
   wireWebviewHardening(win);
 
   // File mà Explorer nhờ mở lúc app còn đang khởi động: bắn xuống ngay khi
@@ -1145,6 +2528,9 @@ function createWindow() {
   // tin rơi vào khoảng trống và file im lặng không mở.
   win.webContents.on('did-finish-load', () => {
     if (!pendingOpenFile) return;
+    // Splash (data:) cũng bắn did-finish-load — nó không có listener nhận IPC,
+    // gửi vào đó là file lặng lẽ biến mất. Chỉ gửi khi đã nạp UI thật.
+    if (!win.webContents.getURL().startsWith(APP_URL)) return;
     const abs = pendingOpenFile;
     pendingOpenFile = null;
     setTimeout(() => {
@@ -1154,9 +2540,25 @@ function createWindow() {
     }, 400);
   });
 
+  attachTranslateFloat(win);
+
   void loadAppWithRetry(win);
   return win;
 }
+
+// 🔕 Workspace: renderer báo tài khoản nào đang ẩn thông báo. Main chặn quyền
+// notifications của đúng partition đó (xem notifAllowed) — notification
+// Windows từ chính trang (chat.zalo.me…) im theo, không chỉ im chuông trong app.
+ipcMain.handle('workspace:setNotifMuted', (_evt, partitions, allMuted) => {
+  notifMuted.all = !!allMuted;
+  notifMuted.parts = new Set(
+    (Array.isArray(partitions) ? partitions : [])
+      .filter((p) => typeof p === 'string')
+      .map(notifPartKey),
+  );
+  log('NotifMuted', `all=${notifMuted.all} · ${[...notifMuted.parts].join(', ') || '(khong co)'}`);
+  return { ok: true };
+});
 
 // Wipe a workspace session (the "Logout" button in the UI).
 ipcMain.handle('workspace:clearSession', async (_evt, partition) => {
@@ -1296,6 +2698,247 @@ ipcMain.handle('workspace:focusHost', (evt) => {
     const win = BrowserWindow.fromWebContents(evt.sender);
     if (win) win.focus();
     evt.sender.focus();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
+// Chay mot doan JS trong MOI FRAME cua guest, khong chi main frame.
+//
+// Vi sao can: webview.executeJavaScript() chi cham tới main frame. Rat nhieu
+// trang dat form login trong <iframe> (Keycloak/SSO nhung khung con), nen bay
+// bat mat khau va autofill khong bao gio thay o password — thanh "Luu mat
+// khau?" im lang tren dung nhung trang can no nhat. webFrameMain thi khong bi
+// gioi han do: chay duoc trong ca frame khac origin.
+//
+// Tra ve mang ket qua cua tung frame (frame nao nem loi thi bo qua, khong lam
+// chet ca luot) kem url cua frame — caller tu chon cai nao dung.
+ipcMain.handle('workspace:execInFrames', (evt, targetId, code) => {
+  try {
+    const target = webContents.fromId(Number(targetId));
+    if (!target || target.isDestroyed()) return { ok: false, error: 'gone' };
+    // Chi nhan guest thuoc DUNG trang dang goi — renderer khong duoc tro vao
+    // webContents tuy y (cua so khac, main window…). Cung mot phep gac nhu
+    // devtools:open ben duoi.
+    if (target.hostWebContents !== evt.sender) return { ok: false, error: 'not your guest' };
+    if (typeof code !== 'string') return { ok: false, error: 'bad code' };
+
+    const main = target.mainFrame;
+    if (!main) return { ok: false, error: 'no frame' };
+    // framesInSubtree gom ca main frame lan moi frame con long nhau.
+    //
+    // LOC va CHAN SO LUONG: trang tin/quang cao co the co vai chuc iframe
+    // (ads, tracker, pixel) va ham nay bi goi lai sau MOI lan dieu huong. Chi
+    // giu frame http(s) — form login khong bao gio nam trong about:blank hay
+    // data: — va cat o 12 frame: chua thay trang login nao can hon the, con
+    // trang ads thi khong co ly gi phai chay script vao tung o quang cao.
+    const all = main.framesInSubtree || [main];
+    const frames = all
+      .filter((f) => {
+        if (!f) return false;
+        if (typeof f.isDestroyed === 'function' && f.isDestroyed()) return false;
+        try { return /^https?:$/.test(new URL(f.url).protocol); } catch { return false; }
+      })
+      .slice(0, 12);
+    // Loc sach tay (vd main frame la about:blank luc vua mo tab) → van chay
+    // main frame, khong tra ve rong.
+    if (frames.length === 0) frames.push(main);
+    const jobs = frames.map((f) => {
+      let url = '';
+      try { url = f.url || ''; } catch { /* frame vua bi huy */ }
+      return Promise.resolve()
+        .then(() => f.executeJavaScript(code, true))
+        .then((value) => ({ url, value }))
+        // Frame cross-origin bi chan, hoac frame bi huy giua duong: bo qua
+        // rieng frame do. Mot frame chet khong duoc lam mat ket qua cua ca
+        // trang — day chinh la truong hop pho bien nhat (iframe quang cao).
+        .catch(() => null);
+    });
+    return Promise.all(jobs).then((out) => ({ ok: true, frames: out.filter(Boolean) }));
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
+// ── DevTools dock TRONG khung, như Chrome ──────────────────────────────────
+//
+// `openDevTools()` trên guest <webview> LUÔN bung CỬA SỔ RỜI: Electron ép dock
+// state 'detach' cho type webview, tham số mode vô dụng. Muốn dock đáy khung
+// thì tự nuôi frontend qua setDevToolsWebContents — nhưng chỗ ở KHÔNG THỂ là
+// một <webview> khác: Chromium cấm guest view làm devtools (electron#14095;
+// đã đo — frontend tải ra vỏ, không bao giờ nối target, devtools-opened không
+// bắn). Chỗ ở phải là WebContentsView do main process đặt ĐÈ lên cửa sổ, tại
+// đúng rect của pane mà renderer vẽ; renderer chỉ vẽ khung + thanh kéo + gửi
+// rect, main lo view + nối frontend (đã xác minh bằng harness: Elements/
+// inspectElement chạy đủ).
+//
+// Luồng F12 / chuột phải → Inspect trong guest:
+//   main KHÔNG mở ngay → gửi 'devtools:request' cho host page → LinkViewer nào
+//   nhận ra đúng webContentsId của mình thì 'devtools:claim' rồi dựng pane và
+//   gọi 'devtools:open' kèm rect. Không ai claim trong 400ms (guest thuộc
+//   WorkspaceView — Zalo/Telegram… không có pane dock) → fallback cửa sổ rời.
+//
+// LƯU Ý isDevToolsOpened(): với frontend NGOÀI (setDevToolsWebContents) nó trả
+// false vĩnh viễn (đã đo) — trạng thái dock phải tự theo dõi (dockedDevTools).
+const pendingDevToolsReq = new Map(); // guest webContents.id → timer fallback
+const dockedDevTools = new Map(); // guest webContents.id → { view, host, win, undock }
+
+/**
+ * Bật MENU CHUỘT PHẢI cho frontend DevTools đang dock.
+ *
+ * Mặc định DevTools nhờ chỗ ở dựng menu native: nó gọi
+ * `InspectorFrontendHost.showContextMenuAtPoint(x, y, items, doc)`. Với cửa sổ
+ * DevTools do chính Electron mở thì Electron lo phần này; còn frontend NGOÀI
+ * (WebContentsView của mình) chỉ nhận được một sự kiện 'context-menu' TRỐNG —
+ * đã đo: params không kèm mục nào của DevTools — nên không ai dựng nổi menu.
+ * Kết quả: chuột phải trong DevTools dock câm lặng, mất sạch Copy as cURL /
+ * Copy payload / Copy response / Copy các dòng header.
+ *
+ * Cách chữa là bảo DevTools TỰ vẽ menu bằng HTML (soft menu) —
+ * `DevToolsAPI.setUseSoftMenu(true)` là công tắc chính thức của frontend. Menu
+ * do frontend vẽ nên đủ mọi mục của từng panel, và các lệnh Copy đi qua
+ * `InspectorFrontendHost.copyText` → clipboard thật (đã đo trên Electron 43).
+ *
+ * Phải đợi frontend đăng ký `window.InspectorFrontendAPI` mới gọi được, mà
+ * không có sự kiện nào báo đúng mốc đó (dom-ready còn sớm hơn một nhịp) → poll
+ * ngắn ngay trong trang. Đo thực tế: ăn ở lần thử thứ hai, ~300ms sau dom-ready.
+ */
+const SOFT_MENU_SCRIPT = `(() => {
+  let left = 25;
+  const tick = () => {
+    const api = globalThis.InspectorFrontendAPI;
+    if (api && typeof api.setUseSoftMenu === 'function') {
+      try { DevToolsAPI.setUseSoftMenu(true); return; } catch { /* chưa dựng xong, thử lại */ }
+    }
+    if (left-- > 0) setTimeout(tick, 300);
+  };
+  tick();
+})()`;
+
+/** Ép rect từ renderer về số nguyên an toàn rồi đặt cho view; null = ẩn
+ *  (tab nền, popup/modal cần nổi trên vùng webview, hoặc đang kéo chiều cao —
+ *  view là native layer nên DOM không che nó được, chỉ có ẩn đi). */
+function applyDevToolsBounds(view, rect) {
+  if (!rect) { view.setVisible(false); return; }
+  const n = (v, lo) => Math.max(lo, Math.round(Number(v) || 0));
+  view.setBounds({ x: n(rect.x, 0), y: n(rect.y, 0), width: n(rect.width, 1), height: n(rect.height, 1) });
+  view.setVisible(true);
+}
+
+/** Đóng DevTools đang DOCK của guest. Đường đóng thật là huỷ webContents của
+ *  view chỗ ở (frontend chết là phiên devtools chết theo) — closeDevTools()
+ *  của Electron không đụng được frontend ngoài. Trả false nếu không dock. */
+function closeDockedDevTools(guest) {
+  const dock = dockedDevTools.get(guest.id);
+  if (!dock) return false;
+  dockedDevTools.delete(guest.id);
+  guest.removeListener('devtools-closed', dock.undock);
+  guest.removeListener('destroyed', dock.undock);
+  try { if (!guest.isDestroyed()) guest.closeDevTools(); } catch { /* đã đóng */ }
+  try { if (!dock.win.isDestroyed()) dock.win.contentView.removeChildView(dock.view); } catch { /* cửa sổ đang đóng */ }
+  try { dock.view.webContents.close(); } catch { /* đã huỷ */ }
+  if (!dock.host.isDestroyed()) dock.host.send('devtools:closed', guest.id);
+  log('DevTools', `undock · wc#${guest.id}`);
+  return true;
+}
+
+function requestEmbeddedDevTools(win, guest, point) {
+  if (guest.isDestroyed()) return;
+  const fallback = () => {
+    try {
+      if (guest.isDestroyed()) return;
+      if (point) guest.inspectElement(point.x, point.y);
+      else guest.openDevTools();
+      log('DevTools', `detach fallback · wc#${guest.id}`);
+    } catch { /* guest vừa chết */ }
+  };
+  if (win.isDestroyed()) { fallback(); return; }
+  const id = guest.id;
+  clearTimeout(pendingDevToolsReq.get(id));
+  win.webContents.send('devtools:request', { id, ...(point || {}) });
+  pendingDevToolsReq.set(id, setTimeout(() => {
+    pendingDevToolsReq.delete(id);
+    fallback();
+  }, 400));
+}
+
+ipcMain.on('devtools:claim', (_evt, id) => {
+  clearTimeout(pendingDevToolsReq.get(id));
+  pendingDevToolsReq.delete(id);
+});
+
+ipcMain.handle('devtools:open', (evt, targetId, rect, point) => {
+  try {
+    const target = webContents.fromId(Number(targetId));
+    if (!target || target.isDestroyed()) return { ok: false, error: 'gone' };
+    // Chỉ nhận guest thuộc ĐÚNG trang đang gọi — renderer không được trỏ vào
+    // webContents tùy ý (cửa sổ khác, main window…).
+    if (target.hostWebContents !== evt.sender) return { ok: false, error: 'not your guest' };
+    const win = BrowserWindow.fromWebContents(evt.sender);
+    if (!win || win.isDestroyed()) return { ok: false, error: 'no window' };
+
+    const existing = dockedDevTools.get(target.id);
+    if (existing) { applyDevToolsBounds(existing.view, rect); return { ok: true } }
+
+    if (target.isDevToolsOpened()) target.closeDevTools(); // đang mở rời từ trước → dọn
+    const view = new WebContentsView({
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    });
+    win.contentView.addChildView(view);
+    tfRaise(win); // bảng dịch nổi luôn nằm trên DevTools dock
+    applyDevToolsBounds(view, rect);
+
+    // Chuột phải trong frontend phải ra menu — xem SOFT_MENU_SCRIPT.
+    view.webContents.on('dom-ready', () => {
+      view.webContents.executeJavaScript(SOFT_MENU_SCRIPT, true).catch(() => { /* frontend vừa đóng */ });
+    });
+
+    const undock = () => closeDockedDevTools(target);
+    dockedDevTools.set(target.id, { view, host: evt.sender, win, undock });
+    target.once('devtools-closed', undock); // nút ✕ của chính frontend DevTools
+    target.once('destroyed', undock); // đóng tab → dọn view mồ côi
+
+    // F12 / Ctrl+Shift+I bấm khi con trỏ đang Ở TRONG frontend = đóng DevTools
+    // của trang đang soi — đúng thói quen Chrome, và tránh devtools-của-devtools.
+    view.webContents.on('before-input-event', (e, input) => {
+      if (input.type !== 'keyDown') return;
+      if (input.key === 'F12' || (input.control && input.shift && (input.key === 'I' || input.key === 'i'))) {
+        e.preventDefault();
+        closeDockedDevTools(target);
+      }
+    });
+
+    // Inspect element: phải đợi frontend sẵn sàng — gọi ngay sau openDevTools
+    // thì lệnh rơi vào khoảng trống lúc devtools:// còn đang tải.
+    if (point && typeof point.x === 'number' && typeof point.y === 'number') {
+      target.once('devtools-opened', () => {
+        try { target.inspectElement(point.x, point.y); } catch { /* đóng ngay sau khi mở */ }
+      });
+    }
+    target.setDevToolsWebContents(view.webContents);
+    target.openDevTools();
+    log('DevTools', `dock · wc#${target.id} → view#${view.webContents.id}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
+// Pane đổi chỗ/chiều cao (kéo grip, resize cửa sổ, chuyển tab, popup cần nổi
+// lên) → renderer gửi rect mới; null = ẩn view. Không cần trả lời.
+ipcMain.on('devtools:bounds', (evt, targetId, rect) => {
+  const dock = dockedDevTools.get(Number(targetId));
+  if (!dock || dock.host !== evt.sender) return;
+  applyDevToolsBounds(dock.view, rect || null);
+});
+
+ipcMain.handle('devtools:close', (evt, targetId) => {
+  try {
+    const target = webContents.fromId(Number(targetId));
+    if (!target || target.isDestroyed()) return { ok: true };
+    if (target.hostWebContents !== evt.sender) return { ok: false, error: 'not your guest' };
+    if (!closeDockedDevTools(target)) target.closeDevTools();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err && err.message };
@@ -1559,6 +3202,408 @@ ipcMain.handle('workspace:copyText', (_evt, text) => {
   }
 });
 
+// ── IPC: quan ly extension cua tab Browser ───────────────────────────────────
+//
+// Moi handler deu tra ve { ok, ... } chu khong nem: panel extension la tinh
+// nang phu, loi cua no khong duoc phep noi len thanh unhandled rejection trong
+// renderer.
+
+/**
+ * Ghep `chrome-extension://<id>/` voi mot duong dan trong extension.
+ *
+ * Electron KHONG hua `ext.url` co dau '/' cuoi hay khong (typings khong noi),
+ * va manifest thi co the ghi 'popup.html' lan '/popup.html'. Ghep thang bang
+ * `a + b` la sinh ra `chrome-extension://<id>popup.html` — URL sai, icon vo va
+ * popup khong mo duoc. Chuan hoa ca hai dau, dung mot cho duy nhat.
+ */
+function extUrl(live, rel) {
+  if (!live || !live.url || !rel) return '';
+  return live.url.replace(/\/+$/, '') + '/' + String(rel).replace(/^\/+/, '');
+}
+
+/**
+ * Doc icon cua extension thanh data: URI.
+ *
+ * KHONG dung duoc chrome-extension://<id>/icon.png tren thanh cong cu: UI
+ * DevBox chay o origin khac (http://localhost), va Chrome CHAN moi truy cap
+ * vao file trong extension tru khi manifest khai `web_accessible_resources`.
+ * Da kiem chung bang Electron that: anh bao onerror, fetch bao "Failed to
+ * fetch". Phan lon extension khong khai icon la web-accessible (chang viec gi
+ * phai khai), nen khong the doi ho sua manifest.
+ *
+ * Main process thi doc thang tu dia, khong qua giao thuc nao — nen tra ve
+ * data: URI la xong. Icon nho (vai KB) nen nhung thang vao JSON khong tot kem.
+ */
+const ICON_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.webp': 'image/webp' };
+const MAX_ICON_BYTES = 256 * 1024;
+
+function iconDataUri(dir, rel) {
+  if (!dir || !rel) return '';
+  try {
+    // Chan duong dan thoat ra ngoai thu muc extension (../../etc).
+    const abs = path.resolve(dir, rel);
+    if (!abs.startsWith(path.resolve(dir) + path.sep)) return '';
+    const st = fs.statSync(abs);
+    if (!st.isFile() || st.size > MAX_ICON_BYTES) return '';
+    const mime = ICON_MIME[path.extname(abs).toLowerCase()];
+    if (!mime) return '';
+    return 'data:' + mime + ';base64,' + fs.readFileSync(abs).toString('base64');
+  } catch {
+    return '';
+  }
+}
+
+/** Danh sach extension + trang thai nap that su trong session. */
+ipcMain.handle('browserExt:list', () => {
+  const reg = readExtRegistry();
+  // Doi chieu voi cai DANG song trong session dau tien — de UI phan biet
+  // "da bat" (trong registry) voi "nap duoc that" (Electron chap nhan).
+  const live = new Map();
+  for (const ses of browserSessions) {
+    try {
+      for (const ext of ses.extensions.getAllExtensions()) {
+        live.set(path.resolve(ext.path), { id: ext.id, name: ext.name, version: ext.version, url: ext.url });
+      }
+    } catch {
+      /* session da chet */
+    }
+    break;
+  }
+  const items = reg.map((e) => {
+    const man = readExtManifest(e.path);
+    const l = live.get(path.resolve(e.path));
+    const gone = !fs.existsSync(e.path);
+    return {
+      path: e.path,
+      name: (man && man.name) || e.name || path.basename(e.path),
+      version: (man && man.version) || e.version || '?',
+      enabled: e.enabled !== false,
+      loaded: !!l,
+      missing: gone,
+      // Thanh cong cu: chi hien nut khi extension DA NAP that (co id) va co
+      // trang popup — id chi ton tai sau khi Electron nap thanh cong.
+      id: (l && l.id) || '',
+      /** chrome-extension://<id>/<popup> — rong neu chua nap hoac khong co popup. */
+      popupUrl: extUrl(l, man && man.popupPage),
+      actionTitle: (man && man.actionTitle) || '',
+      matches: (man && man.matches) || [],
+      /** data: URI cua icon. KHONG dung chrome-extension:// vi UI DevBox o
+       *  origin khac se bi Chrome chan — xem iconDataUri. */
+      iconUrl: iconDataUri(e.path, man && man.icon),
+      // Canh bao kha nang tuong thich — UI hien de nguoi dung biet truoc.
+      warnings: gone
+        ? ['thư mục không còn trên đĩa — đã xoá hoặc đổi tên?']
+        : man
+        ? [
+            // chrome.tabs va chrome.cookies DA duoc DevBox va (xem
+            // ext-popup-preload.cjs) nen khong canh bao nua — chi noi ro pham vi.
+            man.wantsTabs && 'dùng chrome.tabs — DevBox chỉ trả về TAB ĐANG XEM, không thấy các tab khác',
+            man.wantsWebRequest && 'dùng webRequest/declarativeNetRequest — KHÔNG có, phần chặn/sửa request sẽ không chạy',
+            man.hasAction && !man.popupPage && 'có nút trên thanh công cụ nhưng không khai popup — bấm sẽ không ra gì',
+            !man.hasContentScripts && !man.popupPage && 'không có content script lẫn popup — nhiều khả năng không làm gì',
+          ].filter(Boolean)
+        : ['không đọc được manifest.json'],
+    };
+  });
+  return { ok: true, items, dir: extDir(), sessions: browserSessions.size };
+});
+
+/** Mo hop thoai chon thu muc extension. Tra ve { ok, path } hoac { ok:false }. */
+ipcMain.handle('browserExt:pickDir', async () => {
+  try {
+    fs.mkdirSync(extDir(), { recursive: true });
+    // KHONG truyen cua so cha. Goi showOpenDialog(win, ...) gan hop thoai
+    // modal VAO cua so — ma luc nay panel extension dang mo de <webview>
+    // native giu input, hop thoai bi ket phia sau va khong bam duoc gi.
+    // Dialog dung mot minh thi noi len tren, thao tac binh thuong.
+    const r = await dialog.showOpenDialog({
+      title: 'Chọn thư mục extension (thư mục chứa manifest.json)',
+      properties: ['openDirectory'],
+      defaultPath: extDir(),
+    });
+    if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+    return { ok: true, path: r.filePaths[0] };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+/** Them mot thu muc extension vao registry va nap ngay vao cac session dang song. */
+ipcMain.handle('browserExt:add', async (_evt, dirPath) => {
+  if (typeof dirPath !== 'string' || !dirPath) return { ok: false, error: 'thiếu đường dẫn' };
+  const abs = path.resolve(dirPath);
+  const man = readExtManifest(abs);
+  if (!man) return { ok: false, error: 'Thư mục không có manifest.json hợp lệ. Nếu đây là file .crx, hãy giải nén ra thư mục trước.' };
+
+  const reg = readExtRegistry();
+  if (reg.some((e) => path.resolve(e.path) === abs)) return { ok: false, error: 'Extension này đã có trong danh sách.' };
+
+  const entry = { path: abs, name: man.name, version: man.version, enabled: true };
+  reg.push(entry);
+  if (!writeExtRegistry(reg)) return { ok: false, error: 'không ghi được extensions.json' };
+
+  // Nap nong vao cac session browser dang mo. Session mo sau se tu nap trong
+  // configurePartition.
+  let loadErr = null;
+  for (const ses of browserSessions) {
+    const r = await loadExtInto(ses, entry);
+    if (!r.ok) loadErr = r.error;
+  }
+  log('ExtAdded', `${man.name} ${man.version} · ${abs}`);
+  return { ok: true, warning: loadErr, needsRestart: browserSessions.size === 0 };
+});
+
+/** Bat/tat mot extension. Tat = go khoi session ngay; bat = nap lai ngay. */
+ipcMain.handle('browserExt:toggle', async (_evt, dirPath, enabled) => {
+  if (typeof dirPath !== 'string' || !dirPath) return { ok: false, error: 'thiếu đường dẫn' };
+  const abs = path.resolve(dirPath);
+  const reg = readExtRegistry();
+  const entry = reg.find((e) => path.resolve(e.path) === abs);
+  if (!entry) return { ok: false, error: 'không có trong danh sách' };
+
+  entry.enabled = !!enabled;
+  if (!writeExtRegistry(reg)) return { ok: false, error: 'không ghi được extensions.json' };
+
+  if (entry.enabled) {
+    let loadErr = null;
+    for (const ses of browserSessions) {
+      const r = await loadExtInto(ses, entry);
+      if (!r.ok) loadErr = r.error;
+    }
+    log('ExtEnabled', abs);
+    return { ok: true, warning: loadErr };
+  }
+  unloadExtEverywhere(abs);
+  log('ExtDisabled', abs);
+  return { ok: true };
+});
+
+/** Xoa khoi danh sach (KHONG xoa thu muc tren dia — do la file cua nguoi dung). */
+ipcMain.handle('browserExt:remove', (_evt, dirPath) => {
+  if (typeof dirPath !== 'string' || !dirPath) return { ok: false, error: 'thiếu đường dẫn' };
+  const abs = path.resolve(dirPath);
+  const reg = readExtRegistry().filter((e) => path.resolve(e.path) !== abs);
+  if (!writeExtRegistry(reg)) return { ok: false, error: 'không ghi được extensions.json' };
+  unloadExtEverywhere(abs);
+  log('ExtRemoved', abs);
+  return { ok: true };
+});
+
+/** Nap lai tat ca extension dang bat — dung sau khi sua code extension. */
+ipcMain.handle('browserExt:reload', async () => {
+  const reg = readExtRegistry().filter((e) => e.enabled !== false);
+  for (const ses of browserSessions) {
+    try {
+      for (const ext of ses.extensions.getAllExtensions()) ses.extensions.removeExtension(ext.id);
+    } catch {
+      /* bo qua */
+    }
+  }
+  let n = 0;
+  for (const ses of browserSessions) {
+    for (const entry of reg) {
+      if (!fs.existsSync(entry.path)) continue;
+      const r = await loadExtInto(ses, entry);
+      if (r.ok) n++;
+    }
+  }
+  log('ExtReloaded', `${n} lần nạp trên ${browserSessions.size} session`);
+  return { ok: true, count: n, sessions: browserSessions.size };
+});
+
+/**
+ * Doc cookie cua mot partition browser — thay cho `chrome.cookies.getAll` mà
+ * Electron khong cap cho extension trong <webview>.
+ *
+ * CHI cho partition `browser-*`. Cookie phien la toan quyen tai khoan, khong
+ * mo cho moi partition — Workspace (Zalo/Telegram) co duong rieng da kiem toan
+ * (`zaloapi:readCookies`), khong gop chung vao day.
+ *
+ * BAT BUOC co `domain`: khong cho goi rong de quet sach cookie cua moi site
+ * trong profile. Extension phai noi ro no muon domain nao.
+ *
+ * Tra ve ca HttpOnly — do la diem khac biet duy nhat so voi `document.cookie`
+ * doc trong trang, va cung la ly do handler nay ton tai.
+ */
+ipcMain.handle('browserExt:getCookies', async (_evt, partition, domain, names) => {
+  const part = String(partition || '');
+  if (!BROWSER_PARTITION.test(part)) {
+    return { ok: false, error: 'partition khong phai browser-*' };
+  }
+  const dom = String(domain || '').trim().toLowerCase().replace(/^\./, '');
+  // Chan ca chuoi rong lan ky tu la: domain di thang vao regex ben duoi.
+  if (!dom || !/^[a-z0-9.-]+$/.test(dom)) {
+    return { ok: false, error: 'domain khong hop le' };
+  }
+  try {
+    const ses = session.fromPartition(part);
+    // LAY HET roi loc — `.get({domain})` cua Electron BO SOT cookie gan o
+    // subdomain (bai hoc tu zaloapi:readCookies, thieu cookie la hong ca luot).
+    const raw = await ses.cookies.get({});
+    const esc = dom.replace(/[.]/g, '\.');
+    const re = new RegExp(`(^|\.)${esc}$`, 'i');
+    const all = raw.filter((c) => re.test(String(c.domain || '').replace(/^\./, '')));
+
+    const wanted = Array.isArray(names) && names.length ? names : null;
+    const list = all
+      .filter((c) => !wanted || wanted.includes(c.name))
+      .map((c) => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        secure: !!c.secure,
+        httpOnly: !!c.httpOnly,
+        // chrome.cookies tra `expirationDate` (giay); Electron dung `expirationDate`
+        // cung don vi, nhung cookie phien thi khong co truong nay.
+        ...(typeof c.expirationDate === 'number' ? { expirationDate: c.expirationDate } : {}),
+        session: typeof c.expirationDate !== 'number',
+      }));
+    log('ExtCookies', `${part} · ${dom} · ${list.length}/${raw.length}`);
+    return { ok: true, cookies: list };
+  } catch (err) {
+    log('ExtCookiesError', `${part} · ${err && err.message}`);
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+/**
+ * Popup extension xin dieu huong tab dang xem (chrome.tabs.update) hoac mo tab
+ * moi (chrome.tabs.create).
+ *
+ * Popup KHONG tu dieu khien webview nao ca — no chi gui y dinh len main, main
+ * phat xuong renderer, va tab Browser tu quyet dinh. Nho vay khong can dinh vi
+ * guest theo partition (nhieu tab dung chung mot partition, dinh vi kieu do se
+ * tro nham tab), va renderer van la noi duy nhat biet tab nao dang active.
+ */
+function relayFromPopup(evt, channel, url) {
+  if (typeof url !== 'string' || !url) return;
+  // Chi cho http/https: popup la code ben thu ba, khong de no bat app mo
+  // file:// hay chrome-extension:// tuy y.
+  let ok = false;
+  try {
+    const u = new URL(url);
+    ok = u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    ok = false;
+  }
+  if (!ok) {
+    log('ExtPopupNavBlocked', url.slice(0, 90));
+    return;
+  }
+  // Gui len CUA SO CHUA popup, khong broadcast ra moi cua so.
+  const host = BrowserWindow.fromWebContents(evt.sender)
+    || BrowserWindow.getFocusedWindow()
+    || BrowserWindow.getAllWindows()[0];
+  if (!host || host.isDestroyed()) return;
+  host.webContents.send(channel, url);
+  log('ExtPopupNav', channel + ' · ' + url.slice(0, 90));
+}
+
+ipcMain.on('extPopup:navigate', (evt, url) => relayFromPopup(evt, 'browserExt:navigate', url));
+ipcMain.on('extPopup:openTab', (evt, url) => relayFromPopup(evt, 'browserExt:openTab', url));
+
+/** Mo thu muc extensions trong Explorer. */
+ipcMain.handle('browserExt:openDir', () => {
+  try {
+    fs.mkdirSync(extDir(), { recursive: true });
+    void shell.openPath(extDir());
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+// ── Cai dat tai file (nut ⚙ tren thanh tieu de) ───────────────────────────
+//
+// Doc/ghi hai khoa `downloadMode` + `downloadDir` cua
+// userData/workspace.config.json. Ghi xong CAP NHAT LUON bien CONFIG trong bo
+// nho, nen lan tai ke tiep an ngay — khong phai mo lai app. (`--ws-config` chi
+// duoc bom luc dung cua so, vi vay renderer doc qua IPC nay chu khong dua vao
+// anh chup `window.workspace.config`.)
+//
+// Chi ghi DUNG hai khoa nay va giu nguyen phan con lai cua file: nguoi dung co
+// the da tu sua tay `maxActiveWorkspace`, `allowDownload`… — UI khong duoc phep
+// dap mat nhung gia tri do.
+
+ipcMain.handle('downloadPrefs:get', () => ({
+  ok: true,
+  mode: CONFIG.downloadMode === 'auto' ? 'auto' : 'ask',
+  dir: typeof CONFIG.downloadDir === 'string' ? CONFIG.downloadDir : '',
+  /** Thu muc thuc te se dung khi `dir` de trong — de UI hien cho de hieu. */
+  effectiveDir: defaultDownloadDir(),
+  defaultDir: app.getPath('downloads'),
+}));
+
+ipcMain.handle('downloadPrefs:set', (_evt, payload) => {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const next = {};
+  if (p.mode === 'ask' || p.mode === 'auto') next.downloadMode = p.mode;
+  if (typeof p.dir === 'string') {
+    const dir = p.dir.trim();
+    // Thu muc khong ton tai thi tu choi thay vi luu mot duong dan chet roi de
+    // hop thoai Save mo vao cho khong co.
+    if (dir && !fs.existsSync(dir)) return { ok: false, error: 'thư mục không tồn tại' };
+    next.downloadDir = dir;
+  }
+  if (!Object.keys(next).length) return { ok: false, error: 'không có gì để lưu' };
+
+  try {
+    const file = configFile();
+    let raw = {};
+    try {
+      raw = JSON.parse(fs.readFileSync(file, 'utf8')) || {};
+    } catch {
+      /* chua co file / file hong — ghi moi */
+    }
+    // File co the o dang { workspace: {...} } hoac phang — giu dung dang cu.
+    const nested = raw && typeof raw === 'object' && raw.workspace && typeof raw.workspace === 'object';
+    if (nested) raw.workspace = { ...raw.workspace, ...next };
+    else raw = { ...raw, ...next };
+    fs.writeFileSync(file, JSON.stringify(raw, null, 2), 'utf8');
+
+    CONFIG = { ...CONFIG, ...next };
+    log('DownloadPrefsSaved', `${CONFIG.downloadMode} · ${CONFIG.downloadDir || '(Downloads)'}`);
+    return {
+      ok: true,
+      mode: CONFIG.downloadMode,
+      dir: CONFIG.downloadDir,
+      effectiveDir: defaultDownloadDir(),
+    };
+  } catch (err) {
+    log('DownloadPrefsError', err && err.message);
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('downloadPrefs:pickDir', async () => {
+  try {
+    // Khong truyen cua so cha — cung ly do nhu browserExt:pickDir (bang cai dat
+    // mo tren <webview> native thi hop thoai modal bi ket phia sau).
+    const r = await dialog.showOpenDialog({
+      title: 'Chọn thư mục lưu file tải về',
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: defaultDownloadDir(),
+    });
+    if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+    return { ok: true, path: r.filePaths[0] };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+/** Mo thu muc dang duoc dung de tai file. */
+ipcMain.handle('downloadPrefs:openDir', () => {
+  try {
+    const dir = defaultDownloadDir();
+    fs.mkdirSync(dir, { recursive: true });
+    void shell.openPath(dir);
+    return { ok: true, path: dir };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 // Full log history for the renderer's Console drawer (it then subscribes to
 // the `desktop:log` push stream for live lines).
 ipcMain.handle('desktop:getLogs', () => logBuffer);
@@ -1566,16 +3611,175 @@ ipcMain.handle('desktop:getLogs', () => logBuffer);
 /**
  * Khởi động lại app sau khi nút "Cập nhật" kéo code mới về.
  *
- * PHẢI BUỘC GIẾT `next dev` — đây là chỗ dễ sai nhất của cả tính năng.
+ * PHẢI BUỘC GIẾT server Next — đây là chỗ dễ sai nhất của cả tính năng.
  * stopDevServer() bình thường GIỮ server sống khi còn phiên terminal (để đóng
  * app mà phiên không mất). Nhưng ở đây mục đích ngược lại: ta khởi động lại
- * CHÍNH VÌ code đã đổi. Server cũ còn sống thì lần mở sau ensureDevServer()
+ * CHÍNH VÌ code đã đổi. Server cũ còn sống thì lần mở sau ensureServer()
  * probe thấy :3000 có người trả lời và dùng lại nó — app "mới" chạy y nguyên
  * code cũ, người dùng bấm cập nhật xong không thấy gì đổi.
+ *
+ * Ở chế độ production, lần mở sau ensureServer() còn thấy fingerprint file
+ * nguồn local đã lệch khỏi build-info.json (pull vừa đổi file) nên tự
+ * `next build` lại trước khi `next start` — nút Cập nhật vì thế không phải
+ * biết gì về build.
  *
  * Đánh đổi: các phiên terminal đang mở sẽ mất. Đúng, và renderer đã cảnh báo
  * trước khi gọi tới đây.
  */
+/**
+ * "Hard reload" — nut trong app, de khi sua code ma man hinh khong doi thi loai
+ * bo han gia thuyet "dang an cache cu" thay vi ngoi doan.
+ *
+ * Xoa theo dung thu tu tu ngoai vao trong:
+ *   1. HTTP cache + storage cua session UI (chunk JS/CSS cu cua Next)
+ *   2. `.next` tren dia — cache BUILD phia server. Renderer khong the tu xoa
+ *      cai nay, phai o main process. `wipeBuild` mac dinh TAT vi xoa xong lan
+ *      nap dau mat ~10-30s bien dich lai.
+ *   3. localStorage cua app (tuy chon) — noi giu cac co giao dien nhu bt:marks
+ *
+ * `.next` dang bi tien trinh `next dev` mo, nen xoa thang se EBUSY tren Windows.
+ * Phai dung server truoc, xoa, roi de lan reload sau spawn lai — dung duong ma
+ * desktop:relaunch da di.
+ */
+/**
+ * POST JSON toi Next server bang HTTP cua NODE — khong phai fetch cua renderer.
+ *
+ * BAT BUOC di duong nay cho buoc sao luu preset: renderer chi co 6 socket
+ * HTTP/1.1 toi moi host (gioi han cua Chromium), va o may dung nhieu terminal
+ * thi SSE /api/term/:id + automation watch chiem SACH 6 slot do. fetch tu
+ * renderer khi ay XEP HANG VO HAN — do la ly do nut "Nap lai sach" tung treo
+ * o "Đang dọn…" mai mai du server van tra loi curl trong 11ms. Node http o
+ * main process co pool rieng, khong dinh gioi han cua renderer.
+ */
+function requestViaNode(method, url, body, timeoutMs) {
+  return new Promise((resolve) => {
+    const u = new URL(url);
+    const headers = {};
+    let payload;
+    if (body !== undefined && body !== null) {
+      payload = typeof body === 'string' ? body : JSON.stringify(body);
+      headers['content-type'] = 'application/json';
+      headers['content-length'] = Buffer.byteLength(payload);
+    }
+    const req = require('http').request(
+      {
+        hostname: u.hostname,
+        port: u.port,
+        path: u.pathname + u.search,
+        method,
+        headers,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () =>
+          resolve({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            status: res.statusCode,
+            body: Buffer.concat(chunks).toString('utf8'),
+          }),
+        );
+      },
+    );
+    req.on('timeout', () => { req.destroy(new Error(`không phản hồi sau ${timeoutMs}ms`)); });
+    req.on('error', (err) => resolve({ ok: false, error: err.message }));
+    req.end(payload);
+  });
+}
+
+function postJsonViaNode(url, body, timeoutMs) {
+  return requestViaNode('POST', url, body, timeoutMs);
+}
+
+// Cầu fetch tổng quát cho các panel dữ liệu (Redis/Kafka/…): renderer gọi API
+// qua ĐÂY thay vì fetch trực tiếp, để không xếp hàng sau SSE terminal +
+// automation trong pool 6 socket (xem postJsonViaNode). Khoá chặt: chỉ nhận
+// đường dẫn /api/* trên chính APP_URL — renderer không sai khiến main process
+// gọi host tuỳ ý được.
+const API_FETCH_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE']);
+ipcMain.handle('desktop:apiFetch', (_evt, opts) => {
+  const p = opts && typeof opts.path === 'string' ? opts.path : '';
+  const method = opts && typeof opts.method === 'string' ? opts.method.toUpperCase() : 'GET';
+  if (!p.startsWith('/api/')) return { ok: false, error: 'chỉ nhận đường dẫn /api/*' };
+  if (!API_FETCH_METHODS.has(method)) return { ok: false, error: `method ${method} không được phép` };
+  const timeoutMs = Math.min(Math.max(Number(opts && opts.timeoutMs) || 30000, 1000), 120000);
+  const body = opts && typeof opts.body === 'string' ? opts.body : undefined;
+  return requestViaNode(method, `${APP_URL}${p}`, body, timeoutMs);
+});
+
+ipcMain.handle('desktop:hardReload', async (_evt, opts) => {
+  const wipeBuild = !!(opts && opts.wipeBuild);
+  const cleared = [];
+  try {
+    // 0. SAO LUU preset truoc khi renderer don dep — du lieu do renderer gom
+    //    tu localStorage va gui kem, vi chinh no thi khong the tu POST: pool
+    //    6 ket noi cua no dang bi SSE terminal + automation chiem het (xem
+    //    postJsonViaNode). Gui khong duoc thi HUY toan bo — thu tu uu tien
+    //    giong /api/presets: khong bao gio don khi chua chac du lieu an toan.
+    const presets = Array.isArray(opts && opts.presets) ? opts.presets : [];
+    for (const p of presets) {
+      if (!p || typeof p.kind !== 'string' || !Array.isArray(p.list) || p.list.length === 0) continue;
+      const r = await postJsonViaNode(`${APP_URL}/api/presets`, { kind: p.kind, list: p.list }, 8000);
+      if (!r.ok) {
+        log('HardReloadError', `sao luu preset ${p.kind} that bai: ${r.error || 'HTTP ' + r.status}`);
+        return {
+          ok: false,
+          error: `Chưa sao lưu được nút tìm nhanh (${p.kind}) — huỷ dọn để không mất dữ liệu. Thử lại sau.`,
+          cleared,
+        };
+      }
+    }
+    if (presets.length > 0) cleared.push('presets-backed-up');
+
+    // 1. Cache cua session UI chinh.
+    const ses = session.defaultSession;
+    await ses.clearCache();
+    await ses.clearCodeCaches({});
+    cleared.push('http-cache');
+
+    // 2. Cache build tren dia. Chi khi duoc yeu cau ro rang.
+    //
+    // Xoa .next thi PHAI khoi dong lai ca app, khong phai chi reload trang:
+    //   · `next dev` dang mo file trong .next → tren Windows xoa thang la EBUSY,
+    //     bat buoc giet server truoc.
+    //   · giet roi thi khong con backend; reload trang se ra man hinh loi. Duong
+    //     dung la relaunch, va desktop:relaunch da lam san viec do.
+    // Nen o day chi giet + xoa, roi bao renderer goi relaunch.
+    if (wipeBuild) {
+      const appPath = app.getAppPath();
+      const nextDir = path.join(appPath, '.next');
+
+      // stopDevServer() CO CHU Y GIU server song khi con phien terminal — luc do
+      // .next van bi giu va xoa se that bai. Noi ro thay vi de nguoi dung bam
+      // xong tuong da don sach.
+      if (liveTerminals > 0) {
+        return {
+          ok: false,
+          error: `Con ${liveTerminals} phien terminal dang chay nen next dev phai song, khong xoa duoc .next. Dong terminal roi thu lai.`,
+          cleared,
+        };
+      }
+
+      try { stopDevServer(); } catch { /* chua chay thi thoi */ }
+      try {
+        await fs.promises.rm(nextDir, { recursive: true, force: true });
+        cleared.push('.next');
+        log('HardReload', 'da xoa .next — se khoi dong lai app va bien dich lai (~10-30s)');
+      } catch (err) {
+        log('HardReloadError', `.next: ${err && err.message}`);
+        return { ok: false, error: `Khong xoa duoc .next: ${err && err.message}`, cleared };
+      }
+    }
+
+    log('HardReload', `da don: ${cleared.join(', ')}`);
+    return { ok: true, cleared, needsRelaunch: wipeBuild };
+  } catch (err) {
+    log('HardReloadError', err && err.message);
+    return { ok: false, error: err && err.message, cleared };
+  }
+});
+
 ipcMain.handle('desktop:relaunch', () => {
   log('RelaunchRequested', 'cập nhật xong → khởi động lại app');
   try {
@@ -1690,13 +3894,17 @@ if (!app.requestSingleInstanceLock()) {
     // Cửa sổ chính (UI DevBox) chạy trên session mặc định — download từ đó
     // (vd nút ⬇ tab Google) cũng phải đi qua policy tự-lưu, không dialog native.
     wireDownloadPolicy(session.defaultSession, 'default');
+    purgeDownloadStage();
     // Nhặt file NGAY từ argv gốc: khởi động nguội bằng cách bấm vào file thì
     // đường dẫn nằm ở đây, và phải giữ trước khi ensureDevServer() ngốn mất
     // vài chục giây. createWindow() sẽ bắn nó đi lúc trang nạp xong.
     pendingOpenFile = fileFromArgv(process.argv);
     if (pendingOpenFile) log('OpenFileQueued', pendingOpenFile);
-    await ensureDevServer(); // start next dev if nothing is serving :3000 yet
+    // Cửa sổ mở TRƯỚC khi lo server: ensureServer() giờ có thể phải `next
+    // build` vài phút, mà người dùng vừa bấm icon thì phải thấy ngay một cái
+    // gì đó (splash của loadAppWithRetry) chứ không phải một app "không lên".
     createWindow();
+    await ensureServer(); // build (nếu cần) + start server khi :3000 chưa có ai
     // Theo dõi số phiên terminal đang sống — stopDevServer() đọc con số này để
     // quyết định có được phép tắt server lúc thoát app hay không.
     startTerminalPoll();

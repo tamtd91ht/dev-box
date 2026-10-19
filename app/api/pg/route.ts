@@ -3,12 +3,14 @@
 //   POST { action, ... }  where action is one of:
 //     'test'       { host, port, database, username, password?, tls? } → { ok, result: PgTestResult }
 //     'ping'       { connectionId }                        → { ok, result: { latencyMs } }
+//     'stats'      { connectionId, sessions? }             → { ok, result: PgStats }
+//     'hostMetrics' { connectionId }                       → { ok, result: HostMetrics[] }
 //     'databases'  { connectionId }                        → { ok, result: PgDatabaseInfo[] }
 //     'tables'     { connectionId, db }                    → { ok, result: PgTableInfo[] }
 //     'columns'    { connectionId, db, schema, table }     → { ok, result: PgColumnInfo[] }
 //     'indexes'    { connectionId, db, schema, table }     → { ok, result: PgIndexInfo[] }
 //     'query'      { connectionId, db, sql }               → { ok, result: PgQueryResult }        (READ ONLY tx)
-//     'quickFind'  { connectionId, db, schema, table, entries[], limit?, offset?, columns? } → { ok, result }
+//     'quickFind'  { connectionId, db, schema, table, entries[], limit?, offset?, columns?, sort? } → { ok, result }
 //     'quickCount' { connectionId, db, schema, table, entries[] } → { ok, result: { count } }
 //     'countWhere' { connectionId, db, schema, table, where } → { ok, result: { count } }         (update dry-run)
 //     'update'     { connectionId, db, schema, table, set[], where } → { ok, result: { updated } } (gated write)
@@ -24,6 +26,8 @@ import {
   PG_ENABLED,
   testConnection,
   ping,
+  stats,
+  hostMetrics,
   listDatabases,
   listTables,
   listColumns,
@@ -85,6 +89,12 @@ export async function POST(req: NextRequest) {
       case 'info': // version + latency of the SAVED connection (Overview)
         result = await testConnection(conn);
         break;
+      case 'stats': // sức khoẻ server bằng SQL (+ danh sách phiên đang chạy khi sessions=true)
+        result = await stats(conn, { sessions: !!body.sessions });
+        break;
+      case 'hostMetrics': // node_exporter RAM/đĩa/CPU/load (tuỳ chọn, theo connection)
+        result = await hostMetrics(conn);
+        break;
       case 'databases':
         result = await listDatabases(conn);
         break;
@@ -108,6 +118,7 @@ export async function POST(req: NextRequest) {
           limit: body.limit,
           offset: body.offset,
           columns: body.columns,
+          sort: body.sort,
         });
         break;
       case 'quickCount':

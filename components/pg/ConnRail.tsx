@@ -5,6 +5,9 @@
 
 import { useEffect } from 'react';
 import { mutatePgConnection, type PublicPgConnection } from '@/lib/pg';
+import { formatHostLabel } from '@/lib/pgHosts';
+import ConnTransferButton from '../ConnTransferButton';
+import { RailHideButton } from '../RailCollapse';
 import ConnectionForm from './ConnectionForm';
 
 export interface ConnRailProps {
@@ -22,13 +25,18 @@ export interface ConnRailProps {
   onCloseForm: () => void;
   onSaved: (r: { list: PublicPgConnection[]; activeId: string }) => void;
   onDeleted: (list: PublicPgConnection[], deletedId: string) => void;
+  /** Sau khi import từ file: nạp lại danh sách từ server rồi báo cho người dùng. */
+  onImported: (summary: string) => void;
   onError: (msg: string) => void;
+  /** Thu gọn cột — cha truyền vào thì mới vẽ nút « (xem RailCollapse). */
+  onHide?: () => void;
 }
 
 export default function ConnRail(props: ConnRailProps) {
   const {
     connections, activeId, pings, manageOpen, editConn, menuId,
-    onActivate, onPing, onMenu, onEdit, onToggleManage, onCloseForm, onSaved, onDeleted, onError,
+    onActivate, onPing, onMenu, onEdit, onToggleManage, onCloseForm, onSaved, onDeleted, onImported, onError,
+    onHide,
   } = props;
 
   useEffect(() => {
@@ -46,7 +54,11 @@ export default function ConnRail(props: ConnRailProps) {
     <aside className="panel">
       <div className="status-line" style={{ justifyContent: 'space-between' }}>
         <strong>PostgreSQL servers</strong>
-        <button className="chip-btn" onClick={onToggleManage}>{manageOpen ? '✕ Đóng' : '+ Thêm'}</button>
+        <span style={{ display: 'flex', gap: 6 }}>
+          <ConnTransferButton kind="pg" connections={connections} onImported={onImported} onError={onError} />
+          <button className="chip-btn" onClick={onToggleManage}>{manageOpen ? '✕ Đóng' : '+ Thêm'}</button>
+          {onHide && <RailHideButton onHide={onHide} />}
+        </span>
       </div>
 
       {connections.length === 0 && !manageOpen && (
@@ -69,7 +81,7 @@ export default function ConnRail(props: ConnRailProps) {
                   {c.readOnly && <span title="Read-only — UPDATE bị chặn">🔒 </span>}
                   {c.name}
                 </span>
-                <span className="pg-conn-host">{c.host}:{c.port}/{c.database} · {c.username}{c.tls ? ' · tls' : ''}</span>
+                <span className="pg-conn-host">{formatHostLabel(c.host, c.port)}/{c.database} · {c.username}{c.tls ? ' · tls' : ''}</span>
               </div>
               {pings[c.id] != null && (
                 <span className="badge" style={{ color: pings[c.id] === 'err' ? 'var(--err)' : 'var(--ok)' }}>

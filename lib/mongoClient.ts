@@ -80,17 +80,58 @@ function evictIdle(now: number): void {
   }
 }
 
-/** Lazily create (or reuse) a MongoClient for a connection profile. */
-function getClient(conn: MongoConnection): MongoClient {
+/**
+ * Client đã CHẾT hẳn — không bao giờ hồi lại được, phải vứt và tạo mới.
+ *
+ * Driver (mongodb 5.x) khi connect HỎNG sẽ `topology.close({force:true})`
+ * NHƯNG không xóa `client.topology`. Lần gọi sau, executeOperation thấy
+ * `client.topology != null` nên KHÔNG auto-connect lại nữa, bắn thẳng vào cái
+ * topology đã đóng → mọi truy vấn từ đó báo "Topology is closed" vĩnh viễn.
+ * `topology` và `s.hasBeenClosed` là nội bộ của driver (không có trong .d.ts)
+ * nên phải cast — có thay đổi thì chỉ mất lớp bảo vệ, không vỡ build.
+ */
+function isDead(client: MongoClient): boolean {
+  const internals = client as unknown as {
+    s?: { hasBeenClosed?: boolean };
+    topology?: { isDestroyed?: () => boolean };
+  };
+  if (internals.s?.hasBeenClosed) return true;
+  const topo = internals.topology;
+  return !!topo && typeof topo.isDestroyed === 'function' && topo.isDestroyed();
+}
+
+/** Xóa khỏi cache + đóng — lần gọi sau sẽ tạo client hoàn toàn mới. */
+function dropClient(id: string, client: MongoClient): void {
+  const entry = clients.get(id);
+  if (entry?.client === client) clients.delete(id);
+  void client.close().catch(() => {});
+}
+
+/**
+ * Lấy (hoặc tạo) MongoClient cho một connection profile, ĐÃ KẾT NỐI sẵn.
+ *
+ * Luôn `await client.connect()` — rẻ khi đã nối (driver trả về ngay), và đó
+ * là chỗ DUY NHẤT bắt được lỗi kết nối để vứt client hỏng ra khỏi cache.
+ * Không có bước này thì một lần mở hụt lúc khởi động (VPN chưa lên, máy chủ
+ * chưa sẵn sàng…) làm kẹt luôn cả phiên — xem isDead ở trên.
+ */
+async function getClient(conn: MongoConnection): Promise<MongoClient> {
   const now = Date.now();
   evictIdle(now);
   const sig = signature(conn);
   const existing = clients.get(conn.id);
-  if (existing && existing.sig === sig) {
+  if (existing && existing.sig === sig && !isDead(existing.client)) {
     existing.lastUsed = now;
-    return existing.client;
+    try {
+      await existing.client.connect(); // no-op khi đang nối; nối lại nếu chưa
+      return existing.client;
+    } catch (e) {
+      dropClient(conn.id, existing.client);
+      throw e;
+    }
   }
-  if (existing) void existing.client.close().catch(() => {}); // profile changed → drop stale client
+  // profile đổi, hoặc client cũ đã chết → bỏ hẳn
+  if (existing) dropClient(conn.id, existing.client);
 
   const client = new MongoClient(buildUri(conn), {
     connectTimeoutMS: CONNECT_TIMEOUT_MS,
@@ -99,6 +140,12 @@ function getClient(conn: MongoConnection): MongoClient {
     retryWrites: false,
   });
   clients.set(conn.id, { client, sig, lastUsed: now });
+  try {
+    await client.connect();
+  } catch (e) {
+    dropClient(conn.id, client); // không để lại xác chết trong cache
+    throw e;
+  }
   return client;
 }
 
@@ -107,7 +154,7 @@ function getClient(conn: MongoConnection): MongoClient {
  *  collection riêng do người dùng chủ đích cấu hình, KHÔNG đi qua gate
  *  readOnly của tool duyệt Mongo (gate đó bảo vệ thao tác sửa DỮ LIỆU CỦA
  *  CỤM từ UI duyệt, không áp cho kho lưu trữ riêng của app). */
-export function internalClient(conn: MongoConnection): MongoClient {
+export function internalClient(conn: MongoConnection): Promise<MongoClient> {
   return getClient(conn);
 }
 
@@ -243,7 +290,7 @@ export async function testConnection(conn: MongoConnection): Promise<TestResult>
 
 /** PING via the cached client → round-trip latency. */
 export async function ping(conn: MongoConnection): Promise<{ latencyMs: number }> {
-  const client = getClient(conn);
+  const client = await getClient(conn);
   const t0 = Date.now();
   await client.db('admin').command({ ping: 1 });
   return { latencyMs: Date.now() - t0 };
@@ -256,7 +303,7 @@ export interface ServerInfoResult extends TestResult {
 
 /** Overview payload: version + topology + member hosts. */
 export async function serverInfo(conn: MongoConnection): Promise<ServerInfoResult> {
-  const client = getClient(conn);
+  const client = await getClient(conn);
   const t0 = Date.now();
   await client.db('admin').command({ ping: 1 });
   const latencyMs = Date.now() - t0;
@@ -299,7 +346,7 @@ export interface MongoMonitorResult {
 
 /** One snapshot of serverStatus + dbStats + replSetGetStatus (best-effort each). */
 export async function monitor(conn: MongoConnection): Promise<MongoMonitorResult> {
-  const client = getClient(conn);
+  const client = await getClient(conn);
   const admin = client.db('admin');
   const ss = await admin.command({ serverStatus: 1 });
   const stats = await admin.command({ dbStats: 1 }).catch(() => null as Document | null);
@@ -360,7 +407,7 @@ export interface DatabaseInfo {
 }
 
 export async function listDatabases(conn: MongoConnection): Promise<DatabaseInfo[]> {
-  const client = getClient(conn);
+  const client = await getClient(conn);
   const res = await client.db('admin').admin().listDatabases();
   return res.databases
     .map((d) => ({ name: d.name, sizeOnDisk: Number(d.sizeOnDisk ?? 0), empty: !!d.empty }))
@@ -375,7 +422,7 @@ export interface CollectionInfo {
 
 export async function listCollections(conn: MongoConnection, dbName: string): Promise<CollectionInfo[]> {
   const db = requireName(dbName, 'database');
-  const client = getClient(conn);
+  const client = await getClient(conn);
   const cols = await client.db(db).listCollections({}, { nameOnly: false, maxTimeMS: MAX_TIME_ADMIN_MS }).toArray();
   return cols
     .map((c) => ({ name: c.name, type: String(c.type ?? 'collection') }))
@@ -396,7 +443,7 @@ export interface CollStatsResult {
 export async function collectionStats(conn: MongoConnection, dbName: string, collName: string): Promise<CollStatsResult> {
   const db = requireName(dbName, 'database');
   const coll = requireName(collName, 'collection');
-  const client = getClient(conn);
+  const client = await getClient(conn);
   // $collStats aggregation works on modern servers and honors maxTimeMS.
   const [row] = await client
     .db(db)
@@ -428,7 +475,7 @@ export interface IndexInfo {
 export async function listIndexes(conn: MongoConnection, dbName: string, collName: string): Promise<IndexInfo[]> {
   const db = requireName(dbName, 'database');
   const coll = requireName(collName, 'collection');
-  const client = getClient(conn);
+  const client = await getClient(conn);
   const idx = await client.db(db).collection(coll).listIndexes().toArray();
   return idx.map((i) => ({
     name: String(i.name),
@@ -497,7 +544,7 @@ function collectPaths(doc: Document, out: Map<string, FieldInfo>, prefix = '', d
 export async function sampleFields(conn: MongoConnection, dbName: string, collName: string): Promise<FieldInfo[]> {
   const db = requireName(dbName, 'database');
   const coll = requireName(collName, 'collection');
-  const client = getClient(conn);
+  const client = await getClient(conn);
   const rows = await client
     .db(db)
     .collection(coll)
@@ -536,7 +583,7 @@ export async function find(conn: MongoConnection, dbName: string, collName: stri
   const limit = clampLimit(input.limit);
   const skip = clampSkip(input.skip);
 
-  const client = getClient(conn);
+  const client = await getClient(conn);
   const t0 = Date.now();
   // Fetch limit+1 to answer "is there a next page" without a count.
   const rows = await client
@@ -567,7 +614,7 @@ export async function count(conn: MongoConnection, dbName: string, collName: str
   const coll = requireName(collName, 'collection');
   const filter = parseDoc(rawFilter, 'filter');
   forbidKeyDeep(filter, FILTER_FORBIDDEN, 'filter');
-  const client = getClient(conn);
+  const client = await getClient(conn);
   const t0 = Date.now();
   const c = client.db(db).collection(coll);
   const isEmpty = Object.keys(filter).length === 0;
@@ -601,7 +648,7 @@ export async function aggregate(conn: MongoConnection, dbName: string, collName:
   }
   forbidKeyDeep(pipeline, FILTER_FORBIDDEN, 'pipeline');
 
-  const client = getClient(conn);
+  const client = await getClient(conn);
   const t0 = Date.now();
   const rows = await client
     .db(db)
@@ -673,7 +720,7 @@ export async function updateWithQuery(conn: MongoConnection, dbName: string, col
   }
 
   const mode: 'one' | 'many' = input.mode === 'many' ? 'many' : 'one';
-  const client = getClient(conn);
+  const client = await getClient(conn);
   const c = client.db(db).collection(coll);
   const res = mode === 'many'
     ? await c.updateMany(filter, update, { upsert: false })

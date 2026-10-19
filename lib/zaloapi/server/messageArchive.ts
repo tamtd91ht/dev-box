@@ -198,7 +198,7 @@ async function mongoDb(): Promise<Db> {
   }
   const conn = await getConnection(cfg.connectionId);
   if (!conn) throw new Error('Connection đã bị xoá khỏi danh sách quản lý Mongo — cấu hình lại.');
-  return internalClient(conn).db(cfg.database);
+  return (await internalClient(conn)).db(cfg.database);
 }
 
 async function mongoColl(): Promise<Collection<Document>> {

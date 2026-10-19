@@ -15,6 +15,7 @@
 
 import WebSocket from 'ws';
 import { decodeEventData } from './crypto';
+import { scanFileDone } from './uploadHub';
 import { trace } from './trace';
 import { API_TYPE, API_VERSION, type ZaloContext } from './client';
 
@@ -50,6 +51,13 @@ export interface IncomingMessage {
   zCliMsgId: string;
   /** Tên hiển thị người gửi (nếu payload có). */
   fromName: string;
+  /**
+   * Tin GỐC mà tin này TRẢ LỜI (khối trích dẫn), nếu có.
+   *
+   * Không có phần này thì tin người khác trả lời ta hiện ra như một câu rời
+   * khỏi ngữ cảnh — đọc "ok em làm rồi" mà không biết đang nói về việc gì.
+   */
+  quote?: { msgId: string; fromName: string; text: string };
   /** Nội dung văn bản. */
   text: string;
   /**
@@ -155,6 +163,10 @@ function pickReaction(m: Record<string, unknown>): { targetMsgId: string; icon: 
     if (!s.startsWith('{')) return null;
     try { c = JSON.parse(s); } catch { return null; }
   }
+  // Phần tử lấy từ kho `reacts`/`reactGroups` (cmd 612) mang rIcon/rType NGAY Ở
+  // CẤP GỐC, không gói trong `content` như khung tin. Cùng một sự kiện, hai
+  // đường vận chuyển — nhận cả hai thay vì bỏ mất một nửa số cảm xúc.
+  if ((!c || typeof c !== 'object') && ('rIcon' in m || 'rType' in m)) c = m;
   if (!c || typeof c !== 'object') return null;
   const obj = c as Record<string, unknown>;
   const hasIcon = 'rIcon' in obj;
@@ -165,8 +177,11 @@ function pickReaction(m: Record<string, unknown>): { targetMsgId: string; icon: 
   const first = Array.isArray(rMsg) && rMsg.length && rMsg[0] && typeof rMsg[0] === 'object'
     ? (rMsg[0] as Record<string, unknown>)
     : null;
-  // Tin đích: ưu tiên id server (gMsgID), rơi về id client.
-  const targetMsgId = first ? pickStr(first, 'gMsgID', 'gMsgId', 'cMsgID', 'cMsgId') : '';
+  // Tin đích: ưu tiên id server (gMsgID), rơi về id client. Không có `rMsg` thì
+  // tìm ngay trên chính object — dạng đến từ kho `reacts` để id đích ở cấp gốc.
+  const targetMsgId = first
+    ? pickStr(first, 'gMsgID', 'gMsgId', 'cMsgID', 'cMsgId')
+    : pickStr(obj, 'gMsgID', 'gMsgId', 'cMsgID', 'cMsgId', 'msgId', 'globalMsgId');
   if (!targetMsgId) return null; // không biết thả vào tin nào → vô dụng, bỏ
 
   const rTypeRaw = Number(obj['rType']);
@@ -175,6 +190,71 @@ function pickReaction(m: Record<string, unknown>): { targetMsgId: string; icon: 
     icon: typeof obj['rIcon'] === 'string' ? obj['rIcon'] : '',
     rType: Number.isFinite(rTypeRaw) ? rTypeRaw : -1,
   };
+}
+
+/**
+ * Rút khối TRÍCH DẪN của một tin trả lời.
+ *
+ * Zalo để nó trong `content` dưới nhiều tên tuỳ bản build — `qmsg` (payload gửi
+ * đi) hoặc `quote`/`quotedMsg` (payload nhận về), và phần chữ có khi nằm ở
+ * `qmsg`, có khi ở `msg`/`title`. Nhận hết thay vì bám một tên: sai tên thì
+ * khối trích dẫn im lặng biến mất, y như lỗi từng gặp với `groupMsgs`.
+ */
+function pickQuote(m: Record<string, unknown>): { msgId: string; fromName: string; text: string } | undefined {
+  // Khối quote có thể ở CẤP TIN (m.quote) hoặc trong `content`. Bản build hiện
+  // tại đặt ở đâu thì chưa chắc — nhận cả hai thay vì bám một chỗ.
+  //
+  // Quan trọng: tin trả lời vẫn là tin VĂN BẢN, nên `content` thường là CHUỖI
+  // thuần chứ không phải JSON. Bản trước thoát ngay khi content không bắt đầu
+  // bằng '{' và bỏ lọt toàn bộ ca đó — đúng triệu chứng "gửi thì có quote, nhận
+  // thì không".
+  const roots: Record<string, unknown>[] = [];
+
+  const atMsg = m['quote'] ?? m['quotedMsg'] ?? m['qmsg'];
+  if (atMsg && typeof atMsg === 'object') roots.push(atMsg as Record<string, unknown>);
+  // Dạng phẳng ngay trên tin: qmsgId/qmsgOwner… nằm cạnh msgId.
+  if ('qmsgId' in m || 'qmsgOwner' in m) roots.push(m);
+
+  let c: unknown = m['content'];
+  if (typeof c === 'string' && c.trim().startsWith('{')) {
+    try { c = JSON.parse(c.trim()); } catch { c = null; }
+  }
+  if (c && typeof c === 'object') {
+    const obj = c as Record<string, unknown>;
+    const nested = obj['quote'] ?? obj['quotedMsg'];
+    if (nested && typeof nested === 'object') roots.push(nested as Record<string, unknown>);
+    roots.push(obj);
+  }
+
+  for (const q of roots) {
+    const msgId = pickStr(q, 'globalMsgId', 'qmsgId', 'gMsgID', 'gMsgId', 'msgId', 'cMsgID', 'cliMsgId');
+    const text = pickStr(q, 'qmsg', 'msg', 'title', 'text', 'content', 'qmsgContent');
+    // Cần ÍT NHẤT id — chỉ có chữ thì không phân biệt được với chính nội dung
+    // tin, và dựng khối trích dẫn từ đó là bịa ra một tin gốc không tồn tại.
+    if (!msgId) continue;
+    return {
+      msgId,
+      fromName: pickStr(q, 'ownerName', 'qmsgOwnerName', 'dName', 'fromName'),
+      text: text.slice(0, 300),
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Ghi hình dạng một tin CHƯA rút được quote, để dò tiếp khi bản build đổi tên
+ * field. Chỉ ghi TÊN KHOÁ, không ghi giá trị — trace nằm trên đĩa và nội dung
+ * tin là dữ liệu riêng tư của người dùng.
+ */
+function quoteShape(m: Record<string, unknown>): Record<string, unknown> {
+  const c = m['content'];
+  let contentKeys: unknown = typeof c;
+  if (typeof c === 'string') {
+    contentKeys = c.trim().startsWith('{') ? 'json-string' : 'plain-string';
+  } else if (c && typeof c === 'object') {
+    contentKeys = Object.keys(c as object).slice(0, 20);
+  }
+  return { msgKeys: Object.keys(m).slice(0, 25), contentKeys };
 }
 
 /**
@@ -193,17 +273,46 @@ function pickReaction(m: Record<string, unknown>): { targetMsgId: string; icon: 
 export function extractMessages(groupHint: boolean, decoded: unknown, at: number, selfUid: string): IncomingMessage[] {
   const root = decoded as Record<string, unknown> | null;
   if (!root) return [];
-  // Payload có nhiều dạng bọc tuỳ cmd: { msgs:[…] }, { data:[…] },
-  // { data:{ msgs:[…] } }, { data:{…tin…} }, hoặc chính là object tin. Gom hết
-  // về một mảng để quét — đoán sai lớp bọc là "rút 0" dù đã giải mã được.
-  const dataField = root['data'];
-  const dataObj = dataField && typeof dataField === 'object' ? (dataField as Record<string, unknown>) : null;
+
+  // Bóc lớp bọc {error_code, error_message, data} cho tới khi hết. Zalo lồng
+  // MỘT tầng ở hầu hết cmd, nhưng cmd 621 lồng HAI — đi đúng một tầng thì payload
+  // thật vẫn nằm sâu bên trong và mọi thứ rơi vào nhánh "không phải tin".
+  let core: Record<string, unknown> = root;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const inner = core['data'];
+    if (!inner || typeof inner !== 'object' || Array.isArray(inner)) break;
+    const obj = inner as Record<string, unknown>;
+    // Chỉ bóc tiếp khi tầng này ĐÚNG LÀ lớp bọc (có error_code/error_message).
+    // Bóc bừa sẽ ăn mất một object tin thật có field `data` của riêng nó.
+    if (!('error_code' in obj) && !('error_message' in obj)) { core = obj; break; }
+    core = obj;
+  }
+
+  // Gom MỌI kho tin trong payload. Đây là chỗ từng bỏ lọt cả ba thứ:
+  //
+  //   msgs        tin 1-1                      (cmd 501, và 502 khi đồng bộ)
+  //   groupMsgs   tin NHÓM                     (cmd 521, 502)  ← từng bỏ lọt
+  //   pageMsgs    tin từ Official Account
+  //   reacts      CẢM XÚC 1-1                  (cmd 612)       ← từng bỏ lọt
+  //   reactGroups CẢM XÚC trong nhóm           (cmd 612)       ← từng bỏ lọt
+  //
+  // Trước đây chỉ đọc `msgs`; với cmd 502/521 thì `msgs` là mảng RỖNG còn tin
+  // thật nằm ở `groupMsgs`, nên hàm rơi xuống nhánh "coi cả object là một tin"
+  // và bỏ đi — đúng triệu chứng "tin nhóm và tin từ mobile không hiện".
+  const bucket = (key: string): unknown[] => {
+    const v = core[key];
+    return Array.isArray(v) ? v : [];
+  };
+  const plain = [...bucket('msgs'), ...bucket('groupMsgs'), ...bucket('pageMsgs')];
+  // Cảm xúc đi kho RIÊNG, và mỗi phần tử ở đây LUÔN là reaction — không phải
+  // tin có kèm reaction. Đánh dấu để vòng dưới không đòi hỏi nội dung chữ.
+  const reactItems = [...bucket('reacts'), ...bucket('reactGroups')];
+  const fromGroupBucket = new Set<unknown>([...bucket('groupMsgs'), ...bucket('reactGroups')]);
+
   let list: unknown[];
-  if (Array.isArray(root['msgs'])) list = root['msgs'] as unknown[];
-  else if (Array.isArray(dataField)) list = dataField as unknown[];
-  else if (dataObj && Array.isArray(dataObj['msgs'])) list = dataObj['msgs'] as unknown[];
-  else if (dataObj) list = [dataObj];
-  else list = [root];
+  if (plain.length || reactItems.length) list = [...plain, ...reactItems];
+  else if (Array.isArray(core['data'])) list = core['data'] as unknown[];
+  else list = [core];
 
   const out: IncomingMessage[] = [];
   for (const item of list) {
@@ -215,8 +324,11 @@ export function extractMessages(groupHint: boolean, decoded: unknown, at: number
     // Trước đây chỉ xét chữ, nên mọi khung cảm xúc bị rơi ở đúng dòng này.
     if (!text && !react) continue;
 
+    // Tin nằm trong kho groupMsgs/reactGroups thì CHẮC CHẮN là nhóm, kể cả khi
+    // payload không mang groupId (khung reaction nhóm thường không có). Dựa mỗi
+    // groupId là tin nhóm bị xếp nhầm thành 1-1 và tạo hội thoại rác.
     const groupId = pickStr(m, 'groupId', 'gid');
-    const group = groupHint || !!groupId;
+    const group = groupHint || !!groupId || fromGroupBucket.has(item);
     const fromId = pickStr(m, 'uidFrom', 'fromId');
     const toId = pickStr(m, 'idTo', 'toId', 'toUid', 'dId');
     // Zalo đánh dấu tin do CHÍNH mình gửi (đồng bộ từ thiết bị khác) bằng
@@ -245,11 +357,47 @@ export function extractMessages(groupHint: boolean, decoded: unknown, at: number
       fromName: pickStr(m, 'dName', 'fromName', 'senderName'),
       // Cảm xúc không có nội dung → dựng một dòng mô tả để Console đọc được.
       text: text || (react ? (react.icon ? `đã thả ${react.icon}` : 'đã bỏ cảm xúc') : ''),
+      ...(() => {
+        // Chỉ tin THẬT mới có trích dẫn; khung cảm xúc dùng chung `content` cho
+        // payload riêng của nó nên đừng đọc nhầm thành quote.
+        const q = react ? undefined : pickQuote(m);
+        return q ? { quote: q } : {};
+      })(),
       ...(react ? { reaction: { ...react, isSelf } } : {}),
       raw: m,
     });
   }
   return dropBroadcastDuplicates(out);
+}
+
+/**
+ * Mô tả HÌNH DẠNG một payload đã giải mã, để chẩn đoán khung chưa đọc được.
+ *
+ * Bóc qua lớp bọc {error_code,error_message,data} rồi mô tả phần lõi: khoá gì,
+ * mảng hay object, và một mẫu khoá của phần tử đầu. Không ghi NỘI DUNG tin —
+ * trace nằm trên đĩa và tin nhắn là dữ liệu riêng tư của người dùng.
+ */
+function probeShape(decoded: unknown): Record<string, unknown> {
+  const outer = decoded && typeof decoded === 'object' ? (decoded as Record<string, unknown>) : null;
+  if (!outer) return { type: typeof decoded };
+  const inner = outer['data'];
+  const describe = (v: unknown): Record<string, unknown> => {
+    if (Array.isArray(v)) {
+      const first = v[0];
+      return {
+        kind: 'array',
+        len: v.length,
+        itemKeys: first && typeof first === 'object' ? Object.keys(first as object).slice(0, 20) : typeof first,
+      };
+    }
+    if (v && typeof v === 'object') return { kind: 'object', keys: Object.keys(v as object).slice(0, 20) };
+    return { kind: typeof v };
+  };
+  return {
+    outerKeys: Object.keys(outer).slice(0, 8),
+    errorCode: outer['error_code'],
+    data: describe(inner),
+  };
 }
 
 /**
@@ -581,6 +729,9 @@ export class ZaloListener {
       try {
         const decoded = await decodeEventData(parsed as { data: unknown; encrypt: unknown }, this.cipherKey ?? undefined);
         this.stats.decoded += 1;
+        // Sự kiện file_done (upload FILE đính kèm xong, mang fileUrl) đi qua
+        // đúng đường khung mã hoá này — giao cho uploadHub trước khi rút tin.
+        try { scanFileDone(decoded); } catch { /* khung lạ — không được chết listener */ }
         const msgs = extractMessages(groupHint, decoded, Date.now(), this.ctx.uid);
         if (msgs.length) {
           for (const msg of msgs) {
@@ -602,11 +753,25 @@ export class ZaloListener {
             });
           }
           trace('msg', `RÚT ${msgs.length} tin cmd=${cmd}`, { group: last.group, threadId: last.threadId, from: last.fromName || last.fromId, self: last.isSelf, text: last.text.slice(0, 40) });
+          // Tin ĐẾN mà không rút được khối trích dẫn: có thể vốn không phải tin
+          // trả lời, cũng có thể bản build đổi tên field. Ghi hình dạng (chỉ TÊN
+          // khoá) để phân biệt được hai ca đó mà không lộ nội dung tin.
+          if (this.stats.extracted <= 40) {
+            for (const msg of msgs) {
+              if (msg.reaction || msg.quote || msg.isSelf) continue;
+              const src = msg.raw as Record<string, unknown> | undefined;
+              if (src) trace('msg', 'tin đến KHÔNG có khối trích dẫn — hình dạng để dò', quoteShape(src));
+            }
+          }
         } else if (this.stats.decoded <= 20) {
-          // Giải mã được nhưng KHÔNG có chữ → có thể là seen/typing, hoặc schema
-          // lạ. Ghi hình dạng (chỉ 20 lần đầu) để chẩn đoán nếu vẫn thiếu tin.
-          const shape = decoded && typeof decoded === 'object' ? Object.keys(decoded as object).slice(0, 10) : typeof decoded;
-          trace('msg', `giải mã OK nhưng KHÔNG có chữ cmd=${cmd}`, { shape });
+          // Giải mã được nhưng KHÔNG rút ra tin nào → có thể là seen/typing, hoặc
+          // một loại sự kiện ta chưa đọc được (reaction, tin từ mobile, tin nhóm).
+          //
+          // Ghi tới BÊN TRONG `data`, không chỉ lớp ngoài: mọi khung đều bọc
+          // {error_code,error_message,data} nên chỉ ghi lớp ngoài thì mọi cmd
+          // trông giống hệt nhau và chẩn đoán được đúng con số 0. Phần lõi mới
+          // nói được đây là loại sự kiện gì.
+          trace('msg', `giải mã OK nhưng KHÔNG rút được tin cmd=${cmd}`, probeShape(decoded));
         }
       } catch (e) {
         this.stats.decodeErr += 1;

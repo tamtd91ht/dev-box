@@ -35,6 +35,9 @@
 // browser, so every server-side bound (maxTimeMS, limit clamp) applies here too.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import QuickSortEditor from '../export/QuickSortEditor';
+import ColSplit from '../ColSplit';
+import { usePresetSync } from '@/lib/presetSync';
 import {
   findMongo,
   listMongoDatabases,
@@ -50,13 +53,18 @@ import {
   updateQuickFind,
   removeQuickFind,
   buildQuickFilter,
+  buildQuickSort,
+  describeSort,
   QUICK_FIELD_TYPES,
   type MongoQuickFind,
   type QuickFindField,
   type QuickFieldType,
+  type QuickFindSort,
+  type QuickSortDir,
 } from '@/lib/mongoQuickFinds';
 import ExportModal from './ExportModal';
 import TargetPicker from '../TargetPicker';
+import ResultBox, { ExpandButton, FilterBar, FindButton, Hl, useResultExpand, useResultFilter } from '../ResultBox';
 
 export interface QuickFindViewProps {
   connections: PublicMongoConnection[];
@@ -70,7 +78,7 @@ interface RunField extends QuickFindField {
   list: boolean;
 }
 
-type RunTab = 'conditions' | 'projection';
+type RunTab = 'conditions' | 'projection' | 'sort';
 
 /** Union of top-level keys across sample docs → projection suggestions. */
 function deriveFieldNames(docs: WireDoc[]): string[] {
@@ -101,6 +109,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   // Setup panel visibility + tab. Collapsed after a successful run.
   const [panelOpen, setPanelOpen] = useState(true);
   const [runTab, setRunTab] = useState<RunTab>('conditions');
+  /** Sort của LẦN CHẠY — điền sẵn từ nút đã lưu, sửa ở tab "Sắp xếp" chỉ áp cho lần chạy/xuất hiện tại
+   *  (muốn đổi vĩnh viễn thì sửa nút ✎). Rỗng = không sort. */
+  const [sortKeys, setSortKeys] = useState<QuickFindSort[]>([]);
 
   // Projection (run-time only, never persisted into the preset).
   const [projSuggestions, setProjSuggestions] = useState<string[]>([]);
@@ -114,14 +125,22 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<WireDoc | null>(null);
+  const rx = useResultExpand();
+  const flt = useResultFilter(result?.docs, (d) => d.json);
 
   // Export report — needs the EXACT filter of the last successful run.
   const [lastFilter, setLastFilter] = useState('');
+  /** Sort của LẦN CHẠY vừa rồi — export phải xuất ĐÚNG thứ tự bảng đang nhìn,
+   *  nên không đọc run.sort hiện thời (preset có thể vừa được sửa mà chưa chạy). */
+  const [lastSort, setLastSort] = useState('');
+  const [lastSortText, setLastSortText] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
   // Presets live in localStorage — hydrate on mount (client-only).
-  useEffect(() => { setQuickFinds(loadQuickFinds()); }, []);
+  const reloadQf = useCallback(() => setQuickFinds(loadQuickFinds()), []);
+  useEffect(() => { reloadQf(); }, [reloadQf]);
+  usePresetSync('mongo.quickfinds', reloadQf);
 
   const connName = useCallback(
     (id: string) => connections.find((c) => c.id === id)?.name ?? null,
@@ -152,6 +171,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   /** Open the run panel for a preset — every field starts unticked and empty. */
   const startRun = useCallback((p: MongoQuickFind) => {
     setRun(p);
+    setSortKeys(p.sort ?? []);
     setRunFields(p.fields.map((f) => ({ ...f, checked: false, value: '', list: false })));
     setRunDb(p.database); setRunColl(p.collection);
     setDbOpts([]); setCollOpts([]);
@@ -183,23 +203,27 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
       const filter = buildQuickFilter(
         runFields.filter((f) => f.checked).map((f) => ({ path: f.path, type: f.type, value: f.value, list: f.list })),
       );
+      const effSort = sortKeys.filter((k) => k.path.trim()).map((k) => ({ path: k.path.trim(), dir: k.dir }));
+      const sortJson = buildQuickSort(effSort);
       const r = await findMongo(run.connectionId, runDb, runColl, {
-        filter, projection: buildProjection(), sort: '', limit: run.limit, skip: effSkip,
+        filter, projection: buildProjection(), sort: sortJson, limit: run.limit, skip: effSkip,
       });
       setResult(r);
       setSkip(r.skip);
       setLastFilter(filter); // the export re-queries with exactly this filter
-      setPanelOpen(false); // results take the screen; the summary bar carries the query
+      setLastSort(sortJson);
+      setLastSortText(describeSort(effSort));
+      // Khung chia đôi: điều kiện luôn ở cột trái, kết quả ở cột phải — không cần thu panel để nhường chỗ.
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [run, runFields, buildProjection, runDb, runColl]);
+  }, [run, runFields, buildProjection, runDb, runColl, sortKeys]);
 
   /**
    * Discover projectable fields when the tab opens: reuse the docs we already
    * have; otherwise sample 5 full documents from the live collection.
    */
-  const openProjectionTab = useCallback(async () => {
-    setRunTab('projection');
+  const openProjectionTab = useCallback(async (tab: RunTab = 'projection') => {
+    setRunTab(tab);
     if (!run || projSuggestions.length > 0 || !runDb || !runColl) return;
     const have = result?.docs?.length ? result.docs : null;
     if (have) { setProjSuggestions(deriveFieldNames(have)); return; }
@@ -291,11 +315,13 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
 
       {/* ── Run panel ───────────────────────────────────────────────────── */}
       {run && !edit && (
+        <ColSplit storageKey="devbox-mongo-qf-split">
         <div className="mongo-qf-run">
           <div className="status-line" style={{ justifyContent: 'space-between' }}>
             <strong>🔎 {run.name}</strong>
             <span className="badge">
               {connName(run.connectionId) ?? '⚠ connection đã xoá'} · limit {run.limit}
+              {sortKeys.some((k) => k.path.trim()) ? ` · sort ${describeSort(sortKeys.filter((k) => k.path.trim()))}` : ''}
             </span>
           </div>
 
@@ -352,6 +378,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                 </button>
                 <button className={runTab === 'projection' ? 'on' : ''} onClick={() => void openProjectionTab()}>
                   Trường trả về{projSelected.length > 0 ? ` (${projSelected.length})` : ''}
+                </button>
+                <button className={runTab === 'sort' ? 'on' : ''} onClick={() => void openProjectionTab('sort')}>
+                  Sắp xếp{sortKeys.some((k) => k.path.trim()) ? ` (${sortKeys.filter((k) => k.path.trim()).length})` : ''}
                 </button>
               </div>
 
@@ -417,6 +446,10 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                 </div>
               )}
 
+              {runTab === 'sort' && (
+                <QuickSortEditor value={sortKeys} onChange={setSortKeys} suggestions={projSuggestions} disabled={busy} />
+              )}
+
               {runTab === 'projection' && (
                 <div className="mongo-qf-proj">
                   <p className="mongo-qf-hint">
@@ -457,10 +490,17 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
             </>
           )}
 
-          <div className="status-line" style={{ gap: 8 }}>
+          <div className="status-line cs-split-pin" style={{ gap: 8 }}>
             <button className="sm" disabled={busy || enabledCount === 0} onClick={() => void doRun()}>
               {busy ? <span className="spinner" aria-hidden /> : '▶'} Chạy ({enabledCount} điều kiện, AND)
             </button>
+          </div>
+        </div>
+
+        <div className="mongo-qf-run">
+          <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
+          <div className="status-line" style={{ gap: 8 }}>
+            {!result && <span className="xhint">Kết quả sẽ hiện ở đây sau khi chạy.</span>}
             {result && (
               <>
                 <span className="badge">{result.docs.length} docs · skip {result.skip} · {result.tookMs}ms</span>
@@ -472,6 +512,8 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                   title="Xuất toàn bộ kết quả khớp query ra file Excel có định dạng"
                   onClick={() => setExportOpen(true)}
                 >📄 Xuất báo cáo</button>
+                <ExpandButton expanded={rx.expanded} onToggle={rx.toggle} />
+                <FindButton flt={flt} />
               </>
             )}
           </div>
@@ -480,9 +522,12 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
 
           {result && (
+            <>
+            <FilterBar flt={flt} />
             <div className={`mongo-qf-rows${panelOpen ? '' : ' expanded'}`}>
               {result.docs.length === 0 && <p className="empty">Không có document nào khớp.</p>}
-              {result.docs.map((d, i) => (
+              {flt.needle && flt.rows.length === 0 && result.docs.length > 0 && <p className="empty">Không có kết quả nào khớp ô tìm.</p>}
+              {flt.rows.map(({ item: d, index: i }) => (
                 <button
                   key={`${result.skip}-${i}`}
                   className="mongo-qf-row"
@@ -490,12 +535,15 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                   onClick={() => setSelectedDoc(d)}
                 >
                   <span className="mongo-doc-idx">#{result.skip + i + 1}</span>
-                  <span className="mongo-qf-row-text">{d.json}</span>
+                  <span className="mongo-qf-row-text"><Hl text={d.json} needle={flt.needle} /></span>
                 </button>
               ))}
             </div>
+            </>
           )}
+          </ResultBox>
         </div>
+        </ColSplit>
       )}
 
       {selectedDoc && <DocModal doc={selectedDoc} onClose={() => setSelectedDoc(null)} />}
@@ -506,11 +554,10 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           db={runDb}
           coll={runColl}
           filter={lastFilter}
+          sort={lastSort}
+          sortSummary={lastSortText}
           querySummary={querySummary}
           fieldSuggestions={[...new Set(['_id', ...projSuggestions, ...projSelected, ...run.fields.map((f) => f.path), ...deriveFieldNames(result.docs)])]}
-          initialPaths={projSelected.length
-            ? (projKeepId ? ['_id', ...projSelected] : projSelected)
-            : ['_id', ...deriveFieldNames(result.docs)].slice(0, 8)}
           defaultTitle={run.name}
           onClose={() => setExportOpen(false)}
           onDone={(rows, filename) => {
@@ -542,6 +589,9 @@ function QuickFindForm({
   const [database, setDatabase] = useState(initial?.database ?? '');
   const [collection, setCollection] = useState(initial?.collection ?? '');
   const [limit, setLimit] = useState(initial?.limit ?? 50);
+  // Sort là TUỲ CHỌN, NHIỀU KHOÁ — danh sách rỗng = không sort, giữ thứ tự tự
+  // nhiên. loadQuickFinds đã nâng preset cũ (object đơn) thành mảng khi đọc.
+  const [sortKeys, setSortKeys] = useState<QuickFindSort[]>(initial?.sort ?? []);
   const [fields, setFields] = useState<QuickFindField[]>(
     initial?.fields?.length ? initial.fields : [{ label: 'ID', path: '_id', type: 'objectId' }],
   );
@@ -589,6 +639,12 @@ function QuickFindForm({
     collection: collection.trim(),
     fields: validFields.map((f) => ({ label: f.label.trim(), path: f.path.trim(), type: f.type })),
     limit: Math.min(Math.max(Number(limit) || 50, 1), 200),
+    // Luôn có mặt trong patch (kể cả undefined) — updateQuickFind merge nông,
+    // thiếu khoá là sort cũ sống lại sau khi người dùng đã xoá.
+    sort: (() => {
+      const keys = sortKeys.map((k) => ({ path: k.path.trim(), dir: k.dir })).filter((k) => k.path);
+      return keys.length ? keys : undefined;
+    })(),
   });
 
   return (
@@ -642,6 +698,48 @@ function QuickFindForm({
           <input className="input" type="number" min={1} max={200} value={limit}
             onChange={(e) => setLimit(Math.min(Math.max(Number(e.target.value) || 50, 1), 200))} />
         </label>
+      </div>
+
+      {/* SẮP XẾP — nhiều khoá, áp theo thứ tự từ trên xuống (khoá đầu ưu tiên
+          cao nhất), giống tab Elasticsearch để hai tab dùng như nhau. */}
+      <div className="mongo-field">
+        <span>
+          Sắp xếp <i style={{ color: 'var(--faint)', fontStyle: 'normal' }}>
+            (không bắt buộc — trống = thứ tự tự nhiên; nhiều khoá áp theo thứ tự từ trên xuống)
+          </i>
+        </span>
+        {sortKeys.map((k, i) => (
+          <div key={i} className="mongo-form-row" style={{ alignItems: 'center' }}>
+            <input
+              className="input mono" style={{ flex: 1 }}
+              value={k.path}
+              onChange={(e) => setSortKeys((ks) => ks.map((x, j) => (j === i ? { ...x, path: e.target.value } : x)))}
+              placeholder="vd. created_at — hỗ trợ nested path (profile.updated_at)"
+              list="mongo-qf-sort-paths"
+            />
+            <select
+              className="input" style={{ flex: '0 0 160px' }}
+              value={k.dir}
+              disabled={!k.path.trim()}
+              title={k.path.trim() ? 'Chiều sắp xếp' : 'Điền field sort trước'}
+              onChange={(e) => setSortKeys((ks) => ks.map((x, j) => (j === i ? { ...x, dir: e.target.value as QuickSortDir } : x)))}
+            >
+              <option value="desc">↓ giảm dần (mới nhất trước)</option>
+              <option value="asc">↑ tăng dần</option>
+            </select>
+            <button className="chip-btn" title="Bỏ khoá sắp xếp"
+              onClick={() => setSortKeys((ks) => ks.filter((_, j) => j !== i))}>✕</button>
+          </div>
+        ))}
+        <datalist id="mongo-qf-sort-paths">
+          {[...new Set(fields.map((f) => f.path.trim()).filter(Boolean))].map((p) => <option key={p} value={p} />)}
+        </datalist>
+        <div>
+          <button className="ghost sm"
+            onClick={() => setSortKeys((ks) => [...ks, { path: '', dir: 'desc' as QuickSortDir }])}>
+            + Thêm khoá sắp xếp
+          </button>
+        </div>
       </div>
 
       <div className="mongo-field">

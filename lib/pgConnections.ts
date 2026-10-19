@@ -19,6 +19,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { configPath } from './configDir';
+import { normalizeHostList, parseHostList } from './pgHosts';
 
 export interface PgConnection {
   /** Stable opaque id (used as the list key + api param). */
@@ -35,6 +36,12 @@ export interface PgConnection {
   /** Plaintext on local disk (see security model above). */
   password?: string;
   tls: boolean;
+  /**
+   * OPTIONAL node_exporter endpoints của máy chạy Postgres. SQL không nói được gì
+   * về đĩa/RAM/CPU của máy, mà đĩa đầy mới là cách Postgres chết hay gặp nhất —
+   * khai URL ở đây (vd http://10.0.0.5:9100/metrics) thì Monitor đo thêm các chỉ số host.
+   */
+  metricsUrls: string[];
   /** Per-connection write gate — TRUE (default) blocks the update action. */
   readOnly: boolean;
 }
@@ -77,12 +84,15 @@ function normalize(c: PgConnection): PgConnection {
     id: c.id,
     name: c.name,
     project: typeof c.project === 'string' && c.project.trim() ? c.project.trim() : 'default',
-    host: typeof c.host === 'string' ? c.host.trim() : '',
+    host: typeof c.host === 'string' ? normalizeHostList(c.host) : '',
     port: Number.isInteger(c.port) ? c.port : 5432,
     database: typeof c.database === 'string' && c.database.trim() ? c.database.trim() : 'postgres',
     username: typeof c.username === 'string' ? c.username.trim() : '',
     password: typeof c.password === 'string' && c.password.length ? c.password : undefined,
     tls: !!c.tls,
+    metricsUrls: Array.isArray(c.metricsUrls)
+      ? c.metricsUrls.map((u) => (typeof u === 'string' ? u.trim() : '')).filter(Boolean)
+      : [],
     // Locked unless the stored record explicitly says false (pre-flag records → locked).
     readOnly: c.readOnly === undefined ? true : c.readOnly !== false,
   };
@@ -109,18 +119,35 @@ export interface PgConnectionInput {
   username?: unknown;
   password?: unknown;
   tls?: unknown;
+  metricsUrls?: unknown;
   readOnly?: unknown;
+}
+
+function parseMetricsUrls(raw: unknown): string[] {
+  const items = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,]+/) : [];
+  return items
+    .map((x) => (typeof x === 'string' ? x.trim() : ''))
+    .filter(Boolean)
+    .map((u) => {
+      let parsed: URL;
+      try { parsed = new URL(u); } catch { throw new Error(`metrics URL không hợp lệ: "${u}"`); }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error(`metrics URL phải là http/https: "${u}"`);
+      }
+      return u;
+    });
 }
 
 function validate(body: PgConnectionInput, existing?: PgConnection): Omit<PgConnection, 'id'> {
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   if (!name) throw new Error('connection name is required');
   const project = typeof body.project === 'string' && body.project.trim() ? body.project.trim() : 'default';
-  const host = typeof body.host === 'string' ? body.host.trim() : '';
+  // Host có thể là cả cluster: "pg1:5432,pg2:5432,pg3" (xem lib/pgHosts).
+  const host = typeof body.host === 'string' ? normalizeHostList(body.host) : '';
   if (!host) throw new Error('host is required');
-  if (/[\s/@?]/.test(host)) throw new Error(`invalid host "${host}"`);
   const port = Number(body.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('port must be 1–65535');
+  parseHostList(host, port); // ném lỗi nếu có node sai cú pháp / port
   const database = typeof body.database === 'string' && body.database.trim() ? body.database.trim() : 'postgres';
   const username = typeof body.username === 'string' ? body.username.trim() : '';
   if (!username) throw new Error('username is required');
@@ -130,7 +157,8 @@ function validate(body: PgConnectionInput, existing?: PgConnection): Omit<PgConn
   const readOnly = body.readOnly === undefined
     ? (existing ? existing.readOnly : true)
     : !(body.readOnly === false || body.readOnly === 'false' || body.readOnly === 'off');
-  return { name, project, host, port, database, username, password, tls: !!body.tls, readOnly };
+  const metricsUrls = parseMetricsUrls(body.metricsUrls);
+  return { name, project, host, port, database, username, password, tls: !!body.tls, metricsUrls, readOnly };
 }
 
 /** Build a NOT-persisted connection straight from form fields (test action). */

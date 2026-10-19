@@ -58,6 +58,7 @@ import {
   type BindingDeclarationInput,
 } from '@/lib/rabbit';
 import BrokerRail from './rabbit/BrokerRail';
+import { useConnRailCollapse, CollapsedConnRail } from './ConnRailCollapse';
 import OverviewView from './rabbit/OverviewView';
 import QueuesView from './rabbit/QueuesView';
 import ExchangesView from './rabbit/ExchangesView';
@@ -66,6 +67,9 @@ import ConnectionsLiveView from './rabbit/ConnectionsLiveView';
 import PublishModal from './rabbit/PublishModal';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { onInfraFocus } from '@/lib/infraFocus';
+import SessionHistory from './SessionHistory';
+import { recordSession, type RabbitSession } from '@/lib/sessionHistory';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 
@@ -87,6 +91,8 @@ export default function RabbitWorkspace() {
   const railSplit = useSplit({ varName: '--rabbit-rail', min: 180, max: 560, gap: 14 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [connections, setConnections] = useState<PublicRabbitConnection[]>([]);
+  // Gập cột kết nối để nhường chỗ cho vùng làm việc (components/ConnRailCollapse).
+  const railCollapse = useConnRailCollapse('rabbit', connections.length);
   const [activeId, setActiveId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
   const [editConn, setEditConn] = useState<PublicRabbitConnection | null>(null);
@@ -94,6 +100,8 @@ export default function RabbitWorkspace() {
   const [pings, setPings] = useState<Record<string, number | 'err'>>({});
 
   const [subView, setSubView] = useState<SubView>('overview');
+  /** Tăng lên mỗi lần ghi một phiên — buộc SessionHistory đọc lại danh sách. */
+  const [sessBump, setSessBump] = useState(0);
   /** '' = every vhost the account can see. Scopes binding reads + new declarations. */
   const [vhostScope, setVhostScope] = useState('');
 
@@ -164,6 +172,17 @@ export default function RabbitWorkspace() {
   useEffect(() => {
     if (activeId) writeLocal(LAST_CONN_KEY, activeId);
   }, [activeId]);
+
+  // Monitor bấm "↗ Mở …" → chọn ĐÚNG CỤM đang báo và mục liên quan (lib/infraFocus).
+  // Chỉ nghe khi đã có danh sách kết nối, để biết id đó còn tồn tại.
+  useEffect(() => {
+    if (!connections.length) return;
+    return onInfraFocus('rabbit', (f) => {
+      if (!connections.some((c) => c.id === f.connId)) return;
+      setActiveId(f.connId);
+      if (f.view && SUB_VIEWS.some((v) => v.key === f.view)) setSubView(f.view as SubView);
+    });
+  }, [connections]);
 
   // Reset every pane on broker change — stale data from another cluster is worse
   // than an empty pane.
@@ -263,6 +282,15 @@ export default function RabbitWorkspace() {
     setSelectedQueue({ vhost, name });
     setQueueDetail(null); setPeek(null);
     setQDetailLoading(true); setError(null);
+    // Ghi phiên: mở queue nào, ở vhost nào. KHÔNG ghi depth/message — đúng lý do
+    // đã nêu ngay dưới đây ở clearQueue: số liệu cũ tệ hơn là không có số liệu.
+    const st: RabbitSession = { subView: 'queues', vhost, queue: name, exchange: '' };
+    recordSession('rabbit', {
+      label: `📥 ${name}${vhost && vhost !== '/' ? ` (${vhost})` : ''}`,
+      connectionId: activeId,
+      state: st as unknown as Record<string, unknown>,
+    });
+    setSessBump((n) => n + 1);
     try { setQueueDetail(await describeRabbitQueue(activeId, vhost, name)); }
     catch (e) { setError((e as Error).message); }
     finally { setQDetailLoading(false); }
@@ -272,6 +300,13 @@ export default function RabbitWorkspace() {
     setSelectedExchange({ vhost, name });
     setExchangeDetail(null);
     setXDetailLoading(true); setError(null);
+    const st: RabbitSession = { subView: 'exchanges', vhost, queue: '', exchange: name };
+    recordSession('rabbit', {
+      label: `📤 ${name || '(default)'}${vhost && vhost !== '/' ? ` (${vhost})` : ''}`,
+      connectionId: activeId,
+      state: st as unknown as Record<string, unknown>,
+    });
+    setSessBump((n) => n + 1);
     try { setExchangeDetail(await describeRabbitExchange(activeId, vhost, name)); }
     catch (e) { setError((e as Error).message); }
     finally { setXDetailLoading(false); }
@@ -287,6 +322,26 @@ export default function RabbitWorkspace() {
   const clearExchange = useCallback(() => {
     setSelectedExchange(null); setExchangeDetail(null);
   }, []);
+
+  /**
+   * Khôi phục một phiên: về đúng view + vhost rồi mở lại queue/exchange đó.
+   * Số liệu (depth, rate) luôn tải MỚI — phiên chỉ nhớ mình đang xem cái gì.
+   */
+  const restoreSession = useCallback((raw: Record<string, unknown>) => {
+    const st = raw as Partial<RabbitSession>;
+    const vhost = typeof st.vhost === 'string' ? st.vhost : '/';
+    const queue = typeof st.queue === 'string' ? st.queue : '';
+    const exchange = typeof st.exchange === 'string' ? st.exchange : '';
+    if (queue) {
+      setSubView('queues');
+      void selectQueue(vhost, queue);
+    } else if (st.subView === 'exchanges') {
+      // Exchange mặc định có tên RỖNG — hợp lệ, nên phân biệt bằng subView chứ
+      // không bằng việc chuỗi tên có rỗng hay không.
+      setSubView('exchanges');
+      void selectExchange(vhost, exchange);
+    }
+  }, [selectQueue, selectExchange]);
 
   /**
    * Cross-view jump used by the DLX links and binding tables. The target's vhost
@@ -406,8 +461,12 @@ export default function RabbitWorkspace() {
   }
 
   return (
-    <div className="rabbit-layout" ref={railSplit.ref} style={railSplit.style}>
+    <div className={`rabbit-layout${railCollapse.collapsed ? ' rail-collapsed' : ''}`} ref={railSplit.ref} style={railSplit.style}>
+      {railCollapse.collapsed ? (
+        <CollapsedConnRail label="RabbitMQ" count={connections.length} onShow={railCollapse.show} />
+      ) : (
       <BrokerRail
+        onHide={connections.length > 0 ? railCollapse.hide : undefined}
         connections={connections}
         activeId={activeId}
         pings={pings}
@@ -430,8 +489,10 @@ export default function RabbitWorkspace() {
           if (activeId === deletedId) setActiveId(list[0]?.id ?? '');
           flash('Đã xoá broker khỏi danh sách');
         }}
+        onImported={(summary) => { void loadConnections(); flash(summary); }}
         onError={setError}
       />
+      )}
 
       <main className="panel rabbit-browser">
         {!active ? (
@@ -448,6 +509,12 @@ export default function RabbitWorkspace() {
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 {readOnly && <span className="badge" title="Thao tác ghi bị chặn">🔒 read-only</span>}
+                <SessionHistory
+                  scope="rabbit"
+                  connectionId={activeId}
+                  reloadKey={sessBump}
+                  onRestore={restoreSession}
+                />
                 <button className="chip-btn" onClick={reloadCurrent}>↻ Tải lại</button>
               </div>
             </div>
@@ -542,7 +609,8 @@ export default function RabbitWorkspace() {
           onPublish={(payload) => publishRabbitMessage(activeId, payload)}
         />
       )}
-      <Splitter {...railSplit.grip} />
+      {/* Đã gập thì không còn gì để kéo — dải 34px là cố định. */}
+      {!railCollapse.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

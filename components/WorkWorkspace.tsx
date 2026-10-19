@@ -26,9 +26,23 @@
 //
 // Kho lưu: một cụm Mongo chọn từ danh sách quản lý Mongo hiện có, hoặc nhập
 // connection mới (tự lưu vào menu Mongo luôn). First-run hiện panel cấu hình.
+//
+// HAI TAB CON (dãy nút ở đầu toolbar):
+//   · 📅 Lịch công việc — mọi thứ mô tả ở trên.
+//   · 📝 Ghi chú (components/work/NotesPanel) — kho thông tin dạng text: tên +
+//     tag + nội dung, không trạng thái/deadline/cảnh báo. Cùng cụm Mongo, cùng
+//     database, KHÁC collection ('devbox_work_notes').
+//   · 🎯 Nhiệm vụ trọng tâm (components/work/FocusPanel) — việc quan trọng phải
+//     xong trong một TUẦN / THÁNG, có deadline + tag, xem Kanban hoặc bảng. Khác
+//     hai tab trên: dùng được cả khi CHƯA cấu hình Mongo (lưu file local) — vì vậy
+//     thanh tab con luôn hiện, kể cả ở màn cài đặt.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ConnectionForm from './mongo/ConnectionForm';
+import NotesPanel from './work/NotesPanel';
+import FocusPanel from './work/FocusPanel';
+import { LunarTag, LunarCard, LunarReminderForm, useLunarHover, type LunarReminderInput } from './work/LunarCard';
+import { occursOn, alertText, repeatText, type LunarReminder } from '@/lib/lunarReminderCore';
 import type { PublicMongoConnection } from '@/lib/mongo';
 
 // ── Types (khớp lib/workTasks) ───────────────────────────────────────────────
@@ -88,6 +102,26 @@ async function workAction<T>(action: string, params: Record<string, unknown> = {
 const p2 = (n: number) => String(n).padStart(2, '0');
 const dstr = (d: Date) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
 const TODAY = () => dstr(new Date());
+
+/** 'YYYY-MM-DD' → Date LOCAL lúc 00:00 (new Date('2025-09-12') là UTC, lệch múi giờ). */
+const dparse = (s: string) => {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+/** Cộng n ngày vào 'YYYY-MM-DD' — Date tự cuốn tháng/năm, khỏi tự tính. */
+const dAdd = (s: string, n: number) => {
+  const d = dparse(s);
+  d.setDate(d.getDate() + n);
+  return dstr(d);
+};
+/** Số ngày từ a tới b (b - a). Chuẩn hóa về giữa trưa để DST không làm lệch. */
+const dDiff = (a: string, b: string) => {
+  const x = dparse(a); x.setHours(12);
+  const y = dparse(b); y.setHours(12);
+  return Math.round((y.getTime() - x.getTime()) / 86_400_000);
+};
+/** '2025-09-12' → '12/09' — nhãn ngắn trong popup kéo thả. */
+const dShort = (s: string) => s.split('-').slice(1).reverse().join('/');
 
 const PRIORITY_META: Record<Priority, { label: string; cls: string }> = {
   low: { label: 'Thấp', cls: 'lo' },
@@ -519,9 +553,158 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
   );
 }
 
+// ── Popup xác nhận sau khi kéo thả ───────────────────────────────────────────
+
+/** Việc có deadline có HAI mốc ngày (startDate, dlDate) nên "kéo sang ngày Y"
+ *  mơ hồ — người dùng chọn một trong ba cách hiểu. */
+type MoveMode = 'block' | 'deadline' | 'start';
+
+const MOVE_MODES: { key: MoveMode; label: string; hint: string }[] = [
+  { key: 'block', label: 'Dời cả khối', hint: 'Giữ nguyên độ dài, cả ngày bắt đầu lẫn deadline cùng dịch' },
+  { key: 'deadline', label: 'Chỉ đổi deadline', hint: 'Ngày bắt đầu giữ nguyên — gia hạn / rút ngắn' },
+  { key: 'start', label: 'Chỉ đổi ngày bắt đầu', hint: 'Deadline giữ nguyên — khoảng chạy co/giãn' },
+];
+
+/**
+ * Popup nhỏ hiện NGAY TẠI CHỖ THẢ: xác nhận dời công việc sang ngày khác.
+ *
+ * Nguyên tắc: các ô giờ ĐIỀN SẴN GIÁ TRỊ CŨ — mặc định chỉ NGÀY đổi, giờ giữ
+ * nguyên; muốn sửa giờ luôn thì sửa ngay tại đây, khỏi mở form đầy đủ.
+ *
+ * `fromDate` là ngày của Ô ĐANG KÉO, có thể là ngày GIỮA khoảng chạy (chip ⏳).
+ * Nhưng khi tính "dời cả khối" ta lấy mốc từ task.startDate chứ không phải
+ * fromDate — xem comment tại chỗ tính `delta`.
+ */
+function MoveTaskPopup({
+  task, fromDate, toDate, at, busy, onCancel, onSave,
+}: {
+  task: WorkTask;
+  fromDate: string;
+  toDate: string;
+  at: { x: number; y: number };
+  busy: boolean;
+  onCancel: () => void;
+  onSave: (patch: Partial<WorkTask>) => void;
+}) {
+  const isDaily = task.kind === 'daily';
+  const [mode, setMode] = useState<MoveMode>('block');
+  const [startTime, setStartTime] = useState(task.startTime ?? '');
+  const [endTime, setEndTime] = useState(task.endTime ?? '');
+  const [dlTime, setDlTime] = useState(task.dlTime ?? '');
+
+  // Ngày kết quả theo chế độ đang chọn — vừa để xem trước, vừa là thứ đem lưu.
+  const next = useMemo(() => {
+    if (isDaily) return { startDate: toDate, dlDate: null as string | null };
+    if (mode === 'deadline') return { startDate: task.startDate, dlDate: toDate };
+    if (mode === 'start') return { startDate: toDate, dlDate: task.dlDate };
+    // 'block': dịch cả hai mốc. Mốc quy chiếu là startDate, KHÔNG phải fromDate
+    // — kéo chip ⏳ ở ngày giữa được hiểu "coi như kéo ngày bắt đầu", nên thả
+    // vào ngày Y nghĩa là ngày BẮT ĐẦU về Y, dù ô nguồn nằm giữa khoảng.
+    const delta = dDiff(task.startDate, toDate);
+    return { startDate: toDate, dlDate: task.dlDate ? dAdd(task.dlDate, delta) : null };
+  }, [isDaily, mode, toDate, task.startDate, task.dlDate]);
+
+  // sanitize() bên server cũng chặn, nhưng báo trước ngay đây thì đỡ mất công.
+  const spanBad = !isDaily && !!next.dlDate && next.dlDate < next.startDate;
+  const timeBad = isDaily && (!startTime || !endTime);
+
+  const submit = () => {
+    if (busy || spanBad || timeBad) return;
+    onSave(isDaily
+      ? { startDate: next.startDate, startTime, endTime }
+      : { startDate: next.startDate, dlDate: next.dlDate, dlTime: dlTime || null });
+  };
+
+  // Esc = hủy, Enter = lưu. Bắt ở window vì popup không phải modal chiếm focus.
+  //
+  // CỐ Ý không có mảng dependency: gắn lại listener mỗi render để `submit` luôn
+  // đọc state giờ/chế độ MỚI NHẤT. Khóa dependency lại sẽ dính stale closure —
+  // Enter lưu theo giá trị lúc mount. Popup nhỏ, gắn/gỡ mỗi render không đáng kể.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+      else if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  // Kẹp trong viewport để popup không rơi ra ngoài khi thả sát mép phải/dưới.
+  const W = 268;
+  const H = isDaily ? 190 : 290;
+  const left = Math.max(8, Math.min(at.x + 12, window.innerWidth - W - 8));
+  const top = Math.max(8, Math.min(at.y + 12, window.innerHeight - H - 8));
+
+  return (
+    <>
+      {/* Lớp phủ trong suốt: click ra ngoài = hủy, và chặn click lọt xuống lịch. */}
+      <div className="wk-move-veil" onMouseDown={onCancel} />
+      <div className="wk-move-pop" style={{ left, top, width: W }} onMouseDown={(e) => e.stopPropagation()}>
+        <div className="wk-move-title" title={task.name}>
+          {isDaily ? '🕘' : STATUS_META[task.status].icon} Chuyển: <b>{task.name}</b>
+        </div>
+
+        <div className="wk-move-dates">
+          <span className="wk-move-from">{dShort(fromDate)}</span>
+          <span aria-hidden>→</span>
+          <span className="wk-move-to">{dShort(toDate)}</span>
+        </div>
+
+        {isDaily ? (
+          <div className="wk-move-times">
+            <label className="wk-field"><span>Giờ bắt đầu</span>
+              <input className="input" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+            </label>
+            <label className="wk-field"><span>Giờ kết thúc</span>
+              <input className="input" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+            </label>
+          </div>
+        ) : (
+          <>
+            <div className="wk-move-modes" role="group" aria-label="Cách dời">
+              {MOVE_MODES.map((m) => (
+                <button
+                  key={m.key}
+                  className={`wk-move-mode${mode === m.key ? ' on' : ''}`}
+                  aria-pressed={mode === m.key}
+                  title={m.hint}
+                  onClick={() => setMode(m.key)}
+                  disabled={busy}
+                >{m.label}</button>
+              ))}
+            </div>
+            <label className="wk-field"><span>Giờ deadline</span>
+              <input className="input" type="time" value={dlTime} onChange={(e) => setDlTime(e.target.value)} />
+            </label>
+            <div className="wk-move-preview">
+              Kết quả: <b>{dShort(next.startDate)}</b>
+              {next.dlDate && <> → <b>{dShort(next.dlDate)}</b>{dlTime ? ` ${dlTime}` : ''}</>}
+            </div>
+          </>
+        )}
+
+        {spanBad && <div className="wk-move-err">Deadline không được trước ngày bắt đầu.</div>}
+        {timeBad && <div className="wk-move-err">Việc trong ngày cần đủ giờ bắt đầu và kết thúc.</div>}
+
+        <div className="wk-move-actions">
+          <button className="ghost sm" onClick={onCancel} disabled={busy}>Hủy</button>
+          <button className="primary sm" onClick={submit} disabled={busy || spanBad || timeBad}>
+            {busy ? <span className="spinner" aria-hidden /> : '💾'} Lưu
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ── Workspace chính ──────────────────────────────────────────────────────────
 
+/** Hai tab con của workspace — lịch task và kho ghi chú. */
+type Sub = 'tasks' | 'notes' | 'focus';
+
 export default function WorkWorkspace() {
+  /** Tab con đang xem. Ghi chú mount lazy (chỉ gọi API khi người dùng mở). */
+  const [sub, setSub] = useState<Sub>('tasks');
   const [view, setView] = useState<ConfigView | null>(null);
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [showSetup, setShowSetup] = useState(false);
@@ -531,6 +714,24 @@ export default function WorkWorkspace() {
   const [ym, setYm] = useState<{ y: number; m: number }>({ y: now.getFullYear(), m: now.getMonth() });
   const [selDate, setSelDate] = useState<string>(TODAY());
   const [form, setForm] = useState<{ task: WorkTask | null } | null>(null);
+
+  // ── Kéo thả công việc giữa các ô ngày ──────────────────────────────────────
+  /** Chip đang được kéo + ngày của Ô NGUỒN (ô giữa khoảng chạy cũng tính). */
+  const [drag, setDrag] = useState<{ task: WorkTask; fromDate: string } | null>(null);
+  /** Ô đang hover trong lúc kéo — chỉ để tô sáng đích sắp thả. */
+  const [dragOver, setDragOver] = useState<string | null>(null);
+  /** Nhãn âm lịch đang hover → thẻ chi tiết (null = ẩn). */
+  const lunar = useLunarHover();
+  /** Ghi chú / lời nhắc âm lịch. null = chưa tải được (ẩn phần nhắc trên thẻ). */
+  const [reminders, setReminders] = useState<LunarReminder[] | null>(null);
+  /** Form thêm/sửa lời nhắc: date = ngày dương đang thao tác. */
+  const [lunarForm, setLunarForm] = useState<{ date: string; r: LunarReminder | null } | null>(null);
+  const [lunarErr, setLunarErr] = useState<string | null>(null);
+  /** Popup xác nhận sau khi thả (null = không có gì đang chờ). */
+  const [move, setMove] = useState<
+    { task: WorkTask; fromDate: string; toDate: string; at: { x: number; y: number } } | null
+  >(null);
+
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [formErr, setFormErr] = useState<string | null>(null);
@@ -551,6 +752,10 @@ export default function WorkWorkspace() {
       setTasks(r.tasks);
       setErr(null);
     } catch (e) { setErr((e as Error).message); }
+    // Lời nhắc âm lịch tải riêng — lỗi ở đây không được che mất danh sách task.
+    workAction<{ reminders: LunarReminder[] }>('lunar-list')
+      .then((r) => setReminders(r.reminders))
+      .catch(() => setReminders(null));
   }, []);
 
   useEffect(() => {
@@ -614,6 +819,18 @@ export default function WorkWorkspace() {
     }
     return out;
   }, [ym]);
+
+  /** Lời nhắc âm lịch rơi vào từng ngày đang hiển thị (42 ô). */
+  const remByDate = useMemo(() => {
+    const m = new Map<string, LunarReminder[]>();
+    if (!reminders?.length) return m;
+    for (const row of weeks) for (const cell of row) {
+      const hit = reminders.filter((r) => occursOn(r, cell.date));
+      if (hit.length) m.set(cell.date, hit);
+    }
+    return m;
+  }, [weeks, reminders]);
+  const remindersOn = (date: string) => remByDate.get(date) ?? (reminders ?? []).filter((r) => occursOn(r, date));
 
   /** 3 nhóm của ngày đang chọn: bắt đầu hôm nay · đang chạy · deadline hôm nay. */
   const dayTasks = useMemo(() => {
@@ -685,6 +902,28 @@ export default function WorkWorkspace() {
   }, [filterActive, kw, range, statusSel, kindSel, tasks]);
 
   // ── Mutations ──────────────────────────────────────────────────────────────
+  const openLunarForm = (date: string, r: LunarReminder | null) => {
+    lunar.close(); setLunarErr(null); setLunarForm({ date, r });
+  };
+  const saveLunar = async (v: LunarReminderInput) => {
+    if (!lunarForm) return;
+    setBusy(true); setLunarErr(null);
+    try {
+      if (lunarForm.r) await workAction('lunar-update', { id: lunarForm.r.id, ...v });
+      else await workAction('lunar-add', { ...v });
+      setLunarForm(null);
+      await loadTasks();
+    } catch (e) { setLunarErr((e as Error).message); } finally { setBusy(false); }
+  };
+  const removeLunar = async (r: LunarReminder) => {
+    setBusy(true); setLunarErr(null);
+    try {
+      await workAction('lunar-remove', { id: r.id });
+      setLunarForm(null);
+      await loadTasks();
+    } catch (e) { setLunarErr((e as Error).message); } finally { setBusy(false); }
+  };
+
   const saveTask = async (fields: Record<string, unknown>) => {
     setBusy(true); setFormErr(null);
     try {
@@ -693,6 +932,31 @@ export default function WorkWorkspace() {
       setForm(null);
       await loadTasks();
     } catch (e) { setFormErr((e as Error).message); } finally { setBusy(false); }
+  };
+
+  /** Dời ngày từ popup kéo thả.
+   *
+   *  GỬI LẠI ĐỦ MỌI FIELD, không phải patch: updateTask chạy sanitize() trên
+   *  TOÀN payload rồi $set đè (lib/workTasks.ts) — gửi thiếu field nào là field
+   *  đó bị ghi rỗng. Nguồn là chính task đang có trong state, chỉ đắp `patch`
+   *  ngày/giờ lên trên.
+   *
+   *  Cờ đã-nhắc tự reset bên server khi startDate/deadline đổi — đúng ý: dời
+   *  ngày thì phải nhắc lại theo lịch mới. */
+  const moveTask = async (t: WorkTask, patch: Partial<WorkTask>) => {
+    setBusy(true); setErr(null);
+    try {
+      await workAction('update', {
+        id: t.id,
+        kind: t.kind, project: t.project, name: t.name, desc: t.desc,
+        priority: t.priority, tags: t.tags, status: t.status,
+        startDate: t.startDate, startTime: t.startTime, endTime: t.endTime,
+        dlDate: t.dlDate, dlTime: t.dlTime, alert: t.alert,
+        ...patch,
+      });
+      setMove(null);
+      await loadTasks();
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   };
 
   /** Chuyển nhanh trạng thái — optimistic để nút phản hồi tức thì, list tải lại sau. */
@@ -717,27 +981,64 @@ export default function WorkWorkspace() {
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
+  const pickSub = (v: Sub) => { setSub(v); setShowSetup(false); };
+  const subTabs = (
+    /* Tab con: lịch công việc ↔ trọng tâm ↔ ghi chú. Công việc + ghi chú dùng chung
+       kho Mongo; trọng tâm tự chọn Mongo hoặc file local. */
+    <div className="wk-subtabs" role="tablist" aria-label="Tab con Công việc">
+      <button role="tab" aria-selected={sub === 'tasks'} className={`wk-subtab${sub === 'tasks' ? ' on' : ''}`}
+        onClick={() => pickSub('tasks')} title="Lịch tháng + danh sách công việc">📅 Công việc</button>
+      <button role="tab" aria-selected={sub === 'focus'} className={`wk-subtab${sub === 'focus' ? ' on' : ''}`}
+        onClick={() => pickSub('focus')} title="Việc quan trọng phải xong trong tuần / tháng — Kanban hoặc bảng, có deadline và tag">🎯 Nhiệm vụ trọng tâm</button>
+      <button role="tab" aria-selected={sub === 'notes'} className={`wk-subtab${sub === 'notes' ? ' on' : ''}`}
+        onClick={() => pickSub('notes')} title="Kho ghi chú: tên + tag + nội dung">📝 Ghi chú</button>
+    </div>
+  );
+  /** Khung có sẵn thanh tab con — cho các màn thay thế toàn bộ nội dung (cài đặt, chờ tải…). */
+  const shell = (body: React.ReactNode) => (
+    <div className="panel sheet-panel">
+      <div className="sheet-toolbar">{subTabs}</div>
+      {body}
+    </div>
+  );
+  /** Từ tab Trọng tâm: sang màn cấu hình cụm Mongo của tab Công việc. */
+  const configureMongo = () => {
+    setSub('tasks');
+    workAction<ConfigView>('config')
+      .then((v) => { setView(v); setEnabled(true); setShowSetup(true); })
+      .catch((e) => {
+        if ((e as Error).message.includes('MONGO_TOOL_ENABLED')) setEnabled(false);
+        else setErr((e as Error).message);
+      });
+  };
+
+  // Trọng tâm không cần Mongo → đứng TRƯỚC các màn chặn bên dưới.
+  if (sub === 'focus') return shell(<FocusPanel action={workAction} onConfigureMongo={configureMongo} />);
+
   if (enabled === false) {
-    return (
+    return shell(
       <div className="panel" style={{ margin: 'auto', width: 'min(560px, 94%)' }}>
         <div className="office-hero">
           <div className="office-hero-ico" aria-hidden>📋</div>
           <div className="office-hero-title">Tab Công việc cần Mongo tool</div>
           <p className="office-hero-sub">Đặt <code>MONGO_TOOL_ENABLED=true</code> trong <code>.env.local</code> rồi khởi động lại.</p>
+          <p className="office-hero-sub small" style={{ color: 'var(--muted)' }}>
+            Riêng <b>🎯 Nhiệm vụ trọng tâm</b> vẫn dùng được ngay — chưa có Mongo thì lưu trong file trên máy này.
+          </p>
         </div>
-      </div>
+      </div>,
     );
   }
   if (view === null) {
-    return <div className="panel" style={{ margin: 'auto' }}><span className="spinner" /> Đang tải…</div>;
+    return shell(<div className="panel" style={{ margin: 'auto' }}><span className="spinner" /> Đang tải…</div>);
   }
   if (!view.configured || showSetup) {
-    return (
+    return shell(
       <SetupPanel
         view={view}
         onSaved={(v) => { setView(v); setShowSetup(false); setTasks([]); if (v.configured) void loadTasks(); }}
         onCancel={view.configured ? () => setShowSetup(false) : undefined}
-      />
+      />,
     );
   }
 
@@ -809,10 +1110,15 @@ export default function WorkWorkspace() {
   return (
     <div className="panel sheet-panel">
       <div className="sheet-toolbar">
-        <button className="ghost sm" onClick={() => setYm(({ y, m }) => (m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 }))}>‹</button>
-        <b style={{ minWidth: 110, textAlign: 'center' }}>{monthLabel}</b>
-        <button className="ghost sm" onClick={() => setYm(({ y, m }) => (m === 11 ? { y: y + 1, m: 0 } : { y, m: m + 1 }))}>›</button>
-        <button className="ghost sm" onClick={() => { const d = new Date(); setYm({ y: d.getFullYear(), m: d.getMonth() }); setSelDate(TODAY()); }}>Hôm nay</button>
+        {subTabs}
+        {sub === 'tasks' && (
+          <>
+            <button className="ghost sm" onClick={() => setYm(({ y, m }) => (m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 }))}>‹</button>
+            <b style={{ minWidth: 110, textAlign: 'center' }}>{monthLabel}</b>
+            <button className="ghost sm" onClick={() => setYm(({ y, m }) => (m === 11 ? { y: y + 1, m: 0 } : { y, m: m + 1 }))}>›</button>
+            <button className="ghost sm" onClick={() => { const d = new Date(); setYm({ y: d.getFullYear(), m: d.getMonth() }); setSelDate(TODAY()); }}>Hôm nay</button>
+          </>
+        )}
         <span style={{ flex: 1 }} />
         <span className="badge" title="Kho lưu trữ">🍃 {view.connectionName} / {view.config?.database}</span>
         <button
@@ -825,9 +1131,18 @@ export default function WorkWorkspace() {
               .catch((e) => setErr((e as Error).message));
           }}
         >⚙</button>
-        <button className="ghost sm" onClick={() => void loadTasks()} title="Tải lại">↻</button>
-        <button className="sm" onClick={() => { setFormErr(null); setForm({ task: null }); }}>＋ Thêm công việc</button>
+        {sub === 'tasks' && (
+          <>
+            <button className="ghost sm" onClick={() => void loadTasks()} title="Tải lại">↻</button>
+            <button className="sm" onClick={() => { setFormErr(null); setForm({ task: null }); }}>＋ Thêm công việc</button>
+          </>
+        )}
       </div>
+      {sub === 'notes' ? (
+        /* Ghi chú dùng chung helper workAction — cùng endpoint /api/work. */
+        <NotesPanel action={workAction} />
+      ) : (
+      <>
       {/* ── Bộ lọc: keyword (dự án/tên/tag, không dấu) + thời gian ── */}
       <div className="wk-filter">
         <input
@@ -930,17 +1245,54 @@ export default function WorkWorkspace() {
                       cell.inMonth ? '' : 'dim',
                       isToday ? 'today' : '',
                       selDate === cell.date ? 'sel' : '',
+                      dragOver === cell.date ? 'drop' : '',
                     ].filter(Boolean).join(' ')}
                     onClick={() => setSelDate(cell.date)}
                     onDoubleClick={() => { setSelDate(cell.date); setFormErr(null); setForm({ task: null }); }}
+                    // Ô NHẬN THẢ. preventDefault trong onDragOver là BẮT BUỘC —
+                    // không gọi thì trình duyệt coi đây là vùng cấm thả và
+                    // onDrop không bao giờ bắn.
+                    onDragOver={(e) => {
+                      if (!drag || drag.fromDate === cell.date) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'move';
+                      if (dragOver !== cell.date) setDragOver(cell.date);
+                    }}
+                    onDragLeave={() => setDragOver((d) => (d === cell.date ? null : d))}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (!drag || drag.fromDate === cell.date) return;
+                      setMove({
+                        task: drag.task, fromDate: drag.fromDate, toDate: cell.date,
+                        at: { x: e.clientX, y: e.clientY },
+                      });
+                      setDrag(null); setDragOver(null);
+                    }}
                     title={[
                       cell.date,
                       running.length ? `${running.length} việc đang chạy` : '',
                       dls.length ? `${dls.length} deadline` : '',
                     ].filter(Boolean).join(' · ') + ' — double-click để thêm công việc'}
                   >
-                    <span className="wk-day-num">{cell.day}{dls.length > 0 && <span className="wk-day-dl" title={`${dls.length} deadline`}>⏰</span>}</span>
+                    <span className="wk-day-num">
+                      {/* Mùng 1 dương: ghi kèm tháng + màu nổi bật — thấy ngay ranh giới tháng ở các ô mờ đầu/cuối lịch. */}
+                      {cell.day === 1
+                        ? <span className="wk-day-m1">{cell.day}/{Number(cell.date.slice(5, 7))}</span>
+                        : cell.day}{dls.length > 0 && <span className="wk-day-dl" title={`${dls.length} deadline`}>⏰</span>}
+                      <LunarTag date={cell.date} onHover={lunar.set} />
+                    </span>
                     <span className="wk-day-chips">
+                      {(remByDate.get(cell.date) ?? []).slice(0, 2).map((r) => (
+                        <span
+                          key={r.id}
+                          className="wk-chip lunar"
+                          onClick={(e) => { e.stopPropagation(); setSelDate(cell.date); openLunarForm(cell.date, r); }}
+                          title={`🌙 ${r.title} — ${repeatText(r)} · ${alertText(r.alert)} · bấm để sửa`}
+                        >{r.alert ? '🔔' : '🌙'} {r.title}</span>
+                      ))}
+                      {(remByDate.get(cell.date)?.length ?? 0) > 2 && (
+                        <span className="wk-chip more">+{remByDate.get(cell.date)!.length - 2} nhắc AL</span>
+                      )}
                       {starts.slice(0, 3).map((t) => (
                         // Việc có deadline: đã xong / đã hủy đều gạch ngang, hover cho
                         // biết trạng thái nào. Việc trong ngày KHÔNG có trạng thái —
@@ -948,9 +1300,19 @@ export default function WorkWorkspace() {
                         <span
                           key={t.id}
                           className={`wk-chip ${PRIORITY_META[t.priority].cls}${t.kind === 'deadline' && !STATUS_META[t.status].alerts ? ' done' : ''}`}
+                          draggable
+                          onDragStart={(e) => {
+                            // Chip nằm TRONG <button> ô ngày: chặn nổi bọt để
+                            // thao tác kéo là của chip, không phải của ô.
+                            e.stopPropagation();
+                            e.dataTransfer.effectAllowed = 'move';
+                            e.dataTransfer.setData('text/plain', t.id); // vài engine cần mới khởi động drag
+                            setDrag({ task: t, fromDate: cell.date });
+                          }}
+                          onDragEnd={() => { setDrag(null); setDragOver(null); }}
                           title={t.kind === 'daily'
-                            ? `🕘 ${fmtSpan(t)} — ${t.name}`
-                            : `${STATUS_META[t.status].icon} ${STATUS_META[t.status].label} — ${t.name}`}
+                            ? `🕘 ${fmtSpan(t)} — ${t.name} · kéo sang ô khác để đổi ngày`
+                            : `${STATUS_META[t.status].icon} ${STATUS_META[t.status].label} — ${t.name} · kéo sang ô khác để đổi ngày`}
                         >{t.kind === 'daily' && t.startTime ? <span className="wk-chip-t">{t.startTime}</span> : STATUS_META[t.status].icon} {t.name}</span>
                       ))}
                       {starts.length > 3 && <span className="wk-chip more">+{starts.length - 3}</span>}
@@ -960,7 +1322,15 @@ export default function WorkWorkspace() {
                         <span
                           key={t.id}
                           className={`wk-chip span ${PRIORITY_META[t.priority].cls}`}
-                          title={`⏳ Đang chạy — ${t.name} · deadline ${fmtDl(t)}${t.deadlineMs !== null ? ` (${remainText(t.deadlineMs)})` : ''}`}
+                          draggable
+                          onDragStart={(e) => {
+                            e.stopPropagation();
+                            e.dataTransfer.effectAllowed = 'move';
+                            e.dataTransfer.setData('text/plain', t.id);
+                            setDrag({ task: t, fromDate: cell.date });
+                          }}
+                          onDragEnd={() => { setDrag(null); setDragOver(null); }}
+                          title={`⏳ Đang chạy — ${t.name} · deadline ${fmtDl(t)}${t.deadlineMs !== null ? ` (${remainText(t.deadlineMs)})` : ''} · kéo sang ô khác để dời cả khối`}
                         >⏳ {t.name}</span>
                       ))}
                       {running.length > 2 && <span className="wk-chip more">+{running.length - 2} đang chạy</span>}
@@ -975,7 +1345,10 @@ export default function WorkWorkspace() {
         {/* ── Panel ngày đang chọn + sắp đến hạn ── */}
         <aside className="wk-side">
           <div className="group-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ flex: 1 }}>Ngày {selDate.split('-').reverse().join('/')}</span>
+            <span style={{ flex: 1 }}>
+              Ngày {selDate.split('-').reverse().join('/')}{' '}
+              <span className="wk-side-lunar">🌙 <LunarTag date={selDate} onHover={lunar.set} full /></span>
+            </span>
             <button className="ghost sm" onClick={() => { setFormErr(null); setForm({ task: null }); }} title={`Thêm công việc bắt đầu ngày ${selDate}`}>＋</button>
           </div>
           {dayTasks.starts.length === 0 && dayTasks.running.length === 0 && dayTasks.dls.length === 0 && (
@@ -988,6 +1361,25 @@ export default function WorkWorkspace() {
           {dayTasks.running.map((t) => renderTaskRow(t, `từ ${t.startDate.split('-').reverse().join('/')}`))}
           {dayTasks.dls.length > 0 && <div className="group-title" style={{ marginTop: 8 }}>Deadline ngày này</div>}
           {dayTasks.dls.map((t) => renderTaskRow(t, 'deadline'))}
+
+          {reminders && (
+            <>
+              <div className="group-title" style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ flex: 1 }}>🌙 Ghi chú âm lịch</span>
+                <button className="ghost sm" onClick={() => openLunarForm(selDate, null)} title="Thêm ghi chú / lời nhắc theo ngày âm này">＋</button>
+              </div>
+              {remindersOn(selDate).length === 0 && (
+                <p className="small" style={{ color: 'var(--muted)', margin: 0 }}>Chưa có — bấm ＋ hoặc rê chuột vào ngày âm để thêm.</p>
+              )}
+              {remindersOn(selDate).map((r) => (
+                <button key={r.id} className="wk-lunar-rem" onClick={() => openLunarForm(selDate, r)} title="Bấm để sửa">
+                  <span className="wk-lunar-rem-t">{r.alert ? '🔔' : '📝'} {r.title}</span>
+                  <span className="wk-lunar-rem-s">{repeatText(r)} · {alertText(r.alert)}</span>
+                  {r.note && <span className="wk-lunar-rem-n">{r.note}</span>}
+                </button>
+              ))}
+            </>
+          )}
 
           {upcoming.length > 0 && (
             <>
@@ -1006,6 +1398,9 @@ export default function WorkWorkspace() {
       </div>
       )}
 
+      </>
+      )}
+
       {form && (
         <TaskForm
           initial={form.task}
@@ -1015,6 +1410,41 @@ export default function WorkWorkspace() {
           err={formErr}
           onSave={(f) => void saveTask(f)}
           onClose={() => setForm(null)}
+        />
+      )}
+
+      {lunar.hover && !lunarForm && (
+        <LunarCard
+          hover={lunar.hover}
+          reminders={reminders ? remindersOn(lunar.hover.date) : null}
+          onKeep={lunar.keep}
+          onLeave={() => lunar.set(null)}
+          onAdd={(d) => openLunarForm(d, null)}
+          onEdit={(r) => openLunarForm(lunar.hover!.date, r)}
+        />
+      )}
+
+      {lunarForm && (
+        <LunarReminderForm
+          date={lunarForm.date}
+          initial={lunarForm.r}
+          busy={busy}
+          err={lunarErr}
+          onSave={(v) => void saveLunar(v)}
+          onRemove={(r) => void removeLunar(r)}
+          onClose={() => setLunarForm(null)}
+        />
+      )}
+
+      {move && (
+        <MoveTaskPopup
+          task={move.task}
+          fromDate={move.fromDate}
+          toDate={move.toDate}
+          at={move.at}
+          busy={busy}
+          onCancel={() => setMove(null)}
+          onSave={(patch) => void moveTask(move.task, patch)}
         />
       )}
     </div>

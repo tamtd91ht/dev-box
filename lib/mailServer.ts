@@ -133,24 +133,56 @@ export interface SendInput {
 async function withImap<T>(
   account: MailAccount,
   fn: (client: ImapFlow) => Promise<T>,
-  /** Nhận log của ImapFlow — chỉ dùng khi verify để báo lỗi chi tiết. */
-  onLog?: (entry: Record<string, unknown>) => void,
 ): Promise<T> {
+  // Vài dòng log cuối của server, kể cả ở đường chạy THƯỜNG.
+  //
+  // VÌ SAO: imapflow ném `new Error('Command failed')` khi server từ chối —
+  // một chuỗi trống rỗng. Trước đây chỉ verifyImap (lúc THÊM tài khoản) mới
+  // bắt log và phân loại, nên khi mật khẩu/token chết SAU ĐÓ, người dùng chỉ
+  // thấy đúng hai chữ "Command failed" và không có lối nào liên kết lại.
+  // Giờ mọi kết nối đều giữ log → lỗi nào cũng phân loại được.
+  const tail: string[] = [];
+  const keepLog = (o: Record<string, unknown>) => {
+    const msg = [o.msg, o.err, o.responseText].filter((v) => typeof v === 'string').join(' ');
+    // KHÔNG ghi dòng chứa lệnh LOGIN/AUTHENTICATE (có mật khẩu/token trong đó).
+    if (msg && !/\blogin\b|\bauthenticate\b/i.test(msg)) {
+      tail.push(msg);
+      if (tail.length > 6) tail.shift();
+    }
+  };
   const client = new ImapFlow({
     host: account.imap.host,
     port: account.imap.port,
     secure: account.imap.secure,
     // pass HOẶC accessToken (XOAUTH2) — imapflow tự chọn cơ chế theo field có mặt.
     auth: await authFor(account),
-    // logger: false ở đường chạy thường (khỏi ồn + khỏi rò mật khẩu vào log).
-    // Khi verify thì bắt log để lấy đúng câu server từ chối.
-    logger: onLog
-      ? { debug: () => {}, info: (o) => onLog(o as Record<string, unknown>), warn: (o) => onLog(o as Record<string, unknown>), error: (o) => onLog(o as Record<string, unknown>) }
-      : false,
+    // Bắt log ở MỌI kết nối (không chỉ verify): câu từ chối thật của server
+    // nằm ở đây, và không có nó thì lỗi chỉ còn "Command failed".
+    logger: {
+      debug: () => {},
+      info: (o) => keepLog(o as Record<string, unknown>),
+      warn: (o) => keepLog(o as Record<string, unknown>),
+      error: (o) => keepLog(o as Record<string, unknown>),
+    },
   });
-  await client.connect();
+  // connect() = TCP + TLS + LOGIN. Hỏng ở đây là hỏng XÁC THỰC/kết nối — thứ
+  // người dùng sửa được bằng cách liên kết lại. Bọc riêng để không nhầm với
+  // lỗi của `fn` (folder không tồn tại, UID đã xóa…), vốn không cần đăng nhập lại.
+  try {
+    await client.connect();
+  } catch (err) {
+    throw new ImapVerifyError(classifyImapError(err, account, tail));
+  }
   try {
     return await fn(client);
+  } catch (err) {
+    // Lệnh giữa chừng cũng có thể chết vì token hết hạn (server ngắt phiên).
+    // Chỉ nâng lên ImapVerifyError khi đúng là lỗi xác thực; còn lại giữ nguyên.
+    const f = classifyImapError(err, account, tail);
+    if (f.kind === 'auth' || f.kind === 'app-password' || f.kind === 'imap-disabled') {
+      throw new ImapVerifyError(f);
+    }
+    throw err;
   } finally {
     await client.logout().catch(() => client.close());
   }
@@ -168,25 +200,13 @@ export class ImapVerifyError extends Error {
 }
 
 export async function verifyImap(account: MailAccount): Promise<void> {
-  // Giữ vài dòng log cuối của server — câu từ chối thật thường nằm ở đây.
-  const tail: string[] = [];
-  const onLog = (o: Record<string, unknown>) => {
-    const msg = [o.msg, o.err, o.responseText].filter((v) => typeof v === 'string').join(' ');
-    // KHÔNG ghi dòng chứa lệnh LOGIN (có mật khẩu trong đó).
-    if (msg && !/\blogin\b|\bauthenticate\b/i.test(msg)) {
-      tail.push(msg);
-      if (tail.length > 6) tail.shift();
-    }
-  };
+  // withImap đã bắt log + phân loại rồi (xem ghi chú ở đó), nên ở đây chỉ còn
+  // việc LÀM PHẲNG failure thành message text đầy đủ cho log và caller cũ.
   try {
-    await withImap(account, async () => undefined, onLog);
+    await withImap(account, async () => undefined);
   } catch (err) {
-    // Kèm dữ liệu có cấu trúc để UI dựng nút/link khắc phục, đồng thời message
-    // vẫn là text đầy đủ cho log và cho caller cũ.
-    const failure = classifyImapError(err, account, tail);
-    const e = new ImapVerifyError(failure);
-    e.message = explainImapError(err, account, tail);
-    throw e;
+    if (err instanceof ImapVerifyError) err.message = flattenFailure(err.failure);
+    throw err;
   }
 }
 
@@ -380,7 +400,11 @@ export function classifyImapError(
 /** Bản LÀM PHẲNG của classifyImapError thành text — dùng cho log và cho chỗ
  *  nào chỉ hiển thị được một chuỗi. UI mới nên dùng classifyImapError. */
 export function explainImapError(err: unknown, account: MailAccount, serverLog: string[] = []): string {
-  const f = classifyImapError(err, account, serverLog);
+  return flattenFailure(classifyImapError(err, account, serverLog));
+}
+
+/** ImapFailure → một chuỗi đọc được (cho log, hoặc chỗ chỉ hiện được text). */
+export function flattenFailure(f: ImapFailure): string {
   const lines = [f.title];
   if (f.steps.length) lines.push('', ...f.steps.map((s) => `• ${s}`));
   if (f.links.length) lines.push('', ...f.links.map((l) => `${l.label}: ${l.url}`));
@@ -483,6 +507,26 @@ export async function listMessages(account: MailAccount, path: string, beforeSeq
   });
 }
 
+/** Đánh dấu đã đọc MỘT DANH SÁCH UID cụ thể. Dùng khi mở một CHUỖI hội thoại:
+ *  các thư chưa đọc còn lại trong chuỗi cũng được coi là đã đọc (kiểu Gmail) —
+ *  không thì chuỗi kẹt mãi ở "chưa đọc" khi thư mới nhất đã đọc mà thư cũ
+ *  trong chuỗi thì chưa, mở kiểu gì cũng không hết. */
+export async function markSeen(
+  account: MailAccount,
+  path: string,
+  uids: number[],
+): Promise<{ marked: number }> {
+  return withImap(account, async (client) => {
+    const lock = await client.getMailboxLock(path);
+    try {
+      await client.messageFlagsAdd(uids.join(','), ['\\Seen'], { uid: true });
+      return { marked: uids.length };
+    } finally {
+      lock.release();
+    }
+  });
+}
+
 /** Đánh dấu TOÀN BỘ mail trong folder là đã đọc (\Seen) — nút "Đánh dấu tất cả đã đọc". */
 export async function markAllSeen(account: MailAccount, path: string): Promise<{ marked: number }> {
   return withImap(account, async (client) => {
@@ -570,7 +614,11 @@ export async function getMessage(account: MailAccount, path: string, uid: number
       for await (const c of dl.content) chunks.push(c as Buffer);
       const parsed = await simpleParser(Buffer.concat(chunks));
 
-      await client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true }).catch(() => {});
+      // Nuốt lỗi nhưng phải NÓI: gắn cờ hỏng mà im lặng thì "đọc rồi vẫn chưa
+      // đọc" không có lấy một dấu vết để lần (log này hiện ở Console trong app).
+      await client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true }).catch((e) => {
+        console.error(`[mail] không gắn được \\Seen cho uid ${uid} @ ${path}:`, (e as Error).message);
+      });
 
       return toDetail(parsed, uid);
     } finally {
@@ -664,6 +712,42 @@ export async function deleteMessage(
       }
       await client.messageDelete(String(uid), { uid: true });
       return { mode: 'purged' as const };
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+/** Tìm folder Spam của hộp thư: ưu tiên special-use \Junk, fallback theo tên. */
+async function findJunkPath(client: ImapFlow): Promise<string | null> {
+  const boxes = (await client.list()) as ListResponse[];
+  const byUse = boxes.find((b) => b.specialUse === '\\Junk');
+  if (byUse) return byUse.path;
+  const NAMES = ['junk', 'spam', 'junk e-mail', 'junk email', 'bulk mail', 'thư rác'];
+  const byName = boxes.find((b) => NAMES.includes(b.name.toLowerCase()) || NAMES.includes(b.path.toLowerCase()));
+  return byName?.path ?? null;
+}
+
+/**
+ * Đánh dấu spam — MOVE vào folder Junk/Spam, cùng triết lý deleteMessage: chỉ
+ * thao tác UID, KHÔNG đọc/parse nội dung nên an toàn với chính loại mail mà
+ * người ta muốn đánh dấu. Move (thay vì chỉ gắn cờ) để filter phía server học
+ * và mail biến khỏi INBOX trên mọi client. Không có folder Junk thì nói rõ —
+ * đừng im lặng không làm gì.
+ */
+export async function markSpam(
+  account: MailAccount,
+  path: string,
+  uid: number,
+): Promise<{ junkPath: string }> {
+  return withImap(account, async (client) => {
+    const junk = await findJunkPath(client);
+    if (!junk) throw new Error('Hộp thư này không có thư mục Spam/Junk — không đánh dấu được.');
+    if (junk === path) throw new Error('Mail đã nằm trong thư mục Spam.');
+    const lock = await client.getMailboxLock(path);
+    try {
+      await client.messageMove(String(uid), junk, { uid: true });
+      return { junkPath: junk };
     } finally {
       lock.release();
     }

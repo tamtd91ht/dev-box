@@ -20,10 +20,11 @@ import WordFindPanel from './WordFindPanel';
 import WordOutline from './WordOutline';
 import WordHeaderFooterModal from './WordHeaderFooterModal';
 import WordInsertTableModal from './WordInsertTableModal';
+import WordPageSetupModal from './WordPageSetupModal';
 import { fmtBytes } from '@/lib/sheet';
 import {
   applyParaPatch, commonRunFormat, mergeRuns, patchRunRange, runsText,
-  fetchWordFlags, openWordFile, createWordFile, saveWordFile,
+  fetchWordFlags, openWordFile, createWordFile, saveWordFile, statWordFile, openWordExternal,
   type HeaderFooter, type PageSetup, type ParaFormatPatch, type RunFormatPatch,
   type RunSpan, type TableCell, type WordFlags, type WordOp, type WordOpenResult,
   type WordTemplate,
@@ -34,6 +35,8 @@ import {
 } from '@/lib/wordDocUtils';
 
 const RECENT_KEY = 'word.recent';
+/** Trần số bước hoàn tác giữ trong bộ nhớ. */
+const MAX_UNDO = 50;
 const VIEW_KEY = 'word.view';
 
 /** Các nấc phóng to của khung soạn thảo (Ctrl+= / Ctrl+− nhảy theo nấc). */
@@ -198,6 +201,8 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
   const [findOpen, setFindOpen] = useState(false);
   const [hfOpen, setHfOpen] = useState<'header' | 'footer' | null>(null);
   const [tableOpen, setTableOpen] = useState(false);
+  const [pageOpen, setPageOpen] = useState(false);
+  const imgInputRef = useRef<HTMLInputElement | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(true);
   // Đọc từ localStorage trong effect (không phải initializer) — component này
   // vẫn được render trước ở server, đụng `window` ở đó là vỡ.
@@ -247,6 +252,24 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
 
   const dirtyCount = ops.length;
 
+  // ── Hoàn tác / làm lại (Ctrl+Z / Ctrl+Y) ───────────────────────────────────
+  //
+  // Mỗi thao tác sửa chụp NGUYÊN trạng thái tài liệu TRƯỚC khi đổi (blocks + đầu/chân
+  // trang + khổ giấy + op log) — rẻ ở quy mô tài liệu văn phòng và khỏi phải viết hàm
+  // nghịch đảo cho từng loại op (cùng cách với Sheet). Trạng thái hiện tại luôn nằm
+  // trong `docRef`; pushOp đọc nó lúc bấm nên thấy đúng trạng thái trước thao tác.
+  // MỞ file khác và LƯU đều xoá lịch sử: hoàn tác qua mốc lưu sẽ khôi phục op log cũ,
+  // mà các op đó đã nằm trong file rồi — lần lưu sau sẽ phát lại chúng lần nữa.
+  const docRef = useRef({ blocks, headers, footers, page, ops });
+  docRef.current = { blocks, headers, footers, page, ops };
+  const undoRef = useRef<(typeof docRef.current)[]>([]);
+  const redoRef = useRef<(typeof docRef.current)[]>([]);
+  const [histTick, setHistTick] = useState(0);
+  const clearHistory = useCallback(() => {
+    undoRef.current = []; redoRef.current = [];
+    setHistTick((t) => t + 1);
+  }, []);
+
   const applyOpen = useCallback((res: WordOpenResult) => {
     setFile(res);
     setBlocks(res.blocks.slice());
@@ -254,13 +277,14 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     setFooters(res.footers);
     setPage(res.page);
     setOps([]);
+    clearHistory();
     setSel(null); setEditing(null); setRange(null);
     setCell(null); setEditingCell(null);
     setHits(new Set()); setFocusBlock(null);
     setPickerOpen(false);
     const list = [res.path, ...loadRecent().filter((x) => x !== res.path)];
     saveRecent(list); setRecent(list.slice(0, 10));
-  }, []);
+  }, [clearHistory]);
 
   const openPath = useCallback(async (p: string) => {
     setBusy(true); setErr(null);
@@ -313,12 +337,99 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
 
   const reload = useCallback(() => {
     if (!file || !confirmDiscard('tải lại')) return;
+    setExtChanged(false);
     void openPath(file.path);
   }, [file, confirmDiscard, openPath]);
 
+  // ── Mở bằng Word (ứng dụng ngoài) + tự nạp lại khi file bị sửa bên ngoài ────
+  //
+  // Việc nặng (hình, SmartArt, theo dõi thay đổi, mẫu phức tạp…) làm bằng chính Word.
+  // Hai bên chia sẻ MỘT file trên đĩa, nên khi cửa sổ app được focus lại ta so mtime:
+  // file đã đổi mà chưa có thay đổi nào của app thì nạp lại ngay; còn thay đổi chưa lưu
+  // thì KHÔNG tự ghi đè — hiện thanh báo để người dùng chọn. Dò bằng sự kiện focus chứ
+  // không bằng timer: không tốn một nhịp poll nào lúc đang làm việc.
+  const [extChanged, setExtChanged] = useState(false);
+  const live = useRef({ file, dirtyCount, editing, editingCell, busy: false });
+  live.current = { file, dirtyCount, editing, editingCell, busy };
+
+  const openExternally = useCallback(async () => {
+    if (!file) return;
+    if (dirtyCount > 0 && !window.confirm(
+      `Có ${dirtyCount} thay đổi chưa lưu trong app — Word sẽ mở bản trên đĩa, KHÔNG có các thay đổi này.\n\nBấm OK để vẫn mở (nên Lưu trước), Hủy để quay lại.`,
+    )) return;
+    try {
+      await openWordExternal(file.path);
+      flash('Đã mở bằng ứng dụng mặc định. Sửa xong, Lưu bên đó rồi quay lại đây — app tự nạp lại.');
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, [file, dirtyCount, flash]);
+
+  useEffect(() => {
+    if (!file?.path) return;
+    const path = file.path;
+    const check = async () => {
+      const cur = live.current;
+      if (!cur.file || cur.file.path !== path || cur.busy) return;
+      try {
+        const st = await statWordFile(path);
+        if (Math.abs(st.mtimeMs - cur.file.mtimeMs) <= 1) return;
+        if (live.current.dirtyCount > 0 || live.current.editing !== null || live.current.editingCell !== null) {
+          setExtChanged(true);
+          return;
+        }
+        applyOpen(await openWordFile(path));
+        setExtChanged(false);
+        flash('File vừa được chương trình khác sửa — đã nạp lại bản mới.');
+      } catch { /* file bị xoá/đổi tên/đang bị khoá: bỏ qua, lần focus sau thử lại */ }
+    };
+    const onVis = () => { if (document.visibilityState === 'visible') void check(); };
+    window.addEventListener('focus', check);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('focus', check);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [file?.path, applyOpen, flash]);
+
   // ── Op log ──────────────────────────────────────────────────────────────────
 
-  const pushOp = useCallback((op: WordOp) => setOps((os) => [...os, op]), []);
+  const pushOp = useCallback((op: WordOp) => {
+    const before = docRef.current;
+    const last = undoRef.current[undoRef.current.length - 1];
+    // Nhiều op trong CÙNG một thao tác (vd chèn bảng + đoạn trống phía sau) cùng đọc một
+    // trạng thái trước → chỉ chụp một lần, hoàn tác lùi được cả cụm.
+    if (!last || last.ops !== before.ops) {
+      undoRef.current.push(before);
+      if (undoRef.current.length > MAX_UNDO) undoRef.current.shift();
+      redoRef.current = [];
+      setHistTick((t) => t + 1);
+    }
+    setOps((os) => [...os, op]);
+  }, []);
+
+  const restore = useCallback((snap: typeof docRef.current) => {
+    setBlocks(snap.blocks); setHeaders(snap.headers); setFooters(snap.footers);
+    setPage(snap.page); setOps(snap.ops);
+    // Chỉ số khối có thể không còn nghĩa sau khi khôi phục — bỏ chọn cho chắc.
+    setSel(null); setEditing(null); setRange(null); setCell(null); setEditingCell(null);
+    setHits(new Set());
+    setHistTick((t) => t + 1);
+  }, []);
+
+  const doUndo = useCallback(() => {
+    const snap = undoRef.current.pop();
+    if (!snap) return;
+    redoRef.current.push(docRef.current);
+    restore(snap);
+  }, [restore]);
+
+  const doRedo = useCallback(() => {
+    const snap = redoRef.current.pop();
+    if (!snap) return;
+    undoRef.current.push(docRef.current);
+    restore(snap);
+  }, [restore]);
 
   /** Đánh dấu một block là đã sửa (để tô nền cảnh báo). */
   const markDirty = useCallback((i: number) => {
@@ -598,6 +709,73 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     flash(`Đã đặt ${part === 'header' ? 'đầu trang' : 'chân trang'} — bấm Lưu để ghi vào file.`);
   }, [pushOp, flash]);
 
+  // ── Chèn ảnh ────────────────────────────────────────────────────────────────
+
+  /**
+   * Chèn ảnh thành MỘT đoạn riêng (căn giữa) ngay dưới khối đang chọn. Kích thước đổi từ
+   * px sang point theo 96dpi rồi co lại cho vừa bề rộng vùng chữ (và không cao quá một
+   * trang) — ảnh chụp màn hình/ảnh điện thoại thường to gấp nhiều lần khổ giấy.
+   * Đoạn có ảnh bị khóa sửa chữ, giống mọi đoạn chứa ảnh khác trong file.
+   */
+  const insertImage = useCallback(async (file: File) => {
+    if (!['image/png', 'image/jpeg', 'image/gif', 'image/bmp'].includes(file.type)) {
+      setErr('Chỉ chèn được ảnh PNG, JPEG, GIF hoặc BMP.');
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) { setErr('Ảnh quá lớn (tối đa 8 MB).'); return; }
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(new Error('Không đọc được file ảnh.'));
+        fr.readAsDataURL(file);
+      });
+      const px = await new Promise<{ w: number; h: number }>((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight });
+        im.onerror = () => reject(new Error('File không phải ảnh hợp lệ.'));
+        im.src = dataUrl;
+      });
+      let w = Math.max(1, px.w * 0.75);
+      let h = Math.max(1, px.h * 0.75);
+      const maxW = Math.max(72, page.w - page.ml - page.mr);
+      const maxH = Math.max(72, page.h - page.mt - page.mb);
+      if (w > maxW) { h = (h * maxW) / w; w = maxW; }
+      if (h > maxH) { w = (w * maxH) / h; h = maxH; }
+      w = Math.round(w * 100) / 100; h = Math.round(h * 100) / 100;
+
+      const at = sel !== null ? sel + 1 : blocks.length;
+      setBlocks((bs) => {
+        const nb = bs.slice();
+        nb.splice(Math.min(at, nb.length), 0, {
+          kind: 'p', runs: [], fmt: { jc: 'c' }, locked: true, lockReason: 'ảnh/hình vẽ',
+          imgs: [{ src: dataUrl, w, h }], d: true,
+        });
+        return nb;
+      });
+      pushOp({
+        op: 'imgInsert', i: at, name: file.name.replace(/\.[^.]+$/, '').slice(0, 100) || 'Hình ảnh',
+        mime: file.type, b64: dataUrl.slice(dataUrl.indexOf(',') + 1), w, h, jc: 'c',
+      });
+      setSel(at); setEditing(null);
+      flash('Đã chèn ảnh — bấm Lưu để ghi vào file.');
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, [page, sel, blocks.length, pushOp, flash]);
+
+  // ── Bố cục trang (khổ giấy / hướng / lề) ───────────────────────────────────
+
+  const applyPageSetup = useCallback((p: PageSetup) => {
+    setPage(p);
+    pushOp({
+      op: 'pageSetup', w: p.w, h: p.h, mt: p.mt, mr: p.mr, mb: p.mb, ml: p.ml,
+      ...(p.landscape ? { landscape: 1 as const } : {}),
+    });
+    setPageOpen(false);
+    flash('Đã đổi bố cục trang — bấm Lưu để ghi vào file.');
+  }, [pushOp, flash]);
+
   // ── Tìm & thay thế ──────────────────────────────────────────────────────────
 
   const jumpTo = useCallback((i: number) => {
@@ -677,6 +855,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
       const res = await saveWordFile(file.path, file.mtimeMs, ops);
       setFile((f) => (f ? { ...f, mtimeMs: res.mtimeMs, sizeBytes: res.sizeBytes } : f));
       setOps([]);
+      clearHistory();
       setBlocks((bs) => bs.map((b) => (b.d ? { ...b, d: undefined } : b)));
       setSaveOpen(false);
       flash(`Đã lưu ✓${res.replaced ? ` (thay ${res.replaced} chỗ)` : ''} · backup: ${res.backupPath}`);
@@ -685,7 +864,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     } finally {
       setBusy(false);
     }
-  }, [file, ops, flash]);
+  }, [file, ops, flash, clearHistory]);
 
   // ── Phím tắt ────────────────────────────────────────────────────────────────
 
@@ -698,7 +877,14 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
       const k = e.key.toLowerCase();
-      if (k === 'f') { e.preventDefault(); setFindOpen(true); }
+      // Đang gõ trong một đoạn/ô: Ctrl+Z là của trình duyệt (hoàn tác chữ vừa gõ),
+      // không phải của lịch sử tài liệu.
+      const typing = editing !== null || editingCell !== null;
+      if ((k === 'z' || k === 'y') && !typing) {
+        e.preventDefault();
+        if (k === 'y' || e.shiftKey) doRedo(); else doUndo();
+      }
+      else if (k === 'f') { e.preventDefault(); setFindOpen(true); }
       else if (k === 'b') { e.preventDefault(); applyRunFormat({ b: 1 }); }
       else if (k === 'i') { e.preventDefault(); applyRunFormat({ i: 1 }); }
       else if (k === 'u') { e.preventDefault(); applyRunFormat({ u: 1 }); }
@@ -715,7 +901,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [file, active, applyRunFormat, doPrint, allowWrite, ops.length, zoomBy, patchView]);
+  }, [file, active, applyRunFormat, doPrint, allowWrite, ops.length, zoomBy, patchView, editing, editingCell, doUndo, doRedo]);
 
   // ── Dẫn xuất cho thanh công cụ ──────────────────────────────────────────────
 
@@ -778,6 +964,8 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
             <span className="office-point">🔢 Đầu/chân trang &amp; số trang</span>
             <span className="office-point">🔎 Tìm &amp; thay thế · mục lục</span>
             <span className="office-point">🖨 In / xuất PDF</span>
+            <span className="office-point">↶ Hoàn tác / làm lại</span>
+            <span className="office-point">🖼 Chèn ảnh · 📐 Khổ giấy &amp; lề</span>
             <span className="office-point">🛟 Tự backup .bak khi lưu</span>
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
@@ -848,7 +1036,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
   const fmtEdits = opCount(['runFmt', 'paraFmt', 'cellFmt', 'tblBorder']);
   const structEdits = opCount([
     'insert', 'delete', 'move', 'pageBreak', 'tblInsert',
-    'tblRowInsert', 'tblRowDelete', 'tblColInsert', 'tblColDelete', 'hfSet',
+    'tblRowInsert', 'tblRowDelete', 'tblColInsert', 'tblColDelete', 'hfSet', 'pageSetup', 'imgInsert',
   ]);
 
   const targetLabel = cell
@@ -858,12 +1046,34 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
       : 'chỗ đang chọn';
 
   return (
-    <div className="panel sheet-panel">
+    /* data-hist: undo/redo stack nằm trong ref (không kích hoạt render), nên histTick
+       là thứ ép render lại để hai nút Hoàn tác/Làm lại bật-tắt đúng. */
+    <div className="panel sheet-panel" data-hist={histTick}>
       <div className="sheet-toolbar">
         <span className="picker-cwd small" title={file.path}>{file.path}</span>
         <span className="badge">DOCX</span>
         <span className="badge" title="Kích thước file">{fmtBytes(file.sizeBytes)}</span>
+        <button
+          className="ghost sm"
+          onClick={doUndo}
+          disabled={busy || undoRef.current.length === 0}
+          title={`Hoàn tác (Ctrl+Z)${undoRef.current.length ? ` — còn ${undoRef.current.length} bước` : ''}`}
+        >
+          ↶ Hoàn tác
+        </button>
+        <button
+          className="ghost sm"
+          onClick={doRedo}
+          disabled={busy || redoRef.current.length === 0}
+          title={`Làm lại (Ctrl+Y)${redoRef.current.length ? ` — còn ${redoRef.current.length} bước` : ''}`}
+        >
+          ↷ Làm lại
+        </button>
         <button className="ghost sm" onClick={reload} disabled={busy} title="Đọc lại file từ đĩa">↻ Tải lại</button>
+        <button className="ghost sm" onClick={() => void openExternally()} disabled={busy}
+          title="Mở file bằng ứng dụng mặc định (Word / WPS / LibreOffice…) để làm việc nặng. Sửa xong Lưu bên đó, quay lại đây app tự nạp lại.">
+          ↗ Mở bằng Word
+        </button>
         <button className="ghost sm" onClick={() => setPickerOpen(true)} disabled={busy} title="Mở file khác">📂 File khác</button>
         <button
           className="ghost sm"
@@ -876,6 +1086,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
         <span style={{ flex: 1 }} />
         {dirtyCount > 0 && <span className="badge sheet-dirty-badge">● {dirtyCount} thay đổi</span>}
         <button className="ghost sm" onClick={() => setFindOpen((o) => !o)} title="Tìm & thay thế (Ctrl+F)">🔎 Tìm</button>
+        <button className="ghost sm" onClick={() => setPageOpen(true)} title="Khổ giấy, hướng giấy, lề">📐 Bố cục trang</button>
         <button className="ghost sm" onClick={() => setHfOpen('header')} title="Đặt nội dung đầu trang">⌃ Đầu trang</button>
         <button className="ghost sm" onClick={() => setHfOpen('footer')} title="Đặt chân trang và số trang tự động">⌄ Chân trang</button>
         <button className="ghost sm" onClick={doPrint} title="Mở bản in — chọn 'Save as PDF' để xuất PDF (Ctrl+P)">🖨 In / PDF</button>
@@ -918,6 +1129,25 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
         >
           ＋ Thêm đoạn
         </button>
+        <button
+          className="ghost sm"
+          onClick={() => imgInputRef.current?.click()}
+          disabled={busy}
+          title="Chèn ảnh PNG / JPEG / GIF / BMP (tối đa 8 MB) thành một đoạn riêng"
+        >
+          🖼 Chèn ảnh
+        </button>
+        <input
+          ref={imgInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/bmp"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = ''; // chọn lại cùng file vẫn kích hoạt onChange
+            if (f) void insertImage(f);
+          }}
+        />
         <button className="ghost sm" onClick={() => moveBlock(-1)} disabled={busy || sel === null || sel === 0}
           title="Đưa khối đang chọn lên trên">↑ Lên</button>
         <button className="ghost sm" onClick={() => moveBlock(1)} disabled={busy || sel === null || sel === blocks.length - 1}
@@ -966,6 +1196,13 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
         <div className="sheet-banner">
           ⚠ Tài liệu quá dài — chỉ hiển thị {blocks.length.toLocaleString('vi')} khối đầu.
           Sửa trong vùng hiển thị vẫn an toàn cho phần còn lại.
+        </div>
+      )}
+      {extChanged && (
+        <div className="sheet-extbar" role="alert">
+          File đã bị chương trình khác sửa trên đĩa, trong khi bạn đang có {dirtyCount} thay đổi chưa lưu — app không tự ghi đè.
+          <button className="sm" onClick={reload} title="Bỏ các thay đổi chưa lưu và đọc lại bản trên đĩa">↻ Tải lại bản mới</button>
+          <button className="ghost sm" onClick={() => setExtChanged(false)} title="Giữ nguyên. Lưu từ app sẽ bị từ chối cho tới khi tải lại (tránh đè mất bản kia)">Để sau</button>
         </div>
       )}
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '6px 0' }}>{err}</pre>}
@@ -1037,6 +1274,10 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
         <WordInsertTableModal onInsert={insertTable} onClose={() => setTableOpen(false)} />
       )}
 
+      {pageOpen && (
+        <WordPageSetupModal page={page} onApply={applyPageSetup} onClose={() => setPageOpen(false)} />
+      )}
+
       {hfOpen && (
         <WordHeaderFooterModal
           part={hfOpen}
@@ -1061,7 +1302,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
             <ul className="sheet-save-summary">
               {textEdits > 0 && <li>{textEdits} thay đổi nội dung</li>}
               {fmtEdits > 0 && <li>{fmtEdits} thay đổi định dạng</li>}
-              {structEdits > 0 && <li>{structEdits} thay đổi bố cục (thêm/xóa/di chuyển khối, bảng, đầu-chân trang)</li>}
+              {structEdits > 0 && <li>{structEdits} thay đổi bố cục (thêm/xóa/di chuyển khối, bảng, đầu-chân trang, khổ giấy/lề)</li>}
             </ul>
 
             <div className="sheet-save-note">

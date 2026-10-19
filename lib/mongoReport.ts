@@ -8,7 +8,7 @@
 // everything else is text. A column's `format: 'auto'` applies the detection
 // per value; explicit formats force the interpretation.
 
-export type ColumnFormat = 'auto' | 'text' | 'number' | 'date' | 'datetime';
+export type ColumnFormat = 'auto' | 'text' | 'number' | 'date' | 'datetime' | 'custom';
 
 export const COLUMN_FORMATS: { value: ColumnFormat; label: string }[] = [
   { value: 'auto', label: 'Auto' },
@@ -16,15 +16,92 @@ export const COLUMN_FORMATS: { value: ColumnFormat; label: string }[] = [
   { value: 'number', label: 'Số' },
   { value: 'date', label: 'Ngày (dd/MM/yyyy)' },
   { value: 'datetime', label: 'Ngày giờ (HH:mm:ss dd/MM/yyyy)' },
+  { value: 'custom', label: 'Thời gian theo pattern…' },
 ];
+
+/** Đơn vị của timestamp số trong dữ liệu gốc. `auto` = đoán theo độ lớn của giá trị. */
+export type TimeUnit = 'auto' | 'seconds' | 'millis' | 'micros' | 'nanos';
+
+export const TIME_UNITS: { value: TimeUnit; label: string }[] = [
+  { value: 'auto', label: 'Tự nhận' },
+  { value: 'seconds', label: 'Giây (s)' },
+  { value: 'millis', label: 'Mili giây (ms)' },
+  { value: 'micros', label: 'Micro giây (µs)' },
+  { value: 'nanos', label: 'Nano giây (ns)' },
+];
+
+/** Pattern mặc định khi cột chọn "Thời gian theo pattern". */
+export const DEFAULT_TIME_PATTERN = 'dd/MM/yyyy HH:mm:ss';
+
+/** Cách đổi timestamp → chuỗi của một cột `format: 'custom'`. */
+export interface TimeOpts {
+  unit?: TimeUnit;
+  /** Pattern kiểu Java/Excel: yyyy yy MM M dd d HH H hh h mm m ss s SSS a, chữ cố định đặt trong 'nháy đơn'. */
+  pattern?: string;
+  /** Múi giờ IANA (vd. Asia/Ho_Chi_Minh, UTC). Rỗng/không hợp lệ = múi giờ của máy đang xuất. */
+  tz?: string;
+}
 
 export interface ReportColumn {
   /** Header shown in the sheet, e.g. "Tên miền". */
   header: string;
-  /** Mongo field path (dotted for nested), e.g. "domain" / "profile.phone". */
+  /** Mongo field path (dotted for nested), e.g. "domain" / "profile.phone".
+   *  Đi xuyên được list object: "deviceInfos.deviceId" gom deviceId của mọi
+   *  phần tử — xem collectByPath. */
   path: string;
   format: ColumnFormat;
+  /** Ký tự nối khi path trỏ vào list object và thu được nhiều giá trị.
+   *  Rỗng/undefined = DEFAULT_SEP. */
+  sep?: string;
+  /** Đổi giá trị trước khi ghi ra ô — xem ValueMap. */
+  map?: ValueMap;
+  /** Chỉ dùng khi format = 'custom' — đơn vị timestamp gốc. */
+  timeUnit?: TimeUnit;
+  /** Chỉ dùng khi format = 'custom' — pattern đầu ra, vd. dd/MM/yyyy. */
+  pattern?: string;
+  /** Chỉ dùng khi format = 'custom' — múi giờ IANA. */
+  tz?: string;
 }
+
+/** Một luật đổi giá trị: gặp `when` thì ghi ra `to`. */
+export interface ValueMapRule {
+  /** Giá trị gốc cần khớp. Rỗng = khớp ô TRỐNG (null/undefined/chuỗi rỗng). */
+  when: string;
+  /** Ghi ra ô Excel. Rỗng = ô trống. */
+  to: string;
+}
+
+/**
+ * Bảng đổi giá trị của một cột — switch/case cho dữ liệu thô.
+ *
+ * Cột `is_deleted` ra `true`/`false` thì đọc báo cáo rất chướng; khai
+ * `true → Đã xoá`, `false → Đang dùng` là xong, không phải sửa tay sau khi
+ * xuất (sửa tay thì lần xuất sau lại phải sửa lại).
+ */
+export interface ValueMap {
+  rules: ValueMapRule[];
+  /**
+   * Không khớp luật nào thì ghi gì.
+   *
+   * BỎ TRỐNG = GIỮ NGUYÊN giá trị gốc — mặc định an toàn: khai vài luật cho
+   * mấy giá trị hay gặp mà không vô tình xoá trắng phần dữ liệu còn lại. Muốn
+   * "còn lại để trống" thì khai một luật `to` rỗng cho đúng giá trị đó.
+   */
+  fallback?: string;
+}
+
+/** Phân cách mặc định khi cột không khai riêng. */
+export const DEFAULT_SEP = ', ';
+
+/**
+ * Trần số dòng cho MỘT lần xuất — chốt chặn cuối để trình duyệt không chết khi
+ * dựng workbook. Khai ở đây để cả ba tab (Mongo/ES/PG) dùng chung một con số.
+ *
+ * Trước là 5.000 vì phân trang skip/from sâu quá là chậm; giờ ES đi bằng
+ * search_after và Mongo đi bằng cursor _id nên nâng lên được. Hộp thoại xác
+ * nhận báo TRƯỚC khi chạy nếu tập kết quả vượt trần này.
+ */
+export const MAX_EXPORT_ROWS = 100_000;
 
 /** Pseudo field path: sequential row number (1..n) instead of a document value. */
 export const NO_COLUMN_PATH = '__no';
@@ -68,14 +145,117 @@ function unwrapEjson(v: unknown): unknown {
   return v;
 }
 
+/**
+ * Đi theo dotted path, TRẢI QUA MẢNG trên đường đi.
+ *
+ * Trước đây gặp mảng ở giữa đường là trả undefined, nên `deviceInfos.deviceId`
+ * trên một list object không lấy được gì — người dùng buộc phải xuất cả field
+ * cha dạng JSON thô. Giờ gặp mảng thì áp phần path CÒN LẠI lên từng phần tử rồi
+ * gom kết quả:
+ *
+ *   {profile: {phone: '09'}}                      · profile.phone → '09'
+ *   {deviceInfos: [{deviceId: 'a'}, {deviceId: 'b'}]} · deviceInfos.deviceId → ['a','b']
+ *
+ * Quy ước trả về — CỐ Ý không phải lúc nào cũng là mảng:
+ *   · không qua mảng nào  → giá trị đơn (giữ nguyên hành vi cũ)
+ *   · mảng rỗng / không khớp → undefined (ô Excel trống, không phải chuỗi "[]")
+ *   · mảng đúng 1 phần tử  → mở về giá trị đơn
+ * Hai ca cuối quan trọng: typeCell chỉ dựng được date-cell / number-cell thật
+ * từ giá trị ĐƠN, bọc thành mảng là cột ngày tháng tụt xuống text.
+ */
+export function collectByPath(doc: unknown, path: string): unknown {
+  const parts = path.split('.');
+
+  // `spread` = đã TRẢI QUA ít nhất một mảng trên đường đi. Phân biệt hai ca mà
+  // nhìn kết quả thì giống nhau:
+  //   · deviceInfos          → giá trị CUỐI vốn là mảng → trả nguyên mảng
+  //   · deviceInfos.deviceId → mảng do trải ra → gom, và 1 phần tử thì mở gộp
+  // Không phân biệt thì cột trỏ vào chính field mảng có đúng 1 phần tử sẽ bị mở
+  // ra thành object đơn — khác hẳn khi nó có 2 phần tử.
+  let spread = false;
+
+  const walk = (cur: unknown, i: number): unknown[] => {
+    if (cur === null || cur === undefined) return [];
+    if (i >= parts.length) return [cur]; // hết path — nhận nguyên giá trị, kể cả mảng
+    // Mảng ở GIỮA đường: trải phần path còn lại lên từng phần tử. Mảng lồng mảng
+    // cũng xong vì mỗi phần tử lại đi qua đúng nhánh này.
+    if (Array.isArray(cur)) { spread = true; return cur.flatMap((el) => walk(el, i)); }
+    if (typeof cur !== 'object') return [];
+    return walk((cur as Record<string, unknown>)[parts[i]], i + 1);
+  };
+
+  const hits = walk(doc, 0).map(unwrapEjson).filter((v) => v !== undefined && v !== null);
+  if (hits.length === 0) return undefined;
+  // Path dừng đúng tại một mảng (không trải) → trả y nguyên giá trị đó.
+  if (!spread) return hits[0];
+  return hits.length === 1 ? hits[0] : hits;
+}
+
+/**
+ * TÁCH DÒNG theo một field list: mỗi phần tử của list thành một dòng riêng, các
+ * field khác chép y nguyên; field list ở dòng con được thay bằng đúng phần tử đó.
+ *
+ *   {id: 1, A: ['x', 'y']}  · tách theo A → {id: 1, A: 'x'}, {id: 1, A: 'y'}
+ *   {id: 1, A: [{n: 1}, {n: 2}]}  · cột "A.n" sau khi tách → 1 / 2 ở hai dòng
+ *
+ * `path` có thể trỏ thẳng vào field list ("items", "a.list") HOẶC đi xuyên list
+ * object tới một field con ("childs.name" với childs = [{name}, {name}]): mỗi
+ * phần tử của childs thành một dòng, cột "childs.name" ra tên của phần tử đó.
+ * Nhiều list lồng nhau trên path thì nhân dòng theo từng tầng. Bản ghi không có
+ * list / list rỗng / field không phải mảng → giữ đúng MỘT dòng như cũ, không bị
+ * rơi mất khỏi báo cáo.
+ *
+ * `max` chặn số dòng ra — tách có thể nhân số dòng lên nhiều lần, vẫn phải giữ
+ * trần của trình duyệt. `capped` = có dòng bị bỏ lại.
+ */
+export function explodeRows(
+  docs: Record<string, unknown>[],
+  path: string,
+  max: number,
+): { rows: Record<string, unknown>[]; capped: boolean; exploded: number } {
+  const parts = path.split('.').filter(Boolean);
+  const out: Record<string, unknown>[] = [];
+  if (parts.length === 0) return { rows: docs.slice(0, max), capped: docs.length > max, exploded: 0 };
+  /** Số bản ghi thực sự được tách (có list ở path) — để báo khi path gõ sai. */
+  let exploded = 0;
+
+  // Trả về các biến thể của `node` sau khi tách theo parts[i..]. Gặp mảng ở BẤT KỲ
+  // đâu trên path (giữa đường như "childs.name" với childs là list object, hay ở
+  // lá như "items") thì mỗi phần tử thành một biến thể, rồi tiếp tục tách phần
+  // path còn lại bên trong phần tử đó. Chép NÔNG dọc đường đi — không đụng document
+  // gốc, các nhánh khác dùng chung tham chiếu (chỉ đọc nên khỏi deep clone).
+  // Không có gì để tách → trả đúng `node` (cùng tham chiếu) để tầng trên nhận ra.
+  const rec = (node: unknown, i: number): unknown[] => {
+    if (i >= parts.length || !node || typeof node !== 'object' || Array.isArray(node)) return [node];
+    const obj = node as Record<string, unknown>;
+    const key = parts[i];
+    const v = obj[key];
+    if (Array.isArray(v)) {
+      if (v.length === 0) return [node];
+      return v.flatMap((el) => rec(el, i + 1).map((sub) => ({ ...obj, [key]: sub })));
+    }
+    if (v && typeof v === 'object') {
+      const subs = rec(v, i + 1);
+      if (subs.length === 1 && subs[0] === v) return [node];
+      return subs.map((sub) => ({ ...obj, [key]: sub }));
+    }
+    return [node];
+  };
+
+  for (const doc of docs) {
+    const variants = rec(doc, 0) as Record<string, unknown>[];
+    if (variants.length !== 1 || variants[0] !== doc) exploded++;
+    for (const row of variants) {
+      if (out.length >= max) return { rows: out, capped: true, exploded };
+      out.push(row);
+    }
+  }
+  return { rows: out, capped: false, exploded };
+}
+
 /** Resolve a dotted path ("profile.phone") against a parsed document. */
 export function getByPath(doc: unknown, path: string): unknown {
-  let cur: unknown = doc;
-  for (const part of path.split('.')) {
-    if (cur === null || cur === undefined || typeof cur !== 'object') return undefined;
-    cur = (cur as Record<string, unknown>)[part];
-  }
-  return unwrapEjson(cur);
+  return collectByPath(doc, path);
 }
 
 // ── Epoch detection ───────────────────────────────────────────────────────────
@@ -119,6 +299,83 @@ export function detectFormat(v: unknown): Exclude<ColumnFormat, 'auto'> {
   return 'text';
 }
 
+// ── Timestamp → chuỗi theo pattern ───────────────────────────────────────────
+
+/**
+ * Timestamp (số, chuỗi số hoặc ISO) → epoch ms. null = không phải thời gian.
+ *
+ * `auto` đoán đơn vị theo độ lớn: < 1e11 giây (tới năm 5138) · < 1e14 mili giây ·
+ * < 1e17 micro giây · còn lại nano giây. Chọn tay đơn vị thì luôn theo đúng đơn vị đó,
+ * kể cả giá trị nhỏ bất thường (1000 giây = 1970-01-01 00:16:40, không đoán lại).
+ */
+export function toEpochMs(raw: unknown, unit: TimeUnit = 'auto'): number | null {
+  let n: number | null = null;
+  if (typeof raw === 'number') n = raw;
+  else if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (/^-?\d+(\.\d+)?$/.test(t)) n = Number(t);
+    else if (ISO_RE.test(t)) { const p = Date.parse(t); return Number.isFinite(p) ? p : null; }
+  }
+  if (n === null || !Number.isFinite(n)) return null;
+  const u: Exclude<TimeUnit, 'auto'> = unit !== 'auto' ? unit : Math.abs(n) < 1e11 ? 'seconds' : Math.abs(n) < 1e14 ? 'millis' : Math.abs(n) < 1e17 ? 'micros' : 'nanos';
+  const ms = u === 'seconds' ? n * 1000 : u === 'millis' ? n : u === 'micros' ? n / 1000 : n / 1e6;
+  // Date chỉ biểu diễn được ±8.64e15 ms.
+  // toFixed(3): chia 1000/1e6 ra sai số float kiểu 1791565507041.9999 → khỏi bị lùi 1 ms.
+  return Math.abs(ms) <= 8.64e15 ? Math.floor(Number(ms.toFixed(3))) : null;
+}
+
+const fmtCache = new Map<string, Intl.DateTimeFormat>();
+function formatterFor(tz: string): Intl.DateTimeFormat {
+  let f = fmtCache.get(tz);
+  if (!f) {
+    const base: Intl.DateTimeFormatOptions = { hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' };
+    try { f = new Intl.DateTimeFormat('en-US', tz ? { ...base, timeZone: tz } : base); }
+    catch { f = new Intl.DateTimeFormat('en-US', base); } // múi giờ gõ sai → dùng giờ máy, không làm hỏng file
+    fmtCache.set(tz, f);
+  }
+  return f;
+}
+
+/** Múi giờ có hợp lệ không (hộp thoại dùng để báo trước khi xuất). */
+export function isValidTimeZone(tz: string): boolean {
+  if (!tz.trim()) return true;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz.trim() }); return true; } catch { return false; }
+}
+
+const PATTERN_RE = /'([^']*)'|yyyy|yy|MM|M|dd|d|HH|H|hh|h|mm|m|ss|s|SSS|a/g;
+
+/** epoch ms → chuỗi theo pattern, tính theo múi giờ `tz` (rỗng = giờ máy). */
+export function formatTimePattern(ms: number, pattern: string, tz = ''): string {
+  const parts: Record<string, string> = {};
+  for (const p of formatterFor(tz.trim()).formatToParts(new Date(ms))) parts[p.type] = p.value;
+  const hour = Number(parts.hour) % 24; // một số engine trả "24" cho nửa đêm
+  const two = (n: number | string) => String(n).padStart(2, '0');
+  const h12 = hour % 12 === 0 ? 12 : hour % 12;
+  const milli = ((ms % 1000) + 1000) % 1000;
+  return pattern.replace(PATTERN_RE, (tok, lit?: string) => {
+    if (tok.startsWith("'")) return lit === '' ? "'" : (lit ?? '');
+    switch (tok) {
+      case 'yyyy': return parts.year;
+      case 'yy': return parts.year.slice(-2);
+      case 'MM': return parts.month;
+      case 'M': return String(Number(parts.month));
+      case 'dd': return parts.day;
+      case 'd': return String(Number(parts.day));
+      case 'HH': return two(hour);
+      case 'H': return String(hour);
+      case 'hh': return two(h12);
+      case 'h': return String(h12);
+      case 'mm': return parts.minute;
+      case 'm': return String(Number(parts.minute));
+      case 'ss': return parts.second;
+      case 's': return String(Number(parts.second));
+      case 'SSS': return String(milli).padStart(3, '0');
+      case 'a': return hour < 12 ? 'AM' : 'PM';
+      default: return tok;
+    }
+  });
+}
+
 // ── Cell typing ───────────────────────────────────────────────────────────────
 
 const NUMFMT_DATE = 'dd/mm/yyyy';
@@ -130,8 +387,40 @@ interface TypedCell {
   align: 'left' | 'right' | 'center';
 }
 
-function typeCell(raw: unknown, format: ColumnFormat): TypedCell {
+/**
+ * Date → chuỗi, cho các phần tử NẰM TRONG một ô nhiều giá trị.
+ *
+ * Ô gộp là text nên không có numFmt của Excel để dựa vào — phải tự in ra đúng
+ * quy ước nhà: `dd/MM/yyyy` và `HH:mm:ss dd/MM/yyyy`. Date ở đây đã qua
+ * msToExcelDate (đã dịch theo offset local) nên đọc bằng getUTC* mới ra đúng
+ * giờ người dùng thấy ở các ô date thật.
+ */
+function fmtDateText(d: Date, numFmt?: string): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  const day = `${p(d.getUTCDate())}/${p(d.getUTCMonth() + 1)}/${d.getUTCFullYear()}`;
+  if (numFmt === NUMFMT_DATE) return day;
+  return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} ${day}`;
+}
+
+/** Export để test được trực tiếp — không dùng ngoài file này + test. */
+export function typeCell(raw: unknown, format: ColumnFormat, sep?: string, time?: TimeOpts): TypedCell {
   if (raw === undefined || raw === null) return { value: null, align: 'left' };
+
+  // NHIỀU GIÁ TRỊ (field con của list object) → luôn là TEXT nối bằng `sep`.
+  // Một ô Excel chỉ giữ được MỘT giá trị có kiểu, nên kể cả cột khai number/date
+  // thì tập giá trị vẫn phải hạ xuống text — có định dạng từng phần tử trước khi
+  // nối để "ngày giờ" vẫn ra chuỗi ngày đọc được, không phải epoch trần.
+  if (Array.isArray(raw)) {
+    const glue = sep === undefined || sep === '' ? DEFAULT_SEP : sep;
+    const parts = raw.map((v) => {
+      const cell = typeCell(v, format, undefined, time); // không truyền sep — phần tử không lồng thêm
+      if (cell.value === null) return '';
+      if (cell.value instanceof Date) return fmtDateText(cell.value, cell.numFmt);
+      return String(cell.value);
+    });
+    return { value: parts.join(glue), align: 'left' };
+  }
+
   const eff = format === 'auto' ? detectFormat(raw) : format;
   switch (eff) {
     case 'number': {
@@ -139,6 +428,12 @@ function typeCell(raw: unknown, format: ColumnFormat): TypedCell {
       return Number.isFinite(n)
         ? { value: n, align: 'right' }
         : { value: asText(raw), align: 'left' };
+    }
+    case 'custom': {
+      // Pattern tuỳ ý thì không có numFmt Excel tương ứng → ghi TEXT đã định dạng sẵn (không sort/filter theo ngày được).
+      const ms = toEpochMs(raw, time?.unit ?? 'auto');
+      if (ms === null) return { value: asText(raw), align: 'left' }; // không phải thời gian — giữ nguyên
+      return { value: formatTimePattern(ms, time?.pattern?.trim() || DEFAULT_TIME_PATTERN, time?.tz ?? ''), align: 'center' };
     }
     case 'date':
     case 'datetime': {
@@ -154,6 +449,41 @@ function typeCell(raw: unknown, format: ColumnFormat): TypedCell {
     default:
       return { value: asText(raw), align: 'left' };
   }
+}
+
+// ── Đổi giá trị (switch/case của từng cột) ───────────────────────────────────
+
+/**
+ * Khoá so khớp của một giá trị: chuỗi hoá, bỏ khoảng trắng hai đầu, KHÔNG phân
+ * biệt hoa thường.
+ *
+ * Người dùng gõ luật bằng tay nên `True` / `TRUE` / ` true ` phải khớp
+ * `true` — bắt khớp tuyệt đối ở đây chỉ tạo ra loại lỗi "khai rồi mà không ăn",
+ * nhìn bảng Excel thì không đoán ra vì sao.
+ */
+function mapKey(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  return asText(v).trim().toLowerCase();
+}
+
+/** Bảng đổi có thật sự khai gì không (rỗng = khỏi chạy cho nhanh). */
+export function hasValueMap(map?: ValueMap): boolean {
+  return !!map && (map.rules.some((r) => r.when.trim() !== '' || r.to !== '') || !!map.fallback);
+}
+
+/**
+ * Áp bảng đổi giá trị lên một ô.
+ *
+ * Ô NHIỀU GIÁ TRỊ (field con của list object) thì đổi TỪNG phần tử rồi mới nối
+ * — nối trước thì luật `true → Đã xoá` chẳng bao giờ khớp chuỗi `true, false`.
+ * Luật khớp theo thứ tự khai, luật đầu tiên trúng thì thắng.
+ */
+export function applyValueMap(raw: unknown, map?: ValueMap): unknown {
+  if (!hasValueMap(map) || !map) return raw;
+  if (Array.isArray(raw)) return raw.map((v) => applyValueMap(v, map));
+  const key = mapKey(raw);
+  for (const r of map.rules) if (mapKey(r.when) === key) return r.to;
+  return map.fallback ? map.fallback : raw;
 }
 
 function asText(v: unknown): string {
@@ -233,7 +563,9 @@ export async function buildReportXlsx(
       const cell = row.getCell(i + 1);
       const typed: TypedCell = c.path === NO_COLUMN_PATH
         ? { value: r + 1, align: 'right' } // sequential row number, not a doc value
-        : typeCell(getByPath(doc, c.path), c.format);
+        // Đổi giá trị TRƯỚC khi định kiểu ô: luật đổi ra chữ thì ô là text,
+        // đổi ra số/ngày thì vẫn thành ô số/ngày thật như mọi giá trị khác.
+        : typeCell(applyValueMap(collectByPath(doc, c.path), c.map), c.format, c.sep, { unit: c.timeUnit, pattern: c.pattern, tz: c.tz });
       cell.value = typed.value;
       if (typed.numFmt) cell.numFmt = typed.numFmt;
       cell.font = { name: 'Calibri', size: 10.5 };

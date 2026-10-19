@@ -59,6 +59,8 @@ function XTermView({
   const fitRef = useRef<FitAddon | null>(null);
   const onDeadRef = useRef(onDead);
   onDeadRef.current = onDead;
+  // Đang xem lịch sử (không dính đáy) → hiện nút "về cuối". Thuần client.
+  const [scrolledUp, setScrolledUp] = useState(false);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -77,6 +79,14 @@ function XTermView({
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
+
+    // Theo dõi vị trí cuộn để bật/tắt nút "về cuối".
+    const syncScroll = () => {
+      const b = term.buffer.active;
+      setScrolledUp(b.viewportY < b.baseY);
+    };
+    const scrollSub = term.onScroll(syncScroll);
+    const wroteSub = term.onWriteParsed(syncScroll);
 
     const doFit = () => {
       try {
@@ -165,6 +175,8 @@ function XTermView({
       ro.disconnect();
       dataSub.dispose();
       resizeSub.dispose();
+      scrollSub.dispose();
+      wroteSub.dispose();
       es.close();
       term.dispose();
     };
@@ -182,13 +194,31 @@ function XTermView({
     return () => clearTimeout(t);
   }, [active, visible]);
 
+  /** Cuộn xem lịch sử — chỉ đổi viewport phía client, không gửi gì lên server
+   *  nên lệnh đang chạy không bị ảnh hưởng. */
+  const scrollPage = (dir: -1 | 1) => {
+    termRef.current?.scrollLines(dir * Math.max(1, (termRef.current?.rows ?? 10) - 1));
+  };
+  const scrollBottom = () => {
+    termRef.current?.scrollToBottom();
+    termRef.current?.focus();
+  };
+
   return (
-    <div
-      className="cs-xterm"
-      ref={hostRef}
-      style={{ display: active ? 'block' : 'none' }}
-      onClick={() => termRef.current?.focus()}
-    />
+    <div className="tw-xterm-wrap" style={{ display: active ? 'block' : 'none' }}>
+      <div
+        className="cs-xterm"
+        ref={hostRef}
+        onClick={() => termRef.current?.focus()}
+      />
+      <div className="tw-scrollbtns" role="group" aria-label="Cuộn terminal">
+        <button type="button" className="tw-scrollbtn" title="Cuộn lên một trang (Shift+PageUp)" aria-label="Cuộn lên" onClick={() => scrollPage(-1)}>▲</button>
+        <button type="button" className="tw-scrollbtn" title="Cuộn xuống một trang (Shift+PageDown)" aria-label="Cuộn xuống" onClick={() => scrollPage(1)}>▼</button>
+        {scrolledUp && (
+          <button type="button" className="tw-scrollbtn now" title="Về dòng mới nhất" aria-label="Về cuối" onClick={scrollBottom}>⤓</button>
+        )}
+      </div>
+    </div>
   );
 }
 

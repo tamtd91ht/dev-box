@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fmtRel } from '@/lib/google';
+import { keepIfSame } from '@/lib/sameData';
 import FolderPicker from './FolderPicker';
 
 interface AppEntry {
@@ -174,12 +175,15 @@ function ManifestBar({ status, onAdopted, onError }: {
 }
 
 /** Khung log live của một app — poll 1.5s, tự cuộn đáy. */
-function LogPane({ id }: { id: string }) {
+function LogPane({ id, visible }: { id: string; visible: boolean }) {
   const [lines, setLines] = useState<{ seq: number; line: string }[]>([]);
   const lastSeq = useRef(0);
   const boxRef = useRef<HTMLPreElement | null>(null);
   useEffect(() => {
     lastSeq.current = 0; setLines([]);
+  }, [id]);
+  useEffect(() => {
+    if (!visible) return; // tab ẩn thì thôi poll; lastSeq giữ nguyên nên hiện lại sẽ lấy bù
     let alive = true;
     const tick = async () => {
       try {
@@ -193,11 +197,11 @@ function LogPane({ id }: { id: string }) {
     void tick();
     const t = setInterval(tick, 1500);
     return () => { alive = false; clearInterval(t); };
-  }, [id]);
+  }, [id, visible]);
   return <pre ref={boxRef} className="app-log">{lines.map((l) => l.line).join('\n') || '(chưa có log)'}</pre>;
 }
 
-export default function AppsWorkspace() {
+export default function AppsWorkspace({ visible = true }: { visible?: boolean }) {
   const [apps, setApps] = useState<AppEntry[]>([]);
   const [running, setRunning] = useState<ListResult['running']>({});
   const [installed, setInstalled] = useState<Record<string, boolean>>({});
@@ -213,11 +217,19 @@ export default function AppsWorkspace() {
   const [manifest, setManifest] = useState<ManifestStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
 
-  const apply = (r: ListResult) => { setApps(r.apps); setRunning(r.running); setInstalled(r.installed ?? {}); };
+  const apply = (r: ListResult) => {
+    // Poll 5s trả về mảng/object mới tinh — giữ tham chiếu cũ nếu nội dung y hệt.
+    setApps(keepIfSame(r.apps)); setRunning(keepIfSame(r.running)); setInstalled(keepIfSame(r.installed ?? {}));
+  };
   const reload = useCallback(async () => {
     try { apply(await api<ListResult>('list')); } catch (e) { setErr((e as Error).message); }
   }, []);
-  useEffect(() => { void reload(); const t = setInterval(() => void reload(), 5000); return () => clearInterval(t); }, [reload]);
+  useEffect(() => {
+    if (!visible) return; // tab ẩn: dừng poll, hiện lại thì reload ngay
+    void reload();
+    const t = setInterval(() => void reload(), 5000);
+    return () => clearInterval(t);
+  }, [reload, visible]);
 
   // Manifest chỉ đọc lại khi danh sách app đổi — nó chạm đĩa (dò thư mục) nên
   // không nên bám nhịp poll 5s của trạng thái process.
@@ -350,7 +362,7 @@ export default function AppsWorkspace() {
                     </div>
                   </div>
                 )}
-                {logId === a.id && <LogPane id={a.id} />}
+                {logId === a.id && <LogPane id={a.id} visible={visible} />}
               </div>
             );
           })}

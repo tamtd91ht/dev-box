@@ -18,12 +18,47 @@ import { blankWatch } from '@/lib/automation/engine';
 import { MIN_WATCH_INTERVAL_SEC } from '@/lib/automation/normalize';
 import { connLabel, listConnections, refreshConnections, type ConnOption } from '@/lib/automation/connections';
 import { watcher } from '@/lib/automation/watcher';
+import { KAFKA_LAG_METRICS } from '@/lib/automation/sources/infra';
 import { useWatcher } from '@/lib/automation/useAutomation';
-import type { AutomationConfig, InfraStack, InfraWatch, WatchSeverity } from '@/lib/automation/types';
+import { DEFAULT_RATE, MAX_WINDOW_SEC, MIN_POLLS_PER_WINDOW, type AutomationConfig, type InfraStack, type InfraWatch, type RateMode, type WatchSeverity } from '@/lib/automation/types';
 import { buildDescription } from '@/lib/automation/meta';
+import { listKafkaGroups, type GroupSummary } from '@/lib/kafka';
 import { Empty, Field, Num, Toggle } from './parts';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from '../RailCollapse';
+
+/** Nhãn + cách ĐỌC của từng chế độ đo tốc độ. */
+const RATE_MODES: { mode: RateMode; label: string; unit: string; tip: string }[] = [
+  {
+    mode: 'eta',
+    label: 'Còn bao lâu thì cạn (ETA)',
+    unit: 'giờ',
+    tip: 'Ngưỡng tính bằng GIỜ, thường dùng với "<": báo khi sẽ cạn trong dưới N giờ. Đây là chế độ NÊN DÙNG cho đĩa/RAM/heap — tốc độ tự nó không nguy hiểm, CẠN mới nguy hiểm. Đĩa tăng 20%/giờ trên volume rỗng thì không sao; tăng 1%/giờ khi chỉ còn 3% là sự cố trong đêm nay, và chỉ ETA bắt được ca thứ hai.',
+  },
+  {
+    mode: 'points',
+    label: 'Tăng thêm mấy ĐIỂM %',
+    unit: 'điểm',
+    tip: 'Hiệu số trên chỉ số vốn là %: 78% → 90% là +12 ĐIỂM. Đừng nhầm với "% tương đối" — cùng dữ liệu đó chỉ là +15,4% tương đối.',
+  },
+  {
+    mode: 'absolute',
+    label: 'Tăng thêm bao nhiêu (đơn vị gốc)',
+    unit: '',
+    tip: 'Hiệu số theo đơn vị của chính chỉ số: "+12 GB", "+2048 MB". Đặt ngưỡng ÂM để canh chiều TỤT (đĩa còn trống tụt 10 GB).',
+  },
+  {
+    mode: 'relative',
+    label: 'Tăng bao nhiêu % so với chính nó',
+    unit: '%',
+    tip: 'Dùng cho chỉ số ĐẾM không có trần (lag, số hàng đợi). Cẩn thận khi giá trị nền nhỏ: lag 2 → 4 là +100% nhưng chẳng có nghĩa gì.',
+  },
+];
+
+/** Cửa sổ đọc thành lời — dùng chung với cảnh báo để hai bên nói cùng một thứ tiếng. */
+const fmtWin = (sec: number): string =>
+  sec % 3600 === 0 ? `${sec / 3600} giờ` : sec % 60 === 0 ? `${sec / 60} phút` : `${sec} giây`;
 
 const OPS: { op: InfraWatch['op']; label: string }[] = [
   { op: 'gt', label: '>' },
@@ -70,9 +105,51 @@ function WatchEditor({
   const stack = stackDef(watch.stack);
   const set = (p: Partial<InfraWatch>) => onChange({ ...watch, ...p });
 
+  // ── Lọc theo consumer group (chỉ Kafka + chỉ số theo group) ────────────────
+  // Gợi ý group lấy từ chính cụm đã chọn (listKafkaGroups → /api/kafka). Người
+  // dùng chọn từ dropdown, không gõ tay từng chữ.
+  const groupScoped = watch.stack === 'kafka' && KAFKA_LAG_METRICS.has(watch.metric);
+  const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [groupsState, setGroupsState] = useState<{ loading: boolean; err?: string }>({ loading: false });
+  const selectedGroups = watch.groupFilter ?? [];
+
+  useEffect(() => {
+    if (!groupScoped || !watch.connectionId) {
+      setGroups([]);
+      setGroupsState({ loading: false });
+      return;
+    }
+    let alive = true;
+    setGroupsState({ loading: true });
+    listKafkaGroups(watch.connectionId)
+      .then((g) => { if (alive) { setGroups(g); setGroupsState({ loading: false }); } })
+      .catch((e) => { if (alive) { setGroups([]); setGroupsState({ loading: false, err: (e as Error).message }); } });
+    return () => { alive = false; };
+  }, [groupScoped, watch.connectionId]);
+
   const cost = metricCost(watch.stack, watch.metric);
   const def = metricDef(watch.stack, watch.metric);
   const costNote = def?.costNote;
+
+  // ── Watch tốc độ tăng trưởng ───────────────────────────────────────────────
+  const isRate = watch.kind === 'rate';
+  const rateCfg = watch.rate;
+  const rateClass = def?.rate ?? 'level';
+  // ETA cần biết TRẦN của chỉ số — chính là cặp used/total mà catalog khai.
+  const hasCeiling = !!def?.absolute;
+  // Cửa sổ phải chứa ít nhất 3 nhịp đo, nếu không watch không bao giờ đủ mẫu
+  // và sẽ nằm "đang gom dữ liệu" vĩnh viễn — im lặng mà trông như đang canh.
+  const winFloor = Math.max(MIN_WATCH_INTERVAL_SEC, watch.everySec) * MIN_POLLS_PER_WINDOW;
+  const setRate = (p: Partial<NonNullable<InfraWatch['rate']>>) =>
+    set({ rate: { ...(rateCfg ?? DEFAULT_RATE), ...p } });
+  const setWindow = (i: number, p: { sec?: number; threshold?: number }) => {
+    const ws = (rateCfg ?? DEFAULT_RATE).windows.map((w, j) =>
+      j === i
+        ? { sec: Math.min(MAX_WINDOW_SEC, Math.max(winFloor, p.sec ?? w.sec)), threshold: p.threshold ?? w.threshold }
+        : w,
+    );
+    setRate({ windows: ws });
+  };
   const floor = def?.minEverySec ?? MIN_WATCH_INTERVAL_SEC;
   const costIssue = watchLoadIssue(watch.stack, watch.metric, watch.everySec);
 
@@ -190,9 +267,204 @@ function WatchEditor({
             ))}
           </select>
         </Field>
-        <Field label="Ngưỡng" hint={metricDef(watch.stack, watch.metric)?.hint}>
-          <Num value={watch.threshold} onChange={(v) => set({ threshold: v })} min={-1e9} />
+        {!isRate ? (
+          <Field label="Ngưỡng" hint={metricDef(watch.stack, watch.metric)?.hint}>
+            <Num value={watch.threshold} onChange={(v) => set({ threshold: v })} min={-1e9} />
+          </Field>
+        ) : null}
+        <Field
+          label="Đo cái gì"
+          tip="GIÁ TRỊ = so con số hiện tại với ngưỡng (cách làm quen thuộc). TỐC ĐỘ = so mức THAY ĐỔI trong một khoảng thời gian, hoặc thời gian còn lại đến khi cạn — bắt được sự cố đang hình thành trước khi nó chạm ngưỡng. Hai loại KHÔNG che nhau: đặt cả hai trên cùng một chỉ số là chuyện bình thường và nên làm."
+          hint={rateClass === 'none' ? 'chỉ số này không đo tốc độ được' : rateClass === 'derived' ? '⚠ chỉ số này VỐN ĐÃ là tốc độ' : undefined}
+        >
+          <select
+            value={watch.kind ?? 'level'}
+            onChange={(e) => {
+              const kind = e.target.value as 'level' | 'rate';
+              if (kind !== 'rate') { set({ kind: 'level', rate: undefined }); return; }
+              // Bật rate thì nạp luôn preset của chính chỉ số đó: ba cửa sổ bắt
+              // ba dạng sự cố khác nhau, không ai tự nghĩ ra được ngay từ đầu.
+              const sug = metricDef(watch.stack, watch.metric)?.rateSuggest;
+              const r = sug
+                ? { ...DEFAULT_RATE, mode: sug.mode, windows: sug.windows.map((w) => ({ ...w })) }
+                : { ...DEFAULT_RATE, windows: DEFAULT_RATE.windows.map((w) => ({ ...w })) };
+              // ETA đọc là "còn dưới N giờ" → phải là '<'; các chế độ khác là '>'.
+              set({ kind: 'rate', rate: r, op: r.mode === 'eta' ? 'lt' : 'gt' });
+            }}
+          >
+            <option value="level">Giá trị hiện tại</option>
+            <option value="rate" disabled={rateClass === 'none'}>
+              Tốc độ thay đổi{rateClass === 'derived' ? ' (⚠ không khuyến nghị)' : ''}
+            </option>
+          </select>
         </Field>
+        {isRate && rateCfg ? (
+          <>
+            <Field
+              label="Cách đọc mức thay đổi"
+              wide
+              tip={RATE_MODES.find((m) => m.mode === rateCfg.mode)?.tip}
+            >
+              <select
+                value={rateCfg.mode}
+                onChange={(e) => {
+                  const mode = e.target.value as RateMode;
+                  setRate({ mode });
+                  set({ op: mode === 'eta' ? 'lt' : 'gt' });
+                }}
+              >
+                {RATE_MODES.map((m) => (
+                  <option key={m.mode} value={m.mode} disabled={m.mode === 'eta' && !hasCeiling}>
+                    {m.label}
+                    {m.mode === 'eta' && !hasCeiling ? ' — chỉ số này không có trần' : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {/* VÍ DỤ SỐNG. `points` và `relative` là hai thứ cực dễ nhầm trên
+                chỉ số %, và nhầm là ngưỡng lệch nhiều lần — nên chỗ này không
+                nói tên chế độ mà cho xem thẳng con số. */}
+            {rateCfg.mode === 'points' || rateCfg.mode === 'relative' ? (
+              <div className="auto-note" style={{ gridColumn: '1 / -1' }}>
+                Ví dụ: chỉ số đi từ <b>78</b> lên <b>90</b> →{' '}
+                {rateCfg.mode === 'points' ? (
+                  <>
+                    chế độ này tính là <b>+12 điểm</b> (chế độ &quot;% so với chính nó&quot; sẽ tính là +15,4%)
+                  </>
+                ) : (
+                  <>
+                    chế độ này tính là <b>+15,4%</b> (chế độ &quot;điểm %&quot; sẽ tính là +12)
+                  </>
+                )}
+              </div>
+            ) : null}
+            <Field
+              label="Cửa sổ so sánh + ngưỡng"
+              wide
+              tip="Mỗi dòng là MỘT khoảng thời gian để so đầu–cuối, với ngưỡng riêng. Vượt ở BẤT KỲ dòng nào là báo. Nhiều dòng vì một cửa sổ luôn mù với một lớp sự cố: cửa sổ 1 giờ pha loãng cú tăng dốc 5 phút, còn cửa sổ 5 phút không bao giờ thấy đà rò rỉ 12 tiếng."
+              hint={`mỗi cửa sổ tối thiểu ${fmtWin(winFloor)} (3 nhịp đo), tối đa ${fmtWin(MAX_WINDOW_SEC)}`}
+            >
+              <div className="auto-groupsel">
+                {rateCfg.windows.map((w, i) => (
+                  <div key={i} className="auto-ratewin">
+                    <span className="auto-ratewin-lbl">trong</span>
+                    <Num
+                      value={Math.round(w.sec / 60)}
+                      min={Math.ceil(winFloor / 60)}
+                      onChange={(v) => setWindow(i, { sec: Math.round(v) * 60 })}
+                    />
+                    <span className="auto-ratewin-lbl">phút →</span>
+                    <span className="auto-ratewin-lbl">
+                      {rateCfg.mode === 'eta' ? 'còn dưới' : 'thay đổi quá'}
+                    </span>
+                    <Num value={w.threshold} min={-1e9} onChange={(v) => setWindow(i, { threshold: v })} />
+                    <span className="auto-ratewin-lbl">
+                      {RATE_MODES.find((m) => m.mode === rateCfg.mode)?.unit ||
+                        metricDef(watch.stack, watch.metric)?.unit ||
+                        ''}
+                    </span>
+                    <button
+                      type="button"
+                      className="ghost sm"
+                      title="Bỏ cửa sổ này"
+                      disabled={rateCfg.windows.length <= 1}
+                      onClick={() => setRate({ windows: rateCfg.windows.filter((_, j) => j !== i) })}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="ghost sm"
+                  onClick={() => {
+                    const last = rateCfg.windows[rateCfg.windows.length - 1];
+                    const sec = Math.min(MAX_WINDOW_SEC, Math.max(winFloor, (last?.sec ?? 300) * 4));
+                    setRate({ windows: [...rateCfg.windows, { sec, threshold: last?.threshold ?? 10 }] });
+                  }}
+                >
+                  + thêm cửa sổ
+                </button>
+              </div>
+            </Field>
+            <Field
+              label="Làm mượt hai đầu mút"
+              tip="Lấy trung bình 3 mẫu ở mỗi đầu cửa sổ thay vì đúng một điểm — khử nhiễu đo mà KHÔNG làm phẳng cú đột biến (đó là lý do không dùng hồi quy tuyến tính)."
+            >
+              <Toggle checked={rateCfg.smooth !== false} onChange={(v) => setRate({ smooth: v })} label="bật" />
+            </Field>
+            <Field
+              label="Đặt lại mốc khi tụt sâu"
+              tip="Restart / xoay log / dọn đĩa làm chỉ số rơi về gần 0; nhịp sau tăng vọt và sinh ra cảnh báo 'tăng 400%' hoàn toàn bịa. Bật cái này thì mốc cũ bị bỏ, và watch chờ đủ một cửa sổ mới rồi mới canh tiếp. Nên để BẬT."
+            >
+              <Toggle checked={rateCfg.resetOnDrop !== false} onChange={(v) => setRate({ resetOnDrop: v })} label="bật" />
+            </Field>
+          </>
+        ) : null}
+        {groupScoped ? (
+          <Field
+            label="Consumer group"
+            wide
+            tip="Để TRỐNG = xét MỌI consumer trên cụm (bất kỳ cái nào vượt ngưỡng là báo). Chọn một hoặc nhiều = chỉ xét đúng các consumer này — CHỈ CẦN 1 trong số đó vượt ngưỡng là báo. Chọn từ gợi ý của cụm, không gõ tay."
+            hint={
+              groupsState.loading
+                ? 'đang tải danh sách group từ cụm…'
+                : groupsState.err
+                  ? `không tải được group: ${groupsState.err}`
+                  : selectedGroups.length
+                    ? `chỉ xét ${selectedGroups.length} group đã chọn`
+                    : 'trống = mọi consumer trên cụm'
+            }
+          >
+            <div className="auto-groupsel">
+              {selectedGroups.length > 0 ? (
+                <div className="auto-gchips">
+                  {selectedGroups.map((g) => (
+                    <span key={g} className="auto-gchip" title={g}>
+                      <span className="auto-gchip-txt">{g}</span>
+                      <button
+                        type="button"
+                        title="Bỏ group này"
+                        onClick={() => set({ groupFilter: selectedGroups.filter((x) => x !== g) })}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                  <button type="button" className="ghost sm" onClick={() => set({ groupFilter: [] })}>
+                    Xoá hết (về mọi consumer)
+                  </button>
+                </div>
+              ) : null}
+              <select
+                value=""
+                disabled={groupsState.loading || !watch.connectionId}
+                onChange={(e) => {
+                  const g = e.target.value;
+                  if (!g) return;
+                  if (!selectedGroups.includes(g)) set({ groupFilter: [...selectedGroups, g] });
+                }}
+              >
+                <option value="">
+                  {!watch.connectionId
+                    ? '— chọn kết nối trước —'
+                    : groupsState.loading
+                      ? 'đang tải…'
+                      : '+ thêm consumer group…'}
+                </option>
+                {groups
+                  .filter((g) => !selectedGroups.includes(g.groupId))
+                  .map((g) => (
+                    <option key={g.groupId} value={g.groupId}>
+                      {g.groupId}
+                      {g.state ? ` · ${g.state}` : ''}
+                      {typeof g.members === 'number' ? ` · ${g.members}m` : ''}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          </Field>
+        ) : null}
         <Field
           label="Chu kỳ (giây)"
           tip="Bao lâu đo một lần. Mỗi watch đo ĐỘC LẬP — 12 watch trên cùng một cụm là 12 lượt gọi riêng mỗi vòng, không chia sẻ kết quả. Chỉ số càng nặng thì càng phải giãn."
@@ -333,6 +605,8 @@ export default function WatchesPanel({
 }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--auto-list', min: 200, max: 640, gap: 12 });
+  // Thu gọn cột danh sách watch — nhường chỗ cho trình sửa watch.
+  const rail = useRailCollapse('auto-watches', '--auto-list');
   const [selected, setSelected] = useState<string | null>(null);
   /** Dòng đang chọn, để cuộn tới khi được mở từ tab Quy tắc. */
   const selectedRow = useRef<HTMLDivElement | null>(null);
@@ -447,9 +721,14 @@ export default function WatchesPanel({
   };
 
   return (
-    <div className="auto-split" ref={railSplit.ref} style={railSplit.style}>
+    <div className="auto-split" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+      {rail.collapsed ? (
+        <CollapsedRail label="Theo dõi" count={watches.length} onShow={rail.show} />
+      ) : (
       <div className="auto-list panel">
         <div className="auto-list-head">
+          <RailHideButton onHide={rail.hide} className="ghost sm"
+            title="Thu gọn danh sách theo dõi — nhường chỗ cho khung sửa" />
           <span
             className={`auto-runstate${running && leader ? ' on' : ''}`}
             title={
@@ -550,6 +829,18 @@ export default function WatchesPanel({
                         >
                           🔇 bị {s.suppressedBy} che
                         </em>
+                      ) : s?.rate?.pending ? (
+                        /* CHƯA KẾT LUẬN ĐƯỢC — phải nhìn thấy được, vì "im vì
+                           khoẻ" và "im vì chưa có dữ liệu" là hai chuyện khác
+                           hẳn, mà cái sau nghĩa là chỉ số này đang KHÔNG được
+                           canh. Không có nhãn này thì watch mù trông y hệt
+                           watch khoẻ. */
+                        <em
+                          className="auto-pending"
+                          title={`Watch tốc độ chưa đủ mẫu để kết luận: đang có ${s.rate.samples} mẫu, cần thêm khoảng ${Math.round((s.rate.readyInSec ?? 0) / 60)} phút nữa. Trong lúc này chỉ số KHÔNG được canh.`}
+                        >
+                          ⏳ đang gom dữ liệu ({s.rate.samples} mẫu)
+                        </em>
                       ) : s?.firing ? <em className="auto-firing">đang cảnh báo</em> : null}
                       {orphans.has(w.id) ? (
                         <em
@@ -562,11 +853,34 @@ export default function WatchesPanel({
                     </span>
                     <span className="auto-rule-sub">
                       {w.connectionLabel || w.connectionId || '—'} · {w.metric}{' '}
-                      {OPS.find((o) => o.op === w.op)?.label} {w.threshold}
+                      {w.kind === 'rate' && w.rate ? (
+                        /* Watch tốc độ đọc bằng CỬA SỔ, không bằng một ngưỡng
+                           duy nhất — dòng tóm tắt phải nói đúng thứ nó đang đo,
+                           nếu không hai loại watch nhìn giống hệt nhau. */
+                        <span title={RATE_MODES.find((m) => m.mode === w.rate?.mode)?.label}>
+                          {w.rate.mode === 'eta' ? '⏱ cạn sau' : '📈 đổi'}{' '}
+                          {w.rate.windows
+                            .map((x) => `${OPS.find((o) => o.op === w.op)?.label}${x.threshold}/${fmtWin(x.sec)}`)
+                            .join(' · ')}
+                        </span>
+                      ) : (
+                        <>
+                          {OPS.find((o) => o.op === w.op)?.label} {w.threshold}
+                        </>
+                      )}
                       {s ? (
                         <>
                           {' · '}
-                          <b className={s.breaching ? 'bad' : 'ok'}>{s.value ?? '—'}</b> {ago(s.at)}
+                          <b className={s.breaching ? 'bad' : 'ok'}>{s.value ?? '—'}</b>
+                          {/* Với rate, giá trị hiện tại chưa đủ: ETA mới là con
+                              số người trực cần. Hiện ngay cạnh, không bắt mở
+                              cảnh báo ra mới thấy. */}
+                          {s.rate?.lead?.etaSec != null ? (
+                            <b className="bad" title="ước tính theo đà hiện tại">
+                              {' '}· cạn sau ~{Math.round(s.rate.lead.etaSec / 3600)}h
+                            </b>
+                          ) : null}
+                          {' '}{ago(s.at)}
                           {s.error ? ` · ${s.error}` : ''}
                         </>
                       ) : null}
@@ -600,6 +914,8 @@ export default function WatchesPanel({
         )}
       </div>
 
+      )}
+
       <div className="auto-detail panel">
         {current ? (
           <WatchEditor
@@ -610,7 +926,7 @@ export default function WatchesPanel({
           <Empty icon="👈" text="Chọn một mục theo dõi, hoặc tạo mới." />
         )}
       </div>
-      <Splitter {...railSplit.grip} />
+      {!rail.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

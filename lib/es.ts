@@ -72,6 +72,9 @@ export interface EsSearchResult {
   tookMs: number;
   /** Kết quả `aggregations` — null khi request không có aggs. */
   aggs: WireDoc | null;
+  /** Giá trị sort của hit cuối — đưa lại vào `searchAfter` để lấy trang kế.
+   *  null khi body không sort hoặc trang rỗng. */
+  lastSort: unknown[] | null;
 }
 
 // ── Connection registry (CRUD) ────────────────────────────────────────────────
@@ -151,10 +154,54 @@ export interface EsSearchParams {
   size?: number;
   /** Phân trang — đè lên `from` trong body (nếu có). */
   from?: number;
+  /** Con trỏ search_after (mảng giá trị sort của hit cuối trang trước).
+   *  Có nó thì `from` bị bỏ qua — xem EsSearchInput ở lib/esClient. */
+  searchAfter?: unknown[];
 }
 
 export function searchEs(connectionId: string, index: string, p: EsSearchParams): Promise<EsSearchResult> {
   return esAction<EsSearchResult>('search', { connectionId, index, ...p });
+}
+
+/**
+ * Một trang của vòng scroll — đường phân trang của XUẤT BÁO CÁO.
+ *
+ * Vì sao là scroll chứ không phải search_after: xem khối ghi chú dài ở
+ * lib/esClient.ts (tóm tắt: search_after cần một khoá sort định danh được từng
+ * document, mà không cụm nào cũng có — `_id` thì ES 8 chặn fielddata nên cả
+ * lần xuất chết ngay với "all shards failed").
+ */
+export interface EsScrollPage {
+  docs: WireDoc[];
+  tookMs: number;
+  /** Con trỏ trang kế — ES có thể ĐỔI id giữa các trang, luôn gửi lại cái mới nhất. */
+  scrollId: string | null;
+}
+
+export interface EsScrollParams {
+  /** NGUYÊN body _search (tab Dữ liệu). */
+  body?: string;
+  /** `query` rời (tab Tìm nhanh). */
+  query?: string;
+  /** Sort của lần xuất — đè lên sort trong body. Rỗng = không sort. */
+  sort?: string;
+  source?: string;
+  size?: number;
+}
+
+/** Mở scroll + lấy trang đầu. */
+export function scrollStartEs(connectionId: string, index: string, p: EsScrollParams): Promise<EsScrollPage> {
+  return esAction<EsScrollPage>('scroll', { connectionId, index, mode: 'start', ...p });
+}
+
+/** Trang kế. */
+export function scrollNextEs(connectionId: string, scrollId: string): Promise<EsScrollPage> {
+  return esAction<EsScrollPage>('scroll', { connectionId, mode: 'next', scrollId });
+}
+
+/** Đóng scroll. Gọi xong lần xuất (kể cả khi lỗi) để cụm thu hồi context. */
+export function scrollClearEs(connectionId: string, scrollId: string): Promise<{ ok: boolean }> {
+  return esAction<{ ok: boolean }>('scroll', { connectionId, mode: 'clear', scrollId });
 }
 
 export function countEs(connectionId: string, index: string, query: string, body?: string): Promise<{ count: number; tookMs: number }> {
@@ -192,3 +239,24 @@ export function esConsole(
 // ── Shared formatters ─────────────────────────────────────────────────────────
 
 export { fmtBytes, fmtCount, prettyDoc } from '@/lib/mongo';
+
+/**
+ * Tên field top-level suy từ chính kết quả trả về — nguồn gợi ý cột khi export.
+ *
+ * Vì sao không dùng mapping: index thật thường khai hàng trăm field mà một truy
+ * vấn chỉ trả về vài chục, và `_source` có thể đã lọc bớt. Lấy từ document thật
+ * cho danh sách đúng thứ ĐANG có trong tay. Chỉ soi 25 doc đầu là đủ đại diện
+ * mà không tốn thời gian parse cả trang.
+ *
+ * `_id` bị loại vì nó không nằm trong `_source` — chỗ gọi tự thêm vào nếu cần.
+ */
+export function deriveEsFieldNames(docs: WireDoc[]): string[] {
+  const keys = new Set<string>();
+  for (const d of docs.slice(0, 25)) {
+    try {
+      for (const k of Object.keys(JSON.parse(d.json) as Record<string, unknown>)) keys.add(k);
+    } catch { /* doc bị cắt — bỏ qua */ }
+  }
+  keys.delete('_id');
+  return [...keys].sort((a, b) => a.localeCompare(b));
+}

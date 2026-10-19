@@ -3,6 +3,8 @@
 // the browser never talks to Kafka directly). This file is browser-safe: NO `fs`,
 // NO `kafkajs`, no server-only imports.
 
+import { apiFetch } from './apiFetch';
+
 /** A Kafka connection as returned to the browser. */
 export interface PublicKafkaConnection {
   id: string;
@@ -114,7 +116,7 @@ export interface TestResult {
 /** GET the connection list — never throws; returns disabled on any error. */
 export async function fetchKafkaConnections(): Promise<KafkaConnectionsResponse> {
   try {
-    const r = await fetch('/api/kafka-connections');
+    const r = await apiFetch('/api/kafka-connections', { timeoutMs: 15000 });
     if (!r.ok) return { enabled: false, connections: [] };
     return (await r.json()) as KafkaConnectionsResponse;
   } catch {
@@ -127,10 +129,10 @@ export async function mutateKafkaConnection(
   method: 'POST' | 'PUT' | 'DELETE',
   body: Record<string, unknown>,
 ): Promise<PublicKafkaConnection[]> {
-  const r = await fetch('/api/kafka-connections', {
+  const r = await apiFetch('/api/kafka-connections', {
     method,
-    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    timeoutMs: 15000,
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
@@ -141,10 +143,10 @@ export async function mutateKafkaConnection(
 
 /** POST one Kafka action. Throws Error(message) on failure (surfaces Kafka error). */
 async function kafkaAction<T>(action: string, params: Record<string, unknown>): Promise<T> {
-  const r = await fetch('/api/kafka', {
+  const r = await apiFetch('/api/kafka', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ action, ...params }),
+    timeoutMs: 60000, // đọc message/offset trên topic lớn được phép lâu hơn CRUD config
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok || (data as { ok?: boolean }).ok === false) {
@@ -198,12 +200,94 @@ export interface KafkaHostMetrics {
   disks?: KafkaDiskMount[];
   cpuIdleSec?: number;
   cpuTotalSec?: number;
+  /** Số core (đếm nhãn `cpu` của node_cpu_seconds_total) — để quy load1 về mỗi core. */
+  cpuCores?: number;
   at: number;
 }
 
 /** node_exporter RAM/disk/cpu/load per configured metrics URL. */
 export function kafkaHostMetrics(connectionId: string): Promise<KafkaHostMetrics[]> {
   return kafkaAction<KafkaHostMetrics[]>('hostMetrics', { connectionId });
+}
+
+/** Kết quả bắt tay TCP tới một seed broker (chẩn đoán "mất kết nối"). */
+export interface KafkaBrokerReach {
+  addr: string;
+  host: string;
+  port: number;
+  reachable: boolean;
+  latencyMs?: number;
+  error?: string;
+}
+
+/** Kết quả hỏi cụm bằng GIAO THỨC Kafka (không phải chỉ TCP). */
+export interface KafkaProtocolProbe {
+  spoke: boolean;
+  latencyMs?: number;
+  /** null = không có controller → dấu hiệu mất quorum. */
+  controllerId?: number | null;
+  clusterId?: string;
+  /** advertised.listeners cụm trả về ('host:port'). */
+  advertised?: string[];
+  error?: string;
+}
+
+/** Phân giải một hostname theo MỘT đường (getaddrinfo hoặc nameserver). */
+export interface KafkaDnsAnswer {
+  resolved: boolean;
+  addresses?: string[];
+  ms?: number;
+  /** ENOTFOUND = không có bản ghi · EAI_AGAIN/ETIMEOUT = DNS không trả lời. */
+  error?: string;
+}
+
+/**
+ * Phân giải một hostname theo CẢ HAI đường — vì hai đường trả lời hai câu khác
+ * nhau: getaddrinfo là đường kafkajs thật sự đi (ăn theo /etc/hosts), còn
+ * Resolver hỏi thẳng nameserver.
+ */
+export interface KafkaDnsResult {
+  host: string;
+  /** getaddrinfo của OS — đường kafkajs/socket Node đi. */
+  system: KafkaDnsAnswer;
+  /** Hỏi thẳng nameserver, BỎ QUA hosts file. Vắng khi không đọc được resolver. */
+  nameserver?: KafkaDnsAnswer;
+  /** true = hai đường khác nhau → tên đang bị /etc/hosts hoặc NSS can thiệp. */
+  hostsFileOverride?: boolean;
+}
+
+/**
+ * DevBox phân giải hostname bằng DNS NÀO, và ra IP gì. Cần cho ca "cổng seed mở
+ * nhưng cụm quảng bá hostname khác": câu hỏi tiếp theo luôn là resolver nào.
+ */
+export interface KafkaDnsDiagnosis {
+  /** Nameserver tiến trình Node đang dùng (dns.getServers()). */
+  servers: string[];
+  hosts: KafkaDnsResult[];
+  /**
+   * true = không có hostname nào để tra (mọi địa chỉ đều là IP thuần và chưa lấy
+   * được advertised.listeners). `hosts` rỗng vì KHÔNG CÓ GÌ để phân giải, chứ
+   * không phải vì chưa đo — phân biệt được hai ca đó mới nói đúng hướng xử lý.
+   */
+  noNames?: boolean;
+}
+
+export interface KafkaReachReport {
+  brokers: KafkaBrokerReach[];
+  /** Vắng mặt khi không seed broker nào mở cổng. */
+  protocol?: KafkaProtocolProbe;
+  /** LUÔN có. `noNames` = mọi địa chỉ đều là IP nên không có gì để phân giải. */
+  dns: KafkaDnsDiagnosis;
+}
+
+/**
+ * Chẩn đoán cụm không trả lời: bắt tay TCP TỪNG seed broker + hỏi một câu Kafka
+ * thật. Phân biệt "cả cụm chết / một node chết / cổng mở mà không nói được giao
+ * thức / nói được nhưng advertised.listeners trỏ đi đâu" — xem brokerReachability
+ * trong lib/kafkaClient.
+ */
+export function kafkaBrokerReach(connectionId: string): Promise<KafkaReachReport> {
+  return kafkaAction<KafkaReachReport>('brokerReach', { connectionId });
 }
 
 export function listKafkaTopics(connectionId: string): Promise<TopicSummary[]> {
@@ -233,8 +317,14 @@ export interface GroupLagSummary {
   worstTopic: string | null;
   worstTopicLag: number;
   partitions: number;
-  /** Seconds the group's committed offsets have not moved; null = moving / first sight. */
+  /** Tuổi thật (giây) của message chờ lâu nhất chưa commit; null = không có gì chờ đủ lâu. */
   stalledSec: number | null;
+  /** Partition treo lâu nhất ("topic:partition") — để cảnh báo nêu đích danh. */
+  stalledAt?: string;
+  /** Lag của RIÊNG partition đang tắc (khác `totalLag` của cả group). */
+  stalledLag?: number;
+  /** Thời điểm message đang tắc được ghi vào log (epoch ms). */
+  stalledSince?: number;
   /** This group alone failed — its lag is UNKNOWN, not zero. */
   error?: string;
 }

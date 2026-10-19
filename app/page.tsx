@@ -6,48 +6,58 @@
 // RabbitMQ · MongoDB · Elastic · PostgreSQL). Each workspace mounts lazily and
 // stays mounted (hidden) across tab switches so long-running state survives.
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import WebhookReceiver from '@/components/WebhookReceiver';
-import ApiExplorerWorkspace, { type IntegrationView } from '@/components/ApiExplorerWorkspace';
+import ApiExplorerWorkspaceRaw, { type IntegrationView } from '@/components/ApiExplorerWorkspace';
 import PackManager from '@/components/PackManager';
-import GitWorkspace from '@/components/GitWorkspace';
-import CodeStudio from '@/components/CodeStudio';
-import TerminalWorkspace from '@/components/TerminalWorkspace';
-import RedisWorkspace from '@/components/RedisWorkspace';
-import KafkaWorkspace from '@/components/KafkaWorkspace';
-import RabbitWorkspace from '@/components/RabbitWorkspace';
-import MongoWorkspace from '@/components/MongoWorkspace';
-import EsWorkspace from '@/components/EsWorkspace';
-import PgWorkspace from '@/components/PgWorkspace';
-import OfficeWorkspace, { type OfficeApi } from '@/components/OfficeWorkspace';
-import GoogleWorkspace from '@/components/GoogleWorkspace';
-import MailWorkspace from '@/components/MailWorkspace';
-import LinksWorkspace from '@/components/LinksWorkspace';
-import AppsWorkspace from '@/components/AppsWorkspace';
-import ToolsWorkspace, { type ToolsApi } from '@/components/ToolsWorkspace';
-import ApiWorkspace from '@/components/ApiWorkspace';
-import BrowserTabWorkspace from '@/components/BrowserTabWorkspace';
-import BrowserWorkspace from '@/components/BrowserWorkspace';
-import ZaloApiWorkspace from '@/components/ZaloApiWorkspace';
-import RemoteWorkspace from '@/components/RemoteWorkspace';
-import AutomationWorkspace from '@/components/automation/AutomationWorkspace';
+import GitWorkspaceRaw from '@/components/GitWorkspace';
+import CodeStudioRaw from '@/components/CodeStudio';
+import TerminalWorkspaceRaw from '@/components/TerminalWorkspace';
+import MonitorWorkspaceRaw, { type MonitorSummary } from '@/components/monitor/MonitorWorkspace';
+import RedisWorkspaceRaw from '@/components/RedisWorkspace';
+import KafkaWorkspaceRaw from '@/components/KafkaWorkspace';
+import RabbitWorkspaceRaw from '@/components/RabbitWorkspace';
+import MongoWorkspaceRaw from '@/components/MongoWorkspace';
+import EsWorkspaceRaw from '@/components/EsWorkspace';
+import PgWorkspaceRaw from '@/components/PgWorkspace';
+import MinioWorkspaceRaw from '@/components/MinioWorkspace';
+import OfficeWorkspaceRaw, { type OfficeApi } from '@/components/OfficeWorkspace';
+import GoogleWorkspaceRaw from '@/components/GoogleWorkspace';
+import MailWorkspaceRaw from '@/components/MailWorkspace';
+import LinksWorkspaceRaw from '@/components/LinksWorkspace';
+import AppsWorkspaceRaw from '@/components/AppsWorkspace';
+import ToolsWorkspaceRaw, { type ToolsApi } from '@/components/ToolsWorkspace';
+import ApiWorkspaceRaw from '@/components/ApiWorkspace';
+import BrowserTabWorkspaceRaw from '@/components/BrowserTabWorkspace';
+import BrowserWorkspaceRaw from '@/components/BrowserWorkspace';
+import ZaloApiWorkspaceRaw from '@/components/ZaloApiWorkspace';
+import RemoteWorkspaceRaw from '@/components/RemoteWorkspace';
+import AutomationWorkspaceRaw from '@/components/automation/AutomationWorkspace';
 import AutomationHost from '@/components/AutomationHost';
 import GitAutoPullHost from '@/components/GitAutoPullHost';
 import MailWatchHost from '@/components/MailWatchHost';
-import WorkWorkspace from '@/components/WorkWorkspace';
+import WorkWorkspaceRaw from '@/components/WorkWorkspace';
 import WorkAlertHost from '@/components/WorkAlertHost';
 import ConvertHost from '@/components/ConvertHost';
+import StockTickerHost, { StockHeaderButton } from '@/components/StockTickerHost';
+import QuickTranslate from '@/components/QuickTranslate';
 import OpenLinkDialog from '@/components/OpenLinkDialog';
 import NotificationCenter from '@/components/NotificationCenter';
 import QuickTabs, { type TabInfo } from '@/components/QuickTabs';
 import UltraBar from '@/components/UltraBar';
+import TabVisibilityBar from '@/components/TabVisibilityBar';
 import * as recentTabs from '@/lib/recentTabs';
+import { classifyFile, droppedFiles, isFileDrag, onOpenPathRequest, openDropped } from '@/lib/fileDrop';
 import * as ultraView from '@/lib/ultraView';
+import * as hiddenTabs from '@/lib/hiddenTabs';
 import { notices } from '@/lib/noticeStore';
 import ThemeToggle from '@/components/ThemeToggle';
 import DesktopConsole from '@/components/DesktopConsole';
 import ConfigSyncButton from '@/components/ConfigSyncButton';
 import UpdateButton from '@/components/UpdateButton';
+import HardReloadButton from '@/components/HardReloadButton';
+import { hydratePresets } from '@/lib/presetSync';
+import UpdatePrompt from '@/components/UpdatePrompt';
 import { resolveAuth, authReady as isAuthReady } from '@/lib/request';
 import {
   fetchFullConfig,
@@ -55,6 +65,36 @@ import {
   type LocalConfig,
   type GlobalVars,
 } from '@/lib/persist';
+
+// Mỗi workspace bọc memo: page này đổi state rất hay (đổi tab, badge chưa đọc,
+// hòm thông báo, Ultra View…) mà các pane đã mở đều đang mount (chỉ bị ẩn). Không
+// memo thì mỗi lần như vậy cả chục workspace nghìn dòng bị render lại vô ích.
+// Props truyền xuống đều ổn định (không có object/hàm tạo mới mỗi lượt) nên memo ăn.
+const WorkWorkspace = memo(WorkWorkspaceRaw);
+const GitWorkspace = memo(GitWorkspaceRaw);
+const CodeStudio = memo(CodeStudioRaw);
+const TerminalWorkspace = memo(TerminalWorkspaceRaw);
+const MonitorWorkspace = memo(MonitorWorkspaceRaw);
+const RedisWorkspace = memo(RedisWorkspaceRaw);
+const KafkaWorkspace = memo(KafkaWorkspaceRaw);
+const RabbitWorkspace = memo(RabbitWorkspaceRaw);
+const MongoWorkspace = memo(MongoWorkspaceRaw);
+const EsWorkspace = memo(EsWorkspaceRaw);
+const PgWorkspace = memo(PgWorkspaceRaw);
+const MinioWorkspace = memo(MinioWorkspaceRaw);
+const OfficeWorkspace = memo(OfficeWorkspaceRaw);
+const GoogleWorkspace = memo(GoogleWorkspaceRaw);
+const MailWorkspace = memo(MailWorkspaceRaw);
+const LinksWorkspace = memo(LinksWorkspaceRaw);
+const AppsWorkspace = memo(AppsWorkspaceRaw);
+const ToolsWorkspace = memo(ToolsWorkspaceRaw);
+const ApiWorkspace = memo(ApiWorkspaceRaw);
+const BrowserTabWorkspace = memo(BrowserTabWorkspaceRaw);
+const BrowserWorkspace = memo(BrowserWorkspaceRaw);
+const ZaloApiWorkspace = memo(ZaloApiWorkspaceRaw);
+const RemoteWorkspace = memo(RemoteWorkspaceRaw);
+const ApiExplorerWorkspace = memo(ApiExplorerWorkspaceRaw);
+const AutomationWorkspace = memo(AutomationWorkspaceRaw);
 
 const DEFAULT_BASE_URL = 'http://localhost:8090';
 
@@ -164,12 +204,14 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'git', icon: '⎇', label: 'Git', badge: 'local' },
   { key: 'code', icon: '⌨', label: 'Code', badge: 'ide' },
   { key: 'terminal', icon: '❯', label: 'Terminal', badge: 'shell' },
+  { key: 'monitor', icon: '📊', label: 'Monitor', badge: 'infra' },
   { key: 'redis', icon: '◆', label: 'Redis', badge: 'local' },
   { key: 'kafka', icon: '≋', label: 'Kafka', badge: 'local' },
   { key: 'rabbit', icon: '🐇', label: 'RabbitMQ', badge: 'local' },
   { key: 'mongo', icon: '🍃', label: 'MongoDB', badge: 'local' },
   { key: 'es', icon: '🔍', label: 'Elastic', badge: 'local' },
   { key: 'pg', icon: '🐘', label: 'PostgreSQL', badge: 'local' },
+  { key: 'minio', icon: '🪣', label: 'MinIO', badge: 'local' },
   { key: 'office', icon: '🗂', label: 'Office', badge: 'local' },
   { key: 'google', icon: 'Ⓖ', label: 'Google', badge: 'cloud' },
   { key: 'mail', icon: '✉️', label: 'Mail', badge: 'imap' },
@@ -191,6 +233,11 @@ const NAV_KEY = 'devbox.navPos';
 export default function Home() {
   const [mode, setMode] = useState<Mode>('git');
 
+  // Kéo "nút tìm nhanh" (preset Redis/Kafka/Mongo/ES/PG) từ configs/presets.json
+  // về localStorage một lần lúc khởi động. Chạy ở đây — gốc cây — để tab nào mở
+  // cũng đã có dữ liệu, không phải mỗi tab tự đồng bộ.
+  useEffect(() => { void hydratePresets(); }, []);
+
   // Vị trí thanh menu tính năng: ngang trên (mặc định) / dọc trái / dọc phải.
   // Menu dọc trả nhiều chiều cao cho vùng làm việc — lưu localStorage.
   const [navPos, setNavPos] = useState<NavPos>('top');
@@ -203,6 +250,23 @@ export default function Home() {
       const next: NavPos = cur === 'top' ? 'left' : cur === 'left' ? 'right' : 'top';
       if (typeof window !== 'undefined') window.localStorage.setItem(NAV_KEY, next);
       return next;
+    });
+  };
+
+  // Ẩn HẲN thanh menu (mọi vị trí trên/trái/phải) để nhường chỗ cho vùng làm
+  // việc. Khi ẩn, một dải mỏng thế chỗ đúng cạnh đó (nằm trong ô lưới của
+  // appbar) — luôn có lối mở lại, và không bị <webview> che vì nó không nằm
+  // đè lên vùng nội dung. Lưu localStorage.
+  const [navHidden, setNavHidden] = useState(false);
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.localStorage.getItem('devbox.navHidden') === '1') {
+      setNavHidden(true);
+    }
+  }, []);
+  const toggleNavHidden = () => {
+    setNavHidden((v) => {
+      if (typeof window !== 'undefined') window.localStorage.setItem('devbox.navHidden', v ? '0' : '1');
+      return !v;
     });
   };
 
@@ -252,6 +316,27 @@ export default function Home() {
     ultraView.subscribe, ultraView.getSnapshot, ultraView.getServerSnapshot,
   );
 
+  // ── Tính năng bị ẩn khỏi menu ───────────────────────────────────────────────
+  // CHỈ ảnh hưởng thanh menu. Pane vẫn mount theo `visited` như cũ nên automation
+  // / watcher / mail poll của tab bị ẩn vẫn chạy — xem lib/hiddenTabs.
+  const hidden = useSyncExternalStore(
+    hiddenTabs.subscribe, hiddenTabs.getSnapshot, hiddenTabs.getServerSnapshot,
+  );
+  const hiddenSet = useMemo(() => new Set(hidden), [hidden]);
+  const visibleTabs = useMemo(() => TABS.filter((t) => !hiddenSet.has(t.key)), [hiddenSet]);
+  /** Tab đang chờ xác nhận ẩn (bấm ✕ trên menu) — TabVisibilityBar dựng hộp hỏi. */
+  const [pendingHide, setPendingHide] = useState<string | null>(null);
+
+  // Ẩn đúng tab ĐANG MỞ thì không được để màn hình trống: nhảy sang tab hiện
+  // gần nhất vừa dùng, không có thì lấy tab hiện đầu tiên. Pack và màn hình
+  // quản lý packs không ẩn được nên không tính ở đây.
+  useEffect(() => {
+    if (!hiddenSet.has(mode)) return;
+    const fallback = recents.find((r) => r.key !== mode && !hiddenSet.has(r.key))?.key
+      ?? visibleTabs[0]?.key;
+    if (fallback) setMode(fallback);
+  }, [hiddenSet, mode, visibleTabs, recents]);
+
   // Ctrl+Shift+U bật/tắt nhanh, lấy tab đang mở làm pane đầu tiên.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -292,8 +377,10 @@ export default function Home() {
   const onOfficeReady = useCallback((api: OfficeApi) => { officeApi.current = api; }, []);
   const onToolsReady = useCallback((api: ToolsApi) => { toolsApi.current = api; }, []);
 
-  useEffect(() => window.workspace?.onOpenLocalFile?.((filePath) => {
-    const office = /\.(xlsx|xlsm|csv|docx)$/i.test(filePath);
+  /** Mở một file trên đĩa ở đúng view theo đuôi file. Đường chung cho "Open
+   *  with" từ Explorer và kéo thả (lib/fileDrop.ts). */
+  const openLocalPath = useCallback((filePath: string) => {
+    const office = classifyFile(filePath)?.target === 'office';
     const target = office ? 'office' : 'tools';
     // Chuyển tab TRƯỚC khi mở: pane chỉ mount lần đầu được ghé thăm (xem
     // `visited`), chưa vào tab Tools lần nào thì ToolsWorkspace còn chưa tồn
@@ -310,7 +397,77 @@ export default function Home() {
       if (++tries < 40) setTimeout(tick, 50); // bỏ cuộc sau ~2s
     };
     tick();
-  }), []);
+  }, []);
+
+  useEffect(() => window.workspace?.onOpenLocalFile?.(openLocalPath), [openLocalPath]);
+  useEffect(() => onOpenPathRequest(openLocalPath), [openLocalPath]);
+
+  // ── Kéo thả file từ Explorer ─────────────────────────────────────────────
+  //
+  // Rê file vào cửa sổ → nút menu Office/Tools sáng lên báo "thả vào đây được".
+  // Thả lên nút: mở luôn (thả nhầm nút vẫn vào đúng view — bộ định tuyến chọn
+  // theo đuôi file). Giữ file trên nút một lúc mà chưa thả: chuyển sang tab
+  // đó, để thả tiếp vào vùng làm việc bên trong như kéo lên taskbar Windows.
+  const [fileDragging, setFileDragging] = useState(false);
+  const [dropHover, setDropHover] = useState<string | null>(null);
+  const [dropMsg, setDropMsg] = useState<string | null>(null);
+  const springTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dropMsgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showDropMsg = useCallback((m: string) => {
+    setDropMsg(m || null);
+    if (dropMsgTimer.current) clearTimeout(dropMsgTimer.current);
+    if (m) dropMsgTimer.current = setTimeout(() => setDropMsg(null), 6000);
+  }, []);
+  useEffect(() => {
+    // dragenter/dragleave bắn cả khi rê qua phần tử con — đếm mới biết con trỏ
+    // đã thật sự rời cửa sổ hay chưa.
+    let depth = 0;
+    const enter = (e: DragEvent) => { if (isFileDrag(e.dataTransfer)) { depth++; setFileDragging(true); } };
+    const leave = (e: DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
+      if (--depth <= 0) { depth = 0; setFileDragging(false); }
+    };
+    const end = () => { depth = 0; setFileDragging(false); setDropHover(null); };
+    window.addEventListener('dragenter', enter, true);
+    window.addEventListener('dragleave', leave, true);
+    window.addEventListener('drop', end, true);
+    window.addEventListener('dragend', end, true);
+    return () => {
+      window.removeEventListener('dragenter', enter, true);
+      window.removeEventListener('dragleave', leave, true);
+      window.removeEventListener('drop', end, true);
+      window.removeEventListener('dragend', end, true);
+    };
+  }, []);
+  useEffect(() => {
+    if (springTimer.current) clearTimeout(springTimer.current);
+    if (!dropHover) return;
+    const key = dropHover;
+    springTimer.current = setTimeout(() => setMode(key), 700);
+    return () => { if (springTimer.current) clearTimeout(springTimer.current); };
+  }, [dropHover]);
+
+  /** Props kéo thả cho nút menu `key` — chỉ Office/Tools nhận file. */
+  const menuDropProps = (key: string) => (key !== 'office' && key !== 'tools' ? {} : {
+    onDragOver: (e: React.DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      if (dropHover !== key) setDropHover(key);
+    },
+    // Rê qua icon/chữ bên trong nút cũng bắn dragleave — chỉ tính khi ra hẳn
+    // khỏi nút, không thì hẹn giờ chuyển tab bị đặt lại liên tục.
+    onDragLeave: (e: React.DragEvent) => {
+      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+      setDropHover((h) => (h === key ? null : h));
+    },
+    onDrop: (e: React.DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
+      e.preventDefault();
+      setDropHover(null);
+      showDropMsg(openDropped(droppedFiles(e.dataTransfer)));
+    },
+  });
 
   /** Chỗ đặt pane `key`: Ultra View thì theo cột, không thì theo tab đang chọn.
    *  Mọi <main> bên dưới đều đi qua đây nên hai chế độ dùng CHUNG một cây pane
@@ -366,6 +523,8 @@ export default function Home() {
   // Tin chưa đọc của tab Zalo API (nhánh API) — riêng với Workspace vì hai luồng
   // độc lập, nhưng dồn chung vào tiêu đề cửa sổ.
   const [zaUnread, setZaUnread] = useState(0);
+  // Tóm tắt Monitor (số tài nguyên đỏ/vàng) → chấm màu trên nút menu khi đang ở tab khác.
+  const [monSum, setMonSum] = useState<MonitorSummary | null>(null);
   useEffect(() => {
     const total = wsUnread + zaUnread;
     document.title = total > 0 ? `(${total}) VHS DevBox` : 'VHS DevBox';
@@ -491,7 +650,21 @@ export default function Home() {
 
   return (
     <div className="shell" data-nav={navPos}>
+      {/* Menu đang ẩn: dải mỏng thế chỗ — bấm là menu về. Nằm đúng ô lưới của
+          appbar nên chế độ trên/trái/phải đều tự dính đúng cạnh. */}
+      {navHidden && (
+        <button
+          className="appbar-restore"
+          onClick={toggleNavHidden}
+          title="Hiện lại thanh menu (đang ẩn để nhường chỗ cho vùng làm việc)"
+        >
+          <span aria-hidden>☰</span>
+          <span className="appbar-restore-label">menu</span>
+        </button>
+      )}
+
       {/* ── Header / top bar ─────────────────────────────────────────── */}
+      {!navHidden && (
       <header className="appbar">
         <div className="brand">
           <div className="brand-mark">V</div>
@@ -503,16 +676,21 @@ export default function Home() {
           <button className="nav-pos-btn" onClick={cycleNav} title={`Menu đang ${navPos === 'top' ? 'ngang trên' : navPos === 'left' ? 'dọc trái' : 'dọc phải'} — bấm để đổi (menu dọc cho thêm chiều cao)`}>
             {navPos === 'top' ? '⬍' : navPos === 'left' ? '⬅' : '➡'}
           </button>
+          {/* Ẩn hẳn menu — dải mỏng ☰ ở đúng cạnh này để mở lại. */}
+          <button className="nav-pos-btn" onClick={toggleNavHidden}
+            title="Ẩn thanh menu — nhường chỗ cho vùng làm việc; dải mỏng ☰ ở cạnh này để mở lại">
+            {navPos === 'top' ? '⌃' : navPos === 'left' ? '«' : '»'}
+          </button>
         </div>
 
         <div className="modeswitch" role="tablist" aria-label="Workspace">
-          {TABS.map((t) => {
+          {visibleTabs.map((t) => {
             // Thông báo chưa đọc gắn với tab này (hòm thư local) — badge đỏ
             // kiểu "có thư đến" trên đúng menu mục tiêu (vd Git khi có conflict).
             const nUnread = noticeSnap.unreadByTab[t.key] ?? 0;
             return (
+            <span key={t.key} className="ms-wrap">
             <button
-              key={t.key}
               role="tab"
               aria-selected={shown(t.key)}
               className={[
@@ -527,11 +705,22 @@ export default function Home() {
                 // Mail đến chưa đọc — nháy khi đang ở tab khác.
                 t.key === 'mail' && mailUnread > 0 && !shown('mail') ? 'ms-alert' : '',
                 nUnread > 0 && !shown(t.key) ? 'ms-alert' : '',
+                // Đang rê file: sáng các nút nhận được file, đậm nút đang trỏ vào.
+                fileDragging && (t.key === 'office' || t.key === 'tools') ? 'ms-droppable' : '',
+                dropHover === t.key ? 'ms-drophover' : '',
               ].filter(Boolean).join(' ')}
               onClick={(e) => pickTab(t.key, e)}
+              {...menuDropProps(t.key)}
             >
               <span className="ms-ico" aria-hidden>{t.icon}</span>
               {t.label}
+              {t.key === 'monitor' && monSum && (monSum.bad > 0 || monSum.warn > 0) ? (
+                <span
+                  className={`ms-mon ${monSum.bad > 0 ? 'bad' : 'warn'}`}
+                  title={`${monSum.bad} đỏ · ${monSum.warn} vàng trên ${monSum.total} tài nguyên`}
+                  aria-label={`${monSum.bad} tài nguyên đỏ, ${monSum.warn} vàng`}
+                />
+              ) : null}
               {t.key === 'workspace' && wsUnread > 0 ? (
                 <span
                   className={`ms-unread ms-bell${!shown('workspace') ? ' ringing' : ''}`}
@@ -570,6 +759,17 @@ export default function Home() {
                 <span className="ms-badge">{t.badge}</span>
               )}
             </button>
+            {/* Ẩn tính năng: chỉ hiện khi rê chuột lên tab. Nằm NGOÀI <button>
+                vì button lồng button là HTML không hợp lệ — trình duyệt sẽ tự
+                tháo lồng và nút ✕ rơi ra ngoài menu. */}
+            <button
+              className="ms-hide"
+              tabIndex={-1}
+              title={`Ẩn "${t.label}" khỏi menu — bật lại ở nút ⚙ trên thanh tiêu đề. Automation của tab này vẫn chạy.`}
+              aria-label={`Ẩn ${t.label}`}
+              onClick={(e) => { e.stopPropagation(); setPendingHide(t.key); }}
+            >✕</button>
+            </span>
             );
           })}
 
@@ -617,11 +817,31 @@ export default function Home() {
           </button>
           {/* Ultra View: xem nhiều workspace cùng lúc (Ctrl+Shift+U). */}
           <UltraBar state={ultra} current={mode} allKeys={ultraKeys} info={tabInfo} />
+          {/* Hiện/ẩn tính năng — NƠI DUY NHẤT bật lại tab đã ẩn, nên luôn hiện. */}
+          <TabVisibilityBar
+            hidden={hidden}
+            allKeys={TABS.map((t) => t.key)}
+            info={tabInfo}
+            pending={pendingHide}
+            onResolvePending={(ok) => {
+              if (ok && pendingHide) hiddenTabs.hide(pendingHide);
+              setPendingHide(null);
+            }}
+          />
+          {/* Giá cổ phiếu: mở cấu hình widget góc màn hình — lối vào duy nhất
+              khi widget đang tắt (mặc định tắt). */}
+          <StockHeaderButton />
           {/* Hòm thông báo: xem lại lịch sử (local, 2 ngày) + xóa tất cả. */}
           <NotificationCenter />
           <ThemeToggle />
         </div>
       </header>
+      )}
+
+      {/* File kéo thả mà không mở được (loại lạ / không có đường dẫn). */}
+      {dropMsg && (
+        <div className="drop-toast" role="status" onClick={() => setDropMsg(null)}>{dropMsg}</div>
+      )}
 
       {/* Màn hình tiếp cận nhanh (Ctrl+`) — nổi trên mọi workspace. */}
       <QuickTabs
@@ -659,6 +879,11 @@ export default function Home() {
             <TerminalWorkspace visible={shown('terminal')} />
           </main>
         )}
+        {visited.monitor && (
+          <main className="workspace" style={pane('monitor')} aria-hidden={!shown('monitor')}>
+            <MonitorWorkspace visible={shown('monitor')} onOpenTab={pickTab} onSummary={setMonSum} />
+          </main>
+        )}
         {visited.redis && (
           <main className="workspace" style={pane('redis')} aria-hidden={!shown('redis')}>
             <RedisWorkspace />
@@ -689,6 +914,11 @@ export default function Home() {
             <PgWorkspace />
           </main>
         )}
+        {visited.minio && (
+          <main className="workspace" style={pane('minio')} aria-hidden={!shown('minio')}>
+            <MinioWorkspace />
+          </main>
+        )}
         {visited.office && (
           <main className="workspace" style={pane('office')} aria-hidden={!shown('office')}>
             <OfficeWorkspace onReady={onOfficeReady} />
@@ -714,7 +944,7 @@ export default function Home() {
         )}
         {visited.apps && (
           <main className="workspace" style={pane('apps')} aria-hidden={!shown('apps')}>
-            <AppsWorkspace />
+            <AppsWorkspace visible={shown('apps')} />
           </main>
         )}
         {visited.tools && (
@@ -812,6 +1042,12 @@ export default function Home() {
       {/* Cảnh báo Công việc (ngày bắt đầu + gần deadline) → toast + hòm thông báo. */}
       <WorkAlertHost />
 
+      {/* Bảng giá cổ phiếu thu nhỏ ở góc màn hình — MẶC ĐỊNH TẮT, bật ở nút 📈
+          trên header. Sống ngoài mọi pane nên đổi tab vẫn thấy giá. */}
+      <StockTickerHost />
+      {/* Chấm dịch nhanh — nổi ở mọi view (Ctrl+Shift+Y). */}
+      <QuickTranslate />
+
       {/* Bấm link trong tin nhắn Zalo/Telegram → hỏi mở ở tab Links hay tab
           Browser. Cửa sổ Zalo không bị đụng tới, vẫn nguyên khung chat. setMode
           bật tab đích, và effect `visited` ở trên mount nó nếu là lần ghé đầu. */}
@@ -820,6 +1056,11 @@ export default function Home() {
       {/* Job chuyển đổi file chạy ngầm: host này in PDF hộ (Chromium của
           Electron) và báo đường dẫn khi xong. */}
       <ConvertHost />
+
+      {/* Mở app → kiểm tra Git, có bản mới thì hỏi "cập nhật không?" một lần.
+          Đã mới nhất / không phải repo / mất mạng thì không hiện gì.
+          Tắt bằng SELF_UPDATE_PROMPT=false trong .env.local. */}
+      <UpdatePrompt />
 
       {/* ── Footer ───────────────────────────────────────────────────── */}
       <footer className="appfoot">
@@ -832,6 +1073,9 @@ export default function Home() {
           {/* Kéo bản mới của CHÍNH app này từ Git về. Badge = số commit đang
               chờ, nên liếc là biết có bản mới mà không phải bấm vào. */}
           <UpdateButton />
+          {/* Dọn cache rồi nạp lại — để phân biệt "code sai" với "đang ăn bản
+              cũ" mà không phải ngồi đoán. */}
+          <HardReloadButton />
           {/* Desktop only: log của shell + next dev, ẩn mặc định. */}
           <DesktopConsole />
         </span>

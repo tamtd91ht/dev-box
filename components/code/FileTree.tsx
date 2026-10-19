@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { cTree, cCreate, cRename, cRemove, fileIcon, type TreeEntry } from '@/lib/code';
+import { RailHideButton } from '../RailCollapse';
 
 interface Props {
   projectId: string;
@@ -16,6 +17,8 @@ interface Props {
   onTerminalHere: (rel: string) => void;
   /** File đang active trong editor (highlight). */
   activeRel?: string;
+  /** Thu gọn cột cây file — cha truyền vào thì mới vẽ nút « (RailCollapse). */
+  onHide?: () => void;
 }
 
 interface Menu {
@@ -32,7 +35,7 @@ interface Ask {
   submit: (value: string) => void;
 }
 
-export default function FileTree({ projectId, projectName, onOpenFile, onTerminalHere, activeRel }: Props) {
+export default function FileTree({ projectId, projectName, onOpenFile, onTerminalHere, activeRel, onHide }: Props) {
   /** children theo rel của thư mục cha ('' = gốc). */
   const [children, setChildren] = useState<Record<string, TreeEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -200,6 +203,8 @@ export default function FileTree({ projectId, projectName, onOpenFile, onTermina
       <div className="cs-tree-head" title={projectName}>
         <span aria-hidden>🗀</span> {projectName}
         <button className="cs-tree-refresh" title="Refresh toàn bộ cây" onClick={() => { setChildren({}); setExpanded(new Set()); void loadDir(''); }}>⟳</button>
+        {onHide && <RailHideButton onHide={onHide} className="cs-tree-refresh"
+          title="Thu gọn cây file — nhường chỗ cho editor" />}
       </div>
       {err && <div className="cs-tree-err" title={err}>{err}</div>}
       <div className="cs-tree-scroll">{renderLevel('', 0)}</div>

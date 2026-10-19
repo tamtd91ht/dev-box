@@ -138,6 +138,8 @@ export interface WireSheet {
   /** Dòng/cột ẩn (1-based) trong cửa sổ hiển thị. */
   hiddenRows?: number[];
   hiddenCols?: number[];
+  /** Freeze panes trong file: số dòng trên / cột trái đang cố định. */
+  freeze?: { rows: number; cols: number };
 }
 
 export interface SheetOpenResult {
@@ -166,7 +168,9 @@ export type SheetOp =
   /** Đổi độ rộng cột / chiều cao dòng (px trên màn hình) — chỉ .xlsx.
    *  px = null → trả về mặc định của Excel. */
   | { op: 'colWidth'; c: number; px: number | null }
-  | { op: 'rowHeight'; r: number; px: number | null };
+  | { op: 'rowHeight'; r: number; px: number | null }
+  /** Cố định (freeze panes) `rows` dòng trên + `cols` cột trái; 0/0 = bỏ cố định. */
+  | { op: 'freeze'; rows: number; cols: number };
 
 // ── Kích thước dòng/cột: px trên màn hình ↔ đơn vị của Excel ────────────────
 // Excel đo cột theo "số ký tự" của font mặc định (≈7px/ký tự + 5px padding) và
@@ -236,6 +240,33 @@ export function fetchSheetFlags(): Promise<SheetFlags> {
 
 export function openSheetFile(path: string): Promise<SheetOpenResult> {
   return sheetAction<SheetOpenResult>('open', { path });
+}
+
+/** Dữ liệu workbook cho giao diện Univer (xem lib/sheetUniver). */
+export type UniverOpened = import('./sheetUniver').UniverOpenResult;
+
+/** Mở file cho giao diện Univer — không cắt ở 5.000 dòng như lưới cũ. */
+export function openUniverSheet(path: string): Promise<UniverOpened> {
+  return sheetAction<UniverOpened>('openUniver', { path });
+}
+
+/** Lưu từ giao diện Univer: xlsx gửi bản vá (chỉ phần đã đổi), csv gửi cả lưới giá trị. */
+export function saveUniverSheet(
+  path: string,
+  mtimeMs: number,
+  body: { patch: unknown } | { grid: string[][] },
+): Promise<SheetSaveResult & { cells: number }> {
+  return sheetAction('saveUniver', { path, mtimeMs, ...body });
+}
+
+/** mtime hiện tại của file trên đĩa — so với lúc mở để biết có bị sửa ngoài app không. */
+export function statSheetFile(path: string): Promise<{ mtimeMs: number; sizeBytes: number }> {
+  return sheetAction('stat', { path });
+}
+
+/** Mở file bằng ứng dụng mặc định của hệ điều hành (Excel / WPS / LibreOffice…). */
+export function openSheetExternal(path: string): Promise<{ path: string }> {
+  return sheetAction('openExternal', { path });
 }
 
 /** Create a new empty .xlsx/.csv in `dir` (never overwrites) and open it. */

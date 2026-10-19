@@ -41,6 +41,7 @@ import {
   writeNewFile,
   assertNotStale,
   atomicBackupWrite,
+  openWithDefaultApp,
   type OfficeTarget,
 } from './officeFiles';
 
@@ -53,15 +54,35 @@ export const MAX_COLS = 256;
 
 // ── Path validation ──────────────────────────────────────────────────────────
 
-interface ResolvedTarget extends OfficeTarget {
+export interface ResolvedTarget extends OfficeTarget {
   kind: 'xlsx' | 'csv';
 }
 
-async function resolveTarget(raw: unknown): Promise<ResolvedTarget> {
+export async function resolveTarget(raw: unknown): Promise<ResolvedTarget> {
   const t = await resolveOfficeFile(raw, ['.xlsx', '.csv'], {
     '.xlsm': '.xlsm (file có macro) không được hỗ trợ — lưu qua ExcelJS sẽ mất VBA. Hãy Save As .xlsx trước.',
   });
   return { ...t, kind: t.ext === '.csv' ? 'csv' : 'xlsx' };
+}
+
+// ── Mở bằng ứng dụng ngoài + dò file đổi ─────────────────────────────────────
+
+/** mtime + dung lượng hiện tại — để app biết file vừa bị sửa bởi chương trình khác. */
+export async function statFile(rawPath: unknown): Promise<{ mtimeMs: number; sizeBytes: number }> {
+  const t = await resolveTarget(rawPath);
+  return { mtimeMs: t.mtimeMs, sizeBytes: t.sizeBytes };
+}
+
+/**
+ * Mở file bằng ứng dụng MẶC ĐỊNH của hệ điều hành (Excel, WPS, LibreOffice…
+ * tuỳ máy gán .xlsx cho gì) — cùng đường kiểm tra path như `open` nên chỉ mở
+ * được .xlsx/.csv có thật. Không dùng shell: đường dẫn đi vào như MỘT đối số,
+ * tên file có dấu cách / ký tự lạ không bị diễn giải.
+ */
+export async function openExternal(rawPath: unknown): Promise<{ path: string }> {
+  const t = await resolveTarget(rawPath);
+  await openWithDefaultApp(t.abs);
+  return { path: t.abs };
 }
 
 // ── xlsx → wire ──────────────────────────────────────────────────────────────
@@ -123,7 +144,7 @@ function applyTint(hex: string, tint: number): string {
 }
 
 /** ExcelJS color ({argb} | {theme,tint} | {indexed}) → CSS #rrggbb. */
-function resolveColor(c: unknown): string | undefined {
+export function resolveColor(c: unknown): string | undefined {
   if (!c || typeof c !== 'object') return undefined;
   const o = c as { argb?: string; theme?: number; tint?: number; indexed?: number };
   if (typeof o.argb === 'string' && o.argb.length >= 6) {
@@ -332,6 +353,12 @@ function sheetToWire(ws: ExcelJS.Worksheet): WireSheet {
     merges.push({ r1, c1, r2, c2 });
   }
 
+  // Freeze panes: ExcelJS giữ ở views[0] {state:'frozen', xSplit = số cột, ySplit = số dòng}.
+  const view = ws.views?.[0] as { state?: string; xSplit?: number; ySplit?: number } | undefined;
+  const freeze = view?.state === 'frozen' && (view.xSplit || view.ySplit)
+    ? { rows: Math.max(0, Math.floor(view.ySplit ?? 0)), cols: Math.max(0, Math.floor(view.xSplit ?? 0)) }
+    : undefined;
+
   return {
     name: ws.name,
     rows,
@@ -344,12 +371,20 @@ function sheetToWire(ws: ExcelJS.Worksheet): WireSheet {
     rowH,
     ...(hiddenRows.length > 0 ? { hiddenRows } : {}),
     ...(hiddenCols.length > 0 ? { hiddenCols } : {}),
+    ...(freeze ? { freeze } : {}),
   };
+}
+
+/** "A".."XFD" của cột 1-based — cho topLeftCell của freeze. */
+function colName(c: number): string {
+  let s = '';
+  for (let n = c; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
+  return s;
 }
 
 // ── CSV encode/decode ────────────────────────────────────────────────────────
 
-interface CsvDoc {
+export interface CsvDoc {
   grid: string[][];
   delimiter: string;
   newline: '\r\n' | '\n';
@@ -369,21 +404,21 @@ function decodeCsvBuffer(buf: Buffer): { text: string; hasBom: boolean; encoding
   return { text: buf.toString('utf8'), hasBom: false, encoding: 'utf8' };
 }
 
-function parseCsv(buf: Buffer): CsvDoc {
+export function parseCsv(buf: Buffer): CsvDoc {
   const { text, hasBom, encoding } = decodeCsvBuffer(buf);
-  const parsed = Papa.parse<string[]>(text, { delimiter: '' /* auto-detect */ });
-  const grid = parsed.data;
-  // A trailing newline makes Papa emit one final [''] row — an artifact, not data.
   const endsWithNewline = /\r?\n$/.test(text);
-  if (endsWithNewline && grid.length > 0) {
-    const last = grid[grid.length - 1];
-    if (last.length === 0 || (last.length === 1 && last[0] === '')) grid.pop();
-  }
+  // Bỏ MỘT xuống dòng cuối TRƯỚC khi parse (không phải sau): dòng rỗng cuối làm Papa
+  // tính số trường trung bình dưới ngưỡng dò (1.99) nên file nhỏ dưới ~100 dòng dùng
+  // dấu ';' (kiểu xuất của Excel tiếng Việt) bị dò nhầm thành ',' — rồi lưu lại là đổi
+  // luôn dấu phân cách của file. Dòng rỗng cuối vốn chỉ là hệ quả của xuống dòng cuối.
+  const body = endsWithNewline ? text.replace(/\r?\n$/, '') : text;
+  const parsed = Papa.parse<string[]>(body, { delimiter: '' /* auto-detect */ });
+  const grid = body === '' ? [] : parsed.data;
   const newline: '\r\n' | '\n' = parsed.meta.linebreak === '\r\n' ? '\r\n' : '\n';
   return { grid, delimiter: parsed.meta.delimiter || ',', newline, hasBom, encoding, endsWithNewline };
 }
 
-function encodeCsv(doc: CsvDoc): Buffer {
+export function encodeCsv(doc: CsvDoc): Buffer {
   let text = Papa.unparse(doc.grid, { delimiter: doc.delimiter, newline: doc.newline });
   if (doc.endsWithNewline) text += doc.newline;
   if (doc.encoding === 'utf16le') {
@@ -642,6 +677,13 @@ function sanitizeOps(raw: unknown): SheetOp[] {
       if (!Number.isInteger(c) || c < 1 || c > 16_384) throw new Error(`op colWidth có c không hợp lệ: ${op.c}`);
       return { op: 'colWidth', c, px: sanitizeSizePx(op.px, MIN_COL_PX, MAX_COL_PX, 'colWidth') };
     }
+    if (op.op === 'freeze') {
+      const rows = Number(op.rows);
+      const cols = Number(op.cols);
+      if (!Number.isInteger(rows) || rows < 0 || rows > 1_048_575) throw new Error(`op freeze có rows không hợp lệ: ${op.rows}`);
+      if (!Number.isInteger(cols) || cols < 0 || cols > 16_383) throw new Error(`op freeze có cols không hợp lệ: ${op.cols}`);
+      return { op: 'freeze', rows, cols };
+    }
     if (op.op === 'rowHeight') {
       const r = Number(op.r);
       if (!Number.isInteger(r) || r < 1 || r > 1_048_576) throw new Error(`op rowHeight có r không hợp lệ: ${op.r}`);
@@ -743,6 +785,13 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
           // Setter của ExcelJS nhận undefined để BỎ chiều cao riêng (dòng về
           // mặc định), nhưng typings khai là number — cast hẹp đúng chỗ này.
           (ws.getRow(op.r) as { height?: number }).height = op.px === null ? undefined : pxToRowHeight(op.px);
+        } else if (op.op === 'freeze') {
+          // Giữ các thuộc tính view khác (zoom, ô đang chọn…), chỉ thay phần freeze.
+          const { state: _s, xSplit: _x, ySplit: _y, topLeftCell: _t, ...rest } =
+            (ws.views?.[0] ?? {}) as Record<string, unknown>;
+          ws.views = [(op.rows || op.cols
+            ? { ...rest, state: 'frozen', xSplit: op.cols, ySplit: op.rows, topLeftCell: `${colName(op.cols + 1)}${op.rows + 1}` }
+            : { ...rest, state: 'normal' }) as ExcelJS.WorksheetView];
         }
       }
     }
@@ -759,7 +808,7 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
     return `${s.name}(set=${n('set')},insRow=${n('insertRow')},delRow=${n('deleteRow')}`
       + `,insCol=${n('insertCol')},delCol=${n('deleteCol')}`
       + `,style=${n('style')},merge=${n('merge')},unmerge=${n('unmerge')}`
-      + `,colW=${n('colWidth')},rowH=${n('rowHeight')})`;
+      + `,colW=${n('colWidth')},rowH=${n('rowHeight')},freeze=${n('freeze')})`;
   }).join(' ');
   // Audit line → server stdout (same convention as PG_AUDIT / MONGO_AUDIT).
   // eslint-disable-next-line no-console

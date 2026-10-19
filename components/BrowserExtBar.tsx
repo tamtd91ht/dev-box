@@ -1,0 +1,388 @@
+'use client';
+
+// Thanh công cụ extension của tab Browser — chỗ bấm icon để mở popup, giống
+// vùng icon extension bên phải thanh địa chỉ của Chrome.
+//
+// VÌ SAO CẦN: Electron KHÔNG dựng thanh công cụ cho extension. Extension nào
+// sống bằng popup (bấm icon → hiện bảng nhỏ) thì trên <webview> coi như mất
+// hẳn giao diện, dù code bên trong vẫn chạy được. Thanh này dựng lại phần đó.
+//
+// POPUP CHẠY THẬT, KHÔNG PHẢI DỰNG LẠI: popup nạp bằng chính URL
+// `chrome-extension://<id>/popup.html` trong một <webview> riêng, nên nó ở
+// ĐÚNG origin của extension — `chrome.storage`, `chrome.runtime` và messaging
+// sang service worker đều là hàng thật của Electron, không phải đồ giả.
+//
+// PHẦN PHẢI VÁ là mấy API Electron không cấp:
+//   · chrome.tabs.query/update — popup cần biết tab đang xem và điều hướng nó
+//   · chrome.cookies.getAll    — đọc cookie HttpOnly của profile
+// Hai thứ này bơm vào popup qua preload riêng (electron/ext-popup-preload.cjs).
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+
+interface ExtItem {
+  path: string;
+  name: string;
+  version: string;
+  enabled: boolean;
+  loaded: boolean;
+  missing: boolean;
+  id: string;
+  popupUrl: string;
+  actionTitle: string;
+  iconUrl: string;
+  warnings: string[];
+  matches: string[];
+}
+
+/**
+ * Kích thước popup.
+ *
+ * Chiều cao KHÔNG đặt cứng và cũng không lấy theo chỗ trống màn hình — cả hai
+ * cách đều cho ra khung dư thừa hoặc thiếu. Thay vào đó HỎI CHÍNH POPUP nó cao
+ * bao nhiêu (scrollHeight) rồi ôm sát nội dung, chỉ chừa PAD_BOTTOM cho thoáng
+ * dưới nút cuối.
+ *
+ * MIN_H chỉ là chiều cao tạm lúc chưa đo được; MAX_H chặn trên theo chỗ trống
+ * thật để popup không bao giờ tràn khỏi cửa sổ.
+ */
+const POPUP_W = 420;
+const MIN_H = 180;
+const HEAD_H = 34;      // thanh tiêu đề popup (tên + 🔍 + ✕)
+const PAD_BOTTOM = 14;  // khoảng thở dưới nút cuối của extension
+
+export default function BrowserExtBar({
+  partition,
+  activeUrl,
+  onNavigate,
+  onManage,
+  onReloadPage,
+}: {
+  /** Partition của tab đang xem — popup hỏi cookie/tab theo profile này. */
+  partition: string;
+  /** URL tab đang xem — trả lời cho chrome.tabs.query. */
+  activeUrl: string;
+  /** chrome.tabs.update → đổi địa chỉ tab đang xem. */
+  onNavigate: (url: string) => void;
+  /** Mở bảng quản lý extension (🧩). */
+  onManage: () => void;
+  /** Tải lại trang đang xem — sau khi nạp lại extension. */
+  onReloadPage: () => void;
+}) {
+  const [items, setItems] = useState<ExtItem[]>([]);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const popupRef = useRef<HTMLDivElement | null>(null);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  /** createPortal cần document — server render không có. */
+  const [mounted, setMounted] = useState(false);
+  /** Vị trí + kích thước popup, tính từ thanh công cụ (px so với viewport). */
+  const [pos, setPos] = useState({ top: 0, right: 0, height: MIN_H });
+
+  useEffect(() => setMounted(true), []);
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await window.browserExt?.list();
+      if (r?.ok) setItems(r.items as ExtItem[]);
+    } catch {
+      /* thanh phụ trợ — im lặng */
+    }
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  // Danh sách đổi khi người dùng thêm/bật/tắt trong bảng quản lý. Không có
+  // event nào báo, nên nghe lại mỗi lần bảng đó đóng (onManage đổi state cha)
+  // và khi cửa sổ lấy lại focus — đủ để thanh không bị lệch thực tế.
+  useEffect(() => {
+    const onFocus = () => void refresh();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refresh]);
+
+  // Popup đã portal ra body nên nó KHÔNG còn neo theo thanh công cụ được nữa —
+  // phải tự tính toạ độ. Đo lại khi mở, và khi cửa sổ đổi kích thước.
+  /** Chiều cao nội dung thật của popup, do chính nó báo về (0 = chưa đo được). */
+  const [contentH, setContentH] = useState(0);
+
+  useEffect(() => {
+    if (!openId) return;
+    const place = () => {
+      const r = barRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const top = Math.round(r.bottom + 6);
+      // Trần cứng: chỗ trống thật tới đáy cửa sổ. Popup không bao giờ được
+      // tràn ra ngoài màn hình, dù nội dung có dài đến đâu.
+      const room = Math.max(MIN_H, window.innerHeight - top - 12);
+      // Ôm SÁT nội dung khi đã đo được; chưa đo thì tạm MIN_H.
+      const wanted = contentH ? contentH + HEAD_H + PAD_BOTTOM : MIN_H;
+      const height = Math.min(room, Math.max(MIN_H, wanted));
+      setPos({
+        // Không đủ chỗ bên dưới thì đẩy lên cho vừa màn hình.
+        top: Math.max(8, Math.min(top, window.innerHeight - height - 12)),
+        // Neo mép PHẢI theo mép phải của thanh: neo trái sẽ tràn ra ngoài khi
+        // thanh nằm sát bên phải cửa sổ.
+        right: Math.max(8, Math.round(window.innerWidth - r.right)),
+        height,
+      });
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [openId, contentH]);
+
+  // Bấm ra ngoài / Esc → đóng popup, đúng như Chrome.
+  useEffect(() => {
+    if (!openId) return;
+    const onDown = (e: MouseEvent) => {
+      if (!popupRef.current?.contains(e.target as Node)) setOpenId(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpenId(null); };
+    // `capture` để bắt trước khi trang trong webview nuốt sự kiện.
+    document.addEventListener('mousedown', onDown, true);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown, true);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [openId]);
+
+  /** Chỉ extension đã nạp thật + có popup mới lên thanh công cụ. */
+  const withPopup = items.filter((e) => e.enabled && e.loaded && e.popupUrl);
+  const open = withPopup.find((e) => e.id === openId) || null;
+
+  // Popup cần biết tab nào đang xem để trả lời chrome.tabs.query.
+  //
+  // Bối cảnh đi NGAY TRONG URL chứ không gửi qua IPC sau khi attach: script của
+  // popup chạy ngay lúc tải, gọi chrome.tabs.query gần như tức thì — gửi sau
+  // thì đã muộn, popup đã đọc phải giá trị rỗng.
+  //
+  // Tham số nằm ở HASH (#) chứ không phải query (?): nhiều popup tự đọc
+  // `location.search` cho router của chúng, thêm tham số lạ vào đó là làm hỏng
+  // router của người ta.
+  const wvRef = useRef<HTMLElement | null>(null);
+  const popupSrc = open
+    ? open.popupUrl + '#__devbox=' + encodeURIComponent(JSON.stringify({ partition, activeUrl }))
+    : '';
+
+  // Chẩn đoán khi popup trắng. Script của extension ném lỗi thì <webview> chỉ
+  // hiện nền trắng và không báo gì — bắt console-message mức error cùng
+  // did-fail-load để có cái mà đọc, thay vì phải mở DevTools mới biết.
+  const [diag, setDiag] = useState('');
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    setDiag('');
+    setContentH(0);          // đổi extension thì đo lại từ đầu
+    if (!open) return;
+    // Popup của OTool gọi API rồi mới vẽ — mất vài giây, trong lúc đó <webview>
+    // là nền trắng trơn. Không báo gì thì nhìn y như hỏng.
+    setLoading(true);
+    const el = wvRef.current;
+    if (!el) return;
+    const done = () => setLoading(false);
+    const onMsg = (ev: Event) => {
+      const e = ev as Event & { level?: number; message?: string };
+      // level 3 = error trong Electron.
+      if (e.level === 3 && e.message) setDiag((d) => d || `Lỗi trong popup: ${e.message}`);
+    };
+    const onFail = (ev: Event) => {
+      const e = ev as Event & { errorCode?: number; errorDescription?: string };
+      // -3 = ABORTED, xảy ra khi điều hướng bị thay thế — không phải lỗi thật.
+      if (e.errorCode === -3) return;
+      setDiag(`Không tải được popup: ${e.errorDescription || e.errorCode}`);
+    };
+    // ĐO CHIỀU CAO THẬT của popup rồi ôm sát, thay vì đoán.
+    //
+    // Đo NHIỀU LẦN chứ không một lần: popup của OTool gọi API rồi mới vẽ (đo
+    // được là mất ~6 giây), lúc dom-ready nó gần như rỗng. Đo một lần là ra
+    // một cái khung tí xíu rồi kẹt ở đó.
+    const wv = el as HTMLElement & { executeJavaScript?: (c: string) => Promise<number> };
+    const measure = () => {
+      // ĐO PHẦN TỬ NỘI DUNG, không phải body.
+      //
+      // body.scrollHeight VÔ NGHĨA ở đây: body giãn đầy khung nên nó luôn trả
+      // về đúng chiều cao <webview> đang có — đo được 800px chỉ vì khung cao
+      // 800px. Đã kiểm chứng bằng Electron thật.
+      //
+      // Cách đúng: lấy ĐÁY của phần tử nằm thấp nhất trong luồng tài liệu. Bỏ
+      // qua position:fixed (toast, overlay bám mép dưới sẽ kéo số đo xuống sai)
+      // và phần tử ẩn. Popup OTool đo ra 344px — khớp nội dung thật.
+      wv.executeJavaScript?.(`(function(){
+        var b = document.body; if (!b) return 0;
+        var best = 0, all = b.querySelectorAll('*');
+        for (var i = 0; i < all.length; i++) {
+          var el = all[i], cs = getComputedStyle(el);
+          if (cs.position === 'fixed' || cs.display === 'none') continue;
+          var r = el.getBoundingClientRect();
+          if (r.height === 0) continue;
+          var bottom = r.bottom + (window.scrollY || 0);
+          if (bottom > best) best = bottom;
+        }
+        return Math.ceil(best);
+      })()`)
+        .then((h) => { if (typeof h === 'number' && h > 0) setContentH(Math.ceil(h)); })
+        .catch(() => { /* chưa attach hoặc đã đóng — bỏ qua */ });
+    };
+    // Đo tại các mốc render, rồi vài nhịp nữa để bắt phần vẽ sau khi có API.
+    const timers = [120, 600, 1500, 3000, 6000, 9000].map((ms) => setTimeout(measure, ms));
+
+    el.addEventListener('console-message', onMsg as EventListener);
+    el.addEventListener('did-fail-load', onFail as EventListener);
+    el.addEventListener('dom-ready', measure);
+    el.addEventListener('dom-ready', done);
+    el.addEventListener('did-finish-load', done);
+    el.addEventListener('did-stop-loading', done);
+    return () => {
+      timers.forEach(clearTimeout);
+      el.removeEventListener('console-message', onMsg as EventListener);
+      el.removeEventListener('did-fail-load', onFail as EventListener);
+      el.removeEventListener('dom-ready', measure);
+      el.removeEventListener('dom-ready', done);
+      el.removeEventListener('did-finish-load', done);
+      el.removeEventListener('did-stop-loading', done);
+    };
+  }, [open]);
+
+  // Popup xin điều hướng (chrome.tabs.update, hoặc nó tự đổi location và bị
+  // main chặn lại — xem will-navigate trong main.cjs).
+  //
+  // ĐÓNG POPUP sau khi điều hướng, đúng như Chrome: popup là một ô nhỏ để thao
+  // tác, xong việc thì biến mất nhường chỗ cho trang vừa mở. Để nó nằm lại che
+  // mất chính cái trang mình vừa bảo nó mở là vô lý.
+  useEffect(() => {
+    const offNav = window.browserExt?.onNavigate?.((url: string) => {
+      if (typeof url !== 'string' || !url) return;
+      onNavigate(url);
+      setOpenId(null);
+    });
+    // chrome.tabs.create cũng phải đóng popup: tab mới lên trước mặt, popup
+    // treo lại là che mất trang vừa mở.
+    const offOpen = window.browserExt?.onOpenTab?.(() => setOpenId(null));
+    return () => { offNav?.(); offOpen?.(); };
+  }, [onNavigate]);
+
+  /** Nạp lại extension rồi tải lại trang đang xem, để thay đổi có hiệu lực ngay. */
+  const [reloading, setReloading] = useState(false);
+  const reloadExts = useCallback(async () => {
+    setReloading(true);
+    try {
+      await window.browserExt?.reload();
+      await refresh();
+      // Content script chỉ chèn vào LÚC TRANG TẢI — nạp lại extension mà không
+      // tải lại trang thì trang hiện tại vẫn chạy bản cũ.
+      onReloadPage();
+    } catch {
+      /* nút phụ trợ — im lặng */
+    } finally {
+      setReloading(false);
+      setOpenId(null);          // popup cũ trỏ vào id extension đã bị thay
+    }
+  }, [refresh, onReloadPage]);
+
+  return (
+    <div className="bx-bar" ref={barRef}>
+      {/* POPUP KHÔNG PHỤ THUỘC TRANG ĐANG XEM — đúng như Chrome: `matches` chỉ
+          chi phối content script, còn nút trên thanh công cụ thì bấm ở đâu cũng
+          mở được. Bản trước làm mờ icon khi URL không khớp là sai nguyên tắc,
+          và còn dựa trên `activeUrl` vốn là URL LÚC MỞ TAB chứ không phải địa
+          chỉ hiện tại (trang tự chuyển hướng là lệch ngay). Đã bỏ hẳn. */}
+      {withPopup.map((e) => (
+        <button
+          key={e.id}
+          className={`bx-bar-btn${openId === e.id ? ' on' : ''}`}
+          title={e.actionTitle || e.name}
+          onClick={() => setOpenId((v) => (v === e.id ? null : e.id))}
+        >
+          <ExtIcon url={e.iconUrl} name={e.name} />
+        </button>
+      ))}
+
+      {/* Nạp lại extension NGAY TRONG TAB ĐANG XEM.
+          Sửa code extension xong thì phải nạp lại mới thấy đổi, và content
+          script chỉ chèn vào lúc trang tải — nên nạp lại extension rồi tải lại
+          trang, hai việc trong một nút. Trước đây phải mở tab khác mới ăn. */}
+      <button
+        className={`bx-bar-btn${reloading ? ' busy' : ''}`}
+        onClick={() => void reloadExts()}
+        disabled={reloading}
+        title="Nạp lại extension + tải lại trang hiện tại"
+      >
+        {reloading ? <span className="spinner" aria-hidden /> : '↻'}
+      </button>
+
+      <button className="bx-bar-btn bx-bar-manage" onClick={onManage} title="Quản lý extension">
+        🧩
+      </button>
+
+      {/* PORTAL ra document.body — BẮT BUỘC, không phải cho đẹp.
+          Thanh tab (.lv-tabbar) có `overflow-x: auto`, mà overflow khác
+          `visible` thì CẮT CỤT mọi con tràn ra ngoài — popup nằm dưới thanh tab
+          bị clip sạch, kể cả nút đóng. Nhìn y như "bấm xong chẳng có gì".
+          Ra thẳng body thì không cha nào cắt được nữa. */}
+      {open && mounted && createPortal(
+        <div
+          className="bx-popup"
+          ref={popupRef}
+          style={{ width: POPUP_W, height: pos.height, top: pos.top, right: pos.right }}
+        >
+          <div className="bx-popup-head">
+            <b>{open.name}</b>
+            <span style={{ flex: 1 }} />
+            <button
+              className="ghost sm"
+              onClick={() => {
+                const el = wvRef.current as (HTMLElement & { openDevTools?: () => void }) | null;
+                try { el?.openDevTools?.(); } catch { /* chưa attach */ }
+              }}
+              title="Mở DevTools của popup — xem lỗi khi popup trắng"
+            >
+              🔍
+            </button>
+            <button className="ghost sm" onClick={() => setOpenId(null)} title="Đóng (Esc)">✕</button>
+          </div>
+          {/* Popup nạp bằng chính URL chrome-extension:// nên nó ở ĐÚNG origin
+              của extension — chrome.storage/runtime là hàng thật. Preload riêng
+              chỉ bù chrome.tabs + chrome.cookies. */}
+          <div className="bx-popup-body">
+            <webview
+              ref={wvRef as unknown as React.Ref<HTMLElement>}
+              src={popupSrc}
+              partition={partition}
+              style={{ width: '100%', height: '100%', border: 0 }}
+            />
+            {loading && (
+              <div className="bx-popup-loading">
+                <span className="spinner" aria-hidden /> Đang mở…
+              </div>
+            )}
+          </div>
+          {/* Popup trắng là ca hay gặp nhất và khó đoán nhất — script của
+              extension ném lỗi thì <webview> chỉ hiện nền trắng, không báo gì.
+              Dòng này gom lỗi console + did-fail-load để nhìn là biết ngay. */}
+          {diag && <div className="bx-popup-diag" title={diag}>{diag}</div>}
+        </div>,
+        document.body,
+      )}
+
+
+    </div>
+  );
+}
+
+/**
+ * Icon extension, tự lùi về 🧩 khi ảnh không tải được.
+ *
+ * Không có nhánh lùi này thì trình duyệt vẽ biểu tượng "ảnh vỡ" — nhìn như app
+ * hỏng, trong khi chỉ là extension không khai icon hoặc khai sai đường dẫn.
+ */
+function ExtIcon({ url, name }: { url: string; name: string }) {
+  const [bad, setBad] = useState(false);
+  useEffect(() => setBad(false), [url]);   // đổi extension thì thử lại từ đầu
+  if (!url || bad) return <span aria-hidden>🧩</span>;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={url} alt={name} width={16} height={16} onError={() => setBad(true)} />
+  );
+}
+
+

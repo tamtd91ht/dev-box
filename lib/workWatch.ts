@@ -1,5 +1,5 @@
 // Server-only scheduler cho cảnh báo Công việc — quét mỗi phút (lib/workTasks
-// .runAlertSweep), giữ feed sự kiện in-memory để client poll và hiện toast +
+// .runAlertSweep + lời nhắc âm lịch lib/lunarReminders.runLunarSweep), giữ feed sự kiện in-memory để client poll và hiện toast +
 // hòm thông báo. Cùng khuôn gitAutoPull/mailWatch: singleton trên globalThis,
 // khởi động từ instrumentation hoặc lazily bởi request đầu tiên.
 //
@@ -8,6 +8,7 @@
 // nhờ updateOne có điều kiện trong runAlertSweep.
 
 import { runAlertSweep, type WorkAlertEvent } from './workTasks';
+import { runLunarSweep, type LunarAlertEvent } from './lunarReminders';
 
 const INTERVAL_MS = 60_000;
 const FEED_CAP = 50;
@@ -19,7 +20,7 @@ export interface WorkWatchState {
   /** Tăng mỗi khi có sự kiện mới — client so với lần đọc trước. */
   alertSeq: number;
   /** Sự kiện gần nhất, mới trước; mỗi cái kèm seq để client lọc phần chưa xem. */
-  alerts: (WorkAlertEvent & { seq: number })[];
+  alerts: ((WorkAlertEvent | LunarAlertEvent) & { seq: number })[];
 }
 
 interface Store {
@@ -44,7 +45,11 @@ async function cycle(): Promise<void> {
   if (s.state.running) return;
   s.state.running = true;
   try {
-    const events = await runAlertSweep();
+    const events: (WorkAlertEvent | LunarAlertEvent)[] = [
+      ...await runAlertSweep(),
+      // Lỗi kho âm lịch không được chặn cảnh báo task (và ngược lại vẫn ném ra như cũ).
+      ...await runLunarSweep().catch(() => []),
+    ];
     for (const ev of events) {
       s.state.alertSeq += 1;
       s.state.alerts = [{ ...ev, seq: s.state.alertSeq }, ...s.state.alerts].slice(0, FEED_CAP);

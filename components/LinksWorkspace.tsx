@@ -11,28 +11,46 @@
 // cùng service = hai profile. Không gán profile = phiên chung mặc định.
 // Metadata (dự án/mô tả/tags) + lọc theo dự án/tag như trước.
 
-import { useCallback, useEffect, useState } from 'react';
-import { lList, lAdd, lUpdate, lRemove, partitionFor, type SavedLink, type SavedLinkMeta } from '@/lib/links';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { lList, lAdd, lUpdate, lRemove, partitionFor, type SavedLink, type SavedLinkMeta, type SavedLinkPatch } from '@/lib/links';
 import { onOpenUrl } from '@/lib/openTarget';
 import { normalizeUrl } from '@/lib/bookmarks';
 import { fmtRel } from '@/lib/google';
 import LinkViewer from './LinkViewer';
 import PasswordManager from './PasswordManager';
 import PasswordInput from './PasswordInput';
+import DupTabDialog, { tabUrlKey } from './DupTabDialog';
+import { usePopupOverWebview } from '@/lib/useOverWebview';
 
 /** Một TAB viewer đang mở. Kèm metadata đang gõ dở ở "＋ chi tiết" (nếu có)
  *  — để bấm 💾 TRONG viewer vẫn lưu đủ dự án/tags, không chỉ tên + profile.
  *  Mở được nhiều tab song song; webview tab nền vẫn sống (offscreen). */
 interface ViewerTab { id: string; name: string; url: string; partition: string; meta?: SavedLinkMeta }
 
-type MetaDraft = SavedLinkMeta & { tagsText?: string };
+type MetaDraft = SavedLinkPatch & { tagsText?: string };
 
 const splitTags = (s?: string) => (s ?? '').split(',').map((t) => t.trim()).filter(Boolean);
 
-/** Form metadata — dùng cho "＋ chi tiết" khi lưu mới và khi sửa (✎). */
-function MetaFields({ meta, onChange }: { meta: MetaDraft; onChange: (m: MetaDraft) => void }) {
+/** Form metadata — dùng cho "＋ chi tiết" khi lưu mới và khi sửa (✎).
+ *  `showUrl` chỉ bật ở form sửa: lúc thêm mới địa chỉ đã nằm ở ô trên cùng,
+ *  hiện thêm một ô url nữa chỉ tổ rối. */
+function MetaFields({ meta, onChange, showUrl = false }: {
+  meta: MetaDraft;
+  onChange: (m: MetaDraft) => void;
+  showUrl?: boolean;
+}) {
   return (
     <>
+      {showUrl && (
+        <input
+          className="input glink-url-edit"
+          placeholder="Địa chỉ link — vd https://jenkins.noi.bo/job/abc"
+          value={meta.url ?? ''}
+          onChange={(e) => onChange({ ...meta, url: e.target.value })}
+          spellCheck={false}
+          title="Sửa được cả địa chỉ: đổi domain/port, sửa link copy nhầm… mà vẫn giữ nguyên tags, profile phiên đăng nhập và ngày lưu. Bỏ trống = giữ địa chỉ cũ."
+        />
+      )}
       <div className="glink-meta-pair">
         <input className="input" placeholder="Tên hiển thị (optional)" value={meta.name ?? ''}
           onChange={(e) => onChange({ ...meta, name: e.target.value })} />
@@ -73,6 +91,11 @@ function MetaFields({ meta, onChange }: { meta: MetaDraft; onChange: (m: MetaDra
   );
 }
 
+/** Chữ cái đầu của tên tab — hiện thay tên khi tab bị co hẹp tới mức không đủ chỗ. */
+function tabInitial(name: string): string {
+  return (Array.from(name.trim())[0] ?? '•').toUpperCase();
+}
+
 export default function LinksWorkspace() {
   const [links, setLinks] = useState<SavedLink[]>([]);
   const [url, setUrl] = useState('');
@@ -83,6 +106,45 @@ export default function LinksWorkspace() {
   const [err, setErr] = useState<string | null>(null);
   const [tabs, setTabs] = useState<ViewerTab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
+  /** Id tab = số thứ tự (không dựng từ url nữa) để mở được nhiều tab cùng một
+   *  link; "link này mở chưa" do map dưới trả lời — xem DupTabDialog. */
+  const tabSeqRef = useRef(0);
+  const tabKeysRef = useRef<Map<string, string>>(new Map());
+  /** Chống event phát lặp (OpenLinkDialog bắn hai lần) — xem BrowserTabWorkspace. */
+  const recentOpenRef = useRef<{ key: string; at: number; id: string } | null>(null);
+  const [dupAsk, setDupAsk] = useState<{
+    name: string; url: string; profile?: string; meta?: SavedLinkMeta;
+    existingId: string; existingName: string;
+  } | null>(null);
+
+  // Map "link → tab đang mở" đi theo danh sách tab (mở/đóng đều được phủ).
+  useEffect(() => {
+    const m = new Map<string, string>();
+    for (const t of tabs) {
+      const k = tabUrlKey(t.partition, t.url);
+      if (!m.has(k)) m.set(k, t.id);
+    }
+    tabKeysRef.current = m;
+  }, [tabs]);
+
+  /** Menu chuột phải trên thanh tab: Đóng tab này / Đóng hết.
+   *  tabId = null khi chuột phải vào khoảng trống của thanh. */
+  const [tabCtx, setTabCtx] = useState<{ x: number; y: number; tabId: string | null } | null>(null);
+
+  // Click bất kỳ đâu (hoặc chuột phải chỗ khác) → đóng menu ngữ cảnh.
+  useEffect(() => {
+    if (!tabCtx) return;
+    const close = () => setTabCtx(null);
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close, true);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close, true);
+    };
+  }, [tabCtx]);
+
+  // Hộp thoại/menu phải nổi TRÊN <webview> (guest vẽ ở tầng native, đè mọi z-index).
+  usePopupOverWebview(!!dupAsk || !!tabCtx);
 
   // Bộ lọc: 1 dự án + 1 tag (click lần nữa để bỏ).
   const [fProject, setFProject] = useState<string | null>(null);
@@ -103,23 +165,65 @@ export default function LinksWorkspace() {
 
   const nameFor = (u: string) => { try { return new URL(u).hostname; } catch { return u; } };
 
-  /** Mở trong viewer nhúng — link đã mở rồi thì kích hoạt tab cũ, chưa thì
-   *  thêm tab mới; fallback browser ngoài khi chạy web thường. */
-  const openInApp = useCallback((name: string, target: string, profile?: string, meta?: SavedLinkMeta) => {
+  /** Mở trong viewer nhúng; fallback browser ngoài khi chạy web thường.
+   *
+   *  Link ĐANG MỞ SẴN thì không âm thầm nhảy về tab cũ nữa mà HỎI (chuyển tới
+   *  hay mở thêm tab mới) — mở hai tab cùng một trang là nhu cầu thật.
+   *  `forceNew` = người dùng đã chọn "Mở thêm tab mới" trong hộp thoại. */
+  const openInApp = useCallback((
+    name: string, target: string, profile?: string, meta?: SavedLinkMeta,
+    forceNew = false,
+    /** Tab mới chạy NỀN (ctrl+click kiểu Chrome) — giữ nguyên trang đang đọc. */
+    background = false,
+  ) => {
     if (typeof window === 'undefined' || !window.workspace?.isDesktop) {
       window.open(target, '_blank'); // plain browser — <webview> không tồn tại
       return;
     }
     const partition = partitionFor(profile);
-    const id = `${partition}|${target}`;
-    setTabs((cur) => (cur.some((t) => t.id === id) ? cur : [...cur, { id, name, url: target, partition, meta }]));
-    setActiveTab(id);
-  }, []);
+    const key = tabUrlKey(partition, target);
+
+    if (!forceNew) {
+      // Cùng event bị phát lặp trong ~2s (OpenLinkDialog bắn hai lần) → tiếng
+      // vọng, kích hoạt tab vừa mở chứ đừng bật hộp thoại lên trước mặt.
+      const recent = recentOpenRef.current;
+      if (recent && recent.key === key && Date.now() - recent.at < 2000) {
+        if (!background) setActiveTab(recent.id);
+        return;
+      }
+      const existingId = tabKeysRef.current.get(key);
+      if (existingId) {
+        const existing = tabs.find((t) => t.id === existingId);
+        setDupAsk({ name, url: target, profile, meta, existingId, existingName: existing?.name ?? name });
+        return;
+      }
+    }
+
+    const id = `tab-${++tabSeqRef.current}`;
+    recentOpenRef.current = { key, at: Date.now(), id };
+    setTabs((cur) => [...cur, { id, name, url: target, partition, meta }]);
+    if (!background) setActiveTab(id);
+  }, [tabs]);
+
+  // Ctrl+click / chuột giữa TRONG một webview (tab Links, viewer Google) →
+  // main process gửi về đây (workspace:openInLinksTab): mở tab mới CHẠY NỀN
+  // như Chrome, giữ nguyên trang đang đọc; phiên lấy theo tab đang xem.
+  // forceNew: ctrl+click là chủ ý muốn THÊM tab, kể cả link đang mở sẵn.
+  useEffect(() => {
+    if (!window.workspace?.onOpenInLinksTab) return;
+    return window.workspace.onOpenInLinksTab((u) => {
+      const from = tabs.find((t) => t.id === activeTab);
+      const profile = from
+        ? from.partition.replace(/^persist:links-/, '').replace(/^shared$/, '')
+        : '';
+      openInApp(nameFor(u), u, profile || undefined, undefined, true, true);
+    });
+  }, [openInApp, tabs, activeTab]);
 
   // Link bấm trong tin nhắn Zalo/Telegram đã chọn "Mở trong tab Links".
   // Không profile: link lạ chưa thuộc nhóm đăng nhập nào → phiên chung.
-  // OpenLinkDialog phát event hai lần (lo tab vừa mount chưa kịp nghe) nên
-  // openInApp phải chịu được gọi trùng — nó dùng lại tab cùng id nên đã an toàn.
+  // OpenLinkDialog phát event hai lần (lo tab vừa mount chưa kịp nghe); cú thứ
+  // hai bị openInApp nhận diện là tiếng vọng (recentOpenRef) nên vô hại.
   useEffect(() => onOpenUrl('links', (u) => openInApp(nameFor(u), u)), [openInApp]);
 
   /** Đóng một tab; đang đóng tab nổi thì chuyển sang tab kề. */
@@ -170,6 +274,7 @@ export default function LinksWorkspace() {
   const startEdit = (l: SavedLink) => {
     setEditId(l.id);
     setEditMeta({
+      url: l.url,
       name: l.name, project: l.project ?? '', description: l.description ?? '',
       profile: l.profile ?? '', tagsText: (l.tags ?? []).join(', '),
       username: l.username ?? '', password: l.password ?? '',
@@ -181,6 +286,7 @@ export default function LinksWorkspace() {
     setSaving(true); setErr(null);
     try {
       setLinks(await lUpdate(editId, {
+        url: editMeta.url ?? '',
         name: editMeta.name ?? '',
         project: editMeta.project ?? '',
         description: editMeta.description ?? '',
@@ -330,7 +436,7 @@ export default function LinksWorkspace() {
                 </span>
                 <span
                   className="g-open"
-                  title="Sửa tên / dự án / profile / mô tả / tags"
+                  title="Sửa link / tên / dự án / profile / mô tả / tags"
                   onClick={(e) => {
                     e.preventDefault(); e.stopPropagation();
                     if (editId === l.id) setEditId(null); else startEdit(l);
@@ -355,7 +461,7 @@ export default function LinksWorkspace() {
               </a>
               {editId === l.id && (
                 <div className="glink-meta-form glink-edit">
-                  <MetaFields meta={editMeta} onChange={setEditMeta} />
+                  <MetaFields meta={editMeta} onChange={setEditMeta} showUrl />
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button className="sm" onClick={() => void saveEdit()} disabled={saving}>
                       {saving ? <span className="spinner" aria-hidden /> : '💾'} Lưu thay đổi
@@ -386,28 +492,34 @@ export default function LinksWorkspace() {
         /* activeTab=null → chế độ THU NHỎ: chỉ còn thanh tab dưới đáy, danh
            sách link lộ ra để mở thêm; webview các tab vẫn sống offscreen. */
         <div className={`lv-wrap${activeTab ? '' : ' lv-min'}`}>
-          <div className="lv-tabbar" role="tablist" aria-label="Link tabs">
+          <div
+            className="lv-tabbar"
+            role="tablist"
+            aria-label="Link tabs"
+            // Chuột phải khoảng trống của thanh → menu chỉ có "Đóng hết".
+            onContextMenu={(e) => { e.preventDefault(); setTabCtx({ x: e.clientX, y: e.clientY, tabId: null }); }}
+          >
             {tabs.map((t) => (
-              <span key={t.id} className={`lv-tab${t.id === activeTab ? ' on' : ''}`} title={t.url}>
+              <span key={t.id} className={`lv-tab${t.id === activeTab ? ' on' : ''}`}
+                title={`${t.url} — chuột phải: Đóng tab / Đóng hết`}
+                onContextMenu={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  setTabCtx({ x: e.clientX, y: e.clientY, tabId: t.id });
+                }}>
                 <button className="lv-tab-btn" role="tab" aria-selected={t.id === activeTab}
                   onClick={() => setActiveTab(t.id)}>
-                  {t.name}
+                  <span className="lv-tab-ico" aria-hidden>{tabInitial(t.name)}</span>
+                  <span className="lv-tab-name">{t.name}</span>
                 </button>
                 <button className="lv-tab-x" title="Đóng tab"
                   onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}>✕</button>
               </span>
             ))}
+            {/* ＋ dính ngay cạnh tab cuối — như Chrome: bấm là về màn hình mở
+                link mới, các tab đang mở giữ nguyên (webview vẫn sống). */}
+            <button className="bt-newtab" onClick={() => setActiveTab(null)}
+              title="Link mới — về danh sách/ô nhập để mở thêm (các tab giữ nguyên)">＋</button>
             <span style={{ flex: 1 }} />
-            {activeTab ? (
-              <button className="ghost sm" title="Về danh sách để mở thêm link — các tab vẫn giữ nguyên"
-                onClick={() => setActiveTab(null)}>＋ Link mới</button>
-            ) : (
-              <span className="small" style={{ color: 'var(--muted)', padding: '0 6px' }}>
-                chọn link ở danh sách trên để mở tab mới
-              </span>
-            )}
-            <button className="ghost sm" title="Đóng tất cả tab, về danh sách"
-              onClick={() => { setTabs([]); setActiveTab(null); }}>✕ Đóng hết</button>
           </div>
           <div className="lv-body">
             {tabs.map((t) => (
@@ -420,6 +532,7 @@ export default function LinksWorkspace() {
                 creds={{ username: t.meta?.username, password: t.meta?.password }}
                 profile={t.meta?.profile}
                 passwordManager
+                addressBar
                 onClose={() => closeTab(t.id)}
                 onSaveLink={async (name, target) => {
                   // Lưu kèm profile của phiên tab này + metadata gõ dở ở "＋ chi tiết".
@@ -435,6 +548,43 @@ export default function LinksWorkspace() {
               />
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Hộp thoại "link đang mở sẵn" — chuyển tới tab cũ hay mở thêm tab mới. */}
+      {dupAsk && (
+        <DupTabDialog
+          url={dupAsk.url}
+          existingName={dupAsk.existingName}
+          onGoExisting={() => { setActiveTab(dupAsk.existingId); setDupAsk(null); }}
+          onOpenNew={() => {
+            const d = dupAsk;
+            setDupAsk(null);
+            openInApp(d.name, d.url, d.profile, d.meta, true);
+          }}
+          onCancel={() => setDupAsk(null)}
+        />
+      )}
+
+      {/* Menu chuột phải trên thanh tab — thay cho nút "✕ Đóng hết" thường trực. */}
+      {tabCtx && (
+        <div
+          className="bt-ctx"
+          style={{
+            position: 'fixed',
+            left: Math.min(tabCtx.x, window.innerWidth - 210),
+            top: Math.min(tabCtx.y, window.innerHeight - 110),
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {tabCtx.tabId && (
+            <button onClick={() => { closeTab(tabCtx.tabId!); setTabCtx(null); }}>
+              ✕ Đóng tab này
+            </button>
+          )}
+          <button className="danger" onClick={() => { setTabs([]); setActiveTab(null); setTabCtx(null); }}>
+            ✕ Đóng hết ({tabs.length} tab)
+          </button>
         </div>
       )}
 

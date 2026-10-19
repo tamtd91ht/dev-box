@@ -5,7 +5,7 @@
 // on, nodeIntegration off). The effective config is passed in via an
 // additionalArguments flag from the main process (see electron/main.cjs).
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 /** Parse the `--ws-config=<json>` flag the main process injected. */
 function readConfig() {
@@ -26,6 +26,18 @@ contextBridge.exposeInMainWorld('workspace', {
   clearSession: (partition) => ipcRenderer.invoke('workspace:clearSession', partition),
   /** Kéo focus về host page sau khi hủy <webview> (fix input "chết"). */
   focusHost: () => ipcRenderer.invoke('workspace:focusHost'),
+  /**
+   * Chạy JS trong MỌI frame của một guest (theo webContentsId), không chỉ main
+   * frame như webview.executeJavaScript. Cần cho form login nằm trong <iframe>
+   * — xem workspace:execInFrames trong main.cjs.
+   */
+  execInFrames: (targetId, code) => ipcRenderer.invoke('workspace:execInFrames', targetId, code),
+  /**
+   * 🔕: báo main danh sách partition Workspace đang ẨN THÔNG BÁO + cờ toàn cục.
+   * Main chặn quyền `notifications` của guest tương ứng — xem main.cjs.
+   */
+  setNotifMuted: (partitions, allMuted) =>
+    ipcRenderer.invoke('workspace:setNotifMuted', partitions, allMuted),
   /**
    * Tải một ảnh bằng phiên của partition, trả về data URL.
    *
@@ -71,11 +83,28 @@ contextBridge.exposeInMainWorld('workspace', {
   },
   /** Link target=_blank / window.open bấm TRONG một tab của tab Browser → mở
    *  thành tab mới ngay trong tab Browser (giữ phiên đăng nhập của profile).
+   *
+   *  Payload là `{ url, opener, session }` — `opener` là URL của TAB CHA và
+   *  `session` là sessionStorage của nó, để tab mới dựng lại Referer +
+   *  sessionStorage (xem prop `opener` của LinkViewer). Vẫn nhận dạng chuỗi
+   *  trần để không vỡ nếu main cũ hơn.
+   *
    *  Trả về hàm hủy đăng ký. */
   onOpenInBrowserTab: (cb) => {
-    const handler = (_evt, url) => cb(url);
+    const handler = (_evt, payload) => cb(
+      typeof payload === 'string'
+        ? { url: payload, opener: '', session: [] }
+        : { url: '', opener: '', session: [], ...(payload || {}) },
+    );
     ipcRenderer.on('workspace:openInBrowserTab', handler);
     return () => ipcRenderer.removeListener('workspace:openInBrowserTab', handler);
+  },
+  /** Ctrl+click / chuột giữa trong tab Links hay viewer Google → mở thành tab
+   *  mới trong tab Links (thay vì trình duyệt ngoài). Trả về hàm hủy đăng ký. */
+  onOpenInLinksTab: (cb) => {
+    const handler = (_evt, url) => cb(url);
+    ipcRenderer.on('workspace:openInLinksTab', handler);
+    return () => ipcRenderer.removeListener('workspace:openInLinksTab', handler);
   },
   /** Phím tắt khung app (Ctrl+` · Ctrl+Tab · Ctrl+Shift+U) bấm khi con trỏ đang
    *  ở TRONG một <webview>: phím không bubble ra host page nên main process bắt
@@ -103,6 +132,28 @@ contextBridge.exposeInMainWorld('workspace', {
    *  chuyển đường dẫn xuống đây, renderer mở nó ở tab Office / tab Tools tuỳ
    *  đuôi file. Bắn cả lúc khởi động nguội lẫn khi app đang chạy (qua
    *  'second-instance'). Trả về hàm hủy đăng ký. */
+  /** Kéo thả file từ Explorer vào app: đường dẫn THẬT của một File trong
+   *  dataTransfer. Electron ≥ 32 bỏ `File.path`, chỉ còn webUtils ở preload.
+   *  Trả '' khi File không đến từ đĩa (vd kéo ảnh từ trang web). */
+  pathForFile: (file) => {
+    try { return webUtils.getPathForFile(file) || ''; } catch { return ''; }
+  },
+  /** Dịch nhanh nổi — CHỈ trang /translate-float (nằm trong WebContentsView
+   *  riêng, xem attachTranslateFloat trong main.cjs) dùng; main bỏ qua mọi
+   *  tin tf:* không đến từ đúng view đó. */
+  translateFloat: {
+    init: (pos) => ipcRenderer.invoke('tf:init', pos),
+    setSize: (w, h) => ipcRenderer.send('tf:size', w, h),
+    setOpen: (open) => ipcRenderer.send('tf:open', !!open),
+    dragStart: () => ipcRenderer.send('tf:dragStart'),
+    dragMove: (dx, dy) => ipcRenderer.send('tf:dragMove', dx, dy),
+    dragEnd: () => ipcRenderer.invoke('tf:dragEnd'),
+    onState: (cb) => {
+      const handler = (_evt, st) => cb(st);
+      ipcRenderer.on('tf:state', handler);
+      return () => ipcRenderer.removeListener('tf:state', handler);
+    },
+  },
   onOpenLocalFile: (cb) => {
     const handler = (_evt, filePath) => cb(filePath);
     ipcRenderer.on('desktop:openLocalFile', handler);
@@ -114,12 +165,46 @@ contextBridge.exposeInMainWorld('workspace', {
    *  focus cửa sổ đang có.
    *  → { ok: true, focused? } | { ok: false, error } */
   openTerminalWindow: (payload) => ipcRenderer.invoke('workspace:openTerminalWindow', payload),
+  /** DevTools dock trong khung (như Chrome) — xem cụm 'devtools:*' trong
+   *  main.cjs. Main hỏi host khi F12/Inspect bấm trong guest; LinkViewer đúng
+   *  guest claim rồi vẽ pane và gọi devtoolsOpen kèm rect — frontend sống trong
+   *  WebContentsView do main đặt đè đúng rect đó. */
+  onDevToolsRequest: (cb) => {
+    const handler = (_evt, req) => cb(req);
+    ipcRenderer.on('devtools:request', handler);
+    return () => ipcRenderer.removeListener('devtools:request', handler);
+  },
+  /** DevTools vừa đóng (nút ✕ của frontend, F12, guest chết) → host giấu pane. */
+  onDevToolsClosed: (cb) => {
+    const handler = (_evt, id) => cb(id);
+    ipcRenderer.on('devtools:closed', handler);
+    return () => ipcRenderer.removeListener('devtools:closed', handler);
+  },
+  /** Nhận yêu cầu 'devtools:request' về mình — hủy fallback cửa sổ rời 400ms. */
+  devtoolsClaim: (id) => ipcRenderer.send('devtools:claim', id),
+  /** Mở DevTools dock cho guest tại rect (toạ độ cửa sổ); point là toạ độ
+   *  "Inspect element" nếu đi từ menu chuột phải. → { ok } | { ok:false, error } */
+  devtoolsOpen: (targetId, rect, point) =>
+    ipcRenderer.invoke('devtools:open', targetId, rect, point || null),
+  /** Pane dời chỗ/đổi cỡ → rect mới; null = ẩn view (tab nền, popup nổi lên). */
+  devtoolsBounds: (targetId, rect) => ipcRenderer.send('devtools:bounds', targetId, rect),
+  devtoolsClose: (targetId) => ipcRenderer.invoke('devtools:close', targetId),
   /** Zalo API (thử nghiệm): đọc cookie HttpOnly (zpsid/zpw_sek/…) của một phiên
    *  zaloapi-*. Renderer không đọc được cookie HttpOnly qua document.cookie, nên
    *  main process đọc hộ qua session.cookies.get.
    *  → { ok:true, cookies:{name:value}, header:"a=1; b=2", seen:[…] } | { ok:false, error }
    *  `header` là toàn bộ cookie đã ghép — bước đăng nhập server-side cần nó. */
   readZaloCookies: (partition, names) => ipcRenderer.invoke('zaloapi:readCookies', partition, names),
+});
+
+// Cầu gọi API của chính app (/api/*) qua main process. Renderer chỉ có 6 socket
+// HTTP/1.1 tới mỗi host (giới hạn Chromium); máy mở nhiều terminal thì SSE
+// /api/term/:id + automation chiếm sạch — fetch từ renderer khi ấy XẾP HÀNG VÔ
+// HẠN dù server vẫn trả lời curl trong 11ms. Node http ở main process có pool
+// riêng nên không dính. lib/apiFetch.ts tự chọn cầu này khi chạy desktop.
+contextBridge.exposeInMainWorld('desktopApi', {
+  /** → { ok, status?, body? } | { ok:false, error } */
+  fetch: (opts) => ipcRenderer.invoke('desktop:apiFetch', opts),
 });
 
 // In-app console: the shell + `next dev` log stream the main process buffers
@@ -142,4 +227,71 @@ contextBridge.exposeInMainWorld('desktopConsole', {
 contextBridge.exposeInMainWorld('desktopUpdate', {
   /** Giết next dev rồi mở lại app. Không bao giờ trả về nếu thành công. */
   relaunch: () => ipcRenderer.invoke('desktop:relaunch'),
+  /**
+   * Dọn cache rồi nạp lại — để loại bỏ giả thuyết "đang ăn chunk cũ".
+   * `{ wipeBuild: true }` xoá luôn `.next` (cache build phía server), tốn thêm
+   * ~10-30s biên dịch lại ở lần nạp đầu nên phải chọn có ý thức.
+   * `{ presets: [...] }` — dữ liệu nút tìm nhanh để main SAO LƯU HỘ trước khi
+   * dọn: renderer không tự POST được khi 6 socket tới localhost:3000 đã bị SSE
+   * terminal + automation chiếm hết.
+   */
+  hardReload: (opts) => ipcRenderer.invoke('desktop:hardReload', opts || {}),
+});
+
+// Extension cho tab Browser. Đứng riêng khỏi `workspace` vì chỉ áp cho các
+// partition `persist:browser-*` — Workspace/Links/Google/Zalo API không nạp
+// extension (xem khối "Chrome extension cho tab Browser" trong main.cjs).
+contextBridge.exposeInMainWorld('browserExt', {
+  /** → { ok, items:[{path,name,version,enabled,loaded,missing,warnings[]}], dir, sessions } */
+  list: () => ipcRenderer.invoke('browserExt:list'),
+  /** Hộp thoại chọn thư mục → { ok, path } | { ok:false, canceled } */
+  pickDir: () => ipcRenderer.invoke('browserExt:pickDir'),
+  /** Thêm thư mục extension (phải chứa manifest.json) → { ok, warning?, needsRestart? } */
+  add: (dirPath) => ipcRenderer.invoke('browserExt:add', dirPath),
+  /** Bật/tắt → { ok, warning? } */
+  toggle: (dirPath, enabled) => ipcRenderer.invoke('browserExt:toggle', dirPath, enabled),
+  /** Bỏ khỏi danh sách (KHÔNG xoá thư mục trên đĩa) → { ok } */
+  remove: (dirPath) => ipcRenderer.invoke('browserExt:remove', dirPath),
+  /** Nạp lại tất cả — dùng sau khi sửa code extension → { ok, count, sessions } */
+  reload: () => ipcRenderer.invoke('browserExt:reload'),
+  /** Mở thư mục extensions trong Explorer → { ok } */
+  openDir: () => ipcRenderer.invoke('browserExt:openDir'),
+
+  /** chrome.tabs.update từ popup → điều hướng tab đang xem. Trả về hàm gỡ. */
+  onNavigate: (cb) => {
+    const h = (_e, url) => cb(url);
+    ipcRenderer.on('browserExt:navigate', h);
+    return () => ipcRenderer.removeListener('browserExt:navigate', h);
+  },
+
+  /** chrome.tabs.create từ popup → mở tab mới. Trả về hàm gỡ. */
+  onOpenTab: (cb) => {
+    const h = (_e, url) => cb(url);
+    ipcRenderer.on('browserExt:openTab', h);
+    return () => ipcRenderer.removeListener('browserExt:openTab', h);
+  },
+});
+
+// Cài đặt tải file — bảng ⚙ trên thanh tiêu đề (components/TabVisibilityBar.tsx).
+// Đứng riêng khỏi `workspace.config` vì config đó là ẢNH CHỤP lúc dựng cửa sổ
+// (`--ws-config`), không đổi khi người dùng bấm lưu; mấy hàm này hỏi main
+// process giá trị ĐANG hiệu lực.
+contextBridge.exposeInMainWorld('downloadPrefs', {
+  /** → { ok, mode:'ask'|'auto', dir, effectiveDir, defaultDir } */
+  get: () => ipcRenderer.invoke('downloadPrefs:get'),
+  /** { mode?, dir? } → { ok, mode, dir, effectiveDir } | { ok:false, error } */
+  set: (payload) => ipcRenderer.invoke('downloadPrefs:set', payload || {}),
+  /** Hộp thoại chọn thư mục → { ok, path } | { ok:false, canceled } */
+  pickDir: () => ipcRenderer.invoke('downloadPrefs:pickDir'),
+  /** Mở thư mục đang dùng trong Explorer → { ok, path } */
+  openDir: () => ipcRenderer.invoke('downloadPrefs:openDir'),
+});
+
+// Cầu cookie cho extension: thay `chrome.cookies.getAll` mà Electron không cấp
+// cho extension chạy trong <webview>. Khoá theo partition browser-* + bắt buộc
+// nêu domain — xem handler trong main.cjs.
+contextBridge.exposeInMainWorld('browserExtCookies', {
+  /** → { ok, cookies:[{name,value,domain,path,secure,httpOnly,session,…}] } */
+  get: (partition, domain, names) =>
+    ipcRenderer.invoke('browserExt:getCookies', partition, domain, names),
 });

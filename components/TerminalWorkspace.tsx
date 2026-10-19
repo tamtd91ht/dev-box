@@ -22,6 +22,7 @@ import XTermView from '@/components/terminal/XTermView';
 import NewTerminalDialog, {
   type NewTerminalChoice, type OpenMode,
 } from '@/components/terminal/NewTerminalDialog';
+import CloseTerminalDialog from '@/components/terminal/CloseTerminalDialog';
 import { tCreate, tList, tKill, tRename, tDetach, type ShellKind, type TermSessionInfo } from '@/lib/terminal';
 
 // Lựa chọn LẦN TRƯỚC — chỉ dùng làm điểm khởi đầu cho popup (FolderPicker mở
@@ -41,6 +42,9 @@ export default function TerminalWorkspace({ visible = true }: { visible?: boolea
   const [cwdDefault, setCwdDefault] = useState('');
   const [cwdHome, setCwdHome] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
+  // Phiên đang chờ xác nhận đóng — nút ✕ chỉ đặt vào đây, việc giết shell thật
+  // nằm sau một cái bấm nữa trong popup (xem CloseTerminalDialog).
+  const [pendingClose, setPendingClose] = useState<TermSessionInfo | null>(null);
   const [lastCwd, setLastCwd] = useState<string | undefined>();
   const [lastShell, setLastShell] = useState<ShellKind | undefined>();
 
@@ -147,7 +151,11 @@ export default function TerminalWorkspace({ visible = true }: { visible?: boolea
   }, [openWindow, refresh]);
 
   // ── Thao tác trên một phiên ──────────────────────────────────────────────
+  /** Bấm ✕ — KHÔNG đóng ngay, chỉ mở popup xác nhận. */
+  const askClose = (s: TermSessionInfo) => setPendingClose(s);
+
   const close = async (s: TermSessionInfo) => {
+    setPendingClose(null);
     await tKill(s.id).catch(() => {});
     setDeadIds((prev) => {
       const n = new Set(prev);
@@ -241,7 +249,7 @@ export default function TerminalWorkspace({ visible = true }: { visible?: boolea
                 >
                   ⧉
                 </button>
-                <button className="tw-tab-x" title="Đóng phiên" onClick={() => void close(s)}>✕</button>
+                <button className="tw-tab-x" title="Đóng phiên" onClick={() => askClose(s)}>✕</button>
               </span>
             ))}
           </div>
@@ -277,7 +285,7 @@ export default function TerminalWorkspace({ visible = true }: { visible?: boolea
               <button className="tw-chip-btn" title="Đưa phiên về tab này" onClick={() => void attach(s)}>
                 đưa về tab
               </button>
-              <button className="tw-chip-x" title="Đóng phiên" onClick={() => void close(s)}>✕</button>
+              <button className="tw-chip-x" title="Đóng phiên" onClick={() => askClose(s)}>✕</button>
             </span>
           ))}
         </div>
@@ -346,6 +354,16 @@ export default function TerminalWorkspace({ visible = true }: { visible?: boolea
           busy={busy}
           onConfirm={create}
           onClose={() => setDialogOpen(false)}
+        />
+      )}
+
+      {pendingClose && (
+        <CloseTerminalDialog
+          label={pendingClose.label}
+          cwd={pendingClose.cwd}
+          exited={pendingClose.exited || deadIds.has(pendingClose.id)}
+          onConfirm={() => void close(pendingClose)}
+          onClose={() => setPendingClose(null)}
         />
       )}
     </div>

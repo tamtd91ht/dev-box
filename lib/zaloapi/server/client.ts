@@ -11,9 +11,11 @@
 // memory). KHÔNG generateZaloUUID lại: phần UUID ngẫu nhiên sẽ khác, cookie gắn
 // với imei gốc bị từ chối.
 
+import { createHash } from 'crypto';
 import { encodeAES, decodeAES, decodeRespAES, getSignKey, ParamsEncryptor } from './crypto';
 import { readImageMeta } from './imageMeta';
 import { trace } from './trace';
+import { waitFileDone } from './uploadHub';
 
 /** Hằng số API — port từ ctx mặc định của zca-js. Đổi khi Zalo nâng version. */
 export const API_TYPE = 30;
@@ -104,9 +106,26 @@ async function fetchZalo(url: string, init: RequestInit, what: string): Promise<
     return JSON.parse(text) as ZaloEnvelope;
   } catch {
     const head = text.slice(0, 120).replace(/\s+/g, ' ');
+    // 404 KHÔNG phải chuyện cookie. Cookie hỏng thì Zalo trả 401/403 hoặc đẩy
+    // về trang login — còn 404 từ nginx nghĩa là ĐƯỜNG DẪN không tồn tại trên
+    // host đó (endpoint đổi theo bản build, hoặc ta gọi nhầm host). Gộp cả hai
+    // vào một câu "thường là cookie hết hạn" khiến người dùng đi kiểm cookie
+    // trong khi lỗi nằm ở URL — đúng ca đã gặp với lịch sử nhóm.
+    if (res.status === 404) {
+      // Ghi cả URL (đã bỏ phần params mã hoá — nó dài và không giúp gì) để biết
+      // chính xác đường dẫn nào không còn.
+      const bare = url.split('?')[0];
+      trace('http404', `${what}: endpoint không tồn tại`, { url: bare, status: 404 });
+      throw new Error(
+        `${what}: Zalo trả 404 cho ${bare} — endpoint này không còn trên bản build hiện tại `
+        + `(KHÔNG phải lỗi cookie; cookie hỏng sẽ ra 401/403 hoặc trang login).`,
+      );
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`${what}: Zalo từ chối (HTTP ${res.status}) — cookie hết hạn, cần Kết nối lại.`);
+    }
     throw new Error(
-      `${what}: Zalo trả về không phải JSON (HTTP ${res.status}) — thường là cookie hết hạn `
-      + `hoặc bị chặn. Đoạn đầu: ${head}`,
+      `${what}: Zalo trả về không phải JSON (HTTP ${res.status}). Đoạn đầu: ${head}`,
     );
   }
 }
@@ -317,9 +336,68 @@ export interface TextStyle {
   st: string;
 }
 
+/** Một người cần tag (@) trong tin NHÓM — cần uid thật thì Zalo mới ping. */
+export interface MentionTarget {
+  uid: string;
+  name: string;
+}
+
+/**
+ * Tin được TRÍCH DẪN khi trả lời (port từ zca-js apis/sendMessage.ts · quote).
+ *
+ * Zalo cần ĐỦ cả bốn: hai id THẬT của tin gốc (id server + id client), uid người
+ * gửi nó, và thời điểm gửi. Thiếu hoặc sai một cái thì Zalo nhận request nhưng
+ * tin hiện ra KHÔNG có khối trích dẫn — im lặng, không báo lỗi. Đó là lý do
+ * threadStore phải cất riêng zMsgId/zCliMsgId thay vì dùng `id` nội bộ.
+ */
+export interface QuoteTarget {
+  /** gMsgID — id server của tin gốc (dạng số trong chuỗi). */
+  msgId: string;
+  /** cMsgID — id client của tin gốc. */
+  cliMsgId: string;
+  /** uid người gửi tin gốc ('0' nếu chính mình gửi — Zalo tự hiểu). */
+  ownerId: string;
+  /** Epoch ms lúc tin gốc được gửi. */
+  ts: number;
+  /** Nội dung tin gốc, để Zalo vẽ khối trích dẫn. Cắt bớt cho gọn payload. */
+  text: string;
+}
+
+/**
+ * Nối dòng tag vào cuối tin + dựng mentionInfo (port từ zca-js Mention:
+ * mảng {pos, len, uid, type:0}, pos/len tính theo đơn vị UTF-16 — chính là
+ * .length của chuỗi JS nên không phải quy đổi gì).
+ *
+ * Text và vị trí được dựng CÙNG MỘT CHỖ ở đây — nếu để tầng trên tự ghép
+ * "@Tên" vào text rồi tầng này đi dò lại vị trí thì tên người trùng với chữ
+ * trong thân tin là mention trỏ sai người.
+ */
+function withMentions(message: string, mentions: MentionTarget[]): { message: string; mentionInfo: string } {
+  if (!mentions.length) return { message, mentionInfo: '' };
+  // Thân tin rỗng = tin CHỈ ĐỂ TAG (automation gửi cảnh báo xong mới tag riêng
+  // một tin) — khi đó tin chính là chuỗi "@A @B", không có mũi tên dẫn.
+  const base = message.trimEnd();
+  let text = base ? base + '\n→ ' : '';
+  const info: { pos: number; len: number; uid: string; type: 0 }[] = [];
+  mentions.forEach((m, i) => {
+    if (i > 0) text += ' ';
+    const tagText = `@${m.name || m.uid}`;
+    info.push({ pos: text.length, len: tagText.length, uid: m.uid, type: 0 });
+    text += tagText;
+  });
+  return { message: text, mentionInfo: JSON.stringify(info) };
+}
+
 export async function sendMessage(
   ctx: ZaloContext,
-  opts: { threadId: string; message: string; group: boolean; styles?: TextStyle[] },
+  opts: {
+    threadId: string;
+    message: string;
+    group: boolean;
+    styles?: TextStyle[];
+    mentions?: MentionTarget[];
+    quote?: QuoteTarget;
+  },
 ): Promise<SendResult> {
   const now = Date.now();
   const clientId = now;
@@ -330,11 +408,47 @@ export async function sendMessage(
 
   const host = opts.group ? ctx.serviceMap.group?.[0] : ctx.serviceMap.chat?.[0];
   if (!host) return { ok: false, detail: `serviceMap thiếu host ${opts.group ? 'group' : 'chat'}` };
-  const path = opts.group ? '/api/group/sendmsg' : '/api/message/sms';
+
+  // Mention chỉ có nghĩa trong nhóm — tin 1-1 bỏ qua lặng lẽ (người nhận là
+  // chính người được "tag" rồi, thêm @ chỉ gây rối).
+  const tagged = opts.group ? withMentions(opts.message, opts.mentions ?? []) : { message: opts.message, mentionInfo: '' };
+
+  // TRẢ LỜI (quote) đi endpoint RIÊNG, khác cả /sendmsg lẫn /mention:
+  //   nhóm    → group[0]/api/group/quote
+  //   cá nhân → chat[0]/api/message/quote
+  // Gửi quote qua /sendmsg thì Zalo nhận nhưng BỎ khối trích dẫn — tin hiện ra
+  // như tin thường, im lặng, không báo lỗi.
+  //
+  // Quote và mention loại trừ nhau ở tầng endpoint: khi cả hai cùng có, ưu tiên
+  // QUOTE (người dùng chủ động chọn tin để trả lời) và mention rớt về dòng "@A"
+  // trong thân tin — vẫn đọc được tên, chỉ là không ping. Ghép cả hai cần một
+  // endpoint Zalo không có.
+  const quoting = !!opts.quote?.msgId;
+  const path = quoting
+    ? (opts.group ? '/api/group/quote' : '/api/message/quote')
+    : opts.group
+      ? (tagged.mentionInfo ? '/api/group/mention' : '/api/group/sendmsg')
+      : '/api/message/sms';
 
   const payload: Record<string, unknown> = opts.group
-    ? { grid: dest, message: opts.message, clientId, mentionInfo: '', ttl: 0, visibility: 0, imei: ctx.imei }
+    ? { grid: dest, message: tagged.message, clientId, mentionInfo: tagged.mentionInfo, ttl: 0, visibility: 0, imei: ctx.imei }
     : { toid: dest, message: opts.message, clientId, ttl: 0, imei: ctx.imei };
+
+  // Khối trích dẫn — port từ zca-js: qmsgId/qmsgCliId là hai id THẬT của tin
+  // gốc, qmsgOwner là người gửi nó, qmsg là nội dung để Zalo vẽ lại. `qmsgTs`
+  // phải là thời điểm tin GỐC, không phải bây giờ.
+  if (opts.quote && quoting) {
+    const q = opts.quote;
+    payload.qmsgId = q.msgId;
+    payload.qmsgCliId = q.cliMsgId || q.msgId;
+    payload.qmsgOwner = q.ownerId;
+    payload.qmsgTs = q.ts;
+    // Zalo hiện lại nội dung gốc trong khối trích dẫn; tin dài thì cắt để
+    // payload không phình (khối trích dẫn vốn chỉ hiện vài dòng).
+    payload.qmsg = q.text.slice(0, 500);
+    // Tin gốc là văn bản thuần. Ảnh/file dùng mã khác, chưa port.
+    payload.qmsgType = 1;
+  }
 
   // Định dạng chữ (in đậm/nghiêng/màu…) đi kèm dưới dạng textProperties — port
   // đúng zca-js: { styles:[{start,len,st}], ver:0 }.
@@ -545,6 +659,157 @@ export async function sendPhoto(
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+//  GỬI FILE ĐÍNH KÈM — port từ nhánh "others" của zca-js uploadAttachment +
+//  sendMessage (asyncfile). Khác ảnh ở MỘT điểm cốt lõi: HTTP upload chỉ trả
+//  fileId; fileUrl về SAU qua WebSocket (file_done, xem uploadHub) — nên
+//  LISTENER phải đang chạy thì gửi file mới hoàn tất.
+// ════════════════════════════════════════════════════════════════════════════
+
+export interface FileAttachment {
+  fileId: string;
+  /** md5 hex của toàn bộ file — Zalo đối chiếu khi nhận. */
+  checksum: string;
+  fileUrl: string;
+  totalSize: number;
+  fileName: string;
+}
+
+/**
+ * Upload buffer FILE theo chunk (multipart `chunkContent`, params mã hoá ở
+ * query — cùng khuôn uploadImage nhưng endpoint asyncfile/upload), rồi chờ
+ * file_done để lấy fileUrl.
+ */
+export async function uploadFile(
+  ctx: ZaloContext,
+  opts: { buffer: Buffer; fileName: string; threadId: string; group: boolean },
+): Promise<FileAttachment> {
+  const host = ctx.serviceMap.file?.[0];
+  if (!host) throw new Error('serviceMap thiếu host file — bản build không lộ đường upload');
+  const dest = opts.threadId || ctx.uid;
+  if (!dest) throw new Error('không có threadId để upload file');
+
+  const totalSize = opts.buffer.length;
+  const totalChunk = Math.max(1, Math.ceil(totalSize / UPLOAD_CHUNK));
+  const clientId = Date.now();
+  const typeParam = opts.group ? '11' : '2';
+  const path = `/api/${opts.group ? 'group' : 'message'}/asyncfile/upload`;
+
+  let fileId = '';
+  let done: Promise<{ fileUrl: string }> | null = null;
+  for (let i = 0; i < totalChunk; i++) {
+    const chunk = opts.buffer.subarray(i * UPLOAD_CHUNK, (i + 1) * UPLOAD_CHUNK);
+    const params: Record<string, unknown> = {
+      totalChunk,
+      fileName: opts.fileName,
+      clientId,
+      totalSize,
+      imei: ctx.imei,
+      isE2EE: 0,
+      jxl: 0,
+      chunkId: i + 1,
+      [opts.group ? 'grid' : 'toid']: dest,
+    };
+    const encrypted = encodeAES(ctx.secretKey, JSON.stringify(params));
+    if (!encrypted) throw new Error('mã hoá params upload file thất bại');
+    const url = makeURL(`${host}${path}`, { type: typeParam, params: encrypted });
+
+    const form = new FormData();
+    form.append('chunkContent', new Blob([new Uint8Array(chunk)], { type: 'application/octet-stream' }), opts.fileName);
+
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), REQ_TIMEOUT_MS);
+    let raw: ZaloEnvelope;
+    try {
+      const res = await fetch(url, { method: 'POST', headers: headers(ctx), body: form, signal: ac.signal });
+      const text = await res.text().catch(() => '');
+      if (!text.trim()) throw new Error(`upload file: Zalo trả rỗng (HTTP ${res.status})`);
+      raw = JSON.parse(text) as ZaloEnvelope;
+    } catch (e) {
+      throw new Error(`upload file chunk ${i + 1}/${totalChunk}: ${(e as Error).message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (raw.error_code && raw.error_code !== 0) {
+      trace('uploadFile', `Zalo lỗi ${raw.error_code}`, { chunk: i + 1, totalChunk, msg: raw.error_message });
+      throw new Error(`upload file lỗi ${raw.error_code}: ${raw.error_message ?? ''}`);
+    }
+    const decoded = raw.data ? unwrap(decryptRespSecret(ctx.secretKey, raw.data)) : null;
+    if (decoded && decoded['fileId'] != null && !fileId) {
+      fileId = String(decoded['fileId']);
+      // Đăng ký chờ NGAY khi biết fileId — file_done có thể về trước khi vòng
+      // upload kết thúc (Zalo phát nó ngay lúc ghép đủ chunk phía server).
+      done = waitFileDone(fileId);
+      // Reject của promise này được await bên dưới; chặn unhandled-rejection
+      // trong lúc còn đang upload các chunk còn lại.
+      done.catch(() => {});
+    }
+  }
+
+  if (!fileId || !done) throw new Error('upload xong nhưng response không có fileId — xem trace');
+  const checksum = createHash('md5').update(opts.buffer).digest('hex');
+  const { fileUrl } = await done;
+  trace('uploadFile', 'upload file OK', { fileId, totalSize, fileName: opts.fileName });
+  return { fileId, checksum, fileUrl, totalSize, fileName: opts.fileName };
+}
+
+/** Gửi tin FILE tham chiếu attachment đã upload — nhánh asyncfile/msg. */
+export async function sendFileMessage(
+  ctx: ZaloContext,
+  opts: { threadId: string; group: boolean; attachment: FileAttachment },
+): Promise<SendResult> {
+  const host = ctx.serviceMap.file?.[0];
+  if (!host) return { ok: false, detail: 'serviceMap thiếu host file' };
+  const dest = opts.threadId || ctx.uid;
+  if (!dest) return { ok: false, detail: 'không có threadId để gửi file' };
+  const a = opts.attachment;
+  const isGroup = opts.group;
+  const dot = a.fileName.lastIndexOf('.');
+  const extension = dot > 0 ? a.fileName.slice(dot + 1).toLowerCase() : '';
+
+  // `extention` sai chính tả là CỦA ZALO — sửa lại là server từ chối.
+  const payload: Record<string, unknown> = {
+    fileId: a.fileId,
+    checksum: a.checksum,
+    checksumSha: '',
+    extention: extension,
+    totalSize: a.totalSize,
+    fileName: a.fileName,
+    clientId: Date.now(),
+    fType: 1,
+    fileCount: 0,
+    fdata: '{}',
+    toid: isGroup ? undefined : String(dest),
+    grid: isGroup ? String(dest) : undefined,
+    fileUrl: a.fileUrl,
+    zsource: -1,
+    ttl: 0,
+  };
+
+  const encrypted = encodeAES(ctx.secretKey, JSON.stringify(payload));
+  if (!encrypted) return { ok: false, detail: 'mã hoá params gửi file thất bại' };
+  const url = makeURL(`${host}/api/${isGroup ? 'group' : 'message'}/asyncfile/msg`, { nretry: 0 });
+  const body = new URLSearchParams({ params: encrypted });
+
+  let raw: ZaloEnvelope;
+  try {
+    raw = await fetchZalo(
+      url,
+      { method: 'POST', headers: { ...headers(ctx), 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() },
+      'gửi file',
+    );
+  } catch (e) {
+    return { ok: false, detail: (e as Error).message };
+  }
+  if (raw.error_code && raw.error_code !== 0) {
+    trace('sendFile', `Zalo lỗi ${raw.error_code}`, { msg: raw.error_message });
+    return { ok: false, detail: `Zalo trả lỗi ${raw.error_code}: ${raw.error_message ?? ''}`, raw };
+  }
+  const decoded = raw.data ? decryptRespSecret(ctx.secretKey, raw.data) : null;
+  const msgId = decoded && typeof decoded === 'object' ? String((decoded as Record<string, unknown>)['msgId'] ?? '') : '';
+  return { ok: true, msgId: msgId || undefined, detail: 'đã gửi file qua API', raw: decoded };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 //  LỊCH SỬ NHÓM — port nguyên từ zca-js apis/getGroupChatHistory.ts.
 //  GET group[0]/api/group/history?params=encodeAES({grid,count}). KHÔNG signkey.
 //  (Zalo Web KHÔNG có API tương đương cho chat 1-1 — lịch sử 1-1 chỉ dựng dần
@@ -581,16 +846,58 @@ export async function getGroupHistory(ctx: ZaloContext, groupId: string, count =
   if (!host) throw new Error('serviceMap thiếu host group');
   const encrypted = encodeAES(ctx.secretKey, JSON.stringify({ grid: groupId, count }));
   if (!encrypted) throw new Error('mã hoá params lịch sử thất bại');
-  const url = makeURL(`${host}/api/group/history`, { params: encrypted });
 
-  const raw = await fetchZalo(url, { method: 'GET', headers: headers(ctx) }, 'lịch sử nhóm');
+  // Đường dẫn lịch sử ĐỔI theo bản build Zalo, và sai đường thì nginx trả 404
+  // (không phải lỗi cookie — xem fetchZalo). Thử lần lượt các đường đã biết
+  // thay vì chết ở cái đầu tiên: một cái 404 không nói gì về những cái còn lại.
+  //
+  // Thứ tự theo độ phổ biến. `/api/group/getmsgs` là đường bản web hiện dùng
+  // (cùng họ với /api/group/sendmsg đang chạy tốt), `/api/group/history` là
+  // đường zca-js port từ bản cũ.
+  const paths = ['/api/group/getmsgs', '/api/group/history', '/api/group/msgs'];
+  const tried: string[] = [];
+  let raw: ZaloEnvelope | null = null;
+  let lastErr: Error | null = null;
+  for (const path of paths) {
+    const url = makeURL(`${host}${path}`, { params: encrypted });
+    try {
+      raw = await fetchZalo(url, { method: 'GET', headers: headers(ctx) }, 'lịch sử nhóm');
+      trace('history', `lịch sử nhóm OK qua ${path}`, { host, path });
+      break;
+    } catch (e) {
+      const err = e as Error;
+      tried.push(path);
+      lastErr = err;
+      // Chỉ 404 mới đáng thử đường khác. Lỗi khác (cookie, mạng, timeout) thì
+      // thử tiếp cũng hỏng y hệt, chỉ tổ chậm gấp ba.
+      if (!/404/.test(err.message)) throw err;
+    }
+  }
+  if (!raw) {
+    throw new Error(
+      `lịch sử nhóm: không đường dẫn nào còn dùng được trên ${host} `
+      + `(đã thử ${tried.join(', ')}). Bản build Zalo có thể đã đổi endpoint. `
+      + `Chi tiết lần cuối: ${lastErr?.message ?? '—'}`,
+    );
+  }
   if (raw.error_code && raw.error_code !== 0) {
     throw new Error(`lịch sử nhóm lỗi ${raw.error_code}: ${raw.error_message ?? ''}`);
   }
   const decoded = raw.data ? decryptRespSecret(ctx.secretKey, raw.data) : null;
   const inner = unwrap(decoded);
-  const listRaw = inner?.['groupMsgs'];
-  const list = Array.isArray(listRaw) ? listRaw : [];
+  // Nhận MỌI tên kho đã biết: mỗi endpoint trả một tên khác, và đọc thiếu thì
+  // kết quả là "tải xong, 0 tin" — im lặng y hệt lúc lịch sử thật sự trống.
+  // Đúng bài học từ listener: bám một tên field là bỏ lọt cả một đường dữ liệu.
+  const list =
+    (['groupMsgs', 'msgs', 'messages', 'items'] as const)
+      .map((k) => inner?.[k])
+      .find((v): v is unknown[] => Array.isArray(v) && v.length > 0)
+    ?? [];
+  if (!list.length) {
+    trace('history', 'lịch sử nhóm: không thấy kho tin nào trong response', {
+      keys: inner ? Object.keys(inner).slice(0, 15) : null,
+    });
+  }
 
   const out: HistoryMessage[] = [];
   for (const item of list) {

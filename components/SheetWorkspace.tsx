@@ -15,6 +15,28 @@
 // Chèn/xóa dòng-cột có đủ 4 hướng (trên/dưới/trái/phải) — cả ở ribbon lẫn
 // menu chuột phải trên đầu dòng/cột.
 //
+// CHỌN & COPY/PASTE: quét chuột chọn vùng bất kỳ, Shift+click/Shift+mũi tên nới
+// vùng, bấm-kéo trên dãy đầu cột (hoặc đầu dòng) để chọn một hay nhiều cột/dòng
+// liền nhau, Ctrl+A chọn cả vùng có dữ liệu.
+// Ctrl+C chép giá trị ĐANG HIỆN ra clipboard dạng TSV + HTML (dán sang
+// Excel/Sheets/Word giữ đúng hàng cột); Ctrl+V dán TSV/CSV vào từ ô đang chọn,
+// mỗi ô thành một op 'set' như gõ tay nên vẫn đi đúng đường lưu. Cả hai bắt qua
+// SỰ KIỆN copy/paste GỐC của trình duyệt (onCopy/onPaste trên lưới) chứ không
+// đoán phím trong onKeyDown — đó là lý do bản trước Ctrl+C không ăn. Nút ⧉ Copy
+// / ⎘ Dán ở status bar và menu chuột phải đi qua Clipboard API (cần quyền).
+//
+// FILL HANDLE: ô vuông nhỏ góc dưới-phải vùng chọn — kéo dọc/ngang để LẶP LẠI
+// hay TỊNH TIẾN dãy như Excel: 1,2 kéo xuống → 3,4…; một số đơn kéo → lặp lại
+// (giữ Ctrl khi thả = +1); "Mục 1" → "Mục 2","Mục 3"; công thức dịch tham chiếu
+// tương đối theo khoảng kéo ($ đứng yên). Kéo được cả 4 hướng, mỗi ô fill là
+// một op 'set' như gõ tay. Toàn bộ luật series nằm ở lib/sheetFill.ts.
+//
+// HOÀN TÁC: Ctrl+Z / Ctrl+Y (hoặc nút ↶ ↷ trên thanh công cụ), tối đa 50 bước.
+// Mỗi thao tác sửa chụp NGUYÊN state tài liệu trước khi đổi (grids + op log +
+// merge + kích thước + bảng style) — rẻ ở quy mô lưới đang xem và tránh phải
+// viết hàm nghịch đảo cho từng loại op. Mở file khác và LƯU đều xoá lịch sử:
+// undo qua mốc lưu sẽ khôi phục op log cũ và lần lưu sau replay lại lần nữa.
+//
 // KÍCH THƯỚC: kéo mép phải đầu cột để đổi độ rộng, mép dưới đầu dòng để đổi
 // chiều cao (double-click = vừa nội dung / về mặc định). Với .xlsx kích thước
 // lưu vào file qua op colWidth/rowHeight; CSV chỉ đổi trong phiên xem.
@@ -25,15 +47,19 @@
 // style/công thức. Save luôn backup `<file>.bak` trước, gated bởi
 // OFFICE_ALLOW_WRITE.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import FolderPicker from './FolderPicker';
 import OfficeNewFileModal from './OfficeNewFileModal';
 import SheetFormatBar from './SheetFormatBar';
+import UniverPane from './sheet/UniverPane';
 import { evaluateGrid } from '@/lib/formulaEval';
+import { fillSeries, shiftFormulaRefs } from '@/lib/sheetFill';
 import { formatNumFmt } from '@/lib/numFmt';
 import {
   fetchSheetFlags,
   openSheetFile,
+  openSheetExternal,
+  statSheetFile,
   createSheetFile,
   saveSheetFile,
   colLetter,
@@ -53,12 +79,22 @@ import {
 } from '@/lib/sheet';
 
 const RECENT_KEY = 'sheet.recent';
-const RENDER_STEP = 500; // rows rendered at a time (the DOM, not the data, is the bottleneck)
+// Cuộn ảo theo dòng: chỉ vẽ các dòng quanh khung nhìn (DOM mới là nút thắt,
+// không phải dữ liệu) — phần trên/dưới là 2 dòng đệm cao đúng bằng tổng chiều
+// cao các dòng không vẽ, nên thanh cuộn vẫn phản ánh cả sheet.
+const VIRT_OVERSCAN_PX = 800; // vẽ dư trên/dưới khung nhìn, cuộn nhanh khỏi chớp trắng
+const VIRT_CHUNK = 20;        // cửa sổ nhảy theo bội số → không render lại mỗi pixel cuộn
+// Chia khung (View → Split như Excel): tối đa 4 vùng cuộn độc lập.
+type PaneId = 'tl' | 'tr' | 'bl' | 'br';
+const SPLIT_BAR_PX = 5;       // độ dày thanh chia
+const SPLIT_MIN_PX = 28;      // kéo thanh chia sát mép hơn mức này = bỏ chia
+const ROWHEAD_PX = 44;        // cột số dòng — khớp <col> đầu tiên của lưới
 const MIN_COLS = 12;     // lưới trống tối thiểu — như mở Excel mới
 const MIN_ROWS = 30;
 const PAD_COLS = 4;      // ô trống đệm quanh vùng dữ liệu
 const PAD_ROWS = 12;
 const MAX_STRUCT_STEP = 200; // trần dòng/cột chèn-xóa một lần (chống lỡ tay chọn cả cột)
+const MAX_UNDO = 50;         // trần số bước hoàn tác giữ trong bộ nhớ
 
 const EMPTY_CELL: WireCell = { v: '', t: 's' };
 
@@ -169,6 +205,10 @@ export interface SheetWorkspaceProps {
 export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspaceProps = {}) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [flags, setFlags] = useState<SheetFlags | null>(null);
+  /** flags.allowWrite cho các callback đọc — `allowWrite` bên dưới nằm sau các
+   *  early return nên không dùng được trong useCallback. */
+  const allowWriteRef = useRef(false);
+  allowWriteRef.current = flags?.allowWrite === true;
 
   const [file, setFile] = useState<SheetOpenResult | null>(null);
   /** Local working copy of every sheet's visible grid. */
@@ -190,6 +230,60 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
    *  Map thưa 1-based — chỉ chứa cột/dòng có kích thước riêng, còn lại mặc định. */
   const [colWW, setColWW] = useState<Map<number, number>[]>([]);
   const [rowHW, setRowHW] = useState<Map<number, number>[]>([]);
+  /** Freeze panes LÀM VIỆC per-sheet (seed từ file): số dòng trên / cột trái cố định. */
+  const [freezeW, setFreezeW] = useState<{ rows: number; cols: number }[]>([]);
+
+  // ── Undo / Redo (Ctrl+Z / Ctrl+Y) ─────────────────────────────────────────
+  // Mọi thao tác sửa đều đụng NHIỀU state cùng lúc (grids + ops + merges +
+  // kích thước + bảng style) nên undo theo kiểu "op nghịch đảo" sẽ phải viết
+  // hàm đảo cho từng loại op và rất dễ sai. Ở quy mô này (lưới đang xem, tối
+  // đa vài nghìn ô) chụp NGUYÊN state rẻ hơn nhiều so với công sức và rủi ro
+  // đó — grid chỉ copy nông theo dòng, các ô không đổi vẫn dùng chung object.
+  interface Snapshot {
+    grids: WireCell[][][];
+    ops: SheetOp[][];
+    merges: WireMerge[][];
+    colW: Map<number, number>[];
+    rowH: Map<number, number>[];
+    freeze: { rows: number; cols: number }[];
+    styles: WireStyle[][];
+    active: number;
+    sel: Pos | null;
+    selRange: SelRange | null;
+  }
+  const undoRef = useRef<Snapshot[]>([]);
+  const redoRef = useRef<Snapshot[]>([]);
+  /** Đổi để ép render lại khi stack thay đổi (nút Hoàn tác bật/tắt theo nó). */
+  const [histTick, setHistTick] = useState(0);
+
+  // Thu gọn phần cấu hình (thanh công cụ + ribbon) để lưới được cao hơn. Nhớ qua
+  // localStorage — try/catch vì có thể bị chặn.
+  const [cfgCollapsed, setCfgCollapsed] = useState(false);
+  useEffect(() => {
+    try { setCfgCollapsed(localStorage.getItem('sheet.cfgCollapsed') === '1'); } catch { /* bỏ qua */ }
+  }, []);
+  const toggleCfg = useCallback(() => {
+    setCfgCollapsed((v) => {
+      try { localStorage.setItem('sheet.cfgCollapsed', v ? '0' : '1'); } catch { /* bỏ qua */ }
+      return !v;
+    });
+  }, []);
+
+  // Thanh sheet ở đáy: MỘT hàng cuộn ngang, nút ◀ ▶ cuộn khi có nhiều sheet.
+  const tabsRef = useRef<HTMLDivElement | null>(null);
+  const [tabScroll, setTabScroll] = useState({ left: false, right: false });
+  const measureTabs = useCallback(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    const left = el.scrollLeft > 1;
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setTabScroll((t) => (t.left === left && t.right === right ? t : { left, right }));
+  }, []);
+  const scrollTabs = useCallback((dir: -1 | 1) => {
+    const el = tabsRef.current;
+    if (el) el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: 'smooth' });
+  }, []);
+
   /** Đang kéo mép cột/dòng — vẽ đường dóng và cập nhật kích thước theo chuột. */
   const [resizing, setResizing] = useState<
     { kind: 'col'; idx: number; px: number } | { kind: 'row'; idx: number; px: number } | null
@@ -208,13 +302,130 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
    *  cột thì "chèn dòng" chỉ nên chèn 1 dòng (chứ không phải mấy nghìn dòng). */
   const [selKind, setSelKind] = useState<'cells' | 'row' | 'col'>('cells');
   const selDragRef = useRef<Pos | null>(null);
+  /** Đang kéo chuột trên DÃY ĐẦU CỘT / ĐẦU DÒNG để chọn nhiều cột/dòng liền nhau. */
+  const headDragRef = useRef<{ kind: 'col' | 'row'; anchor: number } | null>(null);
+  /** Kéo fill handle: vùng NGUỒN lúc bấm xuống; hướng + độ dài cập nhật theo
+   *  ô chuột đang phủ (ref vì mouseup đọc giá trị mới nhất, không chờ render). */
+  const fillDragRef = useRef<SelRange | null>(null);
+  const fillPrevRef = useRef<{ axis: 'row' | 'col'; dir: 1 | -1; count: number } | null>(null);
+  /** Preview vùng SẼ được fill (không gồm vùng nguồn) — vẽ nền + viền đứt. */
+  const [fillRange, setFillRange] = useState<SelRange | null>(null);
+  const [filling, setFilling] = useState(false);
   const [editing, setEditing] = useState<Editing | null>(null);
-  const [rowLimit, setRowLimit] = useState(RENDER_STEP);
+  /** Cửa sổ dòng đang vẽ [s, e] (1-based, gồm 2 đầu) — xem VIRT_*. */
+  const [vwin, setVwin] = useState({ s: 1, e: 60 });
+  /** Cửa sổ dòng của DẢI TRÊN khi chia khung — dải dưới dùng `vwin`. */
+  const [vwinT, setVwinT] = useState({ s: 1, e: 60 });
+  /** Chiều cao thật của một dòng mặc định, đo từ DOM (ước lượng ban đầu). */
+  const [baseRowPx, setBaseRowPx] = useState(DEFAULT_ROW_PX + 1);
   /** Lưới nở thêm khi đi tới mép (giữ cảm giác "vô tận" của Excel). */
   const [padR, setPadR] = useState(0);
   const [padC, setPadC] = useState(0);
 
+  /** Vùng lưới ĐANG HOẠT ĐỘNG (nhận phím, focus, cuộn theo ô chọn). Không chia
+   *  khung thì chỉ có một vùng ('br'); chia rồi thì là vùng vừa bấm vào. */
   const gridRef = useRef<HTMLDivElement | null>(null);
+
+  /* ── Chia khung (Split) ────────────────────────────────────────────────
+     splitX/splitY = vị trí thanh chia tính bằng px từ mép trái/trên khung lưới;
+     0 = không chia theo chiều đó. Bốn vùng đặt tên theo góc: tl tr / bl br.
+     Vùng CÙNG HÀNG chung cuộn dọc, CÙNG CỘT chung cuộn ngang — đúng như Excel.
+     'br' luôn tồn tại và chính là lưới khi không chia, nên tắt chia là quay về
+     y nguyên lưới cũ. */
+  const [splitX, setSplitX] = useState(0);
+  const [splitY, setSplitY] = useState(0);
+  const [activePane, setActivePane] = useState<PaneId>('br');
+  const activePaneRef = useRef<PaneId>('br');
+  const paneEls = useRef<Partial<Record<PaneId, HTMLDivElement | null>>>({});
+  const splitWrapRef = useRef<HTMLDivElement | null>(null);
+  /** Cuộn cần đặt cho từng vùng NGAY SAU lần render chia khung kế tiếp. */
+  const pendingScroll = useRef<Partial<Record<PaneId, { top: number; left: number }>> | null>(null);
+  const syncGridRef = useCallback(() => {
+    gridRef.current = paneEls.current[activePaneRef.current] ?? paneEls.current.br ?? null;
+  }, []);
+  const activatePane = useCallback((id: PaneId) => {
+    if (activePaneRef.current === id) return;
+    activePaneRef.current = id;
+    syncGridRef();
+    setActivePane(id);
+  }, [syncGridRef]);
+
+  /** flash() khai báo phía dưới — undo/redo gọi qua ref để khỏi xáo thứ tự. */
+  const flashRef = useRef<((m: string) => void) | null>(null);
+
+  // ── Undo/Redo: chụp & khôi phục ───────────────────────────────────────────
+  // Đọc state qua ref để snapshot() không phải nhận cả tá tham số và không bị
+  // stale trong các callback đã memo hóa.
+  const liveRef = useRef({ grids, ops, mergesW, colWW, rowHW, freezeW, active, sel, selRange });
+  liveRef.current = { grids, ops, mergesW, colWW, rowHW, freezeW, active, sel, selRange };
+
+  const takeSnapshot = useCallback((): Snapshot => {
+    const s = liveRef.current;
+    return {
+      // Copy nông theo tầng: mảng dòng mới, còn ô giữ nguyên object cũ. Các
+      // hàm sửa vốn đã không mutate ô tại chỗ (luôn tạo ô mới) nên an toàn.
+      grids: s.grids.map((g) => g.map((row) => row.slice())),
+      ops: s.ops.map((o) => o.slice()),
+      merges: s.mergesW.map((l) => l.map((m) => ({ ...m }))),
+      colW: s.colWW.map((m) => new Map(m)),
+      rowH: s.rowHW.map((m) => new Map(m)),
+      freeze: s.freezeW.map((f) => ({ ...f })),
+      // Bảng style là append-only nên slice() là đủ để "quay lại độ dài cũ".
+      styles: styleRef.current.map((t) => t.slice()),
+      active: s.active,
+      sel: s.sel ? { ...s.sel } : null,
+      selRange: s.selRange ? { ...s.selRange } : null,
+    };
+  }, []);
+
+  /** Gọi NGAY TRƯỚC mỗi thao tác sửa. Ghi lại trạng thái để Ctrl+Z quay về. */
+  const pushHistory = useCallback(() => {
+    undoRef.current.push(takeSnapshot());
+    // Giữ trần cho khỏi phình bộ nhớ khi sửa cả buổi.
+    if (undoRef.current.length > MAX_UNDO) undoRef.current.shift();
+    redoRef.current = []; // làm việc mới → nhánh redo cũ hết hiệu lực
+    setHistTick((t) => t + 1);
+  }, [takeSnapshot]);
+
+  const restore = useCallback((s: Snapshot) => {
+    setGrids(s.grids);
+    setOps(s.ops);
+    setMergesW(s.merges);
+    setColWW(s.colW);
+    setRowHW(s.rowH);
+    setFreezeW(s.freeze);
+    styleRef.current = s.styles;
+    // Bảng tra style phải dựng lại cho khớp — nếu không, style bị undo bỏ đi
+    // vẫn còn trong map và lần định dạng sau sẽ trả về index đã biến mất.
+    styleIdxRef.current = s.styles.map((tbl) => {
+      const m = new Map<string, number>();
+      tbl.forEach((st, i) => { const k = JSON.stringify(st); if (!m.has(k)) m.set(k, i); });
+      return m;
+    });
+    setActive(s.active);
+    setSel(s.sel);
+    setSelRange(s.selRange);
+    setSelKind('cells');
+    setEditing(null);
+    setCtx(null);
+    setHistTick((t) => t + 1);
+  }, []);
+
+  const doUndo = useCallback(() => {
+    const prev = undoRef.current.pop();
+    if (!prev) { flashRef.current?.('Không còn gì để hoàn tác.'); return; }
+    redoRef.current.push(takeSnapshot());
+    restore(prev);
+    flashRef.current?.('↶ Đã hoàn tác');
+  }, [takeSnapshot, restore]);
+
+  const doRedo = useCallback(() => {
+    const next = redoRef.current.pop();
+    if (!next) { flashRef.current?.('Không còn gì để làm lại.'); return; }
+    undoRef.current.push(takeSnapshot());
+    restore(next);
+    flashRef.current?.('↷ Đã làm lại');
+  }, [takeSnapshot, restore]);
 
   // ── Point mode (chèn tham chiếu bằng chuột khi đang gõ công thức) ──────────
   // Gõ "=" rồi CLICK ô → chèn "A1"; gõ "+" click ô khác → "=A1+B1"; gõ
@@ -240,6 +451,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     noticeTimer.current = setTimeout(() => setNotice(null), 5000);
   }, []);
+  flashRef.current = flash;
   useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
 
   useEffect(() => {
@@ -254,10 +466,18 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
 
   const dirtyCount = ops.reduce((n, o) => n + o.length, 0);
 
+  // Giao diện Excel mới (Univer, beta) thay phần lưới tự dựng khi bật. Hai giao diện giữ
+  // thay đổi chưa lưu ở HAI nơi khác nhau (op log vs bản chụp Univer) nên mọi chỗ hỏi
+  // "có gì chưa lưu?" dùng `unsaved` — số của giao diện đang hiển thị.
+  const [univerOn, setUniverOn] = useState(false);
+  const [univerDirty, setUniverDirty] = useState(0);
+  const unsaved = univerOn ? univerDirty : dirtyCount;
+
   const resetView = useCallback(() => {
     // Mở file/đổi sheet là chọn sẵn A1 như Excel — ribbon định dạng dùng được ngay.
     setSel({ r: 1, c: 1 }); setSelRange(null); setSelKind('cells');
-    setEditing(null); setRowLimit(RENDER_STEP); setPadR(0); setPadC(0);
+    setEditing(null); setPadR(0); setPadC(0);
+    for (const el of Object.values(paneEls.current)) if (el) { el.scrollTop = 0; el.scrollLeft = 0; }
     setCtx(null);
   }, []);
 
@@ -275,6 +495,11 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   }, []);
 
   const applyOpen = useCallback((res: SheetOpenResult) => {
+    // Mở file khác / tải lại → lịch sử của tài liệu cũ vô nghĩa (và nguy hiểm:
+    // Ctrl+Z sẽ nhét grid của file cũ vào file mới).
+    undoRef.current = [];
+    redoRef.current = [];
+    setHistTick((t) => t + 1);
     setFile(res);
     setGrids(res.sheets.map((s) => s.rows.map((row) => row.slice())));
     setOps(res.sheets.map(() => []));
@@ -285,6 +510,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       return m;
     });
     setMergesW(res.sheets.map((s) => (s.merges ?? []).map((m) => ({ ...m }))));
+    setFreezeW(res.sheets.map((s) => ({ rows: s.freeze?.rows ?? 0, cols: s.freeze?.cols ?? 0 })));
     // Kích thước từ file → map thưa 1-based (bỏ qua ô null = dùng mặc định).
     // CSV không mang độ rộng: lưới giờ là table-layout fixed nên phải tự ước
     // lượng theo nội dung, kẻo mọi cột đều 96px và text dài bị cắt hết.
@@ -337,8 +563,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
 
   // Dãy tab của Office cần tên file + số thay đổi để hiện dấu ●.
   useEffect(() => {
-    onDocState?.({ path: file?.path ?? null, dirtyCount });
-  }, [file?.path, dirtyCount, onDocState]);
+    onDocState?.({ path: file?.path ?? null, dirtyCount: unsaved });
+  }, [file?.path, unsaved, onDocState]);
 
   const doCreate = useCallback(async (dir: string, name: string) => {
     setBusy(true); setErr(null);
@@ -355,9 +581,9 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   }, [applyOpen, flash]);
 
   const openCreate = useCallback(() => {
-    if (dirtyCount > 0 && !window.confirm(`Đang có ${dirtyCount} thay đổi chưa lưu — tạo file mới sẽ mất hết. Tiếp tục?`)) return;
+    if (unsaved > 0 && !window.confirm(`Đang có ${unsaved} thay đổi chưa lưu — tạo file mới sẽ mất hết. Tiếp tục?`)) return;
     setErr(null); setCreateOpen(true);
-  }, [dirtyCount]);
+  }, [unsaved]);
 
   const switchSheet = useCallback((i: number) => {
     setActive(i);
@@ -366,9 +592,78 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
 
   const reload = useCallback(() => {
     if (!file) return;
-    if (dirtyCount > 0 && !window.confirm(`Đang có ${dirtyCount} thay đổi chưa lưu — tải lại sẽ mất hết. Tiếp tục?`)) return;
+    if (unsaved > 0 && !window.confirm(`Đang có ${unsaved} thay đổi chưa lưu — tải lại sẽ mất hết. Tiếp tục?`)) return;
+    setExtChanged(false);
+    setUniverDirty(0);
     void openPath(file.path);
-  }, [file, dirtyCount, openPath]);
+  }, [file, unsaved, openPath]);
+
+  // ── Mở bằng Excel (ứng dụng ngoài) + tự nạp lại khi file bị sửa bên ngoài ──
+  //
+  // Sheet trong app là bản xem/sửa nhanh; việc nặng (biểu đồ, pivot, lọc/sắp xếp
+  // sâu…) làm bằng chính Excel. Hai bên chia sẻ MỘT file trên đĩa, nên khi cửa sổ
+  // app được focus lại ta so mtime: file đã đổi mà chưa có thay đổi nào của app
+  // thì nạp lại ngay (giữ nguyên sheet đang xem); còn thay đổi chưa lưu thì KHÔNG
+  // tự ghi đè — hiện thanh báo để người dùng chọn. Dò bằng sự kiện focus chứ
+  // không bằng timer: không tốn một nhịp poll nào lúc đang làm việc.
+  const [extChanged, setExtChanged] = useState(false);
+
+  // Giao diện Excel mới (Univer, beta) thay phần lưới tự dựng khi bật. Nhớ lựa chọn
+  // qua lần mở sau; đọc SAU mount (đọc lúc render là hydration mismatch).
+  useEffect(() => {
+    try { if (localStorage.getItem('sheet.engine') === 'univer') setUniverOn(true); } catch { /* bỏ qua */ }
+  }, []);
+  const toggleUniver = useCallback((on: boolean) => {
+    // Hai giao diện không chia sẻ thay đổi chưa lưu — chuyển qua lại là bỏ phần đang dở.
+    if (unsaved > 0 && !window.confirm(
+      `Đang có ${unsaved} thay đổi chưa lưu ở ${on ? 'lưới cũ' : 'giao diện mới'} — chuyển sang ${on ? 'giao diện mới' : 'lưới cũ'} sẽ mất chúng (hai bên không dùng chung). Vẫn chuyển?`,
+    )) return;
+    setUniverDirty(0);
+    setUniverOn(on);
+    try { localStorage.setItem('sheet.engine', on ? 'univer' : 'classic'); } catch { /* bỏ qua */ }
+  }, [unsaved]);
+  const live = useRef({ file, dirtyCount: unsaved, editing, busy: false, active });
+  live.current = { file, dirtyCount: unsaved, editing, busy, active };
+
+  const openExternally = useCallback(async () => {
+    if (!file) return;
+    if (unsaved > 0 && !window.confirm(
+      `Có ${unsaved} thay đổi chưa lưu trong app — Excel sẽ mở bản trên đĩa, KHÔNG có các thay đổi này.\n\nBấm OK để vẫn mở (nên Lưu trước), Hủy để quay lại.`,
+    )) return;
+    try {
+      await openSheetExternal(file.path);
+      flash('Đã mở bằng ứng dụng mặc định. Sửa xong, Lưu bên đó rồi quay lại đây — app tự nạp lại.');
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, [file, unsaved, flash]);
+
+  useEffect(() => {
+    if (!file?.path) return;
+    const path = file.path;
+    const check = async () => {
+      const cur = live.current;
+      if (!cur.file || cur.file.path !== path || cur.busy) return;
+      try {
+        const st = await statSheetFile(path);
+        if (Math.abs(st.mtimeMs - cur.file.mtimeMs) <= 1) return;
+        if (live.current.dirtyCount > 0 || live.current.editing) { setExtChanged(true); return; }
+        const keep = live.current.active;
+        const res = await openSheetFile(path);
+        applyOpen(res);
+        setActive(Math.min(keep, Math.max(0, res.sheets.length - 1)));
+        setExtChanged(false);
+        flash('File vừa được chương trình khác sửa — đã nạp lại bản mới.');
+      } catch { /* file bị xoá/đổi tên/đang bị khoá: bỏ qua, lần focus sau thử lại */ }
+    };
+    const onVis = () => { if (document.visibilityState === 'visible') void check(); };
+    window.addEventListener('focus', check);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('focus', check);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [file?.path, applyOpen, flash]);
 
   // ── Grid dimensions (data extent + padding = "lưới Excel") ─────────────────
 
@@ -377,7 +672,6 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const usedCols = grid.reduce((m, row) => Math.max(m, row.length), 0);
   const dispCols = Math.max(MIN_COLS, usedCols + PAD_COLS, padC);
   const dispRows = Math.max(MIN_ROWS, usedRows + PAD_ROWS, padR);
-  const shownRows = Math.min(dispRows, rowLimit);
 
   /** Bảng style đang dùng để VẼ (file + định dạng user vừa áp trong phiên). */
   const styleTable = styleRef.current[active] ?? [];
@@ -458,6 +752,214 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const hiddenRowSet = useMemo(() => new Set(structShifted ? [] : sheetMeta?.hiddenRows ?? []), [sheetMeta, structShifted]);
   const hiddenColSet = useMemo(() => new Set(structShifted ? [] : sheetMeta?.hiddenCols ?? []), [sheetMeta, structShifted]);
 
+  /** off[r] = mép dưới dòng r tính từ đầu tbody (off[0] = 0) — dòng ẩn cao 0. */
+  const rowOffsets = useMemo(() => {
+    const off = new Float64Array(dispRows + 1);
+    const hw = rowHW[active];
+    for (let r = 1; r <= dispRows; r++) {
+      off[r] = off[r - 1] + (hiddenRowSet.has(r) ? 0 : hw?.get(r) ?? baseRowPx);
+    }
+    return off;
+  }, [dispRows, rowHW, active, hiddenRowSet, baseRowPx]);
+
+  /** Tính lại cửa sổ dòng của một dải (trên/dưới) từ vị trí cuộn hiện tại.
+   *  Hai vùng cùng dải chung scrollTop nên đo một vùng là đủ. */
+  const syncWin = useCallback((band: 't' | 'b' = 'b') => {
+    const el = band === 't' ? paneEls.current.tr : paneEls.current.br;
+    if (!el) return;
+    const off = rowOffsets;
+    const n = off.length - 1;
+    // Dòng đầu tiên có mép dưới vượt y.
+    const rowAtY = (y: number) => {
+      let lo = 1, hi = n;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (off[mid] > y) hi = mid; else lo = mid + 1; }
+      return lo;
+    };
+    const s0 = rowAtY(Math.max(0, el.scrollTop - VIRT_OVERSCAN_PX));
+    const e0 = rowAtY(el.scrollTop + el.clientHeight + VIRT_OVERSCAN_PX);
+    const s = Math.max(1, Math.floor((s0 - 1) / VIRT_CHUNK) * VIRT_CHUNK + 1);
+    const e = Math.min(n, Math.ceil(e0 / VIRT_CHUNK) * VIRT_CHUNK);
+    (band === 't' ? setVwinT : setVwin)((p) => (p.s === s && p.e === e ? p : { s, e }));
+  }, [rowOffsets]);
+
+  const hasTop = splitY > 0;
+  const hasLeft = splitX > 0;
+  useLayoutEffect(() => { syncWin('b'); if (hasTop) syncWin('t'); }, [syncWin, hasTop]);
+  // Khung nhìn đổi cỡ (kéo cửa sổ, đóng/mở panel) → vẽ đủ dòng cho chiều cao mới.
+  const syncWinRef = useRef(syncWin);
+  syncWinRef.current = syncWin;
+  const hasFile = !!file;
+  useEffect(() => {
+    const els = Object.values(paneEls.current).filter((x): x is HTMLDivElement => !!x);
+    if (!els.length) return;
+    const all = () => { syncWinRef.current('b'); if (paneEls.current.tr) syncWinRef.current('t'); };
+    all();
+    const ro = new ResizeObserver(all);
+    for (const el of els) ro.observe(el);
+    return () => ro.disconnect();
+  }, [hasFile, hasTop, hasLeft]);
+
+  // Cửa sổ thực vẽ: kẹp theo dispRows (có thể vừa co lại) rồi nới ra để không
+  // cắt ngang vùng merge — ô master nằm ngoài cửa sổ thì các ô bị nó che trong
+  // cửa sổ sẽ không được vẽ, lưới lệch cột.
+  const rowWin = (v: { s: number; e: number }) => {
+    let rs = Math.min(v.s, dispRows);
+    let re = Math.min(Math.max(v.e, rs), dispRows);
+    if (!structShifted) {
+      for (const m of sheetMerges) if (m.r1 < rs && m.r2 >= rs) rs = m.r1;
+      for (const m of sheetMerges) if (m.r1 >= rs && m.r1 <= re && m.r2 > re) re = Math.min(dispRows, m.r2);
+    }
+    return { rs, re, padTopPx: rowOffsets[rs - 1], padBotPx: rowOffsets[dispRows] - rowOffsets[re] };
+  };
+  const winB = rowWin(vwin);
+  const winT = rowWin(vwinT);
+
+  /** Các vùng đang có, theo góc. Tiêu đề cột chỉ vẽ ở dải trên cùng, số dòng
+   *  chỉ ở dải trái cùng — như Excel. */
+  const panes: { id: PaneId; top: boolean; left: boolean }[] = [
+    ...(hasTop && hasLeft ? [{ id: 'tl' as const, top: true, left: true }] : []),
+    ...(hasTop ? [{ id: 'tr' as const, top: true, left: false }] : []),
+    ...(hasLeft ? [{ id: 'bl' as const, top: false, left: true }] : []),
+    { id: 'br' as const, top: false, left: false },
+  ];
+
+  /** Cuộn một vùng → kéo vùng cùng hàng (dọc) và cùng cột (ngang) theo. Đặt
+   *  lại đúng giá trị đang có thì trình duyệt không bắn scroll nữa → không lặp. */
+  const onPaneScroll = useCallback((id: PaneId) => {
+    const el = paneEls.current[id];
+    if (!el) return;
+    for (const [pid, other] of Object.entries(paneEls.current) as [PaneId, HTMLDivElement | null][]) {
+      if (!other || pid === id) continue;
+      if (pid[0] === id[0] && other.scrollTop !== el.scrollTop) other.scrollTop = el.scrollTop;
+      if (pid[1] === id[1] && other.scrollLeft !== el.scrollLeft) other.scrollLeft = el.scrollLeft;
+    }
+    syncWin(id[0] === 't' ? 't' : 'b');
+  }, [syncWin]);
+
+  // Áp vị trí cuộn đã tính cho bố cục chia mới (sau khi các vùng đã mount).
+  useLayoutEffect(() => {
+    const want = pendingScroll.current;
+    pendingScroll.current = null;
+    syncGridRef();
+    if (!want) return;
+    for (const [id, v] of Object.entries(want) as [PaneId, { top: number; left: number }][]) {
+      const el = paneEls.current[id];
+      if (el) { el.scrollTop = v.top; el.scrollLeft = v.left; }
+    }
+    syncWin('b'); if (hasTop) syncWin('t');
+  }, [hasTop, hasLeft, syncGridRef, syncWin]);
+
+  /**
+   * Bật/tắt chia khung. Bật = chia ngay TRÊN-TRÁI ô đang chọn như Excel; ô
+   * chọn là A1 (hoặc nằm sát mép) thì chia giữa khung. Các vùng mới được cuộn
+   * sao cho nhìn liền mạch với lưới trước khi chia — nội dung không nhảy.
+   */
+  const toggleSplit = useCallback(() => {
+    const wrap = splitWrapRef.current;
+    const main = paneEls.current.br;
+    if (!wrap || !main) return;
+    if (hasTop || hasLeft) {
+      // Bỏ chia: lưới còn lại giữ chỗ đang xem của vùng dưới-phải.
+      pendingScroll.current = { br: { top: main.scrollTop, left: main.scrollLeft } };
+      setSplitX(0); setSplitY(0);
+      activatePane('br');
+      return;
+    }
+    const box = wrap.getBoundingClientRect();
+    const headH = main.querySelector('thead')?.getBoundingClientRect().height ?? 0;
+    const cellBox = main.querySelector('.sheet-cell.selc')?.getBoundingClientRect();
+    let x = cellBox ? cellBox.left - box.left : 0;
+    let y = cellBox ? cellBox.top - box.top : 0;
+    const okX = x > ROWHEAD_PX + SPLIT_MIN_PX && x < box.width - SPLIT_MIN_PX;
+    const okY = y > headH + SPLIT_MIN_PX && y < box.height - SPLIT_MIN_PX;
+    if (!okX && !okY) { x = box.width / 2; y = box.height / 2; }
+    else { if (!okX) x = 0; if (!okY) y = 0; }
+    x = Math.round(x); y = Math.round(y);
+    const st = main.scrollTop, sl = main.scrollLeft;
+    // Vùng dưới không có tiêu đề cột, vùng phải không có cột số dòng → bù lại
+    // để hàng/cột ngay dưới/phải thanh chia đúng là hàng/cột đang thấy ở đó.
+    const bTop = y ? st + y + SPLIT_BAR_PX - headH : st;
+    const rLeft = x ? sl + x + SPLIT_BAR_PX - ROWHEAD_PX : sl;
+    pendingScroll.current = {
+      tl: { top: st, left: sl }, tr: { top: st, left: rLeft },
+      bl: { top: bTop, left: sl }, br: { top: bTop, left: rLeft },
+    };
+    setSplitX(x); setSplitY(y);
+  }, [hasTop, hasLeft, activatePane]);
+
+  /** Kéo thanh chia. Thả sát mép (hoặc vượt khung) = bỏ chia theo chiều đó. */
+  const startSplitDrag = useCallback((axis: 'x' | 'y', e: React.MouseEvent) => {
+    e.preventDefault();
+    const wrap = splitWrapRef.current;
+    if (!wrap) return;
+    const box = wrap.getBoundingClientRect();
+    const size = axis === 'x' ? box.width : box.height;
+    const origin = axis === 'x' ? box.left : box.top;
+    const set = axis === 'x' ? setSplitX : setSplitY;
+    let last = axis === 'x' ? splitX : splitY;
+    const move = (ev: MouseEvent) => {
+      last = Math.round((axis === 'x' ? ev.clientX : ev.clientY) - origin);
+      set(Math.min(Math.max(last, 1), size - SPLIT_BAR_PX));
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      if (last < SPLIT_MIN_PX || last > size - SPLIT_MIN_PX) removeSplitRef.current(axis);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }, [splitX, splitY]);
+
+  /** Bỏ chia theo một chiều (double-click thanh chia, như Excel). Vùng còn lại
+   *  giữ chỗ đang xem của vùng dưới-phải. */
+  const removeSplit = useCallback((axis: 'x' | 'y') => {
+    const main = paneEls.current.br;
+    if (main) pendingScroll.current = { br: { top: main.scrollTop, left: main.scrollLeft }, ...(axis === 'x'
+      ? { tr: { top: paneEls.current.tr?.scrollTop ?? 0, left: main.scrollLeft } }
+      : { bl: { top: main.scrollTop, left: paneEls.current.bl?.scrollLeft ?? 0 } }) };
+    (axis === 'x' ? setSplitX : setSplitY)(0);
+    activatePane('br');
+  }, [activatePane]);
+  const removeSplitRef = useRef(removeSplit);
+  removeSplitRef.current = removeSplit;
+
+  /* ── Cố định khung (Freeze Panes) ─────────────────────────────────────
+     Dòng 1..rows và cột 1..cols đứng yên khi cuộn — vẽ bằng position:sticky
+     ngay trong lưới (không tách bảng), nên chọn ô / sửa / kéo fill qua ranh
+     giới cố định chạy y như phần còn lại. Với .xlsx thành op 'freeze' và được
+     lưu vào file (Excel mở ra cũng thấy cố định); CSV chỉ áp khi đang xem.
+     Như Excel: cố định và chia khung loại trừ nhau. */
+  const curFreeze = freezeW[active] ?? { rows: 0, cols: 0 };
+  const frozen = curFreeze.rows > 0 || curFreeze.cols > 0;
+  const [frzOpen, setFrzOpen] = useState(false);
+  const frzRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!frzOpen) return;
+    const away = (e: MouseEvent) => { if (!frzRef.current?.contains(e.target as Node)) setFrzOpen(false); };
+    window.addEventListener('mousedown', away);
+    return () => window.removeEventListener('mousedown', away);
+  }, [frzOpen]);
+
+  // Đo chiều cao thật của một dòng mặc định (padding + font + viền) để phần
+  // đệm khớp, thanh cuộn không "trượt" khi cuộn xa.
+  useLayoutEffect(() => {
+    const trs = gridRef.current?.querySelectorAll<HTMLTableRowElement>('tbody tr[data-r]');
+    if (!trs) return;
+    for (const tr of trs) {
+      if (tr.style.height || tr.style.display) continue;
+      const h = tr.getBoundingClientRect().height;
+      if (h > 0 && Math.abs(h - baseRowPx) > 0.5) setBaseRowPx(h);
+      return;
+    }
+  }, [vwin, vwinT, hasFile, active, baseRowPx]);
+
+  /** Chiều cao thật của hàng tiêu đề cột — mốc `top` cho các dòng bị cố định. */
+  const [headH, setHeadH] = useState(26);
+  useLayoutEffect(() => {
+    const h = splitWrapRef.current?.querySelector('thead')?.getBoundingClientRect().height;
+    if (h && Math.abs(h - headH) > 0.5) setHeadH(h);
+  });
+
   /** Thống kê vùng chọn — Sum/Avg/Count như status bar Excel. */
   const rangeStats = useMemo(() => {
     if (!selRange) return null;
@@ -484,6 +986,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     // So với TEXT SỬA hiện tại: ô công thức là "=f", ô số/ngày format là raw.
     const curText = cur?.t === 'f' && cur.f ? `=${cur.f}` : cur?.raw ?? cur?.v ?? '';
     if (curText === value) return; // no-op edit (kể cả ô đệm để trống)
+    pushHistory(); // sau early-return: sửa không đổi gì thì đừng tốn một bước undo
     const isFormula = value.startsWith('=') && value.trim().length > 1;
     // Giữ style index — server chỉ set value nên format của ô vẫn nguyên trong file.
     const keepS = cur?.s !== undefined ? { s: cur.s } : {};
@@ -504,7 +1007,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       // hadFormula = ghi đè công thức CŨ bằng GIÁ TRỊ thường (để cảnh báo lúc lưu).
       i === active ? [...o, { op: 'set', r, c, value, ...(cur?.t === 'f' && !isFormula ? { hadFormula: true } : {}) }] : o
     )));
-  }, [grids, active]);
+  }, [grids, active, pushHistory]);
 
   /** Số dòng/cột được phép chèn-xóa một lần (chống lỡ tay chọn cả cột). */
   const clampStep = useCallback((count: number, unit: 'dòng' | 'cột') => {
@@ -541,6 +1044,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
 
   const insertRowAt = useCallback((at: number, howMany = 1) => {
     const count = clampStep(howMany, 'dòng');
+    pushHistory();
     setGrids((gs) => gs.map((g, i) => {
       if (i !== active) return g;
       const ng = g.slice();
@@ -553,14 +1057,14 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     setSel({ r: at, c: sel?.c ?? 1 });
     setSelRange(null);
     setEditing(null);
-    setRowLimit((l) => (at > l ? at + RENDER_STEP : l));
-  }, [active, sel, pushOps, clampStep, shiftSizes]);
+  }, [active, sel, pushOps, clampStep, shiftSizes, pushHistory]);
 
   const deleteRowAt = useCallback((at: number, howMany = 1) => {
     const count = clampStep(howMany, 'dòng');
     const hasData = Array.from({ length: count }, (_, k) => grid[at - 1 + k]).some((row) => row?.some((c) => c.v !== ''));
     const what = count > 1 ? `${count} dòng từ dòng ${at}` : `dòng ${at}`;
     if (hasData && !window.confirm(`Xóa ${what} (đang có dữ liệu)?`)) return;
+    pushHistory(); // sau confirm: bấm Huỷ thì đừng ghi một bước undo rỗng
     setGrids((gs) => gs.map((g, i) => {
       if (i !== active) return g;
       const ng = g.slice();
@@ -572,10 +1076,11 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     shiftSizes('row', at, -count);
     setSelRange(null);
     setEditing(null);
-  }, [active, grid, pushOps, clampStep, shiftSizes]);
+  }, [active, grid, pushOps, clampStep, shiftSizes, pushHistory]);
 
   const insertColAt = useCallback((at: number, howMany = 1) => {
     const count = clampStep(howMany, 'cột');
+    pushHistory();
     setGrids((gs) => gs.map((g, i) => {
       if (i !== active) return g;
       return g.map((row) => {
@@ -590,7 +1095,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     setSel({ r: sel?.r ?? 1, c: at });
     setSelRange(null);
     setEditing(null);
-  }, [active, sel, pushOps, clampStep, shiftSizes]);
+  }, [active, sel, pushOps, clampStep, shiftSizes, pushHistory]);
 
   const deleteColAt = useCallback((at: number, howMany = 1) => {
     const count = clampStep(howMany, 'cột');
@@ -599,6 +1104,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       ? `${count} cột từ cột ${colLetter(at - 1)}`
       : `cột ${colLetter(at - 1)}`;
     if (hasData && !window.confirm(`Xóa ${what} (đang có dữ liệu)?`)) return;
+    pushHistory(); // sau confirm — xem ghi chú ở deleteRowAt
     setGrids((gs) => gs.map((g, i) => {
       if (i !== active) return g;
       return g.map((row) => {
@@ -612,7 +1118,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     shiftSizes('col', at, -count);
     setSelRange(null);
     setEditing(null);
-  }, [active, grid, pushOps, clampStep, shiftSizes]);
+  }, [active, grid, pushOps, clampStep, shiftSizes, pushHistory]);
 
   // ── Kéo đổi kích thước cột / dòng (như Excel) ──────────────────────────────
   // Nắm mép phải đầu cột (hoặc mép dưới đầu dòng) rồi kéo.
@@ -638,6 +1144,28 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   }, [active]);
 
   /** Ghi op đổi kích thước (chỉ .xlsx — CSV không lưu được kích thước). */
+  const applyFreeze = useCallback((rows: number, cols: number) => {
+    if (!file) return;
+    setFrzOpen(false);
+    const cur = liveRef.current.freezeW[active] ?? { rows: 0, cols: 0 };
+    if (cur.rows === rows && cur.cols === cols) return;
+    pushHistory();
+    setFreezeW((fw) => fw.map((f, i) => (i === active ? { rows, cols } : f)));
+    if (file.kind === 'xlsx') {
+      // Chỉ trạng thái cuối mới có nghĩa → thay op freeze cũ của sheet thay vì cộng dồn.
+      setOps((os) => os.map((o, i) => (i !== active ? o : [...o.filter((x) => x.op !== 'freeze'), { op: 'freeze', rows, cols }])));
+    }
+    // Bỏ chia khung (Excel cũng vậy) và về đầu sheet: phần cố định là dòng/cột
+    // ĐẦU của sheet, đang cuộn giữa chừng thì ranh giới nhìn sẽ khó hiểu.
+    setSplitX(0); setSplitY(0);
+    activatePane('br');
+    pendingScroll.current = { br: { top: 0, left: 0 } };
+    for (const el of Object.values(paneEls.current)) if (el) { el.scrollTop = 0; el.scrollLeft = 0; }
+    flash(rows || cols
+      ? `Đã cố định ${rows ? `${rows} dòng trên` : ''}${rows && cols ? ' và ' : ''}${cols ? `${cols} cột trái` : ''}.`
+      : 'Đã bỏ cố định khung.');
+  }, [file, active, pushHistory, activatePane, flash]);
+
   const pushSizeOp = useCallback((kind: 'col' | 'row', idx: number, px: number | null) => {
     if (file?.kind !== 'xlsx') {
       // CSV là text thuần: kéo vẫn đổi được để dễ đọc, nhưng chỉ trong phiên
@@ -667,19 +1195,24 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const startResize = useCallback((kind: 'col' | 'row', idx: number, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation(); // không để lọt xuống header (kẻo chọn cả cột/dòng)
+    // Chụp TRƯỚC khi kéo — cả nét kéo là một bước undo (setSize chỉ chạy lúc thả).
+    pushHistory();
 
     const min = kind === 'col' ? MIN_COL_PX : MIN_ROW_PX;
     const max = kind === 'col' ? MAX_COL_PX : MAX_ROW_PX;
     // Node được sửa trực tiếp: <col> điều khiển cả cột, <tr> cả dòng.
-    const target: HTMLElement | null = kind === 'col'
-      ? gridRef.current?.querySelector(`col[data-c="${idx}"]`) ?? null
-      : gridRef.current?.querySelector(`tr[data-r="${idx}"]`) ?? null;
+    // Chia khung thì cột/dòng ấy có mặt ở nhiều vùng — sửa hết để các vùng
+    // không lệch nhau trong lúc kéo.
+    const targets = Array.from(splitWrapRef.current?.querySelectorAll<HTMLElement>(
+      kind === 'col' ? `col[data-c="${idx}"]` : `tr[data-r="${idx}"]`,
+    ) ?? []);
+    const target: HTMLElement | null = targets[0] ?? null;
     // Mốc kéo lấy từ kích thước ĐANG HIỂN THỊ, không lấy từ state: dòng/cột
     // chưa có kích thước riêng thì state chỉ có giá trị mặc định ước lượng,
     // lệch vài px so với thực tế → nét kéo đầu tiên bị "nhảy".
     // <col> không có hộp riêng nên đo qua ô đầu cột tương ứng.
     const measured = kind === 'col'
-      ? gridRef.current?.querySelectorAll('th.sheet-colhead')[idx - 1]?.getBoundingClientRect().width
+      ? splitWrapRef.current?.querySelector(`th.sheet-colhead[data-c="${idx}"]`)?.getBoundingClientRect().width
       : (target as HTMLElement | null)?.getBoundingClientRect().height;
     const startPx = Math.round(measured ?? (kind === 'col' ? colPx(idx) : rowPx(idx)));
     const start = kind === 'col' ? e.clientX : e.clientY;
@@ -687,9 +1220,9 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     let frame = 0;
     const paint = () => {
       frame = 0;
-      if (target) {
-        if (kind === 'col') target.style.width = `${lastPx}px`;
-        else target.style.height = `${lastPx}px`;
+      for (const t of targets) {
+        if (kind === 'col') t.style.width = `${lastPx}px`;
+        else t.style.height = `${lastPx}px`;
       }
       // Đọc ref ở đây chứ không phải lúc mousedown: badge số đo chỉ mount SAU
       // khi setResizing render xong, lúc bắt đầu kéo nó còn chưa tồn tại.
@@ -720,10 +1253,11 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
     setResizing({ kind, idx, px: startPx } as typeof resizing);
-  }, [colPx, rowPx, setSize, pushSizeOp]);
+  }, [colPx, rowPx, setSize, pushSizeOp, pushHistory]);
 
   /** Double-click tay nắm: co giãn vừa nội dung (autofit) như Excel. */
   const autoFitCol = useCallback((c: number) => {
+    pushHistory();
     let widest = 0;
     const rows = Math.min(grid.length, 2000); // đủ mẫu, khỏi quét file khổng lồ
     for (let r = 1; r <= rows; r++) {
@@ -733,13 +1267,14 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     const px = Math.min(MAX_COL_PX, Math.max(MIN_COL_PX, widest * 7 + 18));
     setSize('col', c, px);
     pushSizeOp('col', c, px);
-  }, [grid, cellAt, setSize, pushSizeOp]);
+  }, [grid, cellAt, setSize, pushSizeOp, pushHistory]);
 
   const autoFitRow = useCallback((r: number) => {
+    pushHistory();
     // Chiều cao mặc định là "vừa một dòng chữ" — autofit = bỏ chiều cao riêng.
     setSize('row', r, null);
     pushSizeOp('row', r, null);
-  }, [setSize, pushSizeOp]);
+  }, [setSize, pushSizeOp, pushHistory]);
 
   // ── Định dạng (chỉ .xlsx) ───────────────────────────────────────────────────
 
@@ -750,9 +1285,12 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
    * Áp một StylePatch cho cả vùng: cập nhật style index của từng ô trong
    * working copy + ghi MỘT op 'style' cho server replay.
    */
-  const applyFormat = useCallback((patch: StylePatch) => {
+  const applyFormat = useCallback((patch: StylePatch, opts?: { noHistory?: boolean }) => {
     const rg = fmtRange;
     if (!rg || file?.kind !== 'xlsx') return;
+    // noHistory: doMerge() gọi applyFormat ở cuối để căn giữa — nó đã chụp
+    // history rồi, chụp thêm lần nữa thì Ctrl+Z phải bấm hai lần mới về được.
+    if (!opts?.noHistory) pushHistory();
     setGrids((gs) => gs.map((g, i) => {
       if (i !== active) return g;
       const ng = g.slice();
@@ -785,7 +1323,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
         && JSON.stringify(Object.keys(last.st).sort()) === JSON.stringify(Object.keys(patch).sort());
       return mergeable ? [...o.slice(0, -1), op] : [...o, op];
     }));
-  }, [fmtRange, file, active, internStyle]);
+  }, [fmtRange, file, active, internStyle, pushHistory]);
 
   /** Trộn vùng chọn thành một ô + căn giữa (như nút Merge & Center của Excel). */
   const doMerge = useCallback(() => {
@@ -801,6 +1339,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       }
     }
     if (lost && !window.confirm('Trộn ô chỉ giữ nội dung ô trên-trái, dữ liệu các ô còn lại sẽ bị xóa. Tiếp tục?')) return;
+    pushHistory();
     setGrids((gs) => gs.map((g, i) => {
       if (i !== active) return g;
       const ng = g.slice();
@@ -822,9 +1361,10 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       ? [...list.filter((m) => !overlaps(rg, m)), { ...rg }]
       : list)));
     setOps((os) => os.map((o, i) => (i === active ? [...o, { op: 'merge', ...rg }] : o)));
-    // Merge & Center: căn giữa ngang + dọc như Excel.
-    applyFormat({ ha: 'c', va: 'm' });
-  }, [selRange, grid, active, flash, applyFormat]);
+    // Merge & Center: căn giữa ngang + dọc như Excel. noHistory — trộn + căn
+    // giữa là MỘT thao tác dưới góc nhìn người dùng, một lần Ctrl+Z là về.
+    applyFormat({ ha: 'c', va: 'm' }, { noHistory: true });
+  }, [selRange, grid, active, flash, applyFormat, pushHistory]);
 
   const doUnmerge = useCallback(() => {
     const rg = fmtRange;
@@ -833,9 +1373,10 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       flash('Vùng chọn không có ô nào đang bị trộn.');
       return;
     }
+    pushHistory();
     setMergesW((ms) => ms.map((list, i) => (i === active ? list.filter((m) => !overlaps(rg, m)) : list)));
     setOps((os) => os.map((o, i) => (i === active ? [...o, { op: 'unmerge', ...rg }] : o)));
-  }, [fmtRange, mergesW, active, flash]);
+  }, [fmtRange, mergesW, active, flash, pushHistory]);
 
   const doSave = useCallback(async () => {
     if (!file) return;
@@ -853,6 +1394,11 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           ? row.map((c) => (c.d ? { v: c.v, t: c.t, ...(c.f ? { f: c.f } : {}), ...(c.s !== undefined ? { s: c.s } : {}) } : c))
           : row
       ))));
+      // Đã lưu → xoá lịch sử. Undo qua mốc lưu sẽ khôi phục op log CŨ, lần lưu
+      // sau replay lại y nguyên những thay đổi vừa ghi — hỏng file.
+      undoRef.current = [];
+      redoRef.current = [];
+      setHistTick((t) => t + 1);
       setSaveOpen(false);
       flash(`Đã lưu ✓ backup: ${res.backupPath}`);
     } catch (e) {
@@ -891,18 +1437,345 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       // Đi tới mép → lưới nở thêm (cảm giác lưới vô tận của Excel).
       if (r >= dispRows - 1) setPadR(r + PAD_ROWS);
       if (c >= dispCols - 1) setPadC(c + PAD_COLS);
-      if (r > rowLimit - 3) setRowLimit(r + RENDER_STEP);
       return { r, c };
     });
-  }, [dispRows, dispCols, rowLimit]);
+  }, [dispRows, dispCols]);
+
+  // ── Sao chép vùng chọn (Ctrl+C / menu chuột phải) ──────────────────────────
+  // Ra hai định dạng như Excel: text/plain là TSV (dán sang Excel/Sheets/Notepad
+  // đều đúng ô), text/html là <table> (giữ dạng bảng khi dán vào Word/mail).
+  // Lấy TEXT ĐANG HIỆN (cellAt) — ô công thức copy ra KẾT QUẢ, số đã format giữ
+  // nguyên cách hiện, đúng như copy từ Excel.
+
+  /** Escape một ô cho TSV: tab/xuống dòng/nháy kép → bọc trong "..." như Excel. */
+  const tsvCell = useCallback((s: string) => (
+    /[\t\n\r"]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  ), []);
+
+  const htmlEsc = useCallback((s: string) => (
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  ), []);
+
+  /** Vùng đích của copy/paste: vùng đã quét, hoặc chỉ ô đang chọn. */
+  const ioRange: SelRange | null = selRange ?? (sel ? { r1: sel.r, c1: sel.c, r2: sel.r, c2: sel.c } : null);
+
+  /** Dựng TSV + HTML cho một vùng. Cắt về phần CÓ DỮ LIỆU vì chọn cả cột/dòng
+   *  phủ tới tận mép lưới trống — không cắt thì dán ra hàng nghìn dòng rỗng. */
+  const serializeRange = useCallback((rg: SelRange) => {
+    const r2 = Math.max(rg.r1, Math.min(rg.r2, Math.max(usedRows, rg.r1)));
+    const c2 = Math.max(rg.c1, Math.min(rg.c2, Math.max(usedCols, rg.c1)));
+    const lines: string[] = [];
+    const rowsHtml: string[] = [];
+    for (let r = rg.r1; r <= r2; r++) {
+      const vals: string[] = [];
+      const tds: string[] = [];
+      for (let c = rg.c1; c <= c2; c++) {
+        const v = cellAt(r, c).v;
+        vals.push(tsvCell(v));
+        tds.push(`<td>${htmlEsc(v) || '&nbsp;'}</td>`);
+      }
+      lines.push(vals.join('\t'));
+      rowsHtml.push(`<tr>${tds.join('')}</tr>`);
+    }
+    return {
+      text: lines.join('\r\n'),
+      html: `<table>${rowsHtml.join('')}</table>`,
+      nCells: (r2 - rg.r1 + 1) * (c2 - rg.c1 + 1),
+      label: `${colLetter(rg.c1 - 1)}${rg.r1}:${colLetter(c2 - 1)}${r2}`,
+    };
+  }, [cellAt, usedRows, usedCols, tsvCell, htmlEsc]);
+
+  /**
+   * Ctrl+C do TRÌNH DUYỆT bắn ra (sự kiện `copy` trên lưới) — không tự đoán
+   * phím trong onKeyDown. Ghi thẳng vào e.clipboardData nên không cần quyền
+   * clipboard, chạy được cả khi không phải ngữ cảnh bảo mật (http://…).
+   */
+  const onGridCopy = useCallback((e: React.ClipboardEvent) => {
+    // Đang sửa trong ô → để input tự copy đoạn text bôi đen của nó.
+    if (editing || !ioRange) return;
+    const { text, html, nCells, label } = serializeRange(ioRange);
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', text);
+    e.clipboardData.setData('text/html', html);
+    flash(`Đã copy ${label} · ${nCells} ô`);
+  }, [editing, ioRange, serializeRange, flash]);
+
+  /** Nút Copy / menu chuột phải — không có sự kiện `copy` nên đi Clipboard API,
+   *  và lùi về execCommand khi API bị chặn. */
+  const copySelection = useCallback(async () => {
+    if (!ioRange) return;
+    const { text, html, nCells, label } = serializeRange(ioRange);
+    const ok = `Đã copy ${label} · ${nCells} ô`;
+    try {
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+        await navigator.clipboard.write([new ClipboardItem({
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+          'text/html': new Blob([html], { type: 'text/html' }),
+        })]);
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
+      flash(ok);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const done = document.execCommand('copy');
+      document.body.removeChild(ta);
+      gridRef.current?.focus();
+      flash(done ? ok : 'Không copy được — trình duyệt chặn truy cập clipboard.');
+    }
+  }, [ioRange, serializeRange, flash]);
+
+  // ── Dán (Ctrl+V) ───────────────────────────────────────────────────────────
+  // Nhận TSV/CSV từ Excel, Sheets, Notepad… Mỗi ô dán vào là một op 'set' như
+  // gõ tay, nên vẫn đi đúng đường lưu (backup + replay server-side).
+
+  /** Tách TSV/CSV có hỗ trợ ô bọc "..." (chứa tab/xuống dòng/nháy kép). */
+  const parseClipTable = useCallback((raw: string): string[][] => {
+    const text = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    // Có tab → TSV (Excel/Sheets luôn ra TSV); không thì thử CSV dấu phẩy.
+    const sep = text.includes('\t') ? '\t' : ',';
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let cur = '';
+    let quoted = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (quoted) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') { cur += '"'; i++; } // "" = một dấu nháy
+          else quoted = false;
+        } else cur += ch;
+        continue;
+      }
+      if (ch === '"' && cur === '') { quoted = true; continue; }
+      if (ch === sep) { row.push(cur); cur = ''; continue; }
+      if (ch === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; continue; }
+      cur += ch;
+    }
+    if (cur !== '' || row.length > 0) { row.push(cur); rows.push(row); }
+    // Excel hay kèm dòng trống ở cuối — bỏ đi cho khỏi ghi đè thừa một dòng.
+    while (rows.length > 1 && rows[rows.length - 1].every((v) => v === '')) rows.pop();
+    return rows;
+  }, []);
+
+  /** Dán bảng vào lưới, góc trên-trái là ô đang chọn. */
+  const pasteTable = useCallback((rows: string[][]) => {
+    if (!sel || rows.length === 0) return;
+    const nR = rows.length;
+    const nC = rows.reduce((m, r) => Math.max(m, r.length), 0);
+    if (nC === 0) return;
+    pushHistory();
+    const r0 = sel.r; const c0 = sel.c;
+    setGrids((gs) => gs.map((g, i) => {
+      if (i !== active) return g;
+      const ng = g.slice();
+      while (ng.length < r0 + nR - 1) ng.push([]);
+      for (let dr = 0; dr < nR; dr++) {
+        const row = ng[r0 + dr - 1].slice();
+        while (row.length < c0 + nC - 1) row.push({ ...EMPTY_CELL });
+        for (let dc = 0; dc < nC; dc++) {
+          const value = rows[dr][dc] ?? '';
+          const cur = row[c0 + dc - 1];
+          const keepS = cur?.s !== undefined ? { s: cur.s } : {};
+          const isFormula = value.startsWith('=') && value.trim().length > 1;
+          row[c0 + dc - 1] = isFormula
+            ? { v: '', t: 'f', f: value.slice(1).trim(), d: true, ...keepS }
+            : { v: value, t: 's', d: true, ...keepS };
+        }
+        ng[r0 + dr - 1] = row;
+      }
+      return ng;
+    }));
+    // Một op 'set' cho mỗi ô — server replay y như người dùng gõ từng ô.
+    setOps((os) => os.map((o, i) => {
+      if (i !== active) return o;
+      const add: SheetOp[] = [];
+      for (let dr = 0; dr < nR; dr++) {
+        for (let dc = 0; dc < nC; dc++) {
+          add.push({ op: 'set', r: r0 + dr, c: c0 + dc, value: rows[dr][dc] ?? '' });
+        }
+      }
+      return [...o, ...add];
+    }));
+    // Chọn đúng vùng vừa dán, như Excel.
+    selExtentRef.current = null;
+    setSelRange({ r1: r0, c1: c0, r2: r0 + nR - 1, c2: c0 + nC - 1 });
+    setSelKind('cells');
+    setPadR((p) => Math.max(p, r0 + nR + PAD_ROWS));
+    setPadC((p) => Math.max(p, c0 + nC + PAD_COLS));
+    flash(`Đã dán ${nR}×${nC} ô vào ${colLetter(c0 - 1)}${r0}`);
+  }, [sel, active, flash, pushHistory]);
+
+  /** Nút "Dán" / menu chuột phải — đọc clipboard qua API (cần quyền; Ctrl+V
+   *  không cần vì đi qua sự kiện `paste`). */
+  const pasteFromClipboard = useCallback(async () => {
+    if (!sel) return;
+    if (!allowWriteRef.current) {
+      flash('Ghi file đang tắt — đặt OFFICE_ALLOW_WRITE=true trong .env.local để sửa/dán.');
+      return;
+    }
+    try {
+      const raw = await navigator.clipboard.readText();
+      if (!raw) { flash('Clipboard đang trống.'); return; }
+      pasteTable(parseClipTable(raw));
+    } catch {
+      flash('Trình duyệt chặn đọc clipboard — bấm vào lưới rồi nhấn Ctrl+V.');
+      gridRef.current?.focus();
+    }
+  }, [sel, parseClipTable, pasteTable, flash]);
+
+  const onGridPaste = useCallback((e: React.ClipboardEvent) => {
+    if (editing || !sel) return; // đang sửa ô → để input nhận text như thường
+    if (!allowWriteRef.current) {
+      e.preventDefault();
+      flash('Ghi file đang tắt — đặt OFFICE_ALLOW_WRITE=true trong .env.local để sửa/dán.');
+      return;
+    }
+    // Ưu tiên text/plain: Excel gửi kèm text/html rất rối, TSV mới là dạng sạch.
+    const raw = e.clipboardData.getData('text/plain');
+    if (!raw) return;
+    e.preventDefault();
+    pasteTable(parseClipTable(raw));
+  }, [editing, sel, parseClipTable, pasteTable, flash]);
+
+  // ── Fill handle (kéo góc dưới-phải vùng chọn — lặp lại / tịnh tiến dãy) ────
+  // Luật series ở lib/sheetFill.ts; ở đây chỉ lo kéo-thả và ghi op. Mỗi ô fill
+  // là một op 'set' như gõ tay nên đi đúng đường lưu + undo được cả cụm.
+
+  const applyFill = useCallback((src: SelRange, axis: 'row' | 'col', dir: 1 | -1, count: number, ctrl: boolean) => {
+    pushHistory();
+    // Mỗi "line" chạy dọc trục kéo: kéo dọc = mỗi CỘT một dãy riêng, kéo
+    // ngang = mỗi DÒNG. Kéo ngược (lên/trái) thì đảo nguồn để series chạy lùi.
+    const sets: { r: number; c: number; value: string }[] = [];
+    if (axis === 'row') {
+      for (let c = src.c1; c <= src.c2; c++) {
+        let texts: string[] = [];
+        for (let r = src.r1; r <= src.r2; r++) texts.push(editText(r, c));
+        if (dir === -1) texts = texts.reverse();
+        const vals = fillSeries(texts, count, ctrl, (f, off) => shiftFormulaRefs(f, dir * off, 0));
+        vals.forEach((value, i) => sets.push({ r: (dir === 1 ? src.r2 : src.r1) + dir * (i + 1), c, value }));
+      }
+    } else {
+      for (let r = src.r1; r <= src.r2; r++) {
+        let texts: string[] = [];
+        for (let c = src.c1; c <= src.c2; c++) texts.push(editText(r, c));
+        if (dir === -1) texts = texts.reverse();
+        const vals = fillSeries(texts, count, ctrl, (f, off) => shiftFormulaRefs(f, 0, dir * off));
+        vals.forEach((value, i) => sets.push({ r, c: (dir === 1 ? src.c2 : src.c1) + dir * (i + 1), value }));
+      }
+    }
+    if (sets.length === 0) return;
+    const maxR = sets.reduce((m, s) => Math.max(m, s.r), src.r2);
+    const maxC = sets.reduce((m, s) => Math.max(m, s.c), src.c2);
+    setGrids((gs) => gs.map((g, i) => {
+      if (i !== active) return g;
+      const ng = g.slice();
+      while (ng.length < maxR) ng.push([]);
+      // Copy mỗi dòng đúng một lần dù nhận nhiều ô (kéo ngang qua nhiều cột).
+      const touched = new Map<number, WireCell[]>();
+      for (const s of sets) {
+        let row = touched.get(s.r);
+        if (!row) { row = ng[s.r - 1].slice(); touched.set(s.r, row); }
+        while (row.length < s.c) row.push({ ...EMPTY_CELL });
+        const cur = row[s.c - 1];
+        const keepS = cur?.s !== undefined ? { s: cur.s } : {};
+        const isFormula = s.value.startsWith('=') && s.value.trim().length > 1;
+        row[s.c - 1] = isFormula
+          ? { v: '', t: 'f', f: s.value.slice(1).trim(), d: true, ...keepS }
+          : { v: s.value, t: 's', d: true, ...keepS };
+      }
+      for (const [r, row] of touched) ng[r - 1] = row;
+      return ng;
+    }));
+    setOps((os) => os.map((o, i) => {
+      if (i !== active) return o;
+      const add = sets.map((s): SheetOp => {
+        // hadFormula: fill đè công thức CŨ bằng giá trị thường → cảnh báo lúc lưu.
+        const cur = grid[s.r - 1]?.[s.c - 1];
+        const isFormula = s.value.startsWith('=') && s.value.trim().length > 1;
+        return { op: 'set', r: s.r, c: s.c, value: s.value, ...(cur?.t === 'f' && !isFormula ? { hadFormula: true } : {}) };
+      });
+      return [...o, ...add];
+    }));
+    // Chọn cả nguồn + vùng vừa fill, như Excel.
+    const union: SelRange = axis === 'row'
+      ? { r1: dir === 1 ? src.r1 : src.r1 - count, c1: src.c1, r2: dir === 1 ? src.r2 + count : src.r2, c2: src.c2 }
+      : { r1: src.r1, c1: dir === 1 ? src.c1 : src.c1 - count, r2: src.r2, c2: dir === 1 ? src.c2 + count : src.c2 };
+    selExtentRef.current = null;
+    setSelRange(union);
+    setSelKind('cells');
+    setPadR((p) => Math.max(p, union.r2 + PAD_ROWS));
+    setPadC((p) => Math.max(p, union.c2 + PAD_COLS));
+    flash(`Đã fill ${sets.length} ô${ctrl ? ' (Ctrl: đảo lặp↔tăng)' : ''} — Ctrl+Z để hoàn tác`);
+  }, [active, grid, editText, flash, pushHistory]);
+
+  /** mousedown trên fill handle → kéo tới khi thả (mouseup đọc Ctrl để đảo
+   *  lặp↔tăng, như Excel). Listener gắn ngay trong hàm, kiểu startResize. */
+  const startFill = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();  // không bôi đen text khi quét
+    e.stopPropagation(); // không để td bên dưới bắt đầu drag-select
+    const s = liveRef.current;
+    const src = s.selRange ?? (s.sel ? { r1: s.sel.r, c1: s.sel.c, r2: s.sel.r, c2: s.sel.c } : null);
+    if (!src) return;
+    fillDragRef.current = { ...src };
+    fillPrevRef.current = null;
+    setFilling(true);
+    const up = (ev: MouseEvent) => {
+      window.removeEventListener('mouseup', up);
+      const from = fillDragRef.current;
+      const prev = fillPrevRef.current;
+      fillDragRef.current = null;
+      fillPrevRef.current = null;
+      setFilling(false);
+      setFillRange(null);
+      // Nuốt đúng MỘT sự kiện click theo sau mouseup — không thì click rơi vào
+      // ô dưới con trỏ và phá vùng vừa chọn. Click (nếu có) chạy TRƯỚC timeout.
+      pointGuardRef.current = true;
+      setTimeout(() => { pointGuardRef.current = false; }, 0);
+      if (from && prev && prev.count > 0) applyFill(from, prev.axis, prev.dir, prev.count, ev.ctrlKey || ev.metaKey);
+    };
+    window.addEventListener('mouseup', up);
+  }, [applyFill]);
 
   const onGridKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (editing || !sel) return;
     const k = e.key;
-    // Ctrl+B / I / U — đậm/nghiêng/gạch chân như Excel (chỉ .xlsx có style).
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && 'biu'.includes(k.toLowerCase())) {
+    // Undo/redo đứng TRƯỚC guard `!sel`: hoàn tác phải dùng được cả khi chưa
+    // chọn ô nào (ví dụ vừa mở lại tab, hoặc undo xong sel bị đặt lại).
+    // Vẫn nhường khi đang sửa trong ô — lúc đó Ctrl+Z là undo của chính input.
+    if (!editing && (e.ctrlKey || e.metaKey) && !e.altKey && (k === 'z' || k === 'Z')) {
       e.preventDefault();
+      if (e.shiftKey) doRedo(); else doUndo();
+      return;
+    }
+    if (!editing && (e.ctrlKey || e.metaKey) && !e.altKey && (k === 'y' || k === 'Y')) {
+      e.preventDefault();
+      doRedo();
+      return;
+    }
+    if (editing || !sel) return;
+    // Ctrl+C / Ctrl+V KHÔNG bắt ở đây — sự kiện `copy`/`paste` gốc của trình
+    // duyệt (onGridCopy/onGridPaste) mới là chỗ xử lý, đáng tin hơn hẳn.
+    // Ctrl+A chọn toàn bộ vùng có dữ liệu.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (k === 'a' || k === 'A')) {
+      e.preventDefault();
+      selExtentRef.current = null;
+      setSel({ r: 1, c: 1 });
+      setSelRange({ r1: 1, c1: 1, r2: Math.max(usedRows, 1), c2: Math.max(usedCols, 1) });
+      setSelKind('cells');
+      return;
+    }
+    // Ctrl+B / I / U — đậm/nghiêng/gạch chân như Excel (chỉ .xlsx có style).
+    // k.length === 1 để "Backspace"/"Insert"… không lọt vào (includes bắt cả
+    // chữ cái nằm giữa tên phím), và CSV thì nhường phím lại cho trình duyệt.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && k.length === 1 && 'biu'.includes(k.toLowerCase())) {
       if (file?.kind !== 'xlsx') return;
+      e.preventDefault();
       const key = k.toLowerCase() === 'b' ? 'b' : k.toLowerCase() === 'i' ? 'i' : 'u';
       const cur = grid[sel.r - 1]?.[sel.c - 1]?.s;
       const on = cur !== undefined ? styleRef.current[active]?.[cur]?.[key] : undefined;
@@ -928,12 +1801,24 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       e.preventDefault();
       setEditing({ ...sel, seed: k });
     }
-  }, [editing, sel, moveSel, extendSel, clearRange, cellAt, commitEdit, file, grid, active, applyFormat]);
+  }, [editing, sel, moveSel, extendSel, clearRange, cellAt, commitEdit, file, grid, active, applyFormat, usedRows, usedCols, doUndo, doRedo]);
 
   // Giữ ô chọn trong khung nhìn.
   useEffect(() => {
     if (!sel) return;
-    gridRef.current?.querySelector('.sheet-cell.selc')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const el = gridRef.current;
+    if (!el) return;
+    const reveal = () => el.querySelector('.sheet-cell.selc')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (el.querySelector('.sheet-cell.selc')) { reveal(); return; }
+    // Ô chọn nằm ngoài cửa sổ đang vẽ (PageDown, Ctrl+↓…) → cuộn dọc theo
+    // offset tính sẵn trước, đợi cửa sổ vẽ tới rồi mới canh chính xác.
+    const off = rowOffsets;
+    const r = Math.min(sel.r, off.length - 1);
+    const headH = el.querySelector('thead')?.getBoundingClientRect().height ?? 0;
+    if (off[r - 1] < el.scrollTop) el.scrollTop = off[r - 1];
+    else if (headH + off[r] > el.scrollTop + el.clientHeight) el.scrollTop = headH + off[r] - el.clientHeight;
+    requestAnimationFrame(() => requestAnimationFrame(reveal));
+    // rowOffsets cố ý không nằm trong deps: chỉ canh lại khi ô chọn đổi.
   }, [sel]);
 
   /** Commit từ ô đang sửa rồi di chuyển (Enter ↓ / Tab → / mũi tên). */
@@ -966,7 +1851,6 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     input.value = REF_TAIL.test(v) ? v.replace(REF_TAIL, text) : v + text;
     const L = input.value.length;
     input.setSelectionRange(L, L);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** mousedown trên một ô: đang gõ công thức → chèn ref (GIỮ focus input);
@@ -992,12 +1876,33 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
     placeRef(input, refText(r, c));
     pointDragRef.current = { anchor: { r, c }, input };
     setPointRange({ r1: r, c1: c, r2: r, c2: c });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFormulaInput, placeRef, refText, clearRange]);
 
-  /** Quét chuột (giữ phím trái) qua các ô: point mode → nới ref công thức;
-   *  bình thường → nới vùng chọn (Sum/Avg/Count). */
+  /** Quét chuột (giữ phím trái) qua các ô: kéo fill handle → cập nhật preview;
+   *  point mode → nới ref công thức; bình thường → nới vùng chọn (Sum/Avg/Count). */
   const onCellMouseEnter = useCallback((r: number, c: number) => {
+    const fs = fillDragRef.current;
+    if (fs) {
+      // Khoá theo trục vượt XA hơn (như Excel): quá mép dưới/trên là kéo dọc,
+      // quá mép phải/trái là kéo ngang; chuột còn trong vùng nguồn = chưa fill.
+      const dR = r > fs.r2 ? r - fs.r2 : r < fs.r1 ? r - fs.r1 : 0;
+      const dC = c > fs.c2 ? c - fs.c2 : c < fs.c1 ? c - fs.c1 : 0;
+      let prev: { axis: 'row' | 'col'; dir: 1 | -1; count: number } | null = null;
+      if (dR !== 0 && Math.abs(dR) >= Math.abs(dC)) prev = { axis: 'row', dir: dR > 0 ? 1 : -1, count: Math.abs(dR) };
+      else if (dC !== 0) prev = { axis: 'col', dir: dC > 0 ? 1 : -1, count: Math.abs(dC) };
+      fillPrevRef.current = prev;
+      setFillRange(!prev ? null : prev.axis === 'row'
+        ? (prev.dir === 1
+          ? { r1: fs.r2 + 1, c1: fs.c1, r2: fs.r2 + prev.count, c2: fs.c2 }
+          : { r1: fs.r1 - prev.count, c1: fs.c1, r2: fs.r1 - 1, c2: fs.c2 })
+        : (prev.dir === 1
+          ? { r1: fs.r1, c1: fs.c2 + 1, r2: fs.r2, c2: fs.c2 + prev.count }
+          : { r1: fs.r1, c1: fs.c1 - prev.count, r2: fs.r2, c2: fs.c1 - 1 }));
+      // Kéo tới mép → lưới nở thêm, như moveSel.
+      if (r >= dispRows - 1) setPadR(r + PAD_ROWS);
+      if (c >= dispCols - 1) setPadC(c + PAD_COLS);
+      return;
+    }
     const d = pointDragRef.current;
     if (d) {
       const r1 = Math.min(d.anchor.r, r); const r2 = Math.max(d.anchor.r, r);
@@ -1012,10 +1917,10 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       setSelRange(normRange(anchor, { r, c }));
       setSelKind('cells');
     }
-  }, [placeRef, refText]);
+  }, [placeRef, refText, dispRows, dispCols]);
 
   useEffect(() => {
-    const up = () => { pointDragRef.current = null; selDragRef.current = null; };
+    const up = () => { pointDragRef.current = null; selDragRef.current = null; headDragRef.current = null; };
     window.addEventListener('mouseup', up);
     return () => window.removeEventListener('mouseup', up);
   }, []);
@@ -1143,6 +2048,8 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   )).length;
   const totalFormulaHits = ops.flat().filter((o) => o.op === 'set' && o.hadFormula).length;
   const selCell = sel ? cellAt(sel.r, sel.c) : null;
+  /** Ô mang fill handle: góc dưới-phải của vùng chọn (hoặc của ô đang chọn). */
+  const fillAnchor = !editing && ioRange ? { r: ioRange.r2, c: ioRange.c2 } : null;
 
   // ── Ribbon: style hiệu dụng của ô đang chọn + phạm vi áp dụng ──────────────
   const selStyleIdx = sel ? grid[sel.r - 1]?.[sel.c - 1]?.s : undefined;
@@ -1159,31 +2066,145 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
   const rowOpCount = selKind === 'col' ? 1 : rowSpan;
   const colOpCount = selKind === 'row' ? 1 : colSpan;
 
-  /** Đầu dòng/cột: click chọn cả dòng/cột (để định dạng hàng loạt như Excel). */
-  const selectWholeRow = (r: number) => {
-    setSel({ r, c: 1 });
+  /** Đầu dòng/cột: chọn cả dòng/cột (để định dạng — hoặc copy — hàng loạt như
+   *  Excel). Truyền `to` để chọn DẢI liền nhau (kéo chuột hoặc Shift+click). */
+  const selectWholeRow = (r: number, to = r) => {
+    const r1 = Math.min(r, to); const r2 = Math.max(r, to);
+    setSel({ r: r1, c: 1 });
     selExtentRef.current = null;
-    setSelRange({ r1: r, c1: 1, r2: r, c2: Math.max(usedCols, MIN_COLS) });
+    setSelRange({ r1, c1: 1, r2, c2: Math.max(usedCols, MIN_COLS) });
     setSelKind('row');
     gridRef.current?.focus();
   };
-  const selectWholeCol = (c: number) => {
-    setSel({ r: 1, c });
+  const selectWholeCol = (c: number, to = c) => {
+    const c1 = Math.min(c, to); const c2 = Math.max(c, to);
+    setSel({ r: 1, c: c1 });
     selExtentRef.current = null;
-    setSelRange({ r1: 1, c1: c, r2: Math.max(usedRows, MIN_ROWS), c2: c });
+    setSelRange({ r1: 1, c1, r2: Math.max(usedRows, MIN_ROWS), c2 });
     setSelKind('col');
     gridRef.current?.focus();
   };
 
+  /** mousedown trên đầu cột/dòng → bắt đầu kéo chọn nhiều cột/dòng.
+   *  Shift+click nới dải từ cột/dòng đã chọn trước đó (như Excel). */
+  const onHeadMouseDown = (kind: 'col' | 'row', idx: number, e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); // khỏi bôi đen chữ khi kéo qua nhiều đầu cột
+    if (e.shiftKey && selRange && selKind === kind) {
+      const anchor = kind === 'col' ? selRange.c1 : selRange.r1;
+      const far = kind === 'col' ? selRange.c2 : selRange.r2;
+      // Neo là đầu XA so với chỗ vừa bấm → dải nới đúng chiều.
+      const from = idx < anchor ? far : anchor;
+      headDragRef.current = { kind, anchor: from };
+      if (kind === 'col') selectWholeCol(from, idx); else selectWholeRow(from, idx);
+      return;
+    }
+    headDragRef.current = { kind, anchor: idx };
+    if (kind === 'col') selectWholeCol(idx); else selectWholeRow(idx);
+  };
+
+  /** Kéo qua đầu cột/dòng khác → nới dải đang chọn. */
+  const onHeadMouseEnter = (kind: 'col' | 'row', idx: number) => {
+    const d = headDragRef.current;
+    if (!d || d.kind !== kind) return;
+    if (kind === 'col') selectWholeCol(d.anchor, idx); else selectWholeRow(d.anchor, idx);
+  };
+
+  if (univerOn) {
+    return (
+      <div className="panel sheet-panel xl-mode">
+        {extChanged && (
+          <div className="sheet-extbar" role="alert">
+            File đã bị chương trình khác sửa trên đĩa{univerDirty > 0 ? `, trong khi bạn có ${univerDirty} thay đổi chưa lưu — lưu từ app sẽ bị từ chối cho tới khi tải lại` : ''}.
+            <button className="sm" onClick={reload}>↻ Tải lại bản mới</button>
+          </div>
+        )}
+        {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '6px 0' }}>{notice}</div>}
+        {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
+        <UniverPane
+          path={file.path}
+          version={file.mtimeMs}
+          allowWrite={allowWrite}
+          onExit={() => toggleUniver(false)}
+          onOpenExternal={() => void openExternally()}
+          onOpenFile={() => setPickerOpen(true)}
+          onReload={reload}
+          onDirty={setUniverDirty}
+          onSaved={(r) => {
+            // Cập nhật mtime/dung lượng để lần focus kế không tưởng file bị sửa ngoài app.
+            setFile((f) => (f ? { ...f, mtimeMs: r.mtimeMs, sizeBytes: r.sizeBytes } : f));
+            setExtChanged(false);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="panel sheet-panel">
+    /* data-hist: undo/redo stack nằm trong ref (không kích hoạt render), nên
+       histTick là thứ ép render lại để hai nút Hoàn tác/Làm lại bật-tắt đúng. */
+    <div className="panel sheet-panel" data-hist={histTick}>
+      {!cfgCollapsed && (<>
       <div className="sheet-toolbar">
         <span className="picker-cwd small" title={file.path}>{file.path}</span>
         <span className="badge" title={file.kind === 'csv' ? `delimiter "${file.csv?.delimiter}"` : undefined}>
           {file.kind === 'csv' ? 'CSV' : 'XLSX'}
         </span>
         <span className="badge" title="Kích thước file">{fmtBytes(file.sizeBytes)}</span>
+        <button
+          className="ghost sm"
+          onClick={doUndo}
+          disabled={busy || undoRef.current.length === 0}
+          title={`Hoàn tác (Ctrl+Z)${undoRef.current.length ? ` — còn ${undoRef.current.length} bước` : ''}`}
+        >
+          ↶ Hoàn tác
+        </button>
+        <button
+          className="ghost sm"
+          onClick={doRedo}
+          disabled={busy || redoRef.current.length === 0}
+          title={`Làm lại (Ctrl+Y)${redoRef.current.length ? ` — còn ${redoRef.current.length} bước` : ''}`}
+        >
+          ↷ Làm lại
+        </button>
         <button className="ghost sm" onClick={reload} disabled={busy} title="Đọc lại file từ đĩa">↻ Tải lại</button>
+        <button className="ghost sm" onClick={() => void openExternally()} disabled={busy}
+          title="Mở file bằng ứng dụng mặc định (Excel / WPS / LibreOffice…) để làm việc nặng. Sửa xong Lưu bên đó, quay lại đây app tự nạp lại.">
+          ↗ Mở bằng Excel
+        </button>
+        <div className="sheet-fmt-dd" ref={frzRef}>
+          <button className={`ghost sm${frozen ? ' on' : ''}`} disabled={busy} onClick={() => setFrzOpen((o) => !o)}
+            title={frozen
+              ? `Đang cố định ${curFreeze.rows} dòng trên · ${curFreeze.cols} cột trái — bấm để đổi / bỏ`
+              : 'Cố định khung như Excel (Freeze Panes): giữ dòng tiêu đề / cột đầu đứng yên khi cuộn'}>
+            ❄ {frozen ? 'Đang cố định' : 'Cố định'} ▾
+          </button>
+          {frzOpen && (
+            <div className="sheet-fmt-menu" style={{ minWidth: 250 }}>
+              <button onMouseDown={(e) => e.preventDefault()}
+                disabled={!sel || (sel.r <= 1 && sel.c <= 1)}
+                onClick={() => sel && applyFreeze(sel.r - 1, sel.c - 1)}
+                title="Cố định mọi dòng PHÍA TRÊN và mọi cột BÊN TRÁI ô đang chọn">
+                ❄ Cố định khung tại {sel ? `${colLetter(sel.c - 1)}${sel.r}` : 'ô đang chọn'}
+                {sel && (sel.r > 1 || sel.c > 1) ? ` (${sel.r - 1} dòng · ${sel.c - 1} cột)` : ''}
+              </button>
+              <button onMouseDown={(e) => e.preventDefault()} onClick={() => applyFreeze(1, 0)}>▤ Cố định dòng đầu</button>
+              <button onMouseDown={(e) => e.preventDefault()} onClick={() => applyFreeze(0, 1)}>▥ Cố định cột đầu</button>
+              <button onMouseDown={(e) => e.preventDefault()} disabled={!frozen} onClick={() => applyFreeze(0, 0)}>✕ Bỏ cố định</button>
+            </div>
+          )}
+        </div>
+        <button className={`ghost sm${hasTop || hasLeft ? ' on' : ''}`}
+          onClick={() => { if (frozen) applyFreeze(0, 0); toggleSplit(); }} disabled={busy}
+          title={hasTop || hasLeft
+            ? 'Bỏ chia khung (hoặc double-click / kéo thanh chia ra sát mép)'
+            : 'Chia khung như Excel (View → Split): chia ngay trên-trái ô đang chọn thành 2–4 vùng cuộn độc lập — xem hai chỗ xa nhau của sheet cùng lúc. Kéo thanh chia để dời.'}>
+          ⊞ {hasTop || hasLeft ? 'Bỏ chia khung' : 'Chia khung'}
+        </button>
+        <button className="ghost sm" onClick={() => toggleUniver(true)} disabled={busy}
+          title="Thử giao diện bảng tính kiểu Excel (beta): freeze, lọc, sắp xếp, Ctrl+F, file lớn, sửa và lưu.">
+          🧪 Giao diện Excel mới
+        </button>
         <button className="ghost sm" onClick={() => setPickerOpen(true)} disabled={busy} title="Mở file khác">📂 File khác</button>
         <button
           className="ghost sm"
@@ -1260,9 +2281,14 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           </span>
         </div>
       )}
+      </>)}
 
       {/* ── Name box + thanh giá trị (kiểu Excel) ── */}
       <div className="sheet-fxbar">
+        <button className="ghost sm sheet-cfg-toggle" onClick={toggleCfg}
+          title={cfgCollapsed ? 'Mở rộng thanh công cụ + định dạng' : 'Thu gọn thanh công cụ + định dạng để lưới cao hơn'}>
+          {cfgCollapsed ? '▸' : '▾'}
+        </button>
         <span className="sheet-namebox" title="Ô đang chọn">
           {sel ? `${colLetter(sel.c - 1)}${sel.r}` : '—'}
         </span>
@@ -1293,18 +2319,17 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
             </span>
           </>
         )}
-      </div>
-
-      {file.sheets.length > 1 && (
-        <div className="sheet-tabs">
-          {file.sheets.map((s, i) => (
-            <button key={s.name} className={`sheet-tab${i === active ? ' on' : ''}`} onClick={() => switchSheet(i)}>
-              {s.name}
-              {(ops[i]?.length ?? 0) > 0 && <span className="sheet-tab-dot" title={`${ops[i].length} thay đổi`}>●</span>}
+        {cfgCollapsed && (
+          <>
+            <span className="picker-cwd small" style={{ maxWidth: 220 }} title={file.path}>{file.path.split(/[\\/]/).pop()}</span>
+            {dirtyCount > 0 && <span className="badge sheet-dirty-badge">● {dirtyCount}</span>}
+            <button className="sm" onClick={() => setSaveOpen(true)}
+              disabled={busy || dirtyCount === 0 || !allowWrite} title="Lưu (ghi đè, backup .bak trước)">
+              💾 Lưu
             </button>
-          ))}
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
       {sheet?.truncated && (
         <div className="sheet-banner">
@@ -1314,13 +2339,97 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
         </div>
       )}
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '6px 0' }}>{err}</pre>}
+      {extChanged && (
+        <div className="sheet-extbar" role="alert">
+          File đã bị chương trình khác sửa trên đĩa, trong khi bạn đang có {dirtyCount} thay đổi chưa lưu — app không tự ghi đè.
+          <button className="sm" onClick={reload} title="Bỏ các thay đổi chưa lưu và đọc lại bản trên đĩa">↻ Tải lại bản mới</button>
+          <button className="ghost sm" onClick={() => setExtChanged(false)} title="Giữ nguyên. Lưu từ app sẽ bị từ chối cho tới khi tải lại (tránh đè mất bản kia)">Để sau</button>
+        </div>
+      )}
       {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '6px 0' }}>{notice}</div>}
 
       <div
-        className={`sheet-scroll${resizing ? ' resizing' : ''}`}
-        ref={gridRef}
+        className={`sheet-split${hasTop || hasLeft ? ' on' : ''}`}
+        ref={splitWrapRef}
+        style={{
+          gridTemplateColumns: hasLeft ? `${splitX}px ${SPLIT_BAR_PX}px minmax(0, 1fr)` : 'minmax(0, 1fr)',
+          gridTemplateRows: hasTop ? `${splitY}px ${SPLIT_BAR_PX}px minmax(0, 1fr)` : 'minmax(0, 1fr)',
+        }}
+      >
+      {hasLeft && (
+        <div className="sheet-splitbar v" style={{ gridColumn: 2, gridRow: '1 / -1' }}
+          role="separator" aria-orientation="vertical"
+          onMouseDown={(e) => startSplitDrag('x', e)} onDoubleClick={() => removeSplit('x')}
+          title="Kéo để dời chỗ chia · double-click hoặc kéo ra mép để bỏ" />
+      )}
+      {hasTop && (
+        <div className="sheet-splitbar h" style={{ gridRow: 2, gridColumn: '1 / -1' }}
+          role="separator" aria-orientation="horizontal"
+          onMouseDown={(e) => startSplitDrag('y', e)} onDoubleClick={() => removeSplit('y')}
+          title="Kéo để dời chỗ chia · double-click hoặc kéo ra mép để bỏ" />
+      )}
+      {panes.map((pane) => {
+        const { rs, re } = pane.top ? winT : winB;
+        const colHead = pane.top || !hasTop;
+        const rowHead = pane.left || !hasLeft;
+        const isActivePane = pane.id === activePane;
+        // Cố định khung: dòng 1..fr LUÔN được vẽ (cuộn ảo không được bỏ chúng
+        // khi cuộn xa) rồi mới tới đệm + cửa sổ dòng; cột 1..fc dính trái.
+        const fr = Math.min(curFreeze.rows, dispRows);
+        const fc = Math.min(curFreeze.cols, dispCols);
+        const s2 = Math.max(rs, fr + 1);
+        const drawRows: (number | 'pad')[] = [];
+        for (let r = 1; r <= fr; r++) drawRows.push(r);
+        drawRows.push('pad');
+        for (let r = s2; r <= re; r++) drawRows.push(r);
+        const padTopPx = rowOffsets[s2 - 1] - rowOffsets[fr];
+        const padBotPx = rowOffsets[dispRows] - rowOffsets[Math.max(re, fr)];
+        const rowHeadW = rowHead ? ROWHEAD_PX : 0;
+        const colLeft: number[] = [];
+        for (let c = 1, x = rowHeadW; c <= fc; c++) { colLeft[c] = x; x += hiddenColSet.has(c) ? 0 : colPx(c); }
+        const frozenW = fc ? colLeft[fc] + (hiddenColSet.has(fc) ? 0 : colPx(fc)) - rowHeadW : 0;
+        /** style dính cho ô ở vùng cố định (null = ô thường). */
+        const stick = (r: number, c: number): CSSProperties | null => {
+          const inR = r <= fr; const inC = c >= 1 && c <= fc;
+          if (!inR && !inC) return null;
+          return {
+            position: 'sticky',
+            ...(inR ? { top: (colHead ? headH : 0) + rowOffsets[r - 1] } : {}),
+            ...(inC ? { left: colLeft[c] } : {}),
+            zIndex: inR && inC ? 3 : inR ? 2 : 1,
+          };
+        };
+        return (
+      <div
+        key={pane.id}
+        className={[
+          'sheet-scroll', 'sheet-pane',
+          resizing ? 'resizing' : '', filling ? 'filling' : '',
+          // Thanh cuộn như Excel: dọc chỉ ở dải phải, ngang chỉ ở dải dưới.
+          hasLeft && pane.left ? 'no-vbar' : '', hasTop && pane.top ? 'no-hbar' : '',
+          (hasTop || hasLeft) && isActivePane ? 'active' : '',
+        ].filter(Boolean).join(' ')}
+        style={{
+          gridColumn: hasLeft && !pane.left ? 3 : 1,
+          gridRow: hasTop && !pane.top ? 3 : 1,
+          // Ô chọn bị cuộn tới thì canh cho khỏi chui xuống dưới vùng cố định.
+          ...(fr || fc ? { scrollPaddingTop: (colHead ? headH : 0) + rowOffsets[fr], scrollPaddingLeft: rowHeadW + frozenW } : {}),
+        }}
+        ref={(el) => { paneEls.current[pane.id] = el; syncGridRef(); }}
         tabIndex={0}
+        onMouseDownCapture={() => activatePane(pane.id)}
+        onFocus={() => activatePane(pane.id)}
         onKeyDown={onGridKeyDown}
+        onCopy={onGridCopy}
+        onPaste={onGridPaste}
+        onScroll={() => onPaneScroll(pane.id)}
+        onWheel={(e) => {
+          // Chiều bị ẩn thanh cuộn (overflow hidden) thì con lăn không tự cuộn —
+          // tự cộng vào; sự kiện scroll sau đó kéo vùng anh em theo.
+          const el = e.currentTarget;
+          if (hasLeft && pane.left && e.deltaY && !e.shiftKey) el.scrollTop += e.deltaY;
+          if (hasTop && pane.top && (e.deltaX || (e.shiftKey && e.deltaY))) el.scrollLeft += e.deltaX || e.deltaY;
+        }}
       >
         {/* xlsx: nền "giấy trắng" như Excel thật — màu chữ/nền của file vốn
             thiết kế cho giấy trắng, render trên dark theme sẽ chìm nghỉm. */}
@@ -1328,7 +2437,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           {/* Độ rộng cột đang dùng (file + user kéo) — cột ẩn → width 0.
               table-layout fixed cho cả CSV để kéo cột cũng ăn. */}
           <colgroup>
-            <col style={{ width: 44 }} />
+            {rowHead && <col style={{ width: ROWHEAD_PX }} />}
             {Array.from({ length: dispCols }, (_, ci) => (
               // data-c: chỗ neo để lúc kéo sửa thẳng width, khỏi render lại lưới.
               <col key={ci} data-c={ci + 1} style={{ width: hiddenColSet.has(ci + 1) ? 0 : colPx(ci + 1) }} />
@@ -1337,23 +2446,26 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                 thứ khiến nó nuốt phần dư thay vì chia đều cho các cột thật. */}
             <col />
           </colgroup>
-          <thead>
+          {colHead && <thead>
             <tr>
-              <th className="sheet-rownum-h">#</th>
+              {rowHead && <th className="sheet-rownum-h">#</th>}
               {Array.from({ length: dispCols }, (_, ci) => {
                 const c = ci + 1;
                 const inSel = selRange ? c >= selRange.c1 && c <= selRange.c2 : sel?.c === c;
                 return (
                   <th
                     key={ci}
-                    className={`sheet-colhead${inSel ? ' on' : ''}`}
-                    onClick={() => selectWholeCol(c)}
+                    data-c={c}
+                    className={`sheet-colhead${inSel ? ' on' : ''}${c === fc ? ' frz-r' : ''}`}
+                    style={c <= fc ? { left: colLeft[c], zIndex: 4 } : undefined}
+                    onMouseDown={(e) => onHeadMouseDown('col', c, e)}
+                    onMouseEnter={() => onHeadMouseEnter('col', c)}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       if (!selRange || c < selRange.c1 || c > selRange.c2) selectWholeCol(c);
                       setCtx({ x: e.clientX, y: e.clientY, kind: 'col' });
                     }}
-                    title={`Chọn cả cột ${colLetter(ci)} · kéo mép phải để đổi rộng · chuột phải để chèn/xóa cột`}
+                    title={`Chọn cả cột ${colLetter(ci)} (kéo ngang / Shift+click để chọn nhiều cột, Ctrl+C để copy) · kéo mép phải để đổi rộng · chuột phải để chèn/xóa cột`}
                   >
                     {/* Bọc trong div: <th> không neo được con absolute một cách
                         đáng tin (xem .sheet-head-inner trong globals.css). */}
@@ -1378,10 +2490,15 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
               {/* Ô đệm: nuốt chỗ trống bên phải (xem .sheet-grid trong CSS). */}
               <th className="sheet-filler" aria-hidden />
             </tr>
-          </thead>
+          </thead>}
           <tbody>
-            {Array.from({ length: shownRows }, (_, ri) => {
-              const r = ri + 1;
+            {drawRows.map((item) => {
+              if (item === 'pad') {
+                return padTopPx > 0
+                  ? <tr key="vpad-top" className="sheet-vpad" aria-hidden style={{ height: padTopPx }}><td colSpan={dispCols + 2} /></tr>
+                  : null;
+              }
+              const r = item;
               const rh = rowHW[active]?.get(r) ?? null;
               return (
                 <tr
@@ -1392,15 +2509,17 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                     ...(hiddenRowSet.has(r) ? { display: 'none' } : {}),
                   }}
                 >
-                  <th
-                    className={`sheet-rownum${(selRange ? r >= selRange.r1 && r <= selRange.r2 : sel?.r === r) ? ' sel' : ''}`}
-                    onClick={() => selectWholeRow(r)}
+                  {rowHead && <th
+                    className={`sheet-rownum${(selRange ? r >= selRange.r1 && r <= selRange.r2 : sel?.r === r) ? ' sel' : ''}${r === fr ? ' frz-b' : ''}`}
+                    style={r <= fr ? { top: (colHead ? headH : 0) + rowOffsets[r - 1], zIndex: 4 } : undefined}
+                    onMouseDown={(e) => onHeadMouseDown('row', r, e)}
+                    onMouseEnter={() => onHeadMouseEnter('row', r)}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       if (!selRange || r < selRange.r1 || r > selRange.r2) selectWholeRow(r);
                       setCtx({ x: e.clientX, y: e.clientY, kind: 'row' });
                     }}
-                    title={`Chọn cả dòng ${r} · kéo mép dưới để đổi cao · chuột phải để chèn/xóa dòng`}
+                    title={`Chọn cả dòng ${r} (kéo dọc / Shift+click để chọn nhiều dòng, Ctrl+C để copy) · kéo mép dưới để đổi cao · chuột phải để chèn/xóa dòng`}
                   >
                     {r}
                     {/* Tay nắm mép dưới là con TRỰC TIẾP của <th>: căng bằng cặp
@@ -1417,7 +2536,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                       onDoubleClick={(e) => { e.stopPropagation(); autoFitRow(r); }}
                       title={`Kéo để đổi chiều cao dòng ${r} · double-click để về mặc định`}
                     />
-                  </th>
+                  </th>}
                   {Array.from({ length: dispCols }, (_, ci) => {
                     const c = ci + 1;
                     // Ô bị merge che → không render (ô master span qua).
@@ -1425,18 +2544,36 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                     const span = mergeInfo.master.get(`${r}:${c}`);
                     const cell = cellAt(r, c);
                     const isSel = sel?.r === r && sel?.c === c;
-                    const isEditing = editing?.r === r && editing?.c === c;
+                    // Ô đang sửa có thể hiện ở nhiều vùng — chỉ vùng đang hoạt động
+                    // dựng ô nhập, kẻo hai <input autoFocus> giành focus của nhau.
+                    const isEditing = editing?.r === r && editing?.c === c && isActivePane;
                     const inRef = pointRange
                       && r >= pointRange.r1 && r <= pointRange.r2
                       && c >= pointRange.c1 && c <= pointRange.c2;
-                    const inSel = !isSel && selRange
+                    // Ô nằm trong vùng quét (kể cả ô neo) — dùng để vẽ KHUNG BAO
+                    // quanh cả vùng như Excel: mỗi ô ở rìa tự kẻ cạnh của mình.
+                    const inRange = !!selRange
                       && r >= selRange.r1 && r <= selRange.r2
                       && c >= selRange.c1 && c <= selRange.c2;
+                    const inSel = !isSel && inRange;
+                    // Ô merge trải rộng → cạnh phải/dưới tính theo mép XA của nó.
+                    const rEnd = r + (span ? span.rs - 1 : 0);
+                    const cEnd = c + (span ? span.cs - 1 : 0);
+                    // Ô nằm trong preview fill (kéo fill handle) — nền + viền đứt.
+                    const inFill = !!fillRange
+                      && r >= fillRange.r1 && r <= fillRange.r2
+                      && c >= fillRange.c1 && c <= fillRange.c2;
+                    // Fill handle đậu ở ô mà mép dưới-phải trùng góc vùng chọn.
+                    const hasHandle = !!fillAnchor && rEnd === fillAnchor.r && cEnd === fillAnchor.c && !isEditing;
                     return (
                       <td
                         key={c}
                         {...(span ? { rowSpan: span.rs, colSpan: span.cs } : {})}
-                        style={cellCss(cell.s !== undefined ? styleTable?.[cell.s] : undefined, cell.nc)}
+                        style={(() => {
+                          const base = cellCss(cell.s !== undefined ? styleTable?.[cell.s] : undefined, cell.nc);
+                          const st = stick(r, c);
+                          return st ? { ...base, ...st } : base;
+                        })()}
                         className={[
                           'sheet-cell',
                           cell.d ? 'sheet-cell-dirty' : '',
@@ -1444,6 +2581,17 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                           isSel ? 'selc' : '',
                           inRef ? 'inref' : '',
                           inSel ? 'insel' : '',
+                          // Khung bao vùng chọn (chỉ khi quét từ 2 ô trở lên —
+                          // một ô đã có viền .selc riêng rồi).
+                          inRange && !(selRange.r1 === selRange.r2 && selRange.c1 === selRange.c2) ? 'rng' : '',
+                          inRange && r === selRange.r1 ? 'rng-t' : '',
+                          inRange && rEnd === selRange.r2 ? 'rng-b' : '',
+                          inRange && c === selRange.c1 ? 'rng-l' : '',
+                          inRange && cEnd === selRange.c2 ? 'rng-r' : '',
+                          inFill ? 'frng' : '',
+                          r <= fr || c <= fc ? 'frz' : '',
+                          fr && rEnd === fr ? 'frz-b' : '',
+                          fc && cEnd === fc ? 'frz-r' : '',
                         ].filter(Boolean).join(' ')}
                         onMouseDown={(e) => { if (!isEditing) onCellMouseDown(r, c, e); }}
                         onMouseEnter={() => onCellMouseEnter(r, c)}
@@ -1499,6 +2647,18 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                             {/* Ô công thức: chỉ một tam giác bé ở góc, hover mới hiện ƒ
                                 (nội dung là KẾT QUẢ, không phải cái badge). */}
                             {cell.t === 'f' && <span className="sheet-fx-mark" aria-hidden />}
+                            {/* Fill handle: kéo để lặp lại / tịnh tiến dãy như Excel. */}
+                            {hasHandle && (
+                              <span
+                                className="sheet-fill-handle"
+                                role="button"
+                                aria-label="Kéo để tự điền dãy"
+                                onMouseDown={startFill}
+                                onClick={(e) => e.stopPropagation()}
+                                onDoubleClick={(e) => e.stopPropagation()}
+                                title="Kéo để tự điền: 1,2 → 3,4… · text lặp lại · 'Mục 1' → 'Mục 2' · giữ Ctrl khi thả để đổi lặp↔tăng"
+                              />
+                            )}
                           </>
                         )}
                       </td>
@@ -1509,18 +2669,14 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                 </tr>
               );
             })}
+            {padBotPx > 0 && (
+              <tr className="sheet-vpad" aria-hidden style={{ height: padBotPx }}><td colSpan={dispCols + 2} /></tr>
+            )}
           </tbody>
         </table>
-        {dispRows > rowLimit && (
-          <div style={{ padding: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="ghost sm" onClick={() => setRowLimit((l) => l + RENDER_STEP)}>
-              ↓ Hiện thêm {RENDER_STEP} dòng
-            </button>
-            <span className="small" style={{ color: 'var(--muted)' }}>
-              đang hiện {rowLimit.toLocaleString('vi')} / {dispRows.toLocaleString('vi')} dòng
-            </span>
-          </div>
-        )}
+      </div>
+        );
+      })}
       </div>
 
       {/* Đang kéo mép: hiện số đo như Excel ("Độ rộng: 128 px").
@@ -1534,19 +2690,56 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
         </div>
       )}
 
-      {/* Status bar kiểu Excel: quét vùng là thấy Sum/Avg/Count ngay. */}
-      {rangeStats && rangeStats.count > 0 && (
+      {/* Thanh sheet ở ĐÁY như Excel: một hàng, quá nhiều thì cuộn bằng ◀ ▶. */}
+      {file.sheets.length > 1 && (
+        <SheetTabBar
+          names={file.sheets.map((x) => x.name)}
+          dirty={file.sheets.map((_, i) => ops[i]?.length ?? 0)}
+          active={active}
+          onSwitch={switchSheet}
+          tabsRef={tabsRef}
+          scroll={tabScroll}
+          onMeasure={measureTabs}
+          onScroll={scrollTabs}
+        />
+      )}
+
+      {/* Status bar kiểu Excel: có vùng chọn là thấy Sum/Avg/Count + nút Copy.
+          Hiện cả khi vùng chọn TOÀN Ô TRỐNG — nút Copy phải luôn với tới được,
+          và đó cũng là chỗ người dùng nhìn để biết mình đang chọn cái gì. */}
+      {selRange && (
         <div className="sheet-statusbar">
           <span title="Vùng đang chọn">
-            {colLetter(selRange!.c1 - 1)}{selRange!.r1}:{colLetter(selRange!.c2 - 1)}{selRange!.r2}
+            {colLetter(selRange.c1 - 1)}{selRange.r1}:{colLetter(selRange.c2 - 1)}{selRange.r2}
+            {' · '}{selRange.r2 - selRange.r1 + 1}×{selRange.c2 - selRange.c1 + 1}
           </span>
-          {rangeStats.nums > 0 && (
+          {rangeStats && rangeStats.nums > 0 && (
             <>
               <span><b>Sum:</b> {rangeStats.sum.toLocaleString('vi-VN', { maximumFractionDigits: 6 })}</span>
               <span><b>Avg:</b> {rangeStats.avg.toLocaleString('vi-VN', { maximumFractionDigits: 6 })}</span>
             </>
           )}
-          <span><b>Count:</b> {rangeStats.count}</span>
+          {rangeStats && <span><b>Count:</b> {rangeStats.count}</span>}
+          <button
+            className="ghost sm"
+            style={{ marginLeft: 'auto' }}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => void copySelection()}
+            title="Sao chép giá trị vùng đang chọn (Ctrl+C) — dán sang Excel/Sheets giữ nguyên hàng cột"
+          >
+            ⧉ Copy
+          </button>
+          <button
+            className="ghost sm"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => void pasteFromClipboard()}
+            disabled={!allowWrite}
+            title={allowWrite
+              ? 'Dán từ clipboard vào ô đang chọn (Ctrl+V)'
+              : 'Dán cần quyền ghi — đặt OFFICE_ALLOW_WRITE=true trong .env.local'}
+          >
+            ⎘ Dán
+          </button>
         </div>
       )}
 
@@ -1566,6 +2759,15 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
               top: Math.min(ctx.y, Math.max(8, window.innerHeight - 300)),
             }}
           >
+            <button onClick={() => { void copySelection(); setCtx(null); }}>
+              <span aria-hidden>⧉</span> Sao chép {rangeLabel}{' '}
+              <span className="small" style={{ color: 'var(--muted)' }}>Ctrl+C</span>
+            </button>
+            <button disabled={!allowWrite} onClick={() => { void pasteFromClipboard(); setCtx(null); }}>
+              <span aria-hidden>⎘</span> Dán vào {sel ? `${colLetter(sel.c - 1)}${sel.r}` : ''}{' '}
+              <span className="small" style={{ color: 'var(--muted)' }}>Ctrl+V</span>
+            </button>
+            <span className="sheet-ctx-sep" aria-hidden />
             {ctx.kind !== 'col' && (
               <>
                 <button onClick={() => { insertRowAt(fmtRange.r1, rowOpCount); setCtx(null); }}>
@@ -1630,7 +2832,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           title="Chọn file .xlsx / .csv"
           fileExts={['xlsx', 'csv']}
           onPickFile={(p) => {
-            if (dirtyCount > 0 && !window.confirm(`Đang có ${dirtyCount} thay đổi chưa lưu — mở file khác sẽ mất hết. Tiếp tục?`)) return;
+            if (unsaved > 0 && !window.confirm(`Đang có ${unsaved} thay đổi chưa lưu — mở file khác sẽ mất hết. Tiếp tục?`)) return;
             void openPath(p);
           }}
           onPick={() => {}}
@@ -1678,6 +2880,10 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
                 if (n('unmerge') > 0) parts.push(`${n('unmerge')} vùng bỏ trộn`);
                 if (n('colWidth') > 0) parts.push(`${n('colWidth')} cột đổi rộng`);
                 if (n('rowHeight') > 0) parts.push(`${n('rowHeight')} dòng đổi cao`);
+                if (n('freeze') > 0) {
+                  const f = freezeW[i];
+                  parts.push(f && (f.rows || f.cols) ? `cố định ${f.rows} dòng · ${f.cols} cột` : 'bỏ cố định khung');
+                }
                 return <li key={s.name}><b>{s.name}</b>: {parts.join(' · ')}</li>;
               })}
             </ul>
@@ -1708,6 +2914,48 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+/** Thanh sheet ở đáy: một hàng cuộn ngang + ◀ ▶; sheet đang chọn luôn được cuộn vào tầm nhìn. */
+function SheetTabBar({ names, dirty, active, onSwitch, tabsRef, scroll, onMeasure, onScroll }: {
+  names: string[];
+  dirty: number[];
+  active: number;
+  onSwitch: (i: number) => void;
+  tabsRef: React.MutableRefObject<HTMLDivElement | null>;
+  scroll: { left: boolean; right: boolean };
+  onMeasure: () => void;
+  onScroll: (dir: -1 | 1) => void;
+}) {
+  useEffect(() => {
+    const el = tabsRef.current;
+    el?.querySelector<HTMLElement>('.sheet-tab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    onMeasure();
+  }, [active, names.length, tabsRef, onMeasure]);
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(onMeasure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [tabsRef, onMeasure]);
+
+  return (
+    <div className="sheet-tabbar">
+      <button className="ghost sm" disabled={!scroll.left} onClick={() => onScroll(-1)} title="Cuộn sang trái">◀</button>
+      <button className="ghost sm" disabled={!scroll.right} onClick={() => onScroll(1)} title="Cuộn sang phải">▶</button>
+      <div className="sheet-tabs" ref={tabsRef} onScroll={onMeasure}
+        onWheel={(e) => { if (tabsRef.current && Math.abs(e.deltaY) > Math.abs(e.deltaX)) tabsRef.current.scrollLeft += e.deltaY; }}>
+        {names.map((n, i) => (
+          <button key={n} className={`sheet-tab${i === active ? ' on' : ''}`} onClick={() => onSwitch(i)} title={n}>
+            {n}
+            {dirty[i] > 0 && <span className="sheet-tab-dot" title={`${dirty[i]} thay đổi`}>●</span>}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

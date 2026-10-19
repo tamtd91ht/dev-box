@@ -25,7 +25,10 @@ import { automation } from './runtime';
 import { newId } from './engine';
 import { listConnections, peekAddress } from './connections';
 import { MIN_WATCH_INTERVAL_SEC } from './normalize';
-import { breaches, infraBreachEvent, infraRecoveredEvent, probeStack, type ProbeResult } from './sources/infra';
+import { breaches, groupActive, infraBreachEvent, infraRecoveredEvent, infraRateStuckEvent, infraResetEvent, probeStack, type BreachingConsumer, type BreachingHost, type KafkaGroupDetail, type ProbeResult } from './sources/infra';
+import { evaluateRate, isRateWatch, maxWindowSec, pushSample, type RateOutcome, type RateSample } from './rate';
+import { loadHistory, saveHistory } from './rateStore';
+import { metricDef } from './catalog';
 import { trace } from './trace';
 import type { AutomationConfig, InfraWatch } from './types';
 
@@ -43,6 +46,9 @@ const HEARTBEAT_MS = 5 * 60 * 1000;
  */
 const STALE_MS = 15 * 60 * 1000;
 
+/** Nhịp ghi lịch sử rate xuống đĩa. Xem InfraWatcher.flush. */
+const SAVE_EVERY_MS = 60 * 1000;
+
 /** Ký hiệu toán tử cho câu trace "bị X (ngưỡng > 90) che". */
 const OP_SIGN: Record<InfraWatch['op'], string> = {
   gt: '>', gte: '≥', lt: '<', lte: '≤', eq: '=', neq: '≠',
@@ -59,6 +65,14 @@ export interface WatchSample {
   /** Tên watch NẶNG HƠN cùng nhóm đang che watch này (nếu có) — UI hiện 🔇 kèm
    *  lý do, để "sao cái này không kêu" nhìn phát là biết. */
   suppressedBy?: string;
+  /**
+   * CHỈ rate watch: kết quả tính trên mọi cửa sổ.
+   *
+   * UI dựa vào đây để hiện "đang gom dữ liệu (4/12 mẫu)" thay vì một dấu tích
+   * xanh — vì "im vì khoẻ" và "im vì chưa có dữ liệu" nhìn giống hệt nhau, mà
+   * cái sau là đang MÙ.
+   */
+  rate?: RateOutcome;
 }
 
 export interface WatcherSnapshot {
@@ -96,11 +110,31 @@ interface WatchState {
   eligibleAt: number;
   /** Đang bị một watch nặng hơn cùng nhóm che (để UI hiện lý do). */
   suppressedBy: string | null;
+  /** CHỈ rate watch: ring buffer các lần đo, cắt theo cửa sổ dài nhất. */
+  history: RateSample[];
+  /**
+   * CHỈ rate watch: từ lúc nào watch này chưa kết luận được vì thiếu mẫu.
+   *
+   * Pending lâu hơn 2× cửa sổ dài nhất nghĩa là probe đang hỏng liên tục và
+   * watch đã MÙ suốt thời gian đó — mà nhìn từ ngoài thì không khác gì khoẻ.
+   * Mốc này để tự phát một cảnh báo về chính watch đó: watchdog cho watchdog.
+   */
+  pendingSince: number | null;
+  /** Đã kêu "mù quá lâu" rồi thì thôi, khỏi lặp mỗi nhịp poll. */
+  stuckAlerted: boolean;
 }
 
 /** Anything here changing means the old breach history is meaningless. */
 const signature = (w: InfraWatch): string =>
-  [w.stack, w.connectionId, w.metric, w.op, w.threshold].join('|');
+  [
+    w.stack, w.connectionId, w.metric, w.op, w.threshold,
+    // Đổi cấu hình rate = đổi phép đo: lịch sử cũ vẫn dùng lại được (vẫn là
+    // cùng chỉ số trên cùng máy), nhưng kết luận cũ thì không — nên `kind` và
+    // `mode` vào chữ ký, còn danh sách cửa sổ thì KHÔNG: thêm một cửa sổ 12h
+    // mà phải gom lại từ đầu 12 tiếng là đúng kiểu mù âm thầm cần tránh.
+    w.kind ?? 'level',
+    isRateWatch(w) ? w.rate?.mode ?? '' : '',
+  ].join('|');
 
 // ── Chống trùng theo BẬC NGƯỠNG (threshold laddering) ──────────────────────
 //
@@ -134,7 +168,13 @@ const signature = (w: InfraWatch): string =>
 function ladderKey(w: InfraWatch): string | null {
   const dir = w.op === 'gt' || w.op === 'gte' ? 'up' : w.op === 'lt' || w.op === 'lte' ? 'down' : null;
   if (!dir) return null; // eq/neq: không có bậc để so
-  return `${w.stack}|${w.connectionId}|${w.metric}|${dir}`;
+  // `kind` (và với rate là cả `mode`) nằm TRONG khoá vì "đĩa > 90%", "đĩa tăng
+  // 10 điểm/giờ" và "đĩa sẽ đầy trong 6 giờ" là BA câu hỏi khác nhau về cùng
+  // một chỉ số. Để cái thứ nhất che hai cái sau là bịt đúng cảnh báo SỚM —
+  // thứ có giá trị nhất trong cả tính năng rate. Hai watch rate cùng mode,
+  // khác ngưỡng thì VẪN xếp bậc với nhau như thường.
+  const kind = isRateWatch(w) ? `rate:${w.rate?.mode ?? 'points'}` : 'level';
+  return `${w.stack}|${w.connectionId}|${w.metric}|${kind}|${dir}`;
 }
 
 /**
@@ -160,6 +200,205 @@ function stricter(a: InfraWatch, b: InfraWatch): boolean {
 const sec = (n: number | undefined, fallback: number): number =>
   typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : fallback;
 
+/** Chỉ số Kafka cảnh báo THEO GROUP → cần liệt kê đích danh group nào. */
+const KAFKA_GROUP_ALERT_METRICS = new Set([
+  'maxConsumerLag',
+  'totalConsumerLag',
+  'stalledGroups',
+  'maxStalledSec',
+  'deadLagGroups',
+  'emptyGroups',
+  'rebalancingGroups',
+  'lagGroupsUnknown',
+  'undescribedGroups',
+]);
+
+/** Chỉ số Kafka cảnh báo THEO TOPIC → cần liệt kê topic bị ảnh hưởng. */
+const KAFKA_TOPIC_ALERT_METRICS = new Set(['underReplicated', 'offline']);
+
+/**
+ * Group này có đang ĐỨNG IM không.
+ *
+ * Chỉ cần `stalledSec !== null`: chính nó đã có nghĩa "có message chờ mà chưa
+ * commit được" (xem kafkaClient.consumerLag). Ghép thêm `lag > 0` đo tại thời
+ * điểm KHÁC là cách cũ, và nó biến 3 message vừa đến thành cảnh báo treo.
+ */
+const isStalled = (g: { stalledSec: number | null }): boolean => g.stalledSec !== null;
+const isRebalancing = (state: string): boolean => /rebalanc|preparing/i.test(state);
+
+/**
+ * Chọn các consumer group LIÊN QUAN tới cảnh báo, tuỳ chỉ số — đích danh cái
+ * nào, KHÔNG phải cái nặng nhất. Trả về danh sách để metadata + tin nhắn nêu tên:
+ *
+ *   maxConsumerLag        → group có lag {op} ngưỡng
+ *   totalConsumerLag      → mọi group còn lag (đóng góp vào tổng)
+ *   stalledGroups         → group đang đứng im
+ *   maxStalledSec         → group đứng im đủ {op} ngưỡng giây
+ *   deadLagGroups         → group có lag nhưng KHÔNG consumer (AKHQ vàng)
+ *   emptyGroups           → group mất consumer (0 member mà có commit)
+ *   rebalancingGroups     → group đang rebalance
+ *   lag/undescribed       → group không đọc được lag / describe
+ *
+ * Mỗi group kèm nhãn hoạt động (active/state/members) để cảnh báo phân biệt
+ * 🟢 còn tiêu thụ / 🟡 không consumer — trả lời "consumer nào không tiêu thụ".
+ */
+function offendingConsumers(watch: InfraWatch, res: ProbeResult): BreachingConsumer[] | undefined {
+  if (watch.stack !== 'kafka' || !KAFKA_GROUP_ALERT_METRICS.has(watch.metric)) return undefined;
+  const groups = res.kafkaGroups;
+  if (!groups?.length) return undefined;
+
+  const withTopic = (g: KafkaGroupDetail) => (g.worstTopic ? { topic: g.worstTopic, topicLag: g.worstTopicLag } : {});
+  // Nhãn AKHQ vàng/xanh: active=true (🟢) hoặc kèm state khi không active (🟡).
+  const act = (g: KafkaGroupDetail) => {
+    const active = groupActive(g.state, g.members);
+    return { active, members: g.members, ...(active ? {} : { state: g.state }) };
+  };
+  const lagItem = (g: KafkaGroupDetail): BreachingConsumer => ({ group: g.groupId, lag: g.lag, ...withTopic(g), ...act(g) });
+  // Ca đứng im: kèm ĐÍCH DANH partition đang tắc — "group treo 20 phút" mà không
+  // nói tắc ở đâu thì người trực vẫn phải đi dò từng partition.
+  const stalledItem = (g: KafkaGroupDetail): BreachingConsumer => ({
+    group: g.groupId, lag: g.lag, stalledSec: g.stalledSec ?? 0,
+    ...(g.stalledAt ? { stalledAt: g.stalledAt } : {}),
+    // Lag của riêng partition tắc + lúc message đó được ghi: hai dữ kiện phân
+    // biệt "một message kẹt cứng" với "cả group đang tụt hậu".
+    ...(g.stalledLag !== undefined ? { stalledLag: g.stalledLag } : {}),
+    ...(g.stalledSince !== undefined ? { stalledSince: g.stalledSince } : {}),
+    ...withTopic(g), ...act(g),
+  });
+
+  switch (watch.metric) {
+    case 'maxConsumerLag':
+      return groups
+        .filter((g) => !g.error && breaches(g.lag, watch.op, watch.threshold))
+        .sort((a, b) => b.lag - a.lag)
+        .map(lagItem);
+    case 'totalConsumerLag':
+      return groups.filter((g) => !g.error && g.lag > 0).sort((a, b) => b.lag - a.lag).map(lagItem);
+    case 'stalledGroups':
+      return groups
+        .filter((g) => !g.error && isStalled(g))
+        .sort((a, b) => (b.stalledSec ?? 0) - (a.stalledSec ?? 0))
+        .map(stalledItem);
+    case 'maxStalledSec':
+      return groups
+        .filter((g) => !g.error && isStalled(g) && breaches(g.stalledSec ?? 0, watch.op, watch.threshold))
+        .sort((a, b) => (b.stalledSec ?? 0) - (a.stalledSec ?? 0))
+        .map(stalledItem);
+    case 'deadLagGroups':
+      return groups
+        .filter((g) => !g.error && g.described && g.members === 0 && g.lag > 0)
+        .sort((a, b) => b.lag - a.lag)
+        .map((g) => ({ group: g.groupId, lag: g.lag, ...withTopic(g), active: false, members: 0, state: g.state }));
+    case 'emptyGroups':
+      return groups
+        .filter((g) => !g.error && g.described && g.members === 0 && g.partitions > 0)
+        .map((g) => ({ group: g.groupId, lag: g.lag, ...withTopic(g), active: false, members: 0, state: g.state }));
+    case 'rebalancingGroups':
+      return groups
+        .filter((g) => !g.error && g.described && isRebalancing(g.state))
+        .map((g) => ({ group: g.groupId, lag: g.lag, active: false, members: g.members, state: g.state }));
+    case 'lagGroupsUnknown':
+      return groups.filter((g) => g.error).map((g) => ({ group: g.groupId, lag: 0, state: 'lag không đọc được' }));
+    case 'undescribedGroups':
+      return groups.filter((g) => !g.described).map((g) => ({ group: g.groupId, lag: g.lag, state: 'không describe được' }));
+    default:
+      return undefined;
+  }
+}
+
+/** Topic bị ảnh hưởng cho cảnh báo theo topic (under-replicated/offline). */
+function offendingTopics(watch: InfraWatch, res: ProbeResult): string[] | undefined {
+  if (watch.stack !== 'kafka' || !KAFKA_TOPIC_ALERT_METRICS.has(watch.metric)) return undefined;
+  return res.affectedTopics?.length ? res.affectedTopics : undefined;
+}
+
+/** Chỉ số Kafka cảnh báo THEO HOST broker → cần liệt kê đích danh máy nào. */
+const KAFKA_HOST_ALERT_METRICS = new Set([
+  'hostDiskUsedPct',
+  'hostDiskFreeGb',
+  'hostMemUsedPct',
+  'hostCpuPct',
+  'hostLoad1PerCore',
+  'hostsDown',
+]);
+
+/**
+ * Chọn các HOST broker liên quan tới cảnh báo, tuỳ chỉ số. Cùng nguyên tắc với
+ * offendingConsumers: nêu MỌI máy thoả điều kiện, không chỉ máy tệ nhất — "đĩa
+ * 92%" mà không biết máy nào thì người trực vẫn phải đi dò từng broker.
+ *
+ * Chỉ đính field có nghĩa với chỉ số đang báo, để tin nhắn không lẫn số liệu
+ * không liên quan (cảnh báo đĩa thì không cần biết CPU bao nhiêu).
+ */
+function offendingHosts(watch: InfraWatch, res: ProbeResult): BreachingHost[] | undefined {
+  if (watch.stack !== 'kafka' || !KAFKA_HOST_ALERT_METRICS.has(watch.metric)) return undefined;
+  const hosts = res.kafkaHosts;
+  if (!hosts?.length) return undefined;
+
+  // Mất số liệu là ca riêng: máy không trả lời thì không có con số nào để so.
+  if (watch.metric === 'hostsDown') {
+    const down = hosts.filter((h) => !h.reachable);
+    return down.length
+      ? down.map((h) => ({ host: h.host, unreachable: true, error: h.error }))
+      : undefined;
+  }
+
+  const live = hosts.filter((h) => h.reachable);
+  // Đĩa: kèm cả % lẫn GB còn trống lẫn mount, bất kể watch dùng chỉ số nào
+  // trong hai — người đọc cần cả ba để quyết định có phải đi dọn ngay không.
+  const diskItem = (h: (typeof live)[number]): BreachingHost => ({
+    host: h.host,
+    ...(h.diskUsedPct !== null ? { diskUsedPct: h.diskUsedPct } : {}),
+    ...(h.diskFreeGb !== null ? { diskFreeGb: h.diskFreeGb } : {}),
+    ...(h.worstMount ? { mount: h.worstMount } : {}),
+  });
+
+  switch (watch.metric) {
+    case 'hostDiskUsedPct':
+      return pick(live.filter((h) => h.diskUsedPct !== null && breaches(h.diskUsedPct, watch.op, watch.threshold))
+        .sort((a, b) => (b.diskUsedPct ?? 0) - (a.diskUsedPct ?? 0))
+        .map(diskItem));
+    case 'hostDiskFreeGb':
+      return pick(live.filter((h) => h.diskFreeGb !== null && breaches(h.diskFreeGb, watch.op, watch.threshold))
+        .sort((a, b) => (a.diskFreeGb ?? 0) - (b.diskFreeGb ?? 0))
+        .map(diskItem));
+    case 'hostMemUsedPct':
+      return pick(live.filter((h) => h.memUsedPct !== null && breaches(h.memUsedPct, watch.op, watch.threshold))
+        .sort((a, b) => (b.memUsedPct ?? 0) - (a.memUsedPct ?? 0))
+        .map((h) => ({ host: h.host, memUsedPct: h.memUsedPct ?? undefined })));
+    case 'hostCpuPct':
+      return pick(live.filter((h) => h.cpuPct !== null && breaches(h.cpuPct, watch.op, watch.threshold))
+        .sort((a, b) => (b.cpuPct ?? 0) - (a.cpuPct ?? 0))
+        .map((h) => ({ host: h.host, cpuPct: h.cpuPct ?? undefined })));
+    case 'hostLoad1PerCore':
+      return pick(live.filter((h) => h.load1PerCore !== null && breaches(h.load1PerCore, watch.op, watch.threshold))
+        .sort((a, b) => (b.load1PerCore ?? 0) - (a.load1PerCore ?? 0))
+        .map((h) => ({ host: h.host, load1PerCore: h.load1PerCore ?? undefined })));
+    default:
+      return undefined;
+  }
+}
+
+/** Danh sách rỗng → undefined, để fields host vắng mặt thay vì hiện dòng trống. */
+const pick = (xs: BreachingHost[]): BreachingHost[] | undefined => (xs.length ? xs : undefined);
+
+/**
+ * Phần CÒN TRỐNG tại lần đo này — nguyên liệu của ETA.
+ *
+ * Lấy từ cặp `absolute` mà catalog đã khai sẵn cho mọi chỉ số có trần (đĩa,
+ * RAM, heap, connections, fd), và lấy từ CHÍNH MetricMap của lần đo này nên
+ * used/total luôn cùng thời điểm với giá trị đang xét. Không có cặp đó thì
+ * không có ETA — và evalWindow coi ETA vắng mặt là "không cạn", tức không báo.
+ */
+function leftOf(watch: InfraWatch, res: ProbeResult): { left?: number } {
+  const abs = metricDef(watch.stack, watch.metric)?.absolute;
+  if (!abs) return {};
+  const used = res.metrics[abs.used];
+  const total = res.metrics[abs.total];
+  if (typeof used !== 'number' || typeof total !== 'number' || total <= 0) return {};
+  return { left: Math.max(0, total - used) };
+}
+
 class InfraWatcher {
   private timer: ReturnType<typeof setInterval> | null = null;
   private states = new Map<string, WatchState>();
@@ -173,6 +412,10 @@ class InfraWatcher {
   /** Danh tính của watcher NÀY trong cuộc đua lease — mỗi cửa sổ một id. */
   private holderId = newId('run');
   private leader = false;
+  /** Lịch sử rate đọc từ đĩa lúc khởi động, chờ reconcile phát cho từng watch. */
+  private loaded: Record<string, RateSample[]> = {};
+  /** Lần cuối ghi lịch sử xuống đĩa (mọi watch một lượt). */
+  private lastSave = 0;
 
   getSnapshot = (): WatcherSnapshot => this.snap;
 
@@ -217,7 +460,13 @@ class InfraWatcher {
     if (this.started) return;
     this.started = true;
     this.unsubConfig = automation.subscribe(() => this.reconcile());
-    void automation.load().then(() => this.reconcile());
+    // Nạp lịch sử TRƯỚC lần reconcile đầu: rate watch nhận lại buffer cũ ngay
+    // từ nhịp poll đầu tiên thay vì mù trọn một cửa sổ sau mỗi lần mở app.
+    // Lỗi đọc trả về map rỗng nên chuỗi này không bao giờ chặn watcher.
+    void Promise.all([automation.load(), loadHistory()]).then(([, hist]) => {
+      this.loaded = hist;
+      this.reconcile();
+    });
   }
 
   stop(): void {
@@ -264,6 +513,11 @@ class InfraWatcher {
           eligible: false,
           eligibleAt: 0,
           suppressedBy: null,
+          // Lịch sử đã nạp từ đĩa (nếu có) — nhờ vậy watch không phải gom lại
+          // từ đầu sau khi mở app lại hay sau khi đổi leader.
+          history: this.loaded[w.id] ?? [],
+          pendingSince: null,
+          stuckAlerted: false,
         });
       } else if (st.sig !== signature(w)) {
         st.sig = signature(w);
@@ -274,6 +528,11 @@ class InfraWatcher {
         st.eligible = false;
         st.eligibleAt = 0;
         st.suppressedBy = null;
+        // Chữ ký đổi = đang đo thứ KHÁC (đổi máy, đổi chỉ số, đổi chế độ rate).
+        // Mẫu cũ thuộc về phép đo cũ, giữ lại là trộn hai thứ không liên quan.
+        st.history = [];
+        st.pendingSince = null;
+        st.stuckAlerted = false;
       }
     }
 
@@ -300,6 +559,10 @@ class InfraWatcher {
     const now = Date.now();
     const watches = this.activeWatches(automation.current);
     this.heartbeat(now, watches.length);
+    // Ghi ở TICK chứ không phải trong nhánh rate của poll(): nếu mọi rate watch
+    // đang lỗi probe thì poll() thoát sớm và buffer sẽ không bao giờ được lưu —
+    // đúng lúc cần nó nhất, vì đó là lúc app dễ bị đóng đi mở lại nhất.
+    void this.flush(now);
     await Promise.all(
       watches.map(async (w) => {
         const st = this.states.get(w.id);
@@ -341,7 +604,7 @@ class InfraWatcher {
   private async poll(watch: InfraWatch, st: WatchState): Promise<void> {
     const cfg = automation.current.trace;
     const t0 = Date.now();
-    const res = await probeStack(watch.stack, watch.connectionId, watch.metric);
+    const res = await probeStack(watch.stack, watch.connectionId, watch.metric, { groupFilter: watch.groupFilter });
     const tookMs = Date.now() - t0;
     const value = res.metrics[watch.metric];
     const has = typeof value === 'number' && Number.isFinite(value);
@@ -370,8 +633,60 @@ class InfraWatcher {
       return;
     }
 
-    const breaching = breaches(value, watch.op, watch.threshold);
     const now = res.at;
+
+    // ── Rate watch: giá trị vừa đo là MỘT MẪU, không phải một kết luận ────
+    //
+    // Toàn bộ khác biệt của rate nằm ở chỗ này: thay vì so `value` với ngưỡng,
+    // ta đẩy nó vào ring buffer rồi hỏi "trong các cửa sổ đã khai, có cửa sổ
+    // nào đang vượt không". Mọi thứ phía sau — bậc ngưỡng, forSec, hồi phục,
+    // rule, action — không đổi một dòng, vì chúng chỉ cần biết breaching.
+    let rateOut: RateOutcome | null = null;
+    if (isRateWatch(watch) && watch.rate) {
+      const r = watch.rate;
+      const sample: RateSample = { at: now, value, ...leftOf(watch, res) };
+      const pushed = pushSample(st.history, sample, r, watch.everySec);
+      st.history = pushed.buf;
+
+      if (pushed.reset) {
+        // Redis restart / xoay log / dọn đĩa → mốc cũ bị vứt. KHÔNG im lặng:
+        // bản thân việc chỉ số tụt sâu lúc 3h sáng là tin đáng biết, và nếu
+        // không nói ra thì watch đột nhiên "đang gom dữ liệu" mà không ai
+        // hiểu vì sao.
+        st.pendingSince = now;
+        st.stuckAlerted = false;
+        trace(cfg, { ...base, ts: now, kind: 'ok', value, note: 'chỉ số tụt sâu — đã đặt lại mốc đo (restart?)' });
+        if (watch.notifyRecovery !== false) {
+          void automation.submit(
+            infraResetEvent(watch, value, now, { address: peekAddress(watch.stack, watch.connectionId), metrics: res.metrics }),
+          );
+        }
+      }
+
+      rateOut = evaluateRate(st.history, { op: watch.op, everySec: watch.everySec, rate: r }, now);
+
+      if (rateOut.pending) {
+        // CHƯA KẾT LUẬN ĐƯỢC — khác hẳn "không vượt ngưỡng". Không phát cảnh
+        // báo, không giữ tư cách che watch khác, và UI phải hiện rõ là đang
+        // gom dữ liệu chứ không phải đang khoẻ.
+        st.eligible = false;
+        st.eligibleAt = now;
+        if (st.pendingSince === null) st.pendingSince = now;
+        this.checkStuck(watch, st, now, rateOut);
+        trace(cfg, {
+          ...base, ts: now, kind: 'ok', value,
+          note: `đang gom dữ liệu (${rateOut.samples} mẫu, cần thêm ~${Math.round(rateOut.readyInSec)}s)`,
+        });
+        this.sample(watch.id, {
+          at: now, value, breaching: false, firing: st.firing, error: res.error, rate: rateOut,
+        });
+        return;
+      }
+      st.pendingSince = null;
+      st.stuckAlerted = false;
+    }
+
+    const breaching = rateOut ? rateOut.breaching : breaches(value, watch.op, watch.threshold);
 
     if (breaching) {
       if (st.breachSince === null) st.breachSince = now;
@@ -407,8 +722,24 @@ class InfraWatcher {
               address: peekAddress(watch.stack, watch.connectionId),
               // Cả MetricMap của CHÍNH lần đo này — cho fields tuyệt đối (absUsed…).
               metrics: res.metrics,
+              // Rate watch: cửa sổ nào vượt, từ bao nhiêu lên bao nhiêu, còn
+              // bao lâu thì cạn — cảnh báo phải nói được những thứ đó.
+              rate: rateOut ?? undefined,
               // "Vì sao là bậc này" — rỗng khi watch vốn đã là bậc cao nhất.
               ladderAbove: this.quieterAbove(watch),
+              // Kafka: đích danh group liên quan (lag/đứng im/mất member…) và
+              // topic bị ảnh hưởng (under-replicated/offline) — tuỳ chỉ số.
+              breachingConsumers: offendingConsumers(watch, res),
+              affectedTopics: offendingTopics(watch, res),
+              // Kafka: đích danh HOST broker liên quan (đĩa/RAM/CPU/mất exporter).
+              breachingHosts: offendingHosts(watch, res),
+              // Kafka MẤT KẾT NỐI: bắt tay TCP từng seed broker (probeStack chỉ
+              // đo khi cụm không trả lời) — node nào chết, IP nào, lỗi gì.
+              brokerReach: res.brokerReach,
+              // Cụm có nói được giao thức Kafka không + advertised.listeners.
+              kafkaProtocol: res.kafkaProtocol,
+              // DevBox phân giải hostname (seed/advertised) bằng DNS nào, ra IP gì.
+              kafkaDns: res.kafkaDns,
             }),
           );
         }
@@ -446,6 +777,7 @@ class InfraWatcher {
             infraRecoveredEvent(watch, value, now, downSec, {
               address: peekAddress(watch.stack, watch.connectionId),
               metrics: res.metrics,
+              rate: rateOut ?? undefined,
             }),
           );
         }
@@ -461,7 +793,52 @@ class InfraWatcher {
     this.sample(watch.id, {
       at: now, value, breaching, firing: st.firing, error: res.error,
       suppressedBy: st.suppressedBy ?? undefined,
+      rate: rateOut ?? undefined,
     });
+  }
+
+  /**
+   * Rate watch nằm "đang gom dữ liệu" quá lâu = đang MÙ.
+   *
+   * Watchdog cho watchdog. Nếu một rate watch không kết luận được suốt hơn hai
+   * lần cửa sổ dài nhất, nghĩa là probe hỏng liên tục (mạng, credentials, chỉ
+   * số biến mất khỏi probe) — và nhìn từ UI thì nó vẫn "đang chạy", vẫn xanh.
+   * Đúng kiểu im lặng nguy hiểm mà tính năng này sinh ra để chống, nên chính
+   * nó phải kêu lên. Kêu MỘT LẦN cho mỗi đợt mù, không lặp mỗi nhịp poll.
+   */
+  private checkStuck(watch: InfraWatch, st: WatchState, now: number, out: RateOutcome): void {
+    if (st.stuckAlerted || st.pendingSince === null) return;
+    const limit = Math.max(60, maxWindowSec(watch.rate) * 2) * 1000;
+    if (now - st.pendingSince < limit) return;
+    st.stuckAlerted = true;
+    const blindSec = Math.round((now - st.pendingSince) / 1000);
+    trace(automation.current.trace, {
+      watchId: watch.id, watch: watch.name, stack: watch.stack,
+      instance: watch.connectionLabel || watch.connectionId, metric: watch.metric,
+      op: watch.op, threshold: watch.threshold, ts: now, kind: 'error',
+      note: `mù ${blindSec}s — chưa đủ mẫu để kết luận (${out.samples} mẫu)`,
+    });
+    void automation.submit(
+      infraRateStuckEvent(watch, now, blindSec, out.samples, {
+        address: peekAddress(watch.stack, watch.connectionId),
+      }),
+    );
+  }
+
+  /**
+   * Ghi lịch sử rate xuống đĩa — THƯA, không phải mỗi lần poll.
+   *
+   * Mất tối đa một phút dữ liệu khi app tắt đột ngột là đánh đổi rẻ so với
+   * việc ghi file ở mọi nhịp poll của 153 watch. Never throws (xem rateStore).
+   */
+  private async flush(now: number): Promise<void> {
+    if (now - this.lastSave < SAVE_EVERY_MS) return;
+    this.lastSave = now;
+    const out: Record<string, RateSample[]> = {};
+    for (const [id, st] of this.states) {
+      if (st.history.length) out[id] = st.history;
+    }
+    await saveHistory(out);
   }
 
   /**
@@ -531,9 +908,10 @@ class InfraWatcher {
     this.emit();
   }
 
-  /** One-off probe for the editor's "Thử ngay" button — touches no state. */
-  probe(watch: Pick<InfraWatch, 'stack' | 'connectionId'>): Promise<ProbeResult> {
-    return probeStack(watch.stack, watch.connectionId);
+  /** One-off probe for the editor's "Thử ngay" button — touches no state.
+   *  Áp cả groupFilter để "Thử ngay" hiện đúng giá trị đã giới hạn theo group. */
+  probe(watch: Pick<InfraWatch, 'stack' | 'connectionId' | 'groupFilter'>): Promise<ProbeResult> {
+    return probeStack(watch.stack, watch.connectionId, undefined, { groupFilter: watch.groupFilter });
   }
 }
 

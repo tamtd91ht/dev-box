@@ -233,6 +233,20 @@ export const mAccountAddOAuth = (email: string, meta: { label?: string; title?: 
 /** URL consent Google kèm scope mail (XOAUTH2 cho IMAP/SMTP). */
 export const mGoogleAuthUrl = (email?: string) =>
   mailAction<{ url: string }>('googleAuthUrl', { email });
+/** LIÊN KẾT LẠI hòm thư mật khẩu: đặt lại thông tin đăng nhập, giữ nguyên
+ *  chữ ký/tên/cấu hình. Host/port bỏ trống = giữ cái đang có. */
+export interface AccountRelinkInput {
+  pass: string;
+  user?: string;
+  imapHost?: string;
+  imapPort?: number;
+  imapSecure?: boolean;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpSecure?: boolean;
+}
+export const mAccountRelink = (id: string, input: AccountRelinkInput) =>
+  mailAction<MailAccountPub[]>('accountRelink', { id, ...input });
 /** Đổi tên tài khoản. title = tên quản lý trên tab; label = tên người gửi (From). */
 export const mAccountRename = (id: string, patch: { title?: string; label?: string }) =>
   mailAction<MailAccountPub[]>('accountRename', { id, ...patch });
@@ -259,6 +273,12 @@ export const mSend = (input: SendInput) => mailAction<{ messageId: string }>('se
 /** Xóa mail theo UID (move Trash; đang ở Trash → xóa vĩnh viễn) — không đọc nội dung. */
 export const mDelete = (accountId: string, path: string, uid: number) =>
   mailAction<{ mode: 'trash' | 'purged'; trashPath?: string }>('delete', { accountId, path, uid });
+/** Đánh dấu spam theo UID (move vào folder \Junk) — không đọc nội dung. */
+export const mSpam = (accountId: string, path: string, uid: number) =>
+  mailAction<{ junkPath: string }>('spam', { accountId, path, uid });
+/** Đánh dấu đã đọc các UID cụ thể (mở chuỗi hội thoại → đọc cả chuỗi). */
+export const mMarkSeen = (accountId: string, path: string, uids: number[]) =>
+  mailAction<{ marked: number }>('markSeen', { accountId, path, uids });
 /** Đánh dấu toàn bộ mail trong folder là đã đọc. */
 export const mMarkAllSeen = (accountId: string, path: string) =>
   mailAction<{ marked: number }>('markAllSeen', { accountId, path });

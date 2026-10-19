@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   mAccounts, mAccountAdd, mAccountAddOAuth, mGoogleAuthUrl, mAccountRemove, mAccountRename,
-  mFolders, mList, mMessage, mNestedMessage, mSend, mDelete, mMarkAllSeen, mContacts, mContactAdd,
+  mFolders, mList, mMessage, mNestedMessage, mSend, mDelete, mSpam, mMarkSeen, mMarkAllSeen, mContacts, mContactAdd,
   mSignatureSet, mSignatureFetch,
   attachmentUrl, folderIcon, fmtAddr, fmtSize, accTitle, groupThreads,
   type MailAccountPub, type MailFolder, type MailListItem, type MailDetail, type AccountAddInput,
@@ -23,16 +23,20 @@ import {
   type MailThread, type ZimbraSignature,
 } from '@/lib/mail';
 import MailBody, { textToHtml } from './mail/MailBody';
+import ComposePreview from './mail/ComposePreview';
 import RichTextEditor, { htmlToText } from './mail/RichTextEditor';
 import MailErrorPanel from './MailErrorPanel';
+import RelinkModal from './mail/RelinkModal';
 import MailCalendar from './MailCalendar';
 import GoogleAuthWindow from './GoogleAuthWindow';
 import { fmtRel } from '@/lib/google';
 import PasswordInput from './PasswordInput';
-import { MAIL_REFRESH_EVENT } from './MailWatchHost';
+import { MAIL_REFRESH_EVENT, MAIL_NEW_EVENT, MAIL_SNAPSHOT_EVENT } from './MailWatchHost';
 import { MAIL_MUTED_EVENT, loadMutedMail, toggleMutedMail } from '@/lib/mailMuted';
 import { useSplit } from '@/lib/useSplit';
+import { useComposeSize } from '@/lib/useComposeSize';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
 /** Báo cho MailWatchHost đếm lại số mail chưa đọc NGAY (badge tab Mail). */
 function pingMailWatch() {
@@ -440,6 +444,17 @@ function Composer({ account, draft, onClose, onSent }: {
   const [contacts, setContacts] = useState<MailContact[]>([]);
   useEffect(() => { mContacts().then(setContacts).catch(() => {}); }, []);
 
+  /**
+   * Kích thước cửa sổ soạn thư — xem hook useComposeSize.
+   *
+   * Khung 720×88vh cố định là quá chật cho mail có bảng/ảnh: gõ vài dòng đã
+   * phải cuộn, mà cuộn thì mất luôn phần trích dẫn đang cần đối chiếu.
+   */
+  const size = useComposeSize();
+
+  /** Xem trước ĐÚNG như người nhận thấy — xem ghi chú ở ComposePreview. */
+  const [preview, setPreview] = useState(false);
+
   const isReply = !!draft.inReplyTo;
   const isForward = (draft.forwardAttachments?.length ?? 0) > 0 || /^fwd?:/i.test(draft.subject);
 
@@ -515,7 +530,8 @@ function Composer({ account, draft, onClose, onSent }: {
 
   return (
     <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && !busy && onClose()}>
-      <div className="mail-compose"
+      <div className={`mail-compose mc-sizable${size.maximized ? ' is-max' : ''}${size.resizing ? ' is-resizing' : ''}`}
+        style={size.style}
         onDragOver={(e) => { e.preventDefault(); }}
         onDrop={(e) => { e.preventDefault(); void addFiles(e.dataTransfer.files); }}>
         {/* Header gradient — phân biệt reply / soạn mới */}
@@ -523,6 +539,14 @@ function Composer({ account, draft, onClose, onSent }: {
           <span className="mc-head-ico" aria-hidden>{isReply ? '↩' : isForward ? '↳' : '✉'}</span>
           <span className="mc-head-title">{isReply ? 'Trả lời' : isForward ? 'Chuyển tiếp' : 'Thư mới'}</span>
           <span className="mc-head-from">từ {account.email}</span>
+          <span style={{ flex: 1 }} />
+          {/* Ô vuông cửa sổ kiểu window manager: ▢ = phóng to, ❐ = thu về khổ
+              cũ. Đặt cạnh ✕ đúng thứ tự quen thuộc của thanh tiêu đề. */}
+          <button className="mc-x" onClick={size.toggleMax}
+            aria-pressed={size.maximized}
+            title={size.maximized ? 'Thu nhỏ về khổ cũ' : 'Phóng to gần hết màn hình'}>
+            {size.maximized ? '❐' : '▢'}
+          </button>
           <button className="mc-x" onClick={onClose} disabled={busy} title="Đóng">✕</button>
         </div>
 
@@ -548,16 +572,30 @@ function Composer({ account, draft, onClose, onSent }: {
         </div>
 
         <div className="mc-body-wrap">
-          <RichTextEditor
-            value={body}
-            onChange={setBody}
-            onSubmit={() => { if (to.trim() && !busy) void send(); }}
-            placeholder="Viết nội dung… (kéo-thả file vào đây để đính kèm · Ctrl+Enter gửi)"
-            minHeight={240}
-            // Soạn mới: con trỏ vào ngay chỗ trống phía trên chữ ký. Trả lời thì
-            // ô "Tới" đã điền sẵn nên cũng nên nhảy thẳng vào chỗ gõ.
-            autoFocusTop={isReply || isForward || !!to.trim()}
-          />
+          {preview ? (
+            <ComposePreview
+              html={body}
+              account={account}
+              to={to}
+              cc={cc}
+              subject={subject}
+              attachments={[
+                ...fwdAtts.map((a) => ({ filename: a.filename, size: a.size })),
+                ...atts.map((a) => ({ filename: a.filename, size: a.size })),
+              ]}
+            />
+          ) : (
+            <RichTextEditor
+              value={body}
+              onChange={setBody}
+              onSubmit={() => { if (to.trim() && !busy) void send(); }}
+              placeholder="Viết nội dung… (kéo-thả file vào đây để đính kèm · Ctrl+Enter gửi)"
+              minHeight={240}
+              // Soạn mới: con trỏ vào ngay chỗ trống phía trên chữ ký. Trả lời thì
+              // ô "Tới" đã điền sẵn nên cũng nên nhảy thẳng vào chỗ gõ.
+              autoFocusTop={isReply || isForward || !!to.trim()}
+            />
+          )}
         </div>
 
         {(atts.length > 0 || fwdAtts.length > 0) && (
@@ -592,9 +630,24 @@ function Composer({ account, draft, onClose, onSent }: {
             📎 Đính kèm
           </button>
           <input ref={fileRef} type="file" multiple hidden onChange={(e) => void addFiles(e.target.files)} />
+          {/* Xem trước = render CHÍNH cái HTML sắp gửi, qua đúng khung iframe
+              dùng để ĐỌC mail. Ô soạn thảo hiển thị theo theme tối của app nên
+              nhìn không giống bên người nhận chút nào; ở đây mới thấy thật. */}
+          <button className={`mc-tool${preview ? ' is-on' : ''}`} onClick={() => setPreview((v) => !v)}
+            disabled={busy} aria-pressed={preview}
+            title="Xem trước đúng như bên người nhận mở ra">
+            {preview ? '✎ Soạn tiếp' : '👁 Xem trước'}
+          </button>
           <span style={{ flex: 1 }} />
           <button className="mc-tool" onClick={onClose} disabled={busy}>Hủy</button>
         </div>
+
+        {/* Tay kéo góc dưới-phải. Ẩn khi đang phóng to (khung đã bám mép màn
+            hình, kéo thêm là vô nghĩa). */}
+        {!size.maximized && (
+          <div className="mc-grip" onPointerDown={size.onResizeStart}
+            role="separator" aria-label="Kéo để đổi kích thước ô soạn thư" title="Kéo để đổi kích thước" />
+        )}
       </div>
     </div>
   );
@@ -604,6 +657,7 @@ function Composer({ account, draft, onClose, onSent }: {
 
 function DetailView({
   accountId, path, detail, onBack, onReply, onForward, onDelete, deleting,
+  onSpam, spamming = false,
   trail = [], onOpenNested, onBackNested, nestedBusy = false,
 }: {
   accountId: string;
@@ -614,6 +668,9 @@ function DetailView({
   onForward: () => void;
   onDelete: () => void;
   deleting: boolean;
+  /** Đánh dấu spam (move vào \Junk). Không truyền = đang ở chính folder Spam. */
+  onSpam?: () => void;
+  spamming?: boolean;
   /** Đường đi tới mail LỒNG đang xem ([] = mail gốc trên server). */
   trail?: number[];
   /** Mở một đính kèm message/rfc822 thành mail để đọc. */
@@ -701,7 +758,13 @@ function DetailView({
         )}
         <span style={{ flex: 1 }} />
         {/* Thư lồng nằm bên trong thư khác — không có UID riêng trên server nên
-            không xoá riêng được. Muốn xoá thì xoá thư chứa nó. */}
+            không xoá/đánh dấu spam riêng được. Muốn thì thao tác thư chứa nó. */}
+        {!nestedView && onSpam && (
+          <button className="ghost sm mail-spam-btn" onClick={onSpam} disabled={spamming}
+            title="Đánh dấu spam — chuyển vào thư mục Spam/Junk">
+            {spamming ? <span className="spinner" aria-hidden /> : '🚫'} Spam
+          </button>
+        )}
         {!nestedView && (
           <button className="ghost sm mail-del-btn" onClick={onDelete} disabled={deleting}
             title="Xóa mail này (chuyển vào Thùng rác; đang ở Thùng rác thì xóa vĩnh viễn)">
@@ -842,12 +905,19 @@ function forwardDraft(detail: MailDetail, path: string): ComposeDraft {
   };
 }
 
-function MailboxView({ account, onCompose }: {
+function MailboxView({ account, onCompose, onReadLocal, onAccountChanged }: {
   account: MailAccountPub;
   onCompose: (draft: ComposeDraft) => void;
+  /** Báo lên cha: N thư INBOX vừa được đọc/xử lý — chip tài khoản trừ NGAY,
+   *  không chờ server đếm lại (snapshot event sẽ xác nhận sau ~1-3s). */
+  onReadLocal?: (count: number) => void;
+  /** Cấu hình tài khoản vừa đổi (liên kết lại) → cha tải lại danh sách. */
+  onAccountChanged?: () => void;
 }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--gp-rail', min: 170, max: 520, gap: 12 });
+  // Thu gọn cột thư mục — nhường chỗ cho danh sách thư + nội dung thư.
+  const rail = useRailCollapse('mail', '--gp-rail');
   const [folders, setFolders] = useState<MailFolder[]>([]);
   const [path, setPath] = useState('INBOX');
   const [items, setItems] = useState<MailListItem[]>([]);
@@ -868,34 +938,95 @@ function MailboxView({ account, onCompose }: {
   /** Gom mail cùng chuỗi hội thoại thành một dòng (như Gmail). Tắt được vì
    *  folder kiểu Sent/Archive nhiều khi muốn xem phẳng theo thời gian. */
   const [threaded, setThreaded] = useState(true);
+  /** Chỉ hiện thư chưa đọc (lọc client trên các trang ĐÃ TẢI — thư chưa đọc
+   *  nằm sâu hơn thì bấm "Tải thêm mail cũ hơn" như thường). */
+  const [unreadOnly, setUnreadOnly] = useState(false);
   /** Chuỗi đang bung ra xem hết (theo khoá chuỗi). */
   const [openThreads, setOpenThreads] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState<number | null>(null);
   const [deleting, setDeleting] = useState<number | null>(null);
+  const [spamming, setSpamming] = useState<number | null>(null);
   const [markingAll, setMarkingAll] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /** Phân loại lỗi server gửi kèm — có thì dựng được UI khắc phục (nút/link)
+   *  thay vì in "Command failed". */
+  const [failure, setFailure] = useState<ImapFailureInfo | undefined>();
+  /** Đang mở hộp thoại LIÊN KẾT LẠI (hòm thư mật khẩu mất xác thực). */
+  const [relinking, setRelinking] = useState(false);
+  /** Consent Google mở trong app để XÁC THỰC LẠI hòm thư OAuth hết hạn. */
+  const [reauthUrl, setReauthUrl] = useState<string | null>(null);
+
+  /** Ghi lỗi kèm phân loại. Mọi chỗ catch dùng hàm này thay cho setErr trần,
+   *  nếu không thì `failure` của lỗi TRƯỚC còn treo lại và UI mọc nút sai. */
+  const fail = useCallback((e: unknown) => {
+    const me = e as MailActionError;
+    setFailure(me.failure);
+    setErr(me.message || 'Mail operation failed');
+  }, []);
+
+  /** Xoá sạch trạng thái lỗi — gọi trước mỗi thao tác mới. */
+  const clearErr = useCallback(() => { setErr(null); setFailure(undefined); }, []);
+
+  /** Token Google chết (app Testing hết hạn 7 ngày / bị thu hồi / đổi mật khẩu)
+   *  → mở consent lại NGAY TẠI ĐÂY. Consent cùng email upsert vào đúng bản ghi
+   *  Google cũ nên hòm thư sống lại tức thì, không phải gỡ/thêm lại. */
+  const startReauth = async () => {
+    clearErr();
+    try {
+      const { url } = await mGoogleAuthUrl(account.email);
+      if (typeof window !== 'undefined' && window.workspace?.isDesktop) setReauthUrl(url);
+      else {
+        window.open(url, '_blank', 'noopener');
+        setErr('Hoàn tất đăng nhập ở tab vừa mở, rồi bấm ↻ tải lại danh sách.');
+      }
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** Chip tài khoản chỉ đếm INBOX (mailWatch đếm INBOX UNSEEN) — đọc thư ở
+   *  folder khác thì đừng trừ, không thì chip âm so với số thật. */
+  const reportRead = useCallback((n: number) => {
+    if (n > 0 && path.toUpperCase() === 'INBOX') onReadLocal?.(n);
+  }, [path, onReadLocal]);
 
   const loadFolders = useCallback(() => {
-    mFolders(account.id).then(setFolders).catch((e) => setErr((e as Error).message));
-  }, [account.id]);
+    mFolders(account.id).then(setFolders).catch((e) => fail(e));
+  }, [account.id, fail]);
   useEffect(() => { loadFolders(); }, [loadFolders]);
 
   const loadList = useCallback(async (p: string, beforeSeq?: number) => {
-    setLoading(true); setErr(null);
+    setLoading(true); clearErr();
     try {
       const page = await mList(account.id, p, beforeSeq);
       setItems((cur) => (beforeSeq ? [...cur, ...page.items] : page.items));
       setTotal(page.total);
       setOldestSeq(page.oldestSeq);
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     } finally {
       setLoading(false);
     }
-  }, [account.id]);
+  }, [account.id, fail, clearErr]);
 
   useEffect(() => { void loadList('INBOX'); }, [loadList]);
+
+  // Mail mới tới (MailWatchHost thấy số chưa đọc TĂNG) → tự tải lại, khỏi phải
+  // bấm ↻ hay thoát ra vào lại mới thấy thư mới. Watch chỉ đếm INBOX nên chỉ
+  // reload danh sách khi đang đứng ở INBOX; badge 🔔 thư mục thì luôn cập nhật.
+  // Đánh đổi biết trước: reload về trang đầu, các trang "tải thêm mail cũ hơn"
+  // đang mở sẽ gập lại — chấp nhận, vì thư mới quan trọng hơn vị trí cuộn.
+  useEffect(() => {
+    const onNew = (e: Event) => {
+      const ids = (e as CustomEvent<{ ids?: string[] }>).detail?.ids;
+      if (Array.isArray(ids) && !ids.includes(account.id)) return;
+      loadFolders();
+      if (path.toUpperCase() === 'INBOX') void loadList(path);
+    };
+    window.addEventListener(MAIL_NEW_EVENT, onNew);
+    return () => window.removeEventListener(MAIL_NEW_EVENT, onNew);
+  }, [account.id, path, loadFolders, loadList]);
 
   const openFolder = (p: string) => {
     setPath(p); setDetail(null); setItems([]); setOldestSeq(null);
@@ -913,31 +1044,46 @@ function MailboxView({ account, onCompose }: {
   const openNested = async (base: number[], idx: number) => {
     if (!detail) return;
     const trail = [...base, idx];
-    setNestedBusy(true); setErr(null);
+    setNestedBusy(true); clearErr();
     try {
       const nd = await mNestedMessage(account.id, path, detail.uid, trail);
       setNested((s) => [...s, { trail, detail: nd }]);
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     } finally {
       setNestedBusy(false);
     }
   };
 
-  const openMessage = async (m: MailListItem) => {
-    setOpening(m.uid); setErr(null);
+  /**
+   * Mở một mail. `thread` = chuỗi hội thoại chứa nó (nếu đang gom chuỗi):
+   * mở chuỗi là ĐỌC CẢ CHUỖI kiểu Gmail — các thư chưa đọc còn lại trong
+   * chuỗi cũng được gắn \Seen. Không thế thì gặp cảnh: dòng chuỗi in đậm vì
+   * một thư CŨ chưa đọc, bấm vào mở thư mới nhất (vốn đã đọc) → bộ đếm không
+   * giảm, lọc "Chưa đọc" vẫn dính, mở kiểu gì cũng không hết đậm.
+   */
+  const openMessage = async (m: MailListItem, thread?: MailThread) => {
+    setOpening(m.uid); clearErr();
     setNested([]); // mail khác → bỏ ngăn xếp mail lồng của mail cũ
     try {
       setDetail(await mMessage(account.id, path, m.uid));
-      // Đã đọc server-side (\Seen) — cập nhật luôn UI khỏi chờ reload:
-      // hàng trong danh sách hết đậm + badge 🔔 của folder giảm 1.
-      if (!m.seen) {
-        setItems((cur) => cur.map((x) => (x.uid === m.uid ? { ...x, seen: true } : x)));
-        setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - 1) } : f)));
+      // Thư m: server đã gắn \Seen khi tải. Các thư chưa đọc KHÁC trong chuỗi:
+      // gắn qua markSeen, không chờ — lỗi thì lần reload sau lộ ra, không chặn
+      // việc đọc.
+      const others = (thread?.items ?? []).filter((x) => !x.seen && x.uid !== m.uid);
+      if (others.length > 0) {
+        void mMarkSeen(account.id, path, others.map((x) => x.uid)).catch(() => {});
+      }
+      const readUids = new Set([...(m.seen ? [] : [m.uid]), ...others.map((x) => x.uid)]);
+      if (readUids.size > 0) {
+        // Cập nhật luôn UI khỏi chờ reload: các hàng hết đậm + badge 🔔 giảm đủ.
+        setItems((cur) => cur.map((x) => (readUids.has(x.uid) ? { ...x, seen: true } : x)));
+        setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - readUids.size) } : f)));
+        reportRead(readUids.size); // chip tài khoản trừ ngay
         pingMailWatch(); // badge tab Mail giảm ngay, khỏi chờ chu kỳ 10 phút
       }
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     } finally {
       setOpening(null);
     }
@@ -945,17 +1091,22 @@ function MailboxView({ account, onCompose }: {
 
   /** Đánh dấu toàn bộ mail trong folder hiện tại là đã đọc — optimistic UI. */
   const markAllRead = async () => {
-    setMarkingAll(true); setErr(null);
+    setMarkingAll(true); clearErr();
+    // Chụp số chưa đọc TRƯỚC khi reset — markAllSeen quét cả folder (kể cả
+    // trang chưa tải) nên số của folder là đúng nhất cho chip tài khoản.
+    const wasUnseen = folders.find((f) => f.path === path)?.unseen
+      ?? items.filter((x) => !x.seen).length;
     try {
       await mMarkAllSeen(account.id, path);
       setItems((cur) => cur.map((x) => ({ ...x, seen: true })));
       setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: 0 } : f)));
+      reportRead(wasUnseen);
       pingMailWatch();
       // Lấy lại số chưa đọc THẬT: markAllSeen chạy trên toàn folder, kể cả các
       // trang chưa tải, nên đừng để badge/nút dựa vào phỏng đoán ở client.
       loadFolders();
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     } finally {
       setMarkingAll(false);
     }
@@ -969,6 +1120,27 @@ function MailboxView({ account, onCompose }: {
   const hasUnread = items.length === 0 ? true : items.some((m) => !m.seen) || (curFolder?.unseen ?? 0) > 0;
   // Đang đứng trong Thùng rác → xóa là VĨNH VIỄN (server sẽ expunge).
   const inTrash = curFolder?.specialUse === '\\Trash' || /^trash$/i.test(curFolder?.name ?? '');
+  // Đang đứng trong Spam → ẩn nút 🚫 (đánh dấu spam một mail đã ở Spam là vô nghĩa).
+  const inJunk = curFolder?.specialUse === '\\Junk' || /^(junk|spam)$/i.test(curFolder?.name ?? '');
+
+  /**
+   * Lỗi này có sửa được bằng cách ĐĂNG NHẬP LẠI không?
+   *
+   * Chỉ mọc nút "Liên kết lại" ở các nhóm thật sự do xác thực/quyền — nhập lại
+   * mật khẩu không cứu được lỗi DNS hay firewall, mà mọc nút ở đó thì người
+   * dùng gõ mật khẩu đúng vẫn thất bại và tưởng mình sai.
+   *
+   * 'unknown' vẫn tính vào: đây chính là ô mà "Command failed" rơi vào khi
+   * server từ chối bằng câu lạ, và bỏ nút ở đó là quay lại đúng cảnh bế tắc cũ.
+   *
+   * KHÔNG phân loại được (`failure` rỗng) thì KHÔNG mọc nút: đó là lỗi không
+   * đi qua IMAP — hết accountId, folder không tồn tại, mạng đứt giữa chừng —
+   * nhập lại mật khẩu chẳng cứu được gì, mà mời gõ mật khẩu cho một lỗi không
+   * liên quan là đẩy người dùng đi sai hướng.
+   */
+  const needsRelink = failure
+    ? ['auth', 'app-password', 'imap-disabled', 'unknown'].includes(failure.kind)
+    : false;
 
   const threads = useMemo(() => groupThreads(items), [items]);
 
@@ -984,18 +1156,23 @@ function MailboxView({ account, onCompose }: {
     const out: { thread: MailThread; item: MailListItem; depth: number }[] = [];
     if (!threaded) {
       for (const m of items) {
+        if (unreadOnly && m.seen) continue;
         out.push({ thread: { key: `uid:${m.uid}`, items: [m], unseen: !m.seen }, item: m, depth: 0 });
       }
       return out;
     }
     for (const t of threads) {
+      // Lọc chưa đọc theo CHUỖI: chuỗi còn thư chưa đọc thì giữ nguyên cả
+      // chuỗi (kể cả các thư đã đọc trong đó) — cắt rời từng thư khỏi chuỗi
+      // thì mất ngữ cảnh hội thoại, đọc không hiểu gì.
+      if (unreadOnly && !t.unseen) continue;
       out.push({ thread: t, item: t.items[0], depth: 0 });
       if (openThreads.has(t.key)) {
         for (const m of t.items.slice(1)) out.push({ thread: t, item: m, depth: 1 });
       }
     }
     return out;
-  }, [threaded, threads, items, openThreads]);
+  }, [threaded, threads, items, openThreads, unreadOnly]);
 
   /** Xóa 1 mail theo UID — không mở/không đọc nội dung (an toàn với mail lừa
    *  đảo). Optimistic: rút khỏi danh sách ngay, trừ badge chưa đọc nếu cần. */
@@ -1005,29 +1182,56 @@ function MailboxView({ account, onCompose }: {
       ? `Xóa VĨNH VIỄN ${label}? (đang ở Thùng rác — không khôi phục được)`
       : `Xóa ${label}? Mail sẽ được chuyển vào Thùng rác.`;
     if (!window.confirm(q)) return;
-    setDeleting(m.uid); setErr(null);
+    setDeleting(m.uid); clearErr();
     try {
       await mDelete(account.id, path, m.uid);
       setItems((cur) => cur.filter((x) => x.uid !== m.uid));
       setTotal((t) => Math.max(0, t - 1));
       if (!m.seen) {
         setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - 1) } : f)));
+        reportRead(1);
         pingMailWatch(); // xóa mail chưa đọc cũng phải giảm badge ngay
       }
       setDetail((d) => (d?.uid === m.uid ? null : d));
     } catch (e) {
-      setErr((e as Error).message);
+      fail(e);
     } finally {
       setDeleting(null);
     }
   };
 
+  /** Đánh dấu spam — move vào folder \Junk, không mở/không đọc nội dung.
+   *  KHÔNG hỏi confirm như xóa: mail vẫn nằm nguyên trong thư mục Spam, bấm
+   *  nhầm thì vào đó kéo lại được. Optimistic UI giống removeMail. */
+  const markSpamMail = async (m: Pick<MailListItem, 'uid' | 'seen'>) => {
+    setSpamming(m.uid); clearErr();
+    try {
+      await mSpam(account.id, path, m.uid);
+      setItems((cur) => cur.filter((x) => x.uid !== m.uid));
+      setTotal((t) => Math.max(0, t - 1));
+      if (!m.seen) {
+        setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, unseen: Math.max(0, f.unseen - 1) } : f)));
+        reportRead(1);
+        pingMailWatch(); // mail chưa đọc rời INBOX → badge tab Mail giảm ngay
+      }
+      setDetail((d) => (d?.uid === m.uid ? null : d));
+    } catch (e) {
+      fail(e);
+    } finally {
+      setSpamming(null);
+    }
+  };
+
   return (
-    <div className="g-projects" ref={railSplit.ref} style={railSplit.style}>
+    <div className="g-projects" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+      {rail.collapsed ? (
+        <CollapsedRail label="Thư mục" count={folders.length} onShow={rail.show} />
+      ) : (
       <aside className="g-rail">
         <div className="group-title" style={{ margin: '0 4px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ flex: 1 }}>Thư mục</span>
           <button className="ghost sm" onClick={loadFolders} title="Tải lại danh sách thư mục">↻</button>
+          <RailHideButton onHide={rail.hide} className="ghost sm" />
         </div>
         {folders.map((f) => (
           <div key={f.path} className={`g-root${f.path === path ? ' on' : ''}`}>
@@ -1044,9 +1248,65 @@ function MailboxView({ account, onCompose }: {
         ))}
         {folders.length === 0 && !err && <p className="small" style={{ color: 'var(--muted)', margin: '4px 6px' }}>Đang tải thư mục…</p>}
       </aside>
+      )}
 
       <div className="g-main">
-        {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
+        {/* Lỗi đã PHÂN LOẠI (server gửi kèm `failure`) → bảng có bước sửa +
+            link + nút thử lại. Chưa phân loại được thì MailErrorPanel tự rơi
+            về in text thô như cũ. */}
+        {err && <MailErrorPanel failure={failure} message={err}
+          onRetry={() => { clearErr(); loadFolders(); void loadList(path); }} retrying={loading} />}
+        {/* Hòm thư mất xác thực thì phải có LỐI SỐNG LẠI ngay tại đây — trước
+            đây chỉ hòm thư OAuth mới có nút, còn hòm thư mật khẩu (Zimbra/mail
+            nội bộ) chỉ thấy "Command failed" và hết đường, phải gỡ rồi thêm
+            lại (mất chữ ký, mất tên đã đặt). */}
+        {err && needsRelink && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: '4px 0 8px' }}>
+            {account.auth === 'oauth' ? (
+              <>
+                <button className="sm" onClick={() => void startReauth()}>
+                  Ⓖ Xác thực lại Google
+                </button>
+                <button className="ghost sm" onClick={() => setRelinking(true)}
+                  title="Chuyển hòm thư này sang đăng nhập bằng mật khẩu / App Password">
+                  🔗 Dùng mật khẩu thay
+                </button>
+                <span className="small" style={{ color: 'var(--muted)' }}>
+                  Token Google có hạn dùng — xác thực lại là hòm thư sống lại, giữ nguyên cấu hình.
+                </span>
+              </>
+            ) : (
+              <>
+                <button className="sm" onClick={() => setRelinking(true)}>
+                  🔗 Liên kết lại
+                </button>
+                <span className="small" style={{ color: 'var(--muted)' }}>
+                  Nhập lại mật khẩu là hòm thư chạy tiếp — giữ nguyên chữ ký, tên và mọi cấu hình.
+                </span>
+              </>
+            )}
+          </div>
+        )}
+        {relinking && (
+          <RelinkModal
+            account={account}
+            onCancel={() => setRelinking(false)}
+            onDone={() => {
+              setRelinking(false);
+              clearErr();
+              loadFolders();
+              void loadList(path);
+              onAccountChanged?.();
+            }}
+          />
+        )}
+        {reauthUrl && (
+          <GoogleAuthWindow
+            url={reauthUrl}
+            onDone={() => { setReauthUrl(null); clearErr(); loadFolders(); void loadList(path); }}
+            onCancel={() => setReauthUrl(null)}
+          />
+        )}
         {detail ? (
           // Đang mở mail lồng thì hiện nó; ngăn xếp rỗng thì hiện mail gốc.
           (() => {
@@ -1066,6 +1326,8 @@ function MailboxView({ account, onCompose }: {
                 onForward={() => onCompose(forwardDraft(detail, path))}
                 onDelete={() => void removeMail({ uid: detail.uid, seen: true, subject: detail.subject })}
                 deleting={deleting === detail.uid}
+                onSpam={inJunk ? undefined : () => void markSpamMail({ uid: detail.uid, seen: true })}
+                spamming={spamming === detail.uid}
                 nestedBusy={nestedBusy}
               />
             );
@@ -1087,6 +1349,18 @@ function MailboxView({ account, onCompose }: {
                   ? 'Đánh dấu tất cả mail trong thư mục này là đã đọc'
                   : 'Thư mục này không còn mail chưa đọc'}>
                 {markingAll ? <span className="spinner" aria-hidden /> : '✓ Đánh dấu tất cả đã đọc'}
+              </button>
+              {/* Lọc chưa đọc — kiểu toggle như nút 🧵. Chỉ lọc trong các trang
+                  đã tải; số 🔔 trên rail vẫn là tổng thật của cả folder. */}
+              <button
+                className="ghost sm"
+                aria-pressed={unreadOnly}
+                onClick={() => setUnreadOnly((v) => !v)}
+                title={unreadOnly
+                  ? 'Đang lọc: chỉ thư chưa đọc — bấm để xem tất cả'
+                  : 'Chỉ hiện thư chưa đọc'}
+              >
+                {unreadOnly ? '◉ Chưa đọc' : '○ Chưa đọc'}
               </button>
               <button
                 className="ghost sm"
@@ -1113,8 +1387,8 @@ function MailboxView({ account, onCompose }: {
                    — button lồng button là HTML sai và click sẽ loạn. */
                 <div key={m.uid} role="button" tabIndex={0}
                   className={`g-row mail-row${m.seen ? '' : ' unread'}${depth > 0 ? ' mail-row-child' : ''}`}
-                  onClick={() => void openMessage(m)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void openMessage(m); } }}
+                  onClick={() => void openMessage(m, threaded ? thread : undefined)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void openMessage(m, threaded ? thread : undefined); } }}
                   title={m.subject}>
                   <span className={`mail-dot${m.seen ? ' off' : ''}`} aria-hidden
                     title={m.seen ? undefined : 'Chưa đọc'} />
@@ -1146,6 +1420,14 @@ function MailboxView({ account, onCompose }: {
                     </button>
                   )}
                   <span className="mail-date">{opening === m.uid ? <span className="spinner" aria-hidden /> : fmtRel(m.date ?? undefined)}</span>
+                  {/* Đánh dấu spam KHÔNG cần mở — cùng lý do với nút xóa. */}
+                  {!inJunk && (
+                    <button className="mail-row-del mail-row-spam" disabled={spamming === m.uid}
+                      onClick={(e) => { e.stopPropagation(); void markSpamMail(m); }}
+                      title="Đánh dấu spam — chuyển vào thư mục Spam/Junk (không cần mở mail)">
+                      {spamming === m.uid ? <span className="spinner" aria-hidden /> : '🚫'}
+                    </button>
+                  )}
                   {/* Xóa KHÔNG cần mở — cho mail nghi lừa đảo/độc hại. */}
                   <button className="mail-row-del" disabled={deleting === m.uid}
                     onClick={(e) => { e.stopPropagation(); void removeMail(m); }}
@@ -1158,6 +1440,14 @@ function MailboxView({ account, onCompose }: {
               {!loading && items.length === 0 && !err && (
                 <div className="empty" style={{ padding: '24px 8px' }}><p className="small">Thư mục trống.</p></div>
               )}
+              {!loading && items.length > 0 && rows.length === 0 && unreadOnly && (
+                <div className="empty" style={{ padding: '24px 8px' }}>
+                  <p className="small">
+                    Không có thư chưa đọc trong số đã tải.
+                    {oldestSeq !== null && oldestSeq > 1 && ' Thử "Tải thêm mail cũ hơn" bên dưới.'}
+                  </p>
+                </div>
+              )}
             </div>
             {oldestSeq !== null && oldestSeq > 1 && (
               <div style={{ padding: '8px 0' }}>
@@ -1169,7 +1459,7 @@ function MailboxView({ account, onCompose }: {
           </>
         )}
       </div>
-      <Splitter {...railSplit.grip} />
+      {!rail.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }
@@ -1415,7 +1705,12 @@ export default function MailWorkspace() {
 
   useEffect(() => {
     let stopped = false;
-    const pull = async () => {
+    // Nạp số MỘT LẦN lúc mở tab Mail (snapshot in-memory, rẻ). Sau đó không tự
+    // poll nữa: MailWatchHost là nguồn duy nhất — nó phát MAIL_SNAPSHOT_EVENT
+    // mỗi khi có số mới, kể cả SAU khi server đếm lại xong. Bản trước tự GET
+    // khi nghe MAIL_REFRESH_EVENT là dính race: GET trả về trước khi đếm xong,
+    // chip tài khoản trơ số cũ tới tick 60s sau.
+    void (async () => {
       try {
         const res = await fetch('/api/mail/watch');
         if (!res.ok) return;
@@ -1423,18 +1718,18 @@ export default function MailWorkspace() {
         if (stopped || !Array.isArray(snap.accounts)) return;
         setUnseenById(Object.fromEntries(snap.accounts.map((a) => [a.id, a.unseen || 0])));
       } catch {
-        /* server chưa sẵn sàng — thử lại ở nhịp sau */
+        /* server chưa sẵn sàng — snapshot event sẽ tới ở nhịp sau */
       }
+    })();
+    const onSnap = (e: Event) => {
+      const snap = (e as CustomEvent<{ accounts?: { id: string; unseen: number }[] }>).detail;
+      if (!Array.isArray(snap?.accounts)) return;
+      setUnseenById(Object.fromEntries(snap.accounts.map((a) => [a.id, a.unseen || 0])));
     };
-    void pull();
-    // Cùng nhịp với MailWatchHost; đọc snapshot in-memory nên rất nhẹ.
-    const timer = setInterval(() => void pull(), 60_000);
-    const onRefresh = () => void pull();
-    window.addEventListener(MAIL_REFRESH_EVENT, onRefresh);
+    window.addEventListener(MAIL_SNAPSHOT_EVENT, onSnap);
     return () => {
       stopped = true;
-      clearInterval(timer);
-      window.removeEventListener(MAIL_REFRESH_EVENT, onRefresh);
+      window.removeEventListener(MAIL_SNAPSHOT_EVENT, onSnap);
     };
   }, []);
 
@@ -1576,7 +1871,20 @@ export default function MailWorkspace() {
       <div className="office-body">
         {view === 'cal'
           ? <MailCalendar key={`cal-${active.id}`} account={active} />
-          : <MailboxView key={active.id} account={active} onCompose={setCompose} />}
+          : <MailboxView
+              key={active.id}
+              account={active}
+              onCompose={setCompose}
+              // Trừ NGAY trên chip tài khoản khi pane đánh dấu đã đọc — server
+              // đếm lại xong thì MAIL_SNAPSHOT_EVENT xác nhận số thật.
+              onReadLocal={(n) => setUnseenById((cur) => ({
+                ...cur,
+                [active.id]: Math.max(0, (cur[active.id] ?? 0) - n),
+              }))}
+              // Liên kết lại xong: cấu hình tài khoản (auth, host…) đã đổi ở
+              // server, nạp lại để chip/tab hiện đúng trạng thái mới.
+              onAccountChanged={() => { void mAccounts().then(setAccounts).catch(() => {}); }}
+            />}
       </div>
 
       {adding && (

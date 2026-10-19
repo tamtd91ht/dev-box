@@ -21,12 +21,14 @@ import {
   type EsNodeInfo,
 } from '@/lib/es';
 import ConnRail from './es/ConnRail';
+import { useConnRailCollapse, CollapsedConnRail } from './ConnRailCollapse';
 import OverviewView from './es/OverviewView';
 import BrowserView from './es/BrowserView';
 import QuickFindView from './es/QuickFindView';
 import ConsoleView from './es/ConsoleView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { onInfraFocus } from '@/lib/infraFocus';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 
@@ -46,6 +48,8 @@ export default function EsWorkspace() {
   const rail = useSplit({ varName: '--es-rail', min: 180, max: 560, gap: 14 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [connections, setConnections] = useState<PublicEsConnection[]>([]);
+  // Gập cột kết nối để nhường chỗ cho vùng làm việc (components/ConnRailCollapse).
+  const railCollapse = useConnRailCollapse('es', connections.length);
   const [activeId, setActiveId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
   const [editConn, setEditConn] = useState<PublicEsConnection | null>(null);
@@ -93,6 +97,17 @@ export default function EsWorkspace() {
   useEffect(() => {
     if (activeId) writeLocal(LAST_CONN_KEY, activeId);
   }, [activeId]);
+
+  // Monitor bấm "↗ Mở …" → chọn ĐÚNG CỤM đang báo và mục liên quan (lib/infraFocus).
+  // Chỉ nghe khi đã có danh sách kết nối, để biết id đó còn tồn tại.
+  useEffect(() => {
+    if (!connections.length) return;
+    return onInfraFocus('es', (f) => {
+      if (!connections.some((c) => c.id === f.connId)) return;
+      setActiveId(f.connId);
+      if (f.view && SUB_VIEWS.some((v) => v.key === f.view)) setSubView(f.view as SubView);
+    });
+  }, [connections]);
 
   useEffect(() => {
     setHealth(null); setNodes([]); setIndices([]); setJumpIndex(undefined);
@@ -161,8 +176,12 @@ export default function EsWorkspace() {
   }
 
   return (
-    <div className="es-layout" ref={rail.ref} style={rail.style}>
+    <div className={`es-layout${railCollapse.collapsed ? ' rail-collapsed' : ''}`} ref={rail.ref} style={rail.style}>
+      {railCollapse.collapsed ? (
+        <CollapsedConnRail label="Elastic" count={connections.length} onShow={railCollapse.show} />
+      ) : (
       <ConnRail
+        onHide={connections.length > 0 ? railCollapse.hide : undefined}
         connections={connections}
         activeId={activeId}
         pings={pings}
@@ -185,8 +204,10 @@ export default function EsWorkspace() {
           if (activeId === deletedId) setActiveId(list[0]?.id ?? '');
           flash('Đã xoá cluster khỏi danh sách');
         }}
+        onImported={(summary) => { void loadConnections(); flash(summary); }}
         onError={setError}
       />
+      )}
 
       <main className="panel es-workspace-main">
         {!active ? (
@@ -241,7 +262,8 @@ export default function EsWorkspace() {
           </>
         )}
       </main>
-      <Splitter {...rail.grip} />
+      {/* Đã gập thì không còn gì để kéo — dải 34px là cố định. */}
+      {!railCollapse.collapsed && <Splitter {...rail.grip} />}
     </div>
   );
 }

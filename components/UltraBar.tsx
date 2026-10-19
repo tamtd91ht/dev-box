@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from 'react';
 import * as ultraView from '@/lib/ultraView';
 import { MAX_PANES, type UltraState } from '@/lib/ultraView';
 import type { TabInfo } from './QuickTabs';
+import { useModalOverWebview } from '@/lib/useOverWebview';
 
 export interface UltraBarProps {
   state: UltraState;
@@ -64,12 +65,7 @@ export default function UltraBar({ state, current, allKeys, info }: UltraBarProp
   // Cách duy nhất là tạm ĐẨY chúng ra khỏi màn hình trong lúc bảng mở: đặt cờ
   // trên <html>, CSS lo phần còn lại. Webview vẫn sống, vẫn giữ phiên đăng nhập
   // và trạng thái cuộn — chỉ là không thấy trong mấy giây bảng đang mở.
-  useEffect(() => {
-    const root = document.documentElement;
-    if (open) root.setAttribute('data-modal-over-webview', '1');
-    else root.removeAttribute('data-modal-over-webview');
-    return () => root.removeAttribute('data-modal-over-webview');
-  }, [open]);
+  useModalOverWebview(open);
 
   const { on, panes } = state;
   const full = panes.length >= MAX_PANES;

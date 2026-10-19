@@ -6,7 +6,9 @@
 
 import { useEffect } from 'react';
 import { mutateRabbitConnection, type PublicRabbitConnection } from '@/lib/rabbit';
+import ConnTransferButton from '../ConnTransferButton';
 import ConnectionForm from './ConnectionForm';
+import { RailHideButton } from '../ConnRailCollapse';
 
 export interface BrokerRailProps {
   connections: PublicRabbitConnection[];
@@ -23,13 +25,18 @@ export interface BrokerRailProps {
   onCloseForm: () => void;
   onSaved: (r: { list: PublicRabbitConnection[]; activeId: string }) => void;
   onDeleted: (list: PublicRabbitConnection[], deletedId: string) => void;
+  /** Sau khi import từ file: nạp lại danh sách từ server rồi báo cho người dùng. */
+  onImported: (summary: string) => void;
   onError: (msg: string) => void;
+  /** Ẩn cả cột kết nối (ConnRailCollapse) — không truyền khi chưa có kết nối nào. */
+  onHide?: () => void;
 }
 
 export default function BrokerRail(props: BrokerRailProps) {
   const {
     connections, activeId, pings, manageOpen, editConn, menuId,
-    onActivate, onPing, onMenu, onEdit, onToggleManage, onCloseForm, onSaved, onDeleted, onError,
+    onActivate, onPing, onMenu, onEdit, onToggleManage, onCloseForm, onSaved, onDeleted, onImported, onError,
+    onHide,
   } = props;
 
   // Close the ⋯ menu on any outside click or Escape.
@@ -48,7 +55,11 @@ export default function BrokerRail(props: BrokerRailProps) {
     <aside className="panel">
       <div className="status-line" style={{ justifyContent: 'space-between' }}>
         <strong>RabbitMQ brokers</strong>
-        <button className="chip-btn" onClick={onToggleManage}>{manageOpen ? '✕ Đóng' : '+ Thêm'}</button>
+        <span style={{ display: 'flex', gap: 6 }}>
+          <ConnTransferButton kind="rabbit" connections={connections} onImported={onImported} onError={onError} />
+          <button className="chip-btn" onClick={onToggleManage}>{manageOpen ? '✕ Đóng' : '+ Thêm'}</button>
+          {onHide && <RailHideButton onHide={onHide} />}
+        </span>
       </div>
 
       {connections.length === 0 && !manageOpen && (

@@ -34,7 +34,7 @@
 // Mọi lượt gửi ghi một dòng ZALOAPI_AUDIT ra stdout, cùng quy ước SHEET_AUDIT.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { login, sendMessage, uploadImage, sendPhoto, getGroupHistory, scanContacts, sendReaction } from '@/lib/zaloapi/server/client';
+import { login, sendMessage, uploadImage, sendPhoto, uploadFile, sendFileMessage, getGroupHistory, scanContacts, sendReaction } from '@/lib/zaloapi/server/client';
 import { reactionByKey, REACTION_SOURCE, UNREACT_RTYPE } from '@/lib/zaloapi/reactions';
 import { ZALOAPI_ENABLED, ZALOAPI_ALLOW_SEND } from '@/lib/zaloapi/server/flags';
 import {
@@ -145,7 +145,19 @@ export async function POST(req: NextRequest) {
       case 'send': {
         const accountKey = need(body.accountKey, 'accountKey');
         const text = typeof body.text === 'string' ? body.text : '';
-        if (!text.trim()) {
+        // Tag (@) trong tin nhóm (tuỳ chọn): [{uid,name}], trần 5 — quá số đó
+        // là spam cả nhóm chứ không còn là cảnh báo.
+        const mentions = Array.isArray(body.mentions)
+          ? body.mentions
+              .filter((m: unknown) => m && typeof m === 'object')
+              .map((m: Record<string, unknown>) => ({ uid: String(m.uid || '').trim(), name: String(m.name || '').trim() }))
+              .filter((m: { uid: string }) => m.uid)
+              .slice(0, 5)
+          : undefined;
+        // Text rỗng vẫn hợp lệ KHI có mention: đó là tin "chỉ để tag" mà
+        // automation gửi riêng sau tin cảnh báo — thân tin sẽ là chuỗi "@A @B"
+        // do sendMessage tự dựng (cùng chỗ với mentionInfo, khỏi lệch vị trí).
+        if (!text.trim() && !mentions?.length) {
           return NextResponse.json({ ok: false, error: 'nội dung rỗng — không gửi' }, { status: 400 });
         }
         if (!ZALOAPI_ALLOW_SEND) {
@@ -174,12 +186,38 @@ export async function POST(req: NextRequest) {
               .map((s: Record<string, unknown>) => ({ start: Number(s.start) || 0, len: Number(s.len) || 0, st: String(s.st || '') }))
               .filter((s: { len: number; st: string }) => s.len > 0 && s.st)
           : undefined;
+        // TRẢ LỜI một tin (tuỳ chọn): cần ĐỦ hai id THẬT + người gửi + thời điểm
+        // của tin gốc. Thiếu msgId thì bỏ hẳn khối quote thay vì gửi nửa vời —
+        // Zalo nhận payload quote thiếu field rồi im lặng hiện tin thường, và
+        // "bấm trả lời mà ra tin rời" khó lần hơn hẳn một lỗi rõ ràng.
+        const q = body.quote && typeof body.quote === 'object' ? (body.quote as Record<string, unknown>) : null;
+        const quote = q && String(q.msgId || '').trim()
+          ? {
+              msgId: String(q.msgId).trim(),
+              cliMsgId: String(q.cliMsgId || '').trim(),
+              ownerId: String(q.ownerId || '').trim(),
+              ts: Number(q.ts) || Date.now(),
+              text: String(q.text || ''),
+            }
+          : undefined;
         // Ghi LẠC QUAN vào kho hội thoại NGAY để màn chat hiện bong bóng liền,
         // rồi cập nhật trạng thái theo kết quả. dest rỗng = tự gửi cho mình (uid).
+        // Tin chỉ-để-tag có text rỗng — bong bóng hiện chuỗi "@Tên" thay vì trống.
+        const echoText = text.trim()
+          ? text
+          : (mentions ?? []).map((m: { uid: string; name: string }) => `@${m.name || m.uid}`).join(' ');
         const dest = threadId || ctx.uid;
         const now = Date.now();
-        const echoId = dest ? recordOutgoing(accountKey, { threadId: dest, group, text, at: now, status: 'sending' }) : '';
-        const result = await sendMessage(ctx, { threadId, message: text, group, styles });
+        const echoId = dest
+          ? recordOutgoing(accountKey, {
+              threadId: dest, group, text: echoText, at: now, status: 'sending',
+              // Bong bóng phải mang theo khối trích dẫn NGAY, không đợi Zalo dội
+              // về: tin gửi lạc quan hiện tức thì, mà bản dội về lại được GỘP vào
+              // chính nó (xem recordIncoming) nên không có lần thứ hai để bổ sung.
+              ...(quote ? { quote: { msgId: quote.msgId, fromName: String(body.quoteFrom || ''), text: quote.text } } : {}),
+            })
+          : '';
+        const result = await sendMessage(ctx, { threadId, message: text, group, styles, mentions, quote });
         if (dest && echoId) setMessageStatus(accountKey, dest, echoId, result.ok ? 'sent' : 'failed');
         // eslint-disable-next-line no-console
         console.log(
@@ -187,6 +225,30 @@ export async function POST(req: NextRequest) {
           + `len=${text.length} ok=${result.ok} ts=${new Date().toISOString()}`,
         );
         return NextResponse.json({ ok: true, result: { ...result, threadId: dest } });
+      }
+
+      // NGƯỜI từng xuất hiện trong tin nhắn của tài khoản này (fromId/fromName,
+      // mới nhắn gần nhất lên đầu) — nguồn gợi ý cho danh bạ mention của bảng
+      // phân công tag. Chỉ đọc kho tin sẵn có, KHÔNG gọi Zalo.
+      case 'people': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        const ownUid = getSession(accountKey)?.uid || '';
+        const seen = new Map<string, { uid: string; name: string; lastAt: number }>();
+        for (const t of threadsFor(accountKey)) {
+          for (const m of messagesFor(accountKey, t.threadId)) {
+            const uid = (m.fromId || '').trim();
+            if (!uid || m.self || uid === ownUid) continue;
+            const cur = seen.get(uid);
+            if (!cur || m.at > cur.lastAt) {
+              seen.set(uid, { uid, name: (m.fromName || '').trim() || cur?.name || uid, lastAt: m.at });
+            }
+          }
+        }
+        const result = [...seen.values()]
+          .sort((a, b) => b.lastAt - a.lastAt)
+          .slice(0, 300)
+          .map(({ uid, name }) => ({ uid, name }));
+        return NextResponse.json({ ok: true, result });
       }
 
       // Bật listener NHẬN tin (server-side WebSocket). Cần phiên đã login.
@@ -423,6 +485,47 @@ export async function POST(req: NextRequest) {
           if (dest && echoId) setMessageStatus(accountKey, dest, echoId, result.ok ? 'sent' : 'failed');
           // eslint-disable-next-line no-console
           console.log(`ZALOAPI_AUDIT operation=SEND_IMAGE account=${accountKey} thread=${threadId || '(self)'} group=${group} size=${buffer.length} ok=${result.ok} ts=${new Date().toISOString()}`);
+          return NextResponse.json({ ok: true, result: { ...result, threadId: dest } });
+        } catch (err) {
+          return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 400 });
+        }
+      }
+
+      // Gửi FILE đính kèm: upload asyncfile theo chunk → chờ file_done (qua
+      // WebSocket, xem uploadHub) → gửi tin asyncfile/msg. LISTENER phải chạy
+      // mới nhận được file_done nên tự bật nếu chưa — kết nối WS mất ~1-2s,
+      // trong lúc các chunk còn đang upload nên hầu như không đội thêm thời gian.
+      case 'sendFile': {
+        const accountKey = need(body.accountKey, 'accountKey');
+        if (!ZALOAPI_ALLOW_SEND) {
+          return NextResponse.json({ ok: false, error: 'Gửi đang tắt. Đặt ZALOAPI_ALLOW_SEND=true trong .env.local.' }, { status: 403 });
+        }
+        const b64 = typeof body.dataBase64 === 'string' ? body.dataBase64 : '';
+        if (!b64) return NextResponse.json({ ok: false, error: 'thiếu dữ liệu file' }, { status: 400 });
+        const buffer = Buffer.from(b64, 'base64');
+        if (!buffer.length) return NextResponse.json({ ok: false, error: 'file rỗng' }, { status: 400 });
+        if (buffer.length > 100 * 1024 * 1024) {
+          return NextResponse.json({ ok: false, error: 'file quá 100MB — gửi qua kênh khác' }, { status: 400 });
+        }
+        const fileName = (typeof body.fileName === 'string' && body.fileName.trim()) || `file_${Date.now()}`;
+        const group = !!body.group;
+        const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
+
+        let ctx;
+        try { ctx = await getFreshContext(accountKey); }
+        catch (err) { return NextResponse.json({ ok: false, error: `${(err as Error).message}` }, { status: 409 }); }
+
+        if (listenerState(accountKey).state === 'off') startListener(accountKey, ctx);
+
+        const dest = threadId || ctx.uid;
+        try {
+          const attachment = await uploadFile(ctx, { buffer, fileName, threadId, group });
+          const now = Date.now();
+          const echoId = dest ? recordOutgoing(accountKey, { threadId: dest, group, text: `📄 ${fileName}`, at: now, status: 'sending' }) : '';
+          const result = await sendFileMessage(ctx, { threadId, group, attachment });
+          if (dest && echoId) setMessageStatus(accountKey, dest, echoId, result.ok ? 'sent' : 'failed');
+          // eslint-disable-next-line no-console
+          console.log(`ZALOAPI_AUDIT operation=SEND_FILE account=${accountKey} thread=${threadId || '(self)'} group=${group} size=${buffer.length} ok=${result.ok} ts=${new Date().toISOString()}`);
           return NextResponse.json({ ok: true, result: { ...result, threadId: dest } });
         } catch (err) {
           return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 400 });

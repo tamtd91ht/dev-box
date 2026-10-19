@@ -23,16 +23,23 @@ import {
   prettyDoc,
   fmtBytes,
   fmtCount,
+  deriveEsFieldNames,
   type EsIndexInfo,
   type EsSearchResult,
   type WireDoc,
 } from '@/lib/es';
 import { flattenEsMapping, type EsField } from '@/lib/esDsl';
+import ExportModal from './ExportModal';
 import QueryEditor from './QueryEditor';
 import AggsResult from './AggsResult';
 import JsonViewer from './JsonViewer';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
+import ColSplit from '../ColSplit';
+
+import SessionHistory from '../SessionHistory';
+import { recordSession, short, type EsSession } from '@/lib/sessionHistory';
+import ResultBox, { ExpandButton, FilterBar, FindButton, Hl, useResultExpand, useResultFilter } from '../ResultBox';
 
 export interface BrowserViewProps {
   connectionId: string;
@@ -78,6 +85,16 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
     setTabs((list) => list.map((t) => (t.id === id ? { ...t, index } : t)));
   }, []);
 
+  /** Tăng lên mỗi lần ghi một phiên — buộc SessionHistory đọc lại danh sách. */
+  const [sessBump, setSessBump] = useState(0);
+  /**
+   * Body cần điền vào tab khi khôi phục một phiên. Mang `seq` để BrowserSession
+   * phân biệt được hai lần khôi phục CÙNG một body (bấm lại cùng dòng) — so
+   * sánh nội dung thì lần thứ hai không kích hoạt gì.
+   */
+  const [restore, setRestore] = useState<{ tabId: string; body: string; seq: number } | null>(null);
+  const restoreSeq = useRef(0);
+
   const addTab = useCallback((index = '') => {
     const t = newTab(index);
     setTabs((list) => [...list, t]);
@@ -99,6 +116,28 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
     setTabs(next);
     if (activeId === id) setActiveId((next[gone] ?? next[next.length - 1]).id);
   }, [tabs, activeId]);
+
+  /**
+   * Khôi phục một phiên: mở index của nó ở tab đang đứng (nếu tab trống hoặc
+   * đã đúng index) hoặc một tab mới, rồi ĐIỀN body — KHÔNG tự chạy _search.
+   */
+  const restoreSession = useCallback((raw: Record<string, unknown>) => {
+    const st = raw as Partial<EsSession>;
+    const index = typeof st.index === 'string' ? st.index : '';
+    const body = typeof st.query === 'string' ? st.query : '';
+    if (!index) return;
+    const cur = tabs.find((t) => t.id === activeId);
+    let target = cur?.id ?? '';
+    if (cur && (!cur.index || cur.index === index)) setTabIndex(cur.id, index);
+    else {
+      const t = newTab(index);
+      setTabs((list) => [...list, t]);
+      setActiveId(t.id);
+      target = t.id;
+    }
+    restoreSeq.current += 1;
+    setRestore({ tabId: target, body, seq: restoreSeq.current });
+  }, [tabs, activeId, setTabIndex]);
 
   // Jump from Overview: mở index đó ở tab đang đứng nếu tab còn trống, còn không
   // thì thêm tab mới — không đè lên phiên đang có kết quả.
@@ -137,6 +176,13 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
           onClick={() => addTab()}>+</button>
       </div>
 
+      <SessionHistory
+        scope="es"
+        connectionId={connectionId}
+        reloadKey={sessBump}
+        onRestore={restoreSession}
+      />
+
       {idxError && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{idxError}</pre>}
 
       {/* Mọi tab đều được mount, chỉ tab không active thì ẩn — nhờ vậy body
@@ -152,6 +198,8 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
             idxLoading={idxLoading}
             onReloadIndices={loadIndices}
             onOpenInNewTab={addTab}
+            restoreBody={restore && restore.tabId === t.id ? restore : null}
+            onRecordSession={() => setSessBump((n) => n + 1)}
           />
         </div>
       ))}
@@ -170,12 +218,17 @@ interface BrowserSessionProps {
   idxLoading: boolean;
   onReloadIndices: () => void;
   onOpenInNewTab: (index: string) => void;
+  /** Body cần điền khi khôi phục phiên (null = không có gì để điền). */
+  restoreBody: { body: string; seq: number } | null;
+  /** Báo lên cha là vừa ghi một phiên, để danh sách đọc lại. */
+  onRecordSession: () => void;
 }
 
 /** Một phiên truy vấn: index + body + kết quả + mapping của riêng một tab. */
 function BrowserSession({
   connectionId, tabId, index: selected, onPickIndex,
   indices, idxLoading, onReloadIndices, onOpenInNewTab,
+  restoreBody, onRecordSession,
 }: BrowserSessionProps) {
   /** Tiền tố khoá model Monaco cho mọi khung JSON của phiên này. Gồm cả index
    *  vì đổi index là nội dung khác hẳn, đừng dùng lại model cũ.
@@ -201,6 +254,23 @@ function BrowserSession({
   const [fields, setFields] = useState<EsField[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const rx = useResultExpand();
+  const flt = useResultFilter(result?.docs, (d) => d.json);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  /**
+   * Điền body từ một phiên vừa khôi phục. Theo `seq` chứ không theo nội dung:
+   * bấm lại đúng dòng cũ vẫn phải điền lại (người dùng có thể đã sửa ô body).
+   * Chỉ ĐIỀN, không chạy — xem lib/sessionHistory.
+   */
+  const restoredSeq = useRef(0);
+  useEffect(() => {
+    if (!restoreBody || restoreBody.seq === restoredSeq.current) return;
+    restoredSeq.current = restoreBody.seq;
+    setBody(restoreBody.body);
+    setResult(null); setCountInfo(null); setError(null);
+  }, [restoreBody]);
 
   /** `over.from` chỉ dùng cho phân trang Prev/Next — nó đè lên from trong body. */
   const runSearch = useCallback(async (over?: { from?: number }) => {
@@ -209,9 +279,17 @@ function BrowserSession({
     try {
       const r = await searchEs(connectionId, selected, { body, from: over?.from });
       setResult(r);
+      // Ghi phiên: index + body, KHÔNG ghi hits trả về.
+      const state: EsSession = { subView: 'browser', index: selected, query: body };
+      recordSession('es', {
+        label: `${selected}${body.trim() ? ` · ${short(body)}` : ' · match_all'}`,
+        connectionId,
+        state: state as unknown as Record<string, unknown>,
+      });
+      onRecordSession();
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [connectionId, selected, body]);
+  }, [connectionId, selected, body, onRecordSession]);
 
   const runCount = useCallback(async () => {
     if (!selected) return;
@@ -335,9 +413,10 @@ function BrowserSession({
             </div>
 
             {error && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{error}</pre>}
+            {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
 
             {idxTab === 'docs' && (
-              <>
+              <ColSplit storageKey="devbox-es-query-split">
                 <div className="es-querybar">
                   <QueryEditor
                     mode="body"
@@ -348,7 +427,7 @@ function BrowserSession({
                     label={`Body _search — như Kibana Dev Tools (trống = match_all)${fields.length ? ` · ${fields.length} field từ mapping` : ''}`}
                     placeholder='{ "query": { "term": { "field": "value" } }, "aggs": { … }, "sort": [{ "createdAt": "desc" }], "size": 50 }'
                   />
-                  <div className="status-line" style={{ gap: 8 }}>
+                  <div className="status-line cs-sticky" style={{ gap: 8 }}>
                     <button className="sm" disabled={busy} onClick={() => void runSearch()}>
                       {busy ? <span className="spinner" aria-hidden /> : '▶'} Search
                     </button>
@@ -358,19 +437,34 @@ function BrowserSession({
                   </div>
                 </div>
 
+                <div className="es-resultpane">
+                {!result && <p className="xhint">Kết quả sẽ hiện ở đây sau khi chạy.</p>}
                 {result && (
-                  <>
+                  <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
                     <div className="status-line" style={{ justifyContent: 'space-between' }}>
                       <span className="badge">
                         {fmtCount(result.total)}{result.totalRelation === 'gte' ? '+' : ''} khớp · hiển thị {result.docs.length} · from {result.from} · {result.tookMs}ms
                       </span>
                       <div style={{ display: 'flex', gap: 6 }}>
+                        <FindButton flt={flt} />
+                        <ExpandButton expanded={rx.expanded} onToggle={rx.toggle} />
+                        {/* Xuất .xlsx — chỉ có nghĩa khi truy vấn đang trả về
+                            document; size=0 (chỉ lấy aggs) thì không có gì để xuất. */}
+                        <button
+                          className="chip-btn"
+                          disabled={busy || result.docs.length === 0}
+                          title={result.docs.length === 0
+                            ? 'Không có document nào để xuất'
+                            : 'Xuất TOÀN BỘ kết quả khớp query ra .xlsx (chọn cột trong hộp thoại)'}
+                          onClick={() => setExportOpen(true)}
+                        >⬇ Export</button>
                         <button className="chip-btn" disabled={busy || result.size === 0 || result.from === 0}
                           onClick={() => void runSearch({ from: Math.max(0, result.from - result.size) })}>← Prev</button>
                         <button className="chip-btn" disabled={busy || result.size === 0 || result.from + result.docs.length >= Math.min(result.total, 10000 - result.size)}
                           onClick={() => void runSearch({ from: result.from + result.size })}>Next →</button>
                       </div>
                     </div>
+                    <FilterBar flt={flt} />
                     <div className="es-results">
                       {result.aggs && (
                         <>
@@ -383,7 +477,8 @@ function BrowserSession({
                       {result.docs.length === 0 && (
                         <p className="empty">{result.size === 0 ? 'size = 0 — chỉ lấy aggregations, không lấy document.' : 'Không có document nào khớp.'}</p>
                       )}
-                      {result.docs.map((d, i) => (
+                      {flt.needle && flt.rows.length === 0 && result.docs.length > 0 && <p className="empty">Không có document nào khớp ô tìm.</p>}
+                      {flt.rows.map(({ item: d, index: i }) => (
                         <DocCard
                           key={`${result.from}-${i}`}
                           json={d.json}
@@ -395,9 +490,10 @@ function BrowserSession({
                         />
                       ))}
                     </div>
-                  </>
+                  </ResultBox>
                 )}
-              </>
+                </div>
+              </ColSplit>
             )}
 
             {idxTab === 'mapping' && (
@@ -433,6 +529,30 @@ function BrowserSession({
         )}
       </div>
       {treeVisible && <Splitter {...tree.grip} />}
+
+      {exportOpen && selected && result && (
+        <ExportModal
+          connectionId={connectionId}
+          index={selected}
+          // Truyền BODY nguyên bản chứ không phải query rời: tab này cho gõ cả
+          // sort/_source/size kiểu Dev Tools, tách lấy mỗi `query` sẽ xuất ra
+          // một tập kết quả KHÁC với cái người dùng đang nhìn.
+          body={body}
+          querySummary={body.trim() ? 'body _search đang gõ' : 'match_all'}
+          // Gợi ý field: mapping (đầy đủ) + tên field có thật trong kết quả.
+          fieldSuggestions={[
+            ...fields.map((f) => ({ value: f.path, hint: f.type })),
+            ...[...new Set(['_id', ...deriveEsFieldNames(result.docs)])].filter((p) => !fields.some((f) => f.path === p)),
+          ]}
+          defaultTitle={selected}
+          onClose={() => setExportOpen(false)}
+          onDone={(rows, filename) => {
+            setExportOpen(false);
+            setNotice(`Đã xuất ${rows.toLocaleString('en-US')} dòng → ${filename}`);
+            setTimeout(() => setNotice(null), 5000);
+          }}
+        />
+      )}
     </div>
   );
 }

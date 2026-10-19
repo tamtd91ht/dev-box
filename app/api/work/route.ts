@@ -19,7 +19,27 @@
 //     'status'       { id, status }              → { ok }   status ∈ pending|active|done|cancelled
 //     'remove'       { id }                      → { ok }
 //
-// Gate theo MONGO_TOOL_ENABLED — tính năng sống trên cụm Mongo do người dùng
+// GHI CHÚ (kho riêng, collection 'devbox_work_notes' — cùng cụm/db với task):
+//     'notes-list'   {}                          → { notes }
+//     'note-add'     { name, tags, body }        → { note }
+//     'note-update'  { id, name, tags, body }    → { note }
+//     'note-remove'  { id }                      → { ok }
+//
+// GHI CHÚ / LỜI NHẮC ÂM LỊCH (lib/lunarReminders, collection 'devbox_lunar_reminders'):
+//     'lunar-list'   {}                                         → { reminders }
+//     'lunar-add'    { anchorDate, title, note, repeat, alert }  → { reminder }  (quét nhắc ngay)
+//     'lunar-update' { id, ...như add }                          → { reminder }
+//     'lunar-remove' { id }                                      → { ok }
+//
+// NHIỆM VỤ TRỌNG TÂM (lib/workFocus) — KHÔNG bị cổng Mongo chặn: có Mongo đã cấu
+// hình thì lưu Mongo, không thì lưu file local:
+//     'focus-list'          {}                    → { items, storage:{mode,label}, localPending }
+//     'focus-add'           { period, periodKey, title, ... }  → { item }
+//     'focus-update'        { id, ...patch }      → { item }
+//     'focus-remove'        { id }                → { ok }
+//     'focus-import-local'  {}                    → { imported }   (file local → Mongo)
+//
+// Phần còn lại gate theo MONGO_TOOL_ENABLED — tính năng sống trên cụm Mongo do người dùng
 // quản lý trong tab Mongo, tắt tool Mongo là tắt luôn chỗ này.
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -27,7 +47,10 @@ import { MONGO_ENABLED } from '@/lib/mongoClient';
 import {
   getWorkConfigView, setWorkConfig, listTasks, addTask, updateTask, setTaskStatus, removeTask,
 } from '@/lib/workTasks';
+import { listNotes, addNote, updateNote, removeNote } from '@/lib/workNotes';
 import { ensureWorkWatch, getWorkWatchState, runWorkWatchNow } from '@/lib/workWatch';
+import { listLunarReminders, addLunarReminder, updateLunarReminder, removeLunarReminder } from '@/lib/lunarReminders';
+import { listFocus, addFocus, updateFocus, removeFocus, importLocalFocus } from '@/lib/workFocus';
 
 export const runtime = 'nodejs';
 
@@ -45,14 +68,32 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  if (!MONGO_ENABLED) return disabled();
-  ensureWorkWatch();
-
   const body = await req.json().catch(() => null) as Record<string, unknown> | null;
   const action = body?.action as string | undefined;
   if (!body || !action) {
     return NextResponse.json({ ok: false, error: 'Missing action' }, { status: 400 });
   }
+
+  // Trọng tâm: đứng TRƯỚC cổng Mongo (xem đầu file) — tự chọn Mongo hoặc local.
+  if (action.startsWith('focus-')) {
+    try {
+      let result: unknown;
+      switch (action) {
+        case 'focus-list': result = await listFocus(); break;
+        case 'focus-add': result = { item: await addFocus(body) }; break;
+        case 'focus-update': result = { item: await updateFocus(body.id, body) }; break;
+        case 'focus-remove': await removeFocus(body.id); result = { ok: true }; break;
+        case 'focus-import-local': result = await importLocalFocus(); break;
+        default: return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
+      }
+      return NextResponse.json({ ok: true, result });
+    } catch (err) {
+      return NextResponse.json({ ok: false, error: (err as Error).message || 'focus operation failed' }, { status: 400 });
+    }
+  }
+
+  if (!MONGO_ENABLED) return disabled();
+  ensureWorkWatch();
 
   try {
     let result: unknown;
@@ -86,6 +127,36 @@ export async function POST(req: NextRequest) {
         break;
       case 'remove':
         await removeTask(body.id);
+        result = { ok: true };
+        break;
+      // ── Ghi chú — kho phẳng, không cảnh báo nên không đụng workWatch ──────
+      case 'notes-list':
+        result = { notes: await listNotes() };
+        break;
+      case 'note-add':
+        result = { note: await addNote(body) };
+        break;
+      case 'note-update':
+        result = { note: await updateNote(body.id, body) };
+        break;
+      case 'note-remove':
+        await removeNote(body.id);
+        result = { ok: true };
+        break;
+      // ── Lời nhắc âm lịch ───────────────────────────────────────────────────
+      case 'lunar-list':
+        result = { reminders: await listLunarReminders() };
+        break;
+      case 'lunar-add':
+        result = { reminder: await addLunarReminder(body) };
+        void runWorkWatchNow();
+        break;
+      case 'lunar-update':
+        result = { reminder: await updateLunarReminder(body.id, body) };
+        void runWorkWatchNow();
+        break;
+      case 'lunar-remove':
+        await removeLunarReminder(body.id);
         result = { ok: true };
         break;
       default:

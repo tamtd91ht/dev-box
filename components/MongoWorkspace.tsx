@@ -28,15 +28,20 @@ import {
   type MongoMonitorResult,
 } from '@/lib/mongo';
 import ConnRail from './mongo/ConnRail';
+import { useConnRailCollapse, CollapsedConnRail } from './ConnRailCollapse';
 import OverviewView from './mongo/OverviewView';
 import BrowserView from './mongo/BrowserView';
 import QuickFindView from './mongo/QuickFindView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { onInfraFocus } from '@/lib/infraFocus';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 
 const LAST_CONN_KEY = 'mongo.lastConn';
+/** Mục đang xem lúc rời tab — tải lại app là quay đúng chỗ đó, không phải bị
+ *  ném về Tổng quan rồi tự bấm lại sang Dữ liệu mỗi lần. */
+const LAST_VIEW_KEY = 'mongo.lastView';
 
 type SubView = 'overview' | 'browser' | 'quickfind';
 
@@ -52,13 +57,24 @@ export default function MongoWorkspace() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [allowWrite, setAllowWrite] = useState(false);
   const [connections, setConnections] = useState<PublicMongoConnection[]>([]);
+  // Gập cột kết nối để nhường chỗ cho vùng làm việc (components/ConnRailCollapse).
+  const railCollapse = useConnRailCollapse('mongo', connections.length);
   const [activeId, setActiveId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
   const [editConn, setEditConn] = useState<PublicMongoConnection | null>(null);
   const [menuId, setMenuId] = useState<string | null>(null);
   const [pings, setPings] = useState<Record<string, number | 'err'>>({});
 
+  // Khởi tạo 'overview' rồi mới nạp lại trong effect, KHÔNG đọc localStorage
+  // ngay trong initializer: HTML dựng ở server (không có window) sẽ khác client
+  // và React báo lỗi hydrate. Đổi mục là việc rẻ nên một nhịp loé là chấp nhận
+  // được — khác với ô filter, nơi loé nội dung rỗng trông như mất bài.
   const [subView, setSubView] = useState<SubView>('overview');
+  useEffect(() => {
+    const saved = readLocal(LAST_VIEW_KEY);
+    if (saved && SUB_VIEWS.some((v) => v.key === saved)) setSubView(saved as SubView);
+  }, []);
+  useEffect(() => { writeLocal(LAST_VIEW_KEY, subView); }, [subView]);
   /** Set by the Overview "open db" jump; consumed by BrowserView. */
   const [jumpDb, setJumpDb] = useState<string | undefined>(undefined);
 
@@ -124,6 +140,17 @@ export default function MongoWorkspace() {
   useEffect(() => {
     if (activeId) writeLocal(LAST_CONN_KEY, activeId);
   }, [activeId]);
+
+  // Monitor bấm "↗ Mở …" → chọn ĐÚNG CỤM đang báo và mục liên quan (lib/infraFocus).
+  // Chỉ nghe khi đã có danh sách kết nối, để biết id đó còn tồn tại.
+  useEffect(() => {
+    if (!connections.length) return;
+    return onInfraFocus('mongo', (f) => {
+      if (!connections.some((c) => c.id === f.connId)) return;
+      setActiveId(f.connId);
+      if (f.view && SUB_VIEWS.some((v) => v.key === f.view)) setSubView(f.view as SubView);
+    });
+  }, [connections]);
 
   // Reset every pane on connection change — stale data from another cluster is
   // worse than an empty pane.
@@ -195,8 +222,12 @@ export default function MongoWorkspace() {
   }
 
   return (
-    <div className="mongo-layout" ref={rail.ref} style={rail.style}>
+    <div className={`mongo-layout${railCollapse.collapsed ? ' rail-collapsed' : ''}`} ref={rail.ref} style={rail.style}>
+      {railCollapse.collapsed ? (
+        <CollapsedConnRail label="MongoDB" count={connections.length} onShow={railCollapse.show} />
+      ) : (
       <ConnRail
+        onHide={connections.length > 0 ? railCollapse.hide : undefined}
         connections={connections}
         activeId={activeId}
         pings={pings}
@@ -219,8 +250,10 @@ export default function MongoWorkspace() {
           if (activeId === deletedId) setActiveId(list[0]?.id ?? '');
           flash('Đã xoá cluster khỏi danh sách');
         }}
+        onImported={(summary) => { void loadConnections(); flash(summary); }}
         onError={setError}
       />
+      )}
 
       <main className="panel mongo-workspace-main">
         {!active ? (
@@ -281,7 +314,8 @@ export default function MongoWorkspace() {
           </>
         )}
       </main>
-      <Splitter {...rail.grip} />
+      {/* Đã gập thì không còn gì để kéo — dải 34px là cố định. */}
+      {!railCollapse.collapsed && <Splitter {...rail.grip} />}
     </div>
   );
 }

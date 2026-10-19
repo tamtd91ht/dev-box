@@ -22,6 +22,8 @@
 // JSON / XML / HTML (xem components/ToolsWorkspace.tsx).
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { registerUnloadBlocker } from '@/lib/unloadGuard';
+import { droppedFiles, isFileDrag, openDropped } from '@/lib/fileDrop';
 import SheetWorkspace from './SheetWorkspace';
 import WordWorkspace from './WordWorkspace';
 
@@ -229,8 +231,61 @@ export default function OfficeWorkspace({ onReady }: OfficeWorkspaceProps = {}) 
     if (dirtyTotal === 0) return;
     const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
     window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
+    // Báo vào sổ chặn unload cùng lúc với beforeunload: trong Electron, handler
+    // này làm mọi điều hướng/thoát app bị huỷ IM LẶNG (main không xử lý
+    // will-prevent-unload), nên các nút "Nạp lại sạch"/"Khởi động lại" phải
+    // tra sổ này để dừng sớm và nói rõ lý do thay vì treo.
+    const unregister = registerUnloadBlocker(
+      `tài liệu Office chưa lưu (${dirtyTotal} thay đổi)`,
+    );
+    return () => {
+      window.removeEventListener('beforeunload', warn);
+      unregister();
+    };
   }, [dirtyTotal]);
+
+  // ── Kéo thả file từ Explorer vào vùng tài liệu ─────────────────────────────
+  //
+  // Bắt ở giai đoạn CAPTURE và chặn luôn cú thả: canvas của Univer và vùng
+  // contentEditable của Word đều có xử lý drop riêng (chèn ảnh/chữ), để lọt
+  // xuống thì file bị nhét vào tài liệu thay vì được mở. File nào cũng đi qua
+  // bộ định tuyến chung (lib/fileDrop.ts): .xlsx/.docx mở tab mới ở đây,
+  // .json/.md… thả nhầm vào thì sang Tools.
+  const [dropping, setDropping] = useState(false);
+  const dragDepth = useRef(0);
+  const [dropErr, setDropErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!dropErr) return;
+    const t = setTimeout(() => setDropErr(null), 6000);
+    return () => clearTimeout(t);
+  }, [dropErr]);
+  const dropProps = {
+    onDragEnterCapture: (e: React.DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
+      e.preventDefault();
+      dragDepth.current += 1;
+      setDropping(true);
+    },
+    onDragOverCapture: (e: React.DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+    },
+    onDragLeaveCapture: (e: React.DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
+      dragDepth.current -= 1;
+      if (dragDepth.current <= 0) { dragDepth.current = 0; setDropping(false); }
+    },
+    onDropCapture: (e: React.DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dragDepth.current = 0;
+      setDropping(false);
+      setDropErr(openDropped(droppedFiles(e.dataTransfer)) || null);
+    },
+  };
 
   return (
     <div className={`office-layout${zen ? ' zen' : ''}`}>
@@ -310,7 +365,18 @@ export default function OfficeWorkspace({ onReady }: OfficeWorkspaceProps = {}) 
         </button>
       </div>
 
-      <div className="office-body">
+      <div className={`office-body${dropping ? ' dropping' : ''}`} {...dropProps}>
+        {dropping && (
+          <div className="tools-dropzone office-dropzone" aria-hidden>
+            <div className="tools-dropzone-box">
+              <span className="tools-dropzone-ico">📥</span>
+              Thả file để mở — Excel/CSV, Word mở tab mới ở đây; JSON/MD/XML… sang Tools
+            </div>
+          </div>
+        )}
+        {dropErr && (
+          <div className="office-drop-err" role="status" onClick={() => setDropErr(null)}>{dropErr}</div>
+        )}
         {tabs.length === 0 && (
           <div className="panel" style={{ margin: 'auto', textAlign: 'center' }}>
             <p className="small" style={{ color: 'var(--muted)' }}>

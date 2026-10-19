@@ -48,26 +48,73 @@ export interface OpenUrlDetail {
   target: OpenTarget;
 }
 
+/**
+ * YÊU CẦU ĐANG CHỜ, theo từng tab đích.
+ *
+ * VÌ SAO CẦN CÁI NÀY — lỗi "lần đầu ra trang trắng, lần hai mới được":
+ * tab Links/Browser chỉ được MOUNT sau lần ghé đầu tiên (`visited` trong
+ * page.tsx). Bấm một link khi tab đích chưa từng mở thì thứ tự là:
+ *
+ *     onGoTab(target)      → React xếp lịch mount, CHƯA mount
+ *     emitOpenUrl(...)     → phát event... không ai nghe
+ *     (mount xong)         → tab lên, rỗng → TRANG TRẮNG
+ *
+ * Bản trước chữa bằng cách phát lại sau `requestAnimationFrame`. Đó là đoán
+ * thời điểm, và một frame không đủ: tab còn phải chạy effect khởi tạo của nó
+ * (đọc registry, dựng partition) trước khi kịp gọi onOpenUrl. Đoán trúng hay
+ * không tuỳ máy nhanh chậm — nên lần đầu trắng, lần hai (tab đã mount) mới được.
+ *
+ * Nay bỏ hẳn việc đoán: yêu cầu được GIỮ LẠI ở đây. Ai đăng ký sau cũng nhận
+ * được ngay thứ đang chờ, dù mount trễ bao lâu. Xử lý xong thì xoá, nên tab
+ * mount lại về sau không mở lại link cũ.
+ */
+const pending = new Map<OpenTarget, string>();
+
 /** Phát yêu cầu mở URL cho tab đích (Links / Browser). */
 export function emitOpenUrl(detail: OpenUrlDetail): void {
   if (typeof window === 'undefined') return;
+  if (!detail?.url || !detail.target) return;
+  // Ghi vào chỗ chờ TRƯỚC khi phát: nếu đã có listener thì nó xử lý ngay và tự
+  // xoá; chưa có thì listener đăng ký sau sẽ thấy.
+  pending.set(detail.target, detail.url);
   window.dispatchEvent(new CustomEvent<OpenUrlDetail>(EVENT, { detail }));
+
+  // HẠN DÙNG. Đường bình thường thì tab đích luôn mount rồi tiêu thụ ngay (page.tsx
+  // gọi setMode nên tab chắc chắn lên). Nhưng nếu vì lý do nào đó không ai lấy —
+  // tab lỗi khi mount, người dùng đổi tab cực nhanh — thì bỏ đi sau một nhịp ngắn,
+  // để lần mount nào đó về sau không bất ngờ mở lại một link cũ.
+  const url = detail.url;
+  const target = detail.target;
+  setTimeout(() => { if (pending.get(target) === url) pending.delete(target); }, 10_000);
 }
 
 /**
  * Đăng ký nhận yêu cầu mở URL dành cho MỘT tab. Trả về hàm hủy đăng ký.
  *
- * Tab vừa được mount lần đầu sẽ nhận event trễ hơn lúc phát (page.tsx bật tab
- * rồi React mới mount) — vì vậy emitOpenUrl được gọi lại sau một nhịp, xem
- * OpenLinkDialog. Cả hai tab đích đều dựng id tab từ URL nên gọi trùng chỉ kích
- * hoạt lại đúng tab đó chứ không mở hai lần.
+ * Nhận cả yêu cầu ĐANG CHỜ lúc đăng ký (tab vừa mount) lẫn yêu cầu phát về sau
+ * (tab đã mở, người dùng bấm link khác). Cả hai tab đích đều dựng id tab từ URL
+ * nên nếu có gọi trùng cũng chỉ kích hoạt lại đúng tab đó, không mở hai lần.
  */
 export function onOpenUrl(target: OpenTarget, cb: (url: string) => void): () => void {
   if (typeof window === 'undefined') return () => {};
+
+  const take = (url: string) => {
+    // Xoá trước khi gọi: `cb` có thể phát tiếp event (mở tab con…), giữ lại là
+    // dễ thành vòng lặp mở đi mở lại.
+    if (pending.get(target) === url) pending.delete(target);
+    cb(url);
+  };
+
   const handler = (e: Event) => {
     const detail = (e as CustomEvent<OpenUrlDetail>).detail;
-    if (detail?.target === target && detail.url) cb(detail.url);
+    if (detail?.target === target && detail.url) take(detail.url);
   };
   window.addEventListener(EVENT, handler);
+
+  // Có thứ đang chờ sẵn → xử lý luôn. Đây chính là đường cứu ca "tab vừa mount
+  // sau khi event đã phát".
+  const waiting = pending.get(target);
+  if (waiting) take(waiting);
+
   return () => window.removeEventListener(EVENT, handler);
 }

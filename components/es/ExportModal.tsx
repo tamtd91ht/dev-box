@@ -1,182 +1,173 @@
 'use client';
 
-// Export the current ES quick-find result set as a styled .xlsx report.
-// Same UX + workbook styling as the Mongo tab (lib/mongoReport is generic):
-// title, column mapper (header ↔ field code ↔ format with epoch detection and
-// the dd/MM/yyyy · HH:mm:ss dd/MM/yyyy date formats). Re-queries the SAME
-// query server-side page by page (200/hit page, capped) so the file holds the
-// full match set — with a `_source` of just the referenced fields.
+// Xuất kết quả Elasticsearch ra .xlsx — dùng hộp thoại chung (components/export/ExportDialog: khai cột, cột thời gian
+// theo pattern, tách dòng theo list, nối cột từ bảng/index khác, lưu cấu hình). Ở đây chỉ còn: ô sort riêng của ES,
+// cách đếm và cách phân trang.
+//
+// PHÂN TRANG BẰNG SCROLL, KHÔNG PHẢI from/size:
+// ES chặn cứng `from + size` ở result window 10.000 — quá ngưỡng là ném lỗi, nên đường from không xuất nổi một index
+// lớn. Scroll không có trần đó, không cần sort, và giữ một ảnh tĩnh của index trong lúc xuất. (Trước đây đi bằng
+// search_after + `_id` làm khoá phá hoà — sai: sort `_id` cần fielddata, ES 8 tắt mặc định nên mọi lần xuất chết ngay
+// trang đầu. Xem khối ghi chú phần Scroll ở lib/esClient.ts.)
+//
+// SORT Ở ĐÂY LÀ TUỲ CHỌN, chỉ quyết định THỨ TỰ DÒNG trong file. Ô sort điền sẵn sort của lần chạy đang nhìn (hoặc sort
+// trong body) và sửa được; bỏ trống thì xuất theo thứ tự index — nhanh nhất, vẫn đủ dòng.
 
-import { useMemo, useState } from 'react';
-import { searchEs } from '@/lib/es';
-import {
-  buildReportXlsx,
-  downloadBlob,
-  reportFilename,
-  COLUMN_FORMATS,
-  NO_COLUMN_PATH,
-  type ReportColumn,
-  type ColumnFormat,
-} from '@/lib/mongoReport';
+import { useMemo, useRef, useState } from 'react';
+import { scrollStartEs, scrollNextEs, scrollClearEs, countEs } from '@/lib/es';
+// Trợ lý gõ JSON dùng chung với ô query Mongo: Enter đóng ngoặc + thụt lề đúng cấp, gợi ý tên field, `asc`/`desc`.
+import { smartEnter } from '@/lib/mongo';
+import { tokenAt } from '@/lib/mongoSuggest';
+import { buildSortMatches } from '@/lib/esSortSuggest';
+import JsonSuggest, { type JsonSuggestPick } from '../JsonSuggest';
+import { runExport, parseRows } from '../export/exportRun';
+import ExportDialog from '../export/ExportDialog';
+import type { SuggestOption } from '../SuggestInput';
 
-/** ES from+size window is 10 000 — stay under it. */
-const MAX_EXPORT_DOCS = 5000;
 const PAGE = 200;
-/** Default suggested data columns — keep the mapper visible without scrolling. */
-const MAX_DEFAULT_COLUMNS = 5;
 
 export interface ExportModalProps {
   connectionId: string;
   index: string;
-  /** JSON query string of the run being exported. */
-  query: string;
+  /** Chỉ phần `query` (tab Tìm nhanh ráp sẵn). Bỏ trống khi dùng `body`. */
+  query?: string;
+  /** Sort JSON của LẦN CHẠY đang nhìn — chỉ để ĐIỀN SẴN ô sort của modal. Với `body` thì sort lấy từ chính body. */
+  sort?: string;
+  /** NGUYÊN body _search kiểu Dev Tools (tab Dữ liệu); `_source`/`size`/`sort` của lần xuất do scrollStart đè lên. */
+  body?: string;
   querySummary: string;
-  fieldSuggestions: string[];
-  initialPaths: string[];
+  /** Gợi ý field code; có thể kèm nhãn kiểu field (mapping). */
+  fieldSuggestions: Array<string | SuggestOption>;
   defaultTitle: string;
   onClose: () => void;
   onDone: (rows: number, filename: string) => void;
 }
 
-interface ColumnDraft extends ReportColumn { key: number; }
-
-function prettyHeader(path: string): string {
-  if (path === NO_COLUMN_PATH) return 'STT';
-  const last = path.split('.').pop() ?? path;
-  return last
-    .replace(/[_-]+/g, ' ')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/^./, (c) => c.toUpperCase());
+/** Sort điền sẵn: sort của lần chạy đang nhìn (Tìm nhanh) hoặc sort nằm trong body (tab Dữ liệu); không có thì để trống. */
+function initialSort(sort?: string, body?: string): string {
+  if (sort?.trim()) return sort.trim();
+  if (body?.trim()) {
+    try {
+      const parsed = JSON.parse(body) as { sort?: unknown };
+      if (parsed.sort !== undefined && parsed.sort !== null) return JSON.stringify(parsed.sort);
+    } catch { /* body đang gõ dở — để trống, không đoán */ }
+  }
+  return '';
 }
 
 export default function ExportModal(props: ExportModalProps) {
-  const { connectionId, index, query, querySummary, fieldSuggestions, initialPaths, defaultTitle, onClose, onDone } = props;
+  const { connectionId, index, query, sort, body, fieldSuggestions } = props;
 
-  const [title, setTitle] = useState(defaultTitle);
-  let seq = 0;
-  // STT (row number) leads by default — removable like any column. Data columns
-  // are capped so the mapper fits the frame; the rest stay in the datalist.
-  const [columns, setColumns] = useState<ColumnDraft[]>(() => [
-    { key: seq++, header: 'STT', path: NO_COLUMN_PATH, format: 'number' as ColumnFormat },
-    ...(initialPaths.length ? initialPaths : ['_id']).slice(0, MAX_DEFAULT_COLUMNS).map((p) => ({
-      key: seq++, header: p === '_id' ? 'ID' : prettyHeader(p), path: p, format: 'auto' as ColumnFormat,
-    })),
-  ]);
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [sortText, setSortText] = useState(() => initialSort(sort, body));
+  const sortRef = useRef<HTMLTextAreaElement>(null);
+  const [sortCaret, setSortCaret] = useState(0);
+  /** Ô sort đang có con trỏ → mới hiện bảng gợi ý. */
+  const [sortFocused, setSortFocused] = useState(false);
 
-  const validColumns = useMemo(() => columns.filter((c) => c.path.trim()), [columns]);
-  const canExport = !busy && !!title.trim() && validColumns.length > 0;
+  /** Bắt sort hỏng NGAY TRÊN FORM — khỏi đi qua hộp xác nhận rồi mới nhận lỗi từ ES. */
+  const sortError = useMemo(() => {
+    if (!sortText.trim()) return null;
+    try { JSON.parse(sortText); return null; } catch (e) { return `Sort không phải JSON hợp lệ: ${(e as Error).message}`; }
+  }, [sortText]);
 
-  const patch = (key: number, p: Partial<ColumnDraft>) =>
-    setColumns((cs) => cs.map((c) => (c.key === key ? { ...c, ...p } : c)));
-
-  const doExport = async () => {
-    setBusy(true); setError(null);
-    try {
-      const tops = [...new Set(validColumns.map((c) => c.path.split('.')[0]))]
-        .filter((t) => t !== '_id' && t !== NO_COLUMN_PATH); // __no is synthesized client-side
-      const source = tops.length ? JSON.stringify(tops) : '';
-
-      const docs: Record<string, unknown>[] = [];
-      let from = 0;
-      for (;;) {
-        setProgress(`Đang tải dữ liệu… ${docs.length} dòng`);
-        const page = await searchEs(connectionId, index, { query, sort: '', source, size: PAGE, from });
-        for (const d of page.docs) {
-          try { docs.push(JSON.parse(d.json) as Record<string, unknown>); } catch { /* truncated — skip row */ }
-        }
-        if (page.docs.length < PAGE || docs.length >= MAX_EXPORT_DOCS) break;
-        from += PAGE;
-      }
-      const capped = docs.length >= MAX_EXPORT_DOCS;
-      const rows = docs.slice(0, MAX_EXPORT_DOCS);
-
-      setProgress(`Đang dựng file Excel… ${rows.length} dòng`);
-      const blob = await buildReportXlsx(
-        {
-          title: title.trim(),
-          target: index,
-          rowCount: rows.length,
-          note: capped ? `đã cắt tại ${MAX_EXPORT_DOCS.toLocaleString('en-US')} dòng` : undefined,
-        },
-        validColumns.map(({ header, path, format }) => ({ header: header.trim() || path, path: path.trim(), format })),
-        rows,
-      );
-      const filename = reportFilename(title);
-      downloadBlob(blob, filename);
-      onDone(rows.length, filename);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false); setProgress(null);
-    }
+  /** Thay text ô sort rồi đặt lại con trỏ (và vùng bôi đen) sau khi React vẽ. */
+  const applySort = (text: string, caret: number, selectLen = 0) => {
+    setSortText(text);
+    setSortCaret(caret);
+    requestAnimationFrame(() => {
+      sortRef.current?.focus();
+      sortRef.current?.setSelectionRange(caret, caret + selectLen);
+    });
   };
 
-  return (
-    <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(720px, 94vw)' }}>
-        <div className="status-line" style={{ marginBottom: 8 }}>
-          <h3 style={{ margin: 0, flex: 1 }}>📄 Xuất báo cáo — {index}</h3>
-          <button className="ghost sm" onClick={onClose} disabled={busy}>✕</button>
-        </div>
+  const sortToken = sortFocused ? tokenAt(sortText, sortCaret) : null;
+  const sortMatches = useMemo(
+    () => buildSortMatches(fieldSuggestions.map((f) => (typeof f === 'string' ? f : f.value)), sortText, sortToken),
+    [fieldSuggestions, sortText, sortToken],
+  );
 
-        <label className="es-field" style={{ marginBottom: 8 }}>
-          <span>Tiêu đề báo cáo (hiện trên đầu sheet + tên file)</span>
-          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Báo cáo customer theo tenant" />
-        </label>
+  const pickSort = (r: JsonSuggestPick) => {
+    const next = sortText.slice(0, r.from) + r.text + sortText.slice(r.to);
+    applySort(next, r.from + (r.caretOffset ?? r.text.length), r.selectLen ?? 0);
+  };
 
-        <div className="es-field" style={{ marginBottom: 4, minHeight: 0 }}>
-          <span>Cột báo cáo (tên cột · field code · định dạng — Auto tự nhận chữ/số/epoch)</span>
-          {/* Column rows scroll INSIDE the modal — an index with many fields
-              must not push the title/footer out of the viewport. */}
-          <div className="export-colscroll">
-            {columns.map((c) => (
-              <div key={c.key} className="es-form-row" style={{ alignItems: 'center', flexWrap: 'nowrap' }}>
-                <input className="input" style={{ flex: 1 }} value={c.header} placeholder="Tên cột (vd. Ngày tạo)"
-                  onChange={(e) => patch(c.key, { header: e.target.value })} />
-                <input className="input mono" style={{ flex: 1.2 }} value={c.path} list="es-export-fields"
-                  placeholder="field code (vd. createdAt)"
-                  onChange={(e) => patch(c.key, { path: e.target.value, header: c.header || prettyHeader(e.target.value) })} />
-                <select className="input" style={{ flex: '0 0 190px' }} value={c.format}
-                  onChange={(e) => patch(c.key, { format: e.target.value as ColumnFormat })}>
-                  {COLUMN_FORMATS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
-                </select>
-                <button className="chip-btn" title="Bỏ cột" disabled={columns.length <= 1}
-                  onClick={() => setColumns((cs) => cs.filter((x) => x.key !== c.key))}>✕</button>
-              </div>
-            ))}
-          </div>
-          <datalist id="es-export-fields">
-            {fieldSuggestions.map((f) => <option key={f} value={f} />)}
-          </datalist>
-          <div>
-            <button className="ghost sm" onClick={() => setColumns((cs) => [...cs, { key: Math.max(0, ...cs.map((c) => c.key)) + 1, header: '', path: '', format: 'auto' }])}>
-              + Thêm cột
-            </button>
-          </div>
-        </div>
-
-        <p className="es-hint" style={{ marginBottom: 8 }}>
-          Xuất <b>toàn bộ</b> kết quả khớp query <code>{querySummary}</code> (không chỉ trang đang xem,
-          trần {MAX_EXPORT_DOCS.toLocaleString('en-US')} dòng). Cột thời gian: “Ngày” → <code>dd/MM/yyyy</code>,
-          “Ngày giờ” → <code>HH:mm:ss dd/MM/yyyy</code> — date-cell thật của Excel.
-        </p>
-
-        {error && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{error}</pre>}
-
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
-          {progress && <span className="badge"><span className="spinner" aria-hidden /> {progress}</span>}
-          <button className="ghost sm" onClick={onClose} disabled={busy}>Huỷ</button>
-          <button className="sm" disabled={!canExport} onClick={() => void doExport()}
-            title={canExport ? 'Tải file .xlsx' : 'Cần tiêu đề + ít nhất 1 cột có field code'}>
-            {busy ? <span className="spinner" aria-hidden /> : '⬇'} Xuất .xlsx
-          </button>
-        </div>
+  const sortBox = (
+    <label className="mongo-field">
+      <span>Sắp xếp (JSON — gõ tên field để gợi ý; bỏ trống = theo thứ tự index, nhanh nhất)</span>
+      <div className="json-suggest-wrap">
+        <textarea
+          ref={sortRef}
+          className="input mono"
+          rows={2}
+          value={sortText}
+          placeholder='[{"created_at": "desc"}]'
+          onChange={(e) => { setSortText(e.target.value); setSortCaret(e.target.selectionStart); }}
+          onFocus={(e) => { setSortFocused(true); setSortCaret(e.target.selectionStart); }}
+          onBlur={() => setSortFocused(false)}
+          onSelect={(e) => setSortCaret((e.target as HTMLTextAreaElement).selectionStart)}
+          onKeyDown={(e) => {
+            // `defaultPrevented` là BẮT BUỘC: JsonSuggest nghe ở capture phase nên khi nó vừa chèn một field bằng
+            // Enter, handler này vẫn chạy tiếp — không chặn thì cùng một phím Enter vừa chèn vừa format.
+            if (e.key !== 'Enter' || e.shiftKey || e.defaultPrevented) return;
+            const el = e.currentTarget;
+            if (el.selectionStart !== el.selectionEnd) return;
+            const r = smartEnter(sortText, el.selectionStart);
+            if (!r) return;
+            e.preventDefault();
+            applySort(r.text, r.caret);
+          }}
+        />
+        {sortFocused && <JsonSuggest matches={sortMatches} token={sortToken} onPick={pickSort} />}
       </div>
-    </div>
+      {sortError && <span className="mongo-json-err">{sortError}</span>}
+    </label>
+  );
+
+  return (
+    <ExportDialog
+      target={index}
+      querySummary={props.querySummary}
+      sortSummary={sortText.trim() || 'theo thứ tự index'}
+      fieldSuggestions={fieldSuggestions}
+      defaultTitle={props.defaultTitle}
+      placeholder="field code (vd. deviceInfos.deviceId)"
+      allowExplode
+      allowJoin
+      extra={sortBox}
+      blocked={!!sortError}
+      countRows={async () => (await countEs(connectionId, index, query ?? '', body)).count}
+      fetchRows={async ({ paths, max, onProgress }) => {
+        const tops = paths.filter((t) => t !== '_id');
+        const source = tops.length ? JSON.stringify(tops) : '';
+        // Con trỏ của vòng lặp là scroll_id. Giữ riêng một biến ngoài để còn ĐÓNG được scroll ở finally — kể cả khi
+        // lỗi giữa chừng hay người dùng bỏ dở.
+        let scrollId: string | null = null;
+        try {
+          return await runExport<string>({
+            max,
+            onProgress,
+            fetchPage: async (cursor) => {
+              // Trang đầu mở scroll (server ráp body từ `body` hoặc `query` rời), các trang sau chỉ cần con trỏ.
+              const page = cursor === undefined
+                ? await scrollStartEs(connectionId, index, { body, query, sort: sortText, source, size: PAGE })
+                : await scrollNextEs(connectionId, cursor);
+              scrollId = page.scrollId;
+              // Còn dòng mà không có con trỏ thì DỪNG HẲN bằng lỗi, không im lặng trả về trang đầu: xuất thiếu dòng
+              // mà file vẫn mở được là kiểu hỏng không ai phát hiện ra.
+              if (page.docs.length > 0 && !page.scrollId) {
+                throw new Error('Cụm không trả scroll_id nên không lật được trang tiếp — dừng để file không bị thiếu dòng.');
+              }
+              // Scroll báo hết bằng một trang RỖNG, không phải trang ngắn.
+              return { rows: parseRows(page.docs), next: page.docs.length === 0 ? null : page.scrollId };
+            },
+          });
+        } finally {
+          // Trả context cho cụm — có trần max_open_scroll_context, bỏ rác lại mỗi lần xuất là tự bắn vào chân mình.
+          if (scrollId) void scrollClearEs(connectionId, scrollId);
+        }
+      }}
+      onClose={props.onClose}
+      onDone={props.onDone}
+    />
   );
 }

@@ -226,6 +226,21 @@ thiệu mình, và dùng được trong điều kiện — nhưng **không đị
 watch bằng `scope.watchIds` (theo **id**), nên đổi tên watch không bao giờ làm đứt
 liên kết.
 
+**Lọc consumer group (chỉ Kafka, chỉ số theo group).** Với các chỉ số lag theo
+group (`maxConsumerLag`, `stalledGroups`, `maxStalledSec`, `totalConsumerLag`,
+`emptyGroups`, `rebalancingGroups`, `groups`, `lagGroupsUnknown`), watch có field
+`groupFilter?: string[]` — chọn từ **dropdown gợi ý** trong editor (danh sách group
+lấy thẳng từ cụm qua `listKafkaGroups`, không gõ tay). Phép đo được giới hạn vào
+đúng các group đó TRƯỚC khi tính, nên cùng một chỉ số cho hai kiểu watch:
+
+- `maxConsumerLag > X` với `groupFilter` **rỗng** = *bất kỳ consumer nào* lag > X.
+- `maxConsumerLag > X` với `groupFilter` = *[nhóm đã chọn]* = *chỉ cần 1 trong các
+  consumer này* lag > X là báo (max trên tập con). Group đã chọn mà không tồn tại
+  trên cụm chỉ đơn giản không đóng góp gì (không làm hỏng phép đo).
+
+Danh sách group đi vào mô tả tự sinh của cảnh báo ("Chỉ xét N consumer group: …"),
+nên tin nhắn tự giải thích vì sao chỉ mấy consumer đó.
+
 Ngữ nghĩa runner:
 
 - **Một** interval 2s cho tất cả watch, mỗi watch tự có `nextDue` → không đẻ N timer trôi lệch nhau.
@@ -242,7 +257,7 @@ Metric mỗi stack khai báo ở `catalog.ts` (kèm `suggest` op + ngưỡng m�
 | 🧠 Redis | `up` `memUsedPct` `memUsedMb` `clients` `opsPerSec` `hitRatePct` `fragmentation` `nodes` |
 | 🍃 Mongo | `up` `connectionsUsedPct` `connections` `cacheUsedPct` `diskUsedPct` `memResidentMb` `replLagSec` `membersUnhealthy` |
 | 🔎 ES | `up` `statusLevel` (0/1/2) `unassignedShards` `relocatingShards` `pendingTasks` `heapPct` `cpuPct` `diskUsedPct` `load1m` `nodes` |
-| 🧵 Kafka | `up` `underReplicated` `offline` `brokers` `noController` `topics` `partitions` — và nhóm **consumer lag**: `maxConsumerLag` `totalConsumerLag` `stalledGroups` `maxStalledSec` `emptyGroups` `rebalancingGroups` `lagGroupsUnknown` `groups` |
+| 🧵 Kafka | `up` `underReplicated` `offline` `brokers` `noController` `topics` `partitions` — và nhóm **consumer lag**: `maxConsumerLag` `totalConsumerLag` `stalledGroups` `maxStalledSec` `deadLagGroups` `emptyGroups` `rebalancingGroups` `lagGroupsUnknown` `groups` |
 | 🐰 Rabbit | `up` `messagesReady` `messagesUnacked` `consumers` `memAlarm` `diskAlarm` `nodesDown` `memUsedPct` `fdUsedPct` `queues` `publishRate` |
 | 🐘 PG | `up` `latencyMs` |
 
@@ -270,13 +285,33 @@ Event hạ tầng phát các field (đầy đủ khai ở `catalog.ts INFRA_FIEL
   (`meaning`), máy đo bằng gì và bao lâu (`probe` + `everySec` + cách gộp node), ngưỡng
   phát là gì (`opText threshold` + `forSec`), nối thêm `note`. Một cảnh báo phải TỰ
   GIẢI THÍCH — người trực (hoặc bot AI) đọc tin nhắn là đủ ngữ cảnh, không cần mở DevBox.
+- `consumers` `consumerCount` `consumersJson` — **Kafka, MỌI chỉ số theo consumer group**:
+  đích danh group LIÊN QUAN tới cảnh báo, KHÔNG phải chỉ cái nặng nhất (5 group cùng thoả
+  thì liệt kê cả 5). Tập group tuỳ chỉ số:
+  `maxConsumerLag` → group có lag `op` ngưỡng · `totalConsumerLag` → mọi group còn lag ·
+  `stalledGroups`/`maxStalledSec` → group đứng im (kèm số giây) · `deadLagGroups` → group có lag
+  nhưng KHÔNG consumer · `emptyGroups` → group mất consumer · `rebalancingGroups` → group đang
+  rebalance · `lagGroupsUnknown`/`undescribedGroups` → group không đọc được. Mỗi group kèm **nhãn
+  hoạt động AKHQ** 🟢 đang tiêu thụ (Stable + member) / 🟡 KHÔNG consumer (0 member) — phân biệt
+  "lag vàng/xanh" bằng CÓ consumer hay không, KHÔNG bằng độ lớn lag: lag=1 mà 🟢 thường chỉ là
+  control-record của transaction (bỏ qua được), lag=1 mà 🟡 mới là kẹt thật. `consumers` là bản
+  người đọc (tự đổi dạng theo ca, kèm nhãn 🟢/🟡), `consumersJson` là bản máy đọc
+  `[{group,lag,topic?,topicLag?,stalledSec?,active?,state?,members?}]` → `AlertMeta.consumers`. Với
+  watch có `groupFilter`, danh sách tự giới hạn trong các consumer đã chọn. Rỗng ở stack/chỉ
+  số khác. Trần 20 group; `consumerCount` là tổng thật.
+- `topics` `topicCount` — **Kafka `underReplicated`/`offline`** (cảnh báo THEO TOPIC): tên các
+  topic có partition under-replicated/offline (từ clusterHealth). Vào `AlertMeta.topics`. Rỗng
+  ở chỉ số khác.
 
 Hai biến template mới (mọi nhóm event đều có):
 
 | Biến | Là gì | Dùng khi |
 |---|---|---|
-| `{{metaJson}}` | AlertMeta v1 nén một dòng | body webhook, nhúng vào tin nhắn cho bot |
+| `{{metaJson}}` | AlertMeta v2 nén một dòng | body webhook, nhúng vào tin nhắn cho bot |
 | `{{metaJsonPretty}}` | Bản thụt dòng | log, nơi người đọc |
+
+> **AlertMeta v2** thêm `consumers?: [{group,lag,topic?,topicLag?}]` (Kafka lag) — bổ sung,
+> tương thích ngược. Bot cũ bỏ qua field lạ vẫn chạy; `schemaVersion` là 2.
 
 **Quy ước cho bot**: KHÔNG có marker bọc — bot quét tin nhắn, tìm đoạn JSON bắt
 đầu bằng `{"schemaVersion":` rồi `JSON.parse`; `schemaVersion` cho biết shape

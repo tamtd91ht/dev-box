@@ -20,6 +20,7 @@ import TerminalPane, { type TermTab } from './code/TerminalPane';
 import SearchPalette from './code/SearchPalette';
 import type { OpenFile, RevealTarget } from './code/EditorPane';
 import { cProjects, cRead, cWrite, type CodeProject, type TreeEntry } from '@/lib/code';
+import { useRailCollapse, CollapsedRail } from './RailCollapse';
 
 // Monaco chỉ chạy client — tránh SSR đụng window.
 const EditorPane = dynamic(() => import('./code/EditorPane'), {
@@ -64,6 +65,8 @@ function ProjectWorkspace({
 
   // Layout (px) + drag — dùng chung LS key cho mọi project (cảm giác một IDE).
   const [sideW, setSideW] = useState(280);
+  // Thu gọn cây file — nhường chỗ cho editor (cột 2 của tab Code).
+  const rail = useRailCollapse('code-tree', '--cs-tree');
   const [termH, setTermH] = useState(260);
   const dragRef = useRef<null | { kind: 'side' | 'term'; start: number; base: number }>(null);
 
@@ -199,8 +202,15 @@ function ProjectWorkspace({
         </button>
       </div>
 
-      <div className="cs-main" style={{ gridTemplateColumns: `${sideW}px 5px 1fr` }}>
+      {/* Cây file thu gọn được: cột 34px chỉ còn dải dọc, editor nở ra hết.
+          Gập thì KHÔNG vẽ thanh kéo nữa, nên grid cũng phải rút còn HAI track —
+          để ba track mà chỉ có hai con thì editor rơi vào track 0px. */}
+      <div className="cs-main" style={{ gridTemplateColumns: rail.collapsed ? '34px 1fr' : `${sideW}px 5px 1fr` }}>
+        {rail.collapsed ? (
+          <CollapsedRail label={project.name} onShow={rail.show} />
+        ) : (
         <FileTree
+          onHide={rail.hide}
           projectId={project.id}
           projectName={project.name}
           onOpenFile={(e) => void openFile(e)}
@@ -210,7 +220,8 @@ function ProjectWorkspace({
           }}
           activeRel={activeRel ?? undefined}
         />
-        <div className="cs-divider v" onMouseDown={startDrag('side')} title="Kéo để đổi cỡ" />
+        )}
+        {!rail.collapsed && <div className="cs-divider v" onMouseDown={startDrag('side')} title="Kéo để đổi cỡ" />}
         <EditorPane
           projectId={project.id}
           files={files}

@@ -14,6 +14,7 @@
 // Lịch sử chỉ có TỪ LÚC listener chạy (kho RAM, không backfill tin cũ trước khi
 // kết nối) — đủ để quản lý hội thoại đang diễn ra và trả lời.
 
+import { keepIfSame } from '@/lib/sameData';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   zaloApiThreads,
@@ -22,6 +23,7 @@ import {
   zaloApiHistory,
   zaloApiSendMessage,
   zaloApiSendImage,
+  zaloApiSendFile,
   zaloApiLoadOlder,
   zaloApiContacts,
   zaloApiReact,
@@ -37,6 +39,7 @@ import {
 } from '@/lib/zaloapi/reactions';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
 const POLL_MS = 2000;
 
@@ -186,6 +189,7 @@ export default function ZaloChatPanel({
   connected,
   canSend,
   active,
+  visible = true,
 }: {
   accountKey: string;
   /** Đã đăng nhập (có phiên server) — chưa thì màn chat trơ. */
@@ -194,6 +198,8 @@ export default function ZaloChatPanel({
   canSend: boolean;
   /** Tài khoản này đang là tab hiển thị — chỉ poll khi cần cho nhẹ. */
   active: boolean;
+  /** Tab Zalo API đang hiện trên màn hình — ẩn thì dừng poll, hiện lại poll bù ngay. */
+  visible?: boolean;
 }) {
   const [threads, setThreads] = useState<ZaloThreadSummary[]>([]);
   const [activeThread, setActiveThread] = useState<string>('');
@@ -232,6 +238,17 @@ export default function ZaloChatPanel({
 
   // CẢM XÚC: id tin đang mở bảng chọn, và có đang mở bảng ĐẦY ĐỦ (54 mặt) hay
   // chỉ hàng nhanh 6 mặt. Lưu theo id tin để bảng đóng khi cuộn sang tin khác.
+  /**
+   * Tin đang được TRẢ LỜI (khối trích dẫn trên ô soạn). null = gửi tin thường.
+   *
+   * Giữ cả object chứ không chỉ id: lúc gửi cần zMsgId/zCliMsgId/fromId/at của
+   * tin gốc, mà `messages` có thể đã đổi (tải tin cũ, poll về tin mới) giữa lúc
+   * chọn và lúc bấm Gửi.
+   */
+  const [replyTo, setReplyTo] = useState<ZaloStoredMessage | null>(null);
+  /** Người được tag (@) trong tin nhóm sắp gửi. */
+  const [mentions, setMentions] = useState<{ uid: string; name: string }[]>([]);
+  const [mentionOpen, setMentionOpen] = useState(false);
   const [reactFor, setReactFor] = useState<string>('');
   const [reactAll, setReactAll] = useState(false);
   const [reactBusy, setReactBusy] = useState('');
@@ -241,6 +258,8 @@ export default function ZaloChatPanel({
   // MIN_HIT để vẫn trúng chuột. Tạm thời trong phiên, không nhớ qua lần mở sau
   // (xem lib/useSplit.ts).
   const rail = useSplit({ varName: '--zc-rail', min: 180, max: 560, gap: 0 });
+  // Thu gọn cột hội thoại — nhường chỗ cho khung chat.
+  const railHide = useRailCollapse('zaloapi', '--zc-rail');
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const activeThreadRef = useRef(activeThread);
@@ -249,32 +268,34 @@ export default function ZaloChatPanel({
   // ── Poll danh sách hội thoại ────────────────────────────────────────────
   useEffect(() => {
     if (!connected) { setThreads([]); return; }
+    if (!visible) return;
     let stop = false;
     const pump = () => {
       if (stop) return;
       zaloApiThreads(accountKey)
-        .then((list) => { if (!stop) setThreads(list); })
+        .then((list) => { if (!stop) setThreads(keepIfSame(list)); })
         .catch(() => { /* route/listener sẽ báo trạng thái ở nơi khác */ });
     };
     pump();
     const t = setInterval(pump, POLL_MS);
     return () => { stop = true; clearInterval(t); };
-  }, [accountKey, connected]);
+  }, [accountKey, connected, visible]);
 
   // ── Poll lịch sử của hội thoại đang mở ─────────────────────────────────
   useEffect(() => {
     if (!connected || !activeThread) { setMessages([]); return; }
+    if (!visible) return;
     let stop = false;
     const pump = () => {
       if (stop) return;
       zaloApiHistory(accountKey, activeThread)
-        .then((list) => { if (!stop) setMessages(list); })
+        .then((list) => { if (!stop) setMessages(keepIfSame(list)); })
         .catch(() => { /* bỏ nhịp */ });
     };
     pump();
     const t = setInterval(pump, POLL_MS);
     return () => { stop = true; clearInterval(t); };
-  }, [accountKey, connected, activeThread]);
+  }, [accountKey, connected, activeThread, visible]);
 
   // Cuộn xuống đáy khi có tin mới / đổi hội thoại.
   useEffect(() => {
@@ -293,6 +314,11 @@ export default function ZaloChatPanel({
     if (editorRef.current) editorRef.current.innerHTML = '';
     setEditorEmpty(true);
     setPending((p) => { p.forEach((x) => URL.revokeObjectURL(x.url)); return []; });
+    // Trả lời + tag thuộc về ĐÚNG hội thoại đang mở: giữ lại khi đổi hội thoại
+    // là gửi trích dẫn của cuộc trò chuyện khác sang đây.
+    setReplyTo(null);
+    setMentions([]);
+    setMentionOpen(false);
   }, []);
 
   const openCompose = useCallback(() => {
@@ -340,8 +366,13 @@ export default function ZaloChatPanel({
     } catch (e) { setErr((e as Error).message); }
   }, [accountKey]);
 
-  // ĐÍNH KÈM ảnh (dán/chọn) — chỉ nạp vào hàng chờ + xem trước, KHÔNG gửi ngay.
+  // ĐÍNH KÈM (dán ảnh / chọn file bất kỳ) — chỉ nạp vào hàng chờ + xem trước,
+  // KHÔNG gửi ngay. Ảnh đi đường photo, file thường đi đường asyncfile.
   const addPending = useCallback((file: File, fallbackName?: string) => {
+    if (file.size > 100 * 1024 * 1024) {
+      setErr(`"${file.name}" quá 100MB — gửi qua kênh khác.`);
+      return;
+    }
     const named = file.name ? file : new File([file], fallbackName || `screenshot_${Date.now()}.png`, { type: file.type || 'image/png' });
     const url = URL.createObjectURL(named);
     pendingSeq.current += 1;
@@ -369,21 +400,64 @@ export default function ZaloChatPanel({
     try {
       let dest = activeThread;
       if (pending.length) {
-        // Gửi từng ảnh đính kèm; chú thích (chữ đang gõ) gắn vào ảnh ĐẦU TIÊN.
-        for (let i = 0; i < pending.length; i++) {
-          const p = pending[i];
+        // Gửi từng đính kèm: ảnh đi đường photo (có chú thích — chữ đang gõ
+        // gắn vào ảnh ĐẦU TIÊN); file thường đi đường asyncfile (Zalo không
+        // có chỗ caption cho file — chữ đang gõ được gửi thành tin riêng sau).
+        let captionUsed = false;
+        for (const p of pending) {
           const dataBase64 = await fileToBase64(p.file);
-          const res = await zaloApiSendImage({ accountKey, threadId: activeThread, group, dataBase64, fileName: p.file.name, caption: i === 0 ? text.trim() : '' });
-          if (!res.ok) setErr(res.detail || 'gửi ảnh không thành công');
+          if (p.file.type.startsWith('image/')) {
+            const res = await zaloApiSendImage({
+              accountKey, threadId: activeThread, group, dataBase64, fileName: p.file.name,
+              caption: !captionUsed ? text.trim() : '',
+            });
+            captionUsed = captionUsed || !!text.trim();
+            if (!res.ok) setErr(res.detail || 'gửi ảnh không thành công');
+            dest = res.threadId || dest;
+          } else {
+            const res = await zaloApiSendFile({ accountKey, threadId: activeThread, group, dataBase64, fileName: p.file.name });
+            if (!res.ok) setErr(res.detail || 'gửi file không thành công');
+            dest = res.threadId || dest;
+          }
+        }
+        // Toàn file thường mà có chữ đang gõ → gửi chữ thành tin riêng, không nuốt.
+        if (text.trim() && !captionUsed) {
+          const res = await zaloApiSendMessage({ accountKey, threadId: activeThread, text, group });
+          if (!res.ok) setErr(res.detail || 'gửi không thành công');
           dest = res.threadId || dest;
         }
       } else {
-        const res = await zaloApiSendMessage({ accountKey, threadId: activeThread, text, group, styles: styles.length ? styles : undefined });
+        // Trả lời cần id THẬT của tin gốc. Tin gửi lạc quan (chưa có phản hồi
+        // Zalo) và tin cũ lưu trước khi có field này đều thiếu — báo thẳng thay
+        // vì gửi thành tin rời, vì "bấm trả lời mà ra tin thường" rất khó lần.
+        let quote;
+        if (replyTo) {
+          if (!replyTo.zMsgId) {
+            setErr('Tin này chưa có ID thật từ Zalo nên không trả lời được (thử tin mới hơn).');
+            setSending(false);
+            return;
+          }
+          quote = {
+            msgId: replyTo.zMsgId,
+            cliMsgId: replyTo.zCliMsgId || '',
+            ownerId: replyTo.self ? '0' : replyTo.fromId,
+            ts: replyTo.at,
+            text: replyTo.text || '',
+          };
+        }
+        const res = await zaloApiSendMessage({
+          accountKey, threadId: activeThread, text, group,
+          styles: styles.length ? styles : undefined,
+          ...(mentions.length && group ? { mentions } : {}),
+          ...(quote ? { quote, quoteFrom: replyTo?.self ? 'Bạn' : (replyTo?.fromName || replyTo?.fromId || '') } : {}),
+        });
         if (!res.ok) setErr(res.detail || 'gửi không thành công');
         dest = res.threadId || dest;
       }
       pending.forEach((p) => URL.revokeObjectURL(p.url));
       setPending([]);
+      setReplyTo(null);
+      setMentions([]);
       if (el) { el.innerHTML = ''; setEditorEmpty(true); }
       refreshAfterSend(dest);
     } catch (e) {
@@ -391,7 +465,7 @@ export default function ZaloChatPanel({
     } finally {
       setSending(false);
     }
-  }, [accountKey, activeThread, group, sending, canSend, pending, refreshAfterSend]);
+  }, [accountKey, activeThread, group, sending, canSend, pending, refreshAfterSend, replyTo, mentions]);
 
   // Áp định dạng cho vùng đang chọn trong editor (giữ focus bằng preventDefault).
   const applyFmt = useCallback((cmd: string, value?: string) => {
@@ -507,12 +581,17 @@ export default function ZaloChatPanel({
   const removeTag = (t: string) => void saveTags(activeTags.filter((x) => x !== t));
 
   return (
-    <div className="zc-wrap" data-active={active ? '1' : '0'} ref={rail.ref} style={rail.style}>
-      {/* Cột trái — danh sách hội thoại */}
+    <div className="zc-wrap" data-active={active ? '1' : '0'} ref={rail.ref} style={{ ...rail.style, ...railHide.style }}>
+      {/* Cột trái — danh sách hội thoại (thu gọn được) */}
+      {railHide.collapsed ? (
+        <CollapsedRail label="Hội thoại" onShow={railHide.show} />
+      ) : (
       <aside className="zc-list">
         <div className="zc-list-head">
           <span>Hội thoại</span>
           <span className="zc-list-headbtns">
+            <RailHideButton onHide={railHide.hide} className="zc-new"
+              title="Thu gọn danh sách hội thoại — nhường chỗ cho khung chat" />
             <button className="zc-new" title="Quét nhóm + khách từ Zalo về" onClick={() => void scan()} disabled={scanning}>
               {scanning ? '…' : '⟲'}
             </button>
@@ -603,6 +682,7 @@ export default function ZaloChatPanel({
           )}
         </div>
       </aside>
+      )}
 
       {/* Cột phải — khung tin + ô soạn */}
       <section className="zc-thread">
@@ -671,6 +751,15 @@ export default function ZaloChatPanel({
                         )}
                         <div className="zc-row-main">
                           {!m.self && group && startGroup && m.fromName && <span className="zc-msg-from">{m.fromName}</span>}
+                          {/* Khối TRÍCH DẪN của tin đang trả lời. Nằm trong
+                              cùng bong bóng, phía trên nội dung — giống Zalo
+                              thật, để đọc là biết ngay đang nói về tin nào. */}
+                          {m.quote && (
+                            <span className="zc-quote">
+                              <b className="zc-quote-from">{m.quote.fromName || 'Tin gốc'}</b>
+                              <span className="zc-quote-text">{m.quote.text || '[tin]'}</span>
+                            </span>
+                          )}
                           {m.imageUrl ? (
                             <a className="zc-msg-img" href={m.imageUrl} target="_blank" rel="noreferrer">
                               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -696,6 +785,18 @@ export default function ZaloChatPanel({
                                 setReactAll(false);
                               }}
                             >☺</button>
+                          )}
+
+                          {/* TRẢ LỜI tin này. Chỉ hiện khi tin có id THẬT của
+                              Zalo — khác với nút cảm xúc (cứ cho bấm rồi server
+                              báo lỗi): ở đây thiếu id thì Zalo im lặng gửi thành
+                              tin RỜI, không báo gì, nên chặn từ đầu rõ hơn. */}
+                          {canSend && !!m.zMsgId && (
+                            <button
+                              className="zc-reply-open"
+                              title="Trả lời tin này"
+                              onClick={() => { setReplyTo(m); editorRef.current?.focus(); }}
+                            >↩</button>
                           )}
 
                           {reactFor === m.id && (
@@ -800,20 +901,103 @@ export default function ZaloChatPanel({
               {pending.length > 0 && (
                 <div className="zc-attach">
                   {pending.map((p) => (
-                    <span key={p.id} className="zc-attach-item">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={p.url} alt="đính kèm" />
-                      <button className="zc-attach-x" title="Bỏ ảnh" onClick={() => removePending(p.id)}>✕</button>
+                    <span key={p.id} className="zc-attach-item" title={p.file.name}>
+                      {p.file.type.startsWith('image/') ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={p.url} alt="đính kèm" />
+                      ) : (
+                        // File thường: không có gì để xem trước — chip tên + cỡ.
+                        <span className="small" style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 4,
+                          padding: '6px 8px', maxWidth: 180, overflow: 'hidden',
+                          textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          📄 {p.file.name} · {p.file.size > 1024 * 1024
+                            ? `${(p.file.size / 1024 / 1024).toFixed(1)}MB`
+                            : `${Math.max(1, Math.round(p.file.size / 1024))}KB`}
+                        </span>
+                      )}
+                      <button className="zc-attach-x" title="Bỏ đính kèm" onClick={() => removePending(p.id)}>✕</button>
                     </span>
                   ))}
-                  <span className="zc-attach-hint">Enter hoặc bấm Gửi để gửi {pending.length} ảnh</span>
+                  <span className="zc-attach-hint">Enter hoặc bấm Gửi để gửi {pending.length} đính kèm</span>
                 </div>
               )}
+              {/* Đang TRẢ LỜI tin nào — hiện ngay trên ô soạn để không gửi
+                  nhầm trích dẫn sau khi đã cuộn đi chỗ khác. */}
+              {replyTo && (
+                <div className="zc-reply-bar">
+                  <span className="zc-reply-ico" aria-hidden>↩</span>
+                  <span className="zc-reply-body">
+                    <b>{replyTo.self ? 'Bạn' : (replyTo.fromName || replyTo.fromId || 'ẩn danh')}</b>
+                    <span className="zc-reply-text">{replyTo.text || (replyTo.imageUrl ? '[ảnh]' : '[tin]')}</span>
+                  </span>
+                  <button className="zc-reply-x" title="Bỏ trả lời" onClick={() => setReplyTo(null)}>✕</button>
+                </div>
+              )}
+
+              {/* TAG người trong nhóm. Chỉ hiện với hội thoại NHÓM: tin 1-1 thì
+                  người nhận đã là chính người đó, thêm @ chỉ gây rối (server
+                  cũng bỏ qua mentions của tin 1-1). */}
+              {group && canSend && (
+                <div className="zc-mention-bar">
+                  <button
+                    className="zc-mention-open"
+                    title="Tag (@) người trong nhóm — Zalo sẽ báo riêng cho họ"
+                    onClick={() => {
+                      setMentionOpen((v) => !v);
+                      // Danh bạ nạp lười: chỉ tốn một request khi thật sự mở.
+                      if (!contacts.length) zaloApiContacts(accountKey).then(setContacts).catch(() => {});
+                    }}
+                  >@ Tag</button>
+                  {mentions.map((p) => (
+                    <span key={p.uid} className="zc-mention-chip" title={p.uid}>
+                      @{p.name || p.uid}
+                      <button onClick={() => setMentions((v) => v.filter((x) => x.uid !== p.uid))} title="Bỏ tag">✕</button>
+                    </span>
+                  ))}
+                  {mentionOpen && (
+                    <div className="zc-mention-pop" role="menu">
+                      {/* Gợi ý từ CHÍNH những người đã nhắn trong nhóm này —
+                          danh bạ Zalo không cho biết thành viên nhóm, nên đây là
+                          nguồn uid thật đáng tin nhất đang có. */}
+                      {[...new Map(
+                        messages
+                          .filter((x) => !x.self && x.fromId)
+                          .map((x) => [x.fromId, { uid: x.fromId, name: x.fromName || x.fromId }]),
+                      ).values()]
+                        .filter((p) => !mentions.some((x) => x.uid === p.uid))
+                        .slice(0, 30)
+                        .map((p) => (
+                          <button
+                            key={p.uid}
+                            className="zc-mention-item"
+                            onClick={() => {
+                              // Trần 5 người: hơn nữa là ping cả nhóm, phiền hơn
+                              // là hữu ích (server cũng cắt ở 5).
+                              setMentions((v) => (v.length >= 5 ? v : [...v, p]));
+                              setMentionOpen(false);
+                              editorRef.current?.focus();
+                            }}
+                          >
+                            @{p.name}
+                          </button>
+                        ))}
+                      {!messages.some((x) => !x.self && x.fromId) && (
+                        <span className="zc-mention-empty">
+                          Chưa ai nhắn trong nhóm này ở phiên hiện tại — chưa có uid để tag.
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="zc-composer">
-                <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => void onPickImage(e)} />
+                <input ref={fileRef} type="file" multiple hidden onChange={(e) => void onPickImage(e)} />
                 <button
                   className="zc-composer-attach"
-                  title="Gửi ảnh (chú thích lấy từ ô soạn nếu có)"
+                  title="Đính kèm ảnh hoặc file bất kỳ (≤100MB). Ảnh mang chú thích từ ô soạn; file thường gửi kèm chữ thành tin riêng"
                   onClick={() => fileRef.current?.click()}
                   disabled={!canSend || sending}
                 >📎</button>
@@ -884,7 +1068,7 @@ export default function ZaloChatPanel({
 
       {/* Thanh kéo giữa danh sách hội thoại và khung chat. Con CUỐI của .zc-wrap
           (nó position:absolute nên không đẻ thêm ô cho grid). */}
-      <Splitter {...rail.grip} />
+      {!railHide.collapsed && <Splitter {...rail.grip} />}
     </div>
   );
 }

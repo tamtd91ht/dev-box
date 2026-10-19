@@ -14,10 +14,14 @@ import {
   fetchPgConnections,
   pingPg,
   pgInfo,
+  pgStats,
+  pgHostMetrics,
   listPgDatabases,
   type PublicPgConnection,
   type PgTestResult,
   type PgDatabaseInfo,
+  type PgStats,
+  type PgHostMetrics,
 } from '@/lib/pg';
 import ConnRail from './pg/ConnRail';
 import OverviewView from './pg/OverviewView';
@@ -25,10 +29,15 @@ import BrowserView from './pg/BrowserView';
 import QuickFindView from './pg/QuickFindView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
+import { onInfraFocus } from '@/lib/infraFocus';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useConnRailCollapse, CollapsedConnRail } from './ConnRailCollapse';
 
 const LAST_CONN_KEY = 'pg.lastConn';
+/** Mục đang xem lúc rời tab — tải lại app là quay đúng chỗ đó, không phải bị
+ *  ném về Tổng quan rồi tự bấm lại sang Dữ liệu mỗi lần. */
+const LAST_VIEW_KEY = 'pg.lastView';
 
 type SubView = 'overview' | 'browser' | 'quickfind';
 
@@ -44,18 +53,33 @@ export default function PgWorkspace() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [allowWrite, setAllowWrite] = useState(false);
   const [connections, setConnections] = useState<PublicPgConnection[]>([]);
+  // Thu gọn cột server — cấu hình kết nối là việc làm một lần, vùng làm việc
+  // mới là chỗ ngồi cả ngày (xem ConnRailCollapse).
+  const railHide = useConnRailCollapse('pg', connections.length);
+
   const [activeId, setActiveId] = useState<string>('');
   const [manageOpen, setManageOpen] = useState(false);
   const [editConn, setEditConn] = useState<PublicPgConnection | null>(null);
   const [menuId, setMenuId] = useState<string | null>(null);
   const [pings, setPings] = useState<Record<string, number | 'err'>>({});
 
+  // Khởi tạo 'overview' rồi mới nạp lại trong effect, KHÔNG đọc localStorage
+  // ngay trong initializer: HTML dựng ở server (không có window) sẽ khác client
+  // và React báo lỗi hydrate. Đổi mục là việc rẻ nên một nhịp loé là chấp nhận
+  // được — khác với ô SQL, nơi loé nội dung rỗng trông như mất bài.
   const [subView, setSubView] = useState<SubView>('overview');
+  useEffect(() => {
+    const saved = readLocal(LAST_VIEW_KEY);
+    if (saved && SUB_VIEWS.some((v) => v.key === saved)) setSubView(saved as SubView);
+  }, []);
+  useEffect(() => { writeLocal(LAST_VIEW_KEY, subView); }, [subView]);
   /** Set by the Overview "open db" jump; consumed by BrowserView. */
   const [jumpDb, setJumpDb] = useState<string | undefined>(undefined);
 
   const [info, setInfo] = useState<PgTestResult | null>(null);
   const [databases, setDatabases] = useState<PgDatabaseInfo[]>([]);
+  const [stats, setStats] = useState<PgStats | null>(null);
+  const [hosts, setHosts] = useState<PgHostMetrics[]>([]);
   const [ovLoading, setOvLoading] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
@@ -91,17 +115,37 @@ export default function PgWorkspace() {
     if (activeId) writeLocal(LAST_CONN_KEY, activeId);
   }, [activeId]);
 
+  // Monitor bấm "↗ Mở …" → chọn ĐÚNG CỤM đang báo và mục liên quan (lib/infraFocus).
+  // Chỉ nghe khi đã có danh sách kết nối, để biết id đó còn tồn tại.
   useEffect(() => {
-    setInfo(null); setDatabases([]); setJumpDb(undefined);
+    if (!connections.length) return;
+    return onInfraFocus('pg', (f) => {
+      if (!connections.some((c) => c.id === f.connId)) return;
+      setActiveId(f.connId);
+      if (f.view && SUB_VIEWS.some((v) => v.key === f.view)) setSubView(f.view as SubView);
+    });
+  }, [connections]);
+
+  useEffect(() => {
+    setInfo(null); setDatabases([]); setStats(null); setHosts([]); setJumpDb(undefined);
     setError(null);
   }, [activeId]);
 
   const loadOverview = useCallback(async () => {
     if (!activeId) return;
     setOvLoading(true); setError(null);
-    const [inf, dbs] = await Promise.allSettled([pgInfo(activeId), listPgDatabases(activeId)]);
+    // Thống kê sức khoẻ + máy chủ là phần THÊM: lỗi ở đó (thiếu quyền, exporter tắt)
+    // không được làm hỏng phần tổng quan cơ bản nên không đẩy vào `error`.
+    const [inf, dbs, st, hm] = await Promise.allSettled([
+      pgInfo(activeId),
+      listPgDatabases(activeId),
+      pgStats(activeId, true),
+      pgHostMetrics(activeId),
+    ]);
     if (inf.status === 'fulfilled') setInfo(inf.value); else setError((inf.reason as Error).message);
     if (dbs.status === 'fulfilled') setDatabases(dbs.value);
+    setStats(st.status === 'fulfilled' ? st.value : null);
+    setHosts(hm.status === 'fulfilled' ? hm.value : []);
     setOvLoading(false);
   }, [activeId]);
 
@@ -137,8 +181,12 @@ export default function PgWorkspace() {
   }
 
   return (
-    <div className="pg-layout" ref={rail.ref} style={rail.style}>
+    <div className="pg-layout" ref={rail.ref} style={{ ...rail.style, ...(railHide.collapsed ? { '--pg-rail': '34px' } : null) }}>
+      {railHide.collapsed ? (
+        <CollapsedConnRail label="PostgreSQL" count={connections.length} onShow={railHide.show} />
+      ) : (
       <ConnRail
+        onHide={railHide.hide}
         connections={connections}
         activeId={activeId}
         pings={pings}
@@ -161,8 +209,10 @@ export default function PgWorkspace() {
           if (activeId === deletedId) setActiveId(list[0]?.id ?? '');
           flash('Đã xoá server khỏi danh sách');
         }}
+        onImported={(summary) => { void loadConnections(); flash(summary); }}
         onError={setError}
       />
+      )}
 
       <main className="panel pg-workspace-main">
         {!active ? (
@@ -193,6 +243,9 @@ export default function PgWorkspace() {
             {subView === 'overview' && (
               <OverviewView
                 info={info}
+                stats={stats}
+                hosts={hosts}
+                hasMetricsUrls={(active.metricsUrls?.length ?? 0) > 0}
                 databases={databases}
                 loading={ovLoading}
                 onReload={loadOverview}
@@ -216,7 +269,7 @@ export default function PgWorkspace() {
           </>
         )}
       </main>
-      <Splitter {...rail.grip} />
+      {!railHide.collapsed && <Splitter {...rail.grip} />}
     </div>
   );
 }

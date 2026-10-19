@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, memo, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchGitProjects,
   mutateGitProject,
@@ -27,6 +27,8 @@ import {
   type ListMrsResult,
   type MergeMrResult,
   type MergeResult,
+  type CheckoutResult,
+  type FetchResult,
   type GitLabTokenStatusResult,
   type ListGitLabTokensResult,
   type ListNamespacesResult,
@@ -40,19 +42,12 @@ import FolderPicker from './FolderPicker';
 import { readLocal, writeLocal } from '@/lib/localKeys';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
+import DiffView from './git/DiffView';
+import { layoutGraph, GRAPH_COLORS } from '@/lib/gitGraph';
 
 const LAST_REPO_KEY = 'git.lastRepo';
 const LAST_PROJECT_KEY = 'git.lastProject';
-
-/** Colour a single diff line by its leading character. */
-function diffLineStyle(line: string): React.CSSProperties {
-  if (line.startsWith('+') && !line.startsWith('+++')) return { color: 'var(--ok, #3fb950)' };
-  if (line.startsWith('-') && !line.startsWith('---')) return { color: 'var(--err, #f85149)' };
-  if (line.startsWith('@@')) return { color: 'var(--accent, #6c8cff)' };
-  if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('+++') || line.startsWith('---'))
-    return { color: 'var(--muted)', fontWeight: 600 };
-  return {};
-}
 
 interface SelectedFile {
   path: string;
@@ -133,6 +128,12 @@ export default function GitWorkspace() {
   // diff rộng) nên dùng BIẾN RIÊNG — dùng chung '--split-rail' thì kéo bên này
   // lại đổi luôn bên kia, và biến CSS di truyền xuống con nên rất khó lần ra.
   const historySplit = useSplit({ varName: '--split-log', min: 220, max: 620, gap: 18 });
+  /** Split TRONG panel chi tiết commit: cột file (trái) | diff (phải). Tách
+   *  var riêng với hai split ngoài — biến CSS di truyền, trùng tên là cấp
+   *  trong ăn nhầm số của cấp ngoài (xem chú thích useSplit). */
+  const commitSplit = useSplit({ varName: '--split-cfiles', min: 200, max: 640, gap: 14 });
+  // Thu gọn cột danh sách file (tab Thay đổi) — nhường chỗ cho khung diff.
+  const rail = useRailCollapse('git-changes', '--split-rail');
   const [enabled, setEnabled] = useState<boolean | null>(null);
   // ── Projects (named root folders) ───────────────────────────────────────────
   const [projects, setProjects] = useState<GitProject[]>([]);
@@ -145,6 +146,11 @@ export default function GitWorkspace() {
   // Create dialog — creates a NEW GitLab project, then clones it into that root.
   const [createOpen, setCreateOpen] = useState(false);
   const [repos, setRepos] = useState<RepoInfo[]>([]);
+  /** Project được trỏ THẲNG vào một repo (root chính là working tree) — repo duy
+   *  nhất trong dropdown là chính project. Ẩn Clone/Tạo repo: chúng clone vào
+   *  BÊN TRONG root, tức vào giữa repo đang mở (server cũng chặn, xem
+   *  resolveTargetProject trong app/api/git/route.ts). */
+  const [selfRepo, setSelfRepo] = useState(false);
   const [reposLoading, setReposLoading] = useState(false);
   const [repo, setRepo] = useState<string>('');
   const [status, setStatus] = useState<RepoStatus | null>(null);
@@ -158,7 +164,10 @@ export default function GitWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [newBranch, setNewBranch] = useState('');
-  const [showBranches, setShowBranches] = useState(false);
+  /** Branch đang chọn ở sidebar (chưa checkout) — để hiện Checkout / Merge. */
+  const [sideBranch, setSideBranch] = useState('');
+  /** Cửa sổ chọn branch để checkout (gồm cả branch mới chỉ có trên remote). */
+  const [branchPickerOpen, setBranchPickerOpen] = useState(false);
   // ── Local merge (branch A → branch hiện tại, kiểu SourceTree) ────────────────
   // `mergeFrom` = ref được chọn để merge vào branch đang checkout; `mergeNoFf` ép
   // tạo merge commit; `mergeConflicts` giữ danh sách file conflict của lần merge
@@ -181,7 +190,23 @@ export default function GitWorkspace() {
   const [mrModalOpen, setMrModalOpen] = useState(false);
   const [mrHighlight, setMrHighlight] = useState<string>('');
   const [view, setView] = useState<'changes' | 'history'>('changes');
+  /** Hiện khu Quản lý (tab dự án, TẤT CẢ REPO, clone/tạo repo). Mặc định ẩn —
+   *  việc hằng ngày nằm ở thanh công cụ + sidebar. Nhớ lựa chọn qua các lần mở. */
+  const [showManage, setShowManage] = useState(false);
+  useEffect(() => { if (readLocal('git.manageOpen') === '1') setShowManage(true); }, []);
+  const toggleManage = useCallback(() => {
+    setShowManage((v) => { writeLocal('git.manageOpen', v ? '0' : '1'); return !v; });
+  }, []);
+  /** Cột sidebar (repo + branch) | vùng chính — kéo để nới. */
+  const sideSplit = useSplit({ varName: '--split-side', min: 180, max: 420, gap: 0 });
   const [commits, setCommits] = useState<CommitLog[]>([]);
+  /** Đồ thị nhánh: bật = log MỌI branch (--all) kèm đường nối; tắt = chỉ HEAD, dạng danh sách. */
+  const [logAll, setLogAll] = useState(true);
+  useEffect(() => { if (readLocal('git.logAll') === '0') setLogAll(false); }, []);
+  const toggleLogAll = useCallback(() => {
+    setLogAll((v) => { writeLocal('git.logAll', v ? '0' : '1'); return !v; });
+  }, []);
+  const graph = useMemo(() => (logAll ? layoutGraph(commits) : null), [logAll, commits]);
   const [logLoading, setLogLoading] = useState(false);
   // ── Xem nội dung thay đổi của một commit trong tab Lịch sử ──────────────────
   // `openCommit` = commit đang mở (null = chỉ xem danh sách). Danh sách file tải
@@ -192,10 +217,19 @@ export default function GitWorkspace() {
   const [commitFile, setCommitFile] = useState<string>('');
   const [commitDiff, setCommitDiff] = useState<string>('');
   const [commitDiffLoading, setCommitDiffLoading] = useState(false);
+  /** Hiện phần mô tả (body) của commit message. Một cờ chung cho cả phiên chứ
+   *  không theo từng commit: ai đã gập là đang muốn dồn chỗ cho diff, mở commit
+   *  khác cũng vẫn muốn thế. */
+  const [commitBodyOpen, setCommitBodyOpen] = useState(true);
   // Per-repo overview (state/ahead/behind) shared by the repo dropdown and the
   // all-repos panel. Keyed by repo path. Populated lazily on dropdown open / check.
   const [overview, setOverview] = useState<Record<string, RepoOverview>>({});
   const [overviewLoading, setOverviewLoading] = useState(false);
+  // Bấm đúp vào một repo → chỉ hiện repo đó trong sidebar, nhường chỗ cho danh
+  // sách branch/hành động bên dưới thay vì phải cuộn qua cả đống repo.
+  const [focusRepo, setFocusRepo] = useState(false);
+  /** Tên thao tác git đang chạy — hiện vòng xoay ngay trên thanh công cụ. */
+  const [runningOp, setRunningOp] = useState<string | null>(null);
 
   const repoRef = useRef(repo);
   repoRef.current = repo;
@@ -238,14 +272,16 @@ export default function GitWorkspace() {
   const loadRepos = useCallback(async (projectId: string) => {
     if (!projectId) {
       setRepos([]);
+      setSelfRepo(false);
       setRepo('');
       return;
     }
     setReposLoading(true);
     try {
-      const r = await gitAction<{ repos: RepoInfo[] }>('repos', { projectId });
+      const r = await gitAction<{ repos: RepoInfo[]; selfRepo?: boolean }>('repos', { projectId });
       if (projectRef.current !== projectId) return; // stale project switch
       setRepos(r.repos);
+      setSelfRepo(!!r.selfRepo);
       let initial = '';
       try {
         initial = readLocal(LAST_REPO_KEY + ':' + projectId) ?? '';
@@ -257,6 +293,7 @@ export default function GitWorkspace() {
     } catch {
       if (projectRef.current !== projectId) return;
       setRepos([]);
+      setSelfRepo(false);
       setRepo('');
     } finally {
       if (projectRef.current === projectId) setReposLoading(false);
@@ -272,6 +309,7 @@ export default function GitWorkspace() {
       /* ignore */
     }
     setOverview({}); // overview is per-project — clear on switch
+    setFocusRepo(false);
     loadRepos(activeProjectId);
   }, [activeProjectId, loadRepos]);
 
@@ -333,7 +371,7 @@ export default function GitWorkspace() {
     setSelected(null);
     setDiff('');
     setViewFile(null);
-    setShowBranches(false);
+    setSideBranch('');
     refresh(repo);
   }, [repo, refresh]);
 
@@ -361,7 +399,7 @@ export default function GitWorkspace() {
     if (!path) return;
     setLogLoading(true);
     try {
-      const r = await gitAction<{ commits: CommitLog[] }>('log', { repo: path, limit: 50 });
+      const r = await gitAction<{ commits: CommitLog[] }>('log', { repo: path, limit: logAll ? 150 : 50, all: logAll });
       if (repoRef.current !== path) return;
       setCommits(r.commits);
     } catch (e) {
@@ -371,7 +409,7 @@ export default function GitWorkspace() {
     } finally {
       setLogLoading(false);
     }
-  }, []);
+  }, [logAll]);
 
   useEffect(() => {
     if (view !== 'history' || !repo) return;
@@ -456,6 +494,7 @@ export default function GitWorkspace() {
   async function run(label: string, fn: () => Promise<{ output?: string; status?: RepoStatus }>) {
     if (busy) return;
     setBusy(true);
+    setRunningOp(label);
     setError(null);
     try {
       const res = await fn();
@@ -467,6 +506,7 @@ export default function GitWorkspace() {
       setError(`${label} failed: ${(e as Error).message}`);
     } finally {
       setBusy(false);
+      setRunningOp(null);
     }
   }
 
@@ -550,13 +590,126 @@ export default function GitWorkspace() {
     setSelected(null);
   }
 
-  async function doCheckout(branch: string, create: boolean) {
-    await run('Checkout', () => gitAction('checkout', { repo, branch, create }));
-    const br = await gitAction<BranchInfo>('branches', { repo });
-    if (repoRef.current === repo) setBranchInfo(br);
-    if (create) setNewBranch('');
-    setMergeConflicts([]); // stale — they belonged to the previous branch
-    setSelected(null);
+  /**
+   * Checkout `ref`. `ref` ĐƯỢC PHÉP là một remote ref ("origin/feat"): server
+   * dựng branch local cùng tên và track nó thay vì rơi vào detached HEAD (xem
+   * checkout() trong lib/gitCore). `create` = tạo branch mới, khi đó `startPoint`
+   * là điểm xuất phát (rỗng = từ HEAD hiện tại).
+   *
+   * NÉM lỗi ra ngoài chứ không tự nuốt: cửa sổ chọn branch phải hiện lỗi ngay
+   * cạnh danh sách, chứ không phải ở dòng lỗi của panel đang bị chính nó che.
+   */
+  const doCheckout = useCallback(
+    async (ref: string, create: boolean, startPoint?: string): Promise<CheckoutResult> => {
+      const target = repoRef.current;
+      if (!target) throw new Error('chưa chọn repo');
+      setBusy(true);
+      setRunningOp('Checkout');
+      setError(null);
+      try {
+        const res = await gitAction<CheckoutResult>('checkout', {
+          repo: target,
+          branch: ref,
+          create,
+          startPoint: startPoint || undefined,
+        });
+        if (repoRef.current === target) {
+          setStatus(res.status);
+          setBranchInfo(res.branches);
+        }
+        if (create) setNewBranch('');
+        setMergeConflicts([]); // stale — chúng thuộc về branch trước
+        setSelected(null);
+        setDiff('');
+        flash(
+          res.trackedFrom
+            ? `Đã tạo branch local "${res.branch}" theo dõi ${res.trackedFrom}`
+            : res.created
+              ? `Đã tạo & checkout "${res.branch}"`
+              : `Đang ở branch "${res.branch}"`,
+        );
+        return res;
+      } finally {
+        setBusy(false);
+        setRunningOp(null);
+      }
+    },
+    [flash],
+  );
+
+  /** Bản cho các nút trong panel — nuốt lỗi vào dòng lỗi chung của panel. */
+  const doCheckoutInline = useCallback(
+    (ref: string, create: boolean) => {
+      doCheckout(ref, create).catch((e) => setError(`Checkout failed: ${(e as Error).message}`));
+    },
+    [doCheckout],
+  );
+
+  // ── Menu chuột phải trên branch ──────────────────────────────────────────────
+  const [branchMenu, setBranchMenu] = useState<{ name: string; remote: boolean; x: number; y: number } | null>(null);
+  /** Hộp nhập tên nhỏ (Electron không có window.prompt) cho "tạo từ đây" / "đổi tên". */
+  const [nameAsk, setNameAsk] = useState<{ kind: 'create' | 'rename'; branch: string; value: string } | null>(null);
+
+  useEffect(() => {
+    if (!branchMenu) return;
+    const close = () => setBranchMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close, true);
+    window.addEventListener('blur', close);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close, true);
+      window.removeEventListener('blur', close);
+    };
+  }, [branchMenu]);
+
+  /** Thao tác branch trả về { output, status, branches } — cập nhật cả hai một lần. */
+  async function branchOp(label: string, action: string, payload: Record<string, unknown>) {
+    if (busy || !repo) return;
+    setBusy(true);
+    setRunningOp(label);
+    setError(null);
+    try {
+      const res = await gitAction<{ output?: string; status: RepoStatus; branches: BranchInfo }>(action, { repo, ...payload });
+      if (repoRef.current === repo) {
+        setStatus(res.status);
+        setBranchInfo(res.branches);
+      }
+      const out = (res.output ?? '').trim();
+      flash(out ? `${label}: ${out.split('\n')[0]}` : `${label} ✓`);
+    } catch (e) {
+      setError(`${label} failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+      setRunningOp(null);
+    }
+  }
+
+  async function menuDelete(name: string) {
+    if (!window.confirm(`Xoá branch local "${name}"?`)) return;
+    await branchOp('Xoá branch', 'delete-branch', { branch: name });
+  }
+
+  async function menuRevertHead() {
+    if (!window.confirm(`Revert commit mới nhất của "${curBranch}"?\nSẽ tạo thêm một commit đảo ngược, không viết lại lịch sử.`)) return;
+    await branchOp('Revert', 'revert-head', {});
+    if (view === 'history') void loadLog(repo);
+  }
+
+  async function submitNameAsk() {
+    if (!nameAsk) return;
+    const name = nameAsk.value.trim();
+    if (!name) return;
+    const a = nameAsk;
+    if (a.kind === 'create') {
+      if (!window.confirm(`Tạo branch mới "${name}" từ "${a.branch}" và chuyển sang nó?`)) return;
+      setNameAsk(null);
+      doCheckout(name, true, a.branch).catch((e) => setError(`Checkout failed: ${(e as Error).message}`));
+    } else {
+      if (!window.confirm(`Đổi tên branch "${a.branch}" thành "${name}"?`)) return;
+      setNameAsk(null);
+      await branchOp('Đổi tên branch', 'rename-branch', { branch: a.branch, newName: name });
+    }
   }
 
   /**
@@ -565,8 +718,8 @@ export default function GitWorkspace() {
    * a conflict is a legitimate outcome that must NOT be rendered as an error: the
    * merge stays in progress and the conflicted files are listed for the user.
    */
-  async function doMerge() {
-    const ref = mergeFrom.trim();
+  async function doMerge(refArg?: string) {
+    const ref = (refArg ?? mergeFrom).trim();
     if (!ref || !repo || busy || !status) return;
     const target = status.branch;
     const summary = [
@@ -599,6 +752,7 @@ export default function GitWorkspace() {
         setError(res.output + staleWarn);
       } else {
         setMergeFrom('');
+        setSideBranch('');
         const label =
           res.outcome === 'up-to-date'
             ? `"${target}" đã có sẵn "${ref}"`
@@ -715,10 +869,65 @@ export default function GitWorkspace() {
     );
   }
 
+  const canAct = !busy && !commandRunning;
+  const manageVisible = showManage || repos.length === 0;
+  const curBranch = branchInfo?.current ?? status?.branch ?? '';
+  const sideTarget = sideBranch && sideBranch !== curBranch ? sideBranch : '';
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
-      {/* ── Project tabs (each = a named root folder) ───────────────────────── */}
-      <ProjectTabs
+    <div className="sg-root">
+      {/* ── Thanh công cụ kiểu SmartGit: icon lớn + nhãn ─────────────────────── */}
+      <div className="sg-toolbar" role="toolbar" aria-label="Git">
+        <ToolBtn icon="↓" label="Pull" title="git pull --ff-only"
+          disabled={!canAct || !repo} running={runningOp === 'Pull'} onClick={() => run('Pull', () => gitAction('pull', { repo }))}
+          badge={status && status.behind > 0 ? status.behind : 0} />
+        <ToolBtn icon="↑" label="Push" title="git push"
+          disabled={!canAct || !repo || (!!status && status.ahead === 0 && !!status.upstream)}
+          running={runningOp === 'Push'}
+          onClick={() => run('Push', () => gitAction('push', { repo }))}
+          badge={status && status.ahead > 0 ? status.ahead : 0} />
+        <ToolBtn icon="⟳" label="Fetch" title="git fetch --prune — cập nhật branch remote"
+          disabled={!canAct || !repo} running={runningOp === 'Fetch'}
+          onClick={() => run('Fetch', async () => {
+            const res = await gitAction<FetchResult>('fetch', { repo });
+            if (repoRef.current === repo) setBranchInfo(res.branches);
+            return { status: res.status, output: res.fetched ? 'đã cập nhật remote' : 'không có remote để fetch' };
+          })} />
+        <span className="sg-tb-sep" />
+        <ToolBtn icon="⎇" label="Branch" title="Chọn / tạo branch — kể cả branch chỉ có trên remote"
+          disabled={!canAct || !repo} onClick={() => setBranchPickerOpen(true)} />
+        <ToolBtn icon="⇥" label="MR → dev" title="Merge request đang mở của repo này vào nhánh dev"
+          disabled={busy || !repo} onClick={() => openMrModal('')} />
+        <span className="sg-tb-sep" />
+        <ToolBtn icon="🔍" label="Review MR" title="Chạy Claude Code /review-mr-dev trên repo này"
+          disabled={!canAct || !repo} running={commandRunning === 'review'}
+          onClick={() => setReviewPromptOpen(true)} />
+        <ToolBtn icon="🛡" label="Scan" title="Chạy Claude Code /scan-security trên branch đang checkout"
+          disabled={!canAct || !repo} running={commandRunning === 'scan'} onClick={doScanSecurity} />
+        <span className="sg-tb-sep" />
+        <ToolBtn icon="↻" label="Làm mới" title="Làm mới trạng thái"
+          disabled={!canAct || !repo} onClick={() => { refresh(repo); if (view === 'history') loadLog(repo); }} />
+        <span style={{ flex: 1 }} />
+        {status && (
+          <span
+            className={branchWarn ? 'badge warn' : 'badge info'}
+            style={{ fontFamily: 'var(--mono)' }}
+            title={branchWarn
+              ? `Repo đang ở branch ${status.branch} — quy ước dự án: code trên dev`
+              : status.upstream ? `branch hiện tại · upstream ${status.upstream}` : 'branch hiện tại · chưa có upstream'}
+          >
+            ⎇ {status.detached ? '(detached)' : status.branch}
+            <SyncMark status={status} />
+          </span>
+        )}
+        <ToolBtn icon="⚙" label="Quản lý" title="Project, tất cả repo, clone / tạo repo"
+          active={manageVisible} onClick={toggleManage} />
+      </div>
+
+      {/* ── Quản lý: project, tất cả repo (pull all), clone / tạo repo ──────── */}
+      {manageVisible && (
+        <div className="sg-manage">
+      {manageVisible && <ProjectTabs
         projects={projects}
         activeId={activeProjectId}
         configured={projectsConfigured}
@@ -741,38 +950,56 @@ export default function GitWorkspace() {
               ?? '';
           });
         }}
-      />
+      />}
 
-      {activeProject && (
+      {manageVisible && activeProject && (
         <div
           className="small"
           style={{ color: 'var(--muted)', marginTop: -6, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}
         >
-          <span style={{ fontFamily: 'var(--mono)' }} title="thư mục gốc của project này">
-            📁 {activeProject.root}
-            {reposLoading ? ' · đang quét repo…' : ` · ${repos.length} repo`}
+          <span
+            style={{ fontFamily: 'var(--mono)' }}
+            title={selfRepo ? 'project này chính là một repo' : 'thư mục gốc của project này'}
+          >
+            {selfRepo ? '⎇' : '📁'} {activeProject.root}
+            {/* Project LAI (root là repo VÀ có repo con) phải nói đủ cả hai,
+                nếu không người dùng thấy "project này chính là repo" rồi tưởng
+                mấy repo con không được quản lý. */}
+            {reposLoading
+              ? ' · đang quét repo…'
+              : selfRepo
+                ? repos.length > 1
+                  ? ` · project này là repo + ${repos.length - 1} repo con`
+                  : ' · project này chính là repo'
+                : ` · ${repos.length} repo`}
           </span>
           <span style={{ flex: 1 }} />
-          <button
-            className="ghost sm"
-            onClick={() => setCreateOpen(true)}
-            disabled={busy || !!commandRunning}
-            title={`Tạo repo mới trên GitLab rồi clone về ${activeProject.root}`}
-          >
-            ⊕ Tạo repo…
-          </button>
-          <button
-            className="ghost sm"
-            onClick={() => setCloneOpen(true)}
-            disabled={busy || !!commandRunning}
-            title={`git clone một repo về ${activeProject.root}`}
-          >
-            ⧉ Clone repo…
-          </button>
+          {/* Project-là-repo: clone/tạo repo sẽ đặt thư mục mới vào GIỮA repo đang
+              mở, nên hai nút này không có nghĩa ở đây (server chặn luôn). */}
+          {!selfRepo && (
+            <>
+              <button
+                className="ghost sm"
+                onClick={() => setCreateOpen(true)}
+                disabled={busy || !!commandRunning}
+                title={`Tạo repo mới trên GitLab rồi clone về ${activeProject.root}`}
+              >
+                ⊕ Tạo repo…
+              </button>
+              <button
+                className="ghost sm"
+                onClick={() => setCloneOpen(true)}
+                disabled={busy || !!commandRunning}
+                title={`git clone một repo về ${activeProject.root}`}
+              >
+                ⧉ Clone repo…
+              </button>
+            </>
+          )}
         </div>
       )}
 
-      {!repos.length ? (
+{!repos.length && (
         <div className="empty" style={{ marginTop: 4 }}>
           <div className="empty-ico">⎇</div>
           {reposLoading ? (
@@ -780,15 +1007,15 @@ export default function GitWorkspace() {
           ) : (
             <p>
               Không tìm thấy repo git nào trong <code className="small">{activeProject?.root ?? 'thư mục này'}</code>.
-              Chọn/ thêm một project trỏ tới thư mục chứa các repo (bấm <b>Quản lý</b> phía trên), hoặc{' '}
-              <b>Clone repo…</b> để tải một repo về thư mục này, hoặc <b>Tạo repo…</b> để tạo repo mới trên GitLab.
+              Chọn/ thêm một project trỏ tới thư mục chứa các repo — hoặc trỏ thẳng vào MỘT repo, khi đó
+              project chính là repo đó (bấm <b>Quản lý</b> phía trên). Hoặc <b>Clone repo…</b> để tải một
+              repo về thư mục này, hoặc <b>Tạo repo…</b> để tạo repo mới trên GitLab.
             </p>
           )}
         </div>
-      ) : (
-        <>
-      {/* ── All-repos overview (status check + pull all) ───────────────────── */}
-      <AllReposPanel
+)}
+
+      {manageVisible && <AllReposPanel
         activeRepo={repo}
         projectId={activeProjectId}
         rows={overviewRows}
@@ -796,249 +1023,190 @@ export default function GitWorkspace() {
         onCheck={loadOverview}
         onOpenRepo={(p) => setRepo(p)}
         onAfterPull={() => refresh(repo)}
-      />
-
-      {/* ── Repo + branch bar ──────────────────────────────────────────────── */}
-      <div className="panel">
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <label className="small" style={{ color: 'var(--muted)' }}>Repo</label>
-          {/* CỐ Ý không tự kiểm tra khi mở dropdown: mỗi lần mở là chạy `git
-              status` cho TẤT CẢ repo, mở ra mở vào vài lần là spam. Badge (↓)
-              chỉ hiện sau khi bấm "Kiểm tra tất cả" ở panel phía trên — kiểm
-              tra là việc chủ động, không phải tác dụng phụ của việc mở menu. */}
-          <select
-            value={repo}
-            onChange={(e) => setRepo(e.target.value)}
-            disabled={busy}
-            title={overviewLoading ? 'Đang kiểm tra trạng thái repo…' : 'Chọn repo — bấm “Kiểm tra tất cả” ở trên để xem repo nào cần pull (↓)'}
-            style={{ padding: '6px 10px', minWidth: 260, fontFamily: 'var(--mono)', fontSize: 12 }}
-          >
-            {repos.map((r) => (
-              <option key={r.path} value={r.path}>{repoOptionLabel(r.name, overview[r.path])}</option>
-            ))}
-          </select>
-
-          {status && (
-            <>
-              <span className="badge info" title={status.upstream ? `upstream ${status.upstream}` : 'chưa có upstream'}>
-                ⎇ {status.detached ? '(detached)' : status.branch}
-              </span>
-              {status.ahead > 0 && <span className="badge" title="commit chưa push">↑ {status.ahead}</span>}
-              {status.behind > 0 && <span className="badge warn" title="commit ở remote chưa pull">↓ {status.behind}</span>}
-              <button className="ghost sm" onClick={() => setShowBranches((s) => !s)} disabled={busy}>
-                {showBranches ? 'Ẩn branch' : 'Branch…'}
-              </button>
-            </>
-          )}
-
-          <span style={{ flex: 1 }} />
-
-          <button
-            className="sm"
-            onClick={() => openMrModal('')}
-            disabled={busy || !repo}
-            title="Xem các merge request đang mở của repo này vào nhánh dev"
-          >
-            ⇥ MR → dev
-          </button>
-          <button
-            className="sm"
-            onClick={() => setReviewPromptOpen(true)}
-            disabled={busy || !!commandRunning || !repo}
-            title="Chạy Claude Code /review-mr-dev trên repo này"
-          >
-            {commandRunning === 'review' ? (
-              <><span className="spinner" aria-hidden /> Đang review</>
-            ) : (
-              '🔍 Review MR'
-            )}
-          </button>
-          <button
-            className="sm"
-            onClick={doScanSecurity}
-            disabled={busy || !!commandRunning || !repo}
-            title="Chạy Claude Code /scan-security trên branch đang checkout"
-          >
-            {commandRunning === 'scan' ? (
-              <><span className="spinner" aria-hidden /> Đang scan</>
-            ) : (
-              '🛡 Scan Security'
-            )}
-          </button>
-          <button
-            className="sm"
-            onClick={() => run('Pull', () => gitAction('pull', { repo }))}
-            disabled={busy || !!commandRunning}
-            title="git pull --ff-only"
-          >
-            ↓ Pull
-          </button>
-          <button
-            className="sm"
-            onClick={() => run('Push', () => gitAction('push', { repo }))}
-            disabled={busy || !!commandRunning || (!!status && status.ahead === 0 && !!status.upstream)}
-            title="git push"
-          >
-            ↑ Push{status && status.ahead > 0 ? ` (${status.ahead})` : ''}
-          </button>
-          <button className="ghost sm" onClick={() => refresh(repo)} disabled={busy || !!commandRunning} title="Làm mới trạng thái">
-            ↻
-          </button>
+      />}
         </div>
+      )}
 
-        {branchWarn && (
-          <div className="badge warn" style={{ marginTop: 10 }}>
-            ⚠ Repo <b>{repoName}</b> đang ở branch <b>{status?.branch}</b> — quy ước dự án: code trên <b>dev</b>.
+      {repos.length > 0 && (
+      <div className="sg-body" ref={sideSplit.ref} style={sideSplit.style}>
+        {/* ── Sidebar: Repositories + Branches ───────────────────────────────── */}
+        <aside className="sg-side">
+          {projects.length > 1 && (
+            <select
+              className="sg-proj"
+              value={activeProjectId}
+              onChange={(e) => setActiveProjectId(e.target.value)}
+              disabled={!canAct}
+              title="Project — thư mục gốc chứa các repo"
+            >
+              {projects.map((p) => <option key={p.id} value={p.id}>📁 {p.name}</option>)}
+            </select>
+          )}
+          <div className="sg-sec">
+            <span>Repositories</span>
+            <span className="sg-sec-n">{repos.length}</span>
+            {focusRepo && (
+              <button className="ghost sm sg-sec-btn" onClick={() => setFocusRepo(false)}
+                title="Hiện lại tất cả repo của project">↩ Tất cả</button>
+            )}
+            <button className="ghost sm sg-sec-btn" onClick={loadOverview} disabled={overviewLoading}
+              title="Kiểm tra trạng thái (↓ cần pull, ↑ cần push, ✎ đang sửa) của tất cả repo">
+              {overviewLoading ? '…' : '⟳'}
+            </button>
           </div>
-        )}
+          <RepoPicker
+            key={activeProjectId}
+            repos={repos}
+            overview={overview}
+            active={repo}
+            focus={focusRepo}
+            busy={busy}
+            onSelect={setRepo}
+            onFocus={setFocusRepo}
+          />
 
-        {showBranches && branchInfo && (
-          <div style={{ marginTop: 12, borderTop: '1px solid var(--border, rgba(127,127,127,.2))', paddingTop: 12 }}>
-            <div className="small" style={{ color: 'var(--muted)', marginBottom: 8 }}>Checkout branch</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-              {branchInfo.branches.map((b) => (
-                <button
-                  key={b}
-                  className={b === branchInfo.current ? 'sm' : 'ghost sm'}
-                  onClick={() => b !== branchInfo.current && doCheckout(b, false)}
-                  disabled={busy || !!commandRunning || b === branchInfo.current}
-                  title={b === branchInfo.current ? 'branch hiện tại' : `checkout ${b}`}
-                >
-                  {b === branchInfo.current ? '● ' : ''}{b}
-                </button>
-              ))}
+          <div className="sg-sec">
+            <span>Branches</span>
+            <span className="sg-sec-n">{branchInfo?.branches.length ?? 0}</span>
+          </div>
+          {branchInfo?.merging && (
+            <div className="sg-warn">
+              ⚠ Đang merge dở dang — xử lý conflict rồi <b>Commit</b>, hoặc{' '}
+              <button className="ghost sm" onClick={doAbortMerge} disabled={!canAct} title="git merge --abort">✕ Hủy merge</button>
             </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          )}
+          <div className="sg-list sg-branches">
+            {branchInfo?.branches.map((b) => (
+              <button
+                key={b}
+                type="button"
+                className={`sg-item${b === curBranch ? ' cur' : ''}${b === sideBranch ? ' active' : ''}`}
+                onClick={() => setSideBranch(b)}
+                onDoubleClick={() => b !== curBranch && canAct && doCheckoutInline(b, false)}
+                onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setSideBranch(b); setBranchMenu({ name: b, remote: false, x: e.clientX, y: e.clientY }); }}
+                title={b === curBranch ? 'branch hiện tại' : `${b}\nBấm đúp để checkout`}
+              >
+                <span className="sg-ico">{b === curBranch ? '●' : '⎇'}</span>
+                <span className="sg-name">{b}</span>
+                {b === curBranch && <SyncMark status={status} />}
+              </button>
+            ))}
+            {branchInfo && branchInfo.remotes.length > 0 && (
+              <details className="sg-remotes">
+                <summary>Remote ({branchInfo.remotes.length})</summary>
+                {branchInfo.remotes.map((b) => (
+                  <button
+                    key={b}
+                    type="button"
+                    className={`sg-item${b === sideBranch ? ' active' : ''}`}
+                    onClick={() => setSideBranch(b)}
+                    onDoubleClick={() => canAct && doCheckoutInline(b, false)}
+                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setSideBranch(b); setBranchMenu({ name: b, remote: true, x: e.clientX, y: e.clientY }); }}
+                    title={`${b}\nBấm đúp để checkout (tạo branch local theo dõi nó)`}
+                  >
+                    <span className="sg-ico">☁</span>
+                    <span className="sg-name">{b}</span>
+                  </button>
+                ))}
+              </details>
+            )}
+          </div>
+
+          {/* Hành động trên branch đang chọn — thay cho panel "Branch/merge" cũ. */}
+          {sideTarget && !branchInfo?.merging && (
+            <div className="sg-actions">
+              <div className="small sg-target" title={sideTarget}>{sideTarget}</div>
+              <div className="sg-actions-row">
+                <button className="sm" disabled={!canAct} onClick={() => doCheckoutInline(sideTarget, false)}
+                  title={`git checkout ${sideTarget}`}>Checkout</button>
+                <button className="sm" disabled={!canAct || !!status?.detached}
+                  onClick={() => void doMerge(sideTarget)}
+                  title={`Merge ${sideTarget} vào ${curBranch}`}>⤵ Merge vào {curBranch || 'HEAD'}</button>
+              </div>
+              <label className="small sg-noff" title="Luôn tạo merge commit kể cả khi fast-forward được">
+                <input type="checkbox" checked={mergeNoFf} onChange={(e) => setMergeNoFf(e.target.checked)} disabled={!canAct} />
+                no-ff
+              </label>
+            </div>
+          )}
+          {nameAsk && (
+            <div className="sg-newbranch sg-nameask">
+              <div className="small">{nameAsk.kind === 'create' ? `Branch mới từ “${nameAsk.branch}”` : `Đổi tên “${nameAsk.branch}”`}</div>
               <input
                 type="text"
-                value={newBranch}
-                onChange={(e) => setNewBranch(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && newBranch.trim() && doCheckout(newBranch.trim(), true)}
-                placeholder="tên branch mới"
-                style={{ flex: 1, maxWidth: 260, fontFamily: 'var(--mono)', fontSize: 12 }}
-                disabled={busy || !!commandRunning}
+                autoFocus
+                value={nameAsk.value}
+                onChange={(e) => setNameAsk({ ...nameAsk, value: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void submitNameAsk();
+                  if (e.key === 'Escape') setNameAsk(null);
+                }}
+                placeholder="Tên branch (Enter xác nhận, Esc huỷ)"
               />
-              <button
-                className="sm"
-                onClick={() => newBranch.trim() && doCheckout(newBranch.trim(), true)}
-                disabled={busy || !!commandRunning || !newBranch.trim()}
-                title="git checkout -b"
-              >
-                + Tạo & checkout
-              </button>
             </div>
-
-            {/* ── Merge branch khác vào branch hiện tại (kiểu SourceTree) ────── */}
-            <div style={{ marginTop: 14, borderTop: '1px solid var(--border, rgba(127,127,127,.2))', paddingTop: 12 }}>
-              {branchInfo.merging ? (
-                // Merge dở dang: không cho merge tiếp — chỉ xử lý conflict rồi commit,
-                // hoặc hủy về trạng thái trước.
-                <>
-                  <div className="badge warn" style={{ marginBottom: 8 }}>
-                    ⚠ Đang có merge dở dang — xử lý conflict rồi <b>Commit</b> để hoàn tất, hoặc hủy merge.
-                  </div>
-                  <button className="ghost sm" onClick={doAbortMerge} disabled={busy || !!commandRunning} title="git merge --abort">
-                    ✕ Hủy merge
-                  </button>
-                </>
-              ) : (
-                <>
-                  <div className="small" style={{ color: 'var(--muted)', marginBottom: 8 }}>
-                    Merge vào branch hiện tại{status && !status.detached ? <> (<b>{status.branch}</b>)</> : ''}
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <select
-                      value={mergeFrom}
-                      onChange={(e) => setMergeFrom(e.target.value)}
-                      style={{ flex: 1, minWidth: 200, maxWidth: 300, fontFamily: 'var(--mono)', fontSize: 12 }}
-                      disabled={busy || !!commandRunning || !!status?.detached}
-                    >
-                      <option value="">— chọn branch nguồn —</option>
-                      {branchInfo.branches
-                        .filter((b) => b !== branchInfo.current)
-                        .map((b) => (
-                          <option key={b} value={b}>{b}</option>
-                        ))}
-                      {branchInfo.remotes.length > 0 && (
-                        <optgroup label="remote">
-                          {branchInfo.remotes.map((b) => (
-                            <option key={b} value={b}>{b}</option>
-                          ))}
-                        </optgroup>
-                      )}
-                    </select>
-                    <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--muted)' }} title="Luôn tạo merge commit kể cả khi fast-forward được">
-                      <input
-                        type="checkbox"
-                        checked={mergeNoFf}
-                        onChange={(e) => setMergeNoFf(e.target.checked)}
-                        disabled={busy || !!commandRunning}
-                      />
-                      no-ff
-                    </label>
-                    <button
-                      className="sm"
-                      onClick={doMerge}
-                      disabled={busy || !!commandRunning || !mergeFrom.trim() || !!status?.detached}
-                      title={`git merge ${mergeFrom || '<branch>'}`}
-                    >
-                      ⤵ Merge
-                    </button>
-                  </div>
-                  {status?.detached && (
-                    <div className="small" style={{ color: 'var(--muted)', marginTop: 6 }}>
-                      Đang detached HEAD — checkout một branch trước khi merge.
-                    </div>
-                  )}
-                </>
-              )}
-
-              {mergeConflicts.length > 0 && (
-                <div style={{ marginTop: 10 }}>
-                  <div className="small" style={{ color: 'var(--err)', marginBottom: 4 }}>
-                    {mergeConflicts.length} file conflict:
-                  </div>
-                  <pre className="code" style={{ margin: 0, maxHeight: 140, overflow: 'auto' }}>
-                    {mergeConflicts.join('\n')}
-                  </pre>
-                </div>
-              )}
-            </div>
+          )}
+          <div className="sg-newbranch">
+            <input
+              type="text"
+              value={newBranch}
+              onChange={(e) => setNewBranch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' || !newBranch.trim()) return;
+                const name = newBranch.trim();
+                if (!window.confirm(`Tạo branch mới "${name}" từ "${curBranch || 'HEAD'}" và chuyển sang nó?`)) return;
+                doCheckoutInline(name, true);
+              }}
+              placeholder="+ branch mới (Enter)"
+              disabled={!canAct}
+            />
           </div>
-        )}
+          {mergeConflicts.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div className="small" style={{ color: 'var(--err)', marginBottom: 4 }}>{mergeConflicts.length} file conflict:</div>
+              <pre className="code" style={{ margin: 0, maxHeight: 140, overflow: 'auto' }}>{mergeConflicts.join('\n')}</pre>
+            </div>
+          )}
+          {branchMenu && (() => {
+            const m = branchMenu;
+            const isCur = !m.remote && m.name === curBranch;
+            const close = () => setBranchMenu(null);
+            return (
+              <div className="sg-menu" style={{ left: m.x, top: m.y }} onClick={(e) => e.stopPropagation()}>
+                <button disabled={!canAct || isCur} onClick={() => { close(); doCheckoutInline(m.name, false); }}>⎇ Checkout</button>
+                <button disabled={!canAct || isCur || !!status?.detached || !!branchInfo?.merging}
+                  onClick={() => { close(); void doMerge(m.name); }}>⤵ Merge vào {curBranch || 'HEAD'}</button>
+                <button disabled={!canAct} onClick={() => { close(); setNameAsk({ kind: 'create', branch: m.name, value: '' }); }}>＋ Tạo branch mới từ đây…</button>
+                {!m.remote && <button disabled={!canAct} onClick={() => { close(); setNameAsk({ kind: 'rename', branch: m.name, value: m.name }); }}>✎ Đổi tên…</button>}
+                <hr />
+                {isCur && <button disabled={!canAct || !!branchInfo?.merging} onClick={() => { close(); void menuRevertHead(); }}>↶ Revert commit mới nhất</button>}
+                <button onClick={() => { close(); void navigator.clipboard?.writeText(m.name); flash(`Đã copy “${m.name}”`); }}>⧉ Copy tên</button>
+                {!m.remote && !isCur && <button className="danger" disabled={!canAct} onClick={() => { close(); void menuDelete(m.name); }}>🗑 Xoá branch</button>}
+              </div>
+            );
+          })()}
+        </aside>
 
-        {error && <pre className="code" style={{ color: 'var(--err)', marginTop: 10, marginBottom: 0 }}>{error}</pre>}
-        {notice && <div className="small" style={{ color: 'var(--ok)', marginTop: 10 }}>{notice}</div>}
-      </div>
-
-      {/* ── Sub-tabs: Changes | History ────────────────────────────────────── */}
+        <div className="sg-main">
+      {/* ── Tabs: Thay đổi | History ───────────────────────────────────────── */}
       <div className="gitsub" role="tablist" aria-label="Git view">
-        <button
-          role="tab"
-          aria-selected={view === 'changes'}
-          className={view === 'changes' ? 'on' : ''}
-          onClick={() => setView('changes')}
-        >
-          <span aria-hidden>≡</span> Thay đổi
-          {status && status.files.length > 0 ? ` (${status.files.length})` : ''}
+        <button role="tab" aria-selected={view === 'changes'} className={view === 'changes' ? 'on' : ''} onClick={() => setView('changes')}>
+          <span aria-hidden>≡</span> Thay đổi{status && status.files.length > 0 ? ` (${status.files.length})` : ''}
         </button>
-        <button
-          role="tab"
-          aria-selected={view === 'history'}
-          className={view === 'history' ? 'on' : ''}
-          onClick={() => setView('history')}
-        >
+        <button role="tab" aria-selected={view === 'history'} className={view === 'history' ? 'on' : ''} onClick={() => setView('history')}>
           <span aria-hidden>⌛</span> History
         </button>
-        {view === 'history' && (
-          <>
-            <span style={{ flex: 1 }} />
-            <button className="ghost sm" onClick={() => loadLog(repo)} disabled={logLoading} title="Làm mới history">
-              ↻
-            </button>
-          </>
+        <span style={{ flex: 1 }} />
+        {branchWarn && (
+          <span className="badge warn">⚠ <b>{repoName}</b> ở <b>{status?.branch}</b> — quy ước: code trên <b>dev</b></span>
         )}
       </div>
+
+      {(error || notice) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {error && <pre className="code" style={{ color: 'var(--err)', margin: 0 }}>{error}</pre>}
+          {notice && <div className="small" style={{ color: 'var(--ok)' }}>{notice}</div>}
+        </div>
+      )}
 
       {view === 'history' ? (
         /* ── History: danh sách commit | nội dung thay đổi ───────────────── */
@@ -1046,6 +1214,13 @@ export default function GitWorkspace() {
           <div className="panel">
             <div className="status-line">
               <h3 style={{ margin: 0, flex: 1 }}>Commit gần đây</h3>
+              <button
+                className={`ghost sm${logAll ? ' on' : ''}`}
+                onClick={toggleLogAll}
+                title={logAll ? 'Đang hiện mọi branch kèm đồ thị — bấm để chỉ xem branch hiện tại' : 'Bấm để hiện mọi branch kèm đồ thị'}
+              >
+                ⑂ Tất cả branch
+              </button>
               <span className="small" style={{ color: 'var(--muted)' }}>
                 {status && !status.detached ? `⎇ ${status.branch}` : ''} · {commits.length}
               </span>
@@ -1063,19 +1238,22 @@ export default function GitWorkspace() {
               </div>
             ) : (
               <div className="log-list" style={{ marginTop: 10, overflow: 'auto', flex: 1, minHeight: 0 }}>
-                {commits.map((c) => (
+                {commits.map((c, idx) => (
                   <button
                     key={c.hash}
                     type="button"
-                    className={`log-row log-pick${openCommit?.hash === c.hash ? ' active' : ''}`}
+                    className={`log-row log-pick${graph ? ' log-graph' : ''}${openCommit?.hash === c.hash ? ' active' : ''}`}
                     onClick={() => openCommitDetail(c.hash)}
                     title={`${c.hash}\n${c.author} · ${c.date}\n\nBấm để xem nội dung thay đổi`}
                   >
+                    {graph && <GraphCell row={graph.rows[idx]} width={graph.width} />}
                     <code className="log-hash">{c.shortHash}</code>
                     <div className="log-main">
                       <div className="log-subject">
                         {c.subject}
-                        {c.refs && <span className="log-refs">{c.refs}</span>}
+                        {c.refs && (graph
+                          ? c.refs.split(', ').map((r) => <span key={r} className="log-refs">{r.replace('HEAD -> ', '● ')}</span>)
+                          : <span className="log-refs">{c.refs}</span>)}
                       </div>
                       <div className="log-meta small">
                         {c.author} · {c.relDate}
@@ -1087,8 +1265,13 @@ export default function GitWorkspace() {
             )}
           </div>
 
-          {/* Phải: file của commit + patch của file đang chọn */}
-          <div className="panel">
+          {/* Phải: chi tiết commit. Bố cục CHIA CỘT chứ không xếp chồng —
+              bản cũ xếp dọc (message → danh sách file → diff) nên diff luôn bị
+              đẩy xuống đáy, còn chưa đến 1/4 màn hình khi commit đụng ~10 file.
+              Giờ: header + mô tả (gập được) chiếm dải mỏng trên cùng, phần còn
+              lại là file (trái) | diff (phải) — diff ăn gần trọn chiều cao,
+              đúng bố cục GitHub Desktop/Fork. */}
+          <div className="panel commit-pane">
             {commitLoading ? (
               <div className="empty" style={{ padding: '24px 8px' }}>
                 <div className="empty-ico">⌛</div>
@@ -1112,27 +1295,34 @@ export default function GitWorkspace() {
                     {openCommit.shortHash}
                   </code>
                 </div>
-                <div className="small" style={{ color: 'var(--muted)', marginTop: 2 }}>
-                  {openCommit.author} · {openCommit.relDate} · {fmtCommitDate(openCommit.date)}
+                <div
+                  className="small"
+                  style={{ color: 'var(--muted)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 8 }}
+                >
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    {openCommit.author} · {openCommit.relDate} · {fmtCommitDate(openCommit.date)}
+                  </span>
+                  {openCommit.body && (
+                    <button
+                      className={`ghost sm${commitBodyOpen ? ' on' : ''}`}
+                      onClick={() => setCommitBodyOpen((v) => !v)}
+                      title={commitBodyOpen
+                        ? 'Gập mô tả commit — nhường chỗ cho diff'
+                        : 'Hiện mô tả đầy đủ của commit'}
+                    >
+                      {commitBodyOpen ? '⌃' : '⌄'} Mô tả
+                    </button>
+                  )}
                 </div>
 
-                {openCommit.body && (
+                {openCommit.body && commitBodyOpen && (
                   <pre
                     className="code"
-                    style={{ marginTop: 10, maxHeight: '22vh', overflow: 'auto', whiteSpace: 'pre-wrap' }}
+                    style={{ marginTop: 8, maxHeight: '16vh', overflow: 'auto', whiteSpace: 'pre-wrap', flex: 'none' }}
                   >
                     {openCommit.body}
                   </pre>
                 )}
-
-                <div className="status-line" style={{ marginTop: 12 }}>
-                  <h3 style={{ margin: 0, flex: 1, fontSize: 13 }}>
-                    {openCommit.files.length} file thay đổi
-                  </h3>
-                  <span className="small" style={{ color: 'var(--muted)' }}>
-                    {churnSummary(openCommit.files)}
-                  </span>
-                </div>
 
                 {openCommit.files.length === 0 ? (
                   <div className="empty" style={{ padding: '18px 8px' }}>
@@ -1143,45 +1333,55 @@ export default function GitWorkspace() {
                     </p>
                   </div>
                 ) : (
-                  <div className="commit-files">
-                    {openCommit.files.map((f) => (
-                      <button
-                        key={f.path}
-                        type="button"
-                        className={`commit-file${commitFile === f.path ? ' active' : ''}`}
-                        onClick={() => setCommitFile(f.path)}
-                        title={f.oldPath ? `${f.oldPath}  →  ${f.path}` : f.path}
-                      >
-                        <span className={`cf-badge st-${f.status}`}>{f.status}</span>
-                        <span className="cf-path">
-                          {f.oldPath && <span className="cf-old">{f.oldPath} → </span>}
-                          {f.path}
+                  <div className="commit-detail" ref={commitSplit.ref} style={commitSplit.style}>
+                    <div className="commit-detail-files">
+                      <div className="status-line">
+                        <h3 style={{ margin: 0, flex: 1, fontSize: 13 }}>
+                          {openCommit.files.length} file thay đổi
+                        </h3>
+                        <span className="small" style={{ color: 'var(--muted)' }}>
+                          {churnSummary(openCommit.files)}
                         </span>
-                        <span className="cf-churn small">{churnLabel(f)}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {commitFile && (
-                  <>
-                    <div className="status-line" style={{ marginTop: 12 }}>
-                      <h3 style={{ margin: 0, flex: 1, minWidth: 0, fontSize: 13 }}>{commitFile}</h3>
-                      {commitDiffLoading && <span className="small" style={{ color: 'var(--muted)' }}>đang tải…</span>}
-                    </div>
-                    {commitDiff ? (
-                      <pre className="code" style={{ marginTop: 8, maxHeight: '48vh', overflow: 'auto' }}>
-                        {commitDiff.split('\n').map((line, i) => (
-                          <div key={i} style={diffLineStyle(line)}>{line || ' '}</div>
-                        ))}
-                      </pre>
-                    ) : !commitDiffLoading ? (
-                      <div className="empty" style={{ padding: '18px 8px' }}>
-                        <div className="empty-ico">≡</div>
-                        <p className="small">Không có diff hiển thị (file nhị phân hoặc chỉ đổi chế độ).</p>
                       </div>
-                    ) : null}
-                  </>
+                      <div className="commit-files">
+                        {openCommit.files.map((f) => (
+                          <button
+                            key={f.path}
+                            type="button"
+                            className={`commit-file${commitFile === f.path ? ' active' : ''}`}
+                            onClick={() => setCommitFile(f.path)}
+                            title={f.oldPath ? `${f.oldPath}  →  ${f.path}` : f.path}
+                          >
+                            <span className={`cf-badge st-${f.status}`}>{f.status}</span>
+                            <span className="cf-path">
+                              {f.oldPath && <span className="cf-old">{f.oldPath} → </span>}
+                              {f.path}
+                            </span>
+                            <span className="cf-churn small">{churnLabel(f)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="commit-detail-diff">
+                      {!commitFile ? (
+                        <div className="empty" style={{ padding: '24px 8px' }}>
+                          <div className="empty-ico">≡</div>
+                          <p className="small">Chọn một file bên trái để xem diff.</p>
+                        </div>
+                      ) : commitDiffLoading ? (
+                        <div className="empty" style={{ padding: '24px 8px' }}>
+                          <div className="empty-ico">⌛</div>
+                          <p className="small">đang tải diff…</p>
+                        </div>
+                      ) : (
+                        /* Tên file do DiffView hiện — bỏ <h3> ở đây, nếu không
+                           cùng một đường dẫn hiện hai lần liền nhau. */
+                        <DiffView patch={commitDiff} path={commitFile} />
+                      )}
+                    </div>
+                    <Splitter {...commitSplit.grip} />
+                  </div>
                 )}
               </>
             )}
@@ -1190,11 +1390,16 @@ export default function GitWorkspace() {
         </div>
       ) : (
       /* ── Changes + diff ─────────────────────────────────────────────────── */
-      <div className="layout" ref={listSplit.ref} style={listSplit.style}>
-        {/* Left: file groups */}
+      <div className="layout" ref={listSplit.ref} style={{ ...listSplit.style, ...rail.style }}>
+        {/* Left: file groups (thu gọn được) */}
+        {rail.collapsed ? (
+          <CollapsedRail label="Thay đổi" count={status?.files.length ?? 0} onShow={rail.show} />
+        ) : (
         <div className="panel">
           <div className="status-line">
             <h3 style={{ margin: 0, flex: 1 }}>Thay đổi</h3>
+            <RailHideButton onHide={rail.hide} className="ghost sm"
+              title="Thu gọn danh sách file — nhường chỗ cho khung diff" />
             {status && <span className="small" style={{ color: 'var(--muted)' }}>{status.files.length} file</span>}
             {status && status.files.length > 0 && (
               <button
@@ -1293,30 +1498,21 @@ export default function GitWorkspace() {
           </div>
         </div>
 
+        )}
+
         {/* Right: diff view */}
         <div className="panel">
           {selected ? (
             <>
-              <div className="status-line">
-                <span className={`badge ${selected.staged ? 'info' : ''}`}>{selected.staged ? 'staged' : 'working'}</span>
-                <code className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {selected.path}
-                </code>
-              </div>
-              {diff ? (
-                <pre className="code" style={{ marginTop: 10, maxHeight: '60vh', overflow: 'auto' }}>
-                  {diff.split('\n').map((line, i) => (
-                    <div key={i} style={diffLineStyle(line)}>{line || ' '}</div>
-                  ))}
-                </pre>
-              ) : (
-                <div className="empty" style={{ padding: '24px 8px' }}>
-                  <div className="empty-ico">≡</div>
-                  <p className="small">
-                    Không có diff hiển thị (file mới chưa stage, hoặc thay đổi binary). Stage để xem.
-                  </p>
-                </div>
-              )}
+              {/* Đường dẫn + badge + số dòng nằm TRONG DiffView để đi kèm công
+                  tắc chế độ xem — tách thành hàng riêng thì hai cụm thông tin về
+                  cùng một file lại ở hai chỗ. DiffView cũng tự lo ca "không có
+                  diff" (binary / file mới chưa stage). */}
+              <DiffView
+                patch={diff}
+                path={selected.path}
+                badge={selected.staged ? 'staged' : 'working'}
+              />
             </>
           ) : (
             <div className="empty">
@@ -1325,11 +1521,14 @@ export default function GitWorkspace() {
             </div>
           )}
         </div>
-        <Splitter {...listSplit.grip} />
+        {!rail.collapsed && <Splitter {...listSplit.grip} />}
       </div>
       )}
-        </>
+        </div>
+        <Splitter {...sideSplit.grip} />
+      </div>
       )}
+
 
       {activityLabel && (
         <div className="activity-badge" role="status" aria-live="polite">
@@ -1449,6 +1648,18 @@ export default function GitWorkspace() {
           existingNames={repos.map((r) => r.name)}
           onClose={() => setCreateOpen(false)}
           onCreated={afterCreate}
+        />
+      )}
+
+      {branchPickerOpen && repo && (
+        <BranchPickerModal
+          repo={repo}
+          repoName={repoName}
+          busy={busy || !!commandRunning}
+          onCheckout={doCheckout}
+          onBranches={(br) => { if (repoRef.current === repo) setBranchInfo(br); }}
+          onStatus={(st) => { if (repoRef.current === repo) setStatus(st); }}
+          onClose={() => setBranchPickerOpen(false)}
         />
       )}
 
@@ -1949,6 +2160,345 @@ function CreateRepoModal({ projectId, projectName, root, existingNames, onClose,
             }}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Cửa sổ chọn branch để checkout ──────────────────────────────────────────
+
+interface BranchPickerModalProps {
+  repo: string;
+  repoName: string;
+  busy: boolean;
+  onCheckout: (ref: string, create: boolean, startPoint?: string) => Promise<CheckoutResult>;
+  onBranches: (br: BranchInfo) => void;
+  onStatus: (st: RepoStatus) => void;
+  onClose: () => void;
+}
+
+/** Một dòng trong danh sách: branch local, hoặc branch MỚI CHỈ CÓ trên remote. */
+interface BranchRow {
+  /** Ref gửi cho server: "feat" (local) hoặc "origin/feat" (chỉ có trên remote). */
+  ref: string;
+  /** Tên branch local sẽ đứng sau khi checkout — cũng là tên hiển thị. */
+  name: string;
+  /** Remote chứa nó, chỉ có ở dòng remote-only. */
+  remote?: string;
+  current: boolean;
+}
+
+/**
+ * Chọn branch để checkout — ĐIỂM CHÍNH: liệt kê cả branch chưa có dưới máy.
+ *
+ * Clone về chỉ có đúng một branch local, nên danh sách `git branch` (cái panel
+ * bên ngoài đang hiện) gần như luôn là một dòng: không có đường nào sang branch
+ * khác. Cửa sổ này gộp `refs/heads` và `refs/remotes` thành MỘT danh sách, và
+ * `git fetch --prune` ngay lúc mở để branch người khác vừa push cũng hiện ra —
+ * bản sao local của refs/remotes không tự cập nhật bao giờ.
+ *
+ * Bấm một dòng remote-only thì server dựng branch local cùng tên và track nó
+ * (không phải detached HEAD) — xem checkout() trong lib/gitCore.
+ *
+ * TỰ ĐỌC DANH SÁCH, KHÔNG NHẬN QUA PROP: panel ngoài giữ branchInfo của repo
+ * vừa xem, mà đổi repo thì nó về muộn (fetch/status xếp hàng sau vài request
+ * khác). Nhận qua prop là có lúc hiện branch của repo TRƯỚC dưới cái tên repo
+ * MỚI — sai một cách rất khó ngờ, vì mọi thứ trông vẫn bình thường.
+ */
+function BranchPickerModal({ repo, repoName, busy, onCheckout, onBranches, onStatus, onClose }: BranchPickerModalProps) {
+  const [list, setList] = useState<BranchInfo | null>(null);
+  /** Số file đang đổi — git sẽ CHẶN checkout nếu branch kia cũng đụng vào chúng. */
+  const [dirty, setDirty] = useState<number | null>(null);
+  const [query, setQuery] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [fetchNote, setFetchNote] = useState<string | null>(null);
+  /** Ref đang checkout (hoặc '__new__' khi đang tạo branch mới) — khóa danh sách. */
+  const [working, setWorking] = useState<string | null>(null);
+  const [newName, setNewName] = useState('');
+  const [startPoint, setStartPoint] = useState('');
+  const [creating, setCreating] = useState(false);
+
+  // Esc đóng, giống các modal khác trong workspace này.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const apply = useCallback(
+    (br: BranchInfo, st?: RepoStatus) => {
+      setList(br);
+      onBranches(br);
+      if (st) {
+        setDirty(st.files.length);
+        onStatus(st);
+      }
+    },
+    [onBranches, onStatus],
+  );
+
+  /** Đọc danh sách dưới máy — chỉ chạm đĩa, nên hiện ra gần như tức thì. */
+  const loadLocal = useCallback(async () => {
+    try {
+      const [st, br] = await Promise.all([
+        gitAction<RepoStatus>('status', { repo }),
+        gitAction<BranchInfo>('branches', { repo }),
+      ]);
+      apply(br, st);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, [repo, apply]);
+
+  const doFetch = useCallback(async () => {
+    setFetching(true);
+    try {
+      const res = await gitAction<FetchResult>('fetch', { repo });
+      apply(res.branches, res.status);
+      setFetchNote(
+        res.fetched
+          ? 'Đã hỏi remote — danh sách dưới đây là branch trên server lúc này.'
+          : '⚠ Không fetch được (offline / chưa có quyền) — đang xem bản local có thể đã cũ.',
+      );
+    } catch (e) {
+      // Fetch hỏng KHÔNG chặn việc chọn branch: danh sách local vẫn dùng được.
+      setFetchNote(`⚠ Fetch lỗi: ${(e as Error).message} — đang xem bản local có thể đã cũ.`);
+    } finally {
+      setFetching(false);
+    }
+  }, [repo, apply]);
+
+  // Mở lên: hiện ngay danh sách dưới máy, rồi mới đi hỏi remote (chậm hơn nhiều).
+  useEffect(() => {
+    loadLocal().then(doFetch);
+  }, [loadLocal, doFetch]);
+
+  /** Local trước (theo thứ tự git), rồi các branch CHỈ CÓ trên remote. */
+  const rows = useMemo<BranchRow[]>(() => {
+    const local = list?.branches ?? [];
+    const localSet = new Set(local);
+    const out: BranchRow[] = local.map((b) => ({ ref: b, name: b, current: b === list?.current }));
+    const remoteOnly: BranchRow[] = [];
+    for (const r of list?.remotes ?? []) {
+      const slash = r.indexOf('/');
+      if (slash <= 0) continue;
+      const remote = r.slice(0, slash);
+      const name = r.slice(slash + 1);
+      // Đã có bản local cùng tên → dòng local phía trên MỚI là cái đúng để bấm;
+      // thêm dòng remote nữa chỉ làm người dùng tưởng có hai branch khác nhau.
+      if (!name || localSet.has(name)) continue;
+      remoteOnly.push({ ref: r, name, remote, current: false });
+    }
+    remoteOnly.sort((a, b) => a.name.localeCompare(b.name));
+    return out.concat(remoteOnly);
+  }, [list]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) => r.ref.toLowerCase().includes(q));
+  }, [rows, query]);
+
+  const localCount = rows.filter((r) => !r.remote).length;
+  const remoteCount = rows.length - localCount;
+  const locked = !!working || busy;
+
+  const pick = useCallback(
+    async (row: BranchRow) => {
+      if (row.current || locked) return;
+      setWorking(row.ref);
+      setErr(null);
+      try {
+        await onCheckout(row.ref, false);
+        onClose();
+      } catch (e) {
+        setErr((e as Error).message);
+      } finally {
+        setWorking(null);
+      }
+    },
+    [locked, onCheckout, onClose],
+  );
+
+  const createBranch = useCallback(async () => {
+    const name = newName.trim();
+    if (!name || locked) return;
+    setWorking('__new__');
+    setErr(null);
+    try {
+      await onCheckout(name, true, startPoint || undefined);
+      onClose();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setWorking(null);
+    }
+  }, [newName, startPoint, locked, onCheckout, onClose]);
+
+  return (
+    <div className="modal-backdrop" onClick={() => !working && onClose()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(620px, 94vw)' }}>
+        <div className="status-line" style={{ marginBottom: 10 }}>
+          <h3 style={{ margin: 0, flex: 1 }}>Đổi branch — {repoName || 'repo'}</h3>
+          <button
+            className="ghost sm"
+            onClick={doFetch}
+            disabled={fetching || !!working}
+            title="git fetch --prune — lấy danh sách branch mới nhất từ remote"
+          >
+            {fetching ? <span className="spinner" aria-hidden /> : '↻'} Fetch
+          </button>
+          <button className="ghost sm" onClick={onClose} disabled={!!working}>✕</button>
+        </div>
+
+        <div className="small" style={{ color: 'var(--muted)', marginBottom: 8 }}>
+          {list ? (
+            <>
+              {localCount} branch dưới máy · {remoteCount} branch chỉ có trên remote
+              {list.current ? <> · đang ở <b>{list.current}</b></> : null}
+            </>
+          ) : (
+            'Đang đọc danh sách branch…'
+          )}
+        </div>
+
+        {(fetching || fetchNote) && (
+          <div
+            className="small"
+            style={{ color: fetchNote?.startsWith('⚠') ? 'var(--warn, #d29922)' : 'var(--muted)', marginBottom: 8 }}
+          >
+            {fetching ? 'Đang hỏi remote xem có branch nào mới…' : fetchNote}
+          </div>
+        )}
+
+        {!!dirty && (
+          <div className="badge warn" style={{ marginBottom: 8 }}>
+            ⚠ Đang có {dirty} file thay đổi chưa commit — git sẽ chặn nếu branch kia cũng đụng vào chúng.
+          </div>
+        )}
+
+        <input
+          type="text"
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && filtered.length) {
+              const first = filtered.find((r) => !r.current);
+              if (first) pick(first);
+            }
+          }}
+          placeholder="Lọc theo tên branch…"
+          disabled={locked}
+          style={{ width: '100%', fontFamily: 'var(--mono)', fontSize: 12, marginBottom: 8 }}
+        />
+
+        {err && <pre className="code" style={{ color: 'var(--err)', margin: '0 0 10px', whiteSpace: 'pre-wrap' }}>{err}</pre>}
+
+        {filtered.length === 0 ? (
+          <div className="empty" style={{ padding: '24px 8px' }}>
+            <div className="empty-ico">⎇</div>
+            <p className="small">
+              {!list
+                ? 'Đang đọc danh sách branch…'
+                : rows.length === 0
+                  ? 'Chưa thấy branch nào — bấm ↻ Fetch, hoặc repo này chưa có remote.'
+                  : `Không có branch nào khớp “${query}”.`}
+            </p>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: '46vh', overflow: 'auto' }}>
+            {filtered.map((row) => (
+              <button
+                key={row.ref}
+                className="ghost sm"
+                onClick={() => pick(row)}
+                disabled={row.current || locked}
+                title={
+                  row.current
+                    ? 'branch hiện tại'
+                    : row.remote
+                      ? `Tạo branch local "${row.name}" theo dõi ${row.ref} rồi checkout`
+                      : `git checkout ${row.ref}`
+                }
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  justifyContent: 'flex-start',
+                  textAlign: 'left',
+                  fontFamily: 'var(--mono)',
+                  padding: '7px 10px',
+                  border: row.current ? '1px solid var(--accent, #6c8cff)' : undefined,
+                }}
+              >
+                <span aria-hidden style={{ color: row.current ? 'var(--accent, #6c8cff)' : 'var(--muted)' }}>
+                  {row.current ? '●' : '⎇'}
+                </span>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.name}</span>
+                {row.current && <span className="badge info">hiện tại</span>}
+                {row.remote && (
+                  <span className="badge" title={`chỉ có trên ${row.remote} — checkout sẽ tải về thành branch local`}>
+                    ↓ {row.remote}
+                  </span>
+                )}
+                {working === row.ref && <span className="spinner" aria-hidden />}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* ── Tạo branch mới (tuỳ chọn: từ một branch khác) ─────────────────── */}
+        <div style={{ marginTop: 12, borderTop: '1px solid var(--border, rgba(127,127,127,.2))', paddingTop: 10 }}>
+          {!creating ? (
+            <button className="ghost sm" onClick={() => setCreating(true)} disabled={!!working} title="git checkout -b">
+              + Tạo branch mới…
+            </button>
+          ) : (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && createBranch()}
+                placeholder="tên branch mới"
+                disabled={!!working}
+                style={{ flex: 1, minWidth: 180, fontFamily: 'var(--mono)', fontSize: 12 }}
+              />
+              <label className="small" style={{ color: 'var(--muted)' }}>từ</label>
+              <select
+                value={startPoint}
+                onChange={(e) => setStartPoint(e.target.value)}
+                disabled={!!working}
+                style={{ minWidth: 170, maxWidth: 240, fontFamily: 'var(--mono)', fontSize: 12 }}
+              >
+                <option value="">branch hiện tại</option>
+                {(list?.branches ?? []).map((b) => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+                {(list?.remotes ?? []).length > 0 && (
+                  <optgroup label="remote">
+                    {(list?.remotes ?? []).map((b) => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+              <button className="sm" onClick={createBranch} disabled={!newName.trim() || !!working}>
+                {working === '__new__' ? <><span className="spinner" aria-hidden /> Đang tạo</> : '+ Tạo & checkout'}
+              </button>
+              <button className="ghost sm" onClick={() => setCreating(false)} disabled={!!working}>Hủy</button>
+            </div>
+          )}
+        </div>
+
+        <div className="small" style={{ color: 'var(--muted)', marginTop: 10 }}>
+          Branch có dấu <b>↓ origin</b> là branch chưa có dưới máy — checkout sẽ tạo branch local cùng tên,
+          theo dõi remote đó và lấy code về (không rơi vào detached HEAD).
+        </div>
       </div>
     </div>
   );
@@ -2472,7 +3022,8 @@ function ProjectTabs({
                 thật trên máy (xem lib/gitProjects) — câu "phải nằm trong…" cũ
                 làm người dùng tưởng không thêm được project ở ổ/nhánh khác. */}
             <div className="small" style={{ color: 'var(--muted)', marginBottom: 6 }}>
-              {editingId ? 'Sửa project' : 'Thêm project'} — thư mục gốc là thư mục <b>chứa các repo git</b>.
+              {editingId ? 'Sửa project' : 'Thêm project'} — thư mục gốc là thư mục <b>chứa các repo git</b>,
+              hoặc trỏ thẳng vào <b>một repo</b> (khi đó project chính là repo đó, không có repo con).
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <input
@@ -3140,47 +3691,66 @@ function FileGroupBlock({
         <span className="group-title" style={{ flex: 1 }}>{title} ({files.length})</span>
         <button className="ghost sm" onClick={headerAction.onClick} disabled={busy}>{headerAction.label}</button>
       </div>
-      <div className="endpoint-list">
+      <div className="gf-list">
         {files.map((f) => {
           const isSel = selected?.path === f.path && selected?.staged === staged;
+          // Tách thư mục / tên file: tên file in đậm màu thường, thư mục mờ đi.
+          // Danh sách cũ in cả đường dẫn một màu một cỡ nên mắt phải đọc hết
+          // chuỗi mới thấy tên file — trong khi tên file là thứ cần nhận ra đầu
+          // tiên. SourceTree cũng tách hai phần như vậy.
+          const shown = f.origPath ? `${f.origPath} → ${f.path}` : f.path;
+          const cut = shown.lastIndexOf('/');
+          const dir = cut >= 0 ? shown.slice(0, cut + 1) : '';
+          const base = cut >= 0 ? shown.slice(cut + 1) : shown;
           return (
             <div
               key={`${f.group}:${f.path}`}
-              className={`ep-item ${isSel ? 'active' : ''}`}
+              className={`gf-row${isSel ? ' active' : ''}`}
               onClick={() => onSelect(f)}
-              style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+              title={shown}
             >
+              <input
+                type="checkbox"
+                className="gf-check"
+                checked={staged}
+                disabled={busy}
+                onClick={(e) => e.stopPropagation()}
+                onChange={() => onRow(f)}
+                title={staged ? 'Bỏ stage' : 'Stage'}
+              />
               <span className={`git-badge ${gitBadgeClass(f.code)}`} title={f.code} style={gitBadgeStyle(f.code)}>
                 {codeLabel(f.code)}
               </span>
-              <code className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {f.origPath ? `${f.origPath} → ${f.path}` : f.path}
-              </code>
-              <button
-                className="ghost sm"
-                onClick={(e) => { e.stopPropagation(); onView(f); }}
-                title="Xem thay đổi 2 ô: nội dung trước ↔ sau"
-              >
-                ⇄ view
-              </button>
-              {onDiscard && (
+              <span className="gf-name">
+                {dir && <span className="gf-dir">{dir}</span>}
+                <span className="gf-base">{base}</span>
+              </span>
+              {/* Các nút chỉ hiện khi trỏ vào hàng (hoặc hàng đang chọn). Trước
+                  đây ba nút luôn hiện trên MỌI hàng, nên một danh sách 20 file là
+                  60 nút giành lấy sự chú ý — chính chỗ làm giao diện rối nhất. */}
+              <span className="gf-acts">
                 <button
                   className="ghost sm"
-                  onClick={(e) => { e.stopPropagation(); onDiscard(f); }}
+                  onClick={(e) => { e.stopPropagation(); onView(f); }}
+                  title="Xem thay đổi 2 ô: nội dung trước ↔ sau"
+                >⇄</button>
+                {onDiscard && (
+                  <button
+                    className="ghost sm gf-danger"
+                    onClick={(e) => { e.stopPropagation(); onDiscard(f); }}
+                    disabled={busy}
+                    title={discardTitle}
+                  >✕</button>
+                )}
+                <button
+                  className="ghost sm"
+                  onClick={(e) => { e.stopPropagation(); onRow(f); }}
                   disabled={busy}
-                  title={discardTitle}
+                  title={rowLabel}
                 >
-                  ✕
+                  {rowLabel}
                 </button>
-              )}
-              <button
-                className="ghost sm"
-                onClick={(e) => { e.stopPropagation(); onRow(f); }}
-                disabled={busy}
-                title={rowLabel}
-              >
-                {rowLabel}
-              </button>
+              </span>
             </div>
           );
         })}
@@ -3216,4 +3786,164 @@ function gitBadgeStyle(code: string): React.CSSProperties {
     letterSpacing: '.03em',
     whiteSpace: 'nowrap',
   };
+}
+
+// ── Toolbar kiểu SmartGit + glyph trạng thái repo ─────────────────────────────
+
+/**
+ * Dấu đồng bộ cạnh tên branch hiện tại: ↓N cần pull, ↑N cần push, ⇅ khi cả hai
+ * (không kèm số). Không hiện gì khi ahead = behind = 0.
+ */
+function SyncMark({ status }: { status: RepoStatus | null }) {
+  if (!status || status.detached) return null;
+  const { ahead, behind } = status;
+  if (ahead > 0 && behind > 0) {
+    return <span className="sg-sync both" title={`Lệch hai chiều: ${behind} commit cần pull, ${ahead} commit cần push`}>⇅</span>;
+  }
+  if (behind > 0) return <span className="sg-sync down" title={`${behind} commit cần pull`}>↓{behind}</span>;
+  if (ahead > 0) return <span className="sg-sync up" title={`${ahead} commit cần push`}>↑{ahead}</span>;
+  return null;
+}
+
+/**
+ * Danh sách repo + ô tìm kiếm, TÁCH khỏi GitWorkspace có chủ đích: ô tìm giữ state
+ * `query` riêng ở đây, nên mỗi phím gõ chỉ render lại danh sách này chứ không kéo
+ * theo cả GitWorkspace (hàng nghìn dòng JSX: diff, history, modal…) — gõ/xoá chữ
+ * khi project có nhiều repo mới hết giật. `useDeferredValue` để việc lọc/vẽ lại
+ * danh sách không chặn ô nhập.
+ */
+interface RepoPickerProps {
+  repos: RepoInfo[];
+  overview: Record<string, RepoOverview>;
+  active: string;
+  focus: boolean;
+  busy: boolean;
+  onSelect: (path: string) => void;
+  onFocus: (v: boolean) => void;
+}
+
+const RepoPicker = memo(function RepoPicker({ repos, overview, active, focus, busy, onSelect, onFocus }: RepoPickerProps) {
+  const [query, setQuery] = useState('');
+  const deferred = useDeferredValue(query);
+  const q = deferred.trim().toLowerCase();
+  // Tên thường hoá một lần cho cả danh sách, không tính lại ở mỗi lần lọc.
+  const lowered = useMemo(() => repos.map((r) => r.name.toLowerCase()), [repos]);
+  const visible = useMemo(() => {
+    if (focus) return repos.filter((r) => r.path === active);
+    if (!q) return repos;
+    return repos.filter((_, i) => lowered[i].includes(q));
+  }, [repos, lowered, focus, active, q]);
+
+  return (
+    <>
+      {!focus && repos.length > 5 && (
+        <div className="sg-search">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setQuery('');
+              if (e.key === 'Enter' && visible[0]) onSelect(visible[0].path);
+            }}
+            placeholder="🔍 Tìm repo… (Enter: mở, Esc: xoá)"
+          />
+        </div>
+      )}
+      <div className="sg-list">
+        {!focus && q && visible.length === 0 && <div className="sg-empty">Không có repo nào khớp “{deferred.trim()}”</div>}
+        {visible.map((r) => {
+          const ov = overview[r.path];
+          const gl = repoGlyph(ov);
+          return (
+            <button
+              key={r.path}
+              type="button"
+              className={`sg-item${r.path === active ? ' active' : ''}`}
+              onClick={() => r.path !== active && onSelect(r.path)}
+              onDoubleClick={() => {
+                if (r.path !== active) onSelect(r.path);
+                onFocus(true);
+              }}
+              disabled={busy}
+              title={`${r.path}\nBấm đúp để chỉ hiện repo này`}
+            >
+              <span className="sg-ico" style={{ color: gl.color }} title={gl.title}>{gl.ch}</span>
+              <span className="sg-name">{r.self ? `${r.name} (gốc)` : r.name}</span>
+              {ov && ov.behind > 0 && <span className="sg-cnt warn">↓{ov.behind}</span>}
+              {ov && ov.ahead > 0 && <span className="sg-cnt">↑{ov.ahead}</span>}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+});
+
+interface ToolBtnProps {
+  icon: string;
+  label: string;
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  /** Số nhỏ ở góc (commit chờ pull/push); 0 = ẩn. */
+  badge?: number;
+  running?: boolean;
+  active?: boolean;
+}
+
+function ToolBtn({ icon, label, title, onClick, disabled, badge = 0, running, active }: ToolBtnProps) {
+  return (
+    <button type="button" className={`sg-tb${active ? ' on' : ''}${running ? ' run' : ''}`} onClick={onClick} disabled={disabled} title={title}>
+      <span className="sg-tb-ico" aria-hidden>
+        {running ? <span className="spinner" /> : icon}
+        {badge > 0 && <span className="sg-tb-badge">{badge}</span>}
+      </span>
+      <span className="sg-tb-lbl">{label}</span>
+    </button>
+  );
+}
+
+/** Ký hiệu 1 ký tự + màu cho trạng thái repo ở sidebar (chưa kiểm tra = chấm mờ). */
+function repoGlyph(ov?: RepoOverview): { ch: string; color: string; title: string } {
+  if (!ov) return { ch: '•', color: 'var(--faint)', title: 'chưa kiểm tra — bấm ⟳ ở đầu danh sách' };
+  switch (ov.state) {
+    case 'behind': return { ch: '↓', color: 'var(--warn, #d29922)', title: 'cần pull' };
+    case 'diverged': return { ch: '⇅', color: 'var(--err, #f85149)', title: 'local và remote đều có commit mới' };
+    case 'ahead': return { ch: '↑', color: 'var(--accent, #6c8cff)', title: 'có commit chưa push' };
+    case 'dirty': return { ch: '✎', color: 'var(--warn, #d29922)', title: 'đang có thay đổi chưa commit' };
+    case 'clean': return { ch: '✓', color: 'var(--ok, #3fb950)', title: 'sạch, đã đồng bộ' };
+    default: return { ch: '?', color: 'var(--muted)', title: 'không rõ / chưa có upstream' };
+  }
+}
+
+// ── Đồ thị nhánh (cột bên trái mỗi commit ở tab History) ──────────────────────
+
+const LANE_W = 14;
+const ROW_H = 44;
+const MAX_LANES = 8;
+
+function GraphCell({ row, width }: { row: ReturnType<typeof layoutGraph>['rows'][number]; width: number }) {
+  // Cột đồ thị rộng đều cho mọi dòng (theo số làn lớn nhất, chặn ở MAX_LANES) để
+  // hash/subject thẳng hàng; làn vượt trần bị cắt chứ không đẩy chữ đi.
+  const lanes = Math.min(width, MAX_LANES);
+  const w = lanes * LANE_W + 6;
+  const x = (lane: number) => Math.min(lane, MAX_LANES - 1) * LANE_W + LANE_W / 2 + 3;
+  const color = (lane: number) => GRAPH_COLORS[lane % GRAPH_COLORS.length];
+  return (
+    <svg className="log-graph-svg" width={w} height={ROW_H} viewBox={`0 0 ${w} ${ROW_H}`} aria-hidden>
+      {row.segs.map((sg, i) => (
+        <line
+          key={i}
+          x1={x(sg.x1)} y1={sg.y1 * ROW_H} x2={x(sg.x2)} y2={sg.y2 * ROW_H}
+          stroke={color(sg.lane)} strokeWidth={2} strokeLinecap="round"
+        />
+      ))}
+      <circle
+        cx={x(row.col)} cy={ROW_H / 2} r={row.merge ? 4.5 : 4}
+        fill={row.merge ? 'var(--bg, #0d1117)' : color(row.col)}
+        stroke={color(row.col)} strokeWidth={2}
+      />
+    </svg>
+  );
 }

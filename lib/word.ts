@@ -70,6 +70,8 @@ export interface ParaBlock {
   /** Paragraph holds content we can't rebuild — text edits are refused. */
   locked?: boolean;
   lockReason?: string;
+  /** Ảnh nằm trong đoạn (chỉ để HIỂN THỊ — đoạn có ảnh vẫn bị khóa sửa chữ). `w`/`h` là point. */
+  imgs?: { src: string; w: number; h: number }[];
 }
 
 /** One table cell: its paragraphs plus cell-level formatting. */
@@ -178,7 +180,14 @@ export type WordOp =
   // ── Header / footer ───────────────────────────────────────────────────────
   /** Set the default header/footer text. `pageNum` appends an auto page field. */
   | { op: 'hfSet'; part: 'header' | 'footer'; text: string; jc?: 'l' | 'c' | 'r'; pageNum?: 0 | 1 }
+  // ── Ảnh ───────────────────────────────────────────────────────────────────
+  /** Chèn một đoạn chứa ảnh (inline) tại khối `i`. `b64` là nội dung file ảnh; `w`/`h` là
+   *  kích thước hiển thị tính bằng point. Server kiểm tra chữ ký file theo `mime`. */
+  | { op: 'imgInsert'; i: number; name: string; mime: string; b64: string; w: number; h: number; jc?: 'l' | 'c' | 'r' }
   // ── Whole-document ────────────────────────────────────────────────────────
+  /** Khổ giấy + hướng + lề của section CUỐI (cái Word coi là khổ mặc định của tài liệu).
+   *  Đơn vị point. Với giấy nằm ngang, `w` là cạnh DÀI (Word lưu w > h kèm orient). */
+  | { op: 'pageSetup'; w: number; h: number; mt: number; mr: number; mb: number; ml: number; landscape?: 0 | 1 }
   /** Find & replace across every paragraph and table cell. */
   | { op: 'replaceAll'; find: string; replace: string; matchCase?: 0 | 1; whole?: 0 | 1 };
 
@@ -346,6 +355,16 @@ async function wordAction<T>(action: string, params: Record<string, unknown>): P
 
 export function fetchWordFlags(): Promise<WordFlags> {
   return wordAction<WordFlags>('flags', {});
+}
+
+/** mtime hiện tại của file trên đĩa — so với lúc mở để biết có bị sửa ngoài app không. */
+export function statWordFile(path: string): Promise<{ mtimeMs: number; sizeBytes: number }> {
+  return wordAction('stat', { path });
+}
+
+/** Mở file bằng ứng dụng mặc định của hệ điều hành (Word / WPS / LibreOffice…). */
+export function openWordExternal(path: string): Promise<{ path: string }> {
+  return wordAction('openExternal', { path });
 }
 
 export function openWordFile(path: string): Promise<WordOpenResult> {

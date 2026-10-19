@@ -11,6 +11,8 @@ export interface PublicPgConnection {
   database: string;
   username: string;
   tls: boolean;
+  /** node_exporter của máy chạy Postgres (tuỳ chọn) — nguồn chỉ số đĩa/RAM/CPU. */
+  metricsUrls: string[];
   readOnly: boolean;
   hasPassword: boolean;
 }
@@ -26,6 +28,70 @@ export interface PgTestResult {
   latencyMs: number;
   version: string;
   database: string;
+  /** Node thực sự được dùng (host:port) — đáng chú ý khi Host là cả cluster. */
+  endpoint?: string;
+  /** 'primary' | 'standby' — vai trò của node đó. */
+  role?: 'primary' | 'standby';
+  /** Số node trong danh sách Host (chỉ có khi > 1). */
+  nodes?: number;
+}
+
+export interface PgSession {
+  pid: number;
+  user: string;
+  db: string;
+  state: string;
+  waitEvent: string | null;
+  queryAgeSec: number | null;
+  xactAgeSec: number | null;
+  query: string;
+}
+
+export interface PgStats {
+  role: 'primary' | 'standby';
+  uptimeSec: number;
+  maxConnections: number;
+  connections: number;
+  connectionsUsedPct: number;
+  active: number;
+  idle: number;
+  idleInTx: number;
+  lockWaiters: number;
+  longestQuerySec: number | null;
+  longestTxSec: number | null;
+  dbSizeBytes: number | null;
+  cacheHitPct: number | null;
+  deadlocks: number | null;
+  tempBytes: number | null;
+  wraparoundPct: number | null;
+  sharedBuffersBytes: number | null;
+  replicas: number | null;
+  replicaLagBytes: number | null;
+  replayLagSec: number | null;
+  inactiveSlots: number | null;
+  slotRetainedBytes: number | null;
+  sessions: PgSession[];
+}
+
+export interface PgHostDisk {
+  mount: string;
+  sizeBytes: number;
+  availBytes: number;
+}
+
+/** Một máy từ node_exporter — cùng hình dạng với Kafka. */
+export interface PgHostMetrics {
+  url: string;
+  host: string;
+  error?: string;
+  load1?: number;
+  memTotalBytes?: number;
+  memAvailableBytes?: number;
+  disks?: PgHostDisk[];
+  cpuIdleSec?: number;
+  cpuTotalSec?: number;
+  cpuCores?: number;
+  at: number;
 }
 
 export interface PgDatabaseInfo {
@@ -77,6 +143,12 @@ export interface PgQuickEntry {
   type: PgQuickFieldType;
   value: string;
   list?: boolean;
+}
+
+/** Một khoá ORDER BY của Tìm nhanh. */
+export interface PgSortKey {
+  column: string;
+  dir: 'asc' | 'desc';
 }
 
 export interface PgUpdateSet {
@@ -141,6 +213,16 @@ export function pgInfo(connectionId: string): Promise<PgTestResult> {
   return pgAction<PgTestResult>('info', { connectionId });
 }
 
+/** Sức khoẻ server bằng SQL — `sessions` kèm danh sách phiên đang chạy (cho Tổng quan). */
+export function pgStats(connectionId: string, sessions = false): Promise<PgStats> {
+  return pgAction<PgStats>('stats', { connectionId, sessions });
+}
+
+/** node_exporter RAM/đĩa/CPU/load của máy chạy Postgres (rỗng nếu chưa khai metricsUrls). */
+export function pgHostMetrics(connectionId: string): Promise<PgHostMetrics[]> {
+  return pgAction<PgHostMetrics[]>('hostMetrics', { connectionId });
+}
+
 export function listPgDatabases(connectionId: string): Promise<PgDatabaseInfo[]> {
   return pgAction<PgDatabaseInfo[]>('databases', { connectionId });
 }
@@ -164,7 +246,7 @@ export function queryPg(connectionId: string, db: string, sql: string): Promise<
 export function pgQuickFind(
   connectionId: string,
   db: string,
-  p: { schema: string; table: string; entries: PgQuickEntry[]; limit: number; offset: number; columns?: string[] },
+  p: { schema: string; table: string; entries: PgQuickEntry[]; limit: number; offset: number; columns?: string[]; sort?: PgSortKey[] },
 ): Promise<PgQuickFindResult> {
   return pgAction<PgQuickFindResult>('quickFind', { connectionId, db, ...p });
 }

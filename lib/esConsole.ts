@@ -168,6 +168,90 @@ export function requestAtLine(requests: EsConsoleRequest[], line: number): EsCon
   return above ?? requests[0];
 }
 
+// ── Format MỘT lệnh ──────────────────────────────────────────────────────────
+
+/**
+ * Dòng BẮT ĐẦU một lệnh — lỏng hơn METHOD_LINE: cho phép body JSON dính ngay
+ * sau path trên cùng dòng (paste từ log/Kibana hay bị vậy). Path dừng trước
+ * khoảng trắng hoặc `{`/`[`, phần dư là body.
+ */
+const METHOD_START = /^\s*(GET|POST|HEAD|PUT|DELETE|PATCH)\s+([^\s{[]+)\s*(.*)$/i;
+
+export type FormatCommandResult =
+  | { ok: true; text: string; caretLine: number }
+  | { ok: false; error: string };
+
+/**
+ * Format ĐÚNG MỘT lệnh — lệnh chứa con trỏ (hoặc gần nhất phía trên): tách
+ * `METHOD path` lên dòng riêng, body JSON pretty-print 2 space. Các lệnh khác
+ * trong editor giữ nguyên từng ký tự.
+ *
+ * Nhận cả lệnh paste bị DÍNH body vào dòng lệnh (parser thường không nhận ra
+ * dạng đó). Dòng comment `#`/`//` trong body bị bỏ khi parse (như lúc chạy).
+ * Body không phải JSON hợp lệ (NDJSON của _bulk/_msearch, JSON gõ dở) → báo
+ * lỗi, không đụng gì.
+ */
+export function formatConsoleCommand(text: string, cursorLine: number): FormatCommandResult {
+  const lines = text.split('\n');
+
+  // Dòng lệnh gần nhất từ con trỏ trở lên.
+  let start = -1;
+  let m: RegExpExecArray | null = null;
+  for (let i = Math.min(Math.max(cursorLine, 1), lines.length) - 1; i >= 0; i--) {
+    const mm = METHOD_START.exec(lines[i]);
+    if (mm) { start = i; m = mm; break; }
+  }
+  if (start < 0 || !m) return { ok: false, error: 'Không thấy lệnh nào ở chỗ con trỏ — đặt con trỏ vào lệnh cần format.' };
+
+  // Gom body: từ phần dư trên dòng lệnh + các dòng dưới, dừng khi ngoặc cân
+  // (không nuốt comment/ghi chú đứng sau lệnh) hoặc gặp lệnh kế tiếp.
+  let depth = 0;
+  let opened = false;
+  const feed = (s: string) => {
+    let inStr = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        if (c === '\\') i++;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') { inStr = true; continue; }
+      if (c === '{' || c === '[') { depth++; opened = true; }
+      else if (c === '}' || c === ']') depth--;
+    }
+  };
+
+  const bodyLines: string[] = [];
+  const comments: string[] = []; // comment giữa khối — dời lên ngay dưới dòng lệnh, không xoá
+  if (m[3].trim()) { bodyLines.push(m[3]); feed(m[3]); }
+  let end = start;
+  for (let i = start + 1; i < lines.length && !(opened && depth <= 0); i++) {
+    const ln = lines[i];
+    if (METHOD_START.test(ln)) break;
+    if (!opened && !ln.trim()) break;          // lệnh không có body
+    if (/^\s*(#|\/\/)/.test(ln)) { comments.push(ln.trim()); end = i; continue; } // comment không vào body
+    bodyLines.push(ln);
+    feed(ln);
+    end = i;
+  }
+
+  const head = `${m[1].toUpperCase()} ${m[2]}`;
+  const bodyRaw = bodyLines.join('\n').trim();
+  let pretty = '';
+  if (bodyRaw) {
+    try {
+      pretty = JSON.stringify(JSON.parse(bodyRaw), null, 2);
+    } catch (e) {
+      return { ok: false, error: `Body không parse được JSON nên chưa format: ${(e as Error).message}` };
+    }
+  }
+  const block = [head, ...comments, ...(pretty ? [pretty] : [])].join('\n');
+
+  const next = [...lines.slice(0, start), block, ...lines.slice(end + 1)].join('\n');
+  return { ok: true, text: next, caretLine: start + 1 };
+}
+
 // ── Lịch sử ──────────────────────────────────────────────────────────────────
 
 export interface EsConsoleHistoryEntry {

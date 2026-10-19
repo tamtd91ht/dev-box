@@ -34,12 +34,19 @@ interface Props {
   name: string;
   /** Drive webViewLink / folder URL to load. */
   url: string;
+  /**
+   * Tab này có đang được xem không. Nhiều tài liệu mở song song thì MỌI instance
+   * vẫn mount (giữ nguyên phiên <webview>, cuộn, nội dung đang soạn) — chỉ tab
+   * đang xem là hiện ra và là tab duy nhất nhận Esc, nếu không thì một cú Esc
+   * đóng luôn cái đang ẩn. Absent = dùng một mình, coi như đang xem.
+   */
+  active?: boolean;
   onClose: () => void;
   /** Lưu URL đang xem vào danh sách link (mục 🔗 Liên kết). Ẩn nút khi absent. */
   onSaveLink?: (name: string, url: string) => Promise<void>;
 }
 
-export default function GoogleDocViewer({ name, url, onClose, onSaveLink }: Props) {
+export default function GoogleDocViewer({ name, url, active = true, onClose, onSaveLink }: Props) {
   const ref = useRef<WebviewElement | null>(null);
   const [status, setStatus] = useState<Status>('loading');
   const [failInfo, setFailInfo] = useState('');
@@ -90,6 +97,14 @@ export default function GoogleDocViewer({ name, url, onClose, onSaveLink }: Prop
   // giữ focus → mọi input trên trang "chết" (nhìn như bị disable) cho tới khi
   // click ra ngoài cửa sổ. Khi viewer unmount, chủ động kéo focus về host qua
   // main process (window.focus + webContents.focus).
+  //
+  // ẨN cũng tính, không chỉ unmount: chuyển sang tab tài liệu khác thì webview
+  // này chỉ display:none — nó vẫn đang giữ focus và triệu chứng y như trên,
+  // chỉ khác là lần này thứ "chết" là cái tab vừa chuyển tới.
+  useEffect(() => {
+    if (active) return;
+    void window.workspace?.focusHost?.().catch(() => {});
+  }, [active]);
   useEffect(() => () => {
     void window.workspace?.focusHost?.().catch(() => {});
   }, []);
@@ -97,10 +112,11 @@ export default function GoogleDocViewer({ name, url, onClose, onSaveLink }: Prop
   // Esc đóng viewer. Phím bấm BÊN TRONG guest không bubble ra host document,
   // nên gõ Esc khi đang soạn trong Docs không vô tình đóng khung.
   useEffect(() => {
+    if (!active) return;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [active, onClose]);
 
   const retry = useCallback(() => {
     setStatus('loading');
@@ -163,7 +179,9 @@ export default function GoogleDocViewer({ name, url, onClose, onSaveLink }: Prop
   if (CHROME_UA) webviewAttrs.useragent = CHROME_UA;
 
   return (
-    <div className="g-viewer">
+    /* Ẩn bằng `hidden` (display:none) chứ không unmount: <webview> bị unmount là
+       mất trắng trang đang mở, phải tải lại và đăng nhập lại từ đầu. */
+    <div className="g-viewer" hidden={!active}>
       <div className="ws-view" style={{ display: 'flex' }}>
         <div className="ws-toolbar">
           <div className="ws-nav">

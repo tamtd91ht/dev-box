@@ -71,7 +71,7 @@ const CORE_FIELDS: FieldDef[] = [
  */
 const INFRA_FIELDS: FieldDef[] = [
   ...CORE_FIELDS,
-  { name: 'stack', label: 'Stack', kind: 'text', hint: 'redis · mongo · es · kafka · rabbit · pg', sample: 'redis' },
+  { name: 'stack', label: 'Stack', kind: 'text', hint: 'redis · mongo · es · kafka · rabbit · pg · minio', sample: 'redis' },
   { name: 'stackLabel', label: 'Tên stack', kind: 'text', sample: 'Redis' },
   { name: 'metric', label: 'Chỉ số', kind: 'text', sample: 'memUsedPct' },
   { name: 'metricLabel', label: 'Tên chỉ số', kind: 'text', sample: 'RAM đã dùng (%)' },
@@ -101,6 +101,124 @@ const INFRA_FIELDS: FieldDef[] = [
     hint: 'mang sẵn " · " đầu chuỗi, rỗng khi metric không có cặp used/total — đặt ngay sau {{value}} là tự gọn',
     sample: ' · 3.8 GB / 4.0 GB · còn 197 MB',
   },
+  // ── Rate watch (kind: 'rate') — rỗng hết với watch thường ──────────────
+  {
+    name: 'rateMode',
+    label: 'Chế độ đo tốc độ',
+    kind: 'text',
+    hint: "points (điểm %) · absolute (đơn vị) · relative (% so với chính nó) · eta (giờ đến khi cạn) — rỗng với watch thường",
+    sample: 'eta',
+  },
+  {
+    name: 'rateWindow',
+    label: 'Cửa sổ đã kích hoạt',
+    kind: 'text',
+    hint: 'cửa sổ VƯỢT NẶNG NHẤT trong các cửa sổ đã khai — một watch có thể canh 5 phút / 1 giờ / 12 giờ cùng lúc',
+    sample: '1 giờ',
+  },
+  {
+    name: 'rateWindowSec',
+    label: 'Cửa sổ đã kích hoạt (giây)',
+    kind: 'number',
+    sample: 3600,
+  },
+  {
+    name: 'rateFrom',
+    label: 'Giá trị đầu cửa sổ',
+    kind: 'number',
+    hint: 'đã làm mượt (trung bình 3 mẫu đầu) khi bật smooth',
+    sample: 78.4,
+  },
+  {
+    name: 'rateTo',
+    label: 'Giá trị cuối cửa sổ',
+    kind: 'number',
+    sample: 90.1,
+  },
+  {
+    name: 'rateDelta',
+    label: 'Mức thay đổi',
+    kind: 'number',
+    hint: 'đơn vị theo rateMode — điểm % · đơn vị gốc · % tương đối',
+    sample: 11.7,
+  },
+  {
+    name: 'ratePerHour',
+    label: 'Tốc độ quy về 1 giờ',
+    kind: 'number',
+    hint: 'so sánh được giữa các cửa sổ khác độ dài',
+    sample: 11.7,
+  },
+  {
+    name: 'rateUnit',
+    label: 'Đơn vị tốc độ',
+    kind: 'text',
+    hint: 'điểm · % · giờ · đơn vị gốc của chỉ số',
+    sample: 'điểm',
+  },
+  {
+    name: 'rateSamples',
+    label: 'Số mẫu đang giữ',
+    kind: 'number',
+    hint: 'ít mẫu = kết luận mỏng; watch chưa đủ mẫu thì KHÔNG phát cảnh báo mà báo "đang gom dữ liệu"',
+    sample: 60,
+  },
+  {
+    name: 'etaSec',
+    label: 'Còn bao lâu thì cạn (giây)',
+    kind: 'number',
+    hint: 'CHỈ mode eta: (tổng − đã dùng) ÷ tốc độ tăng. Rỗng khi không tăng, hoặc chỉ số không có trần',
+    sample: 21600,
+  },
+  {
+    name: 'etaText',
+    label: 'Còn bao lâu thì cạn (đọc được)',
+    kind: 'text',
+    hint: 'câu trả lời cho đúng câu hỏi người trực đêm đang hỏi — rỗng khi không tính được',
+    sample: '6 giờ',
+  },
+  {
+    name: 'rateWindows',
+    label: 'Mọi cửa sổ đang vượt',
+    kind: 'text',
+    hint: 'liệt kê TẤT CẢ cửa sổ đang vượt, không chỉ cái đại diện — ba cửa sổ cùng kêu là tín hiệu khác hẳn một cửa sổ kêu',
+    sample: 'trong 1 giờ: 78.4 % → 90.1 % (+11.7 điểm); trong 12 giờ: 61 % → 90.1 % (+29.1 điểm)',
+  },
+  {
+    name: 'consumersText',
+    label: 'Consumer liên quan (chuỗi có nhãn)',
+    kind: 'text',
+    hint: 'như consumers nhưng MANG SẴN xuống dòng + nhãn dẫn hợp với chỉ số ("Group đứng im:", "Consumer vượt ngưỡng:"…), rỗng với chỉ số không theo group — nhét vào template dùng chung là tự gọn',
+    sample: '\nGroup đứng im: auto_call_group=đứng im 20 phút tại jobs.auto_call:3 · lag 3 · 🟢 đang tiêu thụ',
+  },
+  {
+    name: 'topicsText',
+    label: 'Topic ảnh hưởng (chuỗi có nhãn)',
+    kind: 'text',
+    hint: 'mang sẵn xuống dòng + nhãn, rỗng khi chỉ số không theo topic',
+    sample: '\nTopic ảnh hưởng: omicrm.events, omicrm.jobs',
+  },
+  {
+    name: 'hostsText',
+    label: 'Host broker (chuỗi có nhãn)',
+    kind: 'text',
+    hint: 'mang sẵn xuống dòng + nhãn hợp với chỉ số ("Broker sắp đầy đĩa:"…), rỗng khi chỉ số không theo host',
+    sample: '\nBroker sắp đầy đĩa: 192.168.2.94=đĩa 91% /var/lib/kafka, còn 18.4 GB',
+  },
+  {
+    name: 'rateWindowsJson',
+    label: 'Mọi cửa sổ (JSON)',
+    kind: 'text',
+    hint: 'dành cho MÁY: toàn bộ cửa sổ kèm from/to/delta/etaSec — AlertMeta dựng rate.windows từ đây. Người dùng dùng {{rateWindows}}',
+    sample: '[{"windowSec":3600,"from":78.4,"to":90.1,"delta":11.7,"threshold":10,"breaching":true}]',
+  },
+  {
+    name: 'rateText',
+    label: 'Tốc độ (chuỗi đọc được)',
+    kind: 'text',
+    hint: 'mang sẵn xuống dòng đầu chuỗi, rỗng với watch thường — nhét vào template ở đâu cũng tự gọn',
+    sample: '\ntrong 1 giờ: 78.4 % → 90.1 % (+11.7 điểm)',
+  },
   {
     name: 'ladderAbove',
     label: 'Bậc nặng hơn đang yên',
@@ -128,6 +246,125 @@ const INFRA_FIELDS: FieldDef[] = [
     kind: 'text',
     hint: 'tự sinh từ catalog: chỉ số nghĩa là gì, đo bằng gì, chu kỳ, ngưỡng — đủ ngữ cảnh cho người trực hoặc bot AI phân tích',
     sample: 'RAM đã dùng (%) — tỉ lệ bộ nhớ Redis đang dùng so với giới hạn maxmemory…',
+  },
+  {
+    name: 'consumers',
+    label: 'Consumer liên quan (chuỗi)',
+    kind: 'text',
+    hint: 'CHỈ Kafka chỉ số theo group: danh sách group liên quan kèm giá trị + topic + nhãn 🟢 đang tiêu thụ / 🟡 không consumer (AKHQ vàng/xanh) — rỗng với stack/chỉ số khác',
+    sample: 'nlp_shadow=đứng im 70 phút · lag 5.977 (nlp_need) · 🟡 KHÔNG consumer (Empty, 0 member)',
+  },
+  {
+    name: 'consumerCount',
+    label: 'Số consumer liên quan',
+    kind: 'number',
+    hint: 'tổng số group liên quan (kể cả phần bị cắt khỏi danh sách hiển thị); 0 khi không có',
+    sample: 2,
+  },
+  {
+    name: 'consumersJson',
+    label: 'Consumer liên quan (JSON)',
+    kind: 'text',
+    hint: 'bản máy đọc [{group,lag,topic?,topicLag?,stalledSec?,stalledAt?,stalledLag?,stalledSince?,active?,state?,members?}] — vào AlertMeta.consumers của metaJson; rỗng khi không có',
+    sample: '[{"group":"billing-worker","lag":45200,"topic":"invoice-created","topicLag":45200,"active":true,"members":3}]',
+  },
+  {
+    name: 'topics',
+    label: 'Topic ảnh hưởng (chuỗi)',
+    kind: 'text',
+    hint: 'CHỈ Kafka underReplicated/offline: topic có partition under-replicated/offline — rỗng với chỉ số khác',
+    sample: 'orders, payments',
+  },
+  {
+    name: 'topicCount',
+    label: 'Số topic ảnh hưởng',
+    kind: 'number',
+    hint: 'tổng số topic bị ảnh hưởng (kể cả phần bị cắt khỏi danh sách); 0 khi không có',
+    sample: 2,
+  },
+  {
+    name: 'hosts',
+    label: 'Host broker liên quan (chuỗi)',
+    kind: 'text',
+    hint: 'CHỈ Kafka chỉ số host (đĩa/RAM/CPU/load/mất exporter): đích danh máy nào kèm số liệu — rỗng với stack/chỉ số khác',
+    sample: '192.168.2.94=đĩa 91% /var/lib/kafka, còn 18.4 GB',
+  },
+  {
+    name: 'hostCount',
+    label: 'Số host broker liên quan',
+    kind: 'number',
+    hint: 'tổng số host liên quan (kể cả phần bị cắt khỏi danh sách hiển thị); 0 khi không có',
+    sample: 2,
+  },
+  {
+    name: 'hostsJson',
+    label: 'Host broker liên quan (JSON)',
+    kind: 'text',
+    hint: 'bản máy đọc [{host,diskUsedPct?,diskFreeGb?,mount?,memUsedPct?,cpuPct?,load1PerCore?,unreachable?}] — vào AlertMeta.hosts của metaJson; rỗng khi không có',
+    sample: '[{"host":"192.168.2.94","diskUsedPct":91,"diskFreeGb":18.4,"mount":"/var/lib/kafka"}]',
+  },
+  {
+    name: 'reachSummary',
+    label: 'Chẩn đoán mất kết nối',
+    kind: 'text',
+    hint: 'CHỈ Kafka mất kết nối: câu kết luận hướng xử lý — mất mạng/VPN, node nào chết, hay cụm mở cổng mà chưa phục vụ. Rỗng với chỉ số khác',
+    sample: '1/3 node không kết nối được (192.168.2.220:9092); 2 node còn TCP bình thường → mạng thông, hỏng ở đúng (các) node kia.',
+  },
+  {
+    name: 'brokerReach',
+    label: 'Từng broker (chuỗi)',
+    kind: 'text',
+    hint: 'CHỈ Kafka mất kết nối: kết quả bắt tay TCP tới TỪNG seed broker, nêu rõ IP và lỗi. Rỗng với chỉ số khác',
+    sample: '192.168.2.218:9092 = TCP mở (2ms) · 192.168.2.220:9092 = KHÔNG kết nối được (ECONNREFUSED)',
+  },
+  {
+    name: 'brokersUp',
+    label: 'Số broker bắt tay được',
+    kind: 'number',
+    hint: 'số seed broker còn mở cổng TCP lúc cụm mất kết nối; 0 khi không node nào trả lời',
+    sample: 2,
+  },
+  {
+    name: 'brokersTotal',
+    label: 'Tổng số seed broker',
+    kind: 'number',
+    hint: 'số seed broker khai trong cấu hình kết nối; 0 khi không đo (chỉ số khác)',
+    sample: 3,
+  },
+  {
+    name: 'advertised',
+    label: 'advertised.listeners cụm trả về',
+    kind: 'text',
+    hint: 'CHỈ Kafka mất kết nối: địa chỉ cụm TỰ QUẢNG BÁ cho client. Khác với địa chỉ DevBox đang gọi là nguyên nhân kinh điển của "kết nối được mà vẫn hỏng". Rỗng khi cụm không trả lời được',
+    sample: 'kafka-1.omicrm.services:9092, kafka-2.omicrm.services:9092',
+  },
+  {
+    name: 'dnsServers',
+    label: 'DNS DevBox đang dùng',
+    kind: 'text',
+    hint: 'CHỈ Kafka mất kết nối, khi có địa chỉ dạng hostname: các nameserver tiến trình DevBox đang dùng (dns.getServers()). Trên container/VPN resolver thường KHÁC máy người đọc cảnh báo, nên đây là thứ phải tra. Có mặt cả khi địa chỉ toàn IP (lúc đó dnsResolve nói KHÔNG CẦN); rỗng chỉ khi DevBox không đọc được cấu hình resolver',
+    sample: '10.96.0.10, 8.8.8.8',
+  },
+  {
+    name: 'dnsResolve',
+    label: 'Kết quả phân giải tên',
+    kind: 'text',
+    hint: 'CHỈ Kafka mất kết nối: từng hostname (seed khai bằng tên + advertised.listeners) ra IP gì, hoặc lỗi ENOTFOUND/EAI_AGAIN/timeout. Mỗi tên tra HAI đường — getaddrinfo của OS (đường kafkajs đi) và hỏi thẳng nameserver — nên khi /etc/hosts vá tên tại chỗ thì in cả hai để thấy chênh lệch. Khi mọi địa chỉ đều là IP thuần thì ghi KHÔNG CẦN chứ KHÔNG để rỗng: đó là kết luận DNS vô can, không phải chưa đo',
+    sample: 'kafka-1.omicrm.services = ENOTFOUND · kafka-2.omicrm.services = 10.20.1.32 (4ms) theo getaddrinfo NHƯNG ENOTFOUND khi hỏi thẳng nameserver',
+  },
+  {
+    name: 'dnsJson',
+    label: 'Phân giải tên (JSON)',
+    kind: 'text',
+    hint: 'bản máy đọc {servers,hosts:[{host,system:{resolved,addresses?,ms?,error?},nameserver?:{…},hostsFileOverride?}]} — vào AlertMeta.dns của metaJson; `system` là getaddrinfo (đường kafkajs đi), `nameserver` là hỏi thẳng DNS bỏ qua hosts file; `noNames:true` + hosts rỗng = địa chỉ toàn IP nên không có gì để phân giải; rỗng hẳn chỉ khi không đo được',
+    sample: '{"servers":["10.96.0.10"],"hosts":[{"host":"kafka-1.omicrm.services","system":{"resolved":false,"error":"ENOTFOUND","ms":12},"nameserver":{"resolved":false,"error":"ENOTFOUND","ms":9}}]}',
+  },
+  {
+    name: 'brokerReachJson',
+    label: 'Từng broker (JSON)',
+    kind: 'text',
+    hint: 'bản máy đọc [{addr,host,port,reachable,latencyMs?,error?}] — vào AlertMeta.brokers của metaJson; rỗng khi không có',
+    sample: '[{"addr":"192.168.2.220:9092","host":"192.168.2.220","port":9092,"reachable":false,"error":"ECONNREFUSED"}]',
   },
 ];
 
@@ -321,6 +558,35 @@ export interface MetricDef {
   /** Cách gộp nhiều node. Trống = số liệu vốn là một con số duy nhất. */
   agg?: MetricAgg;
   /**
+   * Đo TỐC ĐỘ trên chỉ số này có nghĩa không.
+   *
+   *   'level'   (mặc định) — giá trị TÍCH LUỸ: đĩa, RAM, lag, số hàng đợi.
+   *                          Đạo hàm của nó là "đang đầy nhanh cỡ nào" — đúng
+   *                          thứ rate watch sinh ra để đo.
+   *   'derived'            — chỉ số VỐN ĐÃ LÀ tốc độ (opsPerSec, publishRate)
+   *                          hoặc gauge tức thời (cpuPct, latencyMs, load1m).
+   *                          Lấy đạo hàm ra GIA TỐC: dao động dữ dội, báo giả
+   *                          liên tục. Không chặn — chỉ cảnh báo trong editor,
+   *                          vì đôi khi người ta thật sự muốn thế.
+   *   'none'               — boolean/hằng số (up, memAlarm, diskTotalGb). Đo
+   *                          tốc độ là vô nghĩa; editor ẩn khỏi danh sách.
+   *
+   * Phân loại này tồn tại để editor không mời người dùng cấu hình một phép đo
+   * không bao giờ cho ra cảnh báo dùng được.
+   */
+  rate?: 'level' | 'derived' | 'none';
+  /**
+   * Ngưỡng gợi ý cho rate watch, theo từng cửa sổ — 5 phút / 1 giờ / 12 giờ.
+   *
+   * Bộ ba cửa sổ bắt ba dạng sự cố khác nhau (đột biến · đà bất thường · rò rỉ
+   * chậm), nên ngưỡng của chúng không suy ra được từ nhau. Vắng cửa sổ nào thì
+   * editor bỏ qua cửa sổ đó.
+   *
+   * Đơn vị theo chế độ mặc định của metric: chỉ số % → điểm phần trăm, chỉ số
+   * đếm → % tương đối, `eta` → giờ.
+   */
+  rateSuggest?: { mode: 'points' | 'absolute' | 'relative' | 'eta'; windows: { sec: number; threshold: number }[] };
+  /**
    * Cặp chỉ số TUYỆT ĐỐI đi kèm khi metric (thường là %) này cảnh báo — vì 90%
    * của 1GB nguy hiểm khác hẳn 90% của 20GB. `used`/`total` là key metric khác
    * trong CÙNG lần đo (watcher đưa cả MetricMap vào event), nên hai con số luôn
@@ -352,6 +618,12 @@ const KAFKA_LAG_NOTE =
   'cộng fetchTopicOffsets cho mỗi topic phân biệt. Chi phí tăng theo SỐ GROUP × SỐ TOPIC. ' +
   'Nên để ≥120s; cụm nhiều group thì 300s. Lag không đổi trong 30 giây, nên đo dày hơn không cho thêm thông tin gì.';
 
+const KAFKA_HOST_NOTE =
+  'Rẻ và KHÔNG đụng vào Kafka: đọc HTTP node_exporter của từng broker host (song song, timeout 5s/host), ' +
+  'không gọi broker hay controller lượt nào. Chi phí không tăng theo số topic/group — chỉ theo số host. ' +
+  'Chỉ hoạt động khi cụm đã khai "Metrics URL" trong cấu hình kết nối; chưa khai thì mọi chỉ số host vắng mặt ' +
+  'và watch không bao giờ khớp (nên bật nhầm cũng không sinh báo giả).';
+
 const ES_NODES_NOTE =
   'Ngoài /_cluster/health còn gọi thêm /_cat/nodes (một round-trip nữa, master trả lời). Nên để ≥60s.';
 
@@ -373,13 +645,21 @@ const ES_HEALTH_PROBE = '/_cluster/health';
 const ES_NODES_PROBE = '/_cluster/health + /_cat/nodes';
 const KAFKA_META_PROBE = 'describeCluster + metadata toàn bộ topic';
 const KAFKA_LAG_PROBE = 'listGroups + describeGroups + fetchOffsets cho từng consumer group';
+const KAFKA_HOST_PROBE = 'node_exporter /metrics của từng broker host';
 const RABBIT_OVERVIEW_PROBE = '/api/overview (management API)';
 const RABBIT_NODES_PROBE = '/api/overview + /api/nodes (management API)';
 const PG_PROBE = 'truy vấn ping (SELECT 1)';
+const PG_STATS_PROBE = 'pg_stat_activity + pg_stat_database + pg_database + replication (SQL chỉ đọc)';
+const PG_HOST_PROBE = 'node_exporter /metrics của máy chạy Postgres (khai metricsUrls trong cấu hình)';
+const PG_HOST_NOTE = 'Chỉ có khi cấu hình server khai metricsUrls (node_exporter); không khai thì chỉ số vắng mặt và watch không bao giờ khớp.';
+const MINIO_PROBE = 'liệt kê bucket + /minio/health + metrics Prometheus của cụm (cần token hoặc MINIO_PROMETHEUS_AUTH_TYPE=public)';
+const MINIO_HOST_PROBE = 'node_exporter /metrics của máy chạy MinIO (khai Metrics URLs máy chủ trong cấu hình)';
+const MINIO_HOST_NOTE = 'Chỉ có khi cấu hình server khai node_exporter; không khai thì chỉ số vắng mặt và watch không bao giờ khớp.';
 
 /** `up` exists for every stack: 1 = probe succeeded, 0 = unreachable. */
 const UP: MetricDef = {
   key: 'up',
+  rate: 'none',
   label: 'Kết nối được',
   unit: '0/1',
   suggest: { op: 'lt', threshold: 1 },
@@ -390,6 +670,7 @@ const UP: MetricDef = {
 };
 const LATENCY: MetricDef = {
   key: 'latencyMs',
+  rate: 'derived',
   label: 'Độ trễ probe',
   unit: 'ms',
   suggest: { op: 'gt', threshold: 1000 },
@@ -406,6 +687,8 @@ export const STACKS: StackDef[] = [
       { ...UP, probe: REDIS_PROBE },
       {
         key: 'memUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'RAM đã dùng',
         unit: '%',
         suggest: { op: 'gt', threshold: 80 },
@@ -418,6 +701,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memUsedMb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 512 }, { sec: 3600, threshold: 2048 }] },
         label: 'RAM đã dùng',
         unit: 'MB',
         alertCode: 'ram',
@@ -427,6 +712,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memTotalMb',
+        rate: 'none',
         label: 'RAM giới hạn',
         unit: 'MB',
         alertCode: 'ram',
@@ -436,6 +722,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'clients',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Client đang kết nối',
         suggest: { op: 'gt', threshold: 5000 },
         alertCode: 'conn',
@@ -445,6 +733,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'opsPerSec',
+        rate: 'derived',
         label: 'Ops/giây',
         suggest: { op: 'gt', threshold: 50000 },
         alertCode: 'ops',
@@ -454,6 +743,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'hitRatePct',
+        rate: 'derived',
         label: 'Tỉ lệ cache hit',
         unit: '%',
         hint: '⚠ Chỉ có nghĩa với instance dùng làm CACHE. Redis làm queue/lock/session thì hit-rate thấp là bình thường — đặt ngưỡng ở đây sẽ báo sai liên tục.',
@@ -464,6 +754,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'fragmentation',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 3600, threshold: 0.5 }, { sec: 43200, threshold: 1 }] },
         label: 'Tỉ lệ phân mảnh',
         suggest: { op: 'gt', threshold: 1.6 },
         alertCode: 'frag',
@@ -473,6 +765,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'nodes',
+        rate: 'none',
         label: 'Số node đọc được',
         alertCode: 'nodes',
         probe: REDIS_PROBE,
@@ -489,6 +782,8 @@ export const STACKS: StackDef[] = [
       { ...UP, probe: MONGO_PROBE },
       {
         key: 'connectionsUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'Connection pool đã dùng',
         unit: '%',
         suggest: { op: 'gt', threshold: 80 },
@@ -499,6 +794,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'connections',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Connection hiện tại',
         alertCode: 'conn',
         probe: MONGO_PROBE,
@@ -506,6 +803,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'connectionsTotal',
+        rate: 'none',
         label: 'Connection tối đa',
         alertCode: 'conn',
         probe: MONGO_PROBE,
@@ -513,6 +811,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'cacheUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 600, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'WiredTiger cache',
         unit: '%',
         hint: '⚠ WiredTiger được thiết kế để giữ cache ~80–95% — đây là hành vi BÌNH THƯỜNG, không phải sự cố. Đừng đặt ngưỡng ở đây.',
@@ -523,6 +823,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'cacheUsedMb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 600, threshold: 512 }, { sec: 3600, threshold: 2048 }] },
         label: 'WiredTiger cache đã dùng',
         unit: 'MB',
         alertCode: 'cache',
@@ -531,6 +833,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'cacheTotalMb',
+        rate: 'none',
         label: 'WiredTiger cache tối đa',
         unit: 'MB',
         alertCode: 'cache',
@@ -541,6 +844,8 @@ export const STACKS: StackDef[] = [
       // number of collections.
       {
         key: 'diskUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 1800, threshold: 72 }, { sec: 21600, threshold: 24 }, { sec: 43200, threshold: 6 }] },
         label: 'Đĩa đã dùng',
         unit: '%',
         suggest: { op: 'gt', threshold: 85 },
@@ -554,6 +859,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskUsedGb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 3600, threshold: 5 }, { sec: 43200, threshold: 30 }] },
         label: 'Đĩa đã dùng',
         unit: 'GB',
         cost: 'medium',
@@ -565,6 +872,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskTotalGb',
+        rate: 'none',
         label: 'Dung lượng đĩa',
         unit: 'GB',
         cost: 'medium',
@@ -576,6 +884,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memResidentMb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 512 }, { sec: 3600, threshold: 2048 }] },
         label: 'RAM resident',
         unit: 'MB',
         alertCode: 'ram',
@@ -584,6 +894,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'replLagSec',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 30 }, { sec: 3600, threshold: 120 }] },
         label: 'Replication lag',
         unit: 's',
         suggest: { op: 'gt', threshold: 10 },
@@ -594,6 +906,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'membersUnhealthy',
+        rate: 'none',
         label: 'Member lỗi',
         suggest: { op: 'gt', threshold: 0 },
         alertCode: 'members',
@@ -611,6 +924,7 @@ export const STACKS: StackDef[] = [
       { ...UP, probe: ES_HEALTH_PROBE },
       {
         key: 'statusLevel',
+        rate: 'none',
         label: 'Trạng thái cluster',
         unit: '0=green 1=yellow 2=red',
         suggest: { op: 'gte', threshold: 1 },
@@ -620,6 +934,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'unassignedShards',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 5 }, { sec: 3600, threshold: 10 }] },
         label: 'Shard chưa gán',
         suggest: { op: 'gt', threshold: 0 },
         alertCode: 'shards',
@@ -628,6 +944,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'relocatingShards',
+        rate: 'none',
         label: 'Shard đang di chuyển',
         alertCode: 'shards',
         probe: ES_HEALTH_PROBE,
@@ -635,6 +952,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'pendingTasks',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 50 }, { sec: 3600, threshold: 100 }] },
         label: 'Pending tasks',
         suggest: { op: 'gt', threshold: 10 },
         alertCode: 'tasks',
@@ -644,6 +963,8 @@ export const STACKS: StackDef[] = [
       // These four come from the second call, /_cat/nodes.
       {
         key: 'heapPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'Heap cao nhất',
         unit: '%',
         suggest: { op: 'gt', threshold: 85 },
@@ -657,6 +978,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'cpuPct',
+        rate: 'derived',
         label: 'CPU cao nhất',
         unit: '%',
         suggest: { op: 'gt', threshold: 90 },
@@ -670,6 +992,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 1800, threshold: 72 }, { sec: 21600, threshold: 24 }, { sec: 43200, threshold: 6 }] },
         label: 'Đĩa cao nhất',
         unit: '%',
         suggest: { op: 'gt', threshold: 85 },
@@ -684,6 +1008,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskUsedGb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 3600, threshold: 5 }, { sec: 43200, threshold: 30 }] },
         label: 'Đĩa đã dùng (node đầy nhất)',
         unit: 'GB',
         cost: 'medium',
@@ -695,6 +1021,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskTotalGb',
+        rate: 'none',
         label: 'Dung lượng đĩa (node đầy nhất)',
         unit: 'GB',
         cost: 'medium',
@@ -706,6 +1033,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'load1m',
+        rate: 'derived',
         label: 'Load 1m cao nhất',
         cost: 'medium',
         costNote: ES_NODES_NOTE,
@@ -717,6 +1045,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'nodes',
+        rate: 'none',
         label: 'Số node',
         suggest: { op: 'lt', threshold: 3 },
         alertCode: 'nodes',
@@ -734,9 +1063,27 @@ export const STACKS: StackDef[] = [
       // EVERY kafka metric pays for clusterHealth, which calls
       // fetchTopicMetadata over ALL topics — cost scales with the topic count,
       // and it is the controller that answers.
-      { ...UP, cost: 'heavy', costNote: KAFKA_META_NOTE, minEverySec: 60, probe: KAFKA_META_PROBE },
+      {
+        ...UP,
+        cost: 'heavy',
+        costNote: KAFKA_META_NOTE,
+        minEverySec: 60,
+        probe: KAFKA_META_PROBE,
+        // Riêng Kafka, khi mất kết nối DevBox đo thêm TỪNG seed broker (bắt tay
+        // TCP) rồi đính vào cảnh báo — nói rõ node nào chết thay vì chỉ "0/1".
+        meaning: `${UP.meaning} Riêng Kafka: khi mất kết nối, DevBox bắt tay TCP tới TỪNG broker `
+          + 'trong danh sách để chỉ rõ node nào không kết nối được và lỗi gì (ECONNREFUSED = máy sống '
+          + 'nhưng Kafka không nghe cổng · timeout = gói không tới nơi, thường do mất mạng/VPN hoặc '
+          + 'firewall), kèm một câu kết luận hướng xử lý. Nếu địa chỉ (seed hoặc advertised.listeners '
+          + 'cụm quảng bá) là HOSTNAME, DevBox tra tên luôn theo HAI đường — getaddrinfo của hệ điều '
+          + 'hành (đường kafkajs thật sự đi, ăn theo /etc/hosts) và hỏi TRỰC TIẾP nameserver — rồi cho '
+          + 'biết nó dùng nameserver nào cùng IP nhận được. Hai đường lệch nhau nghĩa là tên chỉ chạy '
+          + 'được nhờ hosts file của riêng máy DevBox, máy/pod khác sẽ hỏng; nhờ vậy phân biệt được '
+          + 'hỏng DNS, bị hosts file vá, và hỏng đường mạng.',
+      },
       {
         key: 'underReplicated',
+        rate: 'none',
         label: 'Partition under-replicated',
         suggest: { op: 'gt', threshold: 0 },
         cost: 'heavy',
@@ -748,6 +1095,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'offline',
+        rate: 'none',
         label: 'Partition offline',
         suggest: { op: 'gt', threshold: 0 },
         cost: 'heavy',
@@ -759,6 +1107,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'brokers',
+        rate: 'none',
         label: 'Số broker',
         suggest: { op: 'lt', threshold: 3 },
         cost: 'heavy',
@@ -771,6 +1120,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'noController',
+        rate: 'none',
         label: 'Mất controller',
         unit: '0/1',
         suggest: { op: 'gte', threshold: 1 },
@@ -783,6 +1133,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'maxConsumerLag',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Consumer lag cao nhất',
         unit: 'message',
         suggest: { op: 'gt', threshold: 10000 },
@@ -797,19 +1149,22 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'stalledGroups',
+        rate: 'none',
         label: 'Group đứng im',
         suggest: { op: 'gt', threshold: 0 },
-        hint: 'Còn lag nhưng offset KHÔNG nhích qua ≥30s — consumer chết dù vẫn kết nối',
+        hint: 'Có message thật nằm chờ quá lâu mà chưa được xử lý — consumer chết dù vẫn kết nối',
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
         minEverySec: 120,
         alertCode: 'stalled',
         probe: KAFKA_LAG_PROBE,
         agg: 'count',
-        meaning: 'số group còn lag nhưng offset KHÔNG nhích qua ≥30s — consumer chết dù vẫn giữ kết nối; group đang bắt kịp thì không tính.',
+        meaning: 'số group đang có message nằm chờ quá lâu mà chưa xử lý xong — consumer chết dù vẫn giữ kết nối. DevBox đọc thẳng message đang tắc để lấy tuổi thật của nó, nên group đang bắt kịp và ca lag ảo (chỉ còn control record của giao dịch) đều không tính.',
       },
       {
         key: 'maxStalledSec',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 120 }, { sec: 3600, threshold: 600 }] },
         label: 'Đứng im lâu nhất',
         unit: 's',
         suggest: { op: 'gt', threshold: 600 },
@@ -820,23 +1175,39 @@ export const STACKS: StackDef[] = [
         alertCode: 'stalled',
         probe: KAFKA_LAG_PROBE,
         agg: 'max',
-        meaning: 'thời gian group tệ nhất đã đứng im (còn lag, offset không nhích) — dùng thay stalledGroups khi muốn bỏ qua các lần treo ngắn.',
+        meaning: 'tuổi của message chờ lâu nhất chưa được xử lý, lấy ở group tệ nhất — đọc thẳng từ record đang tắc nên đúng cả khi DevBox vừa khởi động lại. Dùng thay stalledGroups khi muốn bỏ qua các lần treo ngắn.',
       },
       {
-        key: 'emptyGroups',
-        label: 'Group không còn member',
+        key: 'deadLagGroups',
+        rate: 'none',
+        label: 'Group có lag nhưng không consumer (AKHQ vàng)',
         suggest: { op: 'gt', threshold: 0 },
-        hint: 'Có commit offset nhưng 0 consumer đang chạy',
+        hint: 'Có message chờ nhưng 0 consumer đang tiêu thụ — "lag vàng", kẹt thật dù nhỏ. Ít báo nhầm hơn "đứng im" (không dính control-record của consumer còn sống)',
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
         minEverySec: 120,
         alertCode: 'consumers',
         probe: KAFKA_LAG_PROBE,
         agg: 'count',
-        meaning: 'số group có commit offset nhưng 0 consumer đang chạy — dịch vụ tiêu thụ đã tắt hẳn.',
+        meaning: 'số group CÒN lag nhưng 0 member đang chạy — không ai tiêu thụ phần message đang chờ (AKHQ tô vàng). Khác "đứng im" (offset không nhích): chỉ số này bỏ qua group còn consumer sống, nên không báo nhầm vì control-record của transaction (lag=1 vĩnh viễn) hay topic nhàn rỗi.',
+      },
+      {
+        key: 'emptyGroups',
+        rate: 'none',
+        label: 'Group không còn member',
+        suggest: { op: 'gt', threshold: 0 },
+        hint: 'Có commit offset nhưng 0 consumer đang chạy (kể cả khi đã hết lag)',
+        cost: 'heavy',
+        costNote: KAFKA_LAG_NOTE,
+        minEverySec: 120,
+        alertCode: 'consumers',
+        probe: KAFKA_LAG_PROBE,
+        agg: 'count',
+        meaning: 'số group có commit offset nhưng 0 consumer đang chạy — dịch vụ tiêu thụ đã tắt hẳn (kể cả khi lag đã về 0; muốn chỉ báo khi CÒN message chờ thì dùng deadLagGroups).',
       },
       {
         key: 'rebalancingGroups',
+        rate: 'none',
         label: 'Group đang rebalance',
         suggest: { op: 'gt', threshold: 0 },
         hint: 'Kéo dài = consumer flapping (chết/sống liên tục)',
@@ -850,6 +1221,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'totalConsumerLag',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Tổng lag toàn cluster',
         unit: 'message',
         cost: 'heavy',
@@ -862,6 +1235,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'lagGroupsUnknown',
+        rate: 'none',
         label: 'Group không đọc được lag',
         suggest: { op: 'gt', threshold: 0 },
         hint: 'Lag KHÔNG xác định (không phải 0) — thường do group đang rebalance',
@@ -875,6 +1249,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'undescribedGroups',
+        rate: 'none',
         label: 'Group không đọc được trạng thái',
         hint: 'describeGroups lỗi → số member/state không xác định; các chỉ số member bỏ qua group này',
         cost: 'heavy',
@@ -887,6 +1262,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'groups',
+        rate: 'none',
         label: 'Số consumer group',
         cost: 'heavy',
         costNote: KAFKA_LAG_NOTE,
@@ -898,6 +1274,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'topics',
+        rate: 'none',
         label: 'Số topic',
         cost: 'heavy',
         costNote: KAFKA_META_NOTE,
@@ -909,6 +1286,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'partitions',
+        rate: 'none',
         label: 'Số partition',
         cost: 'heavy',
         costNote: KAFKA_META_NOTE,
@@ -917,6 +1295,116 @@ export const STACKS: StackDef[] = [
         probe: KAFKA_META_PROBE,
         agg: 'count',
         meaning: 'tổng số partition trong cụm.',
+      },
+
+      // ── Chỉ số HOST của broker (node_exporter) ────────────────────────────
+      // Kafka không nói gì về máy chạy nó. Mà đĩa đầy là cách một cụm Kafka
+      // chết thường gặp nhất và im lặng nhất: mọi chỉ số cluster vẫn "xanh"
+      // cho tới đúng lúc broker không ghi được nữa. Chỉ có ở cụm đã khai
+      // metricsUrls; cụm chưa khai thì các chỉ số này vắng mặt và watch không
+      // bao giờ khớp (metric vắng mặt không được đánh giá).
+      {
+        key: 'hostDiskUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 1800, threshold: 72 }, { sec: 21600, threshold: 24 }, { sec: 43200, threshold: 6 }] },
+        label: 'Đĩa broker đã dùng',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 85 },
+        hint: 'Mount CHẬT NHẤT trong các broker — đĩa đầy là broker ngừng ghi, cluster vẫn xanh tới phút chót',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostdisk',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'max',
+        meaning: 'phần trăm đã dùng của phân vùng chật nhất trên các broker host. Kafka ghi log liên tục nên đĩa đầy làm broker ngừng nhận message — và các chỉ số cluster vẫn báo bình thường cho tới đúng lúc đó, nên đây là cảnh báo đi TRƯỚC sự cố.',
+      },
+      {
+        key: 'hostDiskFreeGb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: -3 }, { sec: 3600, threshold: -10 }, { sec: 43200, threshold: -30 }] },
+        label: 'Đĩa broker còn trống',
+        unit: 'GB',
+        suggest: { op: 'lt', threshold: 20 },
+        hint: 'Dùng thay % khi các broker có đĩa lệch nhau nhiều — 10% của 4TB khác hẳn 10% của 100GB',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostdisk',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'min',
+        meaning: 'dung lượng trống còn lại (GB) trên phân vùng chật nhất của các broker. Dùng thay phần trăm khi các broker có đĩa lệch nhau nhiều: 10% của 4TB là 400GB còn rất thoải mái, 10% của 100GB là sắp chết.',
+      },
+      {
+        key: 'hostMemUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
+        label: 'RAM broker đã dùng',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 90 },
+        hint: 'Kafka dựa vào page cache của OS — RAM cạn là đọc rơi xuống đĩa, độ trễ tăng vọt',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostram',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'max',
+        meaning: 'phần trăm RAM đã dùng trên broker tốn nhiều nhất (tính theo MemAvailable). Kafka phục vụ phần lớn lượt đọc từ page cache của OS, nên RAM cạn không làm nó chết ngay mà làm mọi lượt đọc rơi xuống đĩa — độ trễ tăng vọt trong khi cluster vẫn xanh.',
+      },
+      {
+        key: 'hostCpuPct',
+        rate: 'derived',
+        label: 'CPU broker',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 90 },
+        hint: 'Cần HAI vòng đo mới có số (tính từ chênh lệch bộ đếm) — vòng đầu luôn vắng mặt',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostcpu',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'max',
+        meaning: 'phần trăm CPU đang bận trên broker tải cao nhất, tính từ chênh lệch bộ đếm giữa hai vòng đo liên tiếp — nên vòng đo ĐẦU TIÊN sau khi bật watch không có số (chỉ số vắng mặt, không phải 0).',
+      },
+      {
+        key: 'hostLoad1PerCore',
+        rate: 'derived',
+        label: 'Load broker (mỗi core)',
+        suggest: { op: 'gt', threshold: 1.5 },
+        hint: 'load1 chia số core — ngưỡng dùng chung được cho broker khác cấu hình. >1 = có tiến trình phải xếp hàng',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostcpu',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'max',
+        meaning: 'load average 1 phút chia cho số core, của broker cao nhất. Chia core rồi thì một ngưỡng dùng chung được cho mọi máy dù khác cấu hình: >1 nghĩa là đã có tiến trình phải xếp hàng chờ CPU, >2 là ngộp thật sự.',
+      },
+      {
+        key: 'hostsDown',
+        rate: 'none',
+        label: 'Host broker không lấy được số liệu',
+        suggest: { op: 'gt', threshold: 0 },
+        hint: 'node_exporter tắt / firewall / máy chết — KHÔNG chắc broker đã chết, dùng kèm chỉ số brokers',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostdown',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'count',
+        meaning: 'số host broker mà node_exporter không trả lời (tắt, firewall, hoặc máy đã chết). Lưu ý đây là chỗ ĐO bị mất chứ chưa chắc broker chết — đối chiếu với chỉ số "Số broker" mới kết luận được: cả hai cùng giảm là máy chết thật, chỉ mình chỉ số này tăng là exporter hỏng.',
+      },
+      {
+        key: 'hostsTotal',
+        rate: 'none',
+        label: 'Số host broker đang giám sát',
+        cost: 'cheap',
+        costNote: KAFKA_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostdown',
+        probe: KAFKA_HOST_PROBE,
+        agg: 'count',
+        meaning: 'số endpoint node_exporter đã khai trong cấu hình cụm — mẫu số của "host không lấy được số liệu".',
       },
     ],
   },
@@ -928,6 +1416,8 @@ export const STACKS: StackDef[] = [
       { ...UP, probe: RABBIT_OVERVIEW_PROBE },
       {
         key: 'messagesReady',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Message tồn (ready)',
         suggest: { op: 'gt', threshold: 10000 },
         alertCode: 'queue',
@@ -937,6 +1427,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'messagesUnacked',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'Message chưa ack',
         suggest: { op: 'gt', threshold: 5000 },
         alertCode: 'queue',
@@ -946,6 +1438,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'consumers',
+        rate: 'none',
         label: 'Số consumer',
         suggest: { op: 'lt', threshold: 1 },
         alertCode: 'consumers',
@@ -956,6 +1449,7 @@ export const STACKS: StackDef[] = [
       // Everything below needs the second call, /api/nodes.
       {
         key: 'memAlarm',
+        rate: 'none',
         label: 'Cảnh báo RAM',
         unit: '0/1',
         suggest: { op: 'gte', threshold: 1 },
@@ -968,6 +1462,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'diskAlarm',
+        rate: 'none',
         label: 'Cảnh báo đĩa',
         unit: '0/1',
         suggest: { op: 'gte', threshold: 1 },
@@ -980,6 +1475,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'nodesDown',
+        rate: 'none',
         label: 'Node chết',
         suggest: { op: 'gt', threshold: 0 },
         cost: 'medium',
@@ -992,6 +1488,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'RAM node cao nhất',
         unit: '%',
         suggest: { op: 'gt', threshold: 80 },
@@ -1006,6 +1504,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memUsedMb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 300, threshold: 512 }, { sec: 3600, threshold: 2048 }] },
         label: 'RAM đã dùng (node cao nhất)',
         unit: 'MB',
         cost: 'medium',
@@ -1017,6 +1517,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'memLimitMb',
+        rate: 'none',
         label: 'RAM watermark (node cao nhất)',
         unit: 'MB',
         cost: 'medium',
@@ -1028,6 +1529,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'fdUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
         label: 'File descriptor',
         unit: '%',
         suggest: { op: 'gt', threshold: 80 },
@@ -1042,6 +1545,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'fdUsed',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 300, threshold: 200 }, { sec: 3600, threshold: 500 }] },
         label: 'File descriptor đã dùng (node cao nhất)',
         cost: 'medium',
         costNote: RABBIT_NODES_NOTE,
@@ -1052,6 +1557,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'fdTotal',
+        rate: 'none',
         label: 'File descriptor tối đa (node cao nhất)',
         cost: 'medium',
         costNote: RABBIT_NODES_NOTE,
@@ -1062,6 +1568,8 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'queues',
+        rate: 'level',
+        rateSuggest: { mode: 'relative', windows: [{ sec: 3600, threshold: 100 }, { sec: 43200, threshold: 200 }] },
         label: 'Số queue',
         alertCode: 'queue',
         probe: RABBIT_OVERVIEW_PROBE,
@@ -1070,6 +1578,7 @@ export const STACKS: StackDef[] = [
       },
       {
         key: 'publishRate',
+        rate: 'derived',
         label: 'Publish/giây',
         alertCode: 'ops',
         probe: RABBIT_OVERVIEW_PROBE,
@@ -1085,9 +1594,374 @@ export const STACKS: StackDef[] = [
     metrics: [
       { ...UP, probe: PG_PROBE },
       { ...LATENCY, probe: PG_PROBE },
+      {
+        key: 'connectionsUsedPct',
+        rate: 'level',
+        label: 'Kết nối đã dùng',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 80 },
+        alertCode: 'connections',
+        probe: PG_STATS_PROBE,
+        absolute: { used: 'connections', total: 'maxConnections', unit: '' },
+        meaning: 'số kết nối client so với max_connections. Chạm trần là ứng dụng nhận "too many clients" và không vào được database.',
+      },
+      { key: 'connections', rate: 'level', label: 'Kết nối hiện tại', unit: '', alertCode: 'connections', probe: PG_STATS_PROBE, meaning: 'số kết nối client đang mở tới server.' },
+      { key: 'maxConnections', rate: 'none', label: 'max_connections', unit: '', alertCode: 'connections', probe: PG_STATS_PROBE, meaning: 'trần kết nối của server — mẫu số của connectionsUsedPct.' },
+      { key: 'activeQueries', rate: 'derived', label: 'Query đang chạy', unit: '', alertCode: 'active', probe: PG_STATS_PROBE, meaning: 'số câu lệnh đang thực thi tại thời điểm đo.' },
+      {
+        key: 'lockWaiters',
+        rate: 'derived',
+        label: 'Phiên đang chờ lock',
+        unit: '',
+        suggest: { op: 'gt', threshold: 5 },
+        alertCode: 'locks',
+        probe: PG_STATS_PROBE,
+        meaning: 'số phiên đang bị chặn chờ lock của phiên khác. Tăng liên tục nghĩa là có giao dịch giữ lock quá lâu và kéo theo cả hàng đợi.',
+      },
+      {
+        key: 'idleInTx',
+        rate: 'derived',
+        label: 'Phiên "idle in transaction"',
+        unit: '',
+        suggest: { op: 'gt', threshold: 10 },
+        alertCode: 'idletx',
+        probe: PG_STATS_PROBE,
+        meaning: 'phiên mở giao dịch rồi để đó — giữ lock, chặn vacuum và làm bảng phình. Thường là lỗi ứng dụng quên commit/rollback.',
+      },
+      {
+        key: 'longestQuerySec',
+        rate: 'derived',
+        label: 'Query chạy lâu nhất',
+        unit: 's',
+        suggest: { op: 'gt', threshold: 300 },
+        alertCode: 'slowquery',
+        probe: PG_STATS_PROBE,
+        meaning: 'thời gian của câu lệnh đang chạy lâu nhất. Query treo hoặc thiếu index có thể ngốn CPU/IO của cả server.',
+      },
+      {
+        key: 'longestTxSec',
+        rate: 'derived',
+        label: 'Giao dịch mở lâu nhất',
+        unit: 's',
+        suggest: { op: 'gt', threshold: 600 },
+        alertCode: 'longtx',
+        probe: PG_STATS_PROBE,
+        meaning: 'tuổi của giao dịch đang mở lâu nhất. Giao dịch dài chặn autovacuum dọn rác nên bảng/ chỉ mục phình dần.',
+      },
+      {
+        key: 'cacheHitPct',
+        rate: 'derived',
+        label: 'Cache hit',
+        unit: '%',
+        suggest: { op: 'lt', threshold: 90 },
+        alertCode: 'cache',
+        probe: PG_STATS_PROBE,
+        meaning: 'tỉ lệ khối dữ liệu đọc từ bộ nhớ thay vì đĩa (tích luỹ từ lần reset thống kê). Thấp kéo dài nghĩa là dữ liệu nóng không vừa shared_buffers/RAM và server đang đọc đĩa nhiều.',
+      },
+      {
+        key: 'dbSizeGb',
+        rate: 'level',
+        rateSuggest: { mode: 'absolute', windows: [{ sec: 3600, threshold: 5 }, { sec: 86400, threshold: 50 }] },
+        label: 'Tổng dung lượng database',
+        unit: 'GB',
+        alertCode: 'dbsize',
+        probe: PG_STATS_PROBE,
+        agg: 'sum',
+        meaning: 'tổng dung lượng mọi database trên server. Dùng với rate watch để biết dữ liệu đang phình nhanh cỡ nào.',
+      },
+      {
+        key: 'wraparoundPct',
+        rate: 'level',
+        label: 'Tuổi XID (wraparound)',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 40 },
+        alertCode: 'wraparound',
+        probe: PG_STATS_PROBE,
+        meaning: 'tuổi transaction ID lớn nhất so với giới hạn 2^31. Chạm 100% Postgres tự dừng ghi để chống wraparound — thường do autovacuum không theo kịp hoặc bị giao dịch dài/slot chặn.',
+      },
+      { key: 'deadlocks', rate: 'level', label: 'Deadlock (tích luỹ)', unit: '', alertCode: 'deadlocks', probe: PG_STATS_PROBE, meaning: 'số deadlock tích luỹ từ lần reset thống kê; dùng rate watch để bắt đợt tăng.' },
+      { key: 'sharedBuffersMb', rate: 'none', label: 'shared_buffers', unit: 'MB', alertCode: 'memory', probe: PG_STATS_PROBE, meaning: 'bộ nhớ đệm Postgres tự quản (cấu hình) — tham chiếu để đọc cache hit.' },
+      { key: 'uptimeSec', rate: 'none', label: 'Thời gian chạy', unit: 's', alertCode: 'uptime', probe: PG_STATS_PROBE, meaning: 'thời gian từ lần khởi động gần nhất; tụt về nhỏ là server vừa restart.' },
+      { key: 'isStandby', rate: 'none', label: 'Là standby', unit: '0/1', alertCode: 'role', probe: PG_STATS_PROBE, meaning: '1 = node đang ở chế độ recovery (replica); đổi vai trò giữa hai lần đo nghĩa là vừa failover.' },
+      { key: 'replicas', rate: 'level', label: 'Replica đang nối', unit: '', suggest: { op: 'lt', threshold: 1 }, alertCode: 'replicas', probe: PG_STATS_PROBE, meaning: 'số replica đang streaming từ primary này; về 0 là mất bản sao.' },
+      {
+        key: 'replicaLagMb',
+        rate: 'level',
+        label: 'Replica tụt sau (MB)',
+        unit: 'MB',
+        suggest: { op: 'gt', threshold: 512 },
+        alertCode: 'replag',
+        probe: PG_STATS_PROBE,
+        agg: 'max',
+        meaning: 'lượng WAL mà replica chậm nhất chưa replay. Lớn dần là replica không theo kịp — failover lúc đó sẽ mất dữ liệu.',
+      },
+      {
+        key: 'replayLagSec',
+        rate: 'derived',
+        label: 'Replay lag (standby)',
+        unit: 's',
+        suggest: { op: 'gt', threshold: 30 },
+        alertCode: 'replag',
+        probe: PG_STATS_PROBE,
+        meaning: 'trên node standby: độ trễ replay so với primary (0 khi không còn WAL chờ).',
+      },
+      {
+        key: 'inactiveSlots',
+        rate: 'level',
+        label: 'Replication slot không hoạt động',
+        unit: '',
+        suggest: { op: 'gt', threshold: 0 },
+        alertCode: 'slots',
+        probe: PG_STATS_PROBE,
+        meaning: 'slot không có ai nối vẫn giữ WAL lại mãi — im lặng làm đầy đĩa primary.',
+      },
+      { key: 'slotRetainedMb', rate: 'level', label: 'WAL bị slot giữ lại', unit: 'MB', alertCode: 'slots', probe: PG_STATS_PROBE, agg: 'max', meaning: 'lượng WAL mà slot chậm nhất đang buộc primary giữ lại trên đĩa.' },
+      {
+        key: 'hostDiskUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 1800, threshold: 72 }, { sec: 21600, threshold: 24 }, { sec: 43200, threshold: 6 }] },
+        label: 'Đĩa máy chủ đã dùng',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 85 },
+        hint: 'Mount CHẬT NHẤT của máy chạy Postgres — đầy đĩa là Postgres ngừng ghi và có thể không khởi động lại được',
+        cost: 'cheap',
+        costNote: PG_HOST_NOTE,
+        minEverySec: 60,
+        alertCode: 'hostdisk',
+        probe: PG_HOST_PROBE,
+        agg: 'max',
+        meaning: 'phần trăm đã dùng của phân vùng chật nhất trên máy chạy Postgres. WAL/log/dữ liệu tràn đĩa khiến server dừng ghi.',
+      },
+      {
+        key: 'hostDiskFreeGb',
+        rate: 'level',
+        label: 'Đĩa máy chủ còn trống',
+        unit: 'GB',
+        suggest: { op: 'lt', threshold: 20 },
+        cost: 'cheap',
+        costNote: PG_HOST_NOTE,
+        alertCode: 'hostdisk',
+        probe: PG_HOST_PROBE,
+        agg: 'min',
+        meaning: 'dung lượng trống của phân vùng chật nhất — số tuyệt đối đi kèm phần trăm.',
+      },
+      {
+        key: 'hostMemUsedPct',
+        rate: 'level',
+        label: 'RAM máy chủ đã dùng',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 90 },
+        cost: 'cheap',
+        costNote: PG_HOST_NOTE,
+        alertCode: 'hostmem',
+        probe: PG_HOST_PROBE,
+        agg: 'max',
+        meaning: 'RAM đã dùng của máy chạy Postgres (đã trừ cache có thể thu hồi). Cạn RAM thì OOM killer có thể giết tiến trình postgres.',
+      },
+      {
+        key: 'hostCpuPct',
+        rate: 'derived',
+        label: 'CPU máy chủ',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 85 },
+        cost: 'cheap',
+        costNote: PG_HOST_NOTE + ' Lần đo đầu chưa có số (cần mốc so sánh).',
+        alertCode: 'hostcpu',
+        probe: PG_HOST_PROBE,
+        agg: 'max',
+        meaning: 'mức CPU bận của máy chạy Postgres, tính từ chênh lệch hai lần đo.',
+      },
+      {
+        key: 'hostLoad1PerCore',
+        rate: 'derived',
+        label: 'Load/core máy chủ',
+        unit: '',
+        suggest: { op: 'gt', threshold: 1.5 },
+        cost: 'cheap',
+        costNote: PG_HOST_NOTE,
+        alertCode: 'hostload',
+        probe: PG_HOST_PROBE,
+        agg: 'max',
+        meaning: 'load trung bình 1 phút chia số core — vượt 1 nghĩa là có việc xếp hàng chờ CPU.',
+      },
+      {
+        key: 'hostsDown',
+        rate: 'level',
+        label: 'Host mất exporter',
+        unit: '',
+        suggest: { op: 'gt', threshold: 0 },
+        cost: 'cheap',
+        costNote: PG_HOST_NOTE,
+        alertCode: 'hostdown',
+        probe: PG_HOST_PROBE,
+        agg: 'sum',
+        meaning: 'số endpoint node_exporter không trả lời — khi đó không đo được đĩa/RAM/CPU của máy.',
+      },
+    ],
+  },
+  {
+    id: 'minio',
+    label: 'MinIO',
+    icon: '🪣',
+    metrics: [
+      { ...UP, probe: MINIO_PROBE },
+      { ...LATENCY, probe: MINIO_PROBE },
+      {
+        key: 'buckets',
+        rate: 'none',
+        label: 'Số bucket',
+        unit: '',
+        probe: MINIO_PROBE,
+        meaning: 'số bucket mà access key đang thấy; giảm đột ngột là bucket bị xoá hoặc key mất quyền.',
+      },
+      {
+        key: 'clusterDown',
+        rate: 'none',
+        label: 'Cụm thiếu quorum',
+        unit: '0/1',
+        suggest: { op: 'gt', threshold: 0 },
+        alertCode: 'quorum',
+        probe: MINIO_PROBE,
+        meaning: '1 = /minio/health/cluster không trả 200: cụm không đủ ổ/node để ghi (mất write quorum) — ứng dụng upload sẽ lỗi.',
+      },
+      {
+        key: 'diskUsedPct',
+        rate: 'level',
+        rateSuggest: { mode: 'eta', windows: [{ sec: 300, threshold: 24 }, { sec: 3600, threshold: 6 }] },
+        label: 'Dung lượng đã dùng',
+        unit: '%',
+        suggest: { op: 'gt', threshold: 80 },
+        alertCode: 'disk',
+        probe: MINIO_PROBE,
+        agg: 'max',
+        absolute: { used: 'diskUsedGb', total: 'diskTotalGb', unit: 'GB' },
+        meaning: 'tỉ lệ dung lượng khả dụng của cụm đã dùng (cần MinIO cho đọc metrics công khai). Đầy là không ghi thêm được object.',
+      },
+      {
+        key: 'diskUsedGb',
+        rate: 'level',
+        label: 'Dung lượng đã dùng',
+        unit: 'GB',
+        alertCode: 'disk',
+        probe: MINIO_PROBE,
+        meaning: 'dung lượng dữ liệu cụm đang giữ, tính bằng GB.',
+      },
+      {
+        key: 'diskTotalGb',
+        rate: 'none',
+        label: 'Dung lượng tổng',
+        unit: 'GB',
+        alertCode: 'disk',
+        probe: MINIO_PROBE,
+        meaning: 'tổng dung lượng khả dụng của cụm — mẫu số của diskUsedPct.',
+      },
+      {
+        key: 'nodesOffline',
+        rate: 'level',
+        label: 'Node offline',
+        unit: '',
+        suggest: { op: 'gt', threshold: 0 },
+        alertCode: 'nodes',
+        probe: MINIO_PROBE,
+        meaning: 'số node MinIO đang offline (cần metrics công khai). Mất node làm cụm giảm dự phòng, mất quá nửa là mất quorum.',
+      },
+      {
+        key: 'drivesOffline',
+        rate: 'level',
+        label: 'Ổ đĩa offline',
+        unit: '',
+        suggest: { op: 'gt', threshold: 0 },
+        alertCode: 'drives',
+        probe: MINIO_PROBE,
+        meaning: 'số ổ đĩa MinIO đang offline (cần metrics công khai). Erasure coding chịu được một số ổ hỏng, nhưng mỗi ổ mất là bớt dự phòng.',
+      },
+      { key: 'nodesOnline', rate: 'none', label: 'Node online', unit: '', alertCode: 'nodes', probe: MINIO_PROBE, meaning: 'số node MinIO đang hoạt động (cần metrics).' },
+      { key: 'drivesOnline', rate: 'none', label: 'Ổ đĩa online', unit: '', alertCode: 'drives', probe: MINIO_PROBE, meaning: 'số ổ đĩa MinIO đang hoạt động (cần metrics).' },
+      { key: 'objects', rate: 'level', label: 'Tổng object', unit: '', alertCode: 'objects', probe: MINIO_PROBE, meaning: 'tổng object toàn cụm theo scanner của MinIO (cập nhật định kỳ nên có thể trễ vài phút).' },
+      ...hostMetricDefs('MinIO', MINIO_HOST_PROBE, MINIO_HOST_NOTE),
     ],
   },
 ];
+
+/**
+ * Bộ chỉ số HOST (node_exporter) cho một stack không tự nói được gì về máy nó chạy trên.
+ * Cùng khoá `host*` với Kafka/Postgres để luật Monitor và logic gộp dùng chung.
+ */
+function hostMetricDefs(what: string, probe: string, note: string): MetricDef[] {
+  const base = { cost: 'cheap' as const, costNote: note, probe };
+  return [
+    {
+      ...base,
+      key: 'hostDiskUsedPct',
+      rate: 'level',
+      rateSuggest: { mode: 'eta', windows: [{ sec: 1800, threshold: 72 }, { sec: 21600, threshold: 24 }, { sec: 43200, threshold: 6 }] },
+      label: 'Đĩa máy chủ đã dùng',
+      unit: '%',
+      suggest: { op: 'gt', threshold: 85 },
+      hint: `Mount CHẬT NHẤT của máy chạy ${what} — đầy đĩa là ${what} ngừng ghi`,
+      minEverySec: 60,
+      alertCode: 'hostdisk',
+      agg: 'max',
+      meaning: `phần trăm đã dùng của phân vùng chật nhất trên máy chạy ${what}.`,
+    },
+    {
+      ...base,
+      key: 'hostDiskFreeGb',
+      rate: 'level',
+      label: 'Đĩa máy chủ còn trống',
+      unit: 'GB',
+      suggest: { op: 'lt', threshold: 20 },
+      alertCode: 'hostdisk',
+      agg: 'min',
+      meaning: 'dung lượng trống của phân vùng chật nhất — số tuyệt đối đi kèm phần trăm.',
+    },
+    {
+      ...base,
+      key: 'hostMemUsedPct',
+      rate: 'level',
+      label: 'RAM máy chủ đã dùng',
+      unit: '%',
+      suggest: { op: 'gt', threshold: 90 },
+      alertCode: 'hostmem',
+      agg: 'max',
+      meaning: `RAM đã dùng của máy chạy ${what} (đã trừ cache có thể thu hồi).`,
+    },
+    {
+      ...base,
+      key: 'hostCpuPct',
+      rate: 'derived',
+      label: 'CPU máy chủ',
+      unit: '%',
+      suggest: { op: 'gt', threshold: 85 },
+      costNote: `${note} Lần đo đầu chưa có số (cần mốc so sánh).`,
+      alertCode: 'hostcpu',
+      agg: 'max',
+      meaning: `mức CPU bận của máy chạy ${what}, tính từ chênh lệch hai lần đo.`,
+    },
+    {
+      ...base,
+      key: 'hostLoad1PerCore',
+      rate: 'derived',
+      label: 'Load/core máy chủ',
+      unit: '',
+      suggest: { op: 'gt', threshold: 1.5 },
+      alertCode: 'hostload',
+      agg: 'max',
+      meaning: 'load trung bình 1 phút chia số core — vượt 1 nghĩa là có việc xếp hàng chờ CPU.',
+    },
+    {
+      ...base,
+      key: 'hostsDown',
+      rate: 'level',
+      label: 'Host mất exporter',
+      unit: '',
+      suggest: { op: 'gt', threshold: 0 },
+      alertCode: 'hostdown',
+      agg: 'sum',
+      meaning: 'số endpoint node_exporter không trả lời — khi đó không đo được đĩa/RAM/CPU của máy.',
+    },
+  ];
+}
 
 export const stackDef = (id: InfraStack): StackDef | undefined => STACKS.find((s) => s.id === id);
 

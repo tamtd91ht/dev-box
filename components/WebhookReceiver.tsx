@@ -76,6 +76,7 @@ function chipHost(url: string): string {
 import { readLocal, writeLocal } from '@/lib/localKeys';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
 const QUICK_ID_KEY = 'tool.webhook.quickId';
 
@@ -162,6 +163,8 @@ export default function WebhookReceiver({
 }: Props) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const listSplit = useSplit({ varName: '--split-rail', min: 180, max: 560, gap: 18 });
+  // Thu gọn cột link — nhường chỗ cho luồng request bắt được.
+  const rail = useRailCollapse('webhooks', '--split-rail');
   const [links, setLinks] = useState<WebhookLink[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [captures, setCaptures] = useState<CapturedRequest[]>([]);
@@ -678,10 +681,16 @@ export default function WebhookReceiver({
         </details>
       </div>
 
-    <div className="layout" ref={listSplit.ref} style={listSplit.style}>
-      {/* ── Left: link list + create ─────────────────────────────────────── */}
+    <div className="layout" ref={listSplit.ref} style={{ ...listSplit.style, ...rail.style }}>
+      {/* ── Left: link list + create (thu gọn được) ──────────────────────── */}
+      {rail.collapsed ? (
+        <CollapsedRail label="Webhook links" count={links.length} onShow={rail.show} />
+      ) : (
       <div className="panel">
-        <h3>Webhook links</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <h3 style={{ flex: 1 }}>Webhook links</h3>
+          <RailHideButton onHide={rail.hide} className="ghost sm" />
+        </div>
 
         {!authReady && (
           <div className="badge warn" style={{ marginBottom: 12 }}>
@@ -770,6 +779,8 @@ export default function WebhookReceiver({
           )}
         </div>
       </div>
+
+      )}
 
       {/* ── Right: validation rules + captured requests stream ───────────── */}
       <div className="panel">
@@ -888,7 +899,7 @@ export default function WebhookReceiver({
           </div>
         )}
       </div>
-      <Splitter {...listSplit.grip} />
+      {!rail.collapsed && <Splitter {...listSplit.grip} />}
     </div>
 
       {/* ── Settings drawer: connection + realtime socket ─────────────────── */}

@@ -18,8 +18,10 @@
 //   5. Identifiers (database/schema/table/column) are validated + quoted;
 //      values travel as bind parameters, never concatenated.
 
-import { Pool, types } from 'pg';
+import { Client, Pool, types } from 'pg';
 import type { PgConnection } from '@/lib/pgConnections';
+import { parseHostList, type PgEndpoint } from '@/lib/pgHosts';
+import { fetchHostMetrics, type HostMetrics } from '@/lib/hostMetrics';
 
 // int8/numeric come back as strings by default — keep them as strings (exact),
 // the UI/report layer decides how to render. (No parser overrides needed.)
@@ -46,8 +48,79 @@ interface Cached {
 }
 const pools = new Map<string, Cached>();
 
-function signature(c: PgConnection, db: string): string {
-  return [c.host, c.port, db, c.username, c.tls].join('|');
+function signature(c: PgConnection, db: string, ep: PgEndpoint): string {
+  return [c.host, c.port, ep.host, ep.port, db, c.username, c.tls].join('|');
+}
+
+// ── Cluster: chọn node ────────────────────────────────────────────────────────
+//
+// Ô Host có thể là danh sách "pg1:5432,pg2:5432,…" (xem lib/pgHosts). `pg` không
+// tự failover giữa nhiều host nên ta chọn node ở đây: hỏi song song từng node
+// `pg_is_in_recovery()`, lấy node PRIMARY đứng đầu danh sách; không có primary
+// (đang failover, hoặc chỉ liệt kê replica) thì lấy node đầu tiên sống — đọc vẫn
+// chạy được, còn ghi sẽ bị chính standby từ chối. Kết quả nhớ ENDPOINT_TTL_MS để
+// không dò lại ở mỗi lệnh; hết hạn (hoặc pool lỗi kết nối) thì dò lại, nên sau
+// failover tự chuyển sang primary mới.
+
+interface Picked {
+  ep: PgEndpoint;
+  role: 'primary' | 'standby';
+  at: number;
+}
+const ENDPOINT_TTL_MS = 30_000;
+const picked = new Map<string, Picked>();
+
+function sslOf(c: PgConnection) {
+  return c.tls ? { rejectUnauthorized: false } : undefined;
+}
+
+async function probeNode(c: PgConnection, db: string, ep: PgEndpoint): Promise<'primary' | 'standby'> {
+  const client = new Client({
+    host: ep.host,
+    port: ep.port,
+    database: db,
+    user: c.username,
+    password: c.password,
+    ssl: sslOf(c),
+    connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+  });
+  client.on('error', () => {});
+  await client.connect();
+  try {
+    const r = await client.query('SELECT pg_is_in_recovery() AS r');
+    return r.rows[0]?.r ? 'standby' : 'primary';
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+/** Node đang dùng cho connection này (đã dò + cache khi Host là cluster). */
+async function resolveEndpoint(c: PgConnection, db: string, force = false): Promise<Picked> {
+  const eps = parseHostList(c.host, c.port);
+  if (eps.length === 1) return { ep: eps[0], role: 'primary', at: Date.now() };
+  const key = `${c.id}|${c.host}|${c.port}|${db}`;
+  const hit = picked.get(key);
+  if (!force && hit && Date.now() - hit.at < ENDPOINT_TTL_MS) return hit;
+
+  const results = await Promise.allSettled(eps.map((ep) => probeNode(c, db, ep)));
+  let best: Picked | null = null;
+  for (let i = 0; i < eps.length; i++) {
+    const r = results[i];
+    if (r.status !== 'fulfilled') continue;
+    if (r.value === 'primary') {
+      best = { ep: eps[i], role: 'primary', at: Date.now() };
+      break; // primary đứng đầu danh sách thắng
+    }
+    if (!best) best = { ep: eps[i], role: 'standby', at: Date.now() };
+  }
+  if (!best) {
+    const why = results
+      .map((r, i) => `${eps[i].host}:${eps[i].port} → ${(r as PromiseRejectedResult).reason?.message ?? 'lỗi'}`)
+      .join('; ');
+    throw new Error(`không kết nối được node nào trong cluster (${why})`);
+  }
+  picked.set(key, best);
+  return best;
 }
 
 function evictIdle(now: number): void {
@@ -60,12 +133,13 @@ function evictIdle(now: number): void {
 }
 
 /** Lazily create (or reuse) a pool for a connection + database. */
-function getPool(conn: PgConnection, db?: string): Pool {
+async function getPool(conn: PgConnection, db?: string): Promise<Pool> {
   const database = (db && db.trim()) || conn.database;
   const now = Date.now();
   evictIdle(now);
   const key = `${conn.id}:${database}`;
-  const sig = signature(conn, database);
+  const { ep } = await resolveEndpoint(conn, database);
+  const sig = signature(conn, database, ep);
   const existing = pools.get(key);
   if (existing && existing.sig === sig) {
     existing.lastUsed = now;
@@ -74,12 +148,12 @@ function getPool(conn: PgConnection, db?: string): Pool {
   if (existing) void existing.pool.end().catch(() => {});
 
   const pool = new Pool({
-    host: conn.host,
-    port: conn.port,
+    host: ep.host,
+    port: ep.port,
     database,
     user: conn.username,
     password: conn.password,
-    ssl: conn.tls ? { rejectUnauthorized: false } : undefined,
+    ssl: sslOf(conn),
     max: 3, // interactive tool — tiny bounded pool
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
     idleTimeoutMillis: 60_000,
@@ -132,31 +206,232 @@ export interface PgTestResult {
 }
 
 export async function testConnection(conn: PgConnection): Promise<PgTestResult> {
+  const t0 = Date.now();
+  // Test luôn dò lại cluster (force) để thấy đúng node/vai trò ở thời điểm này.
+  const { ep, role } = await resolveEndpoint(conn, conn.database, true);
+  const nodes = parseHostList(conn.host, conn.port).length;
   const pool = new Pool({
-    host: conn.host,
-    port: conn.port,
+    host: ep.host,
+    port: ep.port,
     database: conn.database,
     user: conn.username,
     password: conn.password,
-    ssl: conn.tls ? { rejectUnauthorized: false } : undefined,
+    ssl: sslOf(conn),
     max: 1,
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
   });
   pool.on('error', () => {});
-  const t0 = Date.now();
   try {
     const r = await pool.query('SELECT version() AS v, current_database() AS db');
     const latencyMs = Date.now() - t0;
     const full = String(r.rows[0]?.v ?? '?');
     const m = /PostgreSQL\s+([\d.]+)/.exec(full);
-    return { latencyMs, version: m ? m[1] : full.slice(0, 40), database: String(r.rows[0]?.db ?? conn.database) };
+    return {
+      latencyMs,
+      version: m ? m[1] : full.slice(0, 40),
+      database: String(r.rows[0]?.db ?? conn.database),
+      ...(nodes > 1 ? { endpoint: `${ep.host}:${ep.port}`, role, nodes } : {}),
+    };
   } finally {
     await pool.end().catch(() => {});
   }
 }
 
+// ── Server health stats (Overview + Monitor) ──────────────────────────────────
+//
+// Mọi thứ đo được BẰNG SQL, không cần quyền superuser (thiếu quyền thì chỉ số đó
+// vắng mặt chứ không làm cả lần đo hỏng): kết nối, phiên chờ lock, giao dịch/query
+// chạy lâu, cache hit, dung lượng database, tuổi XID (nguy cơ wraparound), replication.
+// Đĩa/RAM/CPU của MÁY thì SQL không biết — xem metricsUrls (node_exporter).
+
+export interface PgSession {
+  pid: number;
+  user: string;
+  db: string;
+  state: string;
+  /** "Lock:relation", "IO:DataFileRead"… hoặc null khi đang chạy CPU. */
+  waitEvent: string | null;
+  queryAgeSec: number | null;
+  xactAgeSec: number | null;
+  query: string;
+}
+
+export interface PgStats {
+  role: 'primary' | 'standby';
+  uptimeSec: number;
+  maxConnections: number;
+  connections: number;
+  connectionsUsedPct: number;
+  active: number;
+  idle: number;
+  idleInTx: number;
+  /** Phiên đang chờ một lock. */
+  lockWaiters: number;
+  longestQuerySec: number | null;
+  longestTxSec: number | null;
+  dbSizeBytes: number | null;
+  cacheHitPct: number | null;
+  /** Tích luỹ từ lần reset thống kê gần nhất. */
+  deadlocks: number | null;
+  tempBytes: number | null;
+  /** Tuổi XID lớn nhất / 2^31 — 100% là Postgres tự dừng để chống wraparound. */
+  wraparoundPct: number | null;
+  sharedBuffersBytes: number | null;
+  /** Primary: số replica đang nối + replay lag lớn nhất (byte). */
+  replicas: number | null;
+  replicaLagBytes: number | null;
+  /** Standby: replay lag (giây) — 0 khi không còn gì để replay. */
+  replayLagSec: number | null;
+  inactiveSlots: number | null;
+  slotRetainedBytes: number | null;
+  sessions: PgSession[];
+}
+
+const num = (v: unknown): number | null => {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+const round1 = (n: number | null): number | null => (n === null ? null : Math.round(n * 10) / 10);
+
+export async function stats(conn: PgConnection, opts: { sessions?: boolean } = {}): Promise<PgStats> {
+  const pool = await getPool(conn);
+  return runReadOnly(pool, async (q) => {
+    // Mỗi truy vấn "mềm": thiếu quyền / khác phiên bản → bỏ chỉ số đó, không hỏng cả lần đo.
+    const soft = async (sql: string): Promise<Record<string, unknown> | null> => {
+      try {
+        // SAVEPOINT để một truy vấn lỗi không làm hỏng transaction của các truy vấn sau.
+        await q('SAVEPOINT s');
+        const r = await q(sql);
+        await q('RELEASE SAVEPOINT s');
+        return r.rows[0] ?? null;
+      } catch {
+        await q('ROLLBACK TO SAVEPOINT s').catch(() => {});
+        return null;
+      }
+    };
+
+    const base = await q(
+      `SELECT pg_is_in_recovery() AS rec,
+              extract(epoch FROM now() - pg_postmaster_start_time()) AS up,
+              current_setting('max_connections')::int AS maxc`,
+    );
+    const b = base.rows[0] ?? {};
+    const standby = !!b.rec;
+    const maxConnections = num(b.maxc) ?? 0;
+
+    const act = await soft(
+      `SELECT count(*) FILTER (WHERE backend_type = 'client backend') AS total,
+              count(*) FILTER (WHERE backend_type = 'client backend' AND state = 'active' AND pid <> pg_backend_pid()) AS active,
+              count(*) FILTER (WHERE backend_type = 'client backend' AND state = 'idle') AS idle,
+              count(*) FILTER (WHERE backend_type = 'client backend' AND state LIKE 'idle in transaction%') AS iit,
+              count(*) FILTER (WHERE wait_event_type = 'Lock') AS waiters,
+              max(extract(epoch FROM now() - query_start)) FILTER (WHERE backend_type = 'client backend' AND state = 'active' AND pid <> pg_backend_pid()) AS lq,
+              max(extract(epoch FROM now() - xact_start)) FILTER (WHERE backend_type = 'client backend' AND xact_start IS NOT NULL AND pid <> pg_backend_pid()) AS ltx
+         FROM pg_stat_activity`,
+    );
+    const connections = num(act?.total) ?? 0;
+
+    const size = await soft(`SELECT sum(pg_database_size(datname))::bigint AS sz FROM pg_database WHERE datallowconn`);
+    const dbs = await soft(
+      `SELECT sum(blks_hit)::bigint AS h, sum(blks_read)::bigint AS r, sum(deadlocks)::bigint AS d, sum(temp_bytes)::bigint AS t FROM pg_stat_database`,
+    );
+    const hit = num(dbs?.h) ?? 0;
+    const read = num(dbs?.r) ?? 0;
+    const wrap = await soft(`SELECT max(age(datfrozenxid)) AS a FROM pg_database`);
+    const sb = await soft(`SELECT pg_size_bytes(current_setting('shared_buffers')) AS sb`);
+
+    let replicas: number | null = null;
+    let replicaLagBytes: number | null = null;
+    let replayLagSec: number | null = null;
+    let inactiveSlots: number | null = null;
+    let slotRetainedBytes: number | null = null;
+    if (standby) {
+      const lag = await soft(
+        `SELECT CASE WHEN pg_last_wal_receive_lsn() = pg_last_wal_replay_lsn() THEN 0
+                     ELSE extract(epoch FROM now() - pg_last_xact_replay_timestamp()) END AS lag`,
+      );
+      replayLagSec = num(lag?.lag);
+    } else {
+      const rep = await soft(
+        `SELECT count(*) AS n, max(pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)) AS lag FROM pg_stat_replication`,
+      );
+      replicas = num(rep?.n);
+      replicaLagBytes = num(rep?.lag);
+      const slots = await soft(
+        `SELECT count(*) FILTER (WHERE NOT active) AS inactive,
+                max(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained
+           FROM pg_replication_slots`,
+      );
+      inactiveSlots = num(slots?.inactive);
+      slotRetainedBytes = num(slots?.retained);
+    }
+
+    const sessions: PgSession[] = [];
+    if (opts.sessions) {
+      try {
+        const r = await q(
+          `SELECT pid, usename, datname, state, wait_event_type, wait_event,
+                  extract(epoch FROM now() - query_start) AS qage,
+                  extract(epoch FROM now() - xact_start) AS xage,
+                  left(query, 300) AS query
+             FROM pg_stat_activity
+            WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND state IS NOT NULL AND state <> 'idle'
+            ORDER BY query_start ASC NULLS LAST
+            LIMIT 15`,
+        );
+        for (const row of r.rows) {
+          sessions.push({
+            pid: Number(row.pid),
+            user: String(row.usename ?? ''),
+            db: String(row.datname ?? ''),
+            state: String(row.state ?? ''),
+            waitEvent: row.wait_event_type ? `${row.wait_event_type}:${row.wait_event ?? ''}` : null,
+            queryAgeSec: round1(num(row.qage)),
+            xactAgeSec: round1(num(row.xage)),
+            query: String(row.query ?? ''),
+          });
+        }
+      } catch {
+        /* không đọc được pg_stat_activity chi tiết — bỏ phần phiên */
+      }
+    }
+
+    return {
+      role: standby ? 'standby' : 'primary',
+      uptimeSec: Math.round(num(b.up) ?? 0),
+      maxConnections,
+      connections,
+      connectionsUsedPct: maxConnections > 0 ? round1((connections / maxConnections) * 100) ?? 0 : 0,
+      active: num(act?.active) ?? 0,
+      idle: num(act?.idle) ?? 0,
+      idleInTx: num(act?.iit) ?? 0,
+      lockWaiters: num(act?.waiters) ?? 0,
+      longestQuerySec: round1(num(act?.lq)),
+      longestTxSec: round1(num(act?.ltx)),
+      dbSizeBytes: num(size?.sz),
+      cacheHitPct: hit + read > 0 ? round1((hit / (hit + read)) * 100) : null,
+      deadlocks: num(dbs?.d),
+      tempBytes: num(dbs?.t),
+      wraparoundPct: wrap ? round1(((num(wrap.a) ?? 0) / 2147483647) * 100) : null,
+      sharedBuffersBytes: num(sb?.sb),
+      replicas,
+      replicaLagBytes,
+      replayLagSec: round1(replayLagSec),
+      inactiveSlots,
+      slotRetainedBytes,
+      sessions,
+    };
+  });
+}
+
+/** node_exporter (RAM/đĩa/CPU/load) của máy chạy Postgres — rỗng nếu connection không khai metricsUrls. */
+export async function hostMetrics(conn: PgConnection): Promise<HostMetrics[]> {
+  return fetchHostMetrics(conn.metricsUrls ?? []);
+}
+
 export async function ping(conn: PgConnection): Promise<{ latencyMs: number }> {
-  const pool = getPool(conn);
+  const pool = await getPool(conn);
   const t0 = Date.now();
   await pool.query('SELECT 1');
   return { latencyMs: Date.now() - t0 };
@@ -170,7 +445,7 @@ export interface PgDatabaseInfo {
 }
 
 export async function listDatabases(conn: PgConnection): Promise<PgDatabaseInfo[]> {
-  const pool = getPool(conn);
+  const pool = await getPool(conn);
   return runReadOnly(pool, async (q) => {
     const r = await q(
       `SELECT datname AS name, pg_database_size(datname)::bigint AS size
@@ -192,7 +467,7 @@ export interface PgTableInfo {
 
 /** User tables of ONE database (system schemas excluded). */
 export async function listTables(conn: PgConnection, db: string): Promise<PgTableInfo[]> {
-  const pool = getPool(conn, db);
+  const pool = await getPool(conn, db);
   return runReadOnly(pool, async (q) => {
     const r = await q(
       `SELECT n.nspname AS schema, c.relname AS name,
@@ -222,7 +497,7 @@ export interface PgColumnInfo {
 }
 
 export async function listColumns(conn: PgConnection, db: string, schema: string, table: string): Promise<PgColumnInfo[]> {
-  const pool = getPool(conn, db);
+  const pool = await getPool(conn, db);
   return runReadOnly(pool, async (q) => {
     const r = await q(
       `SELECT column_name, data_type, is_nullable, column_default
@@ -246,7 +521,7 @@ export interface PgIndexInfo {
 }
 
 export async function listIndexes(conn: PgConnection, db: string, schema: string, table: string): Promise<PgIndexInfo[]> {
-  const pool = getPool(conn, db);
+  const pool = await getPool(conn, db);
   return runReadOnly(pool, async (q) => {
     const r = await q(
       `SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = $2 ORDER BY indexname`,
@@ -275,7 +550,7 @@ export interface PgQueryResult {
 export async function query(conn: PgConnection, db: string, rawSql: unknown): Promise<PgQueryResult> {
   const sql = String(rawSql ?? '').trim().replace(/;+\s*$/, '');
   if (!sql) throw new Error('SQL trống');
-  const pool = getPool(conn, db);
+  const pool = await getPool(conn, db);
   const t0 = Date.now();
   const res = await runReadOnly(pool, async (q) => {
     try {
@@ -352,6 +627,8 @@ export interface PgQuickFindInput {
   offset?: unknown;
   /** Optional column allowlist to SELECT (default *). */
   columns?: unknown;
+  /** Optional ORDER BY: [{ column, dir }] (tối đa 5 khoá; cột đi qua ident()). */
+  sort?: unknown;
 }
 
 export async function quickFind(conn: PgConnection, db: string, input: PgQuickFindInput): Promise<PgQueryResult & { hasMore: boolean; offset: number }> {
@@ -365,10 +642,18 @@ export async function quickFind(conn: PgConnection, db: string, input: PgQuickFi
     ? input.columns.map((c) => ident(c, 'column')).join(', ')
     : '*';
 
-  const pool = getPool(conn, db);
+  // ORDER BY: cột qua ident() (chặn injection), chiều chỉ nhận desc/asc. Không sort = thứ tự tự nhiên của PG.
+  const orderKeys = (Array.isArray(input.sort) ? input.sort : []).slice(0, 5).flatMap((s) => {
+    const o = (s ?? {}) as { column?: unknown; dir?: unknown };
+    if (typeof o.column !== 'string' || !o.column.trim()) return [];
+    return [`${ident(o.column, 'column')} ${o.dir === 'desc' ? 'DESC' : 'ASC'}`];
+  });
+  const orderBy = orderKeys.length ? ` ORDER BY ${orderKeys.join(', ')}` : '';
+
+  const pool = await getPool(conn, db);
   const t0 = Date.now();
   const res = await runReadOnly(pool, (q) =>
-    q(`SELECT ${cols} FROM ${schema}.${table} WHERE ${text} LIMIT ${limit + 1} OFFSET ${offset}`, params),
+    q(`SELECT ${cols} FROM ${schema}.${table} WHERE ${text}${orderBy} LIMIT ${limit + 1} OFFSET ${offset}`, params),
   );
   const tookMs = Date.now() - t0;
   const rows: Record<string, unknown>[] = res.rows ?? [];
@@ -379,11 +664,11 @@ export async function quickFind(conn: PgConnection, db: string, input: PgQuickFi
 }
 
 /** Dry-run count for the quick-find entries (also powers the update modal). */
-export async function quickCount(conn: PgConnection, db: string, input: Omit<PgQuickFindInput, 'limit' | 'offset' | 'columns'>): Promise<{ count: number; tookMs: number }> {
+export async function quickCount(conn: PgConnection, db: string, input: Omit<PgQuickFindInput, 'limit' | 'offset' | 'columns' | 'sort'>): Promise<{ count: number; tookMs: number }> {
   const schema = ident(input.schema, 'schema');
   const table = ident(input.table, 'table');
   const { text, params } = buildWhere(input.entries ?? []);
-  const pool = getPool(conn, db);
+  const pool = await getPool(conn, db);
   const t0 = Date.now();
   const res = await runReadOnly(pool, (q) => q(`SELECT count(*)::bigint AS n FROM ${schema}.${table} WHERE ${text}`, params));
   return { count: Number(res.rows[0]?.n ?? 0), tookMs: Date.now() - t0 };
@@ -440,7 +725,7 @@ export async function updateWithWhere(conn: PgConnection, db: string, input: PgU
     }
   }
 
-  const pool = getPool(conn, db);
+  const pool = await getPool(conn, db);
   const client = await pool.connect();
   let updated = 0;
   try {
@@ -472,7 +757,7 @@ export async function countWhere(conn: PgConnection, db: string, schemaRaw: unkn
   const where = String(whereRaw ?? '').trim();
   if (!where) throw new Error('WHERE trống');
   if (where.includes(';')) throw new Error('WHERE must be a single condition — ";" is not allowed');
-  const pool = getPool(conn, db);
+  const pool = await getPool(conn, db);
   const res = await runReadOnly(pool, (q) => q(`SELECT count(*)::bigint AS n FROM ${schema}.${table} WHERE ${where}`));
   return { count: Number(res.rows[0]?.n ?? 0) };
 }

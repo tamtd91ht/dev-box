@@ -31,6 +31,7 @@ import {
 } from '@/lib/persist';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
+import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 
 interface ManifestService {
   id: string;
@@ -55,6 +56,8 @@ export default function ApiExplorerWorkspace({ packId }: { packId: string }) {
   // Hai thanh: rail bên ngoài, và danh sách Endpoints/Flows bên trong (hai
   // mục này loại trừ nhau nên dùng chung một thanh, đổi mục vẫn giữ bề rộng).
   const railSplit = useSplit({ varName: '--apix-rail', min: 180, max: 520, gap: 14 });
+  // Thu gọn cột pack/services — nhường chỗ cho khung gọi API.
+  const rail = useRailCollapse('apix', '--apix-rail');
   const listSplit = useSplit({ varName: '--split-rail', min: 180, max: 560, gap: 18 });
   const [pack, setPack] = useState<IntegrationView | null | undefined>(undefined);
   const [activeServiceId, setActiveServiceId] = useState('');
@@ -192,12 +195,16 @@ export default function ApiExplorerWorkspace({ packId }: { packId: string }) {
   }
 
   return (
-    <div className="apix-layout" ref={railSplit.ref} style={railSplit.style}>
-      {/* ── Rail: THIS pack's identity + services ───────────────────────── */}
+    <div className="apix-layout" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
+      {/* ── Rail: THIS pack's identity + services (thu gọn được) ────────── */}
+      {rail.collapsed ? (
+        <CollapsedRail label={pack.manifest?.name ?? pack.name} count={services.length} onShow={rail.show} />
+      ) : (
       <aside className="panel">
         <div className="apix-pack-head">
           <strong>▤ {pack.manifest?.name ?? pack.name}</strong>
           <span className="badge">integration pack</span>
+          <RailHideButton onHide={rail.hide} className="ghost sm" />
         </div>
         <div className="apix-pack-root" title={pack.root}>{pack.root}</div>
 
@@ -221,6 +228,7 @@ export default function ApiExplorerWorkspace({ packId }: { packId: string }) {
           ↻ Reload manifest
         </button>
       </aside>
+      )}
 
       {/* ── Main: settings + explore/flows ─────────────────────────────── */}
       <main className="panel apix-main">
@@ -398,7 +406,7 @@ export default function ApiExplorerWorkspace({ packId }: { packId: string }) {
           </>
         )}
       </main>
-      <Splitter {...railSplit.grip} />
+      {!rail.collapsed && <Splitter {...railSplit.grip} />}
     </div>
   );
 }

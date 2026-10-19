@@ -9,6 +9,7 @@
 // Results: one row per line, click → pretty-JSON modal. Export → styled .xlsx.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { usePresetSync } from '@/lib/presetSync';
 import {
   pgQuickFind,
   listPgDatabases,
@@ -31,6 +32,9 @@ import {
   type PgQuickFindField,
 } from '@/lib/pgQuickFinds';
 import ExportModal from './ExportModal';
+import ColSplit from '../ColSplit';
+import QuickSortEditor from '../export/QuickSortEditor';
+import ResultBox, { ExpandButton, FilterBar, FindButton, Hl, useResultExpand, useResultFilter } from '../ResultBox';
 
 export interface QuickFindViewProps {
   connections: PublicPgConnection[];
@@ -42,7 +46,10 @@ interface RunField extends PgQuickFindField {
   list: boolean;
 }
 
-type RunTab = 'conditions' | 'columns';
+type RunTab = 'conditions' | 'columns' | 'sort';
+
+/** Khoá sort của một lần chạy — QuickSortEditor dùng `path` làm tên cột. */
+interface SortKey { path: string; dir: 'asc' | 'desc' }
 
 export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [quickFinds, setQuickFinds] = useState<PgQuickFind[]>([]);
@@ -52,6 +59,10 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
 
   const [panelOpen, setPanelOpen] = useState(true);
   const [runTab, setRunTab] = useState<RunTab>('conditions');
+  /** Sort của lần chạy (chỉ trong phiên này; nút PG chưa lưu sort). Rỗng = thứ tự tự nhiên. */
+  const [sortKeys, setSortKeys] = useState<SortKey[]>([]);
+  /** Sort của LẦN CHẠY vừa rồi — để xuất đúng thứ tự bảng đang nhìn. */
+  const [lastSort, setLastSort] = useState<SortKey[]>([]);
 
   // Returned-columns picker (run-time only) — exact list from information_schema.
   const [colSuggestions, setColSuggestions] = useState<string[]>([]);
@@ -63,12 +74,16 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedRow, setSelectedRow] = useState<WireRow | null>(null);
+  const rx = useResultExpand();
+  const flt = useResultFilter(result?.rows, (r) => r.json);
 
   const [lastEntries, setLastEntries] = useState<PgQuickEntry[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  useEffect(() => { setQuickFinds(loadPgQuickFinds()); }, []);
+  const reloadQf = useCallback(() => setQuickFinds(loadPgQuickFinds()), []);
+  useEffect(() => { reloadQf(); }, [reloadQf]);
+  usePresetSync('pg.quickfinds', reloadQf);
 
   const connName = useCallback(
     (id: string) => connections.find((c) => c.id === id)?.name ?? null,
@@ -80,6 +95,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
     setRunFields(p.fields.map((f) => ({ ...f, checked: false, value: '', list: false })));
     setPanelOpen(true); setRunTab('conditions');
     setColSuggestions([]); setColSelected([]);
+    setSortKeys([]); setLastSort([]);
     setResult(null); setOffset(0); setError(null); setSelectedRow(null);
     setLastEntries([]);
   }, []);
@@ -97,21 +113,24 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
     setBusy(true); setError(null);
     try {
       const entries = buildEntries();
+      const effSort = sortKeys.map((k) => ({ path: k.path.trim(), dir: k.dir })).filter((k) => k.path);
       const r = await pgQuickFind(run.connectionId, run.database, {
         schema: run.schema, table: run.table, entries,
         limit: run.limit, offset: effOffset,
         columns: colSelected.length ? colSelected : undefined,
+        sort: effSort.length ? effSort.map((k) => ({ column: k.path, dir: k.dir })) : undefined,
       });
+      setLastSort(effSort);
       setResult(r);
       setOffset(r.offset);
       setLastEntries(entries);
-      setPanelOpen(false);
+      // Khung chia đôi: điều kiện luôn ở cột trái, kết quả ở cột phải.
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [run, buildEntries, colSelected]);
+  }, [run, buildEntries, colSelected, sortKeys]);
 
-  const openColumnsTab = useCallback(async () => {
-    setRunTab('columns');
+  const openColumnsTab = useCallback(async (tab: RunTab = 'columns') => {
+    setRunTab(tab);
     if (!run || colSuggestions.length > 0) return;
     setColLoading(true);
     try {
@@ -180,6 +199,7 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
       )}
 
       {run && !edit && (
+        <ColSplit storageKey="devbox-pg-qf-split">
         <div className="pg-qf-run">
           <div className="status-line" style={{ justifyContent: 'space-between' }}>
             <strong>🔎 {run.name}</strong>
@@ -209,6 +229,9 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                 </button>
                 <button className={runTab === 'columns' ? 'on' : ''} onClick={() => void openColumnsTab()}>
                   Cột trả về{colSelected.length > 0 ? ` (${colSelected.length})` : ''}
+                </button>
+                <button className={runTab === 'sort' ? 'on' : ''} onClick={() => void openColumnsTab('sort')}>
+                  Sắp xếp{sortKeys.some((k) => k.path.trim()) ? ` (${sortKeys.filter((k) => k.path.trim()).length})` : ''}
                 </button>
               </div>
 
@@ -274,6 +297,10 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                 </div>
               )}
 
+              {runTab === 'sort' && (
+                <QuickSortEditor value={sortKeys} onChange={setSortKeys} suggestions={colSuggestions} disabled={busy} />
+              )}
+
               {runTab === 'columns' && (
                 <div className="pg-qf-proj">
                   <p className="pg-hint">
@@ -298,10 +325,17 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
             </>
           )}
 
-          <div className="status-line" style={{ gap: 8 }}>
+          <div className="status-line cs-split-pin" style={{ gap: 8 }}>
             <button className="sm" disabled={busy || enabledCount === 0} onClick={() => void doRun()}>
               {busy ? <span className="spinner" aria-hidden /> : '▶'} Chạy ({enabledCount} điều kiện, AND)
             </button>
+          </div>
+        </div>
+
+        <div className="pg-qf-run">
+          <ResultBox expanded={rx.expanded} onFind={() => flt.setOpen(true)}>
+          <div className="status-line" style={{ gap: 8 }}>
+            {!result && <span className="xhint">Kết quả sẽ hiện ở đây sau khi chạy.</span>}
             {result && (
               <>
                 <span className="badge">{result.rowCount} dòng · offset {result.offset} · {result.tookMs}ms</span>
@@ -313,6 +347,8 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                   title="Xuất toàn bộ kết quả khớp query ra file Excel có định dạng"
                   onClick={() => setExportOpen(true)}
                 >📄 Xuất báo cáo</button>
+                <ExpandButton expanded={rx.expanded} onToggle={rx.toggle} />
+                <FindButton flt={flt} />
               </>
             )}
           </div>
@@ -321,9 +357,12 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           {notice && <div className="badge" style={{ color: 'var(--ok)' }}>{notice}</div>}
 
           {result && (
+            <>
+            <FilterBar flt={flt} />
             <div className={`pg-qf-rows${panelOpen ? '' : ' expanded'}`}>
               {result.rowCount === 0 && <p className="empty">Không có dòng nào khớp.</p>}
-              {result.rows.map((r, i) => (
+              {flt.needle && flt.rows.length === 0 && result.rowCount > 0 && <p className="empty">Không có kết quả nào khớp ô tìm.</p>}
+              {flt.rows.map(({ item: r, index: i }) => (
                 <button
                   key={`${result.offset}-${i}`}
                   className="pg-qf-row"
@@ -331,12 +370,15 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
                   onClick={() => setSelectedRow(r)}
                 >
                   <span className="pg-doc-idx">#{result.offset + i + 1}</span>
-                  <span className="pg-qf-row-text">{r.json}</span>
+                  <span className="pg-qf-row-text"><Hl text={r.json} needle={flt.needle} /></span>
                 </button>
               ))}
             </div>
+            </>
           )}
+          </ResultBox>
         </div>
+        </ColSplit>
       )}
 
       {selectedRow && (
@@ -360,9 +402,10 @@ export default function QuickFindView({ connections }: QuickFindViewProps) {
           schema={run.schema}
           table={run.table}
           entries={lastEntries}
+          sort={lastSort.map((k) => ({ column: k.path, dir: k.dir }))}
+          sortSummary={lastSort.map((k) => `${k.path} ${k.dir === 'desc' ? '↓' : '↑'}`).join(' · ') || undefined}
           querySummary={querySummary}
           fieldSuggestions={colSuggestions.length ? colSuggestions : result.columns}
-          initialPaths={colSelected.length ? colSelected : result.columns}
           defaultTitle={run.name}
           onClose={() => setExportOpen(false)}
           onDone={(rows, filename) => {

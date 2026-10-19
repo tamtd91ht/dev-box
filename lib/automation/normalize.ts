@@ -8,7 +8,11 @@
 import {
   DEFAULT_AUTOMATION_CONFIG,
   DEFAULT_LOG_STORE,
+  DEFAULT_MIN_SAMPLES,
+  DEFAULT_RATE,
   DEFAULT_TRACE,
+  MAX_WINDOW_SEC,
+  MIN_POLLS_PER_WINDOW,
   type ActionType,
   type AutomationAction,
   type AutomationCondition,
@@ -19,12 +23,18 @@ import {
   type HttpMethod,
   type InfraStack,
   type InfraWatch,
+  type RateMode,
+  type RateWindow,
+  type WatchKind,
+  type WatchRate,
   type LogStoreConfig,
   type LogTarget,
+  type MentionAssignment,
   type RuleLimits,
   type TraceConfig,
   type TriggerType,
   type WatchSeverity,
+  type ZaloMentionPerson,
 } from './types';
 
 const OPS: ConditionOp[] = [
@@ -48,7 +58,7 @@ const ACTION_TYPES: ActionType[] = ['notify', 'webhook', 'telegram', 'wsSend', '
 const HTTP_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 const CATEGORIES: EventCategory[] = ['social', 'infra', 'system'];
 const TRIGGERS: TriggerType[] = ['message.received', 'infra.metric', 'infra.recovered', 'system.test'];
-const STACKS: InfraStack[] = ['mongo', 'redis', 'es', 'kafka', 'rabbit', 'pg'];
+const STACKS: InfraStack[] = ['mongo', 'redis', 'es', 'kafka', 'rabbit', 'pg', 'minio'];
 const WATCH_OPS: InfraWatch['op'][] = ['gt', 'gte', 'lt', 'lte', 'eq', 'neq'];
 const SEVERITIES: WatchSeverity[] = ['critical', 'warning', 'info'];
 const COUNT_BY: RuleLimits['countBy'][] = ['rule', 'watch', 'instance'];
@@ -182,6 +192,7 @@ function normAction(raw: unknown): AutomationAction | null {
         threadLabel: str(a.threadLabel),
         group: bool(a.group),
         text: str(a.text),
+        tagAssignees: bool(a.tagAssignees),
       };
     case 'reply':
       // requireApproval defaults TRUE — an omitted flag must never mean
@@ -264,6 +275,51 @@ function normRule(raw: unknown, index: number): AutomationRule | null {
 /** Never poll faster than this — the probes hit real infrastructure. */
 export const MIN_WATCH_INTERVAL_SEC = 15;
 
+const RATE_MODES: RateMode[] = ['points', 'absolute', 'relative', 'eta'];
+const WATCH_KINDS: WatchKind[] = ['level', 'rate'];
+
+/**
+ * Làm sạch cấu hình đo tốc độ.
+ *
+ * Hai ràng buộc ở đây không phải để chiều lòng kiểu dữ liệu, mà để chặn hai
+ * cách cấu hình làm watch IM LẶNG mà người dùng tưởng nó đang canh:
+ *
+ *   · cửa sổ ngắn hơn 3 nhịp poll  → không bao giờ đủ mẫu, watch nằm pending
+ *                                    vĩnh viễn. Nới cửa sổ ra thay vì bỏ đi.
+ *   · cửa sổ dài quá một ngày      → cắt về trần; dài hơn thì là đồ thị, và
+ *                                    buffer phình ra vô ích.
+ *
+ * Cửa sổ rỗng thì lấy mặc định chứ KHÔNG bỏ trống — một rate watch không có
+ * cửa sổ nào là một watch không bao giờ kêu.
+ */
+function normRate(raw: unknown, everySec: number): WatchRate {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const mode = RATE_MODES.includes(r.mode as RateMode) ? (r.mode as RateMode) : DEFAULT_RATE.mode;
+
+  const floor = Math.max(MIN_WATCH_INTERVAL_SEC, everySec) * MIN_POLLS_PER_WINDOW;
+  const seen = new Set<number>();
+  const windows: RateWindow[] = (Array.isArray(r.windows) ? r.windows : [])
+    .map((w) => {
+      const o = (w && typeof w === 'object' ? w : {}) as Record<string, unknown>;
+      const sec = Math.min(MAX_WINDOW_SEC, Math.max(floor, posInt(o.sec) ?? floor));
+      return { sec, threshold: num(o.threshold) };
+    })
+    // Hai cửa sổ cùng độ dài là một cửa sổ — giữ cái đầu, tránh báo trùng.
+    .filter((w) => (seen.has(w.sec) ? false : (seen.add(w.sec), true)))
+    .sort((a, b) => a.sec - b.sec)
+    .slice(0, 6);
+
+  return {
+    mode,
+    windows: windows.length
+      ? windows
+      : DEFAULT_RATE.windows.map((w) => ({ ...w, sec: Math.min(MAX_WINDOW_SEC, Math.max(floor, w.sec)) })),
+    minSamples: Math.min(50, Math.max(2, posInt(r.minSamples) ?? DEFAULT_MIN_SAMPLES)),
+    smooth: bool(r.smooth, true),
+    resetOnDrop: bool(r.resetOnDrop, true),
+  };
+}
+
 function normWatch(raw: unknown, index: number): InfraWatch | null {
   if (!raw || typeof raw !== 'object') return null;
   const w = raw as Record<string, unknown>;
@@ -276,6 +332,13 @@ function normWatch(raw: unknown, index: number): InfraWatch | null {
     connectionId: str(w.connectionId),
     connectionLabel: str(w.connectionLabel),
     metric: fieldName(w.metric, 'up'),
+    // Danh sách consumer group giới hạn phép đo (chỉ Kafka lag). Giữ nguyên
+    // groupId, bỏ trùng/rỗng, cắt trần cho an toàn. Rỗng → bỏ hẳn field.
+    ...(() => {
+      const gf = strArr(w.groupFilter).map((g) => g.trim()).filter(Boolean);
+      const uniq = [...new Set(gf)].slice(0, 200);
+      return uniq.length ? { groupFilter: uniq } : {};
+    })(),
     op: WATCH_OPS.includes(w.op as InfraWatch['op']) ? (w.op as InfraWatch['op']) : 'gt',
     threshold: num(w.threshold),
     everySec: Math.max(MIN_WATCH_INTERVAL_SEC, posInt(w.everySec) ?? 60),
@@ -290,6 +353,14 @@ function normWatch(raw: unknown, index: number): InfraWatch | null {
     notifyRecovery: bool(w.notifyRecovery, true),
     // Clamped: description tự sinh phải giữ được dưới độ dài một tin nhắn Zalo.
     note: str(w.note).slice(0, 280),
+    // Watch cũ không khai `kind` → 'level', và không mang theo khối `rate` nào
+    // cả: cấu hình đã lưu từ trước giữ nguyên byte-for-byte.
+    ...(() => {
+      const kind = WATCH_KINDS.includes(w.kind as WatchKind) ? (w.kind as WatchKind) : 'level';
+      if (kind !== 'rate') return {};
+      const every = Math.max(MIN_WATCH_INTERVAL_SEC, posInt(w.everySec) ?? 60);
+      return { kind, rate: normRate(w.rate, every) };
+    })(),
   };
 }
 
@@ -376,6 +447,51 @@ function migrateWatchCooldown(rawWatches: unknown[], rules: AutomationRule[]): v
   }
 }
 
+/** Danh bạ mention: alias + uid là bắt buộc; dòng thiếu thì bỏ, không đoán. */
+function normMentionPerson(raw: unknown): ZaloMentionPerson | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as Record<string, unknown>;
+  const alias = str(p.alias).trim();
+  const uid = str(p.uid).trim();
+  if (!alias || !uid) return null;
+  return { alias, name: str(p.name).trim() || alias, uid };
+}
+
+const MENTION_KINDS: MentionAssignment['kind'][] = ['topic', 'infra', 'custom'];
+
+/** Một dòng bảng phân công. Dòng không tag ai thì vô nghĩa — bỏ. */
+function normMentionAssignment(raw: unknown, index: number): MentionAssignment | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const a = raw as Record<string, unknown>;
+  const tag = strArr(a.tag).map((s) => s.trim()).filter(Boolean);
+  if (!tag.length) return null;
+  const kind = MENTION_KINDS.includes(a.kind as MentionAssignment['kind'])
+    ? (a.kind as MentionAssignment['kind'])
+    : 'topic';
+  // Khung giờ được phép tag — cùng khuôn window của rule.
+  let window: MentionAssignment['window'];
+  if (a.window && typeof a.window === 'object') {
+    const w = a.window as Record<string, unknown>;
+    const days = Array.isArray(w.days)
+      ? w.days.filter((d): d is number => typeof d === 'number' && d >= 0 && d <= 6)
+      : [];
+    window = { days, from: str(w.from), to: str(w.to) };
+  }
+  return {
+    window,
+    id: str(a.id) || `mention-${index + 1}`,
+    enabled: bool(a.enabled, true),
+    kind,
+    values: strArr(a.values).map((s) => s.trim()).filter(Boolean),
+    excludes: strArr(a.excludes).map((s) => s.trim()).filter(Boolean),
+    conditions: (Array.isArray(a.conditions) ? a.conditions : [])
+      .map(normCondition)
+      .filter((c): c is AutomationCondition => !!c),
+    tag,
+    note: str(a.note),
+  };
+}
+
 /** Merge anything into a valid AutomationConfig. Never throws. */
 export function normalizeConfig(raw: unknown): AutomationConfig {
   const d = DEFAULT_AUTOMATION_CONFIG;
@@ -413,5 +529,13 @@ export function normalizeConfig(raw: unknown): AutomationConfig {
     trace: normTrace(c.trace),
     rules,
     watches,
+    mentionPeople: (Array.isArray(c.mentionPeople) ? c.mentionPeople : [])
+      .map(normMentionPerson)
+      .filter((p): p is ZaloMentionPerson => !!p),
+    mentionAssignments: dedupeIds(
+      (Array.isArray(c.mentionAssignments) ? c.mentionAssignments : [])
+        .map(normMentionAssignment)
+        .filter((a): a is MentionAssignment => !!a),
+    ),
   };
 }

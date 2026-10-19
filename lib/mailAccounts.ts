@@ -115,6 +115,46 @@ export async function addAccount(input: Omit<MailAccount, 'id'>): Promise<MailAc
   return accounts;
 }
 
+/** auth='oauth': trỏ hòm thư sang bản ghi Google khác (sau khi LIÊN KẾT LẠI —
+ *  token cũ chết, consent lại xong phải nối về đúng bản ghi mới). */
+export async function relinkGoogle(id: string, googleAccountId: string): Promise<MailAccount[]> {
+  const accounts = await readAll();
+  const a = accounts.find((x) => x.id === id);
+  if (!a) throw new Error('Không tìm thấy hòm thư để liên kết lại.');
+  a.googleAccountId = googleAccountId;
+  await writeAll(accounts);
+  return accounts;
+}
+
+/**
+ * auth='password': đặt lại MẬT KHẨU cho một hòm thư đã có — "liên kết lại".
+ *
+ * Mật khẩu mail đổi (chính sách công ty bắt đổi 90 ngày, admin reset…) là
+ * chuyện thường; trước đây phải GỠ hòm thư rồi THÊM LẠI, mất cả chữ ký lẫn
+ * tên đã đặt. Ở đây chỉ ghi đè `pass`, mọi cấu hình khác giữ nguyên.
+ *
+ * Cho phép sửa luôn host/port: nhiều lần "mất liên kết" thật ra là mail server
+ * đổi endpoint, không phải sai mật khẩu.
+ */
+export async function relinkPassword(
+  id: string,
+  patch: { pass: string; user?: string; imap?: Partial<MailEndpoint>; smtp?: Partial<MailEndpoint> },
+): Promise<MailAccount[]> {
+  const accounts = await readAll();
+  const a = accounts.find((x) => x.id === id);
+  if (!a) throw new Error('Không tìm thấy hòm thư để liên kết lại.');
+  a.pass = patch.pass;
+  // Hòm thư từng là OAuth mà giờ liên kết bằng mật khẩu → chuyển hẳn sang
+  // 'password', không thì authFor() vẫn đi đòi token Google đã chết.
+  a.auth = 'password';
+  a.googleAccountId = undefined;
+  if (patch.user?.trim()) a.user = patch.user.trim();
+  if (patch.imap) a.imap = { ...a.imap, ...patch.imap };
+  if (patch.smtp) a.smtp = { ...a.smtp, ...patch.smtp };
+  await writeAll(accounts);
+  return accounts;
+}
+
 export async function removeAccount(id: string): Promise<MailAccount[]> {
   const accounts = (await readAll()).filter((a) => a.id !== id);
   await writeAll(accounts);

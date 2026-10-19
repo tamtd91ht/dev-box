@@ -253,6 +253,12 @@ Runtime knobs default in `lib/workspace/config.ts` and may be overridden by
 | `keepAlive`          | `true`  | Keep visited guests mounted (hidden) on switch.     |
 | `allowDownload`      | `true`  | Allow file downloads from workspaces.               |
 | `enableDevTools`     | `false` | Show a DevTools button on the workspace toolbar.    |
+| `downloadMode`       | `ask`   | `ask` = hiện hộp thoại chọn nơi lưu mỗi lần tải (như Chrome); `auto` = tự lưu, không hỏi. |
+| `downloadDir`        | `''`    | Thư mục mặc định cho hộp thoại Save; `''` = Downloads của máy, hoặc chỗ vừa lưu lần trước. |
+
+`downloadMode` và `downloadDir` sửa được ngay trong app: nút **⚙ trên thanh tiêu đề** →
+mục **Tải file về** (components/DownloadPrefs.tsx). Lưu xong áp dụng liền cho lần tải kế
+tiếp, không cần mở lại app. Các khoá khác vẫn phải sửa tay trong file JSON.
 
 Per-plugin `keepAlive: true` pins a workspace in memory even past the LRU cap (Zalo keeps
 receiving messages in the background).

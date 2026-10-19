@@ -122,6 +122,10 @@ export interface WorkspaceConfig {
   allowDownload: boolean;
   /** Allow opening DevTools on a workspace guest. */
   enableDevTools: boolean;
+  /** `ask` = hiện hộp thoại chọn nơi lưu mọi lần tải (như Chrome); `auto` = tự lưu. */
+  downloadMode: 'ask' | 'auto';
+  /** Thư mục cố định cho download; '' = Downloads của máy / chỗ lưu lần trước. */
+  downloadDir: string;
 }
 
 /** The `window.workspace` bridge injected by electron/preload.cjs. */
@@ -136,6 +140,23 @@ export interface WorkspaceBridge {
   /** Kéo focus về host page sau khi hủy <webview> giữ focus (fix input "chết").
    *  Optional: preload cũ (trước khi có handler này) chưa expose. */
   focusHost?(): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Chạy `code` trong MỌI frame của guest `targetId` (từ getWebContentsId),
+   * kể cả iframe khác origin — webview.executeJavaScript chỉ với tới main
+   * frame. Mỗi phần tử `frames` là kết quả của một frame đọc được; frame bị
+   * chặn hoặc vừa bị hủy được bỏ qua chứ không làm cả lượt thất bại.
+   */
+  execInFrames?(targetId: number, code: string): Promise<{
+    ok: boolean;
+    error?: string;
+    frames?: { url: string; value: unknown }[];
+  }>;
+  /** 🔕: báo main danh sách partition Workspace đang ẨN THÔNG BÁO (dạng
+   *  'ws-<plugin>-<instance>', không kèm 'persist:') + cờ tắt toàn cục. Main
+   *  chặn quyền `notifications` của đúng guest đó — notification Windows từ
+   *  chính trang (chat.zalo.me…) im theo, không chỉ im chuông trong app.
+   *  Optional: preload cũ chưa expose. */
+  setNotifMuted?(partitions: string[], allMuted: boolean): Promise<{ ok: boolean }>;
   /** Tải ảnh bằng phiên của partition → data URL. Dùng cho ảnh đại diện tài
    *  khoản: avatar ở CDN khác gốc không kèm CORS nên trong guest fetch() và
    *  canvas đều chết; main process tải ở tầng mạng, không vướng CORS.
@@ -156,8 +177,17 @@ export interface WorkspaceBridge {
    *  do defaultTargetFor() quyết định. Optional: preload cũ chưa expose. */
   onOpenInApp?(cb: (url: string) => void): () => void;
   /** Link target=_blank bấm TRONG tab Browser → mở thành tab mới ngay trong tab
-   *  Browser (giữ phiên của profile). Optional: preload cũ chưa expose. */
-  onOpenInBrowserTab?(cb: (url: string) => void): () => void;
+   *  Browser (giữ phiên của profile). Optional: preload cũ chưa expose.
+   *
+   *  `opener` = URL của TAB CHA và `session` = sessionStorage của nó (rỗng nếu
+   *  main cũ hơn không gửi, hoặc origin chặn storage): tab mới dùng để dựng lại
+   *  Referer + sessionStorage — xem `TabOpener` trong LinkViewer. */
+  onOpenInBrowserTab?(
+    cb: (p: { url: string; opener: string; session: [string, string][] }) => void,
+  ): () => void;
+  /** Ctrl+click / chuột giữa trong tab Links hay viewer Google → mở thành tab
+   *  mới (chạy nền) trong tab Links. Optional: preload cũ chưa expose. */
+  onOpenInLinksTab?(cb: (url: string) => void): () => void;
   /** Phím tắt khung app bấm khi con trỏ đang ở TRONG một <webview> (đang chat
    *  Zalo chẳng hạn): phím không bubble ra host page, main process bắt hộ rồi
    *  chuyển về đây. Trả về hàm hủy đăng ký. Optional: preload cũ chưa expose. */
@@ -166,6 +196,12 @@ export interface WorkspaceBridge {
    *  process gửi đường dẫn tuyệt đối xuống, app tự chọn tab theo đuôi file
    *  (xem openLocalPath trong app/page.tsx). Optional: preload cũ chưa expose. */
   onOpenLocalFile?(cb: (filePath: string) => void): () => void;
+  /** Đường dẫn thật của một File kéo thả từ Explorer ('' nếu không có). Thay
+   *  cho `File.path` mà Electron ≥ 32 đã bỏ. Optional: preload cũ chưa expose. */
+  pathForFile?(file: File): string;
+  /** Dịch nhanh nổi (WebContentsView riêng) — chỉ trang /translate-float dùng.
+   *  Có mặt ⇒ bản desktop: trang chính KHÔNG tự vẽ widget dịch nữa. */
+  translateFloat?: TranslateFloatApi;
   /** Niêm phong mật khẩu bằng safeStorage (DPAPI) trước khi ghi xuống đĩa.
    *  error='unavailable' khi OS không hỗ trợ → caller lưu plaintext + cảnh báo.
    *  Optional: preload cũ chưa expose. */
@@ -191,6 +227,26 @@ export interface WorkspaceBridge {
    *  (`focused: true`). Optional: preload cũ chưa expose. */
   openTerminalWindow?(payload: { id: string; title?: string }):
     Promise<{ ok: boolean; focused?: boolean; error?: string }>;
+  /** DevTools dock đáy khung LinkViewer như Chrome, thay cho cửa sổ rời mà
+   *  Electron ép cho guest <webview>. Main gửi yêu cầu khi F12/Inspect bấm
+   *  trong guest; LinkViewer đúng webContentsId claim (hủy fallback cửa sổ rời)
+   *  rồi vẽ pane và gọi devtoolsOpen kèm rect của pane — frontend sống trong
+   *  một WebContentsView do main đặt đè đúng rect đó (chỗ ở KHÔNG thể là
+   *  <webview>: Chromium cấm guest view làm devtools, electron#14095).
+   *  Optional: preload cũ chưa expose → giữ hành vi openDevTools() rời. */
+  onDevToolsRequest?(cb: (req: { id: number; x?: number; y?: number }) => void): () => void;
+  onDevToolsClosed?(cb: (id: number) => void): () => void;
+  devtoolsClaim?(id: number): void;
+  devtoolsOpen?(
+    targetId: number,
+    rect: { x: number; y: number; width: number; height: number } | null,
+    point?: { x: number; y: number } | null,
+  ): Promise<{ ok: boolean; error?: string }>;
+  devtoolsBounds?(
+    targetId: number,
+    rect: { x: number; y: number; width: number; height: number } | null,
+  ): void;
+  devtoolsClose?(targetId: number): Promise<{ ok: boolean; error?: string }>;
   /** Zalo API (thử nghiệm): đọc cookie HttpOnly của một phiên `zaloapi-*` —
    *  zpsid/zpw_sek/… mà renderer không thấy qua document.cookie. Optional:
    *  preload cũ chưa expose. */
@@ -219,9 +275,17 @@ export interface WebviewElement extends HTMLElement {
   canGoForward(): boolean;
   getURL(): string;
   getTitle(): string;
-  loadURL(url: string): Promise<void>;
+  /** Guest còn đang tải trang không. */
+  isLoading(): boolean;
+  /** `options.httpReferrer` đặt header Referer cho request — tab mở từ link
+   *  trong trang phải mang Referer của trang cha, nếu không nhiều trang coi là
+   *  truy cập trực tiếp và đá về trang mặc định. */
+  loadURL(url: string, options?: { httpReferrer?: string }): Promise<void>;
   openDevTools(): void;
   closeDevTools(): void;
+  /** Id webContents của guest — chìa khoá ghép cặp với các kênh devtools:*.
+   *  Ném lỗi khi guest chưa attach — caller phải try/catch. */
+  getWebContentsId(): number;
   /** Run code in the guest page and resolve with its result. */
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
   /** Zoom của guest (1 = 100%). Là thuộc tính của guest → set lại sau mỗi lần
@@ -243,3 +307,25 @@ declare global {
 // drive the rest imperatively through a WebviewElement ref.
 
 export {};
+
+export interface TranslateFloatState {
+  open: boolean;
+  /** Chấm ở nửa trái / nửa trên cửa sổ → bảng bung sang phải / xuống dưới. */
+  flipX: boolean;
+  flipY: boolean;
+  /** Kích thước vùng nội dung cửa sổ — bảng không được to hơn. */
+  maxW: number;
+  maxH: number;
+  /** Chữ đang bôi đen nơi bấm Ctrl+Shift+Y (kể cả trong webview). */
+  prefill?: string;
+}
+
+export interface TranslateFloatApi {
+  init(pos?: { right: number; bottom: number }): Promise<TranslateFloatState | null>;
+  setSize(w: number, h: number): void;
+  setOpen(open: boolean): void;
+  dragStart(): void;
+  dragMove(dx: number, dy: number): void;
+  dragEnd(): Promise<{ right: number; bottom: number } | null>;
+  onState(cb: (st: TranslateFloatState) => void): () => void;
+}

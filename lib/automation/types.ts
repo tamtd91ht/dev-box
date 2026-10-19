@@ -270,6 +270,72 @@ export interface ZaloApiSendAction {
   threadLabel?: string;
   /** Nội dung, có template. */
   text: string;
+  /**
+   * TAG (@) người phụ trách theo BẢNG PHÂN CÔNG chung (config.mentionAssignments)
+   * — chỉ có nghĩa khi gửi NHÓM. Cờ opt-in nằm ở action để rule editor NHÌN
+   * THẤY tin này sẽ tag; còn "ai phụ trách gì" là dữ liệu miền dùng chung, sống
+   * ở bảng — đổi người trực sửa một chỗ, mọi rule tự ăn theo. Mention là mention
+   * THẬT (mentionInfo của Zalo, có ping), không phải chữ "@tên" trần.
+   */
+  tagAssignees?: boolean;
+}
+
+// ── Mention (@) khi gửi Zalo nhóm ───────────────────────────────────────────
+
+/** Một người trong danh bạ mention Zalo — Zalo cần UID thật mới ping được. */
+export interface ZaloMentionPerson {
+  /** Khoá gọi trong bảng phân công (viết ngắn, không dấu: 'userA', 'devops'). */
+  alias: string;
+  /** Tên hiển thị — thành chữ "@Tên" trong tin nhắn. */
+  name: string;
+  /** UID Zalo thật (chuỗi số) — đổ vào mentionInfo để Zalo ping đúng người. */
+  uid: string;
+}
+
+/**
+ * Một dòng bảng phân công: SỰ KIỆN NÀO → TAG NHỮNG AI.
+ *
+ * Mọi dòng khớp đều được CỘNG DỒN (khử trùng người): sự kiện dính cả topic A
+ * lẫn topic B thì một tin tag đủ người của cả hai dòng. Hai kiểu đầu là
+ * "hardcode có chủ đích" — người cấu hình chỉ gõ tên topic, KHÔNG phải biết
+ * topic nằm ở field nào của event; tri thức đó nằm trong lib/automation/mention.ts.
+ */
+export interface MentionAssignment {
+  id: string;
+  enabled: boolean;
+  /**
+   * 'topic'  — cảnh báo Kafka dính một trong các topic ở `values`
+   *            (dò trong fields.topics / fields.groups / title / text).
+   *            Giá trị đặc biệt: '*' = mọi sự kiện dính topic/consumer;
+   *            '*:<cụm>' = như trên nhưng riêng một cụm (id hoặc tên) —
+   *            gán cả cụm cho một người, khỏi liệt kê từng topic.
+   * 'infra'  — sự cố hạ tầng kiểu devops: mất kết nối, host down, đĩa/RAM/CPU/
+   *            load/heap… `values` rỗng = cả nhóm metric đó; có giá trị = giới
+   *            hạn đúng các metric key này.
+   * 'custom' — điều kiện tuỳ ý (AND toàn bộ `conditions`) — lối thoát cho case
+   *            thứ ba sau này mà không phải đục engine.
+   */
+  kind: 'topic' | 'infra' | 'custom';
+  /** kind 'topic': danh sách topic. kind 'infra': (tuỳ chọn) danh sách metric key. */
+  values?: string[];
+  /**
+   * kind 'topic', chỉ có tác dụng với token tất-cả ('*' / '*:<cụm>'): sự kiện
+   * NHẮC TỚI một topic trong danh sách này thì wildcard bỏ qua — "gán cả cụm,
+   * trừ mấy topic ồn ào". Tên topic tường minh trong `values` không bị ảnh hưởng.
+   */
+  excludes?: string[];
+  /** kind 'custom': tất cả điều kiện phải đúng (AND). */
+  conditions?: AutomationCondition[];
+  /** Alias trong danh bạ mention — nhiều người một dòng. */
+  tag: string[];
+  /**
+   * KHUNG GIỜ được phép tag — quyền riêng tư cho người trực: ngoài khung này
+   * dòng KHÔNG tag ai (cảnh báo vẫn gửi vào nhóm bình thường, chỉ thôi ping).
+   * Dùng lại RuleWindow (days rỗng = mọi ngày; from > to vắt qua nửa đêm).
+   * Không khai = tag 24/7 — dòng cho sự cố thật sự gấp thì ĐỪNG đặt khung giờ.
+   */
+  window?: RuleWindow;
+  note?: string;
 }
 
 /**
@@ -388,7 +454,7 @@ export interface AutomationRule {
 // ── Infrastructure watches (the `infra` source) ────────────────────────────
 
 /** Stacks the probe layer can poll — all reuse the DevBox connection registries. */
-export type InfraStack = 'mongo' | 'redis' | 'es' | 'kafka' | 'rabbit' | 'pg';
+export type InfraStack = 'mongo' | 'redis' | 'es' | 'kafka' | 'rabbit' | 'pg' | 'minio';
 
 /**
  * How serious a breach of this watch is. PURE METADATA: it travels on the event
@@ -417,6 +483,81 @@ export type WatchSeverity = 'critical' | 'warning' | 'info';
  * RuleLimits. A watch therefore emits on EVERY poll while breaching, and a rule
  * that pays attention to a chatty watch must set its own limits.
  */
+/**
+ * Watch đo CÁI GÌ.
+ *
+ *   'level' (mặc định) — giá trị hiện tại so với ngưỡng. Hành vi từ trước tới
+ *                        nay; watch cũ không khai trường này nên vẫn là level.
+ *   'rate'             — TỐC ĐỘ THAY ĐỔI, hoặc thời gian còn lại đến khi cạn.
+ *                        Xem WatchRate và lib/automation/rate.ts.
+ *
+ * Hai loại này KHÔNG BAO GIỜ che nhau ở tầng bậc ngưỡng (ladderKey có kèm
+ * kind): "đĩa > 90%" và "đĩa sẽ đầy trong 6 giờ" là hai câu hỏi khác nhau, và
+ * để cái trước bịt miệng cái sau là bịt đúng cảnh báo SỚM — thứ có giá trị
+ * nhất trong cả tính năng này.
+ */
+export type WatchKind = 'level' | 'rate';
+
+/**
+ * Chênh lệch được ĐỌC theo nghĩa nào.
+ *
+ *   'points'   hiệu số trên chỉ số vốn là %      "78% → 90% = +12 ĐIỂM"
+ *   'absolute' hiệu số trên chỉ số có đơn vị     "tăng thêm 12 GB"
+ *   'relative' phần trăm so với chính nó         "tăng 15,4% so với đầu cửa sổ"
+ *   'eta'      thời gian còn lại đến khi CẠN     "sẽ đầy sau ~9 giờ"
+ *
+ * `points` và `relative` cực dễ nhầm trên chỉ số %: 78→90 là +12 điểm nhưng
+ * chỉ +15,4% tương đối — sai chỗ này là ngưỡng lệch nhiều lần. Editor phải
+ * hiện ví dụ sống chứ không chỉ tên chế độ.
+ *
+ * `eta` là chế độ ĐƯỢC KHUYẾN NGHỊ cho mọi chỉ số có trần (metric khai
+ * `absolute` trong catalog): tốc độ tự nó không nguy hiểm, CẠN mới nguy hiểm.
+ * Ngưỡng của eta tính bằng GIỜ.
+ */
+export type RateMode = 'points' | 'absolute' | 'relative' | 'eta';
+
+/** Một cửa sổ so sánh + ngưỡng riêng của nó. */
+export interface RateWindow {
+  /** Độ dài cửa sổ (giây). Trần 24h; phải chứa ít nhất 3 nhịp poll. */
+  sec: number;
+  /** Ngưỡng cho RIÊNG cửa sổ này — đơn vị theo `mode` (eta: giờ). */
+  threshold: number;
+}
+
+/**
+ * Cấu hình đo tốc độ. Chỉ có nghĩa khi `kind === 'rate'`.
+ *
+ * NHIỀU CỬA SỔ, báo khi BẤT KỲ cái nào vượt. Một cửa sổ cố định luôn mù với
+ * một lớp sự cố: 60 phút pha loãng cú tăng dốc 5 phút; 5 phút không bao giờ
+ * thấy đà rò rỉ 12 tiếng. Ba cửa sổ trong một watch bắt cả ba dạng — đột
+ * biến, đà bất thường, rò rỉ chậm — mà không tốn thêm probe call nào.
+ */
+export interface WatchRate {
+  mode: RateMode;
+  /** Rỗng → lấy DEFAULT_RATE.windows. Vượt ở cửa sổ nào thì cảnh báo nêu tên cửa sổ đó. */
+  windows: RateWindow[];
+  /** Số mẫu tối thiểu trong cửa sổ mới dám kết luận. Trống → 3. */
+  minSamples?: number;
+  /** Lấy trung bình 3 mẫu ở mỗi đầu mút — khử nhiễu đo mà không làm phẳng đột biến. Trống → bật. */
+  smooth?: boolean;
+  /** Giá trị tụt sâu (restart, xoay log) → xoá mốc cũ thay vì tính ra "tăng 400%". Trống → bật. */
+  resetOnDrop?: boolean;
+}
+
+export const DEFAULT_MIN_SAMPLES = 3;
+/** Trần cửa sổ. Cửa sổ dài hơn một ngày là đồ thị, không còn là cảnh báo. */
+export const MAX_WINDOW_SEC = 24 * 3600;
+/** Cửa sổ phải chứa ít nhất ngần này nhịp poll, nếu không phép đo vô nghĩa. */
+export const MIN_POLLS_PER_WINDOW = 3;
+
+export const DEFAULT_RATE: WatchRate = {
+  mode: 'points',
+  windows: [{ sec: 300, threshold: 5 }],
+  minSamples: DEFAULT_MIN_SAMPLES,
+  smooth: true,
+  resetOnDrop: true,
+};
+
 export interface InfraWatch {
   id: string;
   name: string;
@@ -428,6 +569,15 @@ export interface InfraWatch {
   connectionLabel?: string;
   /** Metric key from the stack's probe adapter (see catalog.ts). */
   metric: string;
+  /**
+   * CHỈ Kafka + chỉ số theo consumer group (maxConsumerLag, stalledGroups…):
+   * giới hạn phép đo vào ĐÚNG các consumer group này (theo groupId), chọn từ
+   * dropdown gợi ý trong editor. Rỗng/không có = mọi group trên cụm (hành vi
+   * cũ). Nhờ đó `maxConsumerLag > X` với danh sách rỗng = "bất kỳ consumer nào
+   * lag > X", và với danh sách đã chọn = "chỉ 1 trong các consumer này lag > X
+   * là báo" — cùng một chỉ số, khác nhau ở tập group được xét.
+   */
+  groupFilter?: string[];
   op: 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq';
   threshold: number;
   /** Poll interval (seconds). Minimum enforced by the runner. */
@@ -440,6 +590,10 @@ export interface InfraWatch {
   tags?: string[];
   /** Also emit infra.recovered when the metric returns to normal. */
   notifyRecovery?: boolean;
+  /** Đo giá trị hay đo TỐC ĐỘ. Vắng = 'level' = hành vi cũ, watch cũ không phải sửa gì. */
+  kind?: WatchKind;
+  /** Chỉ khi kind === 'rate'. Vắng khi là rate → normalize điền DEFAULT_RATE. */
+  rate?: WatchRate;
   /**
    * Ghi chú nghiệp vụ tự do ("Redis này cấp session cho tổng đài…"). Được NỐI
    * vào description tự sinh của mọi cảnh báo — là phần ngữ cảnh mà catalog
@@ -601,6 +755,10 @@ export interface AutomationConfig {
   trace: TraceConfig;
   rules: AutomationRule[];
   watches: InfraWatch[];
+  /** Danh bạ mention Zalo (alias → tên + uid) — bảo trì uid MỘT chỗ. */
+  mentionPeople: ZaloMentionPerson[];
+  /** Bảng phân công tag — dữ liệu miền "ai phụ trách gì", dùng chung mọi rule. */
+  mentionAssignments: MentionAssignment[];
 }
 
 export const DEFAULT_AUTOMATION_CONFIG: AutomationConfig = {
@@ -618,6 +776,8 @@ export const DEFAULT_AUTOMATION_CONFIG: AutomationConfig = {
   trace: DEFAULT_TRACE, // opt-in: debug volume, not something to leave on by accident
   rules: [],
   watches: [],
+  mentionPeople: [],
+  mentionAssignments: [],
 };
 
 // ── Engine output ──────────────────────────────────────────────────────────

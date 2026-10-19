@@ -371,8 +371,13 @@ const WordDocView = forwardRef<HTMLDivElement, WordDocViewProps>(function WordDo
                 >
                   {marker && <span className="word-bullet" aria-hidden>{marker}</span>}
                   {para.locked && <span className="word-lock-badge">🔒 {para.lockReason}</span>}
+                  {para.imgs?.map((im, k) => (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img key={k} className="word-img" src={im.src} alt=""
+                      style={im.w ? { width: `${im.w}pt` } : undefined} draggable={false} />
+                  ))}
                   {para.runs.length === 0
-                    ? <span className="word-p-empty">¶</span>
+                    ? (para.imgs?.length ? null : <span className="word-p-empty">¶</span>)
                     : <RunsView runs={para.runs} />}
                 </div>
               )}
