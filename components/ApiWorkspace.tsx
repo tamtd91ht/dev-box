@@ -150,6 +150,8 @@ export default function ApiWorkspace() {
   const [curlResolve, setCurlResolve] = useState(true);
   /** Menu ⋯ / chuột phải của một request ở rail (toạ độ fixed). */
   const [railMenu, setRailMenu] = useState<{ x: number; y: number; req: ApiRequest } | null>(null);
+  /** Menu chuột phải của một TAB request đang mở (toạ độ fixed). */
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; key: string } | null>(null);
   /** Menu ⋯ / chuột phải của một THƯ MỤC ở rail. */
   const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; path: string } | null>(null);
   /** Hộp đổi tên thư mục (kéo theo thư mục con + biến dự án). */
@@ -231,6 +233,35 @@ export default function ApiWorkspace() {
     // Đóng tab đang xem → nhảy sang tab kế bên (Postman/Chrome đều vậy).
     if (cur?.key === key) setActiveKey(next[Math.min(i, next.length - 1)].key);
   }, [sessions, cur]);
+
+  /**
+   * Đóng nhiều tab một lượt (menu chuột phải: tất cả / tab khác / bên trái /
+   * bên phải). Tab đang xem bị đóng → nhảy sang `focus` (tab vừa bấm chuột
+   * phải) nếu nó còn; đóng hết thì dọn bàn như closeSession.
+   */
+  const closeMany = useCallback((drop: Set<string>, focus?: string) => {
+    if (!drop.size) return;
+    const left = sessions.filter((s) => !drop.has(s.key));
+    const next = left.length ? left : [blankSession()];
+    setSessions(next);
+    if (!cur || drop.has(cur.key)) setActiveKey(focus && next.some((s) => s.key === focus) ? focus : next[0].key);
+  }, [sessions, cur]);
+
+  /** Nhân bản một tab thành request MỚI (bỏ id: 💾 sẽ lưu thành bản riêng), mở ngay bên phải nó. */
+  const duplicateSession = useCallback((key: string) => {
+    const i = sessions.findIndex((s) => s.key === key);
+    if (i < 0) return;
+    const src = sessions[i].draft;
+    const draftNew: Draft = {
+      ...structuredClone(src),
+      id: undefined,
+      name: src.name.trim() ? `${src.name} (copy)` : '',
+    };
+    const s = blankSession(draftNew);
+    s.tab = sessions[i].tab;
+    setSessions((ss) => [...ss.slice(0, i + 1), s, ...ss.slice(i + 1)]);
+    setActiveKey(s.key);
+  }, [sessions]);
 
   const reload = useCallback(async () => {
     try { setData(await apiGet()); } catch (e) { setErr((e as Error).message); }
@@ -749,7 +780,15 @@ export default function ApiWorkspace() {
           <div className="api-wintabs g-shrink">
             {sessions.map((s) => (
               <div key={s.key} className={`api-wintab${s.key === cur.key ? ' on' : ''}`}
-                onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeSession(s.key); } }}>
+                onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeSession(s.key); } }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setTabMenu({
+                    x: Math.max(6, Math.min(e.clientX, window.innerWidth - 240)),
+                    y: Math.max(6, Math.min(e.clientY, window.innerHeight - 260)),
+                    key: s.key,
+                  });
+                }}>
                 <button className="api-wintab-btn" onClick={() => setActiveKey(s.key)}
                   title={s.draft.url || 'Request mới'}>
                   <span className={methodClass(s.draft.method)}>{s.draft.method}</span>
@@ -770,7 +809,7 @@ export default function ApiWorkspace() {
               onChange={(e) => setDraft({ ...draft, method: e.target.value })}>
               {METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            <VarInput className="input" style={{ flex: 1, minWidth: 160 }} selectOnClick
+            <VarInput className="input" style={{ flex: 1, minWidth: 160 }}
               placeholder="https://… (gõ {{ để chèn biến) — hoặc dán thẳng lệnh curl vào đây"
               value={draft.url} onChange={setUrl}
               onPaste={onUrlPaste}
@@ -842,8 +881,8 @@ export default function ApiWorkspace() {
                 {draft.headers.map((h, i) => (
                   <div key={i} className="api-kv-row">
                     <input type="checkbox" checked={h.on !== false} onChange={(e) => setHeader(i, { on: e.target.checked })} />
-                    <VarInput className="input" placeholder="Header" value={h.key} onChange={(v) => setHeader(i, { key: v })} selectOnClick />
-                    <VarInput className="input" placeholder="Value" value={h.value} onChange={(v) => setHeader(i, { value: v })} selectOnClick />
+                    <VarInput className="input" placeholder="Header" value={h.key} onChange={(v) => setHeader(i, { key: v })} />
+                    <VarInput className="input" placeholder="Value" value={h.value} onChange={(v) => setHeader(i, { value: v })} />
                     <button className="ghost sm" onClick={() => rmHeader(i)}>✕</button>
                   </div>
                 ))}
@@ -903,7 +942,7 @@ export default function ApiWorkspace() {
                         <input type="checkbox" checked={f.on !== false}
                           onChange={(e) => setField(i, { on: e.target.checked })} />
                         <VarInput className="input" placeholder="Key" value={f.key}
-                          onChange={(v) => setField(i, { key: v })} selectOnClick />
+                          onChange={(v) => setField(i, { key: v })} />
                         {f.kind === 'file' ? (
                           <label className="api-file">
                             <input type="file" hidden
@@ -917,7 +956,7 @@ export default function ApiWorkspace() {
                           </label>
                         ) : (
                           <VarInput className="input" placeholder="Value" value={f.value}
-                            onChange={(v) => setField(i, { value: v })} selectOnClick />
+                            onChange={(v) => setField(i, { value: v })} />
                         )}
                         {/* Chuyển text ↔ file. Chỉ multipart mới mang được file,
                             urlencoded thì nút này không có nghĩa. */}
@@ -1034,6 +1073,48 @@ export default function ApiWorkspace() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Menu chuột phải của tab request đang mở — chỉ ĐÓNG tab, không xoá gì
+          khỏi collection (request đã lưu vẫn nằm ở rail, bấm là mở lại). */}
+      {tabMenu && typeof document !== 'undefined' && createPortal(
+        <>
+          <div className="bt-menu-backdrop" onMouseDown={() => setTabMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setTabMenu(null); }} />
+          <div className="bt-menu bt-menu-fixed" role="menu" style={{ left: tabMenu.x, top: tabMenu.y, minWidth: 220 }}
+            onMouseDown={(e) => e.stopPropagation()}>
+            {(() => {
+              const key = tabMenu.key;
+              const i = sessions.findIndex((s) => s.key === key);
+              const keys = sessions.map((s) => s.key);
+              const left = keys.slice(0, Math.max(0, i));
+              const right = i < 0 ? [] : keys.slice(i + 1);
+              const others = keys.filter((k) => k !== key);
+              const run = (fn: () => void) => () => { setTabMenu(null); fn(); };
+              return (
+                <>
+                  <button onClick={run(() => duplicateSession(key))}>⧉ Nhân bản thành tab mới</button>
+                  <div className="bt-menu-sep" />
+                  <button onClick={run(() => closeSession(key))}>✕ Đóng tab này</button>
+                  <button onClick={run(() => closeMany(new Set(others), key))} disabled={!others.length}>
+                    Đóng các tab khác<span className="bt-menu-key">{others.length || ''}</span>
+                  </button>
+                  <button onClick={run(() => closeMany(new Set(left), key))} disabled={!left.length}>
+                    ⇤ Đóng các tab bên trái<span className="bt-menu-key">{left.length || ''}</span>
+                  </button>
+                  <button onClick={run(() => closeMany(new Set(right), key))} disabled={!right.length}>
+                    ⇥ Đóng các tab bên phải<span className="bt-menu-key">{right.length || ''}</span>
+                  </button>
+                  <div className="bt-menu-sep" />
+                  <button className="danger" onClick={run(() => closeMany(new Set(keys)))}>
+                    Đóng tất cả<span className="bt-menu-key">{keys.length}</span>
+                  </button>
+                </>
+              );
+            })()}
+          </div>
+        </>,
+        document.body,
       )}
 
       {/* Menu ⋯ / chuột phải của request ở rail */}

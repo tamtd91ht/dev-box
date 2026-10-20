@@ -20,7 +20,7 @@ import Editor, { type Monaco } from '@monaco-editor/react';
 import type { editor, languages, Position } from 'monaco-editor';
 import { useEffect, useRef, useState } from 'react';
 import { DYNAMIC_VARS } from '@/lib/apiVars';
-import { tokenAt } from './VarInput';
+import { tokenAt, isEditKey, isNavKey } from './VarInput';
 
 const MONO = 'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace';
 
@@ -64,6 +64,11 @@ function defineApiThemes(monaco: Monaco): void {
 // có truyền `vars`) mới được gợi ý; ô xem response thì không.
 const modelVars = new Map<string, { current: Record<string, string> }>();
 const varsReady = new WeakSet<object>();
+/**
+ * Biến đang được BÔI ĐEN TRỌN (click vào `{{tên}}`) theo model: gợi ý lúc đó
+ * thay CẢ token `{{…}}` chứ không chỉ phần tên. Xoá khi vùng chọn đổi khác.
+ */
+const swaps = new Map<string, { line: number; start: number; end: number }>();
 
 function registerVarCompletion(monaco: Monaco): void {
   if (varsReady.has(monaco)) return;
@@ -74,6 +79,29 @@ function registerVarCompletion(monaco: Monaco): void {
       provideCompletionItems(model: editor.ITextModel, pos: Position, context: languages.CompletionContext) {
         const ref = modelVars.get(model.uri.toString());
         if (!ref) return { suggestions: [] };
+        const all = (mk: (name: string, detail: string, group: string) => languages.CompletionItem) => [
+          ...Object.entries(ref.current).map(([k, v]) => mk(k, v || '(rỗng)', '1')),
+          ...Object.entries(DYNAMIC_VARS).map(([k, d]) => mk(k, d.desc, '2')),
+        ];
+        // Đang bôi đen trọn một biến → mục chọn thay cả `{{…}}`, hiện đủ danh sách
+        // (filterText mở đầu bằng chính token nên không mục nào bị lọc mất).
+        const sw = swaps.get(model.uri.toString());
+        if (sw && sw.line === pos.lineNumber && sw.end === pos.column) {
+          const range = { startLineNumber: sw.line, endLineNumber: sw.line, startColumn: sw.start, endColumn: sw.end };
+          const tokText = model.getValueInRange(range);
+          const cur = /\{\{\s*([^{}\s]*)/.exec(tokText)?.[1] ?? '';
+          return {
+            suggestions: all((name, detail, group) => ({
+              label: name,
+              kind: monaco.languages.CompletionItemKind.Variable,
+              insertText: `{{${name}}}`,
+              range,
+              detail,
+              sortText: `${name === cur ? '0' : group}${name}`,
+              filterText: tokText + name,
+            })),
+          };
+        }
         const line = model.getLineContent(pos.lineNumber);
         const m = /\{\{\s*([\w.$-]*)$/.exec(line.slice(0, pos.column - 1));
         if (!m) return { suggestions: [] };
@@ -89,20 +117,16 @@ function registerVarCompletion(monaco: Monaco): void {
         // Gọi TAY (Ctrl+Space, menu chuột phải, bôi đen) trên một biến đã đủ
         // `{{…}}` = muốn ĐỔI biến → hiện hết, không lọc theo tên đang có.
         const swap = context.triggerKind === monaco.languages.CompletionTriggerKind.Invoke && !!tail?.[2] && !!current;
-        const mk = (name: string, detail: string, group: string) => ({
-          label: name,
-          kind: monaco.languages.CompletionItemKind.Variable,
-          insertText: `${name}}}`,
-          range,
-          detail,
-          sortText: `${name === current ? '0' : group}${name}`,
-          filterText: swap ? m[1] + name : name,
-        });
         return {
-          suggestions: [
-            ...Object.entries(ref.current).map(([k, v]) => mk(k, v || '(rỗng)', '1')),
-            ...Object.entries(DYNAMIC_VARS).map(([k, d]) => mk(k, d.desc, '2')),
-          ],
+          suggestions: all((name, detail, group) => ({
+            label: name,
+            kind: monaco.languages.CompletionItemKind.Variable,
+            insertText: `${name}}}`,
+            range,
+            detail,
+            sortText: `${name === current ? '0' : group}${name}`,
+            filterText: swap ? m[1] + name : name,
+          })),
         };
       },
     });
@@ -176,6 +200,27 @@ export default function JsonBox({
       onMount={(e: editor.IStandaloneCodeEditor, monaco: Monaco) => {
         e.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => submitRef.current?.());
         if (withVars) {
+          /**
+           * Bôi đen TRỌN biến đang chứa vùng chọn / con trỏ rồi mở gợi ý đổi biến.
+           * Gõ / dán lúc đó là thay cả `{{tên}}` (vd "{{tenantId}}" → "23"), không
+           * chèn chữ vào giữa tên. Trả false nếu không đứng trong biến nào.
+           */
+          /** Biến vừa được CLICK vào (cột 1-based, end loại trừ) — xem chốt chặn onKeyDown. */
+          let armed: { line: number; start: number; end: number } | null = null;
+          const selectToken = (x: editor.ICodeEditor): boolean => {
+            const model = x.getModel();
+            const sel = x.getSelection();
+            if (!model || !sel || sel.startLineNumber !== sel.endLineNumber) return false;
+            const ln = sel.startLineNumber;
+            const tok = tokenAt(model.getLineContent(ln), sel.startColumn - 1, sel.endColumn - 1);
+            if (!tok || !tok.name) return false;
+            armed = { line: ln, start: tok.start + 1, end: tok.end + 1 };
+            swaps.set(model.uri.toString(), armed);
+            // Hướng chọn trái → phải: con trỏ nằm cuối token, khớp điều kiện của provider.
+            x.setSelection({ startLineNumber: ln, endLineNumber: ln, startColumn: tok.start + 1, endColumn: tok.end + 1 }, 'api');
+            x.trigger('api.vars', 'editor.action.triggerSuggest', {});
+            return true;
+          };
           // Mục chuột phải: đứng trong một biến → đổi; ngoài → chèn `{{}}` rồi gợi ý.
           e.addAction({
             id: 'api.vars',
@@ -183,38 +228,60 @@ export default function JsonBox({
             contextMenuGroupId: 'navigation',
             contextMenuOrder: 0,
             run: (x) => {
-              const model = x.getModel();
-              const pos = x.getPosition();
-              if (!model || !pos) return;
-              const line = model.getLineContent(pos.lineNumber);
-              const tok = tokenAt(line, pos.column - 1, pos.column - 1);
-              if (tok) {
-                x.setPosition({ lineNumber: pos.lineNumber, column: tok.nameEnd + 1 });
-              } else {
-                const sel = x.getSelection();
-                if (sel) x.executeEdits('api.vars', [{ range: sel, text: '{{}}' }]);
-                const p2 = x.getPosition();
-                if (p2) x.setPosition({ lineNumber: p2.lineNumber, column: p2.column - 2 });
-              }
+              if (selectToken(x)) return;
+              const sel = x.getSelection();
+              if (sel) x.executeEdits('api.vars', [{ range: sel, text: '{{}}' }]);
+              const p2 = x.getPosition();
+              if (p2) x.setPosition({ lineNumber: p2.lineNumber, column: p2.column - 2 });
               x.trigger('api.vars', 'editor.action.triggerSuggest', {});
             },
           });
-          // Bôi đen (một phần) một biến → mời đổi biến luôn, như ô một dòng.
-          e.onDidChangeCursorSelection((ev) => {
-            const s = ev.selection;
-            if (s.isEmpty() || s.startLineNumber !== s.endLineNumber || ev.source === 'api') return;
+          // Click (hoặc double-click / kéo chọn gọn trong) VÀO một biến → bôi đen
+          // trọn biến + gợi ý đổi. Click chỗ khác: như thường. Phím ← → vẫn đi
+          // vào giữa tên được để sửa tay.
+          //
+          // HOÃN sang lượt sau: Monaco / Chromium còn xử lý nốt cú click SAU sự
+          // kiện mouseup (click vào vùng đang bôi đen thì thu về con trỏ) — chọn
+          // ngay tại đây là bị đặt lại mất.
+          e.onMouseUp((ev) => {
+            if (ev.event.rightButton) return;
+            armed = null;
+            setTimeout(() => { if (e.hasTextFocus()) selectToken(e); }, 0);
+          });
+          // CHỐT CHẶN: phím sửa đầu tiên sau khi click vào biến luôn thay / xoá
+          // TRỌN `{{tên}}` — bôi đen lại ngay trước khi Monaco chèn ký tự, phòng
+          // khi vùng chọn bị đặt lại. Đi bằng ← → = muốn sửa tay tên → thôi chặn.
+          e.onKeyDown((kev) => {
+            const b = kev.browserEvent;
+            if (isNavKey(b)) { armed = null; return; }
+            if (!armed || !isEditKey(b)) return;
+            const a = armed;
+            armed = null;
+            const sel = e.getSelection();
             const model = e.getModel();
-            if (!model) return;
-            const line = model.getLineContent(s.startLineNumber);
-            const tok = tokenAt(line, s.startColumn - 1, s.endColumn - 1);
-            if (!tok || !tok.name) return;
-            // Đặt con trỏ ngay cuối tên rồi gọi gợi ý: provider thấy `{{tên|}}`
-            // và trả về đủ danh sách, chọn mục nào là thay cả token.
-            e.setSelection({
-              startLineNumber: s.startLineNumber, endLineNumber: s.startLineNumber,
-              startColumn: tok.nameEnd + 1, endColumn: tok.nameEnd + 1,
-            }, 'api');
-            e.trigger('api.vars', 'editor.action.triggerSuggest', {});
+            if (!sel || !model || sel.startLineNumber !== a.line || sel.endLineNumber !== a.line) return;
+            if (sel.startColumn < a.start || sel.endColumn > a.end) return;
+            const tok = tokenAt(model.getLineContent(a.line), a.start - 1, a.start);
+            if (!tok || tok.start + 1 !== a.start) return;
+            const range = { startLineNumber: a.line, endLineNumber: a.line, startColumn: tok.start + 1, endColumn: tok.end + 1 };
+            if (b.key === 'Backspace' || b.key === 'Delete') {
+              // Xoá thẳng: phím xoá đi qua keybinding của Monaco, có thể chạy
+              // trước khi vùng chọn mới kịp áp → tự xoá cho chắc, chặn phím gốc.
+              kev.preventDefault();
+              kev.stopPropagation();
+              e.executeEdits('api.vars', [{ range, text: '' }]);
+              return;
+            }
+            // Ký tự / dán: chỉ cần bôi đen — Monaco gõ đè lên vùng chọn hiện tại.
+            e.setSelection(range, 'api');
+          });
+          // Vùng chọn rời khỏi token đã bôi đen → thôi chế độ thay cả token.
+          e.onDidChangeCursorSelection((ev) => {
+            if (ev.source === 'api') return;
+            const uri = e.getModel()?.uri.toString();
+            const sw = uri ? swaps.get(uri) : undefined;
+            const s = ev.selection;
+            if (uri && sw && !(s.startLineNumber === sw.line && s.startColumn === sw.start && s.endColumn === sw.end)) swaps.delete(uri);
           });
         }
         setEd(e);

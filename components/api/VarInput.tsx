@@ -7,8 +7,9 @@
 //   · Gõ `{{`            → gợi ý, gõ tiếp để lọc; Enter/Tab chọn, Esc đóng.
 //                          `{{#auth` = chỉ biến có tag auth; chip tag ở đầu
 //                          popup cũng lọc được.
-//   · Bôi đen một biến   → (kéo chuột hoặc double-click vào tên) popup "Đổi
-//                          {{x}} thành…" — chọn là thay cả token, khỏi gõ lại.
+//   · Click vào một biến → bôi đen TRỌN `{{x}}` + popup "Đổi {{x}} thành…":
+//                          gõ / dán là thay cả biến bằng giá trị mới, chọn
+//                          trong popup là đổi sang biến khác.
 //   · Chuột phải / Ctrl+Space → đứng trong một biến thì đổi biến đó, đứng ngoài
 //                          thì chèn biến tại con trỏ. Menu chuột phải kèm luôn
 //                          Cắt / Sao chép / Dán vì nó thay menu mặc định.
@@ -79,19 +80,25 @@ interface PopState { mode: Mode; x: number; y: number; menu: boolean }
 
 type InputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>;
 
-export default function VarInput({ value, onChange, onKeyDown, onBlur, selectOnClick, ...rest }: InputProps & {
+/** Phím sẽ SỬA nội dung: ký tự thường, Backspace / Delete, Ctrl+V / Ctrl+X. */
+export function isEditKey(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }): boolean {
+  if (e.key === 'Backspace' || e.key === 'Delete') return true;
+  if (e.ctrlKey || e.metaKey) return e.key === 'v' || e.key === 'V' || e.key === 'x' || e.key === 'X';
+  return e.key.length === 1 && !e.altKey;
+}
+
+/** Phím di chuyển con trỏ — dùng nó tức là muốn đi vào giữa tên biến để sửa tay. */
+export function isNavKey(e: { key: string }): boolean {
+  return /^(Arrow(Left|Right|Up|Down)|Home|End|PageUp|PageDown)$/.test(e.key);
+}
+
+export default function VarInput({ value, onChange, onKeyDown, onBlur, onPaste, ...rest }: InputProps & {
   value: string;
   onChange: (v: string) => void;
-  /**
-   * Click (chuột trái) vào ô CHƯA focus → bôi đen hết, dán / gõ là thay luôn
-   * giá trị cũ. Đã focus rồi thì click đặt con trỏ như thường; kéo chuột chọn
-   * một đoạn ngay cú click đầu cũng được tôn trọng.
-   */
-  selectOnClick?: boolean;
 }) {
   const ctx = useContext(Ctx);
-  /** Cú mousedown vừa rồi là click trái vào ô chưa focus — chờ mouseup để bôi đen hết. */
-  const pendingSelect = useRef(false);
+  /** Vị trí `{{` của biến vừa được CLICK vào (null = không có) — xem claimToken. */
+  const armed = useRef<number | null>(null);
   const ref = useRef<HTMLInputElement>(null);
   const [pop, setPop] = useState<PopState | null>(null);
   const [hi, setHi] = useState(0);
@@ -164,6 +171,7 @@ export default function VarInput({ value, onChange, onKeyDown, onBlur, selectOnC
 
   const pick = (it: Item) => {
     if (!pop) return;
+    armed.current = null;
     const { start } = pop.mode;
     let end = pop.mode.end;
     // Gõ `{{ab` mà ngay sau con trỏ còn sót `c}}` / `}}` (ô có sẵn, hoặc sửa
@@ -211,7 +219,24 @@ export default function VarInput({ value, onChange, onKeyDown, onBlur, selectOnC
     }
   };
 
+  /**
+   * CHỐT CHẶN cho "click vào biến rồi gõ": phím sửa đầu tiên sau cú click đó
+   * luôn thay / xoá TRỌN `{{tên}}` — bôi đen trước khi trình duyệt chèn ký tự,
+   * phòng khi vùng chọn của cú click bị trình duyệt đặt lại. Đi bằng phím
+   * ← → (isNavKey) là ý sửa tay tên biến → thôi chặn.
+   */
+  const claimToken = () => {
+    const el = ref.current;
+    const start = armed.current;
+    armed.current = null;
+    if (!el || start === null) return;
+    const tok = tokenAt(value, el.selectionStart ?? 0, el.selectionEnd ?? 0);
+    if (tok && tok.start === start) el.setSelectionRange(tok.start, tok.end);
+  };
+
   const keyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (isNavKey(e)) armed.current = null;
+    else if (isEditKey(e)) claimToken();
     if (e.key === ' ' && e.ctrlKey) {
       e.preventDefault();
       open(modeAtCaret());
@@ -275,18 +300,26 @@ export default function VarInput({ value, onChange, onKeyDown, onBlur, selectOnC
         onKeyDown={keyDown}
         onSelect={onSelect}
         onContextMenu={onContextMenu}
-        onMouseDown={(e) => {
-          pendingSelect.current = !!selectOnClick && e.button === 0 && document.activeElement !== e.currentTarget;
-        }}
         onMouseUp={(e) => {
-          if (!pendingSelect.current) return;
-          pendingSelect.current = false;
+          if (e.button !== 0) return;
           const el = e.currentTarget;
-          // Bôi đen hết SAU mouseup (trước đó trình duyệt còn đặt con trỏ đè lên).
-          // Ô chỉ có đúng một biến → onSelect mở luôn popup đổi biến.
-          if (el.selectionStart === el.selectionEnd) el.select();
+          const s = el.selectionStart ?? 0;
+          const end = el.selectionEnd ?? s;
+          // Click VÀO MỘT BIẾN → bôi đen TRỌN `{{tên}}`: gõ / dán là thay cả biến
+          // (vd {{tenantId}} → 23), không chèn chữ vào giữa tên; onSelect mở
+          // luôn popup đổi sang biến khác. Click chỗ khác trong ô: như thường.
+          const tok = tokenAt(value, s, end);
+          armed.current = tok ? tok.start : null;
+          if (!tok) return;
+          // HOÃN sang lượt sau: click vào vùng ĐANG bôi đen thì Chromium chỉ thu
+          // vùng chọn về con trỏ SAU khi mouseup chạy xong — chọn ngay tại đây
+          // sẽ bị nó xoá mất.
+          setTimeout(() => {
+            if (document.activeElement === el && armed.current === tok.start) el.setSelectionRange(tok.start, tok.end);
+          }, 0);
         }}
-        onBlur={(e) => { if (!pop?.menu) close(); onBlur?.(e); }}
+        onPaste={(e) => { claimToken(); onPaste?.(e); }}
+        onBlur={(e) => { armed.current = null; if (!pop?.menu) close(); onBlur?.(e); }}
       />
       {pop && typeof document !== 'undefined' && createPortal(
         <>
