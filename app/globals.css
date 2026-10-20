@@ -10259,22 +10259,26 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .univer-host { position: absolute; inset: 0; }
 /* Nút/ô nhập BÊN TRONG Univer không được ăn kiểu nút chung của app (nền gradient,
    chữ trắng, bóng đổ, bo góc 10px) — footer (nút +, danh sách sheet, −/+ zoom,
-   núm thanh trượt) từng hiện thành các khối tím xanh rất chướng. Dùng :where()
+   núm thanh trượt) và menu chuột phải từng hiện thành các khối tím xanh rất chướng.
+   Menu/dropdown/tooltip được Univer portal ra một <div> TRỐNG dưới <body> (không
+   class, không id) nên không bám .univer-host được; bám theo class tiện ích
+   `univer-*` mà Univer đặt trên mọi phần tử của nó, loại trừ 4 class cùng tiền tố
+   nhưng là của app (univer-wrap/body/banner/state — xem UniverPane). Dùng :where()
    để độ ưu tiên bằng rule `button {}` toàn cục (thắng nhờ đứng sau) nhưng vẫn
    THẤP hơn các class tiện ích của Univer, nên Univer tự vẽ kiểu của nó. */
-:where(.univer-host) button {
+:where(.univer-host, [class*="univer-"]:not(.univer-wrap, .univer-body, .univer-banner, .univer-state)) button {
   background: transparent; color: inherit; border: 0; border-radius: 0; padding: 0;
   font: inherit; font-weight: 400; box-shadow: none; transition: none;
 }
-:where(.univer-host) button:hover:not(:disabled) { transform: none; box-shadow: none; }
-:where(.univer-host) button:active:not(:disabled) { transform: none; }
-:where(.univer-host) button:disabled { opacity: 1; cursor: default; }
-:where(.univer-host) input, :where(.univer-host) textarea, :where(.univer-host) select {
+:where(.univer-host, [class*="univer-"]:not(.univer-wrap, .univer-body, .univer-banner, .univer-state)) button:hover:not(:disabled) { transform: none; box-shadow: none; }
+:where(.univer-host, [class*="univer-"]:not(.univer-wrap, .univer-body, .univer-banner, .univer-state)) button:active:not(:disabled) { transform: none; }
+:where(.univer-host, [class*="univer-"]:not(.univer-wrap, .univer-body, .univer-banner, .univer-state)) button:disabled { opacity: 1; cursor: default; }
+:where(.univer-host, [class*="univer-"]:not(.univer-wrap, .univer-body, .univer-banner, .univer-state)) input, :where(.univer-host, [class*="univer-"]:not(.univer-wrap, .univer-body, .univer-banner, .univer-state)) textarea, :where(.univer-host, [class*="univer-"]:not(.univer-wrap, .univer-body, .univer-banner, .univer-state)) select {
   width: auto; background: transparent; color: inherit; border: 0; border-radius: 0; padding: 0;
   font-size: inherit; transition: none;
 }
-:where(.univer-host) input:focus, :where(.univer-host) textarea:focus, :where(.univer-host) select:focus { box-shadow: none; border-color: transparent; }
-:where(.univer-host) a { color: inherit; }
+:where(.univer-host, [class*="univer-"]:not(.univer-wrap, .univer-body, .univer-banner, .univer-state)) input:focus, :where(.univer-host, [class*="univer-"]:not(.univer-wrap, .univer-body, .univer-banner, .univer-state)) textarea:focus, :where(.univer-host, [class*="univer-"]:not(.univer-wrap, .univer-body, .univer-banner, .univer-state)) select:focus { box-shadow: none; border-color: transparent; }
+:where(.univer-host, [class*="univer-"]:not(.univer-wrap, .univer-body, .univer-banner, .univer-state)) a { color: inherit; }
 .univer-state { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
 .univer-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 /* ── Giao diện kiểu Microsoft Excel cho Univer (components/sheet/ExcelRibbon) ──
