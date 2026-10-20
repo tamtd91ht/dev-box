@@ -770,7 +770,7 @@ export default function ApiWorkspace() {
               onChange={(e) => setDraft({ ...draft, method: e.target.value })}>
               {METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            <VarInput className="input" style={{ flex: 1, minWidth: 160 }}
+            <VarInput className="input" style={{ flex: 1, minWidth: 160 }} selectOnClick
               placeholder="https://… (gõ {{ để chèn biến) — hoặc dán thẳng lệnh curl vào đây"
               value={draft.url} onChange={setUrl}
               onPaste={onUrlPaste}
@@ -842,8 +842,8 @@ export default function ApiWorkspace() {
                 {draft.headers.map((h, i) => (
                   <div key={i} className="api-kv-row">
                     <input type="checkbox" checked={h.on !== false} onChange={(e) => setHeader(i, { on: e.target.checked })} />
-                    <VarInput className="input" placeholder="Header" value={h.key} onChange={(v) => setHeader(i, { key: v })} />
-                    <VarInput className="input" placeholder="Value" value={h.value} onChange={(v) => setHeader(i, { value: v })} />
+                    <VarInput className="input" placeholder="Header" value={h.key} onChange={(v) => setHeader(i, { key: v })} selectOnClick />
+                    <VarInput className="input" placeholder="Value" value={h.value} onChange={(v) => setHeader(i, { value: v })} selectOnClick />
                     <button className="ghost sm" onClick={() => rmHeader(i)}>✕</button>
                   </div>
                 ))}
@@ -903,7 +903,7 @@ export default function ApiWorkspace() {
                         <input type="checkbox" checked={f.on !== false}
                           onChange={(e) => setField(i, { on: e.target.checked })} />
                         <VarInput className="input" placeholder="Key" value={f.key}
-                          onChange={(v) => setField(i, { key: v })} />
+                          onChange={(v) => setField(i, { key: v })} selectOnClick />
                         {f.kind === 'file' ? (
                           <label className="api-file">
                             <input type="file" hidden
@@ -917,7 +917,7 @@ export default function ApiWorkspace() {
                           </label>
                         ) : (
                           <VarInput className="input" placeholder="Value" value={f.value}
-                            onChange={(v) => setField(i, { value: v })} />
+                            onChange={(v) => setField(i, { value: v })} selectOnClick />
                         )}
                         {/* Chuyển text ↔ file. Chỉ multipart mới mang được file,
                             urlencoded thì nút này không có nghĩa. */}

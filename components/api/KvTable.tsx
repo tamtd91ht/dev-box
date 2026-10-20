@@ -27,8 +27,8 @@ export default function KvTable({
             title="Bật/tắt dòng này" />
           {withVars ? (
             <>
-              <VarInput className="input" placeholder={keyPlaceholder} value={r.key} onChange={(v) => set(i, { key: v })} />
-              <VarInput className="input" placeholder={valuePlaceholder} value={r.value} onChange={(v) => set(i, { value: v })} />
+              <VarInput className="input" placeholder={keyPlaceholder} value={r.key} onChange={(v) => set(i, { key: v })} selectOnClick />
+              <VarInput className="input" placeholder={valuePlaceholder} value={r.value} onChange={(v) => set(i, { value: v })} selectOnClick />
             </>
           ) : (
             <>

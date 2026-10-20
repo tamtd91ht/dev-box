@@ -79,11 +79,19 @@ interface PopState { mode: Mode; x: number; y: number; menu: boolean }
 
 type InputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>;
 
-export default function VarInput({ value, onChange, onKeyDown, onBlur, ...rest }: InputProps & {
+export default function VarInput({ value, onChange, onKeyDown, onBlur, selectOnClick, ...rest }: InputProps & {
   value: string;
   onChange: (v: string) => void;
+  /**
+   * Click (chuột trái) vào ô CHƯA focus → bôi đen hết, dán / gõ là thay luôn
+   * giá trị cũ. Đã focus rồi thì click đặt con trỏ như thường; kéo chuột chọn
+   * một đoạn ngay cú click đầu cũng được tôn trọng.
+   */
+  selectOnClick?: boolean;
 }) {
   const ctx = useContext(Ctx);
+  /** Cú mousedown vừa rồi là click trái vào ô chưa focus — chờ mouseup để bôi đen hết. */
+  const pendingSelect = useRef(false);
   const ref = useRef<HTMLInputElement>(null);
   const [pop, setPop] = useState<PopState | null>(null);
   const [hi, setHi] = useState(0);
@@ -267,6 +275,17 @@ export default function VarInput({ value, onChange, onKeyDown, onBlur, ...rest }
         onKeyDown={keyDown}
         onSelect={onSelect}
         onContextMenu={onContextMenu}
+        onMouseDown={(e) => {
+          pendingSelect.current = !!selectOnClick && e.button === 0 && document.activeElement !== e.currentTarget;
+        }}
+        onMouseUp={(e) => {
+          if (!pendingSelect.current) return;
+          pendingSelect.current = false;
+          const el = e.currentTarget;
+          // Bôi đen hết SAU mouseup (trước đó trình duyệt còn đặt con trỏ đè lên).
+          // Ô chỉ có đúng một biến → onSelect mở luôn popup đổi biến.
+          if (el.selectionStart === el.selectionEnd) el.select();
+        }}
         onBlur={(e) => { if (!pop?.menu) close(); onBlur?.(e); }}
       />
       {pop && typeof document !== 'undefined' && createPortal(
