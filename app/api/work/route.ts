@@ -11,8 +11,8 @@
 // (/api/mongo-connections) — cùng một registry, không có đường riêng ở đây.
 //     'add'          { ...task }                 → { task }   (quét cảnh báo ngay sau đó)
 //
-// Task có 2 loại qua field 'kind': 'daily' (việc trong ngày, cần startTime +
-// endTime, không cảnh báo, không trạng thái — server ép 'done' và 'status' từ
+// Task có 2 loại qua field 'kind': 'daily' (việc trong ngày, cần 'slots' =
+// [{ start, end }, …] — hoặc startTime + endTime với client cũ, không cảnh báo, không trạng thái — server ép 'done' và 'status' từ
 // chối loại này) và 'deadline' (cần dlDate/dlTime + alert). Thiếu 'kind' → hiểu
 // là 'deadline' (tương thích client/dữ liệu cũ).
 //     'update'       { id, ...task }             → { ok }

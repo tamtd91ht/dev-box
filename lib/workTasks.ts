@@ -130,6 +130,12 @@ export type WorkKind = 'daily' | 'deadline';
 
 export const WORK_KINDS: WorkKind[] = ['daily', 'deadline'];
 
+/** Một khung giờ 'HH:mm' → 'HH:mm' của việc trong ngày. */
+export interface WorkSlot {
+  start: string;
+  end: string;
+}
+
 export interface WorkTask {
   id: string;
   kind: WorkKind;
@@ -140,7 +146,13 @@ export interface WorkTask {
   tags: string[];
   /** Ngày bắt đầu 'YYYY-MM-DD' (chọn từ lịch). Với 'daily' là NGÀY làm việc. */
   startDate: string;
-  /** Khung giờ 'HH:mm' — chỉ loại 'daily', bắt buộc; loại 'deadline' luôn null. */
+  /**
+   * Các khung giờ — chỉ loại 'daily', bắt buộc ≥ 1, đã sắp theo giờ bắt đầu và
+   * không chồng nhau; loại 'deadline' luôn []. startTime/endTime là giờ đầu
+   * tiên / giờ cuối cùng của các khung (giữ cho sắp xếp + dữ liệu cũ chỉ có
+   * một khung); loại 'deadline' luôn null.
+   */
+  slots: WorkSlot[];
   startTime: string | null;
   endTime: string | null;
   /** Deadline cam kết — ngày + giờ local, kèm epoch ms để tính cảnh báo. */
@@ -199,15 +211,33 @@ function sanitize(raw: Record<string, unknown>): Omit<WorkTask, 'id' | 'createdA
     : String(raw.tags ?? '').split(',').map((t) => t.trim()).filter(Boolean).slice(0, 20);
 
   // ── Khung giờ (chỉ 'daily') ───────────────────────────────────────────────
+  // Nhiều khung giờ qua 'slots'; client cũ chỉ gửi startTime/endTime → một khung.
   let startTime: string | null = null;
   let endTime: string | null = null;
+  let slots: WorkSlot[] = [];
   if (kind === 'daily') {
-    startTime = String(raw.startTime ?? '').trim();
-    endTime = String(raw.endTime ?? '').trim();
-    if (!HHMM.test(startTime)) throw new Error('Giờ bắt đầu không hợp lệ (HH:mm) — việc trong ngày phải có khung giờ.');
-    if (!HHMM.test(endTime)) throw new Error('Giờ kết thúc không hợp lệ (HH:mm) — việc trong ngày phải có khung giờ.');
-    // Cùng một ngày nên so chuỗi 'HH:mm' là đủ (thứ tự lexicographic = thứ tự giờ).
-    if (endTime <= startTime) throw new Error('Giờ kết thúc phải sau giờ bắt đầu.');
+    const rawSlots: unknown[] = Array.isArray(raw.slots) ? raw.slots : [{ start: raw.startTime, end: raw.endTime }];
+    if (rawSlots.length === 0) throw new Error('Việc trong ngày phải có ít nhất một khung giờ.');
+    if (rawSlots.length > 24) throw new Error('Tối đa 24 khung giờ cho một việc.');
+    slots = rawSlots.map((r) => {
+      const o = (r && typeof r === 'object' ? r : {}) as Record<string, unknown>;
+      const start = String(o.start ?? '').trim();
+      const end = String(o.end ?? '').trim();
+      if (!HHMM.test(start)) throw new Error('Giờ bắt đầu không hợp lệ (HH:mm) — việc trong ngày phải có khung giờ.');
+      if (!HHMM.test(end)) throw new Error('Giờ kết thúc không hợp lệ (HH:mm) — việc trong ngày phải có khung giờ.');
+      // Cùng một ngày nên so chuỗi 'HH:mm' là đủ (thứ tự lexicographic = thứ tự giờ).
+      if (end <= start) throw new Error(`Khung ${start} → ${end}: giờ kết thúc phải sau giờ bắt đầu.`);
+      return { start, end };
+    }).sort((a, b) => a.start.localeCompare(b.start));
+    // Các khung CỦA CÙNG MỘT việc không được chồng nhau (chạm mép thì được).
+    // Trùng với việc KHÁC thì chỉ là cảnh báo phía client, server không chặn.
+    for (let i = 1; i < slots.length; i++) {
+      if (slots[i].start < slots[i - 1].end) {
+        throw new Error(`Khung ${slots[i - 1].start} → ${slots[i - 1].end} và ${slots[i].start} → ${slots[i].end} chồng nhau.`);
+      }
+    }
+    startTime = slots[0].start;
+    endTime = slots[slots.length - 1].end;
   }
 
   // ── Deadline + cảnh báo (chỉ 'deadline') ──────────────────────────────────
@@ -235,6 +265,7 @@ function sanitize(raw: Record<string, unknown>): Omit<WorkTask, 'id' | 'createdA
     priority,
     tags,
     startDate,
+    slots,
     startTime,
     endTime,
     dlDate,
@@ -272,11 +303,22 @@ function kindFromDoc(d: Document): WorkKind {
   return WORK_KINDS.includes(d.kind as WorkKind) ? (d.kind as WorkKind) : 'deadline';
 }
 
+/** Khung giờ của document — dữ liệu cũ (chưa có 'slots') là một khung startTime–endTime. */
+function slotsFromDoc(d: Document): WorkSlot[] {
+  if (Array.isArray(d.slots) && d.slots.length) {
+    return d.slots
+      .filter((s: unknown) => s && typeof s === 'object' && typeof (s as WorkSlot).start === 'string' && typeof (s as WorkSlot).end === 'string')
+      .map((s: WorkSlot) => ({ start: s.start, end: s.end }));
+  }
+  return typeof d.startTime === 'string' && typeof d.endTime === 'string' ? [{ start: d.startTime, end: d.endTime }] : [];
+}
+
 function fromDoc(d: Document): WorkTask {
   const kind = kindFromDoc(d);
   return {
     id: String(d._id),
     kind,
+    slots: kind === 'daily' ? slotsFromDoc(d) : [],
     startTime: kind === 'daily' && typeof d.startTime === 'string' ? d.startTime : null,
     endTime: kind === 'daily' && typeof d.endTime === 'string' ? d.endTime : null,
     project: d.project ?? '',

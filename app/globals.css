@@ -7613,6 +7613,10 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .wk-move-preview { font-size: 11px; color: var(--muted); font-family: var(--mono); }
 .wk-move-err { font-size: 11px; color: var(--err); }
+/* Cảnh báo đè khung giờ ở ngày đích khi kéo thả việc trong ngày. */
+.wk-move-warn { font-size: 11px; color: var(--warn, #d29922); }
+.wk-move-warn ul { margin: 2px 0; padding-left: 16px; max-height: 76px; overflow: auto; }
+.wk-move-warn li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wk-move-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
 .wk-side { flex: none; width: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
@@ -7661,6 +7665,9 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 /* Khung giờ của việc trong ngày. */
 .wk-span { font-family: var(--mono); color: var(--muted); }
+/* Danh sách nhiều khung giờ trong form việc trong ngày. */
+.wk-slots { display: flex; flex-direction: column; gap: 6px; }
+.wk-slot { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
 /* ── Tab chọn LOẠI công việc trong form thêm/sửa ── */
 .wk-kindtabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }

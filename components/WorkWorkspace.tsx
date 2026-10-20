@@ -58,6 +58,9 @@ type WorkAlert =
 /** 2 loại công việc — xem WorkKind trong lib/workTasks. */
 type Kind = 'daily' | 'deadline';
 
+/** Một khung giờ 'HH:mm' → 'HH:mm' của việc trong ngày. */
+interface Slot { start: string; end: string }
+
 interface WorkTask {
   id: string;
   kind: Kind;
@@ -67,6 +70,8 @@ interface WorkTask {
   priority: Priority;
   tags: string[];
   startDate: string;
+  /** Các khung giờ (chỉ 'daily'); startTime/endTime = giờ đầu / giờ cuối của chúng. */
+  slots: Slot[];
   startTime: string | null;
   endTime: string | null;
   dlDate: string | null;
@@ -158,15 +163,49 @@ const KIND_META: Record<Kind, { label: string; short: string; icon: string; hint
 
 const KIND_ORDER: Kind[] = ['daily', 'deadline'];
 
-/** Khung giờ của việc trong ngày, ví dụ '09:00 → 11:30'. */
-function fmtSpan(t: WorkTask): string {
-  return t.startTime && t.endTime ? `${t.startTime} → ${t.endTime}` : '';
+/** Khung giờ của task — server đã trả 'slots'; phòng bản server cũ chỉ có startTime/endTime. */
+function slotsOf(t: WorkTask): Slot[] {
+  if (t.kind !== 'daily') return [];
+  if (t.slots?.length) return t.slots;
+  return t.startTime && t.endTime ? [{ start: t.startTime, end: t.endTime }] : [];
 }
 
-/** Độ dài khung giờ, ví dụ '(2 giờ 30 phút)'. */
-function durText(from: string, to: string): string {
-  const mins = (s: string) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
-  const d = mins(to) - mins(from);
+function fmtSlots(slots: Slot[]): string {
+  return slots.map((s) => `${s.start} → ${s.end}`).join(', ');
+}
+
+/** Khung giờ của việc trong ngày, ví dụ '09:00 → 11:30, 14:00 → 15:00'. */
+function fmtSpan(t: WorkTask): string {
+  return fmtSlots(slotsOf(t));
+}
+
+const hhmmMins = (s: string) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
+
+/** Hai khung có chồng nhau không — chạm mép (09:00–10:00 và 10:00–11:00) thì không tính. */
+const slotsOverlap = (a: Slot, b: Slot) => a.start < b.end && b.start < a.end;
+
+/** Một chỗ trùng giờ giữa khung đang nhập và khung của một việc khác cùng ngày. */
+interface SlotClash { mine: Slot; task: WorkTask; theirs: Slot }
+
+/**
+ * Các chỗ ĐÈ khung giờ với việc trong ngày KHÁC cùng ngày `date` (bỏ qua chính
+ * task `selfId` đang sửa). Chỉ việc trong ngày mới có khung giờ — việc có
+ * deadline không chiếm giờ nào trong ngày nên không tính.
+ */
+function findClashes(slots: Slot[], date: string, tasks: WorkTask[], selfId: string | null): SlotClash[] {
+  const out: SlotClash[] = [];
+  for (const t of tasks) {
+    if (t.kind !== 'daily' || t.id === selfId || t.startDate !== date) continue;
+    for (const theirs of slotsOf(t)) {
+      for (const mine of slots) if (slotsOverlap(mine, theirs)) out.push({ mine, task: t, theirs });
+    }
+  }
+  return out.sort((a, b) => a.mine.start.localeCompare(b.mine.start) || a.theirs.start.localeCompare(b.theirs.start));
+}
+
+/** Độ dài TỔNG các khung giờ, ví dụ '(2 giờ 30 phút)'. */
+function durText(slots: Slot[]): string {
+  const d = slots.reduce((sum, s) => sum + Math.max(0, hhmmMins(s.end) - hhmmMins(s.start)), 0);
   if (d <= 0) return '';
   const h = Math.floor(d / 60);
   const m = d % 60;
@@ -365,10 +404,12 @@ function alertToChoice(a: WorkAlert | null): AlertChoice {
   return (['30', '60', '180', '1440'].includes(String(a.minutes)) ? String(a.minutes) : 'daily') as AlertChoice;
 }
 
-function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: {
+function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onClose }: {
   initial: WorkTask | null;
   startDate: string;
   projects: string[];
+  /** Toàn bộ task đang có — để dò trùng khung giờ với việc khác trong ngày. */
+  tasks: WorkTask[];
   busy: boolean;
   err: string | null;
   onSave: (fields: Record<string, unknown>) => void;
@@ -382,8 +423,12 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
   const [priority, setPriority] = useState<Priority>(initial?.priority ?? 'normal');
   const [tags, setTags] = useState(initial?.tags.join(', ') ?? '');
   const [start, setStart] = useState(initial?.startDate ?? startDate);
-  const [startTime, setStartTime] = useState(initial?.startTime ?? '09:00');
-  const [endTime, setEndTime] = useState(initial?.endTime ?? '10:00');
+  const [slots, setSlots] = useState<Slot[]>(() => {
+    const cur = initial ? slotsOf(initial) : [];
+    return cur.length ? cur : [{ start: '09:00', end: '10:00' }];
+  });
+  /** Chỗ trùng giờ với việc khác đang chờ người dùng xác nhận (null = không hỏi). */
+  const [clashes, setClashes] = useState<SlotClash[] | null>(null);
   // Task mới: để trống → server tự chọn Đang chờ / Đang diễn ra theo ngày bắt đầu.
   const [status, setStatus] = useState<Status | ''>(initial?.status ?? '');
   const [dlDate, setDlDate] = useState(initial?.dlDate ?? '');
@@ -392,10 +437,39 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
   const [dDays, setDDays] = useState(initial?.alert?.kind === 'daily' ? initial.alert.daysBefore : 1);
   const [dTime, setDTime] = useState(initial?.alert?.kind === 'daily' ? initial.alert.time : '21:00');
 
-  /** Khung giờ sai (kết thúc ≤ bắt đầu) — chặn nút Lưu, khỏi phải đợi lỗi server. */
-  const spanBad = kind === 'daily' && !!startTime && !!endTime && endTime <= startTime;
+  const setSlot = (i: number, patch: Partial<Slot>) =>
+    setSlots((prev) => prev.map((s, j) => (j === i ? { ...s, ...patch } : s)));
+  /** Khung mới nối tiếp sau khung muộn nhất, dài 1 giờ (kẹp trong ngày). */
+  const addSlot = () => setSlots((prev) => {
+    const last = prev.reduce((m, s) => (s.end > m ? s.end : m), '08:00');
+    const from = Math.min(hhmmMins(last), 22 * 60 + 59);
+    const to = Math.min(from + 60, 23 * 60 + 59);
+    const f = (n: number) => `${p2(Math.floor(n / 60))}:${p2(n % 60)}`;
+    return [...prev, { start: f(from), end: f(to) }];
+  });
+
+  // Khung giờ sai — chặn nút Lưu, khỏi phải đợi lỗi server (server cũng chặn y hệt).
+  const isDaily = kind === 'daily';
+  const slotMissing = isDaily && (slots.length === 0 || slots.some((s) => !s.start || !s.end));
+  /** Chỉ số các khung có kết thúc ≤ bắt đầu. */
+  const badIdx = new Set(isDaily ? slots.flatMap((s, i) => (s.start && s.end && s.end <= s.start ? [i] : [])) : []);
+  /** Các khung CỦA CHÍNH việc này chồng nhau — vô nghĩa, chặn lưu (trùng với việc KHÁC chỉ cảnh báo). */
+  const selfOverlap = isDaily && slots.some((a, i) => slots.some((b, j) => j > i && !!a.start && !!a.end && !!b.start && !!b.end && slotsOverlap(a, b)));
+  const spanBad = badIdx.size > 0 || selfOverlap;
+  /** Trùng với việc khác cùng ngày — cảnh báo ngay dưới khung giờ, và hỏi lại lúc lưu. */
+  const liveClashes = useMemo(
+    () => (isDaily && !slotMissing && !spanBad ? findClashes(slots, start, tasks, initial?.id ?? null) : []),
+    [isDaily, slotMissing, spanBad, slots, start, tasks, initial],
+  );
+
+  /** Bấm Lưu: có đè giờ việc khác → hỏi xác nhận trước; không thì lưu luôn. */
+  const trySubmit = () => {
+    if (liveClashes.length > 0) { setClashes(liveClashes); return; }
+    submit();
+  };
 
   const submit = () => {
+    setClashes(null);
     const alert: WorkAlert | null = kind !== 'deadline' || !dlDate || choice === 'none'
       ? null
       : choice === 'daily'
@@ -406,8 +480,7 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
       tags: tags.split(',').map((t) => t.trim()).filter(Boolean),
       startDate: start,
       // Server bỏ qua field không thuộc loại đang chọn, nhưng gửi rỗng cho gọn.
-      startTime: kind === 'daily' ? startTime : '',
-      endTime: kind === 'daily' ? endTime : '',
+      slots: isDaily ? [...slots].sort((a, b) => a.start.localeCompare(b.start)) : [],
       dlDate: kind === 'deadline' ? dlDate || '' : '',
       dlTime, alert,
       // Việc trong ngày không gửi trạng thái — server tự ép 'done'.
@@ -480,20 +553,40 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
           )}
           {kind === 'daily' ? (
             /* ── VIỆC TRONG NGÀY: chỉ khung giờ, bắt buộc ── */
-            <div className="wk-field wk-span2"><span>Khung giờ *</span>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <input className="input" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} style={{ width: 110 }} />
-                <span className="small" style={{ color: 'var(--muted)' }}>→</span>
-                <input className="input" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} style={{ width: 110 }} />
-                {startTime && endTime && !spanBad && (
-                  <span className="small" style={{ color: 'var(--muted)' }}>{durText(startTime, endTime)}</span>
-                )}
+            <div className="wk-field wk-span2">
+              <span>Khung giờ *{slots.length > 1 && !spanBad && !slotMissing && <i style={{ fontWeight: 400 }}> · tổng {durText(slots)}</i>}</span>
+              <div className="wk-slots">
+                {slots.map((s, i) => (
+                  <div key={i} className="wk-slot">
+                    <input className="input" type="time" value={s.start} onChange={(e) => setSlot(i, { start: e.target.value })} style={{ width: 110 }} />
+                    <span className="small" style={{ color: 'var(--muted)' }}>→</span>
+                    <input className="input" type="time" value={s.end} onChange={(e) => setSlot(i, { end: e.target.value })} style={{ width: 110 }} />
+                    {s.start && s.end && !badIdx.has(i) && (
+                      <span className="small" style={{ color: 'var(--muted)' }}>{durText([s])}</span>
+                    )}
+                    {badIdx.has(i) && <span className="small" style={{ color: 'var(--err)' }}>⚠ kết thúc phải sau bắt đầu</span>}
+                    {slots.length > 1 && (
+                      <button className="ghost sm" onClick={() => setSlots((prev) => prev.filter((_, j) => j !== i))}
+                        disabled={busy} title="Bỏ khung giờ này">✕</button>
+                    )}
+                  </div>
+                ))}
+                <div>
+                  <button className="ghost sm" onClick={addSlot} disabled={busy || slots.length >= 24}>＋ Thêm khung giờ</button>
+                </div>
               </div>
               <span className="small" style={{ color: spanBad ? 'var(--err)' : 'var(--muted)' }}>
-                {spanBad
+                {badIdx.size > 0
                   ? '⚠ Giờ kết thúc phải sau giờ bắt đầu.'
-                  : 'Việc trong ngày là bản ghi đã-làm-gì — không deadline, không cảnh báo.'}
+                  : selfOverlap
+                    ? '⚠ Các khung giờ của việc này đang chồng lên nhau.'
+                    : 'Việc trong ngày là bản ghi đã-làm-gì — không deadline, không cảnh báo.'}
               </span>
+              {liveClashes.length > 0 && (
+                <span className="small" style={{ color: 'var(--warn, #d29922)' }}>
+                  ⚠ Đè khung giờ của {new Set(liveClashes.map((c) => c.task.id)).size} việc khác trong ngày — vẫn lưu được, sẽ hỏi xác nhận.
+                </span>
+              )}
             </div>
           ) : (
           <>
@@ -543,12 +636,40 @@ function TaskForm({ initial, startDate, projects, busy, err, onSave, onClose }: 
         {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap' }}>{err}</pre>}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
           <button className="ghost sm" onClick={onClose} disabled={busy}>Hủy</button>
-          <button className="sm" onClick={submit}
-            disabled={busy || !name.trim() || !start || spanBad || (kind === 'daily' && (!startTime || !endTime))}>
+          <button className="sm" onClick={trySubmit}
+            disabled={busy || !name.trim() || !start || spanBad || slotMissing}>
             {busy ? <span className="spinner" aria-hidden /> : '💾'} Lưu
           </button>
         </div>
       </div>
+
+      {/* XÁC NHẬN khi đè khung giờ của việc khác cùng ngày — không chặn (làm
+          song song hai việc là chuyện có thật), chỉ bắt đọc lại trước khi lưu. */}
+      {clashes && (
+        <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget && !busy) setClashes(null); }}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(520px, 94vw)' }}>
+            <h3 style={{ marginTop: 0 }}>⚠ Trùng khung giờ</h3>
+            <p className="small">
+              Ngày <b>{start.split('-').reverse().join('/')}</b>, khung giờ của việc này đè lên việc khác:
+            </p>
+            <ul className="small" style={{ lineHeight: 1.9, maxHeight: 260, overflow: 'auto' }}>
+              {clashes.map((c, i) => (
+                <li key={i}>
+                  <code>{c.mine.start} → {c.mine.end}</code> đè <code>{c.theirs.start} → {c.theirs.end}</code> của <b>{c.task.name}</b>
+                  {c.task.project ? <span style={{ color: 'var(--muted)' }}> ({c.task.project})</span> : null}
+                </li>
+              ))}
+            </ul>
+            <p className="small" style={{ color: 'var(--muted)' }}>Vẫn lưu với khung giờ như hiện tại?</p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button className="ghost sm" onClick={() => setClashes(null)} disabled={busy}>Quay lại sửa</button>
+              <button className="sm" onClick={submit} disabled={busy} autoFocus>
+                {busy ? <span className="spinner" aria-hidden /> : '💾'} Vẫn lưu
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -576,9 +697,11 @@ const MOVE_MODES: { key: MoveMode; label: string; hint: string }[] = [
  * fromDate — xem comment tại chỗ tính `delta`.
  */
 function MoveTaskPopup({
-  task, fromDate, toDate, at, busy, onCancel, onSave,
+  task, tasks, fromDate, toDate, at, busy, onCancel, onSave,
 }: {
   task: WorkTask;
+  /** Toàn bộ task đang có — để dò trùng khung giờ ở ngày đích. */
+  tasks: WorkTask[];
   fromDate: string;
   toDate: string;
   at: { x: number; y: number };
@@ -587,9 +710,12 @@ function MoveTaskPopup({
   onSave: (patch: Partial<WorkTask>) => void;
 }) {
   const isDaily = task.kind === 'daily';
+  /** Nhiều khung giờ thì popup chỉ đổi NGÀY, giữ nguyên các khung (sửa giờ → mở form đầy đủ). */
+  const taskSlots = slotsOf(task);
+  const multi = taskSlots.length > 1;
   const [mode, setMode] = useState<MoveMode>('block');
-  const [startTime, setStartTime] = useState(task.startTime ?? '');
-  const [endTime, setEndTime] = useState(task.endTime ?? '');
+  const [startTime, setStartTime] = useState(taskSlots[0]?.start ?? '');
+  const [endTime, setEndTime] = useState(taskSlots[0]?.end ?? '');
   const [dlTime, setDlTime] = useState(task.dlTime ?? '');
 
   // Ngày kết quả theo chế độ đang chọn — vừa để xem trước, vừa là thứ đem lưu.
@@ -606,12 +732,30 @@ function MoveTaskPopup({
 
   // sanitize() bên server cũng chặn, nhưng báo trước ngay đây thì đỡ mất công.
   const spanBad = !isDaily && !!next.dlDate && next.dlDate < next.startDate;
-  const timeBad = isDaily && (!startTime || !endTime);
+  const timeBad = isDaily && !multi && (!startTime || !endTime || endTime <= startTime);
+
+  /** Khung giờ sẽ lưu — cũng là thứ đem dò trùng ở ngày đích. */
+  const nextSlots = useMemo(
+    () => (multi ? taskSlots : [{ start: startTime, end: endTime }]),
+    // taskSlots đổi tham chiếu mỗi render khi đi qua fallback của slotsOf — bám theo task.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [multi, task, startTime, endTime],
+  );
+  /** Đè giờ việc khác ở ngày đích — cùng luật với form (findClashes). */
+  const clashes = useMemo(
+    () => (isDaily && !timeBad ? findClashes(nextSlots, next.startDate, tasks, task.id) : []),
+    [isDaily, timeBad, nextSlots, next.startDate, tasks, task.id],
+  );
+  /** Đã bấm Lưu một lần khi đang đè giờ → lần bấm sau (hoặc Enter) mới lưu thật. */
+  const [confirming, setConfirming] = useState(false);
+  // Sửa giờ thì kết quả dò trùng đổi — phải xác nhận lại theo giờ mới.
+  useEffect(() => { setConfirming(false); }, [clashes]);
 
   const submit = () => {
     if (busy || spanBad || timeBad) return;
+    if (clashes.length > 0 && !confirming) { setConfirming(true); return; }
     onSave(isDaily
-      ? { startDate: next.startDate, startTime, endTime }
+      ? { startDate: next.startDate, slots: nextSlots }
       : { startDate: next.startDate, dlDate: next.dlDate, dlTime: dlTime || null });
   };
 
@@ -631,7 +775,7 @@ function MoveTaskPopup({
 
   // Kẹp trong viewport để popup không rơi ra ngoài khi thả sát mép phải/dưới.
   const W = 268;
-  const H = isDaily ? 190 : 290;
+  const H = (isDaily ? 190 : 290) + (clashes.length ? 40 + Math.min(clashes.length, 4) * 18 : 0);
   const left = Math.max(8, Math.min(at.x + 12, window.innerWidth - W - 8));
   const top = Math.max(8, Math.min(at.y + 12, window.innerHeight - H - 8));
 
@@ -650,7 +794,11 @@ function MoveTaskPopup({
           <span className="wk-move-to">{dShort(toDate)}</span>
         </div>
 
-        {isDaily ? (
+        {isDaily && multi ? (
+          <div className="wk-move-preview">
+            Giữ nguyên {taskSlots.length} khung giờ: <b>{fmtSlots(taskSlots)}</b>
+          </div>
+        ) : isDaily ? (
           <div className="wk-move-times">
             <label className="wk-field"><span>Giờ bắt đầu</span>
               <input className="input" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
@@ -684,12 +832,26 @@ function MoveTaskPopup({
         )}
 
         {spanBad && <div className="wk-move-err">Deadline không được trước ngày bắt đầu.</div>}
-        {timeBad && <div className="wk-move-err">Việc trong ngày cần đủ giờ bắt đầu và kết thúc.</div>}
+        {timeBad && <div className="wk-move-err">Việc trong ngày cần đủ giờ bắt đầu và kết thúc (kết thúc sau bắt đầu).</div>}
+        {/* Đè giờ việc khác ở ngày đích — không chặn, chỉ bắt bấm Lưu lần hai để xác nhận. */}
+        {clashes.length > 0 && (
+          <div className="wk-move-warn">
+            <b>⚠ Đè khung giờ ngày {dShort(next.startDate)}:</b>
+            <ul>
+              {clashes.map((c, i) => (
+                <li key={i} title={c.task.name}>
+                  {c.mine.start}–{c.mine.end} đè {c.theirs.start}–{c.theirs.end} · <b>{c.task.name}</b>
+                </li>
+              ))}
+            </ul>
+            {confirming && <div>Bấm <b>Vẫn lưu</b> (hoặc Enter) để xác nhận.</div>}
+          </div>
+        )}
 
         <div className="wk-move-actions">
           <button className="ghost sm" onClick={onCancel} disabled={busy}>Hủy</button>
           <button className="primary sm" onClick={submit} disabled={busy || spanBad || timeBad}>
-            {busy ? <span className="spinner" aria-hidden /> : '💾'} Lưu
+            {busy ? <span className="spinner" aria-hidden /> : '💾'} {confirming ? 'Vẫn lưu' : 'Lưu'}
           </button>
         </div>
       </div>
@@ -950,7 +1112,7 @@ export default function WorkWorkspace() {
         id: t.id,
         kind: t.kind, project: t.project, name: t.name, desc: t.desc,
         priority: t.priority, tags: t.tags, status: t.status,
-        startDate: t.startDate, startTime: t.startTime, endTime: t.endTime,
+        startDate: t.startDate, slots: slotsOf(t),
         dlDate: t.dlDate, dlTime: t.dlTime, alert: t.alert,
         ...patch,
       });
@@ -1067,8 +1229,8 @@ export default function WorkWorkspace() {
           {t.desc && <div className="wk-task-desc">{t.desc}</div>}
           <div className="wk-task-meta">
             {t.kind === 'daily' && fmtSpan(t) && (
-              <span className="wk-span" title={`Việc trong ngày ${t.startDate.split('-').reverse().join('/')} · ${durText(t.startTime!, t.endTime!)}`}>
-                🕘 {fmtSpan(t)} {durText(t.startTime!, t.endTime!)}
+              <span className="wk-span" title={`Việc trong ngày ${t.startDate.split('-').reverse().join('/')} · ${durText(slotsOf(t))}`}>
+                🕘 {fmtSpan(t)} {durText(slotsOf(t))}
               </span>
             )}
             {t.dlDate && (
@@ -1406,6 +1568,7 @@ export default function WorkWorkspace() {
           initial={form.task}
           startDate={selDate}
           projects={projects}
+          tasks={tasks}
           busy={busy}
           err={formErr}
           onSave={(f) => void saveTask(f)}
@@ -1439,6 +1602,7 @@ export default function WorkWorkspace() {
       {move && (
         <MoveTaskPopup
           task={move.task}
+          tasks={tasks}
           fromDate={move.fromDate}
           toDate={move.toDate}
           at={move.at}
