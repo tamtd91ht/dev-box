@@ -4,6 +4,7 @@
 // header/query cho API key). Giá trị dùng được {{biến}} như mọi nơi khác.
 
 import type { ApiAuth, ApiAuthType } from '@/lib/api';
+import VarInput from './VarInput';
 
 const TYPES: { key: ApiAuthType; label: string }[] = [
   { key: 'none', label: 'Không' },
@@ -34,28 +35,28 @@ export default function AuthPanel({ auth, onChange }: { auth: ApiAuth | undefine
       {a.type === 'bearer' && (
         <div className="api-auth-grid">
           <label>Token</label>
-          <input className="input" placeholder="{{token}} hoặc dán token" value={a.token ?? ''}
-            onChange={(e) => set({ token: e.target.value })} />
+          <VarInput className="input" placeholder="{{token}} hoặc dán token" value={a.token ?? ''}
+            onChange={(v) => set({ token: v })} />
         </div>
       )}
 
       {a.type === 'basic' && (
         <div className="api-auth-grid">
           <label>Username</label>
-          <input className="input" value={a.user ?? ''} onChange={(e) => set({ user: e.target.value })} />
+          <VarInput className="input" value={a.user ?? ''} onChange={(v) => set({ user: v })} />
           <label>Password</label>
-          <input className="input" type="password" value={a.pass ?? ''} onChange={(e) => set({ pass: e.target.value })} />
+          <VarInput className="input" type="password" value={a.pass ?? ''} onChange={(v) => set({ pass: v })} />
         </div>
       )}
 
       {a.type === 'apikey' && (
         <div className="api-auth-grid">
           <label>Key</label>
-          <input className="input" placeholder="vd: X-API-Key" value={a.keyName ?? ''}
-            onChange={(e) => set({ keyName: e.target.value })} />
+          <VarInput className="input" placeholder="vd: X-API-Key" value={a.keyName ?? ''}
+            onChange={(v) => set({ keyName: v })} />
           <label>Value</label>
-          <input className="input" placeholder="{{apiKey}}" value={a.keyValue ?? ''}
-            onChange={(e) => set({ keyValue: e.target.value })} />
+          <VarInput className="input" placeholder="{{apiKey}}" value={a.keyValue ?? ''}
+            onChange={(v) => set({ keyValue: v })} />
           <label>Đặt ở</label>
           <select className="input" value={a.keyIn ?? 'header'} onChange={(e) => set({ keyIn: e.target.value as 'header' | 'query' })}>
             <option value="header">Header</option>

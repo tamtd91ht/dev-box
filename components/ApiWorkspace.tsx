@@ -36,6 +36,7 @@ import ResponsePane, { type ResTab } from './api/ResponsePane';
 import AuthPanel from './api/AuthPanel';
 import KvTable from './api/KvTable';
 import VarsModal from './api/VarsModal';
+import VarInput, { VarSuggestProvider } from './api/VarInput';
 import HistoryPopover from './api/HistoryPopover';
 import SendOptsPopover from './api/SendOptsPopover';
 import CollectionRail, { allFolderPaths } from './api/CollectionRail';
@@ -139,9 +140,10 @@ export default function ApiWorkspace() {
   const [activeKey, setActiveKey] = useState<string>(() => '');
   /** Hộp "View curl": xem lệnh curl của request đang dựng. */
   const [curlView, setCurlView] = useState(false);
-  /** Thay {{var}} bằng giá trị thật trong curl (mặc định giữ nguyên {{var}} —
-   *  không để lộ token ra màn hình/clipboard nếu người dùng không chủ ý). */
-  const [curlResolve, setCurlResolve] = useState(false);
+  /** Thay {{var}} bằng giá trị thật trong curl — MẶC ĐỊNH BẬT: lệnh curl là để
+   *  chạy được ngay (giá trị theo name đang chọn), giống ⧉ Copy curl. Bỏ tick
+   *  khi cần xem/chép bản còn nguyên {{var}} (vd chia sẻ mà không lộ token). */
+  const [curlResolve, setCurlResolve] = useState(true);
   /** Menu ⋯ / chuột phải của một request ở rail (toạ độ fixed). */
   const [railMenu, setRailMenu] = useState<{ x: number; y: number; req: ApiRequest } | null>(null);
   /** Menu ⋯ / chuột phải của một THƯ MỤC ở rail. */
@@ -315,6 +317,12 @@ export default function ApiWorkspace() {
     );
     return names.filter((n) => !(n in vars));
   }, [draft, vars]);
+
+  /** Nguồn gợi ý cho mọi ô VarInput (gõ {{, bôi đen biến, chuột phải). */
+  const varSuggest = useMemo(
+    () => ({ vars, onManage: () => setVarsOpen({ scope: project }) }),
+    [vars, project],
+  );
 
   /** URL sau khi thay biến — hiện dưới ô URL để thấy biến map ra gì. */
   const resolvedUrl = useMemo(() => (draft.url.includes('{{') ? resolveVars(draft.url, vars) : ''), [draft.url, vars]);
@@ -672,6 +680,7 @@ export default function ApiWorkspace() {
   }, [draft.body, draft.bodyType]);
 
   return (
+    <VarSuggestProvider value={varSuggest}>
     <div className="panel sheet-panel">
       <div className="api-root" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
         {/* ── Rail: collection + environment (thu gọn được) ── */}
@@ -729,9 +738,9 @@ export default function ApiWorkspace() {
               onChange={(e) => setDraft({ ...draft, method: e.target.value })}>
               {METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            <input className="input" style={{ flex: 1, minWidth: 160 }}
-              placeholder="https://… (dùng {{var}}) — hoặc dán thẳng lệnh curl vào đây"
-              value={draft.url} onChange={(e) => setUrl(e.target.value)}
+            <VarInput className="input" style={{ flex: 1, minWidth: 160 }}
+              placeholder="https://… (gõ {{ để chèn biến) — hoặc dán thẳng lệnh curl vào đây"
+              value={draft.url} onChange={setUrl}
               onPaste={onUrlPaste}
               onKeyDown={(e) => e.key === 'Enter' && void send()} />
             {sending
@@ -813,8 +822,8 @@ export default function ApiWorkspace() {
                 {draft.headers.map((h, i) => (
                   <div key={i} className="api-kv-row">
                     <input type="checkbox" checked={h.on !== false} onChange={(e) => setHeader(i, { on: e.target.checked })} />
-                    <input className="input" placeholder="Header" value={h.key} onChange={(e) => setHeader(i, { key: e.target.value })} />
-                    <input className="input" placeholder="Value" value={h.value} onChange={(e) => setHeader(i, { value: e.target.value })} />
+                    <VarInput className="input" placeholder="Header" value={h.key} onChange={(v) => setHeader(i, { key: v })} />
+                    <VarInput className="input" placeholder="Value" value={h.value} onChange={(v) => setHeader(i, { value: v })} />
                     <button className="ghost sm" onClick={() => rmHeader(i)}>✕</button>
                   </div>
                 ))}
@@ -823,9 +832,9 @@ export default function ApiWorkspace() {
             )}
             {tab === 'params' && (
               <div>
-                <KvTable rows={paramRows} onChange={setParamRows} keyPlaceholder="Param" valuePlaceholder="Value" addLabel="＋ Thêm param" />
+                <KvTable rows={paramRows} onChange={setParamRows} keyPlaceholder="Param" valuePlaceholder="Value" addLabel="＋ Thêm param" withVars />
                 <p className="small" style={{ color: 'var(--muted)', margin: '2px 4px 6px' }}>
-                  Đồng bộ hai chiều với URL. Bỏ tick một dòng để tắt tạm (không gửi nhưng vẫn giữ). Hỗ trợ <code>{'{{var}}'}</code>.
+                  Đồng bộ hai chiều với URL. Bỏ tick một dòng để tắt tạm (không gửi nhưng vẫn giữ). Hỗ trợ <code>{'{{var}}'}</code> — gõ <code>{'{{'}</code> để gợi ý, bôi đen / chuột phải vào biến để đổi sang biến khác.
                 </p>
               </div>
             )}
@@ -873,8 +882,8 @@ export default function ApiWorkspace() {
                       <div key={i} className="api-kv-row">
                         <input type="checkbox" checked={f.on !== false}
                           onChange={(e) => setField(i, { on: e.target.checked })} />
-                        <input className="input" placeholder="Key" value={f.key}
-                          onChange={(e) => setField(i, { key: e.target.value })} />
+                        <VarInput className="input" placeholder="Key" value={f.key}
+                          onChange={(v) => setField(i, { key: v })} />
                         {f.kind === 'file' ? (
                           <label className="api-file">
                             <input type="file" hidden
@@ -887,8 +896,8 @@ export default function ApiWorkspace() {
                               : <span className="api-file-name">📎 Chọn file…</span>}
                           </label>
                         ) : (
-                          <input className="input" placeholder="Value" value={f.value}
-                            onChange={(e) => setField(i, { value: e.target.value })} />
+                          <VarInput className="input" placeholder="Value" value={f.value}
+                            onChange={(v) => setField(i, { value: v })} />
                         )}
                         {/* Chuyển text ↔ file. Chỉ multipart mới mang được file,
                             urlencoded thì nút này không có nghĩa. */}
@@ -922,6 +931,7 @@ export default function ApiWorkspace() {
                         value={draft.body}
                         onChange={(v) => setDraft({ ...draft, body: v })}
                         language={looksLikeJson(draft.body) || !draft.body.trim() ? 'json' : 'plaintext'}
+                        vars={vars}
                         height="100%"
                         placeholder={'{ "key": "{{value}}" }'}
                         onSubmit={() => void send()}
@@ -1129,6 +1139,7 @@ export default function ApiWorkspace() {
         />
       )}
     </div>
+    </VarSuggestProvider>
   );
 }
 

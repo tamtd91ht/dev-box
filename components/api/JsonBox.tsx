@@ -17,8 +17,10 @@
 
 import '@/lib/monacoSetup'; // Monaco local /monaco/vs — phải config trước init đầu
 import Editor, { type Monaco } from '@monaco-editor/react';
-import type { editor } from 'monaco-editor';
+import type { editor, languages, Position } from 'monaco-editor';
 import { useEffect, useRef, useState } from 'react';
+import { DYNAMIC_VARS } from '@/lib/apiVars';
+import { tokenAt } from './VarInput';
 
 const MONO = 'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace';
 
@@ -55,6 +57,58 @@ function defineApiThemes(monaco: Monaco): void {
   });
 }
 
+// ── Gợi ý biến {{…}} trong ô body ───────────────────────────────────────────
+//
+// Provider đăng ký MỘT lần cho mỗi instance monaco, áp cho mọi model json/
+// plaintext — nên phải tự lọc: chỉ model nằm trong bảng này (ô body đang soạn,
+// có truyền `vars`) mới được gợi ý; ô xem response thì không.
+const modelVars = new Map<string, { current: Record<string, string> }>();
+const varsReady = new WeakSet<object>();
+
+function registerVarCompletion(monaco: Monaco): void {
+  if (varsReady.has(monaco)) return;
+  varsReady.add(monaco);
+  for (const lang of ['json', 'plaintext']) {
+    monaco.languages.registerCompletionItemProvider(lang, {
+      triggerCharacters: ['{'],
+      provideCompletionItems(model: editor.ITextModel, pos: Position, context: languages.CompletionContext) {
+        const ref = modelVars.get(model.uri.toString());
+        if (!ref) return { suggestions: [] };
+        const line = model.getLineContent(pos.lineNumber);
+        const m = /\{\{\s*([\w.$-]*)$/.exec(line.slice(0, pos.column - 1));
+        if (!m) return { suggestions: [] };
+        // Nuốt luôn phần tên còn lại + `}}` sau con trỏ: chọn biến là THAY cả
+        // token (JSON tự đóng ngoặc nên gõ `{{` thường đã có sẵn `}}` phía sau).
+        const tail = /^([\w.$-]*)(\s*\}\})?/.exec(line.slice(pos.column - 1));
+        const range = {
+          startLineNumber: pos.lineNumber, endLineNumber: pos.lineNumber,
+          startColumn: pos.column - m[1].length,
+          endColumn: pos.column + (tail?.[0].length ?? 0),
+        };
+        const current = m[1] + (tail?.[1] ?? '');
+        // Gọi TAY (Ctrl+Space, menu chuột phải, bôi đen) trên một biến đã đủ
+        // `{{…}}` = muốn ĐỔI biến → hiện hết, không lọc theo tên đang có.
+        const swap = context.triggerKind === monaco.languages.CompletionTriggerKind.Invoke && !!tail?.[2] && !!current;
+        const mk = (name: string, detail: string, group: string) => ({
+          label: name,
+          kind: monaco.languages.CompletionItemKind.Variable,
+          insertText: `${name}}}`,
+          range,
+          detail,
+          sortText: `${name === current ? '0' : group}${name}`,
+          filterText: swap ? m[1] + name : name,
+        });
+        return {
+          suggestions: [
+            ...Object.entries(ref.current).map(([k, v]) => mk(k, v || '(rỗng)', '1')),
+            ...Object.entries(DYNAMIC_VARS).map(([k, d]) => mk(k, d.desc, '2')),
+          ],
+        };
+      },
+    });
+  }
+}
+
 /** Theo theme app (html[data-theme]) — đổi theme là editor đổi theo. */
 function useApiTheme(): string {
   const [dark, setDark] = useState(true);
@@ -83,10 +137,12 @@ export interface JsonBoxProps {
   onSubmit?: () => void;
   /** Nhận editor sau khi mount — để nút ngoài (🔍 tìm) gọi được action của Monaco. */
   onEditor?: (ed: editor.IStandaloneCodeEditor) => void;
+  /** Có = ô soạn có gợi ý biến: gõ `{{`, bôi đen một biến để đổi, chuột phải → Chèn / đổi biến. */
+  vars?: Record<string, string>;
 }
 
 export default function JsonBox({
-  value, onChange, path, language = 'json', height, placeholder, onSubmit, onEditor,
+  value, onChange, path, language = 'json', height, placeholder, onSubmit, onEditor, vars,
 }: JsonBoxProps) {
   const theme = useApiTheme();
   // Giữ callback mới nhất trong ref: addCommand chỉ chạy lúc mount nên nó đóng
@@ -95,6 +151,20 @@ export default function JsonBox({
   const submitRef = useRef(onSubmit);
   submitRef.current = onSubmit;
 
+  // Biến mới nhất cho provider (đọc qua ref, không phải đăng ký lại).
+  const varsRef = useRef(vars ?? {});
+  varsRef.current = vars ?? {};
+  const [ed, setEd] = useState<editor.IStandaloneCodeEditor | null>(null);
+  // Đổi tab request = Editor đổi MODEL ngay trong cùng instance (theo `path`),
+  // nên đăng ký theo uri của model hiện tại, chạy lại mỗi khi path đổi.
+  const withVars = !!vars;
+  useEffect(() => {
+    const uri = ed?.getModel()?.uri.toString();
+    if (!uri || !withVars) return;
+    modelVars.set(uri, varsRef);
+    return () => { modelVars.delete(uri); };
+  }, [ed, path, withVars]);
+
   return (
     <Editor
       path={path}
@@ -102,10 +172,53 @@ export default function JsonBox({
       theme={theme}
       value={value}
       onChange={onChange ? (v) => onChange(v ?? '') : undefined}
-      beforeMount={defineApiThemes}
-      onMount={(ed: editor.IStandaloneCodeEditor, monaco: Monaco) => {
-        ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => submitRef.current?.());
-        onEditor?.(ed);
+      beforeMount={(monaco) => { defineApiThemes(monaco); registerVarCompletion(monaco); }}
+      onMount={(e: editor.IStandaloneCodeEditor, monaco: Monaco) => {
+        e.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => submitRef.current?.());
+        if (withVars) {
+          // Mục chuột phải: đứng trong một biến → đổi; ngoài → chèn `{{}}` rồi gợi ý.
+          e.addAction({
+            id: 'api.vars',
+            label: 'Chèn / đổi biến {{…}}',
+            contextMenuGroupId: 'navigation',
+            contextMenuOrder: 0,
+            run: (x) => {
+              const model = x.getModel();
+              const pos = x.getPosition();
+              if (!model || !pos) return;
+              const line = model.getLineContent(pos.lineNumber);
+              const tok = tokenAt(line, pos.column - 1, pos.column - 1);
+              if (tok) {
+                x.setPosition({ lineNumber: pos.lineNumber, column: tok.nameEnd + 1 });
+              } else {
+                const sel = x.getSelection();
+                if (sel) x.executeEdits('api.vars', [{ range: sel, text: '{{}}' }]);
+                const p2 = x.getPosition();
+                if (p2) x.setPosition({ lineNumber: p2.lineNumber, column: p2.column - 2 });
+              }
+              x.trigger('api.vars', 'editor.action.triggerSuggest', {});
+            },
+          });
+          // Bôi đen (một phần) một biến → mời đổi biến luôn, như ô một dòng.
+          e.onDidChangeCursorSelection((ev) => {
+            const s = ev.selection;
+            if (s.isEmpty() || s.startLineNumber !== s.endLineNumber || ev.source === 'api') return;
+            const model = e.getModel();
+            if (!model) return;
+            const line = model.getLineContent(s.startLineNumber);
+            const tok = tokenAt(line, s.startColumn - 1, s.endColumn - 1);
+            if (!tok || !tok.name) return;
+            // Đặt con trỏ ngay cuối tên rồi gọi gợi ý: provider thấy `{{tên|}}`
+            // và trả về đủ danh sách, chọn mục nào là thay cả token.
+            e.setSelection({
+              startLineNumber: s.startLineNumber, endLineNumber: s.startLineNumber,
+              startColumn: tok.nameEnd + 1, endColumn: tok.nameEnd + 1,
+            }, 'api');
+            e.trigger('api.vars', 'editor.action.triggerSuggest', {});
+          });
+        }
+        setEd(e);
+        onEditor?.(e);
       }}
       loading={<span className="spinner" aria-hidden />}
       height={height}
