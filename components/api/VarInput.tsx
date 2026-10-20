@@ -5,6 +5,8 @@
 //
 // Ba cách mở danh sách biến, cùng MỘT popup:
 //   · Gõ `{{`            → gợi ý, gõ tiếp để lọc; Enter/Tab chọn, Esc đóng.
+//                          `{{#auth` = chỉ biến có tag auth; chip tag ở đầu
+//                          popup cũng lọc được.
 //   · Bôi đen một biến   → (kéo chuột hoặc double-click vào tên) popup "Đổi
 //                          {{x}} thành…" — chọn là thay cả token, khỏi gõ lại.
 //   · Chuột phải / Ctrl+Space → đứng trong một biến thì đổi biến đó, đứng ngoài
@@ -16,11 +18,14 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { DYNAMIC_VARS } from '@/lib/apiVars';
+import { DYNAMIC_VARS, type VarInfo } from '@/lib/apiVars';
+import { TagChip } from './TagEditor';
 
 export interface VarSuggest {
-  /** Biến hiệu lực của request đang xem (đã chọn theo name đang dùng). */
+  /** Biến hiệu lực của request đang xem (giá trị đang dùng của từng biến). */
   vars: Record<string, string>;
+  /** Chi tiết từng biến (nhãn đang dùng, số giá trị, tag) — để hiện + lọc theo tag. */
+  info?: Record<string, VarInfo>;
   /** Mở hộp quản lý biến (mục cuối popup). */
   onManage?: () => void;
 }
@@ -52,11 +57,18 @@ export function tokenAt(text: string, s: number, e: number): Token | null {
 
 /** `{{abc` đang gõ dở ngay trước con trỏ → vị trí `{{` + phần đã gõ. */
 function typingAt(text: string, caret: number): { start: number; query: string } | null {
-  const m = /\{\{\s*([\w.$-]*)$/.exec(text.slice(0, caret));
+  const m = /\{\{\s*(#?[\w.$-]*)$/.exec(text.slice(0, caret));
   return m ? { start: caret - m[0].length, query: m[1] } : null;
 }
 
-interface Item { name: string; value: string; dynamic: boolean }
+interface Item {
+  name: string;
+  value: string;
+  dynamic: boolean;
+  /** Nhãn giá trị đang dùng — chỉ hiện khi biến có nhiều giá trị. */
+  label?: string;
+  tags: string[];
+}
 
 type Mode =
   /** Thay [start, end) bằng `{{tên}}`. */
@@ -75,18 +87,37 @@ export default function VarInput({ value, onChange, onKeyDown, onBlur, ...rest }
   const ref = useRef<HTMLInputElement>(null);
   const [pop, setPop] = useState<PopState | null>(null);
   const [hi, setHi] = useState(0);
+  /** Chip tag đang chọn ở đầu popup (null = không lọc). */
+  const [tagPick, setTagPick] = useState<string | null>(null);
+
+  /** Mọi biến có thể chọn (chưa lọc) — biến khai trước, biến động sau. */
+  const pool = useMemo((): Item[] => {
+    if (!pop) return [];
+    const vars: Item[] = Object.entries(ctx?.vars ?? {}).map(([name, v]) => {
+      const i = ctx?.info?.[name];
+      return { name, value: v, dynamic: false, label: i && i.options.length > 1 ? i.pick || 'mặc định' : undefined, tags: i?.tags ?? [] };
+    });
+    const dyn = Object.entries(DYNAMIC_VARS).map(([name, d]) => ({ name, value: d.desc, dynamic: true, tags: [] }));
+    return [...vars.sort((a, b) => a.name.localeCompare(b.name)), ...dyn];
+  }, [pop, ctx?.vars, ctx?.info]);
+  const poolTags = useMemo(() => [...new Set(pool.flatMap((it) => it.tags))].sort((a, b) => a.localeCompare(b)), [pool]);
 
   const items = useMemo((): Item[] => {
-    if (!pop) return [];
-    const vars = Object.entries(ctx?.vars ?? {}).map(([name, v]) => ({ name, value: v, dynamic: false }));
-    const dyn = Object.entries(DYNAMIC_VARS).map(([name, d]) => ({ name, value: d.desc, dynamic: true }));
-    const all = [...vars.sort((a, b) => a.name.localeCompare(b.name)), ...dyn];
-    if (pop.mode.kind !== 'insert' || !pop.mode.query) return all;
-    const q = pop.mode.query.toLowerCase();
+    let all = tagPick ? pool.filter((it) => it.tags.includes(tagPick)) : pool;
+    const raw = pop?.mode.kind === 'insert' ? pop.mode.query.toLowerCase() : '';
+    if (!raw) return all;
+    // `#tag` = lọc theo tag (khớp đầu tag), biến động không có tag nên rơi hết.
+    if (raw.startsWith('#')) {
+      const t = raw.slice(1);
+      return all.filter((it) => it.tags.some((x) => x.toLowerCase().startsWith(t)));
+    }
     // Khớp đầu tên lên trước, khớp giữa tên xuống sau.
-    const hits = all.filter((it) => it.name.toLowerCase().includes(q));
-    return [...hits.filter((it) => it.name.toLowerCase().startsWith(q)), ...hits.filter((it) => !it.name.toLowerCase().startsWith(q))];
-  }, [pop, ctx?.vars]);
+    all = all.filter((it) => it.name.toLowerCase().includes(raw));
+    return [...all.filter((it) => it.name.toLowerCase().startsWith(raw)), ...all.filter((it) => !it.name.toLowerCase().startsWith(raw))];
+  }, [pool, pop, tagPick]);
+
+  // Đóng popup thì bỏ lọc tag — lần mở sau bắt đầu sạch.
+  useEffect(() => { if (!pop) setTagPick(null); }, [pop]);
 
   // Mở popup mới (hoặc đổi chế độ) thì đánh dấu sẵn biến hiện tại — đổi biến
   // thường là sang một biến "hàng xóm", mũi tên lên/xuống từ đó là gần nhất.
@@ -97,7 +128,7 @@ export default function VarInput({ value, onChange, onKeyDown, onBlur, ...rest }
     const i = cur ? items.findIndex((it) => it.name === cur) : -1;
     setHi(Math.max(0, i));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modeKey]);
+  }, [modeKey, tagPick]);
 
   /** Popup neo ngay dưới ô (gõ / bôi đen / Ctrl+Space). */
   const below = (): { x: number; y: number } => {
@@ -248,10 +279,18 @@ export default function VarInput({ value, onChange, onKeyDown, onBlur, ...rest }
             <div className="api-varpop-head">
               {pop.mode.kind === 'replace'
                 ? <>Đổi <code>{`{{${pop.mode.current}}}`}</code> thành…</>
+                : pop.mode.query.startsWith('#') ? <>Biến có tag “{pop.mode.query.slice(1)}”</>
                 : pop.mode.query ? <>Biến khớp “{pop.mode.query}”</> : 'Chèn biến'}
               <span style={{ flex: 1 }} />
-              <span className="api-varpop-key">↑↓ Enter · Esc</span>
+              <span className="api-varpop-key">↑↓ Enter · Esc · #tag</span>
             </div>
+            {poolTags.length > 0 && (
+              <div className="api-varpop-tags">
+                {poolTags.map((t) => (
+                  <TagChip key={t} tag={t} on={tagPick === t} onClick={() => setTagPick((p) => (p === t ? null : t))} />
+                ))}
+              </div>
+            )}
             <div className="api-varpop-list">
               {items.length === 0 && <div className="api-varpop-empty">Không có biến nào khớp.</div>}
               {items.map((it, i) => (
@@ -266,7 +305,9 @@ export default function VarInput({ value, onChange, onKeyDown, onBlur, ...rest }
                     title={it.dynamic ? it.value : `${it.name} = ${it.value}`}
                   >
                     <code>{`{{${it.name}}}`}</code>
+                    {it.label && <b className="api-varpop-label">{it.label}</b>}
                     <span className="api-varpop-val">{it.value || <i>(rỗng)</i>}</span>
+                    {it.tags.slice(0, 2).map((t) => <TagChip key={t} tag={t} />)}
                   </button>
                 </div>
               ))}

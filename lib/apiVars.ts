@@ -40,34 +40,74 @@ export function dynamicVar(name: string): string | null {
 
 const VAR_RE = /\{\{\s*(\$?[\w.-]+)\s*\}\}/g;
 
+/** Một tầng biến: phạm vi ('' = chung, hoặc đường dẫn thư mục) + biến + lựa chọn giá trị. */
+export interface VarLayer {
+  scope: string;
+  vars?: ApiVar[];
+  /** Tên biến → nhãn của giá trị đang dùng (ApiData.varPicks[scope]). */
+  picks?: Record<string, string>;
+}
+
+/** Một giá trị của biến: `label` = nhãn (cột Name cũ, vd dev/stg), '' = không nhãn. */
+export interface VarOption { label: string; value: string }
+
+/** Biến hiệu lực sau khi gộp tầng — đủ để hiện chip/gợi ý và đổi giá trị. */
+export interface VarInfo {
+  key: string;
+  /** Tầng đang cung cấp biến (đổi lựa chọn là ghi vào tầng này). */
+  scope: string;
+  options: VarOption[];
+  /** Nhãn đang dùng. */
+  pick: string;
+  value: string;
+  tags: string[];
+}
+
 /**
- * Gộp các tầng biến (chung → dự án, tầng sau ghi đè) thành bản đồ key → value.
- *
- * Trong MỘT tầng, cùng key có thể khai nhiều dòng với `name` khác nhau; chọn theo
- * `active`: dòng name = active, không có thì dòng không name, không có nữa thì dòng
- * đầu tiên. Tầng sau chỉ ghi đè khi nó có dòng bật cho key đó.
+ * Nhãn sẽ dùng của một biến: lựa chọn riêng của nó (nếu nhãn đó còn), không
+ * thì nhãn mặc định `fallback` (lần chuyển nhanh gần nhất), không thì giá trị
+ * không nhãn, không nữa thì giá trị đầu tiên.
  */
-export function buildVarMap(
-  layers: (ApiVar[] | undefined)[],
-  active = '',
-): Record<string, string> {
-  const out: Record<string, string> = {};
+export function pickLabel(options: VarOption[], pick: string | undefined, fallback = ''): string {
+  const has = (l: string) => options.some((o) => o.label === l);
+  if (pick !== undefined && has(pick)) return pick;
+  if (fallback && has(fallback)) return fallback;
+  if (has('')) return '';
+  return options[0]?.label ?? '';
+}
+
+/**
+ * Gộp các tầng (chung → thư mục cha → thư mục con, tầng sau ghi đè) thành biến
+ * hiệu lực. Trong MỘT tầng, cùng key khai nhiều dòng = nhiều giá trị có nhãn;
+ * MỖI BIẾN tự chọn giá trị đang dùng (VarLayer.picks). Dòng tắt không tính.
+ */
+export function resolveVarInfo(layers: VarLayer[], fallback = ''): Record<string, VarInfo> {
+  const out: Record<string, VarInfo> = {};
   for (const layer of layers) {
     const byKey = new Map<string, ApiVar[]>();
-    for (const v of layer ?? []) {
+    for (const v of layer.vars ?? []) {
       const k = v.key.trim();
       if (!k || v.on === false) continue;
       const list = byKey.get(k);
       if (list) list.push(v); else byKey.set(k, [v]);
     }
     for (const [k, rows] of byKey) {
-      const pick = (active ? rows.find((r) => (r.name ?? '') === active) : undefined)
-        ?? rows.find((r) => !(r.name ?? ''))
-        ?? rows[0];
-      out[k] = pick.value;
+      const options = rows.map((r) => ({ label: (r.name ?? '').trim(), value: r.value }));
+      const pick = pickLabel(options, layer.picks?.[k], fallback);
+      const tags = [...new Set(rows.flatMap((r) => r.tags ?? []))];
+      out[k] = {
+        key: k, scope: layer.scope, options, pick,
+        value: options.find((o) => o.label === pick)?.value ?? '',
+        tags,
+      };
     }
   }
   return out;
+}
+
+/** Bản đồ key → value để thay biến lúc gửi / dựng curl. */
+export function buildVarMap(layers: VarLayer[], fallback = ''): Record<string, string> {
+  return Object.fromEntries(Object.entries(resolveVarInfo(layers, fallback)).map(([k, i]) => [k, i.value]));
 }
 
 /** Mọi name đã dùng trong các tầng biến, theo thứ tự xuất hiện. */

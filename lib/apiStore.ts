@@ -25,7 +25,8 @@ export interface ApiFormField {
   fileType?: string;
 }
 
-export interface ApiVar { key: string; value: string; on?: boolean; name?: string }
+/** `tags` = nhãn tự gán để lọc/gom biến (vd auth, user, payment) — không ảnh hưởng lúc gửi. */
+export interface ApiVar { key: string; value: string; on?: boolean; name?: string; tags?: string[] }
 
 export interface ApiAuth {
   type: 'none' | 'bearer' | 'basic' | 'apikey';
@@ -69,9 +70,16 @@ interface ApiData {
   /** Cũ: giữ nguyên trong file, không còn dùng (xem globalVars). */
   environments: ApiEnvironment[];
   activeEnvId?: string;
+  /** Nhãn mặc định cho biến CHƯA có lựa chọn riêng (= nhãn lần "chuyển nhanh" gần nhất). */
   activeVarName?: string;
   globalVars: ApiVar[];
   projectVars: Record<string, ApiVar[]>;
+  /**
+   * Giá trị ĐANG DÙNG của từng biến: phạm vi ('' = chung, hoặc thư mục) → tên
+   * biến → nhãn của giá trị ('' = giá trị không nhãn). Mỗi biến tự chọn, không
+   * còn một ô name chung cho mọi biến. Lưu chung cho mọi request.
+   */
+  varPicks: Record<string, Record<string, string>>;
 }
 
 const REG_PATH = process.env.API_COLLECTIONS_PATH ? path.resolve(process.cwd(), process.env.API_COLLECTIONS_PATH) : configPath('apicollections.json', ['.apicollections.json']);
@@ -94,8 +102,9 @@ async function readAll(): Promise<ApiData> {
         ? d.globalVars
         : (legacy?.vars ?? []).map((v) => ({ key: v.key, value: v.value, on: true })),
       projectVars: d.projectVars && typeof d.projectVars === 'object' ? d.projectVars : {},
+      varPicks: cleanPicks(d.varPicks),
     };
-  } catch { return { requests: [], environments: [], globalVars: [], projectVars: {} }; }
+  } catch { return { requests: [], environments: [], globalVars: [], projectVars: {}, varPicks: {} }; }
 }
 async function writeAll(data: ApiData): Promise<void> {
   await fs.writeFile(REG_PATH, JSON.stringify(data, null, 2), 'utf8');
@@ -177,6 +186,78 @@ export async function setActiveVarName(name: unknown): Promise<ApiData> {
   return data;
 }
 
+/** varPicks sạch: chỉ giữ chuỗi → chuỗi, bỏ phạm vi rỗng. */
+function cleanPicks(raw: unknown): Record<string, Record<string, string>> {
+  const out: Record<string, Record<string, string>> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [scope, m] of Object.entries(raw as Record<string, unknown>)) {
+    const picks = cleanScopePicks(m);
+    if (Object.keys(picks).length) out[scope] = picks;
+  }
+  return out;
+}
+
+function cleanScopePicks(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (k.trim() && typeof v === 'string') out[k.trim()] = v.trim();
+  }
+  return out;
+}
+
+/** Ghi lựa chọn của MỘT phạm vi, bỏ khoá không còn biến nào (khỏi rác). */
+function putScopePicks(data: ApiData, scope: string, picks: unknown, vars: ApiVar[]): void {
+  const keys = new Set(vars.map((v) => v.key));
+  const clean = Object.fromEntries(Object.entries(cleanScopePicks(picks)).filter(([k]) => keys.has(k)));
+  if (Object.keys(clean).length) data.varPicks[scope] = clean;
+  else delete data.varPicks[scope];
+}
+
+/** Đổi giá trị đang dùng của MỘT biến (thanh chip của request). */
+export async function setVarPick(scopeRaw: unknown, keyRaw: unknown, labelRaw: unknown): Promise<ApiData> {
+  const scope = String(scopeRaw ?? '').trim();
+  const key = String(keyRaw ?? '').trim();
+  if (!key) throw new Error('Thiếu tên biến.');
+  const data = await readAll();
+  (data.varPicks[scope] ??= {})[key] = String(labelRaw ?? '').trim();
+  await writeAll(data);
+  return data;
+}
+
+/**
+ * CHUYỂN NHANH: mọi biến (mọi phạm vi) có giá trị mang nhãn `label` chuyển sang
+ * giá trị đó; biến không có nhãn này giữ nguyên lựa chọn. Nhãn cũng thành mặc
+ * định cho biến chưa từng được chọn riêng.
+ */
+export async function quickSwitchVars(labelRaw: unknown): Promise<ApiData> {
+  const label = String(labelRaw ?? '').trim();
+  const data = await readAll();
+  const scopes: [string, ApiVar[]][] = [['', data.globalVars], ...Object.entries(data.projectVars)];
+  for (const [scope, vars] of scopes) {
+    for (const v of vars) {
+      if (v.on !== false && (v.name ?? '') === label) (data.varPicks[scope] ??= {})[v.key] = label;
+    }
+  }
+  data.activeVarName = label || undefined;
+  await writeAll(data);
+  return data;
+}
+
+/** Tag sạch: trim, bỏ rỗng, bỏ trùng (không phân biệt hoa/thường), tối đa 10. */
+function cleanTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of tags) {
+    const s = String(t ?? '').trim().slice(0, 40);
+    if (!s || seen.has(s.toLowerCase())) continue;
+    seen.add(s.toLowerCase());
+    out.push(s);
+  }
+  return out.slice(0, 10);
+}
+
 /** Danh sách biến sạch: bỏ dòng không có key, trim key. */
 function cleanVars(vars: unknown): ApiVar[] {
   if (!Array.isArray(vars)) return [];
@@ -185,20 +266,26 @@ function cleanVars(vars: unknown): ApiVar[] {
     const key = String(v?.key ?? '').trim();
     if (!key) continue;
     const name = String(v?.name ?? '').trim();
-    out.push({ key, value: String(v?.value ?? ''), on: v?.on === false ? false : true, ...(name ? { name } : {}) });
+    const tags = cleanTags(v?.tags);
+    out.push({
+      key, value: String(v?.value ?? ''), on: v?.on === false ? false : true,
+      ...(name ? { name } : {}), ...(tags.length ? { tags } : {}),
+    });
   }
   return out;
 }
 
-export async function saveGlobals(vars: unknown): Promise<ApiData> {
+/** `picks` (tuỳ chọn) = lựa chọn giá trị của phạm vi này, ghi cùng lúc với biến. */
+export async function saveGlobals(vars: unknown, picks?: unknown): Promise<ApiData> {
   const data = await readAll();
   data.globalVars = cleanVars(vars);
+  if (picks !== undefined) putScopePicks(data, '', picks, data.globalVars);
   await writeAll(data);
   return data;
 }
 
 /** `project` rỗng không hợp lệ: biến chung có chỗ riêng của nó (saveGlobals). */
-export async function saveProjectVars(project: string, vars: unknown): Promise<ApiData> {
+export async function saveProjectVars(project: string, vars: unknown, picks?: unknown): Promise<ApiData> {
   const name = project.trim();
   if (!name) throw new Error('Thiếu tên dự án.');
   const data = await readAll();
@@ -206,6 +293,7 @@ export async function saveProjectVars(project: string, vars: unknown): Promise<A
   // Danh sách rỗng thì bỏ hẳn khoá — khỏi để lại mục mồ côi trong file.
   if (clean.length) data.projectVars[name] = clean;
   else delete data.projectVars[name];
+  if (picks !== undefined) putScopePicks(data, name, picks, clean);
   await writeAll(data);
   return data;
 }
@@ -308,6 +396,13 @@ export async function renameFolder(fromRaw: unknown, toRaw: unknown): Promise<Ap
     pv[nk] = pv[nk] ? mergeVars(pv[nk], v, false) : v;
   }
   data.projectVars = pv;
+  // Lựa chọn giá trị đi theo thư mục (trùng thì lựa chọn đang có ở đích thắng).
+  const picks: ApiData['varPicks'] = {};
+  for (const [k, m] of Object.entries(data.varPicks)) {
+    const nk = k === '' ? '' : move(k) ?? k;
+    picks[nk] = { ...m, ...picks[nk] };
+  }
+  data.varPicks = picks;
   await writeAll(data);
   return data;
 }

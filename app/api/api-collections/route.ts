@@ -6,7 +6,10 @@
 //     'saveEnv'      { ...ApiEnvironment } → ApiData
 //     'removeEnv'    { id }            → ApiData
 //     'setActiveEnv' { id | null }     → ApiData
-//     'setActiveVarName' { name }      → ApiData   (name đang dùng của biến)
+//     'setActiveVarName' { name }      → ApiData   (nhãn mặc định cho biến chưa chọn riêng)
+//     'setVarPick'   { scope, key, label } → ApiData (giá trị đang dùng của MỘT biến)
+//     'quickSwitchVars' { label }      → ApiData   (mọi biến có nhãn này chuyển sang nó)
+//     'saveGlobals' / 'saveProjectVars' nhận thêm { picks } — lựa chọn của phạm vi đó
 //     'saveGlobals'  { vars }          → ApiData   (biến chung)
 //     'saveProjectVars' { project, vars } → ApiData (biến theo dự án)
 //     'importBundle' { requests, projectVars?, globalVars?, mode, prefix } → { data, result }
@@ -16,6 +19,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import {
   getData, saveRequest, removeRequest, saveEnv, removeEnv, setActiveEnv, setActiveVarName, saveGlobals, saveProjectVars,
+  setVarPick, quickSwitchVars,
   importBundle, renameFolder,
 } from '@/lib/apiStore';
 
@@ -36,8 +40,10 @@ export async function POST(req: NextRequest) {
       case 'removeEnv': result = await removeEnv(String(body.id ?? '')); break;
       case 'setActiveEnv': result = await setActiveEnv((body.id as string) ?? null); break;
       case 'setActiveVarName': result = await setActiveVarName(body.name); break;
-      case 'saveGlobals': result = await saveGlobals(body.vars); break;
-      case 'saveProjectVars': result = await saveProjectVars(String(body.project ?? ''), body.vars); break;
+      case 'saveGlobals': result = await saveGlobals(body.vars, body.picks); break;
+      case 'saveProjectVars': result = await saveProjectVars(String(body.project ?? ''), body.vars, body.picks); break;
+      case 'setVarPick': result = await setVarPick(body.scope, body.key, body.label); break;
+      case 'quickSwitchVars': result = await quickSwitchVars(body.label); break;
       case 'importBundle': result = await importBundle(body as unknown as Parameters<typeof importBundle>[0]); break;
       case 'renameFolder': result = await renameFolder(body.from, body.to); break;
       default: return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });

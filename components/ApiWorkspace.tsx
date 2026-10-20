@@ -17,13 +17,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  apiGet, apiSaveRequest, apiRemoveRequest, apiSend, apiSetActiveVarName, apiRenameFolder,
+  apiGet, apiSaveRequest, apiRemoveRequest, apiSend, apiSetVarPick, apiQuickSwitchVars, apiRenameFolder,
   stripFiles, FILE_LIMIT,
   type ApiData, type ApiRequest, type ApiHeader, type HttpResult,
   type ApiBodyType, type ApiFormField, type ApiAuth, type ApiSendOpts,
 } from '@/lib/api';
 import { parseCurl, looksLikeCurl, buildCurl } from '@/lib/curlParse';
-import { resolveVars, findVarNames, buildVarMap, varNames, splitQuery, joinQuery, applyAuth } from '@/lib/apiVars';
+import {
+  resolveVars, findVarNames, buildVarMap, resolveVarInfo, varNames, splitQuery, joinQuery, applyAuth,
+  type VarLayer, type VarInfo,
+} from '@/lib/apiVars';
 import { pushHistory } from '@/lib/apiHistory';
 import { formatText } from '@/lib/format';
 import { looksLikeJson } from '@/lib/jsonEdit';
@@ -37,6 +40,7 @@ import AuthPanel from './api/AuthPanel';
 import KvTable from './api/KvTable';
 import VarsModal from './api/VarsModal';
 import VarInput, { VarSuggestProvider } from './api/VarInput';
+import VarChips, { QuickSwitch } from './api/VarChips';
 import HistoryPopover from './api/HistoryPopover';
 import SendOptsPopover from './api/SendOptsPopover';
 import CollectionRail, { allFolderPaths } from './api/CollectionRail';
@@ -154,8 +158,8 @@ export default function ApiWorkspace() {
   const [transfer, setTransfer] = useState<{ tab: 'export' | 'import'; scope: string } | null>(null);
   /** Hộp sửa tên/dự án của request đã lưu. */
   const [railEdit, setRailEdit] = useState<{ req: ApiRequest; name: string; folder: string } | null>(null);
-  /** Hộp quản lý biến: null = đóng; scope '' = biến chung, hoặc tên dự án. */
-  const [varsOpen, setVarsOpen] = useState<{ scope: string } | null>(null);
+  /** Hộp quản lý biến: null = đóng; scope '' = biến chung, hoặc tên dự án; key = mở sẵn biến đó. */
+  const [varsOpen, setVarsOpen] = useState<{ scope: string; key?: string } | null>(null);
   /** Tăng sau mỗi lần ghi lịch sử để popover đọc lại. */
   const [histVersion, setHistVersion] = useState(0);
   /** Request đang chạy theo tab — để nút Hủy cắt đúng cái cần cắt. */
@@ -292,36 +296,64 @@ export default function ApiWorkspace() {
   // biến dự án ghi đè khi trùng tên. Dòng bị tắt (on:false) không tính.
   // Thư mục lồng nhau ("admin/call-export") thừa kế biến của MỌI thư mục cha:
   // chung → admin → admin/call-export, lớp sâu hơn ghi đè lớp nông hơn.
+  //
+  // Biến nhiều giá trị (dev / stg…): MỖI BIẾN tự chọn giá trị đang dùng
+  // (data.varPicks, lưu chung cho mọi request). activeVarName chỉ còn là nhãn
+  // mặc định cho biến chưa được chọn riêng — tức nhãn của lần ⇄ chuyển nhanh.
   const project = (draft.folder ?? '').trim();
   const activeName = data.activeVarName ?? '';
-  const layersFor = useCallback((proj: string) => {
+  const layersFor = useCallback((proj: string): VarLayer[] => {
     const parts = proj.split('/').map((x) => x.trim()).filter(Boolean);
-    return [data.globalVars, ...parts.map((_, i) => data.projectVars?.[parts.slice(0, i + 1).join('/')])];
-  }, [data.globalVars, data.projectVars]);
+    const paths = parts.map((_, i) => parts.slice(0, i + 1).join('/'));
+    return [
+      { scope: '', vars: data.globalVars, picks: data.varPicks?.[''] },
+      ...paths.map((p) => ({ scope: p, vars: data.projectVars?.[p], picks: data.varPicks?.[p] })),
+    ];
+  }, [data.globalVars, data.projectVars, data.varPicks]);
   /** Biến hiệu lực của MỘT dự án — cũng dùng cho request ở rail (copy curl). */
   const varsFor = useCallback((proj: string) => buildVarMap(layersFor(proj), activeName), [layersFor, activeName]);
-  /** Các name có thể chọn: của biến chung + biến của dự án hiện tại (kể cả thư mục cha). */
-  const nameOptions = useMemo(() => varNames(layersFor(project)), [layersFor, project]);
-  const vars = useMemo(() => varsFor(project), [varsFor, project]);
+  /** Biến hiệu lực của request đang xem, kèm các giá trị + giá trị đang dùng (chip, gợi ý). */
+  const varInfo = useMemo(() => resolveVarInfo(layersFor(project), activeName), [layersFor, project, activeName]);
+  const vars = useMemo(
+    () => Object.fromEntries(Object.entries(varInfo).map(([k, i]) => [k, i.value])),
+    [varInfo],
+  );
   const envMap = vars; // tên cũ — phần còn lại của file vẫn gọi envMap
 
-  /** Biến request này dùng nhưng chưa khai ở đâu cả — để cảnh báo trước khi gửi. */
-  const missingVars = useMemo(() => {
+  /** Nhãn cho ⇄ chuyển nhanh: gom mọi phạm vi (chuyển nhanh áp cho mọi phạm vi). */
+  const allVarLayers = useMemo(() => [data.globalVars, ...Object.values(data.projectVars ?? {})], [data.globalVars, data.projectVars]);
+  const quickLabels = useMemo(() => varNames(allVarLayers), [allVarLayers]);
+  const quickCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const layer of allVarLayers) for (const v of layer ?? []) if (v.name && v.on !== false) c[v.name] = (c[v.name] ?? 0) + 1;
+    return c;
+  }, [allVarLayers]);
+
+  /** Biến request này dùng (theo thứ tự xuất hiện) — cho thanh chip. */
+  const usedVars = useMemo(() => {
     const a = draft.auth;
-    const names = findVarNames(
+    return findVarNames(
       draft.url,
       ...draft.headers.filter((h) => h.on !== false).flatMap((h) => [h.key, h.value]),
       draft.bodyType === 'raw' ? draft.body : undefined,
       ...(isFormType(draft.bodyType) ? draft.form.filter((f) => f.on !== false).flatMap((f) => [f.key, f.value]) : []),
-      a?.token, a?.user, a?.pass, a?.keyName, a?.keyValue,
+      ...(a && a.type !== 'none' ? [a.token, a.user, a.pass, a.keyName, a.keyValue] : []),
     );
-    return names.filter((n) => !(n in vars));
-  }, [draft, vars]);
+  }, [draft]);
+
+  /** Đổi giá trị đang dùng của một biến — lạc quan, rồi lấy bản của server. */
+  const pickVar = useCallback((info: VarInfo, label: string) => {
+    setData((d) => ({ ...d, varPicks: { ...d.varPicks, [info.scope]: { ...d.varPicks?.[info.scope], [info.key]: label } } }));
+    apiSetVarPick(info.scope, info.key, label).then(setData).catch((e) => setErr((e as Error).message));
+  }, [setErr]);
+  const quickSwitch = useCallback((label: string) => {
+    apiQuickSwitchVars(label).then(setData).catch((e) => setErr((e as Error).message));
+  }, [setErr]);
 
   /** Nguồn gợi ý cho mọi ô VarInput (gõ {{, bôi đen biến, chuột phải). */
   const varSuggest = useMemo(
-    () => ({ vars, onManage: () => setVarsOpen({ scope: project }) }),
-    [vars, project],
+    () => ({ vars, info: varInfo, onManage: () => setVarsOpen({ scope: project }) }),
+    [vars, varInfo, project],
   );
 
   /** URL sau khi thay biến — hiện dưới ô URL để thấy biến map ra gì. */
@@ -757,16 +789,18 @@ export default function ApiWorkspace() {
               title="Xem lệnh curl của request này">👁 View curl</button>
           </div>
 
-          {/* Biến map ra gì + biến nào còn thiếu — "map đúng" thấy ngay, không đợi
-              server trả 4xx rồi mới đoán. */}
-          {(missingVars.length > 0 || resolvedUrl) && (
+          {/* Biến của request: đổi giá trị từng biến ngay tại chỗ + biến nào còn
+              thiếu + URL map ra gì — "map đúng" thấy ngay, không đợi server trả
+              4xx rồi mới đoán. */}
+          {(usedVars.length > 0 || resolvedUrl) && (
             <div className="api-vline">
-              {missingVars.length > 0 && (
-                <button className="api-vwarn" onClick={() => setVarsOpen({ scope: project })}
-                  title="Bấm để khai biến">
-                  ⚠ Chưa có biến: {missingVars.map((n) => `{{${n}}}`).join(' ')}
-                </button>
-              )}
+              <VarChips
+                names={usedVars}
+                info={varInfo}
+                onPick={pickVar}
+                onEdit={(i) => setVarsOpen({ scope: i.scope, key: i.key })}
+                onMissing={(k) => setVarsOpen({ scope: project, key: k })}
+              />
               {resolvedUrl && <span className="api-vresolved" title={resolvedUrl}>→ {resolvedUrl}</span>}
             </div>
           )}
@@ -790,22 +824,8 @@ export default function ApiWorkspace() {
                     </button>
                   ))}
                   <span style={{ flex: 1 }} />
-                  {nameOptions.length > 0 && (
-                    <select className="input sm" value={activeName} style={{ width: 'auto' }}
-                      title="Name đang dùng — biến khai nhiều giá trị theo name sẽ lấy giá trị ứng với name này khi Send"
-                      onChange={(e) => {
-                        const n = e.target.value;
-                        setData((d) => ({ ...d, activeVarName: n || undefined }));
-                        void apiSetActiveVarName(n).then(setData).catch(() => {});
-                      }}>
-                      <option value="">(không name)</option>
-                      {nameOptions.map((n) => <option key={n} value={n}>{n}</option>)}
-                    </select>
-                  )}
-                  <button className="ghost sm" onClick={() => setVarsOpen({ scope: project })}
-                    title={project ? `Biến của dự án “${project}” + biến chung` : 'Biến chung (request chưa thuộc dự án nào)'}>
-                    🔣 {Object.keys(vars).length}{project ? ` · ${project}` : ''}
-                  </button>
+                  <QuickSwitch labels={quickLabels} counts={quickCounts} current={activeName} onSwitch={quickSwitch}
+                    onManage={() => setVarsOpen({ scope: project })} />
                   <span className="api-tools">
                     <button className="ghost sm" onClick={flipDir}
                       title={layout.dir === 'h' ? 'Đang xếp ngang (request trái · response phải) — bấm để xếp dọc' : 'Đang xếp dọc (request trên · response dưới) — bấm để xếp ngang'}>
@@ -1134,6 +1154,7 @@ export default function ApiWorkspace() {
           data={data}
           projects={allFolderPaths(data.requests)}
           initialScope={varsOpen.scope}
+          initialKey={varsOpen.key}
           onSaved={setData}
           onClose={() => setVarsOpen(null)}
         />

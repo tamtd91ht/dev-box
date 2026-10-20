@@ -1,6 +1,12 @@
 // Client helpers + types cho tab API (Postman-like). Browser-safe.
 
-export interface ApiHeader { key: string; value: string; on?: boolean; /** Chỉ dùng ở bảng Biến: nhãn (dev/stg…) để cùng một tên biến có nhiều giá trị. */ name?: string }
+export interface ApiHeader {
+  key: string; value: string; on?: boolean;
+  /** Chỉ dùng ở bảng Biến: nhãn (dev/stg…) để cùng một tên biến có nhiều giá trị. */
+  name?: string;
+  /** Chỉ dùng ở bảng Biến: tag tự gán để lọc. */
+  tags?: string[];
+}
 
 /**
  * Kiểu body, đặt tên theo đúng content-type sẽ gửi đi:
@@ -38,10 +44,14 @@ export interface ApiFormField {
   fileType?: string;
 }
 
-/** Một biến {{key}}. `on:false` = tắt tạm mà không phải xoá.
- *  `name` = nhãn của giá trị (vd "dev", "stg"): cùng `key` khai nhiều dòng với name khác nhau,
- *  lúc gửi lấy dòng có name = `activeVarName`. Để trống = dùng cho mọi name. */
-export interface ApiVar { key: string; value: string; on?: boolean; name?: string }
+/** Một GIÁ TRỊ của biến {{key}}. `on:false` = tắt tạm mà không phải xoá.
+ *  `name` = nhãn của giá trị (vd "dev", "stg", "user A"): cùng `key` khai nhiều dòng = biến có
+ *  nhiều giá trị; MỖI BIẾN tự chọn giá trị đang dùng (ApiData.varPicks). */
+export interface ApiVar {
+  key: string; value: string; on?: boolean; name?: string;
+  /** Tag tự gán (vd auth, user) — chỉ để lọc/gom trong bảng Biến và popup gợi ý. */
+  tags?: string[];
+}
 
 export type ApiAuthType = 'none' | 'bearer' | 'basic' | 'apikey';
 
@@ -96,8 +106,10 @@ export interface ApiData {
   /** Cũ — còn trong file để không mất dữ liệu, UI không dùng nữa (xem globalVars). */
   environments: ApiEnvironment[];
   activeEnvId?: string;
-  /** Name đang dùng để chọn giá trị biến khi gửi (xem ApiVar.name). Rỗng = chỉ dòng không name. */
+  /** Nhãn mặc định cho biến CHƯA chọn riêng (= nhãn lần chuyển nhanh gần nhất). */
   activeVarName?: string;
+  /** Giá trị đang dùng của từng biến: phạm vi ('' = chung) → tên biến → nhãn. */
+  varPicks?: Record<string, Record<string, string>>;
   /** Biến chung cho mọi dự án. */
   globalVars?: ApiVar[];
   /** Biến theo dự án (khoá = tên dự án = `folder` của request). Ghi đè biến chung. */
@@ -137,8 +149,11 @@ export const apiSaveEnv = (e: Partial<ApiEnvironment> & { name: string }) => sto
 export const apiRemoveEnv = (id: string) => store('removeEnv', { id });
 export const apiSetActiveEnv = (id: string | null) => store('setActiveEnv', { id });
 export const apiSetActiveVarName = (name: string) => store('setActiveVarName', { name });
-export const apiSaveGlobals = (vars: ApiVar[]) => store('saveGlobals', { vars });
-export const apiSaveProjectVars = (project: string, vars: ApiVar[]) => store('saveProjectVars', { project, vars });
+export const apiSaveGlobals = (vars: ApiVar[], picks?: Record<string, string>) => store('saveGlobals', { vars, picks });
+export const apiSaveProjectVars = (project: string, vars: ApiVar[], picks?: Record<string, string>) =>
+  store('saveProjectVars', { project, vars, picks });
+export const apiSetVarPick = (scope: string, key: string, label: string) => store('setVarPick', { scope, key, label });
+export const apiQuickSwitchVars = (label: string) => store('quickSwitchVars', { label });
 export type ApiImportMode = 'overwrite' | 'skip' | 'duplicate';
 export interface ApiImportResult { added: number; overwritten: number; skipped: number }
 export const apiImportBundle = (b: {
