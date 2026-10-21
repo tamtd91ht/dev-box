@@ -104,7 +104,7 @@ function evictIdle(now: number): void {
  * cluster gets a `Cluster` over the seed nodes (DB is always 0 in cluster mode).
  * One saved connection keeps a separate cached socket per db it has been used against.
  */
-function getClient(conn: RedisConnection, db = 0): AnyRedis {
+export function getClient(conn: RedisConnection, db = 0): AnyRedis {
   const now = Date.now();
   evictIdle(now);
   const eff = effectiveDb(conn, db);
@@ -167,15 +167,17 @@ export interface RedisNodeStats {
   systemMemoryBytes: number;
   connectedClients: number;
   opsPerSec: number;
-  /** keyspace hit rate percent since server start (null when no traffic). */
+  /** Hit rate GẦN ĐÂY (giữa hai lần đo) — chưa đủ số liệu thì bằng số cộng dồn. */
   hitRatePct: number | null;
+  /** Hit rate cộng dồn từ lúc khởi động / CONFIG RESETSTAT. */
+  hitRateTotalPct: number | null;
   fragmentationRatio: number | null;
   uptimeSec: number;
   connectedSlaves: number;
 }
 
 /** Parse the INFO text format into a flat key→value map. */
-function parseInfo(raw: string): Record<string, string> {
+export function parseInfo(raw: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const line of raw.split('\n')) {
     const s = line.trim();
@@ -186,9 +188,34 @@ function parseInfo(raw: string): Record<string, string> {
   return out;
 }
 
-function toStats(addr: string, info: Record<string, string>): RedisNodeStats {
+// ── Hit rate GẦN ĐÂY ─────────────────────────────────────────────────────────
+// keyspace_hits/misses cộng dồn từ lúc khởi động: một đợt miss lớn lúc cache còn
+// lạnh giữ tỉ lệ thấp rất lâu dù hiện tại đã ổn — Monitor báo mãi. Nên lấy hiệu
+// giữa hai lần đo; mốc chỉ dời khi cửa sổ đủ HIT_MIN_LOOKUPS lượt tra, quá
+// HIT_MAX_AGE_MS thì bỏ mốc cũ (cùng cách với cache hit của PostgreSQL).
+const HIT_MIN_LOOKUPS = 200;
+const HIT_MAX_AGE_MS = 15 * 60 * 1000;
+const hitBase = new Map<string, { hits: number; misses: number; at: number; recent: number | null }>();
+
+function recentHitPct(id: string, hits: number, misses: number): number | null {
+  const now = Date.now();
+  const base = hitBase.get(id);
+  if (!base || hits < base.hits || misses < base.misses || now - base.at > HIT_MAX_AGE_MS) {
+    hitBase.set(id, { hits, misses, at: now, recent: base && now - base.at <= HIT_MAX_AGE_MS ? base.recent : null });
+    return null;
+  }
+  const dh = hits - base.hits;
+  const dm = misses - base.misses;
+  if (dh + dm < HIT_MIN_LOOKUPS) return base.recent;
+  const recent = (dh / (dh + dm)) * 100;
+  hitBase.set(id, { hits, misses, at: now, recent });
+  return recent;
+}
+
+function toStats(addr: string, info: Record<string, string>, connId?: string): RedisNodeStats {
   const hits = Number(info.keyspace_hits ?? 0);
   const misses = Number(info.keyspace_misses ?? 0);
+  const total = hits + misses > 0 ? (hits / (hits + misses)) * 100 : null;
   return {
     addr,
     role: String(info.role ?? '?'),
@@ -197,7 +224,8 @@ function toStats(addr: string, info: Record<string, string>): RedisNodeStats {
     systemMemoryBytes: Number(info.total_system_memory ?? 0),
     connectedClients: Number(info.connected_clients ?? 0),
     opsPerSec: Number(info.instantaneous_ops_per_sec ?? 0),
-    hitRatePct: hits + misses > 0 ? (hits / (hits + misses)) * 100 : null,
+    hitRatePct: (connId ? recentHitPct(`${connId}|${addr}`, hits, misses) : null) ?? total,
+    hitRateTotalPct: total,
     fragmentationRatio: info.mem_fragmentation_ratio != null ? Number(info.mem_fragmentation_ratio) : null,
     uptimeSec: Number(info.uptime_in_seconds ?? 0),
     connectedSlaves: Number(info.connected_slaves ?? 0),
@@ -215,11 +243,11 @@ export async function infoStats(conn: RedisConnection): Promise<RedisNodeStats[]
     const masters = client.nodes('master');
     return Promise.all(masters.map(async (n) => {
       const addr = `${(n.options.host ?? '?')}:${n.options.port ?? '?'}`;
-      return toStats(addr, parseInfo(await n.info()));
+      return toStats(addr, parseInfo(await n.info()), conn.id);
     }));
   }
   const info = parseInfo(await (client as Redis).info());
-  return [toStats(`${conn.host}:${conn.port}`, info)];
+  return [toStats(`${conn.host}:${conn.port}`, info, conn.id)];
 }
 
 // ── Operations ──────────────────────────────────────────────────────────────

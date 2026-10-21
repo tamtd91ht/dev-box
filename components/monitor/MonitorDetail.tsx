@@ -2,7 +2,7 @@
 
 // Ngăn chi tiết một tài nguyên (bấm vào thẻ / dòng bảng): nguyên nhân, lịch sử
 // trạng thái, toàn bộ chỉ số kèm đồ thị nhỏ, và số liệu riêng của Kafka.
-// Cảnh báo nào có bộ phân tích nguyên nhân (hiện: cache hit PostgreSQL) thì có
+// Cảnh báo nào có bộ phân tích nguyên nhân (cache hit PostgreSQL, hit rate Redis) thì có
 // nút "Phân tích" ngay trên dòng nguyên nhân.
 
 import { useEffect, useMemo, useState } from 'react';
@@ -13,6 +13,7 @@ import {
 } from '@/lib/monitor/status';
 import { Spark, Timeline } from './Spark';
 import PgCacheDiagnosis from './PgCacheDiagnosis';
+import RedisMissDiagnosis from './RedisMissDiagnosis';
 
 interface Props {
   row: Row;
@@ -53,7 +54,8 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
   // Phân tích nguyên nhân — mở theo tài nguyên, chuyển sang tài nguyên khác thì đóng.
   const [diagOpen, setDiagOpen] = useState(false);
   useEffect(() => { setDiagOpen(false); }, [res.key]);
-  const canDiagnose = (metric: string): boolean => res.stack === 'pg' && metric === 'cacheHitPct';
+  const canDiagnose = (metric: string): boolean =>
+    (res.stack === 'pg' && metric === 'cacheHitPct') || (res.stack === 'redis' && metric === 'hitRatePct');
 
   const groups = useMemo(
     () => [...(last?.kafkaGroups ?? [])].sort((a, b) => b.lag - a.lag).slice(0, 12),
@@ -118,6 +120,7 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
         </section>
 
         {diagOpen && res.stack === 'pg' ? <PgCacheDiagnosis key={res.key} connectionId={res.id} /> : null}
+        {diagOpen && res.stack === 'redis' ? <RedisMissDiagnosis key={res.key} connectionId={res.id} /> : null}
 
         {last?.brokerReach?.length ? (
           <section>

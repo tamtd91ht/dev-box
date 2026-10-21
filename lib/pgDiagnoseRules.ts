@@ -9,31 +9,13 @@
 // quyền, không khai node_exporter) thì nói rõ là không xác định được + cách bật,
 // chứ không suy ra kết luận từ chỗ trống.
 
-export type FindingLevel = 'crit' | 'warn' | 'info' | 'ok';
+import {
+  buildPlan, fmtBytes, fmtN, pct, share, sortFindings,
+  type Finding, type PlanStep,
+} from '@/lib/diagnose';
 
-export interface Finding {
-  id: string;
-  level: FindingLevel;
-  title: string;
-  /** Số liệu thật dẫn tới kết luận. */
-  evidence: string[];
-  /** Việc nên làm, bằng lời. */
-  fix?: string;
-  /** Lệnh mẫu để sao chép — app KHÔNG tự chạy. */
-  sql?: string;
-  /** Bước tương ứng trong "Đề xuất hướng xử lý". */
-  step?: { phase: PlanPhase; text: string };
-}
-
-/** now: làm được ngay, không downtime · restart: cần lịch bảo trì · long: dài hạn · observe: bật thêm số liệu / theo dõi. */
-export type PlanPhase = 'now' | 'restart' | 'long' | 'observe';
-
-export interface PlanStep {
-  phase: PlanPhase;
-  text: string;
-  /** Kết luận sinh ra bước này — UI cuộn tới để xem bằng chứng + lệnh. */
-  findingId: string;
-}
+export type { Finding, FindingLevel, PlanPhase, PlanStep } from '@/lib/diagnose';
+export { fmtBytes, pct } from '@/lib/diagnose';
 
 export interface DiagDb {
   name: string;
@@ -143,20 +125,6 @@ const DEFAULT_SB = 128 * 1024 * 1024;
 
 // ── Định dạng ─────────────────────────────────────────────────────────────
 
-export const pct = (hit: number, read: number): number | null =>
-  hit + read > 0 ? Math.round((hit / (hit + read)) * 1000) / 10 : null;
-
-export function fmtBytes(n: number | null | undefined): string {
-  if (n === null || n === undefined || !Number.isFinite(n)) return '?';
-  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v >= 100 || i === 0 ? Math.round(v) : Math.round(v * 10) / 10} ${u[i]}`;
-}
-
-const fmtN = (n: number): string => Math.round(n).toLocaleString('vi-VN');
-const share = (part: number, total: number): number => (total > 0 ? Math.round((part / total) * 1000) / 10 : 0);
 const qname = (t: { schema: string; table: string }): string =>
   t.schema === 'public' ? t.table : `${t.schema}.${t.table}`;
 const qualified = (t: { schema: string; table: string }): string => `${quoteIdent(t.schema)}.${quoteIdent(t.table)}`;
@@ -268,8 +236,6 @@ function investigateScript(t: DiagTable): string {
 const indexCols = (def: string): string => def.match(/\(([^)]*)\)\s*(WHERE.*)?$/i)?.[1] ?? def;
 
 // ── Phân tích ─────────────────────────────────────────────────────────────
-
-const RANK: Record<FindingLevel, number> = { crit: 3, warn: 2, info: 1, ok: 0 };
 
 export function analyzeCacheHit(f: CacheHitFacts, at = Date.now()): CacheHitDiagnosis {
   const out: Finding[] = [];
@@ -552,7 +518,7 @@ export function analyzeCacheHit(f: CacheHitFacts, at = Date.now()): CacheHitDiag
     });
   }
 
-  const findings = out.sort((a, b) => RANK[b.level] - RANK[a.level]);
+  const findings = sortFindings(out);
   return {
     at,
     cumulativePct,
@@ -560,30 +526,10 @@ export function analyzeCacheHit(f: CacheHitFacts, at = Date.now()): CacheHitDiag
     windowSec: f.window?.sec ?? null,
     headline: headline(findings, currentPct, cumulativePct),
     findings,
-    plan: buildPlan(findings),
+    plan: buildPlan(findings, 'Phân tích lại sau khi xử lý — mục tiêu cache hit hiện tại ≥ 95%'),
     analyzedDbs: f.analyzedDbs,
     skippedDbs: f.skippedDbs,
   };
-}
-
-const PHASE_ORDER: PlanPhase[] = ['now', 'restart', 'long', 'observe'];
-
-/**
- * Kế hoạch: việc làm ngay (không downtime, hiệu quả nhất) → việc cần restart →
- * dài hạn → bật thêm số liệu. Trong cùng giai đoạn giữ thứ tự nặng → nhẹ của
- * kết luận. Có việc sửa thật thì thêm bước đo lại để xác nhận.
- */
-export function buildPlan(findings: Finding[]): PlanStep[] {
-  // Hiện tại đã ổn (số thấp là cộng dồn cũ) → không bày việc sửa, chỉ giữ bước theo dõi.
-  const stale = findings.some((x) => x.id === 'stale');
-  const steps = findings
-    .filter((x) => x.step && (!stale || x.step.phase === 'observe'))
-    .map((x) => ({ phase: x.step!.phase, text: x.step!.text, findingId: x.id }));
-  const plan = PHASE_ORDER.flatMap((ph) => steps.filter((st) => st.phase === ph));
-  if (plan.some((st) => st.phase === 'now' || st.phase === 'restart')) {
-    plan.push({ phase: 'observe', text: 'Phân tích lại sau khi xử lý — mục tiêu cache hit hiện tại ≥ 95%', findingId: '' });
-  }
-  return plan;
 }
 
 function headline(findings: Finding[], current: number | null, cumulative: number | null): string {

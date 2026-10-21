@@ -10888,6 +10888,15 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   border-radius: 0; font-weight: 400;
 }
 .pgd-step-link:hover:not(:disabled) { transform: none; box-shadow: none; text-decoration: underline; text-underline-offset: 3px; }
+
+/* Redis: xác nhận trước khi bật tạm notify-keyspace-events + bảng dạng key bị miss */
+.rmd-confirm { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--glass-brd); background: var(--glass); }
+.rmd-confirm code { font-family: var(--mono); font-size: 12px; }
+.rmd-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+.rmd-dur { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.rmd-dur select { font: inherit; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--glass-brd); background: var(--glass); color: var(--text); }
+.rmd-table-wrap { overflow-x: auto; }
+.rmd-table code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { .pgd-item.flash { animation: none; outline: 2px solid var(--lv); } }
 
 /* hộp chỉnh ngưỡng */

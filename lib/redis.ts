@@ -3,6 +3,9 @@
 // browser never connects to Redis directly). This file is browser-safe: NO `fs`,
 // NO `ioredis`, no server-only imports.
 
+import type { RedisMissDiagnosis } from '@/lib/redisDiagnoseRules';
+export type { RedisMissDiagnosis };
+
 import { apiFetch } from './apiFetch';
 
 export type RedisKeyType = 'string' | 'list' | 'set' | 'zset' | 'hash' | 'stream' | 'none';
@@ -132,7 +135,10 @@ export interface RedisNodeStats {
   systemMemoryBytes: number;
   connectedClients: number;
   opsPerSec: number;
+  /** Gần đây (giữa hai lần đo); chưa đủ số liệu thì bằng số cộng dồn. */
   hitRatePct: number | null;
+  /** Cộng dồn từ lúc khởi động. */
+  hitRateTotalPct: number | null;
   fragmentationRatio: number | null;
   uptimeSec: number;
   connectedSlaves: number;
@@ -141,6 +147,14 @@ export interface RedisNodeStats {
 /** INFO snapshot per node (single → 1 entry; cluster → every master). */
 export function redisStats(connectionId: string): Promise<RedisNodeStats[]> {
   return redisAction<RedisNodeStats[]>('stats', { connectionId });
+}
+
+/**
+ * Bắt key bị miss trong `seconds` giây (bật tạm notify-keyspace-events "Em" rồi
+ * trả lại) → dạng key nào đang miss và vì sao. Mất seconds + vài giây quét.
+ */
+export function redisDiagnoseMisses(connectionId: string, seconds: number): Promise<RedisMissDiagnosis> {
+  return redisAction<RedisMissDiagnosis>('diagnoseMisses', { connectionId, seconds });
 }
 
 /** Test a not-yet-saved connection straight from the form (single or cluster). */

@@ -99,7 +99,7 @@ export const RULES: Record<InfraStack, Rule[]> = {
   redis: [
     { metric: 'memUsedPct', label: 'RAM đã dùng', unit: '%', dir: 'gt', warn: 80, crit: 90, why: 'Gần chạm maxmemory — sắp evict key hoặc từ chối ghi.' },
     { metric: 'fragmentation', label: 'Phân mảnh bộ nhớ', unit: '', dir: 'gt', warn: 1.8, crit: 3, why: 'RSS lớn hơn nhiều so với dữ liệu thật.', when: { metric: 'memUsedMb', min: 256, label: 'RAM đã dùng', unit: 'MB' } },
-    { metric: 'hitRatePct', label: 'Hit rate', unit: '%', dir: 'lt', warn: 50, why: 'Phần lớn truy vấn trượt cache.' },
+    { metric: 'hitRatePct', label: 'Hit rate', unit: '%', dir: 'lt', warn: 50, why: 'Phần lớn lượt tra trượt cache (tính gần đây, không phải cộng dồn) — bấm Phân tích để biết dạng key nào miss.' },
     { metric: 'clients', label: 'Client đang kết nối', unit: '', dir: 'gt', warn: 5000, crit: 9000, why: 'Gần chạm maxclients.' },
   ],
   kafka: [
