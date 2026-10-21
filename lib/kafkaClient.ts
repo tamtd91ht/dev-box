@@ -255,7 +255,7 @@ export function dropCachedClient(connectionId: string): void {
  * Đây đúng là ca của watch: chạy mỗi 300s nên LẦN NÀO client cũng đã nằm im,
  * lần nào cũng được kiểm tra.
  */
-async function getAdmin(conn: KafkaConnection): Promise<Admin> {
+export async function getAdmin(conn: KafkaConnection): Promise<Admin> {
   const entry = getEntry(conn);
   if (entry.adminConnected) {
     if (Date.now() - entry.lastOkAt < STALE_CHECK_MS) return entry.admin;
@@ -974,7 +974,7 @@ type PendingProbe =
  * — consumer không bao giờ nhận được marker nên offset không bao giờ nhích, và
  * đồng hồ đứng-im sẽ treo cảnh báo vĩnh viễn nếu không lọc ở đây.
  */
-async function firstPendingRecord(
+export async function firstPendingRecord(
   conn: KafkaConnection,
   topic: string,
   partition: number,
@@ -1288,7 +1288,7 @@ export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerL
  * cái consumer thấy. Cụm không dùng transaction thì hai mức bằng nhau — đổi sang
  * đây không làm sai lệch gì.
  */
-async function topicHighWatermarks(
+export async function topicHighWatermarks(
   conn: KafkaConnection,
   topic: string,
 ): Promise<Map<number, number>> {

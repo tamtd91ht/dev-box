@@ -4,6 +4,8 @@
 // NO `kafkajs`, no server-only imports.
 
 import { apiFetch } from './apiFetch';
+import type { KafkaLagDiagnosis } from '@/lib/kafkaDiagnoseRules';
+export type { KafkaLagDiagnosis };
 
 /** A Kafka connection as returned to the browser. */
 export interface PublicKafkaConnection {
@@ -354,6 +356,11 @@ export interface KafkaConsumerLag {
  */
 export function kafkaConsumerLag(connectionId: string): Promise<KafkaConsumerLag> {
   return kafkaAction<KafkaConsumerLag>('consumerLag', { connectionId });
+}
+
+/** Vì sao một group lag — chỉ đọc, đo hai lần cách nhau `seconds` giây (5–30). */
+export function kafkaDiagnoseLag(connectionId: string, groupId: string, seconds: number): Promise<KafkaLagDiagnosis> {
+  return kafkaAction<KafkaLagDiagnosis>('diagnoseLag', { connectionId, groupId, seconds });
 }
 
 /** Consumer groups that consume THIS topic (have committed offsets), with per-partition lag. */
