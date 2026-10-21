@@ -107,8 +107,11 @@ function HealthGrid({ s }: { s: PgStats }) {
           value={orDash(s.cacheHitPct, (n) => `${n}%`)}
           pct={s.cacheHitPct}
           level={lvl('cacheHitPct', s.cacheHitPct)}
-          text={s.sharedBuffersBytes ? `shared_buffers ${fmtBytes(s.sharedBuffersBytes)}` : undefined}
-          hint="Tỉ lệ khối đọc từ bộ nhớ thay vì đĩa (tích luỹ từ lần reset thống kê). Thấp kéo dài = dữ liệu nóng không vừa bộ nhớ."
+          text={[
+            s.sharedBuffersBytes ? `shared_buffers ${fmtBytes(s.sharedBuffersBytes)}` : '',
+            s.cacheHitTotalPct !== null && s.cacheHitTotalPct !== s.cacheHitPct ? `cộng dồn ${s.cacheHitTotalPct}%` : '',
+          ].filter(Boolean).join(' · ') || undefined}
+          hint="Tỉ lệ khối đọc từ shared_buffers thay vì phải xin hệ điều hành — tính GẦN ĐÂY (giữa các lần đo); 'cộng dồn' là từ lần reset thống kê. Thấp kéo dài = dữ liệu nóng không vừa bộ nhớ hoặc query quét nhiều — Monitor có nút Phân tích để tìm nguyên nhân."
         />
         <Meter
           label="Dung lượng database"

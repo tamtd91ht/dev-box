@@ -2,6 +2,9 @@
 // go to the same-origin /api/pg* routes (the Next server holds the pg pools —
 // the browser never connects to PostgreSQL directly). Browser-safe module.
 
+import type { CacheHitDiagnosis } from '@/lib/pgDiagnoseRules';
+export type { CacheHitDiagnosis };
+
 export interface PublicPgConnection {
   id: string;
   name: string;
@@ -60,7 +63,10 @@ export interface PgStats {
   longestQuerySec: number | null;
   longestTxSec: number | null;
   dbSizeBytes: number | null;
+  /** Tỉ lệ GẦN ĐÂY (giữa hai lần đo); chưa đủ số liệu thì bằng số cộng dồn. */
   cacheHitPct: number | null;
+  /** Cộng dồn từ lần reset thống kê. */
+  cacheHitTotalPct: number | null;
   deadlocks: number | null;
   tempBytes: number | null;
   wraparoundPct: number | null;
@@ -221,6 +227,11 @@ export function pgStats(connectionId: string, sessions = false): Promise<PgStats
 /** node_exporter RAM/đĩa/CPU/load của máy chạy Postgres (rỗng nếu chưa khai metricsUrls). */
 export function pgHostMetrics(connectionId: string): Promise<PgHostMetrics[]> {
   return pgAction<PgHostMetrics[]>('hostMetrics', { connectionId });
+}
+
+/** Tìm nguyên nhân cache hit thấp — chỉ đọc thống kê, mất ~6s (đo tỉ lệ hiện tại). */
+export function pgDiagnoseCacheHit(connectionId: string): Promise<CacheHitDiagnosis> {
+  return pgAction<CacheHitDiagnosis>('diagnoseCacheHit', { connectionId });
 }
 
 export function listPgDatabases(connectionId: string): Promise<PgDatabaseInfo[]> {

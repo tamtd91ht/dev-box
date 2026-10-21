@@ -151,7 +151,7 @@ export const RULES: Record<InfraStack, Rule[]> = {
     { metric: 'idleInTx', label: 'Phiên idle in transaction', unit: '', dir: 'gt', warn: 10, crit: 50, why: 'Ứng dụng mở giao dịch rồi để đó — giữ lock và chặn vacuum.' },
     { metric: 'longestTxSec', label: 'Giao dịch mở lâu nhất', unit: 's', dir: 'gt', warn: 600, crit: 3600, why: 'Giao dịch dài chặn autovacuum, bảng phình dần.' },
     { metric: 'longestQuerySec', label: 'Query chạy lâu nhất', unit: 's', dir: 'gt', warn: 300, crit: 1800, why: 'Query treo hoặc thiếu index đang ngốn tài nguyên.' },
-    { metric: 'cacheHitPct', label: 'Cache hit', unit: '%', dir: 'lt', warn: 90, crit: 80, why: 'Dữ liệu nóng không vừa bộ nhớ — server đọc đĩa nhiều.' },
+    { metric: 'cacheHitPct', label: 'Cache hit', unit: '%', dir: 'lt', warn: 90, crit: 80, why: 'Nhiều block phải đọc ngoài shared_buffers (tính gần đây, không phải cộng dồn) — bấm Phân tích để tìm nguyên nhân.' },
     { metric: 'replayLagSec', label: 'Replay lag (standby)', unit: 's', dir: 'gt', warn: 30, crit: 300, why: 'Standby tụt sau primary — failover lúc này sẽ mất dữ liệu.' },
     { metric: 'replicaLagMb', label: 'Replica tụt sau', unit: 'MB', dir: 'gt', warn: 512, crit: 4096, why: 'Replica chậm nhất chưa replay lượng WAL này.' },
     { metric: 'inactiveSlots', label: 'Replication slot không hoạt động', unit: '', dir: 'gt', warn: 0, why: 'Slot không có ai nối vẫn giữ WAL — im lặng làm đầy đĩa primary.' },

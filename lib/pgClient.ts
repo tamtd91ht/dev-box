@@ -133,7 +133,7 @@ function evictIdle(now: number): void {
 }
 
 /** Lazily create (or reuse) a pool for a connection + database. */
-async function getPool(conn: PgConnection, db?: string): Promise<Pool> {
+export async function getPool(conn: PgConnection, db?: string): Promise<Pool> {
   const database = (db && db.trim()) || conn.database;
   const now = Date.now();
   evictIdle(now);
@@ -164,7 +164,7 @@ async function getPool(conn: PgConnection, db?: string): Promise<Pool> {
 }
 
 /** Run a function inside a READ ONLY transaction with a statement timeout. */
-async function runReadOnly<T>(pool: Pool, fn: (q: (text: string, params?: unknown[]) => Promise<import('pg').QueryResult>) => Promise<T>): Promise<T> {
+export async function runReadOnly<T>(pool: Pool, fn: (q: (text: string, params?: unknown[]) => Promise<import('pg').QueryResult>) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN TRANSACTION READ ONLY');
@@ -270,7 +270,10 @@ export interface PgStats {
   longestQuerySec: number | null;
   longestTxSec: number | null;
   dbSizeBytes: number | null;
+  /** Tỉ lệ GẦN ĐÂY (giữa hai lần đo) — xem recentHitPct; chưa đủ số liệu thì bằng số cộng dồn. */
   cacheHitPct: number | null;
+  /** Cộng dồn từ lần reset thống kê — một đợt quét lớn cũ kéo số này xuống rất lâu. */
+  cacheHitTotalPct: number | null;
   /** Tích luỹ từ lần reset thống kê gần nhất. */
   deadlocks: number | null;
   tempBytes: number | null;
@@ -293,6 +296,33 @@ const num = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 const round1 = (n: number | null): number | null => (n === null ? null : Math.round(n * 10) / 10);
+
+// ── Cache hit GẦN ĐÂY ─────────────────────────────────────────────────────────
+// blks_hit/blks_read của pg_stat_database cộng dồn từ lần reset thống kê: một
+// đợt quét lớn tuần trước (hoặc lúc vừa khởi động, cache trống) kéo tỉ lệ xuống
+// và giữ đó rất lâu dù hiện tại đã ổn — Monitor báo đỏ mãi. Nên lấy hiệu giữa
+// hai lần đo. Mốc chỉ dời khi cửa sổ đủ HIT_MIN_BLOCKS (tải thấp thì cửa sổ cứ
+// nới ra cho đủ mẫu), quá HIT_MAX_AGE_MS thì bỏ mốc cũ. Nhiều nơi cùng gọi
+// stats() (tab PG + Monitor) chỉ làm cửa sổ ngắn lại, không làm sai số.
+const HIT_MIN_BLOCKS = 1000;
+const HIT_MAX_AGE_MS = 15 * 60 * 1000;
+const hitBase = new Map<string, { hit: number; read: number; at: number; recent: number | null }>();
+
+function recentHitPct(id: string, hit: number, read: number): number | null {
+  const now = Date.now();
+  const base = hitBase.get(id);
+  // Lần đầu / counter bị reset / mốc quá cũ → đặt mốc mới, chưa có số gần đây.
+  if (!base || hit < base.hit || read < base.read || now - base.at > HIT_MAX_AGE_MS) {
+    hitBase.set(id, { hit, read, at: now, recent: base && now - base.at <= HIT_MAX_AGE_MS ? base.recent : null });
+    return null;
+  }
+  const dh = hit - base.hit;
+  const dr = read - base.read;
+  if (dh + dr < HIT_MIN_BLOCKS) return base.recent;
+  const recent = round1((dh / (dh + dr)) * 100);
+  hitBase.set(id, { hit, read, at: now, recent });
+  return recent;
+}
 
 export async function stats(conn: PgConnection, opts: { sessions?: boolean } = {}): Promise<PgStats> {
   const pool = await getPool(conn);
@@ -410,7 +440,9 @@ export async function stats(conn: PgConnection, opts: { sessions?: boolean } = {
       longestQuerySec: round1(num(act?.lq)),
       longestTxSec: round1(num(act?.ltx)),
       dbSizeBytes: num(size?.sz),
-      cacheHitPct: hit + read > 0 ? round1((hit / (hit + read)) * 100) : null,
+      // dbs null (thiếu quyền / lỗi) → hit=read=0 giả; không được đụng vào mốc đo.
+      cacheHitPct: (dbs ? recentHitPct(conn.id, hit, read) : null) ?? (hit + read > 0 ? round1((hit / (hit + read)) * 100) : null),
+      cacheHitTotalPct: hit + read > 0 ? round1((hit / (hit + read)) * 100) : null,
       deadlocks: num(dbs?.d),
       tempBytes: num(dbs?.t),
       wraparoundPct: wrap ? round1(((num(wrap.a) ?? 0) / 2147483647) * 100) : null,

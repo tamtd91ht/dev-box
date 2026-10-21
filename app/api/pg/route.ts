@@ -5,6 +5,7 @@
 //     'ping'       { connectionId }                        → { ok, result: { latencyMs } }
 //     'stats'      { connectionId, sessions? }             → { ok, result: PgStats }
 //     'hostMetrics' { connectionId }                       → { ok, result: HostMetrics[] }
+//     'diagnoseCacheHit' { connectionId }                  → { ok, result: CacheHitDiagnosis } (chỉ đọc thống kê, ~6s)
 //     'databases'  { connectionId }                        → { ok, result: PgDatabaseInfo[] }
 //     'tables'     { connectionId, db }                    → { ok, result: PgTableInfo[] }
 //     'columns'    { connectionId, db, schema, table }     → { ok, result: PgColumnInfo[] }
@@ -39,6 +40,7 @@ import {
   updateWithWhere,
 } from '@/lib/pgClient';
 import { getConnection, buildUnsavedConnection } from '@/lib/pgConnections';
+import { diagnoseCacheHit } from '@/lib/pgDiagnose';
 
 export const runtime = 'nodejs';
 
@@ -94,6 +96,9 @@ export async function POST(req: NextRequest) {
         break;
       case 'hostMetrics': // node_exporter RAM/đĩa/CPU/load (tuỳ chọn, theo connection)
         result = await hostMetrics(conn);
+        break;
+      case 'diagnoseCacheHit': // tìm nguyên nhân cache hit thấp (lib/pgDiagnose)
+        result = await diagnoseCacheHit(conn);
         break;
       case 'databases':
         result = await listDatabases(conn);

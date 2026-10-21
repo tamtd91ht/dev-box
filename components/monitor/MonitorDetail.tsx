@@ -2,14 +2,17 @@
 
 // Ngăn chi tiết một tài nguyên (bấm vào thẻ / dòng bảng): nguyên nhân, lịch sử
 // trạng thái, toàn bộ chỉ số kèm đồ thị nhỏ, và số liệu riêng của Kafka.
+// Cảnh báo nào có bộ phân tích nguyên nhân (hiện: cache hit PostgreSQL) thì có
+// nút "Phân tích" ngay trên dòng nguyên nhân.
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Row } from '@/lib/monitor/useMonitor';
 import {
   LEVEL_LABEL, STACK_META, ago, describeMetric, fmtDuration, fmtNum, fmtValue, gatedOff, levelOf,
   type Overrides,
 } from '@/lib/monitor/status';
 import { Spark, Timeline } from './Spark';
+import PgCacheDiagnosis from './PgCacheDiagnosis';
 
 interface Props {
   row: Row;
@@ -46,6 +49,11 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
     return orderMetrics(Object.keys(metrics).filter((k) => k !== 'up'), ruled);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [last?.at, res.stack]);
+
+  // Phân tích nguyên nhân — mở theo tài nguyên, chuyển sang tài nguyên khác thì đóng.
+  const [diagOpen, setDiagOpen] = useState(false);
+  useEffect(() => { setDiagOpen(false); }, [res.key]);
+  const canDiagnose = (metric: string): boolean => res.stack === 'pg' && metric === 'cacheHitPct';
 
   const groups = useMemo(
     () => [...(last?.kafkaGroups ?? [])].sort((a, b) => b.lag - a.lag).slice(0, 12),
@@ -88,15 +96,28 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
               {ev.reasons.map((r) => (
                 <li key={r.metric} className={`lv-${r.level}`}>
                   <span className="mon-dot sm" aria-hidden />
-                  <div>
+                  <div className="mon-reason-body">
                     <div>{r.text}</div>
                     {r.why ? <div className="mon-d-faint">{r.why}</div> : null}
                   </div>
+                  {canDiagnose(r.metric) ? (
+                    <button
+                      type="button"
+                      className="mon-btn mon-reason-act"
+                      onClick={() => setDiagOpen(true)}
+                      disabled={diagOpen}
+                      title="Đọc thống kê của server (chỉ đọc) để tìm bảng / query / cấu hình gây ra, kèm cách khắc phục"
+                    >
+                      🔍 Phân tích
+                    </button>
+                  ) : null}
                 </li>
               ))}
             </ul>
           )}
         </section>
+
+        {diagOpen && res.stack === 'pg' ? <PgCacheDiagnosis key={res.key} connectionId={res.id} /> : null}
 
         {last?.brokerReach?.length ? (
           <section>
