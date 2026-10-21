@@ -54,32 +54,40 @@ const VIEW_REV = 1;
 const DEFAULT_PREFS: Prefs = { viewRev: 0, view: 'all', density: 'full', groupBy: 'stack', intervalSec: 30, paused: false, collapsed: [], order: [...STACK_ORDER] };
 const INTERVALS = [10, 15, 30, 60, 300];
 
-// Lưới "Toàn bộ": ô cao cố định, bề ngang co giãn trong [MIN, MAX] sao cho cả lưới
-// vừa chiều cao vùng nhìn; MIN đủ cho 3 dòng (loại · tên · trạng thái) không vỡ chữ.
+// Lưới "Toàn bộ": ô co giãn CẢ HAI CHIỀU để lưới lấp kín vùng nhìn. Nhỏ nhất
+// MIN_W×MIN_H (đủ 3 dòng loại · tên · trạng thái); ô cao tới MAX_H thì thôi lớn
+// thêm — ít kết nối mà phóng ô to cả màn hình chỉ tổ khó đọc.
 const ALL_MIN_W = 136;
-const ALL_MAX_W = 260;
-const ALL_TILE_H = 66;
+const ALL_MIN_H = 66;
+const ALL_MAX_H = 150;
+/** Ô rộng hơn ASPECT × cao không "to" thêm về mặt đọc — chỉ là dải trống ngang. */
+const ALL_ASPECT = 2.6;
 const ALL_GAP = 6;
 /** padding-top của .mon-all — trừ ra khi đo chiều cao còn lại. */
 const ALL_PAD_TOP = 10;
 
+type AllSize = 'sm' | 'md' | 'lg';
+/** Cao bao nhiêu thì ô hiện thêm dòng chỉ số (xem AllTile). */
+const sizeOf = (h: number): AllSize => (h >= 124 ? 'lg' : h >= 92 ? 'md' : 'sm');
+
 /**
- * Số cột cho n ô trong khung w×h: ít cột nhất (ô rộng nhất) mà vẫn vừa chiều cao,
- * nhưng không ít tới mức ô rộng quá MAX (để còn lấp kín bề ngang). Không vừa nổi
- * ngay cả ở cỡ MIN thì dùng cỡ MIN và chấp nhận cuộn.
+ * Chia n ô vào khung w×h: thử mọi số cột, mỗi cách cho ô rộng colW × cao rowH
+ * (rowH kẹp ở MAX_H); chọn cách có ô "dùng được" lớn nhất = min(colW, rowH×ASPECT),
+ * hoà thì lấy nhiều cột hơn. Không cách nào vừa nổi ở cỡ MIN thì dùng cỡ MIN và cuộn.
  */
-function fitAll(n: number, w: number, h: number): { cols: number; colW: number } | null {
+function fitAll(n: number, w: number, h: number): { cols: number; rowH: number } | null {
   if (n === 0 || w < ALL_MIN_W || h <= 0) return null;
-  const maxCols = Math.max(1, Math.floor((w + ALL_GAP) / (ALL_MIN_W + ALL_GAP)));
-  const fillCols = Math.ceil((w + ALL_GAP) / (ALL_MAX_W + ALL_GAP));
-  let cols = maxCols;
+  const maxCols = Math.min(n, Math.max(1, Math.floor((w + ALL_GAP) / (ALL_MIN_W + ALL_GAP))));
+  let best: { cols: number; rowH: number; score: number } | null = null;
   for (let c = 1; c <= maxCols; c++) {
     const r = Math.ceil(n / c);
-    if (r * ALL_TILE_H + (r - 1) * ALL_GAP <= h) { cols = c; break; }
+    const colW = (w - (c - 1) * ALL_GAP) / c;
+    const rowH = Math.min(ALL_MAX_H, Math.floor((h - (r - 1) * ALL_GAP) / r));
+    if (rowH < ALL_MIN_H) continue;
+    const score = Math.min(colW, rowH * ALL_ASPECT);
+    if (!best || score >= best.score) best = { cols: c, rowH, score };
   }
-  cols = Math.min(n, maxCols, Math.max(cols, fillCols));
-  const colW = Math.min(ALL_MAX_W, Math.floor((w - (cols - 1) * ALL_GAP) / cols));
-  return { cols, colW };
+  return best ? { cols: best.cols, rowH: best.rowH } : { cols: maxCols, rowH: ALL_MIN_H };
 }
 
 function loadJson<T>(key: string, fallback: T): T {
@@ -569,13 +577,14 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
         {prefs.view === 'all' && allRows.length > 0 && (
           <div
             className="mon-all"
-            style={allFit ? { gridTemplateColumns: `repeat(${allFit.cols}, ${allFit.colW}px)` } : undefined}
+            style={allFit ? { gridTemplateColumns: `repeat(${allFit.cols}, minmax(0, 1fr))`, gridAutoRows: `${allFit.rowH}px` } : undefined}
           >
             {allRows.map((r) => (
               <AllTile
                 key={r.res.key}
                 row={r}
                 now={now}
+                size={allFit ? sizeOf(allFit.rowH) : 'sm'}
                 selected={selected === r.res.key}
                 onOpen={open}
                 onEnter={showTip}
@@ -778,22 +787,35 @@ function Tile({ row, now, compact, showStack, selected, onOpen, onEnter, onLeave
   );
 }
 
-type AllTileProps = Omit<TileProps, 'compact' | 'showStack'>;
+type AllTileProps = Omit<TileProps, 'compact' | 'showStack'> & { size: AllSize };
 
-/** Ô gọn của "Toàn bộ": loại · tên · một dòng trạng thái. Chi tiết nằm ở tooltip. */
-function AllTile({ row, now, selected, onOpen, onEnter, onLeave }: AllTileProps) {
+/** Số dòng trạng thái theo cỡ ô: ô nhỏ gộp 1 dòng, ô lớn mỗi chỉ số một dòng. */
+const ALL_LINES: Record<AllSize, number> = { sm: 1, md: 2, lg: 3 };
+
+/** Ô của "Toàn bộ": loại · tên · trạng thái (thêm dòng khi ô đủ cao). Chi tiết nằm ở tooltip. */
+function AllTile({ row, now, size, selected, onOpen, onEnter, onLeave }: AllTileProps) {
   const { res, st, ev } = row;
   const meta = STACK_META[res.stack];
-  const issue = ev.reasons[0];
-  let line: React.ReactNode;
-  if (ev.level === 'down') line = <>Mất kết nối{st.since ? ` · ${ago(st.since, now)}` : ''}</>;
-  else if (ev.level === 'unknown') line = st.busy ? 'Đang đo…' : 'Chưa đo';
-  else if (issue) line = <>{issue.label} <b>{issue.value}</b></>;
-  else line = ev.kpis.slice(0, 2).map((k, i) => <span key={k.metric}>{i ? ' · ' : ''}{k.label} <b>{k.text}</b></span>);
+  const max = ALL_LINES[size];
+  // Vàng/đỏ: các nguyên nhân; xanh: các chỉ số chính.
+  const items = ev.reasons.length
+    ? ev.reasons.map((x) => ({ k: x.metric, label: x.label, val: x.value, lv: x.level as Level }))
+    : ev.kpis.map((x) => ({ k: x.metric, label: x.label, val: x.text, lv: x.level }));
+  let lines: React.ReactNode[];
+  if (ev.level === 'down') lines = [<>Mất kết nối{st.since ? ` · ${ago(st.since, now)}` : ''}</>];
+  else if (ev.level === 'unknown') lines = [st.busy ? 'Đang đo…' : 'Chưa đo'];
+  else if (max === 1) {
+    const one = ev.reasons.length ? items.slice(0, 1) : items.slice(0, 2);
+    lines = [one.map((x, i) => <span key={x.k}>{i ? ' · ' : ''}{x.label} <b>{x.val}</b></span>)];
+  } else {
+    lines = items.slice(0, max).map((x) => (
+      <span key={x.k} className={`mon-at-kv lv-${x.lv}`}><span>{x.label}</span><b>{x.val}</b></span>
+    ));
+  }
 
   return (
     <button
-      className={`mon-tile mon-at lv-${ev.level}${selected ? ' sel' : ''}${st.busy ? ' busy' : ''}`}
+      className={`mon-tile mon-at ${size} lv-${ev.level}${selected ? ' sel' : ''}${st.busy ? ' busy' : ''}`}
       onClick={() => onOpen(res.key)}
       onMouseEnter={(e) => onEnter(res.key, e.currentTarget)}
       onMouseLeave={onLeave}
@@ -808,7 +830,9 @@ function AllTile({ row, now, selected, onOpen, onEnter, onLeave }: AllTileProps)
         {ev.reasons.length > 1 && <span className="mon-tile-n">{ev.reasons.length}</span>}
       </div>
       <div className="mon-at-name">{res.name}</div>
-      <div className="mon-at-st">{line}</div>
+      <div className="mon-at-body">
+        {lines.map((l, i) => <div key={i} className="mon-at-st">{l}</div>)}
+      </div>
     </button>
   );
 }

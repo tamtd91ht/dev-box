@@ -10733,7 +10733,7 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .mon-grid.compact .mon-tile { padding: 7px 10px; border-left-width: 3px; }
 .mon-grid.compact .mon-dot { width: 8px; height: 8px; box-shadow: none; }
 
-/* xem toàn bộ — cột do MonitorWorkspace/fitAll tính (ALL_* phải khớp: cao 66, khe 6, đệm trên 10) */
+/* xem toàn bộ — cột + chiều cao hàng do MonitorWorkspace/fitAll tính (ALL_* phải khớp: cao min 66, khe 6, đệm trên 10) */
 .mon-scroll.all { scrollbar-gutter: stable; }
 .mon-all { display: grid; gap: 6px; padding-top: 10px; grid-auto-rows: 66px; grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); }
 .mon-tile.mon-at { gap: 2px; padding: 6px 8px 6px 9px; justify-content: space-between; overflow: hidden; }
@@ -10746,6 +10746,20 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .mon-at-name { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mon-at-st { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mon-at-st b { font-variant-numeric: tabular-nums; color: var(--text); }
+.mon-at-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.mon-at-kv { display: flex; justify-content: space-between; gap: 8px; min-width: 0; }
+.mon-at-kv > span { overflow: hidden; text-overflow: ellipsis; }
+.mon-at .mon-at-kv.lv-warn b, .mon-at .mon-at-kv.lv-crit b { color: var(--lv); }
+/* ô cao hơn → chữ to hơn, đệm rộng hơn; nội dung dàn đều theo chiều cao */
+.mon-tile.mon-at.md { padding: 9px 11px 9px 12px; }
+.mon-at.md .mon-at-top { font-size: 12px; }
+.mon-at.md .mon-at-name { font-size: 14px; }
+.mon-at.md .mon-at-st { font-size: 12.5px; }
+.mon-tile.mon-at.lg { padding: 12px 14px 12px 15px; }
+.mon-at.lg .mon-at-top { font-size: 12.5px; }
+.mon-at.lg .mon-at-name { font-size: 16px; }
+.mon-at.lg .mon-at-st { font-size: 13px; }
+.mon-at.lg .mon-at-body { gap: 3px; }
 .mon-at.lv-warn .mon-at-st, .mon-at.lv-crit .mon-at-st, .mon-at.lv-down .mon-at-st,
 .mon-at.lv-warn .mon-at-st b, .mon-at.lv-crit .mon-at-st b, .mon-at.lv-down .mon-at-st b { color: var(--lv); }
 
