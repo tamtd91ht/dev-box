@@ -209,6 +209,7 @@ export default function KafkaWorkspace() {
     page: PendingPage | null; loading: boolean; error: string | null;
   } | null>(null);
   const [pendingN, setPendingN] = useState(PENDING_SAMPLE);
+  const [pendingCollapsed, setPendingCollapsed] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -548,6 +549,7 @@ export default function KafkaWorkspace() {
       const committed = p.committed;
       const same = (cur: { topic: string; partition: number } | null) => !!cur && cur.topic === topic && cur.partition === p.partition;
       setPending({ topic, partition: p.partition, committed, page: null, loading: true, error: null });
+      setPendingCollapsed(false);
       try {
         const page = await peekKafkaPending(activeId, topic, p.partition, committed, n);
         setPending((cur) => (same(cur) ? { ...cur!, page, loading: false } : cur));
@@ -1088,8 +1090,9 @@ export default function KafkaWorkspace() {
             )}
 
             {subView === 'groups' && selectedGroup && (
-              /* ── Consumer group detail (lag) ─────────────────────────── */
-              <div className="kafka-pane kafka-scroll">
+              /* ── Consumer group detail (lag) — message đang chờ mở ở cột phải ── */
+              <div className="kafka-pane kafka-group-split">
+              <div className="kafka-scroll kafka-group-main">
                 {groupLoading ? (
                   <p><span className="spinner" /> Đang tính lag…</p>
                 ) : groupDetail ? (
@@ -1144,26 +1147,37 @@ export default function KafkaWorkspace() {
                               ))}
                             </tbody>
                           </table>
-                          {pending?.topic === t.topic && (
-                            <PendingPanel
-                              pending={pending}
-                              n={pendingN}
-                              members={groupDetail.members.length}
-                              partitions={t.partitions}
-                              selected={selectedMsg}
-                              onSelect={setSelectedMsg}
-                              onN={(n) => {
-                                setPendingN(n);
-                                const p = t.partitions.find((x) => x.partition === pending.partition);
-                                if (p) void loadPending(t.topic, p, n);
-                              }}
-                              onClose={() => setPending(null)}
-                            />
-                          )}
                         </div>
                       ))}
                     </>
                   ) : null}
+              </div>
+              {pending && groupDetail && (() => {
+                const parts = groupDetail.topics.find((x) => x.topic === pending.topic)?.partitions ?? [];
+                return pendingCollapsed ? (
+                  <button className="kafka-pending-strip" onClick={() => setPendingCollapsed(false)} title="Mở rộng panel message đang chờ">
+                    <span aria-hidden>‹</span>
+                    <span className="kafka-pending-strip-label">👁 Message đang chờ · P{pending.partition}</span>
+                  </button>
+                ) : (
+                  <PendingPanel
+                    topic={pending.topic}
+                    pending={pending}
+                    n={pendingN}
+                    members={groupDetail.members.length}
+                    partitions={parts}
+                    selected={selectedMsg}
+                    onSelect={setSelectedMsg}
+                    onN={(n) => {
+                      setPendingN(n);
+                      const p = parts.find((x) => x.partition === pending.partition);
+                      if (p) void loadPending(pending.topic, p, n);
+                    }}
+                    onCollapse={() => setPendingCollapsed(true)}
+                    onClose={() => setPending(null)}
+                  />
+                );
+              })()}
               </div>
             )}
 
@@ -1412,6 +1426,7 @@ function worstPending(parts: GroupPartitionLag[]): GroupPartitionLag | undefined
 }
 
 function PendingPanel({
+  topic,
   pending,
   n,
   members,
@@ -1419,8 +1434,10 @@ function PendingPanel({
   selected,
   onSelect,
   onN,
+  onCollapse,
   onClose,
 }: {
+  topic: string;
   pending: { partition: number; committed: number; page: PendingPage | null; loading: boolean; error: string | null };
   n: number;
   members: number;
@@ -1428,6 +1445,7 @@ function PendingPanel({
   selected: PreviewMessage | null;
   onSelect: (m: PreviewMessage) => void;
   onN: (n: number) => void;
+  onCollapse: () => void;
   onClose: () => void;
 }) {
   const { page } = pending;
@@ -1440,15 +1458,18 @@ function PendingPanel({
     [page, members, partitions],
   );
   return (
-    <div className="kafka-pending">
+    <aside className="kafka-pending">
       <div className="kafka-pending-head">
         <strong>Message đang chờ · P{pending.partition}</strong>
-        <span className="kafka-meta" style={{ margin: 0 }}>từ offset {fmtInt(pending.committed)} (message đầu = cái consumer đang kẹt)</span>
         <span style={{ flex: 1 }} />
         <select className="input kafka-peekn" value={n} onChange={(e) => onN(Number(e.target.value))} title="Số message lấy mẫu">
           {PENDING_SIZES.map((x) => <option key={x} value={x}>{x} message</option>)}
         </select>
+        <button className="chip-btn" onClick={onCollapse} title="Thu gọn sang phải">›</button>
         <button className="chip-btn" onClick={onClose} title="Đóng">✕</button>
+      </div>
+      <div className="kafka-meta" style={{ margin: '2px 2px 0' }}>
+        <span className="code" title={topic}>{topic}</span> · từ offset {fmtInt(pending.committed)} (message đầu = cái consumer đang kẹt)
       </div>
       <p className="kafka-meta" style={{ margin: '4px 2px' }}>
         Chỉ đọc — không join group, không commit: group vẫn đứng nguyên offset và sẽ xử lý lại đúng các message này.
@@ -1466,7 +1487,7 @@ function PendingPanel({
         </ul>
       )}
       <MessageList page={page} loading={pending.loading} mode="peek" selected={selected} onSelect={onSelect} />
-    </div>
+    </aside>
   );
 }
 
