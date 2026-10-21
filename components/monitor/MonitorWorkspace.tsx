@@ -3,8 +3,10 @@
 // DevBox Monitor — bảng giám sát toàn bộ hạ tầng đã cấu hình (Redis · Kafka ·
 // RabbitMQ · MongoDB · Elastic · PostgreSQL · MinIO).
 //
-// Hai cách xem:
-//   • Ô (mặc định): mỗi tài nguyên một ô màu, gom theo loại (hoặc theo dự án) —
+// Ba cách xem:
+//   • Toàn bộ (mặc định): mọi tài nguyên trong MỘT lưới, không chia nhóm, ô tự co
+//     cho vừa một màn hình (có cỡ tối thiểu) — đỏ/vàng xếp đầu. Hover → nguyên nhân, bấm → chi tiết.
+//   • Ô: mỗi tài nguyên một ô màu, gom theo loại (hoặc theo dự án) —
 //     liếc một cái biết cả hệ thống xanh/vàng/đỏ. Hover ô → nguyên nhân, bấm → chi tiết.
 //   • Bảng: một dòng một tài nguyên, sắp được, có cột vấn đề.
 //
@@ -25,7 +27,7 @@ import { focusFromRow } from '@/lib/monitor/focus';
 import MonitorThresholds from './MonitorThresholds';
 import type { CritStack } from './CritBar';
 
-type View = 'tiles' | 'table';
+type View = 'all' | 'tiles' | 'table';
 type Density = 'full' | 'compact';
 type GroupBy = 'stack' | 'project';
 type SortCol = 'level' | 'name' | 'stack' | 'project';
@@ -39,14 +41,46 @@ interface Prefs {
   collapsed: string[];
   /** Thứ tự các loại hạ tầng (kéo thả ở ⋯) — quyết định thứ tự nhóm, nút lọc, cột Loại. */
   order: InfraStack[];
+  /** Đã áp lần đổi kiểu xem mặc định nào — xem VIEW_REV. */
+  viewRev: number;
 }
 
 /** Số ô cảnh báo hiện sẵn trước khi bấm "Xem hết". */
 const ISSUES_SHOWN = 8;
 const PREFS_KEY = 'devbox.monitor.prefs';
 const OV_KEY = 'devbox.monitor.thresholds';
-const DEFAULT_PREFS: Prefs = { view: 'tiles', density: 'full', groupBy: 'stack', intervalSec: 30, paused: false, collapsed: [], order: [...STACK_ORDER] };
+/** Tăng khi đổi kiểu xem mặc định: prefs cũ hơn được chuyển sang mặc định mới đúng một lần. */
+const VIEW_REV = 1;
+const DEFAULT_PREFS: Prefs = { viewRev: 0, view: 'all', density: 'full', groupBy: 'stack', intervalSec: 30, paused: false, collapsed: [], order: [...STACK_ORDER] };
 const INTERVALS = [10, 15, 30, 60, 300];
+
+// Lưới "Toàn bộ": ô cao cố định, bề ngang co giãn trong [MIN, MAX] sao cho cả lưới
+// vừa chiều cao vùng nhìn; MIN đủ cho 3 dòng (loại · tên · trạng thái) không vỡ chữ.
+const ALL_MIN_W = 136;
+const ALL_MAX_W = 260;
+const ALL_TILE_H = 66;
+const ALL_GAP = 6;
+/** padding-top của .mon-all — trừ ra khi đo chiều cao còn lại. */
+const ALL_PAD_TOP = 10;
+
+/**
+ * Số cột cho n ô trong khung w×h: ít cột nhất (ô rộng nhất) mà vẫn vừa chiều cao,
+ * nhưng không ít tới mức ô rộng quá MAX (để còn lấp kín bề ngang). Không vừa nổi
+ * ngay cả ở cỡ MIN thì dùng cỡ MIN và chấp nhận cuộn.
+ */
+function fitAll(n: number, w: number, h: number): { cols: number; colW: number } | null {
+  if (n === 0 || w < ALL_MIN_W || h <= 0) return null;
+  const maxCols = Math.max(1, Math.floor((w + ALL_GAP) / (ALL_MIN_W + ALL_GAP)));
+  const fillCols = Math.ceil((w + ALL_GAP) / (ALL_MAX_W + ALL_GAP));
+  let cols = maxCols;
+  for (let c = 1; c <= maxCols; c++) {
+    const r = Math.ceil(n / c);
+    if (r * ALL_TILE_H + (r - 1) * ALL_GAP <= h) { cols = c; break; }
+  }
+  cols = Math.min(n, maxCols, Math.max(cols, fillCols));
+  const colW = Math.min(ALL_MAX_W, Math.floor((w - (cols - 1) * ALL_GAP) / cols));
+  return { cols, colW };
+}
 
 function loadJson<T>(key: string, fallback: T): T {
   try {
@@ -89,7 +123,12 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
   const [overrides, setOverrides] = useState<Overrides>({});
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
-    setPrefs(loadJson(PREFS_KEY, DEFAULT_PREFS));
+    const p = loadJson(PREFS_KEY, DEFAULT_PREFS);
+    if (p.viewRev < VIEW_REV) {
+      const n = { ...p, view: 'all' as View, viewRev: VIEW_REV };
+      saveJson(PREFS_KEY, n);
+      setPrefs(n);
+    } else setPrefs(p);
     setOverrides(loadJson<Overrides>(OV_KEY, {}));
     setHydrated(true);
   }, []);
@@ -214,6 +253,33 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
     });
   }, [filtered, sort, order]);
 
+  // ── Toàn bộ: một lưới phẳng, nặng trước → theo thứ tự loại → tên ──
+  const allRows = useMemo(
+    () => [...filtered].sort((a, b) =>
+      LEVEL_RANK[b.ev.level] - LEVEL_RANK[a.ev.level]
+      || order.indexOf(a.res.stack) - order.indexOf(b.res.stack)
+      || a.res.name.localeCompare(b.res.name)),
+    [filtered, order],
+  );
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || prefs.view !== 'all') return;
+    const measure = () => {
+      const cs = getComputedStyle(el);
+      setBox({
+        w: el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
+        h: el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - ALL_PAD_TOP,
+      });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [prefs.view]);
+  const allFit = useMemo(() => fitAll(allRows.length, box.w, box.h), [allRows.length, box]);
+
   // ── Tooltip ──
   const [tip, setTip] = useState<Tip | null>(null);
   const showTip = useCallback((key: string, el: HTMLElement) => {
@@ -299,6 +365,7 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
           ))}
         </div>
         <div className="mon-seg" role="tablist" aria-label="Kiểu xem">
+          <button role="tab" aria-selected={prefs.view === 'all'} className={prefs.view === 'all' ? 'on' : ''} onClick={() => setPref('view', 'all')} title="Xem toàn bộ trên một màn hình">⊞</button>
           <button role="tab" aria-selected={prefs.view === 'tiles'} className={prefs.view === 'tiles' ? 'on' : ''} onClick={() => setPref('view', 'tiles')} title="Xem dạng ô">▦</button>
           <button role="tab" aria-selected={prefs.view === 'table'} className={prefs.view === 'table' ? 'on' : ''} onClick={() => setPref('view', 'table')} title="Xem dạng bảng">☰</button>
         </div>
@@ -394,7 +461,7 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
         </div>
       </div>
 
-      <div className="mon-scroll">
+      <div className={`mon-scroll${prefs.view === 'all' ? ' all' : ''}`} ref={scrollRef}>
         {/* ── Cần chú ý: mỗi tài nguyên đang vàng/đỏ một ô gọn, nêu thẳng chỉ số + giá trị ── */}
         {issues.length > 0 && prefs.view === 'tiles' && !levelFilter && (
           <section className="mon-issues" aria-label="Cần chú ý">
@@ -497,6 +564,26 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
             </section>
           );
         })}
+
+        {/* ── Xem toàn bộ ── */}
+        {prefs.view === 'all' && allRows.length > 0 && (
+          <div
+            className="mon-all"
+            style={allFit ? { gridTemplateColumns: `repeat(${allFit.cols}, ${allFit.colW}px)` } : undefined}
+          >
+            {allRows.map((r) => (
+              <AllTile
+                key={r.res.key}
+                row={r}
+                now={now}
+                selected={selected === r.res.key}
+                onOpen={open}
+                onEnter={showTip}
+                onLeave={hideTip}
+              />
+            ))}
+          </div>
+        )}
 
         {/* ── Xem dạng bảng ── */}
         {prefs.view === 'table' && tableRows.length > 0 && (
@@ -687,6 +774,41 @@ function Tile({ row, now, compact, showStack, selected, onOpen, onEnter, onLeave
           </div>
         </>
       )}
+    </button>
+  );
+}
+
+type AllTileProps = Omit<TileProps, 'compact' | 'showStack'>;
+
+/** Ô gọn của "Toàn bộ": loại · tên · một dòng trạng thái. Chi tiết nằm ở tooltip. */
+function AllTile({ row, now, selected, onOpen, onEnter, onLeave }: AllTileProps) {
+  const { res, st, ev } = row;
+  const meta = STACK_META[res.stack];
+  const issue = ev.reasons[0];
+  let line: React.ReactNode;
+  if (ev.level === 'down') line = <>Mất kết nối{st.since ? ` · ${ago(st.since, now)}` : ''}</>;
+  else if (ev.level === 'unknown') line = st.busy ? 'Đang đo…' : 'Chưa đo';
+  else if (issue) line = <>{issue.label} <b>{issue.value}</b></>;
+  else line = ev.kpis.slice(0, 2).map((k, i) => <span key={k.metric}>{i ? ' · ' : ''}{k.label} <b>{k.text}</b></span>);
+
+  return (
+    <button
+      className={`mon-tile mon-at lv-${ev.level}${selected ? ' sel' : ''}${st.busy ? ' busy' : ''}`}
+      onClick={() => onOpen(res.key)}
+      onMouseEnter={(e) => onEnter(res.key, e.currentTarget)}
+      onMouseLeave={onLeave}
+      onFocus={(e) => onEnter(res.key, e.currentTarget)}
+      onBlur={onLeave}
+      aria-label={`${meta.label} ${res.name} — ${LEVEL_LABEL[ev.level]}`}
+    >
+      <div className="mon-at-top">
+        <span className="mon-dot" aria-hidden />
+        <span className="mon-at-stack">{meta.icon} {meta.short}</span>
+        <span className="mon-at-proj">{res.project}</span>
+        {ev.reasons.length > 1 && <span className="mon-tile-n">{ev.reasons.length}</span>}
+      </div>
+      <div className="mon-at-name">{res.name}</div>
+      <div className="mon-at-st">{line}</div>
     </button>
   );
 }
