@@ -55,8 +55,8 @@ const MAX_SAMPLES = 90;
 const CONCURRENCY = 3;
 /** Cứ N vòng đo Kafka sâu (lag + host) một lần; các vòng giữa giữ số liệu cũ. */
 const DEEP_EVERY = 5;
-/** Tab ẩn: vẫn đo (để chấm đỏ trên menu còn đúng) nhưng thưa hơn. */
-const HIDDEN_MIN_SEC = 120;
+/** Tab ẩn: vẫn đo (cảnh báo critical ở footer + chấm đỏ trên menu) nhưng thưa hơn — đủ gần để không báo trễ. */
+const HIDDEN_MIN_SEC = 60;
 
 const KAFKA_HEAVY = new Set<string>([...KAFKA_LAG_METRICS, ...KAFKA_HOST_METRICS]);
 

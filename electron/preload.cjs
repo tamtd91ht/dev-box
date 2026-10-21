@@ -207,6 +207,18 @@ contextBridge.exposeInMainWorld('desktopApi', {
   fetch: (opts) => ipcRenderer.invoke('desktop:apiFetch', opts),
 });
 
+// Cảnh báo critical của Monitor ra ngoài app: nháy taskbar + toast hệ thống
+// (main chỉ làm khi cửa sổ không ở trước mặt). Bấm toast → onOpen.
+contextBridge.exposeInMainWorld('desktopAlert', {
+  critical: (title, body) => ipcRenderer.send('alert:critical', String(title), String(body)),
+  /** Người dùng bấm toast. Trả về hàm huỷ đăng ký. */
+  onOpen: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on('alert:open', handler);
+    return () => ipcRenderer.removeListener('alert:open', handler);
+  },
+});
+
 // In-app console: the shell + `next dev` log stream the main process buffers
 // (see pushLog in electron/main.cjs). Rendered by components/DesktopConsole.tsx.
 contextBridge.exposeInMainWorld('desktopConsole', {

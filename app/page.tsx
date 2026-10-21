@@ -58,6 +58,7 @@ import UpdateButton from '@/components/UpdateButton';
 import HardReloadButton from '@/components/HardReloadButton';
 import { hydratePresets } from '@/lib/presetSync';
 import UpdatePrompt from '@/components/UpdatePrompt';
+import CritBadge, { useCritAlerts, type CritStack } from '@/components/monitor/CritBar';
 import { resolveAuth, authReady as isAuthReady } from '@/lib/request';
 import {
   fetchFullConfig,
@@ -228,6 +229,7 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
 ];
 
 type NavPos = 'top' | 'left' | 'right';
+const NO_CRIT: CritStack[] = [];
 const NAV_KEY = 'devbox.navPos';
 
 export default function Home() {
@@ -650,6 +652,12 @@ export default function Home() {
     saveLocalConfig(TOOL, disk).catch(() => {});
   }
 
+  // Cảnh báo critical (components/monitor/CritBar): badge ở góc trái footer + nháy
+  // taskbar / toast hệ thống khi app không ở trước mặt. Bấm → tab Monitor.
+  const critStacks = monSum?.critStacks ?? NO_CRIT;
+  const openMonitor = useCallback(() => pickTab('monitor'), [pickTab]);
+  useCritAlerts(critStacks, openMonitor);
+
   return (
     <div className="shell" data-nav={navPos}>
       {/* Menu đang ẩn: dải mỏng thế chỗ — bấm là menu về. Nằm đúng ô lưới của
@@ -881,11 +889,11 @@ export default function Home() {
             <TerminalWorkspace visible={shown('terminal')} />
           </main>
         )}
-        {visited.monitor && (
-          <main className="workspace" style={pane('monitor')} aria-hidden={!shown('monitor')}>
-            <MonitorWorkspace visible={shown('monitor')} onOpenTab={pickTab} onSummary={setMonSum} />
-          </main>
-        )}
+        {/* Monitor luôn mount (không chờ `visited`): cảnh báo critical ở footer cần
+            vòng đo chạy ngay từ lúc mở app, dù chưa vào tab Monitor lần nào. */}
+        <main className="workspace" style={pane('monitor')} aria-hidden={!shown('monitor')}>
+          <MonitorWorkspace visible={shown('monitor')} onOpenTab={pickTab} onSummary={setMonSum} />
+        </main>
         {visited.redis && (
           <main className="workspace" style={pane('redis')} aria-hidden={!shown('redis')}>
             <RedisWorkspace />
@@ -1066,7 +1074,12 @@ export default function Home() {
 
       {/* ── Footer ───────────────────────────────────────────────────── */}
       <footer className="appfoot">
-        <span>VHS DevBox · infra toolbox dùng chung cho mọi dự án</span>
+        <span className="foot-left">
+          {/* Cảnh báo critical ở góc trái footer — footer có mặt ở mọi tab và mọi
+              vị trí menu (kể cả menu ẩn), không bị <webview> che. */}
+          <CritBadge stacks={critStacks} onOpen={openMonitor} />
+          <span>VHS DevBox · infra toolbox dùng chung cho mọi dự án</span>
+        </span>
         <span className="foot-right">
           Redis · Kafka · RabbitMQ · MongoDB · Elastic · PostgreSQL · Office · Google · Mail · Links · Git · Webhooks · Automation
           {/* Đồng bộ configs/ với repo dev-box-config: đẩy lên một cú bấm,

@@ -11150,3 +11150,28 @@ html.tf-page nextjs-portal { display: none !important; }
 .tf-panel .qtr-head { cursor: grab; }
 .tf-panel .qtr-head:active { cursor: grabbing; }
 .tf-panel .qtr-head button, .tf-panel .qtr-head select { cursor: pointer; }
+
+
+/* ── Cảnh báo critical ở góc trái footer (components/monitor/CritBar) ──────
+   Nút dùng LẠI kiểu chuông thông báo (.ntc-bell.has-unread + .ms-unread) —
+   cùng kích thước, cùng quầng sáng — chỉ khác icon và nhịp 1s. Tên loại kế
+   bên: chữ mảnh, nhỏ, đỏ critical (không đậm), hiện nhẹ mỗi nhịp. */
+.foot-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.crit { display: inline-flex; align-items: center; gap: 7px; flex: none; }
+.crit-bell { animation-duration: 1s; }
+.crit-ico { width: 1em; height: 1em; flex: none; color: #ef4444; }
+.crit-name {
+  min-width: 7ch; font-size: 11px; font-weight: 300; letter-spacing: .02em;
+  color: #ef4444; white-space: nowrap;
+  animation: crit-name 1s ease-in-out both;
+}
+:root[data-theme='light'] .crit-name { color: #dc2626; }
+@keyframes crit-name {
+  0%   { opacity: 0; }
+  20%  { opacity: 1; }
+  75%  { opacity: 1; }
+  100% { opacity: .15; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .crit-bell, .crit-name { animation: none; }
+}

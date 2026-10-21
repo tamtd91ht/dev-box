@@ -17,7 +17,7 @@
 // It knows NOTHING about Zalo specifically — plugins are declared in the
 // renderer (lib/workspace/plugins.ts). Nothing here is hardcoded per website.
 
-const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard, net, dialog, webContents, WebContentsView } = require('electron');
+const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard, net, dialog, webContents, WebContentsView, Notification } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -2686,6 +2686,43 @@ ipcMain.handle('zaloapi:readCookies', async (_evt, partition, names) => {
   } catch (err) {
     log('ZaloApiCookiesError', `${partition} · ${err && err.message}`);
     return { ok: false, error: err && err.message };
+  }
+});
+
+// ── Cảnh báo critical của Monitor (components/monitor/CritBar) ─────────────
+// Renderer báo khi có loại hạ tầng VỪA đỏ. Cửa sổ đang ở trước mặt thì thanh
+// critical trong app là đủ; không thì nháy nút taskbar (tới khi người dùng
+// quay lại) + toast hệ thống. Bấm toast → đưa app lên và mở tab Monitor.
+// Toast làm ở main (không phải `new Notification` trong renderer): một lần
+// một toast, có tên app, bấm được — xem ghi chú osNotify ở lib/automation/runtime.
+const CRIT_TOAST_GAP_MS = 15_000;
+let critToastAt = 0;
+const critToasts = new Set(); // giữ tham chiếu: toast bị GC thì sự kiện click mất trên Windows
+ipcMain.on('alert:critical', (evt, title, body) => {
+  try {
+    const win = BrowserWindow.fromWebContents(evt.sender);
+    if (!win || win.isDestroyed()) return;
+    if (win.isFocused() && !win.isMinimized()) return;
+    win.flashFrame(true);
+    win.once('focus', () => { if (!win.isDestroyed()) win.flashFrame(false); });
+    // Chập chờn đỏ/xanh liên tục thì chỉ nháy taskbar, không xả toast.
+    if (!Notification.isSupported() || Date.now() - critToastAt < CRIT_TOAST_GAP_MS) return;
+    critToastAt = Date.now();
+    const n = new Notification({ title: String(title || 'DevBox Monitor'), body: String(body || ''), urgency: 'critical' });
+    critToasts.add(n);
+    const drop = () => critToasts.delete(n);
+    n.on('close', drop);
+    n.on('click', () => {
+      drop();
+      if (win.isDestroyed()) return;
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+      evt.sender.send('alert:open');
+    });
+    n.show();
+  } catch (err) {
+    log('CritAlert', err && err.message);
   }
 });
 

@@ -23,6 +23,7 @@ import MonitorDetail from './MonitorDetail';
 import { emitInfraFocus } from '@/lib/infraFocus';
 import { focusFromRow } from '@/lib/monitor/focus';
 import MonitorThresholds from './MonitorThresholds';
+import type { CritStack } from './CritBar';
 
 type View = 'tiles' | 'table';
 type Density = 'full' | 'compact';
@@ -66,7 +67,13 @@ const bySeverity = (a: Row, b: Row): number =>
 
 interface Tip { key: string; x: number; y: number; above: boolean }
 
-export interface MonitorSummary { bad: number; warn: number; total: number }
+export interface MonitorSummary {
+  bad: number;
+  warn: number;
+  total: number;
+  /** Loại đang có kết nối đỏ (crit/down), theo thứ tự loại người dùng chọn — cho thanh critical toàn cục. */
+  critStacks: CritStack[];
+}
 
 interface Props {
   /** Pane đang hiện — tab ẩn vẫn đo nhưng thưa hơn. */
@@ -104,9 +111,16 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
     return () => clearInterval(t);
   }, []);
 
+  const order = useMemo(() => normOrder(prefs.order), [prefs.order]);
+
   useEffect(() => {
-    onSummary?.({ bad: counts.down + counts.crit, warn: counts.warn, total: rows.length });
-  }, [counts, rows.length, onSummary]);
+    const bad = new Map<InfraStack, number>();
+    for (const r of rows) {
+      if (r.ev.level === 'crit' || r.ev.level === 'down') bad.set(r.res.stack, (bad.get(r.res.stack) ?? 0) + 1);
+    }
+    const critStacks = order.filter((s) => bad.has(s)).map((s) => ({ stack: s, n: bad.get(s)! }));
+    onSummary?.({ bad: counts.down + counts.crit, warn: counts.warn, total: rows.length, critStacks });
+  }, [counts, rows, order, onSummary]);
 
   // ── Lọc ──
   const [stackFilter, setStackFilter] = useState<InfraStack[]>([]);
@@ -132,7 +146,6 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
   // Dự án bị xoá khỏi cấu hình thì bỏ bộ lọc, nếu không màn hình trống mà không rõ vì sao.
   useEffect(() => { if (project && !projects.includes(project)) setProject(''); }, [project, projects]);
 
-  const order = useMemo(() => normOrder(prefs.order), [prefs.order]);
   /** Chỉ những loại thực sự có kết nối mới có nút lọc — nút cho loại trống chỉ là nhiễu. */
   const presentStacks = useMemo(() => order.filter((s) => rows.some((r) => r.res.stack === s)), [order, rows]);
   // Loại biến mất khỏi cấu hình thì bỏ khỏi bộ lọc, nếu không màn hình trống mà không rõ vì sao.
