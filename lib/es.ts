@@ -3,6 +3,9 @@
 // to the cluster — the browser never reaches ES directly). Browser-safe: no fs,
 // no server-only imports.
 
+import type { EsDiagnosis } from '@/lib/esDiagnoseRules';
+export type { EsDiagnosis };
+
 export interface PublicEsConnection {
   id: string;
   name: string;
@@ -136,6 +139,11 @@ export function listEsIndices(connectionId: string): Promise<EsIndexInfo[]> {
 
 export function listEsNodes(connectionId: string): Promise<EsNodeInfo[]> {
   return esAction<EsNodeInfo[]>('nodes', { connectionId });
+}
+
+/** Phân tích heap / shard / CPU / đĩa của cụm — toàn GET, mất ~6–8s (đo GC trong 5s). */
+export function esDiagnose(connectionId: string): Promise<EsDiagnosis> {
+  return esAction<EsDiagnosis>('diagnose', { connectionId });
 }
 
 export function esMapping(connectionId: string, index: string): Promise<WireDoc> {

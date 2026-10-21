@@ -10932,6 +10932,13 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .kld-pick select { max-width: 260px; }
 .kld-nums { display: inline; }
 .kld-owner { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+/* ES: bảng node — tô ô vượt ngưỡng; trạng thái cụm theo màu */
+.esd-warn { color: var(--warn); font-weight: 600; }
+.esd-crit { color: var(--err); font-weight: 700; }
+.esd-status { text-transform: uppercase; }
+.esd-status.esd-green { color: var(--ok); }
+.esd-status.esd-yellow { color: var(--warn); }
+.esd-status.esd-red { color: var(--err); }
 @media (prefers-reduced-motion: reduce) { .pgd-item.flash { animation: none; outline: 2px solid var(--lv); } }
 
 /* hộp chỉnh ngưỡng */

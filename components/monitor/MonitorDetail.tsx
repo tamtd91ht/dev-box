@@ -2,7 +2,7 @@
 
 // Ngăn chi tiết một tài nguyên (bấm vào thẻ / dòng bảng): nguyên nhân, lịch sử
 // trạng thái, toàn bộ chỉ số kèm đồ thị nhỏ, và số liệu riêng của Kafka.
-// Cảnh báo nào có bộ phân tích nguyên nhân (cache hit PostgreSQL, hit rate Redis, lag Kafka) thì có
+// Cảnh báo nào có bộ phân tích nguyên nhân (cache hit PostgreSQL, hit rate Redis, lag Kafka, cụm ES) thì có
 // nút "Phân tích" ngay trên dòng nguyên nhân.
 
 import { useEffect, useMemo, useState } from 'react';
@@ -15,6 +15,7 @@ import { Spark, Timeline } from './Spark';
 import PgCacheDiagnosis from './PgCacheDiagnosis';
 import RedisMissDiagnosis from './RedisMissDiagnosis';
 import KafkaLagDiagnosis from './KafkaLagDiagnosis';
+import EsDiagnosisPanel from './EsDiagnosis';
 import { focusFromRow } from '@/lib/monitor/focus';
 
 interface Props {
@@ -28,6 +29,8 @@ interface Props {
 
 /** Cảnh báo Kafka có nút Phân tích lag (đều xoay quanh một consumer group). */
 const KAFKA_LAG_METRICS = new Set(['maxConsumerLag', 'deadLagGroups', 'stalledGroups', 'maxStalledSec']);
+/** Cảnh báo ES có nút Phân tích — cùng một bộ phân tích cả cụm (heap, shard, CPU, đĩa). */
+const ES_METRICS = new Set(['statusLevel', 'unassignedShards', 'heapPct', 'diskUsedPct', 'cpuPct', 'pendingTasks']);
 
 /** Chỉ số có luật lên đầu, rồi tới phần còn lại theo bảng chữ cái. */
 function orderMetrics(keys: string[], ruled: Set<string>): string[] {
@@ -61,7 +64,8 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
   useEffect(() => { setDiagOpen(false); }, [res.key]);
   const canDiagnose = (metric: string): boolean =>
     (res.stack === 'pg' && metric === 'cacheHitPct') || (res.stack === 'redis' && metric === 'hitRatePct')
-    || (res.stack === 'kafka' && KAFKA_LAG_METRICS.has(metric));
+    || (res.stack === 'kafka' && KAFKA_LAG_METRICS.has(metric))
+    || (res.stack === 'es' && ES_METRICS.has(metric));
   // Kafka: group có lag để chọn, mặc định group gắn với cảnh báo nặng nhất (cùng cách nút "Mở Kafka").
   const lagGroups = useMemo(
     () => (last?.kafkaGroups ?? []).filter((g) => g.lag > 0 && !g.error).sort((a, b) => b.lag - a.lag).map((g) => ({ groupId: g.groupId, lag: g.lag })),
@@ -133,6 +137,7 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
 
         {diagOpen && res.stack === 'pg' ? <PgCacheDiagnosis key={res.key} connectionId={res.id} /> : null}
         {diagOpen && res.stack === 'redis' ? <RedisMissDiagnosis key={res.key} connectionId={res.id} /> : null}
+        {diagOpen && res.stack === 'es' ? <EsDiagnosisPanel key={res.key} connectionId={res.id} /> : null}
         {diagOpen && res.stack === 'kafka' && defaultGroup
           ? <KafkaLagDiagnosis key={res.key} connectionId={res.id} groups={lagGroups} initialGroup={defaultGroup} />
           : null}

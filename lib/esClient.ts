@@ -37,7 +37,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
  * authoritative and NOT retried on another node (same policy as the RabbitMQ
  * tab's management-API client). Throws Error with the ES reason.
  */
-async function esFetch<T>(
+export async function esFetch<T>(
   conn: EsConnection,
   pathAndQuery: string,
   body?: unknown,

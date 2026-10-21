@@ -25,6 +25,7 @@
     "check:pg-diagnose": "tsx scripts/check-pg-diagnose.ts",
     "check:redis-diagnose": "tsx scripts/check-redis-diagnose.ts",
     "check:kafka-diagnose": "tsx scripts/check-kafka-diagnose.ts",
+    "check:es-diagnose": "tsx scripts/check-es-diagnose.ts",
     "check:zalo": "tsx scripts/check-zalo-extract.ts",
     "check:json-edit": "tsx scripts/check-json-edit.ts",
     "check:history": "tsx scripts/check-browser-history.ts",

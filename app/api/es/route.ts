@@ -13,6 +13,7 @@
 //               (đường phân trang của XUẤT BÁO CÁO — xem scrollStart ở esClient)
 //     'count'   { connectionId, index, query? | body? } → { ok, result: { count, tookMs } }
 //     'console' { connectionId, method, path, body? } → { ok, result: EsConsoleResult }
+//     'diagnose' { connectionId }               → { ok, result: EsDiagnosis }   (toàn GET; heap/shard/CPU/đĩa — lib/esDiagnose)
 //
 // There is NO write action — the tool cannot index/delete/change settings.
 // 'console' passes a raw REST call through, but only after esClient vets it
@@ -22,6 +23,7 @@
 // scripting keys rejected). Gated by ES_TOOL_ENABLED (403 when off).
 
 import { NextResponse, type NextRequest } from 'next/server';
+import { diagnoseEs } from '@/lib/esDiagnose';
 import {
   ES_ENABLED,
   testConnection,
@@ -92,6 +94,9 @@ export async function POST(req: NextRequest) {
         break;
       case 'nodes':
         result = await listNodes(conn);
+        break;
+      case 'diagnose': // vì sao cụm có vấn đề (Monitor → Phân tích) — chỉ GET
+        result = await diagnoseEs(conn);
         break;
       case 'mapping':
         result = await getMapping(conn, String(body.index ?? ''));
