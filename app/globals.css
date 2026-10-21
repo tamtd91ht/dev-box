@@ -10942,6 +10942,19 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .esd-query { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .esd-hot input { margin: 0 4px 0 0; vertical-align: middle; }
 .mon-es-diag { margin-top: 10px; }
+
+/* Nút "ⓘ Cơ chế" + bảng giải thích cơ chế phân tích (DiagnosisView) */
+.pgd-info-btn.on { background: var(--glass-2); border-color: var(--glass-brd-hover); }
+.pgd-info {
+  position: relative; margin-bottom: 12px; padding: 10px 12px 12px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  font-size: 13px; line-height: 1.55;
+}
+.pgd-info p { margin: 0 0 8px !important; }
+.pgd-info code { font-family: var(--mono); font-size: 12px; }
+.pgd-info-steps { margin: 0 0 8px; padding-left: 20px; display: flex; flex-direction: column; gap: 5px; }
+.pgd-info-close { margin-top: 2px; }
 @media (prefers-reduced-motion: reduce) { .pgd-item.flash { animation: none; outline: 2px solid var(--lv); } }
 
 /* hộp chỉnh ngưỡng */

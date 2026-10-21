@@ -43,10 +43,18 @@ interface Props {
   foot?: ReactNode;
   /** Chưa chạy lần nào (vd chờ xác nhận) — hiện thay cho kết quả. */
   start?: ReactNode;
+  /** Hiện lại `start` dù đã có kết quả (vd "Phân tích lại" cần chọn lại thời gian đo). */
+  showStart?: boolean;
   onRerun?: () => void;
+  /** Giải thích cơ chế phân tích — nút "ⓘ Cơ chế": rê chuột thấy `infoSummary`, bấm mở `info`. */
+  info?: ReactNode;
+  infoSummary?: string;
 }
 
-export default function DiagnosisView({ title, busy, busyText, error, data: d, nums, extra, foot, start, onRerun }: Props) {
+export default function DiagnosisView({
+  title, busy, busyText, error, data: d, nums, extra, foot, start, showStart, onRerun, info, infoSummary,
+}: Props) {
+  const [infoOpen, setInfoOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const listRef = useRef<HTMLOListElement>(null);
@@ -67,6 +75,17 @@ export default function DiagnosisView({ title, busy, busyText, error, data: d, n
       <h4>
         {title}
         <span className="pgd-head-acts">
+          {info ? (
+            <button
+              type="button"
+              className={`mon-btn pgd-info-btn${infoOpen ? ' on' : ''}`}
+              onClick={() => setInfoOpen((o) => !o)}
+              aria-expanded={infoOpen}
+              title={`${infoSummary ?? 'Cơ chế phân tích'} — bấm để xem chi tiết`}
+            >
+              ⓘ Cơ chế
+            </button>
+          ) : null}
           {d ? (
             <button
               type="button"
@@ -86,7 +105,14 @@ export default function DiagnosisView({ title, busy, busyText, error, data: d, n
         </span>
       </h4>
 
-      {!d && !busy && !error ? start : null}
+      {info && infoOpen ? (
+        <div className="pgd-info" role="note">
+          {info}
+          <button type="button" className="mon-btn pgd-info-close" onClick={() => setInfoOpen(false)}>Đóng</button>
+        </div>
+      ) : null}
+
+      {!busy && (showStart || (!d && !error)) ? start : null}
       {busy && !d ? <p className="mon-d-faint">{busyText}</p> : null}
       {error ? <p className="pgd-error">Không phân tích được: {error}</p> : null}
 
