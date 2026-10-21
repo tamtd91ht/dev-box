@@ -13,7 +13,8 @@
 //               (đường phân trang của XUẤT BÁO CÁO — xem scrollStart ở esClient)
 //     'count'   { connectionId, index, query? | body? } → { ok, result: { count, tookMs } }
 //     'console' { connectionId, method, path, body? } → { ok, result: EsConsoleResult }
-//     'diagnose' { connectionId }               → { ok, result: EsDiagnosis }   (toàn GET; heap/shard/CPU/đĩa — lib/esDiagnose)
+//     'diagnose' { connectionId, hotThreads? }  → { ok, result: EsDiagnosis }   (toàn GET đọc thống kê; heap/shard/CPU/đĩa/truy vấn chậm —
+//               lib/esDiagnose; hot_threads chỉ khi hotThreads=true)
 //
 // There is NO write action — the tool cannot index/delete/change settings.
 // 'console' passes a raw REST call through, but only after esClient vets it
@@ -96,7 +97,7 @@ export async function POST(req: NextRequest) {
         result = await listNodes(conn);
         break;
       case 'diagnose': // vì sao cụm có vấn đề (Monitor → Phân tích) — chỉ GET
-        result = await diagnoseEs(conn);
+        result = await diagnoseEs(conn, { hotThreads: body.hotThreads === true });
         break;
       case 'mapping':
         result = await getMapping(conn, String(body.index ?? ''));

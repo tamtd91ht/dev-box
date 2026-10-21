@@ -88,7 +88,7 @@ export interface RedisMissFacts {
   version: string;
   nodes: number;
   /** Có bắt được sự kiện keymiss không — lý do nếu không. */
-  capture: { ok: true } | { ok: false; reason: 'version' | 'config' | 'noEvents' | 'busy'; detail?: string };
+  capture: { ok: true } | { ok: false; reason: 'version' | 'config' | 'noEvents' | 'busy' | 'load'; detail?: string };
   /** Cờ notify-keyspace-events trước khi phân tích (đã trả lại). null = không đọc được. */
   originalFlags: string | null;
   durationSec: number;
@@ -217,7 +217,9 @@ export function analyzeRedisMisses(f: RedisMissFacts, at = Date.now()): RedisMis
       level: 'warn',
       title: why === 'version'
         ? `Redis ${f.version} chưa hỗ trợ sự kiện key-miss — chưa xác định được dạng key nào miss`
-        : why === 'busy'
+        : why === 'load'
+          ? `Không bật bắt key-miss: tốc độ miss quá cao (${f.capture.detail ?? '?'}) — để bảo vệ production`
+          : why === 'busy'
           ? 'Đang có một phiên phân tích khác trên kết nối này'
           : why === 'config'
             ? 'Server chặn CONFIG — không bật tạm được sự kiện key-miss'
@@ -227,16 +229,19 @@ export function analyzeRedisMisses(f: RedisMissFacts, at = Date.now()): RedisMis
         why === 'config' ? `CONFIG lỗi: ${f.capture.detail ?? '?'} (thường gặp ở Redis managed: ElastiCache, Azure Cache…)` : '',
         why === 'noEvents' ? `Cửa sổ ${f.durationSec}s có ${fmtN(f.window?.misses ?? 0)} miss theo INFO nhưng không nhận được sự kiện nào${f.capture.detail ? ` (${f.capture.detail})` : ''}` : '',
         why === 'busy' ? 'Chờ phiên kia xong (nó sẽ tự trả lại cấu hình) rồi phân tích lại' : '',
+        why === 'load' ? 'Mỗi miss sẽ thành một lần publish trên luồng chính của Redis — ở tốc độ này sẽ làm chậm mọi lệnh khác' : '',
       ].filter(Boolean),
-      fix: why === 'version'
-        ? 'Nâng Redis lên ≥ 6.0; trong lúc chờ, ghi log key miss ở phía ứng dụng (chỗ GET trả về rỗng) theo dạng key để biết loại nào miss.'
+      fix: why === 'version' || why === 'load'
+        ? `${why === 'load' ? 'Chạy lại lúc thấp điểm, hoặc ' : 'Nâng Redis lên ≥ 6.0; trong lúc chờ, '}ghi log / đếm key miss ở phía ứng dụng (chỗ GET trả về rỗng) theo dạng key để biết loại nào miss — không tốn gì phía Redis.`
         : why === 'config'
           ? 'Bật notify-keyspace-events có chứa "Em" qua cấu hình của nhà cung cấp (parameter group / redis.conf). Khi đã bật sẵn, app chỉ cần nghe — không phải CONFIG SET.'
           : why === 'busy' ? undefined : 'Kiểm tra user có quyền PSUBSCRIBE (ACL) và notify-keyspace-events chứa "Em".',
       sql: why === 'config' || why === 'noEvents'
         ? "CONFIG SET notify-keyspace-events Em   # hoặc khai trong redis.conf / parameter group\nPSUBSCRIBE __keyevent@*__:keymiss     # kiểm tra tay: mỗi miss in ra tên key"
         : undefined,
-      step: why === 'busy' ? undefined : { phase: 'observe', text: why === 'version' ? 'Nâng Redis ≥ 6.0 (hoặc log key miss phía ứng dụng) để biết dạng key nào miss' : 'Bật notify-keyspace-events "Em" phía server rồi phân tích lại' },
+      step: why === 'busy' ? undefined : { phase: 'observe', text: why === 'version' ? 'Nâng Redis ≥ 6.0 (hoặc log key miss phía ứng dụng) để biết dạng key nào miss'
+        : why === 'load' ? 'Đếm key miss theo dạng ở phía ứng dụng (hoặc phân tích lại lúc thấp điểm)'
+          : 'Bật notify-keyspace-events "Em" phía server rồi phân tích lại' },
     });
   }
 

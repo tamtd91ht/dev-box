@@ -84,6 +84,12 @@ check(!find(facts({ evicted: { total: 90_000, window: 0 }, memory: { used: 1e9, 
 check(find(facts({ capture: { ok: false, reason: 'config', detail: 'unknown command CONFIG' }, captured: 0 }), 'no-capture')!.fix!.includes('parameter group'),
   'CONFIG bị khoá → hướng dẫn bật qua cấu hình nhà cung cấp');
 
+{
+  const d = analyzeRedisMisses(facts({ capture: { ok: false, reason: 'load', detail: '48.000 miss/giây' }, captured: 0 }));
+  const f = d.findings.find((x) => x.id === 'no-capture')!;
+  check(f.title.includes('bảo vệ production') && f.fix!.includes('phía ứng dụng'), 'miss quá cao → không bật sự kiện, đề xuất đếm phía ứng dụng');
+}
+
 // ── Hiện tại hay chuyện cũ ──
 {
   const d = analyzeRedisMisses(facts({ window: { hits: 9_500, misses: 500, sec: 10 }, patterns: [pattern({})] }));

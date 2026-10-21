@@ -1,26 +1,34 @@
-// Server-only: phân tích sức khoẻ cụm Elasticsearch — phần GOM SỐ LIỆU.
+// Server-only: phân tích sức khoẻ + hiệu năng truy vấn cụm Elasticsearch — phần GOM SỐ LIỆU.
 //
-// Toàn lệnh GET (đúng mô hình chỉ đọc của /api/es), không đổi gì trên cụm:
-//   • _cluster/health, _cat/shards, _cat/indices (replica), pending_tasks.
-//   • _nodes/stats hai lần cách WINDOW_MS → GC old gen + request bị từ chối
-//     TRONG cửa sổ (số cộng dồn từ lúc khởi động không nói gì về hiện tại).
-//   • _cluster/allocation/explain khi có shard chưa gán — lời giải thích của ES.
-//   • Watermark đĩa / allocation.enable / max_shards_per_node thật của cụm
-//     (persistent > transient > mặc định).
-//   • Index đang bị khoá read_only_allow_delete.
-//   • hot_threads CHỈ khi có node CPU cao — để biết việc gì đang ăn CPU.
+// AN TOÀN CHO PRODUCTION — chỉ đọc thống kê ES giữ sẵn trong bộ nhớ, không
+// lệnh nào chặn (block) cụm, không đổi gì:
+//   • GET /, _cluster/health, _cluster/settings, _cluster/pending_tasks,
+//     _cluster/allocation/explain — đọc cluster state trên master, rẻ.
+//   • _nodes/stats (có filter_path) hai lần cách WINDOW_MS — đọc bộ đếm trong
+//     bộ nhớ từng node: GC old gen, request bị từ chối, luồng đang chạy từng
+//     thread pool, query/indexing/cache trong cửa sổ.
+//   • _tasks (chỉ search, filter_path) — danh sách task đang chạy, trong bộ nhớ.
+//   • _cat/shards, _stats/search theo index, index settings — CHỈ khi cụm
+//     ≤ LARGE_CLUSTER_SHARDS shard; cụm lớn hơn dùng _cat/allocation thay
+//     _cat/shards và bỏ phần theo index (ghi rõ trong kết quả).
+//   • KHÔNG chạy hot_threads mặc định: nó lấy mẫu stack mọi luồng trên mọi node
+//     (mỗi lần lấy mẫu là một safepoint JVM). Chỉ chạy khi người dùng bật hẳn.
+//   • Mỗi kết nối một phiên phân tích tại một thời điểm; mọi request có timeout
+//     15s (esFetch), lỗi một phần thì bỏ phần đó chứ không thử lại dồn dập.
 // Luật biến số liệu thành kết luận nằm ở lib/esDiagnoseRules (thuần, kiểm được).
 
 import type { EsConnection } from '@/lib/esConnections';
 import { esFetch } from '@/lib/esClient';
 import {
   analyzeEs, threadKind,
-  type EsDiagnosis, type EsExplain, type EsFacts, type EsHotThread, type EsNodeFacts,
+  type EsDiagnosis, type EsExplain, type EsFacts, type EsHotThread, type EsNodeFacts, type EsRunningSearch,
 } from '@/lib/esDiagnoseRules';
 
-const WINDOW_MS = 5000;
-const CPU_HOT = 85;
+const WINDOW_MS = 8000;
 const UNASSIGNED_LIST_MAX = 50;
+/** Trên ngần này shard thì bỏ các lệnh liệt kê theo shard / index (phản hồi lớn, tốn CPU node điều phối). */
+const LARGE_CLUSTER_SHARDS = 10_000;
+const RUNNING_MAX = 20;
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -29,11 +37,16 @@ const NODE_STATS =
     'nodes.*.name', 'nodes.*.roles',
     'nodes.*.jvm.mem.heap_used_percent', 'nodes.*.jvm.mem.heap_max_in_bytes', 'nodes.*.jvm.gc.collectors.old',
     'nodes.*.os.cpu.percent', 'nodes.*.os.mem.total_in_bytes',
-    'nodes.*.thread_pool.search', 'nodes.*.thread_pool.write',
+    'nodes.*.thread_pool.*.active', 'nodes.*.thread_pool.*.queue', 'nodes.*.thread_pool.*.rejected',
     'nodes.*.breakers',
-    'nodes.*.indices.fielddata.memory_size_in_bytes', 'nodes.*.indices.segments.memory_in_bytes',
+    'nodes.*.indices.fielddata.memory_size_in_bytes', 'nodes.*.indices.segments.memory_in_bytes', 'nodes.*.indices.segments.count',
+    'nodes.*.indices.search.query_total', 'nodes.*.indices.search.query_time_in_millis',
+    'nodes.*.indices.store.size_in_bytes', 'nodes.*.indices.indexing.index_total',
+    'nodes.*.indices.query_cache.hit_count', 'nodes.*.indices.query_cache.miss_count', 'nodes.*.indices.query_cache.evictions',
     'nodes.*.fs.total',
   ].join(',');
+
+const INDEX_SEARCH = '/_stats/search?level=indices&filter_path=indices.*.total.search.query_total,indices.*.total.search.query_time_in_millis';
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const nn = (v: unknown): number | null => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -66,33 +79,57 @@ export function parseHotThreads(text: string): Map<string, EsHotThread[]> {
   return out;
 }
 
-export async function diagnoseEs(conn: EsConnection): Promise<EsDiagnosis> {
+const running = new Set<string>();
+
+export async function diagnoseEs(conn: EsConnection, opts: { hotThreads?: boolean } = {}): Promise<EsDiagnosis> {
+  if (running.has(conn.id)) throw new Error('Đang có một phiên phân tích khác trên cụm này — chờ nó xong rồi chạy lại.');
+  running.add(conn.id);
+  try {
+    return await run(conn, !!opts.hotThreads);
+  } finally {
+    running.delete(conn.id);
+  }
+}
+
+async function run(conn: EsConnection, wantHotThreads: boolean): Promise<EsDiagnosis> {
+  const skipped: string[] = [];
+  const [root, health] = await Promise.all([esFetch<Json>(conn, '/'), esFetch<Json>(conn, '/_cluster/health')]);
+  const large = n(health.active_shards) + n(health.unassigned_shards) > LARGE_CLUSTER_SHARDS;
+  if (large) skipped.push(`cụm > ${fmt(LARGE_CLUSTER_SHARDS)} shard: bỏ _cat/shards (dùng _cat/allocation), bỏ thống kê search theo index, slowlog`);
+
   const t0 = Date.now();
-  const [root, health, s0, shards, indices, settings, readOnly, pending] = await Promise.all([
-    esFetch<Json>(conn, '/'),
-    esFetch<Json>(conn, '/_cluster/health'),
+  const [s0, idx0, shards, alloc, indices, settings, readOnly, pending, slowlog] = await Promise.all([
     esFetch<Json>(conn, NODE_STATS),
-    soft(esFetch<Json[]>(conn, '/_cat/shards?format=json&bytes=b&h=index,shard,prirep,state,unassigned.reason,node,store')),
+    large ? null : soft(esFetch<Json>(conn, INDEX_SEARCH)),
+    large ? null : soft(esFetch<Json[]>(conn, '/_cat/shards?format=json&bytes=b&h=index,shard,prirep,state,unassigned.reason,node,store')),
+    large ? soft(esFetch<Json[]>(conn, '/_cat/allocation?format=json&h=node,shards')) : null,
     soft(esFetch<Json[]>(conn, '/_cat/indices?format=json&h=index,rep')),
     soft(esFetch<Json>(conn, '/_cluster/settings?include_defaults=true&flat_settings=true&filter_path=*.cluster.routing.allocation.disk.watermark*,*.cluster.routing.allocation.enable,*.cluster.max_shards_per_node')),
     soft(esFetch<Json>(conn, '/_all/_settings/index.blocks.read_only_allow_delete?flat_settings=true')),
     soft(esFetch<Json>(conn, '/_cluster/pending_tasks')),
+    large ? null : soft(esFetch<Json>(conn, '/_all/_settings/index.search.slowlog.threshold.*?flat_settings=true')),
   ]);
 
   const unassigned = n(health.unassigned_shards);
   const explainRaw = unassigned > 0 ? await soft(esFetch<Json>(conn, '/_cluster/allocation/explain')) : null;
 
   await sleep(Math.max(0, t0 + WINDOW_MS - Date.now()));
-  const s1 = await esFetch<Json>(conn, NODE_STATS);
+  const [s1, idx1, tasks] = await Promise.all([
+    esFetch<Json>(conn, NODE_STATS),
+    idx0 ? soft(esFetch<Json>(conn, INDEX_SEARCH)) : null,
+    soft(esFetch<Json>(conn, '/_tasks?actions=indices:data/read/search&detailed=true&filter_path=nodes.*.name,nodes.*.tasks.*.running_time_in_nanos,nodes.*.tasks.*.description')),
+  ]);
   const windowSec = Math.max(1, Math.round((Date.now() - t0) / 1000));
+  if (!tasks) skipped.push('không đọc được _tasks (thiếu quyền monitor?) — chưa biết query nào đang chạy lâu');
 
-  // hot_threads chỉ khi cần — nó tự lấy mẫu 500ms trên mọi node.
-  const anyHot = Object.values<Json>(s1.nodes ?? {}).some((x) => n(x.os?.cpu?.percent) >= CPU_HOT);
+  // hot_threads: chỉ khi người dùng bật — xem ghi chú đầu file.
   let hot = new Map<string, EsHotThread[]>();
-  if (anyHot) {
-    const r = await soft(esFetch<Json>(conn, '/_nodes/hot_threads?threads=3&interval=500ms&ignore_idle_threads=true'));
+  if (wantHotThreads) {
+    const r = await soft(esFetch<Json>(conn, '/_nodes/hot_threads?threads=3&interval=500ms&snapshots=5&ignore_idle_threads=true'));
     const text = typeof r?.raw === 'string' ? r.raw : '';
     if (text) hot = parseHotThreads(text);
+  } else {
+    skipped.push('hot_threads (tắt mặc định — lấy mẫu stack gây safepoint ngắn trên mọi node)');
   }
 
   // Số shard theo node + kích thước + danh sách chưa gán.
@@ -109,12 +146,14 @@ export async function diagnoseEs(conn: EsConnection): Promise<EsDiagnosis> {
     if (r.node) shardsPerNode.set(String(r.node), (shardsPerNode.get(String(r.node)) ?? 0) + 1);
     if (r.state === 'STARTED') shardSizes.push({ index: String(r.index), shard: n(r.shard), bytes: n(r.store) });
   }
+  for (const r of alloc ?? []) if (r.node && r.node !== 'UNASSIGNED') shardsPerNode.set(String(r.node), n(r.shards));
 
   const nodes: EsNodeFacts[] = Object.entries<Json>(s1.nodes ?? {}).map(([id, x]) => {
     const p = s0.nodes?.[id] ?? x;
     const old1 = x.jvm?.gc?.collectors?.old ?? {};
     const old0 = p.jvm?.gc?.collectors?.old ?? old1;
     const tp = (o: Json, k: string) => o.thread_pool?.[k] ?? {};
+    const d = (path: (o: Json) => unknown) => Math.max(0, n(path(x)) - n(path(p)));
     const name = String(x.name ?? id);
     return {
       name,
@@ -139,6 +178,17 @@ export async function diagnoseEs(conn: EsConnection): Promise<EsDiagnosis> {
       diskAvail: nn(x.fs?.total?.available_in_bytes),
       shards: shardsPerNode.get(name) ?? 0,
       hotThreads: (hot.get(name) ?? []).sort((a, b) => b.pct - a.pct),
+      poolActive: Object.fromEntries(Object.entries<Json>(x.thread_pool ?? {}).map(([k, v]) => [k, n(v.active)])),
+      search: {
+        queries: d((o) => o.indices?.search?.query_total),
+        queryMs: d((o) => o.indices?.search?.query_time_in_millis),
+        storeBytes: nn(x.indices?.store?.size_in_bytes),
+        segments: nn(x.indices?.segments?.count),
+        indexing: d((o) => o.indices?.indexing?.index_total),
+        qcHit: d((o) => o.indices?.query_cache?.hit_count),
+        qcMiss: d((o) => o.indices?.query_cache?.miss_count),
+        qcEvictions: d((o) => o.indices?.query_cache?.evictions),
+      },
     };
   });
 
@@ -150,8 +200,8 @@ export async function diagnoseEs(conn: EsConnection): Promise<EsDiagnosis> {
   let explain: EsExplain | null = null;
   if (explainRaw && explainRaw.index !== undefined) {
     const agg = new Map<string, { decider: string; explanation: string; nodes: number }>();
-    for (const d of (explainRaw.node_allocation_decisions ?? []) as Json[]) {
-      for (const dec of (d.deciders ?? []) as Json[]) {
+    for (const dn of (explainRaw.node_allocation_decisions ?? []) as Json[]) {
+      for (const dec of (dn.deciders ?? []) as Json[]) {
         if (dec.decision !== 'NO' && dec.decision !== 'THROTTLE') continue;
         const k = `${dec.decider}|${dec.explanation}`;
         const cur = agg.get(k) ?? { decider: String(dec.decider), explanation: String(dec.explanation ?? ''), nodes: 0 };
@@ -176,6 +226,24 @@ export async function diagnoseEs(conn: EsConnection): Promise<EsDiagnosis> {
     const src = String(t.source ?? '?').split(/[\s[({]/)[0] || '?';
     pendingBy.set(src, (pendingBy.get(src) ?? 0) + 1);
   }
+
+  // Search đang chạy (task cha) — lâu nhất trước.
+  const runningSearches: EsRunningSearch[] = [];
+  for (const nd of Object.values<Json>(tasks?.nodes ?? {})) {
+    for (const [taskId, t] of Object.entries<Json>(nd.tasks ?? {})) {
+      runningSearches.push({ node: String(nd.name ?? '?'), taskId, ms: Math.round(n(t.running_time_in_nanos) / 1e6), description: String(t.description ?? '') });
+    }
+  }
+  runningSearches.sort((a, b) => b.ms - a.ms);
+
+  // Search theo index trong cửa sổ.
+  const indexSearch = idx0 && idx1
+    ? Object.entries<Json>(idx1.indices ?? {}).map(([index, v]) => {
+      const a = idx0.indices?.[index]?.total?.search ?? {};
+      const b = v.total?.search ?? {};
+      return { index, queries: Math.max(0, n(b.query_total) - n(a.query_total)), queryMs: Math.max(0, n(b.query_time_in_millis) - n(a.query_time_in_millis)) };
+    })
+    : null;
 
   const facts: EsFacts = {
     version: String(root.version?.number ?? '?'),
@@ -203,6 +271,14 @@ export async function diagnoseEs(conn: EsConnection): Promise<EsDiagnosis> {
       .filter(([, v]) => String(v?.settings?.['index.blocks.read_only_allow_delete']) === 'true')
       .map(([k]) => k),
     pending: [...pendingBy.entries()].map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count),
+    running: tasks ? runningSearches.slice(0, RUNNING_MAX) : null,
+    indexSearch,
+    slowlogIndices: slowlog
+      ? Object.entries<Json>(slowlog).filter(([, v]) => Object.values(v?.settings ?? {}).some((x) => String(x) !== '-1')).map(([k]) => k)
+      : null,
+    skipped,
   };
   return analyzeEs(facts);
 }
+
+const fmt = (x: number): string => x.toLocaleString('vi-VN');

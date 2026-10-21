@@ -13,6 +13,15 @@
 //     đang có + lấy mẫu TTL — để phân biệt "không bao giờ được ghi" với "TTL ngắn".
 //   • INFO trước/sau: hit rate hiện tại, evict, hết hạn trong cửa sổ.
 // Luật biến số liệu thành kết luận nằm ở lib/redisDiagnoseRules (thuần, kiểm được).
+//
+// AN TOÀN CHO PRODUCTION — Redis chạy lệnh trên MỘT luồng chính, nên:
+//   • Đo tốc độ miss 1s TRƯỚC khi bật sự kiện: mỗi miss sẽ thành một lần publish
+//     trên luồng chính; vượt MAX_MISS_RATE thì không bật (báo rõ, đề xuất cách khác).
+//   • Bắt đủ MAX_EVENTS sự kiện là dừng sớm, trả lại cấu hình ngay — đủ mẫu để
+//     thấy dạng key, không kéo dài tải thêm.
+//   • SCAN có nghỉ SCAN_PAUSE_MS giữa các lượt (mỗi lượt COUNT nhỏ, không bao
+//     giờ KEYS) — không chiếm luồng chính liên tục.
+//   • Không đọc giá trị key; EXISTS/TTL chỉ trên vài chục key mẫu.
 
 import Redis, { Cluster } from 'ioredis';
 import type { RedisConnection } from '@/lib/redisConnections';
@@ -30,6 +39,11 @@ const TTL_SAMPLE_PER_PATTERN = 30;
 /** Tổng số key SCAN được xét — đủ để ước lượng, không quét hết keyspace lớn. */
 const SCAN_BUDGET = 200_000;
 const SCAN_COUNT = 1000;
+const SCAN_PAUSE_MS = 2;
+/** Trên ngần này miss/giây thì KHÔNG bật sự kiện keymiss (mỗi miss = một publish trên luồng chính). */
+const MAX_MISS_RATE = 10_000;
+/** Bắt đủ ngần này sự kiện thì dừng sớm. */
+const MAX_EVENTS = 20_000;
 const CHANNEL = '__keyevent@*__:keymiss';
 
 /** Một phiên một kết nối: hai phiên chồng nhau sẽ "trả lại" nhầm cờ của nhau. */
@@ -90,7 +104,11 @@ export async function diagnoseMisses(conn: RedisConnection, seconds: number): Pr
 
 async function run(conn: RedisConnection, durationSec: number): Promise<RedisMissDiagnosis> {
   const nodes = await masters(conn);
+  // Đo tốc độ miss 1s trước khi quyết định có bật sự kiện hay không.
+  const pre = await totals(nodes);
+  await sleep(1000);
   const before = await totals(nodes);
+  const missRate = Math.max(0, before.misses - pre.misses);
   const t0 = Date.now();
 
   // ── Bắt sự kiện keymiss ──
@@ -98,8 +116,12 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
   const patternOf = new Map<string, { pattern: string; glob: string }>();
   let captured = 0;
   let distinctCapped = false;
+  let stopEarly: () => void = () => {};
+  const enough = new Promise<void>((r) => { stopEarly = r; });
   const record = (channel: string, key: string) => {
+    if (captured >= MAX_EVENTS) return;
     captured++;
+    if (captured >= MAX_EVENTS) stopEarly();
     const db = Number(/@(\d+)__/.exec(channel)?.[1] ?? 0);
     let pg = patternOf.get(key);
     if (!pg) {
@@ -122,6 +144,9 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
   if (major < 6) {
     capture = { ok: false, reason: 'version' };
     await sleep(durationSec * 1000);
+  } else if (missRate > MAX_MISS_RATE) {
+    capture = { ok: false, reason: 'load', detail: `${missRate.toLocaleString('vi-VN')} miss/giây` };
+    await sleep(Math.min(durationSec, 5) * 1000);
   } else {
     const changed: { node: Redis; orig: string }[] = [];
     const subs: Redis[] = [];
@@ -151,7 +176,8 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
         // ACL có thể chặn PSUBSCRIBE — vẫn chạy hết cửa sổ để có số liệu INFO, báo lý do sau.
         await sub.psubscribe(CHANNEL).catch((e: Error) => { subErr = e.message; });
       }
-      await sleep(Math.max(0, t0 + durationSec * 1000 - Date.now()));
+      // Dừng khi hết thời gian HOẶC đã đủ mẫu — cái nào tới trước.
+      await Promise.race([sleep(Math.max(0, t0 + durationSec * 1000 - Date.now())), enough]);
     } finally {
       for (const s of subs) s.disconnect();
       for (const { node, orig } of changed) {
@@ -202,6 +228,7 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
         do {
           const [next, keys] = await s.scan(cursor, 'COUNT', SCAN_COUNT);
           cursor = next;
+          await sleep(SCAN_PAUSE_MS);
           scanned += keys.length;
           for (const k of keys) {
             const a = want.get(`${db}|${keyPattern(k).pattern}`);

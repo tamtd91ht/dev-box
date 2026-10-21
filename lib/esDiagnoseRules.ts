@@ -10,6 +10,9 @@
 // Câu hỏi phải trả lời được: heap đầy VÌ CÁI GÌ (fielddata, quá nhiều shard,
 // GC không kịp), shard chưa gán VÌ SAO (đúng decider ES nói), CPU bận VÌ VIỆC
 // GÌ (search / ghi / merge / GC) — chứ không chỉ nhắc lại con số đã thấy.
+// Và khi cụm XANH mà truy vấn chậm: query nào đang chạy lâu, index nào chậm,
+// node nào chậm hơn các node khác, vì sao (RAM cho filesystem cache, hàng đợi
+// search, nhiều segment, ghi nặng song song, query đắt).
 
 import { buildPlan, fmtBytes, fmtN, sortFindings, type Finding, type PlanStep } from '@/lib/diagnose';
 
@@ -39,6 +42,35 @@ export interface EsNodeFacts {
   diskAvail: number | null;
   shards: number;
   hotThreads: EsHotThread[];
+  /** Số luồng ĐANG chạy của từng thread pool (search, write, force_merge, refresh…) — rẻ, không cần hot_threads. */
+  poolActive?: Record<string, number>;
+  /** Δ trong cửa sổ đo — hiệu năng truy vấn (query phase, mỗi lượt là một shard). */
+  search?: {
+    queries: number;
+    queryMs: number;
+    /** Dữ liệu index trên node (để so với RAM dành cho filesystem cache). */
+    storeBytes: number | null;
+    segments: number | null;
+    indexing: number;
+    qcHit: number;
+    qcMiss: number;
+    qcEvictions: number;
+  };
+}
+
+/** Một search đang chạy (_tasks) — description có tên index + nguồn query. */
+export interface EsRunningSearch {
+  node: string;
+  taskId: string;
+  ms: number;
+  description: string;
+}
+
+/** Hiệu năng search theo index trong cửa sổ đo. */
+export interface EsIndexSearch {
+  index: string;
+  queries: number;
+  queryMs: number;
 }
 
 export interface EsUnassigned { index: string; shard: number; primary: boolean; reason: string | null }
@@ -79,6 +111,14 @@ export interface EsFacts {
   maxShardsPerNode: number | null;
   readOnlyIndices: string[];
   pending: { source: string; count: number }[];
+  /** Search đang chạy lâu nhất (null = không đọc được _tasks). */
+  running?: EsRunningSearch[] | null;
+  /** null = bỏ qua (cụm quá lớn / không đọc được). */
+  indexSearch?: EsIndexSearch[] | null;
+  /** Index đã bật search slowlog (null = không đọc được). */
+  slowlogIndices?: string[] | null;
+  /** Các phần đã bỏ qua để không tạo tải trên cụm lớn — nêu ra cho minh bạch. */
+  skipped?: string[];
 }
 
 export interface EsNodeRow {
@@ -91,6 +131,8 @@ export interface EsNodeRow {
   shards: number;
   rejected: number;
   top: string | null;
+  /** ms trung bình mỗi lượt query (shard) trong cửa sổ; null = không có query. */
+  queryMs: number | null;
 }
 
 export interface EsDiagnosis {
@@ -101,6 +143,11 @@ export interface EsDiagnosis {
   plan: PlanStep[];
   nodes: EsNodeRow[];
   windowSec: number;
+  /** Search đang chạy lâu nhất — hiển thị bảng. */
+  running: { node: string; taskId: string; ms: number; indices: string; flags: string[]; query: string }[];
+  /** Index chậm nhất trong cửa sổ. */
+  slowIndices: { index: string; queries: number; avgMs: number }[];
+  skipped: string[];
 }
 
 // ── Ngưỡng ───────────────────────────────────────────────────────────────
@@ -122,6 +169,48 @@ const BREAKER_NEAR = 0.9;
 
 const GB = 1024 ** 3;
 const pct = (n: number): string => `${Math.round(n)}%`;
+
+/** Search đang chạy lâu hơn ngần này thì nêu ra. */
+const RUNNING_WARN_MS = 5_000;
+const RUNNING_CRIT_MS = 30_000;
+/** ms trung bình mỗi lượt query trên shard. */
+const QUERY_WARN_MS = 100;
+const QUERY_CRIT_MS = 500;
+/** Ít hơn ngần này lượt query trong cửa sổ thì số trung bình không đáng tin. */
+const MIN_QUERIES = 20;
+const SEGMENTS_PER_SHARD = 50;
+
+/** Pool → loại việc (dùng khi không có hot_threads). */
+const POOL_KIND: Record<string, string> = {
+  search: 'search', search_worker: 'search', write: 'write', bulk: 'write', index: 'write',
+  force_merge: 'merge', refresh: 'refresh', flush: 'flush', management: 'management',
+  snapshot: 'snapshot', generic: 'generic',
+};
+
+/** "indices[a,b], search_type[QUERY_THEN_FETCH], source[{…}]" → index + nguồn query. */
+export function parseSearchDescription(d: string): { indices: string; query: string } {
+  const idx = /indices\[([^\]]*)\]/.exec(d)?.[1] ?? '?';
+  const src = d.indexOf('source[');
+  const query = src >= 0 ? d.slice(src + 7).replace(/\]\s*$/, '') : '';
+  return { indices: idx, query };
+}
+
+/** Dấu hiệu query đắt trong nguồn query — đều là nguyên nhân chậm kinh điển. */
+export function expensiveFlags(query: string, indices: string): string[] {
+  const q = query.replace(/\s+/g, '');
+  const out: string[] = [];
+  if (/"wildcard":\{[^}]*"(value|wildcard)":"[*?]/.test(q) || /"query_string":\{[^}]*"query":"[^"]*(^|[\s:(])[*?]/.test(query.replace(/\s+/g, ' ')) || /"query":"[*?]/.test(q)) out.push('wildcard đầu chuỗi');
+  if (/"regexp":/.test(q)) out.push('regexp');
+  if (/"script(_score)?":/.test(q)) out.push('script');
+  const from = Number(/"from":(\d+)/.exec(q)?.[1] ?? 0);
+  if (from >= 1000) out.push(`phân trang sâu (from ${from})`);
+  const size = Number(/"size":(\d+)/.exec(q)?.[1] ?? 0);
+  if (size >= 1000) out.push(`size ${size}`);
+  if (/"terms":\{[^}]*"size":(\d{4,})/.test(q)) out.push('terms aggregation nhiều bucket');
+  if (/"(cardinality|percentiles|top_hits)":/.test(q)) out.push('aggregation đắt');
+  if (/^(\*|_all|.*\*)$/.test(indices.trim()) || /(^|,)\*(,|$)/.test(indices)) out.push('quét mọi index (*)');
+  return out;
+}
 
 /** Đổi watermark ("85%", "0.85", "50gb", "500mb") thành % đĩa ĐÃ DÙNG tương ứng trên node có `total` byte. */
 export function watermarkUsedPct(v: string, total: number | null): number | null {
@@ -159,6 +248,14 @@ const KIND_TEXT: Record<string, string> = {
   snapshot: 'snapshot',
   force_merge: 'force merge',
 };
+
+/** Thread pool đang có nhiều luồng chạy nhất (bỏ pool không gắn được với loại việc). */
+function busiestPool(n: EsNodeFacts): { pool: string; kind: string; active: number } | null {
+  const e = Object.entries(n.poolActive ?? {}).filter(([p, a]) => a > 0 && POOL_KIND[p]).sort((a, b) => b[1] - a[1])[0];
+  return e ? { pool: e[0], kind: POOL_KIND[e[0]], active: e[1] } : null;
+}
+const poolSummary = (n: EsNodeFacts): string =>
+  Object.entries(n.poolActive ?? {}).filter(([, a]) => a > 0).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([p, a]) => `${p} ${a}`).join(' · ');
 
 // ── Phân tích ────────────────────────────────────────────────────────────
 
@@ -342,7 +439,9 @@ export function analyzeEs(f: EsFacts, at = Date.now()): EsDiagnosis {
     const byKind = new Map<string, number>();
     for (const t of n.hotThreads) byKind.set(t.kind, (byKind.get(t.kind) ?? 0) + t.pct);
     const top = [...byKind.entries()].sort((a, b) => b[1] - a[1])[0];
-    const kind = top?.[0];
+    const poolTop = busiestPool(n);
+    // Không chạy hot_threads (tránh safepoint trên production) → dựa vào luồng đang bận của thread pool.
+    const kind = top?.[0] ?? poolTop?.kind;
     const fixes: Record<string, string> = {
       search: 'Tìm query nặng: bật slow log, xem _tasks đang chạy. Hay gặp: wildcard/regex đầu chuỗi, aggregation nhiều bucket, script, deep pagination (from lớn). Thêm replica + node để chia tải đọc.',
       write: 'Tải ghi cao: tăng refresh_interval (vd 30s) cho index ghi nhiều, bulk vừa phải (5–15MB/lô), tắt replica trong lúc nạp hàng loạt.',
@@ -357,7 +456,9 @@ export function analyzeEs(f: EsFacts, at = Date.now()): EsDiagnosis {
       evidence: [
         n.hotThreads.length
           ? `Luồng nóng nhất: ${n.hotThreads.slice(0, 3).map((t) => `${t.pct}% ${t.thread}`).join(' · ')}`
-          : 'Không đọc được hot_threads',
+          : poolTop
+            ? `Luồng đang chạy theo thread pool: ${poolSummary(n)}`
+            : 'Không có thread pool nào đang bận — CPU có thể do GC hoặc tiến trình khác trên máy',
         n.queue.search || n.queue.write ? `Hàng đợi: search ${n.queue.search} · write ${n.queue.write}` : '',
       ].filter(Boolean),
       fix: (kind && fixes[kind]) || 'Xem hot_threads chi tiết để biết luồng nào bận.',
@@ -442,6 +543,149 @@ export function analyzeEs(f: EsFacts, at = Date.now()): EsDiagnosis {
     }
   }
 
+  // ── Truy vấn chậm (kể cả khi cụm xanh) ──
+  const running = (f.running ?? [])
+    .filter((r) => r.ms >= RUNNING_WARN_MS)
+    .sort((a, b) => b.ms - a.ms)
+    .map((r) => ({ ...r, ...parseSearchDescription(r.description) }))
+    .map((r) => ({ ...r, flags: expensiveFlags(r.query, r.indices) }));
+  if (running.length) {
+    const worst = running[0];
+    const flags = [...new Set(running.flatMap((r) => r.flags))];
+    out.push({
+      id: 'running',
+      level: worst.ms >= RUNNING_CRIT_MS ? 'crit' : 'warn',
+      title: `${running.length} truy vấn đang chạy lâu — lâu nhất ${Math.round(worst.ms / 1000)}s trên ${worst.indices}`,
+      evidence: [
+        ...running.slice(0, 3).map((r) => `${Math.round(r.ms / 1000)}s · ${r.indices} · ${r.node}${r.flags.length ? ` · ${r.flags.join(', ')}` : ''}`),
+        flags.length ? `Dấu hiệu query đắt: ${flags.join(', ')}` : 'Không thấy mẫu query đắt quen thuộc trong nguồn query — xem kế hoạch bằng _search?profile trên bản sao query',
+      ],
+      fix: flags.length
+        ? 'Sửa query: wildcard/regexp đầu chuỗi → dùng field keyword + prefix hoặc ngram; script → tính sẵn lúc index; phân trang sâu → search_after; size/terms lớn → giảm, dùng composite aggregation; giới hạn index (đừng "*"). Đặt timeout cho search phía ứng dụng.'
+        : 'Lấy nguyên query (bảng bên dưới) chạy lại với "profile": true trên giờ thấp điểm để xem phần nào tốn; đặt timeout cho search phía ứng dụng.',
+      sql: `GET _tasks?actions=indices:data/read/search&detailed=true&group_by=none
+# huỷ query đang làm nghẽn (an toàn — chỉ dừng query đó):
+POST _tasks/${worst.taskId}/_cancel`,
+      step: { phase: 'now', text: `Xử lý query chạy lâu trên ${worst.indices}${flags.length ? ` (${flags.slice(0, 2).join(', ')})` : ''}` },
+    });
+  }
+
+  const searchNodes = f.nodes.filter((n) => (n.search?.queries ?? 0) >= MIN_QUERIES);
+  const avg = (n: EsNodeFacts) => (n.search!.queryMs / Math.max(1, n.search!.queries));
+  const totalQ = searchNodes.reduce((a, n) => a + n.search!.queries, 0);
+  const clusterAvg = totalQ ? searchNodes.reduce((a, n) => a + n.search!.queryMs, 0) / totalQ : null;
+  if (clusterAvg !== null && clusterAvg >= QUERY_WARN_MS) {
+    // Nguyên nhân khả dĩ, theo thứ tự hay gặp — mỗi cái có số liệu kèm theo.
+    const causes: string[] = [];
+    let fix = '';
+    let sql = '';
+    for (const n of searchNodes) {
+      const s = n.search!;
+      const cache = n.ramTotal && n.heapMax ? n.ramTotal - n.heapMax : null;
+      if (cache && s.storeBytes && s.storeBytes > cache * 2) {
+        causes.push(`${n.name}: dữ liệu ${fmtBytes(s.storeBytes)} gấp ${Math.round(s.storeBytes / cache)} lần RAM dành cho filesystem cache (${fmtBytes(cache)}) → search đọc đĩa`);
+      }
+    }
+    const queued = f.nodes.filter((n) => n.queue.search > 0);
+    if (queued.length) causes.push(`hàng đợi search đang có việc chờ: ${queued.map((n) => `${n.name} ${n.queue.search}`).join(', ')} → nhiều query đồng thời hơn số luồng`);
+    const segHeavy = f.nodes.filter((n) => n.search?.segments && n.shards && n.search.segments / n.shards > SEGMENTS_PER_SHARD);
+    if (segHeavy.length) causes.push(`nhiều segment: ${segHeavy.map((n) => `${n.name} ~${Math.round(n.search!.segments! / n.shards)}/shard`).join(', ')} → mỗi query phải duyệt nhiều segment`);
+    const writing = f.nodes.filter((n) => (n.search?.indexing ?? 0) / Math.max(1, f.windowSec) >= 1000);
+    if (writing.length) causes.push(`đang ghi nặng song song: ${writing.map((n) => `${n.name} ${fmtN(n.search!.indexing / Math.max(1, f.windowSec))} doc/s`).join(', ')} → refresh/merge tranh CPU & IO với search`);
+    const qc = f.nodes.reduce((a, n) => ({ hit: a.hit + (n.search?.qcHit ?? 0), miss: a.miss + (n.search?.qcMiss ?? 0), ev: a.ev + (n.search?.qcEvictions ?? 0) }), { hit: 0, miss: 0, ev: 0 });
+    if (qc.ev > 0 && qc.hit + qc.miss > 100 && qc.hit / (qc.hit + qc.miss) < 0.3) causes.push(`query cache hit ${pct((qc.hit / (qc.hit + qc.miss)) * 100)}, ${fmtN(qc.ev)} lần bị đẩy ra trong ${f.windowSec}s`);
+    // Các nguyên nhân thường đi cùng nhau (dữ liệu vượt RAM cache → query chậm → hàng
+    // đợi đầy) — gộp cách sửa của MỌI nguyên nhân có mặt, việc làm được ngay lên trước.
+    const fsCache = causes.some((c) => c.includes('filesystem cache'));
+    const fixes: string[] = [];
+    const sqls: string[] = [];
+    if (queued.length) {
+      fixes.push('Quá nhiều query đồng thời: giảm song song phía ứng dụng, gộp query (msearch), thêm replica + node để chia tải đọc. Không tăng queue_size.');
+      sqls.push('GET _cat/thread_pool/search?v&h=node_name,active,queue,rejected,size');
+    }
+    if (segHeavy.length) {
+      fixes.push('Nhiều segment: tăng refresh_interval cho index ghi nhiều; index KHÔNG còn ghi thì force_merge về 1 segment vào giờ thấp điểm (tốn IO — không chạy trên index đang ghi).');
+      sqls.push('PUT <index-đang-ghi>/_settings\n{ "index.refresh_interval": "30s" }\n# index cũ, giờ thấp điểm:\nPOST <index-cũ>/_forcemerge?max_num_segments=1');
+    }
+    if (writing.length) {
+      fixes.push('Ghi nặng làm chậm đọc: tăng refresh_interval, gom bulk; tách node ghi (hot) và node đọc nếu cần.');
+      if (!segHeavy.length) sqls.push('PUT <index>/_settings\n{ "index.refresh_interval": "30s" }');
+    }
+    if (fsCache) {
+      fixes.push('Dữ liệu cần đọc không nằm trong RAM: thêm RAM (giữ heap ≈ 50%), thêm node để chia dữ liệu, giảm dữ liệu nóng (ILM chuyển index cũ sang warm/cold), bỏ field không dùng khỏi index.');
+      sqls.push('GET _cat/allocation?v\nGET _cat/indices?v&s=store.size:desc&h=index,pri,rep,store.size');
+    }
+    fix = fixes.join(' ') || 'Không thấy nguyên nhân hạ tầng rõ ràng — thường là do chính query (xem mục query chạy lâu / index chậm). Bật search slowlog để bắt query chậm.';
+    sql = sqls.join('\n\n');
+    const nowCause = causes.find((c) => !c.includes('filesystem cache'));
+    out.push({
+      id: 'slow-search',
+      level: clusterAvg >= QUERY_CRIT_MS ? 'crit' : 'warn',
+      title: `Truy vấn chậm: trung bình ${Math.round(clusterAvg)} ms mỗi lượt query trên shard (${fmtN(totalQ)} lượt trong ${f.windowSec}s)`,
+      evidence: causes.length ? causes : ['Cụm không có dấu hiệu quá tải (CPU, heap, hàng đợi, đĩa) — nguyên nhân nằm ở query / mapping'],
+      fix,
+      sql: sql || undefined,
+      step: nowCause || !fsCache
+        ? { phase: 'now', text: nowCause ? `Truy vấn chậm: ${nowCause.split(' → ')[1] ?? nowCause}` : 'Truy vấn chậm: tìm query / index gây ra (slowlog)' }
+        : { phase: 'long', text: 'Truy vấn chậm vì dữ liệu vượt RAM dành cho filesystem cache: thêm RAM / node, giảm dữ liệu nóng' },
+    });
+  }
+
+  // Node chậm hơn hẳn các node khác — phần cứng / GC / đĩa của riêng node đó.
+  if (searchNodes.length >= 2) {
+    const sorted = [...searchNodes].sort((a, b) => avg(b) - avg(a));
+    const others = sorted.slice(1).map(avg).sort((a, b) => a - b);
+    const median = others[Math.floor(others.length / 2)];
+    const slow = sorted[0];
+    if (avg(slow) >= QUERY_WARN_MS && avg(slow) >= median * 2) {
+      const gc = (slow.oldGcMs / winMs) * 100;
+      out.push({
+        id: `slow-node:${slow.name}`,
+        level: 'warn',
+        title: `Node ${slow.name} trả lời chậm gấp ${Math.round(avg(slow) / Math.max(1, median))} lần các node khác (${Math.round(avg(slow))} ms vs ${Math.round(median)} ms)`,
+        evidence: [
+          `Heap ${slow.heapPct ?? '?'}% · GC old ${pct(gc)} thời gian · CPU ${slow.cpu ?? '?'}% · đĩa ${slow.diskTotal && slow.diskAvail !== null ? pct(100 - (slow.diskAvail / slow.diskTotal) * 100) : '?'}`,
+          'Mọi query chạm shard trên node này đều phải chờ nó — một node chậm kéo cả cụm',
+        ],
+        fix: gc >= GC_WARN
+          ? 'Node này đang GC nhiều — xem mục heap của node.'
+          : 'Kiểm tra máy của node này: đĩa (IO chậm / sắp hỏng), CPU bị tiến trình khác chiếm, mạng. Tạm thời có thể dời shard khỏi node (cluster.routing.allocation.exclude._name) rồi xem latency cụm có hồi lại không.',
+        sql: `GET _nodes/${slow.name}/stats/fs,os,jvm?human
+# tạm dời shard khỏi node (đảo lại bằng null):
+PUT _cluster/settings
+{ "transient": { "cluster.routing.allocation.exclude._name": "${slow.name}" } }`,
+        step: { phase: 'now', text: `Kiểm tra máy của node ${slow.name} — chậm gấp ${Math.round(avg(slow) / Math.max(1, median))} lần các node khác` },
+      });
+    }
+  }
+
+  // Index chậm nhất.
+  const idxRows = (f.indexSearch ?? [])
+    .filter((x) => x.queries >= MIN_QUERIES)
+    .map((x) => ({ index: x.index, queries: x.queries, avgMs: Math.round(x.queryMs / x.queries) }))
+    .sort((a, b) => b.avgMs - a.avgMs);
+  const slowIdx = idxRows.filter((x) => x.avgMs >= QUERY_WARN_MS && (clusterAvg === null || x.avgMs >= clusterAvg * 1.5)).slice(0, 3);
+  if (slowIdx.length) {
+    const noSlowlog = f.slowlogIndices ? slowIdx.filter((x) => !f.slowlogIndices!.includes(x.index)) : [];
+    out.push({
+      id: 'slow-index',
+      level: slowIdx[0].avgMs >= QUERY_CRIT_MS ? 'warn' : 'info',
+      title: `Index chậm nhất: ${slowIdx[0].index} — ${slowIdx[0].avgMs} ms mỗi lượt query`,
+      evidence: [
+        ...slowIdx.map((x) => `${x.index}: ${x.avgMs} ms × ${fmtN(x.queries)} lượt`),
+        noSlowlog.length ? `Chưa bật search slowlog cho: ${noSlowlog.map((x) => x.index).join(', ')}` : '',
+      ].filter(Boolean),
+      fix: 'Bật search slowlog cho index này để bắt đúng query chậm (ghi ra log của node, không tốn thêm khi query nhanh). Xem lại mapping (sort/filter trên field text, nested sâu), số shard (quá nhiều shard nhỏ → mỗi query rải rộng; shard quá lớn → mỗi lượt lâu).',
+      sql: `PUT ${slowIdx[0].index}/_settings
+{
+  "index.search.slowlog.threshold.query.warn": "2s",
+  "index.search.slowlog.threshold.query.info": "500ms",
+  "index.search.slowlog.threshold.fetch.warn": "1s"
+}`,
+      step: { phase: 'now', text: `Bật search slowlog cho ${slowIdx[0].index} để bắt query chậm` },
+    });
+  }
+
   // ── Pending task ──
   if (f.pending.length) {
     const total = f.pending.reduce((a, p) => a + p.count, 0);
@@ -467,6 +711,7 @@ export function analyzeEs(f: EsFacts, at = Date.now()): EsDiagnosis {
     const kinds = new Map<string, number>();
     for (const t of n.hotThreads) kinds.set(t.kind, (kinds.get(t.kind) ?? 0) + t.pct);
     const top = [...kinds.entries()].sort((a, b) => b[1] - a[1])[0];
+    const pool = busiestPool(n);
     return {
       name: n.name,
       roles: n.roles,
@@ -476,9 +721,11 @@ export function analyzeEs(f: EsFacts, at = Date.now()): EsDiagnosis {
       diskPct: n.diskTotal && n.diskAvail !== null ? Math.round(100 - (n.diskAvail / n.diskTotal) * 100) : null,
       shards: n.shards,
       rejected: n.rejected.search + n.rejected.write,
-      top: top ? KIND_TEXT[top[0]] ?? top[0] : null,
+      top: top ? KIND_TEXT[top[0]] ?? top[0] : pool ? `${KIND_TEXT[pool.kind] ?? pool.kind} (${pool.active} luồng)` : null,
+      queryMs: n.search && n.search.queries >= MIN_QUERIES ? Math.round(n.search.queryMs / n.search.queries) : null,
     };
   });
+  const runRows = running.slice(0, 8).map((r) => ({ node: r.node, taskId: r.taskId, ms: r.ms, indices: r.indices, flags: r.flags, query: r.query.slice(0, 2000) }));
   return {
     at,
     status: f.status,
@@ -487,12 +734,15 @@ export function analyzeEs(f: EsFacts, at = Date.now()): EsDiagnosis {
     plan: buildPlan(findings, 'Phân tích lại sau khi xử lý — cụm phải về green, heap < 85%, không còn request bị từ chối'),
     nodes,
     windowSec: f.windowSec,
+    running: runRows,
+    slowIndices: idxRows.slice(0, 8),
+    skipped: f.skipped ?? [],
   };
 }
 
 function headline(f: EsFacts, findings: Finding[]): string {
   const cause = findings.find((x) => x.level === 'crit' || x.level === 'warn');
   const st = `Cụm ${f.status}`;
-  if (!cause) return `${st} — không thấy vấn đề về heap, shard, CPU, đĩa trong ${f.windowSec}s đo.`;
+  if (!cause) return `${st} — không thấy vấn đề về heap, shard, CPU, đĩa, tốc độ truy vấn trong ${f.windowSec}s đo.`;
   return `${st} — vấn đề chính: ${cause.title.charAt(0).toLowerCase()}${cause.title.slice(1)}.`;
 }

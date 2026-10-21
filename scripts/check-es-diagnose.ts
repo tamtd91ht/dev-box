@@ -8,7 +8,7 @@
 //
 //   npx tsx scripts/check-es-diagnose.ts
 
-import { analyzeEs, threadKind, watermarkUsedPct, type EsFacts, type EsNodeFacts } from '../lib/esDiagnoseRules';
+import { analyzeEs, expensiveFlags, parseSearchDescription, threadKind, watermarkUsedPct, type EsFacts, type EsNodeFacts } from '../lib/esDiagnoseRules';
 import { parseHotThreads } from '../lib/esDiagnose';
 
 let failures = 0;
@@ -117,6 +117,53 @@ check(get(facts({ nodes: [node({ name: 'es-1', rejected: { search: 0, write: 340
 check(get(facts({ shardSizes: Array.from({ length: 2600 }, (_, i) => ({ index: `i${i}`, shard: 0, bytes: 10 * GB })) }), 'shard-limit')?.level === 'warn', '2600 shard / 3 node ≈ 87% max_shards_per_node → vàng');
 check(!!get(facts({ shardSizes: Array.from({ length: 200 }, (_, i) => ({ index: `d${i}`, shard: 0, bytes: 50 * 1024 ** 2 })) }), 'small-shards'), '200 shard 50MB → quá nhiều shard nhỏ');
 check(get(facts({ shardSizes: [{ index: 'big', shard: 0, bytes: 120 * GB }] }), 'huge-shards')!.evidence[0].includes('big[0]'), 'shard 120GB → nêu tên');
+
+// ── CPU khi KHÔNG chạy hot_threads: dựa vào luồng đang chạy của thread pool ──
+{
+  const c = get(facts({ nodes: [node({ name: 'es-1', cpu: 96, poolActive: { search: 13, write: 1, management: 1 } })] }), 'cpu:es-1')!;
+  check(c.title.includes('truy vấn') && c.evidence[0].includes('search 13'), 'không có hot_threads → CPU do search (13 luồng search đang chạy)');
+}
+
+// ── Truy vấn chậm khi cụm XANH ──
+const srch = (queries: number, queryMs: number, over: Partial<NonNullable<EsNodeFacts['search']>> = {}) =>
+  ({ queries, queryMs, storeBytes: 50 * GB, segments: 2000, indexing: 0, qcHit: 0, qcMiss: 0, qcEvictions: 0, ...over });
+{
+  const p = parseSearchDescription('indices[orders,logs-*], search_type[QUERY_THEN_FETCH], source[{"query":{"wildcard":{"name":{"value":"*abc"}}},"from":5000,"size":20}]');
+  check(p.indices === 'orders,logs-*' && p.query.startsWith('{"query"'), 'đọc index + nguồn query từ description của _tasks');
+  const fl = expensiveFlags(p.query, p.indices);
+  check(fl.includes('wildcard đầu chuỗi') && fl.some((x) => x.startsWith('phân trang sâu')), 'nhận ra wildcard đầu chuỗi + phân trang sâu');
+  check(expensiveFlags('{"query":{"match":{"name":"abc"}},"size":10}', 'orders').length === 0, 'query bình thường → không gắn cờ');
+  check(expensiveFlags('{"query":{"match_all":{}}}', '*').includes('quét mọi index (*)'), 'quét "*" → gắn cờ');
+}
+{
+  const r = get(facts({ running: [{ node: 'es-2', taskId: 'abc:123', ms: 45_000, description: 'indices[orders], source[{"query":{"regexp":{"sku":".*x"}}}]' }] }), 'running')!;
+  check(r.level === 'crit' && r.title.includes('45s') && !!r.sql?.includes('POST _tasks/abc:123/_cancel') && r.evidence.some((e) => e.includes('regexp')),
+    'query chạy 45s → đỏ, nêu dấu hiệu đắt + lệnh huỷ đúng task');
+}
+check(!get(facts({ running: [{ node: 'es-2', taskId: 'a:1', ms: 800, description: 'indices[orders]' }] }), 'running'), 'query < 5s → không nêu');
+{
+  const f = facts({ nodes: [node({ name: 'es-1', ramTotal: 32 * GB, heapMax: 16 * GB, search: srch(200, 160_000, { storeBytes: 300 * GB }) })] });
+  const s = get(f, 'slow-search')!;
+  check(s.level === 'crit' && s.evidence[0].includes('filesystem cache') && s.step?.phase === 'long', '800ms/query, dữ liệu gấp ~19 lần RAM cache → đọc đĩa (dài hạn: RAM / node / ILM)');
+}
+{
+  const f = facts({ nodes: [node({ name: 'es-1', queue: { search: 120, write: 0 }, search: srch(500, 100_000) })] });
+  check(get(f, 'slow-search')!.fix!.includes('msearch'), 'hàng đợi search đầy → quá nhiều query đồng thời');
+}
+check(!get(facts({ nodes: [node({ search: srch(10, 9_000) })] }), 'slow-search'), '< 20 lượt query trong cửa sổ → không kết luận tốc độ');
+check(!get(facts({ nodes: [node({ search: srch(5_000, 50_000) })] }), 'slow-search'), '10ms/query → không báo chậm');
+{
+  const f = facts({ nodes: [
+    node({ name: 'es-1', search: srch(300, 180_000) }), node({ name: 'es-2', search: srch(300, 15_000) }), node({ name: 'es-3', search: srch(300, 18_000) }),
+  ] });
+  const s = get(f, 'slow-node:es-1')!;
+  check(!!s && s.title.includes('es-1') && !!s.sql?.includes('"cluster.routing.allocation.exclude._name": "es-1"'), 'một node chậm gấp ~12 lần → nêu đích danh, gợi ý tạm dời shard');
+}
+{
+  const f = facts({ indexSearch: [{ index: 'orders', queries: 400, queryMs: 360_000 }, { index: 'logs', queries: 4000, queryMs: 40_000 }], slowlogIndices: [] });
+  const s = get(f, 'slow-index')!;
+  check(s.title.includes('orders') && s.evidence.some((e) => e.includes('Chưa bật search slowlog')) && !!s.sql?.includes('PUT orders/_settings'), 'index chậm nhất + chưa bật slowlog → lệnh bật slowlog đúng index');
+}
 
 // ── Pending task ──
 check(get(facts({ pending: [{ source: 'put-mapping', count: 140 }] }), 'pending')!.fix!.includes('mapping explosion'), 'pending put-mapping → mapping explosion');

@@ -8,6 +8,12 @@
 //   • Metadata (số partition, leader) + retention / cleanup.policy của topic.
 //   • Tuổi message chờ lâu nhất (đọc record đầu tiên chưa commit của vài partition lag nặng).
 // Luật biến số liệu thành kết luận nằm ở lib/kafkaDiagnoseRules (thuần, kiểm được).
+//
+// AN TOÀN CHO PRODUCTION: không join consumer group, không commit offset, không
+// đổi cấu hình — group đang chạy không hề biết có người đo. Request là các lệnh
+// admin đọc metadata (DescribeGroups, OffsetFetch, ListOffsets, Metadata,
+// DescribeConfigs) + tối đa AGE_PROBES lần Fetch ≤ 1MB đọc message đang chờ.
+// Một phiên phân tích cho mỗi kết nối tại một thời điểm.
 
 import { AssignerProtocol, ConfigResourceTypes, type GroupDescription } from 'kafkajs';
 import type { KafkaConnection } from '@/lib/kafkaConnections';
@@ -58,8 +64,21 @@ async function sample(conn: KafkaConnection, groupId: string): Promise<Sample> {
 /** "clientId@host" — host của kafkajs có dấu "/" ở đầu (/10.0.0.5). */
 const label = (m: { clientId: string; clientHost: string }): string => `${m.clientId}@${m.clientHost.replace(/^\//, '')}`;
 
+/** Một phiên phân tích cho mỗi kết nối — không để bấm dồn nhân số request lên cụm. */
+const running = new Set<string>();
+
 export async function diagnoseLag(conn: KafkaConnection, groupId: string, seconds: number): Promise<KafkaLagDiagnosis> {
   if (!groupId) throw new Error('groupId is required');
+  if (running.has(conn.id)) throw new Error('Đang có một phiên phân tích khác trên cụm này — chờ nó xong rồi chạy lại.');
+  running.add(conn.id);
+  try {
+    return await run(conn, groupId, seconds);
+  } finally {
+    running.delete(conn.id);
+  }
+}
+
+async function run(conn: KafkaConnection, groupId: string, seconds: number): Promise<KafkaLagDiagnosis> {
   const sec = Math.min(MAX_SEC, Math.max(MIN_SEC, Math.round(Number(seconds) || 15)));
   const admin = await getAdmin(conn);
 

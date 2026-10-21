@@ -13,6 +13,17 @@
 //
 // Mỗi truy vấn "mềm": thiếu quyền / khác phiên bản thì bỏ phần đó và nói rõ,
 // không làm hỏng cả lần phân tích.
+//
+// AN TOÀN CHO PRODUCTION:
+//   • KHÔNG xin khoá bảng: kích thước bảng/index lấy từ pg_class.relpages (ước
+//     lượng VACUUM/ANALYZE cập nhật) thay vì pg_total_relation_size — hàm đó xin
+//     AccessShareLock, và nếu đúng lúc có ALTER TABLE đang chờ khoá thì lệnh của
+//     ta xếp hàng sau nó, kéo mọi truy vấn của ứng dụng vào bảng đó xếp hàng sau ta.
+//   • Mỗi transaction đặt lock_timeout 500ms + statement_timeout 5s (chặt hơn
+//     15s mặc định của tab PG) — có gì bất thường thì bỏ phần đó, không chờ.
+//   • Server sắp hết kết nối (≥ CONN_GUARD) thì KHÔNG mở thêm kết nối tới các
+//     database khác — không giành slot của ứng dụng.
+//   • Một phiên phân tích cho mỗi kết nối tại một thời điểm.
 
 import type { PgConnection } from '@/lib/pgConnections';
 import { getPool, runReadOnly, hostMetrics } from '@/lib/pgClient';
@@ -26,6 +37,8 @@ const WINDOW_MS = 6000;
 const MAX_DBS = 3;
 const TOP_TABLES = 10;
 const TOP_STATEMENTS = 15;
+/** Tỉ lệ kết nối đã dùng mà từ đó không mở thêm kết nối tới database khác. */
+const CONN_GUARD = 0.85;
 
 type Q = (text: string, params?: unknown[]) => Promise<import('pg').QueryResult>;
 
@@ -40,6 +53,12 @@ const numOrNull = (v: unknown): number | null => {
 };
 const iso = (v: unknown): string | null => (v instanceof Date ? v.toISOString() : v ? String(v) : null);
 const errMsg = (e: unknown): string => (e as Error)?.message || String(e);
+
+/** Giới hạn chặt cho mọi transaction của phần phân tích — xem ghi chú đầu file. */
+async function guard(q: Q): Promise<void> {
+  await q("SET LOCAL lock_timeout = '500ms'");
+  await q("SET LOCAL statement_timeout = '5s'");
+}
 
 /** Một truy vấn lỗi không được làm hỏng transaction của các truy vấn sau. */
 async function soft(q: Q, sql: string, params?: unknown[]): Promise<Record<string, unknown>[] | null> {
@@ -57,6 +76,7 @@ async function soft(q: Q, sql: string, params?: unknown[]): Promise<Record<strin
 async function sampleTotals(conn: PgConnection): Promise<{ hit: number; read: number; at: number }> {
   const pool = await getPool(conn);
   return runReadOnly(pool, async (q) => {
+    await guard(q);
     const r = await q('SELECT sum(blks_hit)::bigint AS h, sum(blks_read)::bigint AS r FROM pg_stat_database');
     return { hit: num(r.rows[0]?.h), read: num(r.rows[0]?.r), at: Date.now() };
   });
@@ -70,19 +90,24 @@ interface ServerPart {
   sharedBuffersBytes: number | null;
   effectiveCacheBytes: number | null;
   trackIoTiming: boolean | null;
+  /** Kết nối đang dùng / tối đa cho user thường (null = không đọc được). */
+  connUse: number | null;
   dbs: (DiagDb & { allowConn: boolean })[];
 }
 
 async function serverPart(conn: PgConnection): Promise<ServerPart> {
   const pool = await getPool(conn);
   return runReadOnly(pool, async (q) => {
+    await guard(q);
     const s = (await soft(q, `
       SELECT current_setting('server_version_num')::int AS v,
              current_setting('block_size')::int AS bs,
              pg_size_bytes(current_setting('shared_buffers')) AS sb,
              pg_size_bytes(current_setting('effective_cache_size')) AS ecs,
              current_setting('track_io_timing') AS tio,
-             current_user AS u`))?.[0] ?? {};
+             current_user AS u,
+             (SELECT count(*) FROM pg_stat_activity) AS conns,
+             current_setting('max_connections')::int - current_setting('superuser_reserved_connections')::int AS maxc`))?.[0] ?? {};
     const priv = (await soft(q, `
       SELECT coalesce((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false)
              OR pg_has_role(current_user, 'pg_read_all_stats', 'USAGE') AS ok`))?.[0];
@@ -101,6 +126,7 @@ async function serverPart(conn: PgConnection): Promise<ServerPart> {
       sharedBuffersBytes: numOrNull(s.sb),
       effectiveCacheBytes: numOrNull(s.ecs),
       trackIoTiming: s.tio === undefined ? null : s.tio === 'on',
+      connUse: num(s.maxc) > 0 ? num(s.conns) / num(s.maxc) : null,
       dbs: dbRows.map((r) => ({
         name: String(r.name),
         hit: num(r.hit),
@@ -118,6 +144,7 @@ async function serverPart(conn: PgConnection): Promise<ServerPart> {
 async function activeQueries(conn: PgConnection): Promise<DiagActive[]> {
   const pool = await getPool(conn);
   return runReadOnly(pool, async (q) => {
+    await guard(q);
     const rows = (await soft(q, `
       SELECT datname AS db, left(query, 4000) AS query, extract(epoch FROM now() - query_start) AS age
         FROM pg_stat_activity
@@ -137,6 +164,7 @@ interface DbPart {
 async function dbPart(conn: PgConnection, db: string, wantStatements: boolean): Promise<DbPart> {
   const pool = await getPool(conn, db);
   return runReadOnly(pool, async (q) => {
+    await guard(q);
     const tableSql = (order: string, extraWhere = '') => `
       SELECT st.schemaname AS sch, st.relname AS rel,
              coalesce(io.heap_blks_read, 0) AS hr, coalesce(io.heap_blks_hit, 0) AS hh,
@@ -144,9 +172,13 @@ async function dbPart(conn: PgConnection, db: string, wantStatements: boolean): 
              coalesce(io.toast_blks_read, 0) + coalesce(io.tidx_blks_read, 0) AS tr,
              coalesce(st.seq_scan, 0) AS ss, coalesce(st.seq_tup_read, 0) AS str, st.idx_scan AS isc,
              coalesce(st.n_live_tup, 0) AS live, coalesce(st.n_dead_tup, 0) AS dead,
-             pg_total_relation_size(st.relid) AS size,
+             -- Ước lượng từ pg_class (không xin khoá bảng — xem ghi chú đầu file).
+             (c.relpages::bigint + coalesce(t.relpages, 0)
+               + coalesce((SELECT sum(i.relpages) FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = c.oid), 0))
+               * current_setting('block_size')::bigint AS size,
              greatest(st.last_vacuum, st.last_autovacuum) AS vac
         FROM pg_stat_user_tables st JOIN pg_statio_user_tables io ON io.relid = st.relid
+        JOIN pg_class c ON c.oid = st.relid LEFT JOIN pg_class t ON t.oid = c.reltoastrelid
        ${extraWhere}
        ORDER BY ${order} DESC LIMIT ${TOP_TABLES}`;
     const hot = (await soft(q, tableSql('coalesce(io.heap_blks_read,0) + coalesce(io.idx_blks_read,0) + coalesce(io.toast_blks_read,0) + coalesce(io.tidx_blks_read,0)'))) ?? [];
@@ -186,10 +218,10 @@ async function dbPart(conn: PgConnection, db: string, wantStatements: boolean): 
         [hotTables.map((t) => t.schema), hotTables.map((t) => t.table)])) ?? [];
       // Index đang có + số lần dùng — để không gợi ý trùng và thấy index bị bỏ không.
       const idx = await soft(q,
-        `SELECT schemaname AS s, relname AS t, indexrelname AS i, idx_scan AS sc,
-                pg_relation_size(indexrelid) AS sz, pg_get_indexdef(indexrelid) AS def
-           FROM pg_stat_user_indexes
-          WHERE schemaname::text = ANY($1::text[]) AND relname::text = ANY($2::text[])`,
+        `SELECT ui.schemaname AS s, ui.relname AS t, ui.indexrelname AS i, ui.idx_scan AS sc,
+                i.relpages::bigint * current_setting('block_size')::bigint AS sz, pg_get_indexdef(ui.indexrelid) AS def
+           FROM pg_stat_user_indexes ui JOIN pg_class i ON i.oid = ui.indexrelid
+          WHERE ui.schemaname::text = ANY($1::text[]) AND ui.relname::text = ANY($2::text[])`,
         [hotTables.map((t) => t.schema), hotTables.map((t) => t.table)]);
       for (const t of hotTables) {
         t.columns = cols.filter((c) => c.s === t.schema && c.t === t.table).map((c) => String(c.c));
@@ -240,7 +272,19 @@ async function dbPart(conn: PgConnection, db: string, wantStatements: boolean): 
   });
 }
 
+const running = new Set<string>();
+
 export async function diagnoseCacheHit(conn: PgConnection): Promise<CacheHitDiagnosis> {
+  if (running.has(conn.id)) throw new Error('Đang có một phiên phân tích khác trên kết nối này — chờ nó xong rồi chạy lại.');
+  running.add(conn.id);
+  try {
+    return await run(conn);
+  } finally {
+    running.delete(conn.id);
+  }
+}
+
+async function run(conn: PgConnection): Promise<CacheHitDiagnosis> {
   const first = await sampleTotals(conn);
   const [server, host, active] = await Promise.all([
     serverPart(conn),
@@ -253,12 +297,18 @@ export async function diagnoseCacheHit(conn: PgConnection): Promise<CacheHitDiag
     .sort((a, b) => b.read - a.read)
     .slice(0, MAX_DBS)
     .map((d) => d.name);
-  // Database mặc định của connection luôn được xét tìm pg_stat_statements (thường cài ở đó).
-  const order = [...new Set([conn.database, ...candidates])].filter(Boolean);
-
   const tables: DiagTable[] = [];
   const analyzedDbs: string[] = [];
   const skippedDbs: { name: string; error: string }[] = [];
+  // Server sắp hết kết nối: chỉ dùng database mặc định (đã có kết nối) — không giành slot của ứng dụng.
+  const tight = server.connUse !== null && server.connUse >= CONN_GUARD;
+  if (tight) {
+    for (const db of candidates.filter((d) => d !== conn.database)) {
+      skippedDbs.push({ name: db, error: `bỏ qua — server đã dùng ${Math.round(server.connUse! * 100)}% kết nối, không mở thêm` });
+    }
+  }
+  // Database mặc định của connection luôn được xét tìm pg_stat_statements (thường cài ở đó).
+  const order = [...new Set([conn.database, ...candidates])].filter((d) => d && (!tight || d === conn.database));
   let statements: DbPart['statements'] = null;
   for (const db of order) {
     try {

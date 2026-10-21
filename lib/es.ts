@@ -141,9 +141,12 @@ export function listEsNodes(connectionId: string): Promise<EsNodeInfo[]> {
   return esAction<EsNodeInfo[]>('nodes', { connectionId });
 }
 
-/** Phân tích heap / shard / CPU / đĩa của cụm — toàn GET, mất ~6–8s (đo GC trong 5s). */
-export function esDiagnose(connectionId: string): Promise<EsDiagnosis> {
-  return esAction<EsDiagnosis>('diagnose', { connectionId });
+/**
+ * Phân tích heap / shard / CPU / đĩa / truy vấn chậm của cụm — toàn GET đọc thống
+ * kê, mất ~9–12s (đo trong 8s). `hotThreads` = lấy mẫu stack (safepoint ngắn) — tắt mặc định.
+ */
+export function esDiagnose(connectionId: string, hotThreads = false): Promise<EsDiagnosis> {
+  return esAction<EsDiagnosis>('diagnose', { connectionId, hotThreads });
 }
 
 export function esMapping(connectionId: string, index: string): Promise<WireDoc> {

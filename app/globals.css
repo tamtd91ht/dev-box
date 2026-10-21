@@ -10939,6 +10939,9 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .esd-status.esd-green { color: var(--ok); }
 .esd-status.esd-yellow { color: var(--warn); }
 .esd-status.esd-red { color: var(--err); }
+.esd-query { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.esd-hot input { margin: 0 4px 0 0; vertical-align: middle; }
+.mon-es-diag { margin-top: 10px; }
 @media (prefers-reduced-motion: reduce) { .pgd-item.flash { animation: none; outline: 2px solid var(--lv); } }
 
 /* hộp chỉnh ngưỡng */

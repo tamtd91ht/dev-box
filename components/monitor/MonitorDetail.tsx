@@ -29,8 +29,6 @@ interface Props {
 
 /** Cảnh báo Kafka có nút Phân tích lag (đều xoay quanh một consumer group). */
 const KAFKA_LAG_METRICS = new Set(['maxConsumerLag', 'deadLagGroups', 'stalledGroups', 'maxStalledSec']);
-/** Cảnh báo ES có nút Phân tích — cùng một bộ phân tích cả cụm (heap, shard, CPU, đĩa). */
-const ES_METRICS = new Set(['statusLevel', 'unassignedShards', 'heapPct', 'diskUsedPct', 'cpuPct', 'pendingTasks']);
 
 /** Chỉ số có luật lên đầu, rồi tới phần còn lại theo bảng chữ cái. */
 function orderMetrics(keys: string[], ruled: Set<string>): string[] {
@@ -62,10 +60,10 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
   // Phân tích nguyên nhân — mở theo tài nguyên, chuyển sang tài nguyên khác thì đóng.
   const [diagOpen, setDiagOpen] = useState(false);
   useEffect(() => { setDiagOpen(false); }, [res.key]);
+  // ES không nằm ở đây: có một nút luôn hiện ngay dưới phần nguyên nhân (kể cả khi cụm xanh).
   const canDiagnose = (metric: string): boolean =>
     (res.stack === 'pg' && metric === 'cacheHitPct') || (res.stack === 'redis' && metric === 'hitRatePct')
-    || (res.stack === 'kafka' && KAFKA_LAG_METRICS.has(metric))
-    || (res.stack === 'es' && ES_METRICS.has(metric));
+    || (res.stack === 'kafka' && KAFKA_LAG_METRICS.has(metric));
   // Kafka: group có lag để chọn, mặc định group gắn với cảnh báo nặng nhất (cùng cách nút "Mở Kafka").
   const lagGroups = useMemo(
     () => (last?.kafkaGroups ?? []).filter((g) => g.lag > 0 && !g.error).sort((a, b) => b.lag - a.lag).map((g) => ({ groupId: g.groupId, lag: g.lag })),
@@ -133,6 +131,17 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
               ))}
             </ul>
           )}
+          {res.stack === 'es' ? (
+            <button
+              type="button"
+              className="mon-btn mon-es-diag"
+              onClick={() => setDiagOpen(true)}
+              disabled={diagOpen}
+              title="Phân tích heap, shard, CPU, đĩa và truy vấn chậm — chạy được cả khi cụm xanh. Chỉ đọc thống kê, không chặn cụm."
+            >
+              🔍 Phân tích cụm (heap · shard · CPU · truy vấn chậm)
+            </button>
+          ) : null}
         </section>
 
         {diagOpen && res.stack === 'pg' ? <PgCacheDiagnosis key={res.key} connectionId={res.id} /> : null}
