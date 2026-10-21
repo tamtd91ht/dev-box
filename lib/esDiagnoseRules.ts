@@ -3,8 +3,9 @@
 //
 // Số liệu do lib/esDiagnose.ts gom (toàn lệnh GET, không đổi gì trên cụm):
 // _nodes/stats hai lần cách vài giây (GC, rejected), _cat/shards,
-// _cluster/allocation/explain, watermark thật của cụm, hot_threads khi CPU
-// cao… File này biến chúng thành kết luận có bằng chứng + lệnh mẫu (Dev Tools).
+// _cluster/allocation/explain, watermark thật của cụm, thread pool đang bận
+// (hot_threads chỉ khi người dùng bật hẳn)… File này biến chúng thành kết luận
+// có bằng chứng + lệnh mẫu (Dev Tools).
 // Thuần để kiểm bằng script (check:es-diagnose) và để client import kiểu.
 //
 // Câu hỏi phải trả lời được: heap đầy VÌ CÁI GÌ (fielddata, quá nhiều shard,

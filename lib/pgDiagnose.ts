@@ -23,6 +23,7 @@
 //     15s mặc định của tab PG) — có gì bất thường thì bỏ phần đó, không chờ.
 //   • Server sắp hết kết nối (≥ CONN_GUARD) thì KHÔNG mở thêm kết nối tới các
 //     database khác — không giành slot của ứng dụng.
+//   • Không gọi pg_database_size (đi qua toàn bộ file dữ liệu).
 //   • Một phiên phân tích cho mỗi kết nối tại một thời điểm.
 
 import type { PgConnection } from '@/lib/pgConnections';
@@ -114,10 +115,9 @@ async function serverPart(conn: PgConnection): Promise<ServerPart> {
     const dbRows = (await soft(q, `
       SELECT coalesce(d.datname, '(catalog dùng chung)') AS name,
              s.blks_hit AS hit, s.blks_read AS read, s.blk_read_time AS rt, s.stats_reset AS reset,
-             coalesce(d.datallowconn, false) AS allow,
-             CASE WHEN d.datallowconn AND has_database_privilege(d.datname, 'CONNECT')
-                  THEN pg_database_size(d.datname) END AS size
+             coalesce(d.datallowconn, false) AS allow
         FROM pg_stat_database s LEFT JOIN pg_database d ON d.oid = s.datid`)) ?? [];
+    // Không gọi pg_database_size: nó đi qua toàn bộ file dữ liệu — phân tích phải nhẹ như lệnh thường.
     return {
       versionNum: num(s.v),
       blockSize: num(s.bs) || 8192,
@@ -132,7 +132,7 @@ async function serverPart(conn: PgConnection): Promise<ServerPart> {
         hit: num(r.hit),
         read: num(r.read),
         readTimeMs: numOrNull(r.rt),
-        sizeBytes: numOrNull(r.size),
+        sizeBytes: null,
         statsReset: iso(r.reset),
         allowConn: !!r.allow,
       })),

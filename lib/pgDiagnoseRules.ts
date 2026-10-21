@@ -326,7 +326,7 @@ export function analyzeCacheHit(f: CacheHitFacts, at = Date.now()): CacheHitDiag
       id: 'db-hot',
       level: 'info',
       title: `Phần lớn đọc ngoài đến từ database ${named[0].name}`,
-      evidence: named.slice(0, 3).map((d) => `${d.name}: ${share(d.read, clusterRead)}% block đọc ngoài · cache hit ${pct(d.hit, d.read) ?? '?'}% · ${fmtBytes(d.sizeBytes)}`),
+      evidence: named.slice(0, 3).map((d) => `${d.name}: ${share(d.read, clusterRead)}% block đọc ngoài · cache hit ${pct(d.hit, d.read) ?? '?'}%${d.sizeBytes ? ` · ${fmtBytes(d.sizeBytes)}` : ''}`),
     });
   }
 

@@ -37,11 +37,14 @@ const TOP_PATTERNS = 10;
 const RECHECK_PER_PATTERN = 20;
 const TTL_SAMPLE_PER_PATTERN = 30;
 /** Tổng số key SCAN được xét — đủ để ước lượng, không quét hết keyspace lớn. */
-const SCAN_BUDGET = 200_000;
-const SCAN_COUNT = 1000;
-const SCAN_PAUSE_MS = 2;
-/** Trên ngần này miss/giây thì KHÔNG bật sự kiện keymiss (mỗi miss = một publish trên luồng chính). */
-const MAX_MISS_RATE = 10_000;
+const SCAN_BUDGET = 100_000;
+const SCAN_COUNT = 500;
+const SCAN_PAUSE_MS = 5;
+/**
+ * Trên ngần này miss/giây thì KHÔNG bật sự kiện keymiss (mỗi miss = một publish trên
+ * luồng chính). 2.000/s ≈ 1–2% CPU của Redis — ngưỡng để phân tích vẫn là "lệnh thường".
+ */
+const MAX_MISS_RATE = 2_000;
 /** Bắt đủ ngần này sự kiện thì dừng sớm. */
 const MAX_EVENTS = 20_000;
 const CHANNEL = '__keyevent@*__:keymiss';

@@ -49,9 +49,9 @@ export default function RedisMissDiagnosis({ connectionId }: { connectionId: str
             <code>keymiss</code>, rồi <b>trả lại giá trị cũ</b> ngay khi xong (kể cả khi lỗi).
           </p>
           <p className="mon-d-faint">
-            Chỉ đọc TÊN key bị miss, không đọc giá trị. Bảo vệ production: đo tốc độ miss trước — trên 10.000 miss/giây
-            thì KHÔNG bật; đủ 20.000 mẫu là dừng sớm và trả lại cấu hình ngay. Sau đó quét SCAN tối đa 200.000 key
-            (có nghỉ giữa các lượt, không dùng KEYS) để đếm key cùng dạng và lấy mẫu TTL. Cần Redis ≥ 6.0.
+            Chỉ đọc TÊN key bị miss, không đọc giá trị. Bảo vệ production: đo tốc độ miss trước — trên 2.000 miss/giây
+            thì KHÔNG bật; đủ 20.000 mẫu là dừng sớm và trả lại cấu hình ngay. Sau đó quét SCAN tối đa 100.000 key
+            (lượt nhỏ, nghỉ giữa các lượt, không dùng KEYS) để đếm key cùng dạng và lấy mẫu TTL. Cần Redis ≥ 6.0.
           </p>
           <div className="rmd-actions">
             {durationPick}

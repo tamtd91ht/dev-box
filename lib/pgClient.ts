@@ -17,6 +17,13 @@
 //      (defaults true) + typed-confirm modal in the UI. Audit-logged.
 //   5. Identifiers (database/schema/table/column) are validated + quoted;
 //      values travel as bind parameters, never concatenated.
+//   6. KHÔNG ĐỂ BẢNG KẸT KHOÁ. Mọi transaction (đọc lẫn UPDATE) đặt
+//      `lock_timeout` LOCK_TIMEOUT_MS: hễ phải chờ khoá là báo lỗi ngay thay vì
+//      xếp hàng — vì một lệnh đang chờ khoá đứng sau ALTER TABLE / VACUUM FULL /
+//      REINDEX sẽ kéo mọi truy vấn của ứng dụng vào bảng đó xếp hàng sau nó.
+//      Thông tin kích thước (danh sách bảng, phân tích) lấy từ pg_class.relpages
+//      — KHÔNG gọi pg_total_relation_size / pg_relation_size, vì các hàm đó xin
+//      AccessShareLock trên từng bảng (danh sách bảng gọi cho MỌI bảng một lượt).
 
 import { Client, Pool, types } from 'pg';
 import type { PgConnection } from '@/lib/pgConnections';
@@ -34,6 +41,8 @@ export const PG_ALLOW_WRITE = /^(1|true|yes|on)$/i.test(process.env.PG_ALLOW_WRI
 export const QUERY_ROWS_MAX = 500;
 export const QUICKFIND_LIMIT_MAX = 200;
 const STMT_TIMEOUT_MS = 15_000;
+/** Chờ khoá quá ngần này thì bỏ — xem mục 6 ở đầu file. */
+const LOCK_TIMEOUT_MS = 1_000;
 const CONNECT_TIMEOUT_MS = 5000;
 const IDLE_EVICT_MS = 10 * 60 * 1000;
 /** Rendered row guard — mirrors the Mongo tab. */
@@ -169,6 +178,7 @@ export async function runReadOnly<T>(pool: Pool, fn: (q: (text: string, params?:
   try {
     await client.query('BEGIN TRANSACTION READ ONLY');
     await client.query(`SET LOCAL statement_timeout = ${STMT_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`);
     const out = await fn((text, params) => client.query(text, params as never));
     await client.query('COMMIT');
     return out;
@@ -308,6 +318,10 @@ const HIT_MIN_BLOCKS = 1000;
 const HIT_MAX_AGE_MS = 15 * 60 * 1000;
 const hitBase = new Map<string, { hit: number; read: number; at: number; recent: number | null }>();
 
+/** Dung lượng database đo lại thưa — xem chỗ dùng trong stats(). */
+const DB_SIZE_TTL_MS = 10 * 60 * 1000;
+const dbSizeCache = new Map<string, { bytes: number | null; at: number }>();
+
 function recentHitPct(id: string, hit: number, read: number): number | null {
   const now = Date.now();
   const base = hitBase.get(id);
@@ -362,7 +376,15 @@ export async function stats(conn: PgConnection, opts: { sessions?: boolean } = {
     );
     const connections = num(act?.total) ?? 0;
 
-    const size = await soft(`SELECT sum(pg_database_size(datname))::bigint AS sz FROM pg_database WHERE datallowconn`);
+    // pg_database_size đi qua TOÀN BỘ file dữ liệu (không khoá, nhưng nặng hơn một lệnh
+    // thường) — Monitor đo mỗi 30s nên chỉ đo lại sau DB_SIZE_TTL_MS, giữa chừng dùng số cũ.
+    const cachedSize = dbSizeCache.get(conn.id);
+    const size = cachedSize && Date.now() - cachedSize.at < DB_SIZE_TTL_MS
+      ? { sz: cachedSize.bytes }
+      : await soft(`SELECT sum(pg_database_size(datname))::bigint AS sz FROM pg_database WHERE datallowconn`);
+    if (size && (!cachedSize || Date.now() - cachedSize.at >= DB_SIZE_TTL_MS)) {
+      dbSizeCache.set(conn.id, { bytes: num(size.sz), at: Date.now() });
+    }
     const dbs = await soft(
       `SELECT sum(blks_hit)::bigint AS h, sum(blks_read)::bigint AS r, sum(deadlocks)::bigint AS d, sum(temp_bytes)::bigint AS t FROM pg_stat_database`,
     );
@@ -494,6 +516,7 @@ export interface PgTableInfo {
   name: string;
   /** reltuples estimate — cheap, not exact. */
   estRows: number;
+  /** Ước lượng từ pg_class.relpages (bảng + toast + index) — không xin khoá; cập nhật theo VACUUM/ANALYZE. */
   sizeBytes: number;
 }
 
@@ -504,9 +527,14 @@ export async function listTables(conn: PgConnection, db: string): Promise<PgTabl
     const r = await q(
       `SELECT n.nspname AS schema, c.relname AS name,
               GREATEST(c.reltuples, 0)::bigint AS est_rows,
-              pg_total_relation_size(c.oid)::bigint AS size
+              -- KHÔNG dùng pg_total_relation_size: nó xin khoá TỪNG bảng (ở đây là mọi bảng
+              -- một lượt) — kẹt sau một ALTER TABLE là kéo cả ứng dụng xếp hàng. Xem mục 6.
+              (c.relpages::bigint + coalesce(t.relpages, 0)
+                + coalesce((SELECT sum(i.relpages) FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = c.oid), 0))
+                * current_setting('block_size')::bigint AS size
          FROM pg_class c
          JOIN pg_namespace n ON n.oid = c.relnamespace
+         LEFT JOIN pg_class t ON t.oid = c.reltoastrelid
         WHERE c.relkind IN ('r', 'p', 'm')
           AND n.nspname NOT IN ('pg_catalog', 'information_schema')
           AND n.nspname NOT LIKE 'pg_toast%'
@@ -763,6 +791,8 @@ export async function updateWithWhere(conn: PgConnection, db: string, input: PgU
   try {
     await client.query('BEGIN');
     await client.query(`SET LOCAL statement_timeout = ${STMT_TIMEOUT_MS}`);
+    // Hàng đang bị ứng dụng giữ khoá → bỏ ngay, không chờ (và không giữ khoá của ta lâu).
+    await client.query(`SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`);
     const res = await client.query(`UPDATE ${schema}.${table} SET ${assigns.join(', ')} WHERE ${where}`, params);
     updated = res.rowCount ?? 0;
     await client.query('COMMIT');
