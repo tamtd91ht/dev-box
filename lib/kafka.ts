@@ -106,6 +106,18 @@ export interface MessagePage {
   note?: string;
 }
 
+/** A few messages a consumer group has NOT processed yet, read from its committed offset. */
+export interface PendingPage extends MessagePage {
+  partition: number;
+  /** The group's committed offset = the next message it will process. */
+  committed: number;
+  /** First offset actually read (> committed when retention already deleted the head). */
+  startOffset: number;
+  logEnd: number;
+  /** logEnd − committed: how many messages are waiting in this partition. */
+  pending: number;
+}
+
 export interface TestResult {
   latencyMs: number;
   brokers: number;
@@ -351,6 +363,13 @@ export function listKafkaTopicGroups(connectionId: string, topic: string): Promi
 
 export function peekKafkaMessages(connectionId: string, topic: string, limit: number): Promise<MessagePage> {
   return kafkaAction<MessagePage>('peek', { connectionId, topic, limit });
+}
+
+/** A few messages the group has not processed yet (from its committed offset) — read-only, commits nothing. */
+export function peekKafkaPending(
+  connectionId: string, topic: string, partition: number, committed: number, limit: number,
+): Promise<PendingPage> {
+  return kafkaAction<PendingPage>('peekPending', { connectionId, topic, partition, committed, limit });
 }
 
 /** Search REQUIRES a time window (fromMs/toMs) AND a keyword. */

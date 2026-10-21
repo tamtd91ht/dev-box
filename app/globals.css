@@ -1861,6 +1861,15 @@ audio { width: 100%; margin-top: 12px; }
 .kafka-msg { border: 1px solid var(--border, rgba(127,127,127,.18)); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; }
 .kafka-msg-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
+/* Message đang chờ của consumer group (lấy mẫu từ committed offset) */
+.kafka-pending { margin-top: 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border, rgba(127,127,127,.18))); border-radius: 10px; }
+.kafka-pending-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.kafka-pending-head .kafka-peekn { width: auto; }
+.kafka-pending-warn { margin: 4px 2px; font-size: 12px; color: var(--warn); }
+.kafka-pending-hints { list-style: none; margin: 6px 0 2px; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
+.kafka-pending-hints li.warn { color: var(--warn); }
+.kafka-pending-hints li.info { color: var(--muted); }
+
 /* Message viewer — one row per message, horizontal scroll (Kafka-HQ style) */
 .kafka-msg-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 6px; }
 .kafka-msg-table {

@@ -48,6 +48,9 @@ const SEARCH_CHUNK_PER_PARTITION = 2_000;
  *  KAFKA_SEARCH_DEADLINE_MS — raise it when scanning heavy topics over a slow
  *  link; the chunked newest-first walk keeps every extra second productive. */
 const SEARCH_DEADLINE_MS = Math.max(10_000, Number(process.env.KAFKA_SEARCH_DEADLINE_MS) || 120_000);
+/** Default / hard cap for a pending-messages sample — it is for eyeballing, not draining. */
+const PENDING_DEFAULT = 5;
+const PENDING_MAX = 50;
 /** Wall-clock budget for a peek consume loop. */
 const PEEK_TIMEOUT_MS = 10_000;
 /** Bytes of a message value materialized for keyword matching AND returned to the
@@ -148,6 +151,18 @@ export interface MessagePage {
   truncated: boolean;
   /** Optional human note (e.g. the time window mapped to an empty offset range). */
   note?: string;
+}
+
+/** A few messages a consumer group has NOT processed yet, read from its committed offset. */
+export interface PendingPage extends MessagePage {
+  partition: number;
+  /** The group's committed offset = the next message it will process. */
+  committed: number;
+  /** First offset actually read (> committed when retention already deleted the head). */
+  startOffset: number;
+  logEnd: number;
+  /** logEnd − committed: how many messages are waiting in this partition. */
+  pending: number;
 }
 
 // ── Client cache (one Kafka instance + admin per connection) ─────────────────────
@@ -1429,6 +1444,52 @@ export async function peekMessages(conn: KafkaConnection, topic: string, limit: 
   // Newest first, then trim to the requested count.
   page.messages.sort((a, b) => b.timestamp - a.timestamp || Number(b.offset) - Number(a.offset));
   return { messages: page.messages.slice(0, n), scanned: page.scanned, truncated: page.truncated };
+}
+
+/**
+ * Sample the first `limit` messages a group is stuck on: read [committed, committed+limit)
+ * of ONE partition. Cost is the sample size, never the lag — a 10M lag reads the
+ * same few messages as a lag of 10. Raw fetch like every other read here: no group
+ * is joined and nothing is committed, so the lagging group is left exactly as it was.
+ */
+export async function peekPending(
+  conn: KafkaConnection,
+  topic: string,
+  partition: number,
+  committed: number,
+  limit: number,
+): Promise<PendingPage> {
+  if (!topic) throw new Error('topic is required');
+  if (!Number.isInteger(partition) || partition < 0) throw new Error('partition is required');
+  if (!Number.isFinite(committed) || committed < 0) throw new Error('committed offset is required');
+  const n = Math.min(Math.max(Number(limit) || PENDING_DEFAULT, 1), PENDING_MAX);
+  const admin = await getAdmin(conn);
+  const o = (await admin.fetchTopicOffsets(topic)).find((x) => x.partition === partition);
+  if (!o) throw new Error(`Topic ${topic} không có partition ${partition}`);
+  const low = Number(o.low);
+  const logEnd = Number(o.high ?? o.offset);
+  const startOffset = Math.max(committed, low);
+  const end = Math.min(logEnd, startOffset + n);
+  const base = { partition, committed, startOffset, logEnd, pending: Math.max(0, logEnd - committed) };
+  if (end <= startOffset) {
+    return { ...base, messages: [], scanned: 0, truncated: false, note: 'Partition này không còn message nào chờ — group đã đuổi kịp.' };
+  }
+  const page = await consumeRange(conn, topic, [{ partition, start: startOffset, end }], {
+    filter: null,
+    maxMatches: n,
+    maxScan: MAX_SCAN,
+    timeoutMs: PEEK_TIMEOUT_MS,
+  });
+  const messages = page.messages.sort((a, b) => Number(a.offset) - Number(b.offset)).slice(0, n);
+  return {
+    ...base,
+    messages,
+    scanned: page.scanned,
+    truncated: page.truncated && messages.length < end - startOffset,
+    note: startOffset > committed
+      ? `Offset group đang đứng (${committed}) đã bị retention xoá — ${startOffset - committed} message chưa xử lý đã mất; đang xem từ offset còn lại sớm nhất.`
+      : undefined,
+  };
 }
 
 /**

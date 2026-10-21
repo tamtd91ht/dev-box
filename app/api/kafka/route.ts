@@ -9,6 +9,7 @@
 //     'consumerLag'   { connectionId }                         → KafkaConsumerLag  (every group, one sweep)
 //     'topicGroups'   { connectionId, topic }                  → TopicConsumerGroup[]
 //     'peek'          { connectionId, topic, limit? }          → MessagePage
+//     'peekPending'   { connectionId, topic, partition, committed, limit? } → PendingPage  (a few messages a group hasn't processed; commits nothing)
 //     'search'        { connectionId, topic, fromMs, toMs, keyword } → MessagePage
 //     'produce'       { connectionId, topic, key?, value, partition? } → { partition, offset }
 //
@@ -32,6 +33,7 @@ import {
   consumerLag,
   listTopicGroups,
   peekMessages,
+  peekPending,
   searchMessages,
   produce,
 } from '@/lib/kafkaClient';
@@ -128,6 +130,9 @@ export async function POST(req: NextRequest) {
         break;
       case 'peek':
         result = await peekMessages(conn, String(body.topic ?? ''), Number(body.limit ?? 20));
+        break;
+      case 'peekPending':
+        result = await peekPending(conn, String(body.topic ?? ''), Number(body.partition), Number(body.committed), Number(body.limit ?? 5));
         break;
       case 'search':
         result = await searchMessages(conn, {

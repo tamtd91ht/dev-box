@@ -11,6 +11,7 @@ import {
   listKafkaGroups,
   describeKafkaGroup,
   peekKafkaMessages,
+  peekKafkaPending,
   searchKafkaMessages,
   produceKafkaMessage,
   kafkaConsumerLag,
@@ -21,6 +22,8 @@ import {
   type TopicDetail,
   type GroupSummary,
   type GroupDetail,
+  type GroupPartitionLag,
+  type PendingPage,
   type MessagePage,
   type PreviewMessage,
   type TopicConsumerGroup,
@@ -28,6 +31,7 @@ import {
   listKafkaTopicGroups,
 } from '@/lib/kafka';
 import DateTimeField from '@/components/DateTimeField';
+import { pendingHints } from '@/lib/kafkaPendingHints';
 import ConnTransferButton from './ConnTransferButton';
 import HealthStrip from './kafka/HealthStrip';
 import {
@@ -199,6 +203,12 @@ export default function KafkaWorkspace() {
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [groupDetail, setGroupDetail] = useState<GroupDetail | null>(null);
   const [groupLoading, setGroupLoading] = useState(false);
+  // Vài message group chưa xử lý (đọc từ committed offset của MỘT partition) — để đoán vì sao lag.
+  const [pending, setPending] = useState<{
+    topic: string; partition: number; committed: number;
+    page: PendingPage | null; loading: boolean; error: string | null;
+  } | null>(null);
+  const [pendingN, setPendingN] = useState(PENDING_SAMPLE);
 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -529,6 +539,24 @@ export default function KafkaWorkspace() {
     if (subView === 'groups' && activeId && groups.length === 0 && !groupsLoading) void loadGroups();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subView, activeId]);
+
+  useEffect(() => { setPending(null); }, [selectedGroup, activeId]);
+
+  const loadPending = useCallback(
+    async (topic: string, p: GroupPartitionLag, n: number) => {
+      if (p.committed == null) return;
+      const committed = p.committed;
+      const same = (cur: { topic: string; partition: number } | null) => !!cur && cur.topic === topic && cur.partition === p.partition;
+      setPending({ topic, partition: p.partition, committed, page: null, loading: true, error: null });
+      try {
+        const page = await peekKafkaPending(activeId, topic, p.partition, committed, n);
+        setPending((cur) => (same(cur) ? { ...cur!, page, loading: false } : cur));
+      } catch (e) {
+        setPending((cur) => (same(cur) ? { ...cur!, loading: false, error: (e as Error).message } : cur));
+      }
+    },
+    [activeId],
+  );
 
   const selectGroup = useCallback(
     async (groupId: string) => {
@@ -1083,25 +1111,55 @@ export default function KafkaWorkspace() {
                         <div key={t.topic} style={{ marginTop: 10 }}>
                           <div className="status-line" style={{ justifyContent: 'space-between' }}>
                             <span className="code">{t.topic}</span>
-                            <span className="badge" style={{ color: t.totalLag > 0 ? 'var(--err)' : 'var(--ok)' }}>lag {fmtInt(t.totalLag)}</span>
+                            <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                              {worstPending(t.partitions) && (
+                                <button
+                                  className="chip-btn"
+                                  onClick={() => void loadPending(t.topic, worstPending(t.partitions)!, pendingN)}
+                                  title="Đọc vài message đầu mà group chưa xử lý ở partition lag nặng nhất — chỉ đọc, không commit"
+                                >👁 Xem message đang chờ</button>
+                              )}
+                              <span className="badge" style={{ color: t.totalLag > 0 ? 'var(--err)' : 'var(--ok)' }}>lag {fmtInt(t.totalLag)}</span>
+                            </span>
                           </div>
                           <table className="kafka-table">
                             <thead>
-                              <tr><th>P</th><th>Committed</th><th>Log end</th><th>Lag</th></tr>
+                              <tr><th>P</th><th>Committed</th><th>Log end</th><th>Lag</th><th /></tr>
                             </thead>
                             <tbody>
                               {t.partitions.map((p) => (
-                                <tr key={p.partition}>
+                                <tr key={p.partition} className={pending?.topic === t.topic && pending.partition === p.partition ? 'active' : undefined}>
                                   <td>{p.partition}</td>
                                   <td>{p.committed == null ? '—' : fmtInt(p.committed)}</td>
                                   <td>{fmtInt(p.logEnd)}</td>
                                   <td style={{ color: (p.lag ?? 0) > 0 ? 'var(--err)' : undefined }}>
                                     {p.lag == null ? '—' : fmtInt(p.lag)}
                                   </td>
+                                  <td>
+                                    {(p.lag ?? 0) > 0 && p.committed != null && (
+                                      <button className="chip-btn" onClick={() => void loadPending(t.topic, p, pendingN)} title="Xem vài message đầu đang chờ của partition này">👁</button>
+                                    )}
+                                  </td>
                                 </tr>
                               ))}
                             </tbody>
                           </table>
+                          {pending?.topic === t.topic && (
+                            <PendingPanel
+                              pending={pending}
+                              n={pendingN}
+                              members={groupDetail.members.length}
+                              partitions={t.partitions}
+                              selected={selectedMsg}
+                              onSelect={setSelectedMsg}
+                              onN={(n) => {
+                                setPendingN(n);
+                                const p = t.partitions.find((x) => x.partition === pending.partition);
+                                if (p) void loadPending(t.topic, p, n);
+                              }}
+                              onClose={() => setPending(null)}
+                            />
+                          )}
                         </div>
                       ))}
                     </>
@@ -1336,6 +1394,78 @@ function MessageList({
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Message đang chờ của một consumer group ───────────────────────────────────
+
+/** Số message mặc định khi lấy mẫu — đủ để thấy message đang kẹt và vài cái sau nó. */
+const PENDING_SAMPLE = 5;
+const PENDING_SIZES = [5, 10, 20, 50];
+/** Lag từ mức này trở lên: nhắc rõ đây chỉ là MẪU, không phải toàn bộ. */
+const PENDING_BIG_LAG = 10_000;
+
+/** Partition lag nặng nhất (có committed offset) — đích mặc định của nút "Xem message đang chờ". */
+function worstPending(parts: GroupPartitionLag[]): GroupPartitionLag | undefined {
+  return parts.filter((p) => (p.lag ?? 0) > 0 && p.committed != null).sort((a, b) => (b.lag ?? 0) - (a.lag ?? 0))[0];
+}
+
+function PendingPanel({
+  pending,
+  n,
+  members,
+  partitions,
+  selected,
+  onSelect,
+  onN,
+  onClose,
+}: {
+  pending: { partition: number; committed: number; page: PendingPage | null; loading: boolean; error: string | null };
+  n: number;
+  members: number;
+  partitions: GroupPartitionLag[];
+  selected: PreviewMessage | null;
+  onSelect: (m: PreviewMessage) => void;
+  onN: (n: number) => void;
+  onClose: () => void;
+}) {
+  const { page } = pending;
+  const hints = useMemo(
+    () => (page ? pendingHints(page, {
+      members,
+      laggingPartitions: partitions.filter((x) => (x.lag ?? 0) > 0).length,
+      totalPartitions: partitions.length,
+    }) : []),
+    [page, members, partitions],
+  );
+  return (
+    <div className="kafka-pending">
+      <div className="kafka-pending-head">
+        <strong>Message đang chờ · P{pending.partition}</strong>
+        <span className="kafka-meta" style={{ margin: 0 }}>từ offset {fmtInt(pending.committed)} (message đầu = cái consumer đang kẹt)</span>
+        <span style={{ flex: 1 }} />
+        <select className="input kafka-peekn" value={n} onChange={(e) => onN(Number(e.target.value))} title="Số message lấy mẫu">
+          {PENDING_SIZES.map((x) => <option key={x} value={x}>{x} message</option>)}
+        </select>
+        <button className="chip-btn" onClick={onClose} title="Đóng">✕</button>
+      </div>
+      <p className="kafka-meta" style={{ margin: '4px 2px' }}>
+        Chỉ đọc — không join group, không commit: group vẫn đứng nguyên offset và sẽ xử lý lại đúng các message này.
+      </p>
+      {page && page.pending >= PENDING_BIG_LAG && (
+        <p className="kafka-pending-warn">
+          ⚠ Partition này đang chờ {fmtInt(page.pending)} message — đây chỉ là {page.messages.length} message ĐẦU để xem mẫu; đọc hết
+          vừa không khả thi vừa không cần (nguyên nhân thường nằm ở message đầu).
+        </p>
+      )}
+      {pending.error && <p className="kafka-pending-warn">Lỗi: {pending.error}</p>}
+      {hints.length > 0 && (
+        <ul className="kafka-pending-hints">
+          {hints.map((h) => <li key={h.text} className={h.level}>{h.level === 'warn' ? '⚠' : 'ℹ'} {h.text}</li>)}
+        </ul>
+      )}
+      <MessageList page={page} loading={pending.loading} mode="peek" selected={selected} onSelect={onSelect} />
     </div>
   );
 }
