@@ -168,6 +168,18 @@ check(!get(facts({ nodes: [node({ search: srch(5_000, 50_000) })] }), 'slow-sear
 // ── Pending task ──
 check(get(facts({ pending: [{ source: 'put-mapping', count: 140 }] }), 'pending')!.fix!.includes('mapping explosion'), 'pending put-mapping → mapping explosion');
 
+// ── Node không trả lời trong 5s ──
+{
+  const d = analyzeEs(facts({
+    nodes: [node({ name: 'es-1' }), node({ name: 'es-2', diskAvail: 30 * GB })],
+    unresponsive: [{ id: 'Xy9', name: 'es-3', address: '10.0.0.3:9300', reason: 'timed out after [5004ms]' }],
+  }));
+  check(d.findings[0]?.id === 'unresponsive:es-3' && d.findings[0].level === 'crit', 'node treo → đỏ, đứng ĐẦU (trước cả đĩa đầy)');
+  check(d.findings[0].sql!.includes('"cluster.routing.allocation.enable": "primaries"') && d.findings[0].fix!.includes('vmstat'), 'kèm runbook: xem máy, chặn dời shard trước khi dừng node');
+  const row = d.nodes.find((n) => n.name === 'es-3');
+  check(!!row?.unresponsive && d.nodes.length === 3, 'node treo vẫn có dòng trong bảng node (đánh dấu không trả lời)');
+}
+
 // ── Cụm khoẻ ──
 {
   const d = analyzeEs(facts({}));

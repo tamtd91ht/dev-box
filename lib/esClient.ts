@@ -42,12 +42,14 @@ export async function esFetch<T>(
   pathAndQuery: string,
   body?: unknown,
   method?: 'GET' | 'POST' | 'DELETE',
+  /** Ghi đè REQUEST_TIMEOUT_MS cho lệnh này (vd phân tích không muốn chờ 15s). */
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   const scheme = conn.tls ? 'https' : 'http';
   let lastErr: Error | null = null;
   for (const node of conn.nodes) {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await fetch(`${scheme}://${node}${pathAndQuery}`, {
         method: method ?? (body === undefined ? 'GET' : 'POST'),
@@ -66,7 +68,7 @@ export async function esFetch<T>(
     } catch (e) {
       if (e instanceof AuthoritativeError) throw new Error(e.message); // HTTP answer — done
       lastErr = (e as Error).name === 'AbortError'
-        ? new Error(`node ${node} không phản hồi trong ${REQUEST_TIMEOUT_MS / 1000}s`)
+        ? new Error(`node ${node} không phản hồi trong ${timeoutMs / 1000}s`)
         : new Error(`node ${node}: ${(e as Error).message}`);
       // connection-level failure → try the next node
     } finally {

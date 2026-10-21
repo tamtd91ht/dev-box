@@ -15,6 +15,11 @@
 //     (mỗi lần lấy mẫu là một safepoint JVM). Chỉ chạy khi người dùng bật hẳn.
 //   • Mỗi kết nối một phiên phân tích tại một thời điểm; mọi request có timeout
 //     15s (esFetch), lỗi một phần thì bỏ phần đó chứ không thử lại dồn dập.
+//   • Lệnh gửi tới TỪNG node (_nodes/stats, _tasks, hot_threads) có timeout=5s phía
+//     ES: một node treo (GC xoáy, đĩa kẹt…) không kéo cả lần phân tích chờ theo —
+//     ES trả số của các node khoẻ, node treo nằm trong _nodes.failures và được báo
+//     thành kết luận riêng. _stats theo index (broadcast tới shard, không có timeout
+//     theo node) bị cắt phía app sau INDEX_STATS_TIMEOUT_MS.
 // Luật biến số liệu thành kết luận nằm ở lib/esDiagnoseRules (thuần, kiểm được).
 
 import type { EsConnection } from '@/lib/esConnections';
@@ -29,12 +34,15 @@ const UNASSIGNED_LIST_MAX = 50;
 /** Trên ngần này shard thì bỏ các lệnh liệt kê theo shard / index (phản hồi lớn, tốn CPU node điều phối). */
 const LARGE_CLUSTER_SHARDS = 10_000;
 const RUNNING_MAX = 20;
+/** Timeout phía ES cho mỗi node của các lệnh theo node. */
+const NODE_TIMEOUT = '5s';
+const INDEX_STATS_TIMEOUT_MS = 8000;
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 const NODE_STATS =
-  '/_nodes/stats/jvm,os,thread_pool,breaker,indices,fs?filter_path=' + [
-    'nodes.*.name', 'nodes.*.roles',
+  `/_nodes/stats/jvm,os,thread_pool,breaker,indices,fs?timeout=${NODE_TIMEOUT}&filter_path=` + [
+    '_nodes', 'nodes.*.name', 'nodes.*.roles',
     'nodes.*.jvm.mem.heap_used_percent', 'nodes.*.jvm.mem.heap_max_in_bytes', 'nodes.*.jvm.gc.collectors.old',
     'nodes.*.os.cpu.percent', 'nodes.*.os.mem.total_in_bytes',
     'nodes.*.thread_pool.*.active', 'nodes.*.thread_pool.*.queue', 'nodes.*.thread_pool.*.rejected',
@@ -100,7 +108,7 @@ async function run(conn: EsConnection, wantHotThreads: boolean): Promise<EsDiagn
   const t0 = Date.now();
   const [s0, idx0, shards, alloc, indices, settings, readOnly, pending, slowlog] = await Promise.all([
     esFetch<Json>(conn, NODE_STATS),
-    large ? null : soft(esFetch<Json>(conn, INDEX_SEARCH)),
+    large ? null : soft(esFetch<Json>(conn, INDEX_SEARCH, undefined, undefined, INDEX_STATS_TIMEOUT_MS)),
     large ? null : soft(esFetch<Json[]>(conn, '/_cat/shards?format=json&bytes=b&h=index,shard,prirep,state,unassigned.reason,node,store')),
     large ? soft(esFetch<Json[]>(conn, '/_cat/allocation?format=json&h=node,shards')) : null,
     soft(esFetch<Json[]>(conn, '/_cat/indices?format=json&h=index,rep')),
@@ -116,8 +124,8 @@ async function run(conn: EsConnection, wantHotThreads: boolean): Promise<EsDiagn
   await sleep(Math.max(0, t0 + WINDOW_MS - Date.now()));
   const [s1, idx1, tasks] = await Promise.all([
     esFetch<Json>(conn, NODE_STATS),
-    idx0 ? soft(esFetch<Json>(conn, INDEX_SEARCH)) : null,
-    soft(esFetch<Json>(conn, '/_tasks?actions=indices:data/read/search&detailed=true&filter_path=nodes.*.name,nodes.*.tasks.*.running_time_in_nanos,nodes.*.tasks.*.description')),
+    idx0 ? soft(esFetch<Json>(conn, INDEX_SEARCH, undefined, undefined, INDEX_STATS_TIMEOUT_MS)) : null,
+    soft(esFetch<Json>(conn, `/_tasks?actions=indices:data/read/search&detailed=true&timeout=${NODE_TIMEOUT}&filter_path=node_failures,nodes.*.name,nodes.*.tasks.*.running_time_in_nanos,nodes.*.tasks.*.description`)),
   ]);
   const windowSec = Math.max(1, Math.round((Date.now() - t0) / 1000));
   if (!tasks) skipped.push('không đọc được _tasks (thiếu quyền monitor?) — chưa biết query nào đang chạy lâu');
@@ -125,11 +133,36 @@ async function run(conn: EsConnection, wantHotThreads: boolean): Promise<EsDiagn
   // hot_threads: chỉ khi người dùng bật — xem ghi chú đầu file.
   let hot = new Map<string, EsHotThread[]>();
   if (wantHotThreads) {
-    const r = await soft(esFetch<Json>(conn, '/_nodes/hot_threads?threads=3&interval=500ms&snapshots=5&ignore_idle_threads=true'));
+    const r = await soft(esFetch<Json>(conn, `/_nodes/hot_threads?threads=3&interval=500ms&snapshots=5&ignore_idle_threads=true&timeout=${NODE_TIMEOUT}`));
     const text = typeof r?.raw === 'string' ? r.raw : '';
     if (text) hot = parseHotThreads(text);
   } else {
     skipped.push('hot_threads (tắt mặc định — lấy mẫu stack gây safepoint ngắn trên mọi node)');
+  }
+
+  // Node không trả lời trong NODE_TIMEOUT — gom từ mọi lệnh theo node.
+  const failed = new Map<string, string>();
+  const collect = (list: unknown) => {
+    for (const f of (Array.isArray(list) ? list : []) as Json[]) {
+      const id = String(f.node_id ?? /\[([^\]]+)\]/.exec(String(f.reason ?? ''))?.[1] ?? '');
+      if (!id) continue;
+      const why = String(f.caused_by?.reason ?? f.caused_by?.type ?? f.reason ?? f.type ?? 'không trả lời');
+      if (!failed.has(id)) failed.set(id, why);
+    }
+  };
+  collect(s0._nodes?.failures);
+  collect(s1._nodes?.failures);
+  collect(tasks?.node_failures);
+  let unresponsive: EsFacts['unresponsive'] = [];
+  if (failed.size) {
+    // Tên node lấy từ cluster state trên MASTER — không phải hỏi lại node đang treo.
+    const st = await soft(esFetch<Json>(conn, '/_cluster/state/nodes?filter_path=nodes.*.name,nodes.*.transport_address', undefined, undefined, 5000));
+    unresponsive = [...failed.entries()].map(([id, reason]) => ({
+      id,
+      name: String(st?.nodes?.[id]?.name ?? id),
+      address: st?.nodes?.[id]?.transport_address ? String(st.nodes[id].transport_address) : null,
+      reason,
+    }));
   }
 
   // Số shard theo node + kích thước + danh sách chưa gán.
@@ -277,6 +310,7 @@ async function run(conn: EsConnection, wantHotThreads: boolean): Promise<EsDiagn
       ? Object.entries<Json>(slowlog).filter(([, v]) => Object.values(v?.settings ?? {}).some((x) => String(x) !== '-1')).map(([k]) => k)
       : null,
     skipped,
+    unresponsive,
   };
   return analyzeEs(facts);
 }

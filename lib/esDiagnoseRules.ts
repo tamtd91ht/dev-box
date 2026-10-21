@@ -120,6 +120,8 @@ export interface EsFacts {
   slowlogIndices?: string[] | null;
   /** Các phần đã bỏ qua để không tạo tải trên cụm lớn — nêu ra cho minh bạch. */
   skipped?: string[];
+  /** Node không trả lời các lệnh theo node trong 5s (vẫn còn trong cluster state). */
+  unresponsive?: { id: string; name: string; address: string | null; reason: string }[];
 }
 
 export interface EsNodeRow {
@@ -134,6 +136,8 @@ export interface EsNodeRow {
   top: string | null;
   /** ms trung bình mỗi lượt query (shard) trong cửa sổ; null = không có query. */
   queryMs: number | null;
+  /** Node không trả lời trong 5s — số liệu các cột khác không có. */
+  unresponsive?: boolean;
 }
 
 export interface EsDiagnosis {
@@ -265,6 +269,30 @@ export function analyzeEs(f: EsFacts, at = Date.now()): EsDiagnosis {
   const winMs = Math.max(1, f.windowSec) * 1000;
   // roles từ _nodes/stats: "data", "data_hot", "data_content"… (rỗng = bản cũ không báo → coi là data).
   const dataNodes = f.nodes.filter((n) => n.roles === '' || /data/.test(n.roles));
+
+  // ── Node không trả lời: lên đầu — mọi query chạm shard trên node đó đều phải chờ nó ──
+  for (const u of f.unresponsive ?? []) {
+    out.push({
+      id: `unresponsive:${u.name}`,
+      level: 'crit',
+      title: `Node ${u.name} không trả lời trong 5s — có thể đang treo`,
+      evidence: [
+        `${u.address ? `${u.address} · ` : ''}ES báo: ${u.reason}`,
+        'Node vẫn còn trong cụm nên query chạm shard trên nó phải chờ — cả cụm chậm theo',
+        'Load rất cao (hàng trăm) thường là chờ I/O: đĩa treo / hỏng, swap, ổ mạng — không phải CPU thật',
+      ],
+      fix: 'Trên máy của node: uptime; vmstat 1 5 (wa cao → đĩa, si/so → swap); iostat -x 1 3; dmesg -T | tail -50 (lỗi I/O, "task blocked", OOM); top -H -p <pid> (GC Thread → heap; [search] → query). Nếu cụm vẫn green (mọi shard có replica ở node khác): chặn dời shard rồi dừng node — replica được nâng lên, dịch vụ chạy tiếp. Dừng không được → kill -9 / reboot từ console. Khoẻ lại thì bật lại phân bổ.',
+      sql: `GET _cat/shards?v&h=index,shard,prirep,state,node&s=node   # node này giữ primary nào, có replica không
+PUT _cluster/settings
+{ "persistent": { "cluster.routing.allocation.enable": "primaries" } }
+PUT _all/_settings
+{ "index.unassigned.node_left.delayed_timeout": "15m" }
+# sau khi node khoẻ lại và vào cụm:
+PUT _cluster/settings
+{ "persistent": { "cluster.routing.allocation.enable": null } }`,
+      step: { phase: 'now', text: `Xử lý node ${u.name} đang treo: xem máy (vmstat / dmesg), cụm green thì dừng node an toàn` },
+    });
+  }
 
   // ── Đĩa: kiểm trước vì nó gây ra cả shard chưa gán lẫn index read-only ──
   const flooded: string[] = [];
@@ -726,6 +754,10 @@ PUT _cluster/settings
       queryMs: n.search && n.search.queries >= MIN_QUERIES ? Math.round(n.search.queryMs / n.search.queries) : null,
     };
   });
+  for (const u of f.unresponsive ?? []) {
+    if (nodes.some((r) => r.name === u.name)) continue;
+    nodes.push({ name: u.name, roles: '', heapPct: null, gcOldPct: 0, cpu: null, diskPct: null, shards: 0, rejected: 0, top: null, queryMs: null, unresponsive: true });
+  }
   const runRows = running.slice(0, 8).map((r) => ({ node: r.node, taskId: r.taskId, ms: r.ms, indices: r.indices, flags: r.flags, query: r.query.slice(0, 2000) }));
   return {
     at,

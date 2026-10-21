@@ -88,7 +88,12 @@ export default function EsDiagnosisPanel({ connectionId }: { connectionId: strin
                     </tr>
                   </thead>
                   <tbody>
-                    {d.nodes.map((n) => (
+                    {d.nodes.map((n) => n.unresponsive ? (
+                      <tr key={n.name} className="lv-crit">
+                        <td><code>{n.name}</code></td>
+                        <td colSpan={8} className="esd-crit">Không trả lời trong 5s — có thể đang treo</td>
+                      </tr>
+                    ) : (
                       <tr key={n.name}>
                         <td title={n.roles}><code>{n.name}</code></td>
                         <td className={`r ${lv(n.heapPct, 85, 95)}`}>{n.heapPct ?? '?'}%</td>
