@@ -2,10 +2,15 @@
 //
 // Redis không ghi lại key nào bị miss, chỉ có tổng keyspace_misses. Cách bắt
 // đúng tên key là sự kiện keymiss (Redis ≥ 6.0): bật TẠM cờ "Em" của
-// notify-keyspace-events, PSUBSCRIBE __keyevent@*__:keymiss trong vài giây,
+// notify-keyspace-events, SUBSCRIBE __keyevent@<db>__:keymiss trong vài giây,
 // rồi TRẢ LẠI cờ cũ trong finally — kể cả khi lỗi giữa chừng. Đây là thay đổi
 // cấu hình server duy nhất; UI hỏi xác nhận trước khi chạy. Không đọc giá trị
 // key nào, chỉ tên key bị miss.
+//
+// Chống sót cờ (lib/redisKeymissGuard): có kết nối KHÁC đang nghe kênh keymiss
+// (PUBSUB NUMSUB) thì không bật — tránh hai phiên trả lại nhầm cờ của nhau; ghi dấu
+// "đang bật" ra đĩa trước khi bật, trả lại xong mới xoá — app chết giữa chừng thì
+// lần quét 10 phút (KeymissFlagHost) thấy và hỏi người dùng có tắt không.
 //
 // Sau cửa sổ bắt:
 //   • EXISTS lại vài key vừa miss — có rồi = được nạp lại sau miss (cache-aside chạy).
@@ -29,9 +34,10 @@
 //     giờ KEYS) — không chiếm luồng chính liên tục.
 //   • Không đọc giá trị key; EXISTS/TTL chỉ trên vài chục key mẫu.
 
-import Redis, { Cluster } from 'ioredis';
+import type Redis from 'ioredis';
 import type { RedisConnection } from '@/lib/redisConnections';
-import { getClient, isCluster, parseInfo } from '@/lib/redisClient';
+import { getClient, isCluster, masters, parseInfo } from '@/lib/redisClient';
+import { clearPending, keymissChannels, keymissListeners, markPending, runningKeymiss } from '@/lib/redisKeymissGuard';
 import { analyzeRedisMisses, keyPattern, type MissPattern, type RedisMissDiagnosis, type RedisMissFacts } from '@/lib/redisDiagnoseRules';
 
 const MIN_SEC = 5;
@@ -62,26 +68,14 @@ const MAX_RTT_EVENTS = 10_000;
 const MAX_CPU = 0.9;
 /** Bắt đủ ngần này sự kiện thì dừng sớm. */
 const MAX_EVENTS = 20_000;
-const CHANNEL = '__keyevent@*__:keymiss';
 
-/** Một phiên một kết nối: hai phiên chồng nhau sẽ "trả lại" nhầm cờ của nhau. */
-const running = new Set<string>();
+const addrOf = (n: Redis) => `${n.options.host}:${n.options.port}`;
 
 interface Totals {
   hits: number; misses: number; evicted: number; expired: number; used: number; max: number; policy: string | null; version: string;
   /** Giây CPU đã dùng của từng node — luồng chính nếu Redis ≥ 6.2 có, không thì cả tiến trình. */
   cpu: number[];
   at: number;
-}
-
-export async function masters(conn: RedisConnection): Promise<Redis[]> {
-  const base = getClient(conn, 0);
-  if (isCluster(conn) && base instanceof Cluster) {
-    if (base.status !== 'ready') await base.ping();
-    return base.nodes('master');
-  }
-  if ((base as Redis).status !== 'ready') await (base as Redis).ping();
-  return [base as Redis];
 }
 
 async function totals(nodes: Redis[]): Promise<Totals> {
@@ -140,12 +134,13 @@ interface Agg {
 }
 
 export async function diagnoseMisses(conn: RedisConnection, seconds: number): Promise<RedisMissDiagnosis> {
-  if (running.has(conn.id)) throw new Error('Đang có một phiên phân tích khác trên kết nối này — chờ nó xong (tự trả lại cấu hình) rồi chạy lại.');
-  running.add(conn.id);
+  // Một phiên một kết nối trong app này; phiên ở app / máy khác thì run() phát hiện qua PUBSUB NUMSUB.
+  if (runningKeymiss.has(conn.id)) throw new Error('Đang có một phiên phân tích khác trên kết nối này — chờ nó xong (tự trả lại cấu hình) rồi chạy lại.');
+  runningKeymiss.add(conn.id);
   try {
     return await run(conn, Math.min(MAX_SEC, Math.max(MIN_SEC, Math.round(Number(seconds) || 10))));
   } finally {
-    running.delete(conn.id);
+    runningKeymiss.delete(conn.id);
   }
 }
 
@@ -212,80 +207,104 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
     let configErr: string | null = null;
     let subErr: string | null = null;
     const deadline = t0 + durationSec * 1000;
+    let marked: string[] = [];
+    const restoreFailed: string[] = [];
     try {
-      // Nghe TRƯỚC khi bật cờ — không lỡ sự kiện của lát đầu.
+      // Nghe TRƯỚC khi bật cờ — không lỡ sự kiện của lát đầu. Nghe đúng từng kênh (SUBSCRIBE,
+      // không PSUBSCRIBE) để PUBSUB NUMSUB đếm được còn ai khác đang nghe.
+      const channelsOf = new Map<Redis, string[]>();
       for (const n of nodes) {
+        const channels = await keymissChannels(conn, n);
+        channelsOf.set(n, channels);
         const sub = n.duplicate();
         sub.on('error', () => {});
         subs.push(sub);
-        sub.on('pmessage', (_p: string, channel: string, key: string) => record(channel, key));
-        // ACL có thể chặn PSUBSCRIBE — vẫn chạy hết cửa sổ để có số liệu INFO, báo lý do sau.
-        await sub.psubscribe(CHANNEL).catch((e: Error) => { subErr = e.message; });
+        sub.on('message', (channel: string, key: string) => record(channel, key));
+        // ACL có thể chặn SUBSCRIBE — vẫn chạy hết cửa sổ để có số liệu INFO, báo lý do sau.
+        await sub.subscribe(...channels).catch((e: Error) => { subErr = e.message; });
       }
-      for (const n of nodes) {
-        try {
-          const r = (await n.config('GET', 'notify-keyspace-events')) as unknown as string[];
-          const orig = String(r?.[1] ?? '');
-          originalFlags ??= orig;
-          const next = withMissFlags(orig);
-          if (next !== orig) changed.push({ node: n, orig, next });
-        } catch (e) {
-          // CONFIG bị khoá (Redis managed) — vẫn nghe thử: có thể cờ đã bật sẵn phía server.
-          configErr = (e as Error).message;
+      // Kết nối KHÁC đang nghe keymiss (phiên phân tích ở app / máy khác — dev-box, vhs-monitor —
+      // hoặc công cụ khác) → không bật: hai phiên chồng nhau sẽ "trả lại" nhầm cờ của nhau.
+      // Đếm SAU khi mình đã nghe nên bình thường là 1; hai phiên khởi động cùng lúc thì cả hai
+      // cùng thấy 2 và cùng lùi — an toàn.
+      let other: string | null = null;
+      if (!subErr) {
+        for (const n of nodes) {
+          if ((await keymissListeners(n, channelsOf.get(n)!).catch(() => 1)) > 1) { other = addrOf(n); break; }
         }
       }
-      // Node không cho CONFIG SET (managed cho GET mà chặn SET) thì bỏ khỏi danh sách — vẫn nghe
-      // các node còn lại; lỗi lúc TẮT để finally trả lại lần nữa và báo nếu vẫn hỏng.
-      // Chỉ bỏ khi ĐỌC LẠI thấy cờ vẫn là giá trị cũ: SET báo lỗi (quá giờ, rớt kết nối) nhưng
-      // thực ra đã áp dụng thì node phải ở lại để finally trả lại — không để cờ bật mãi.
-      const setFlags = async (on: boolean) => {
-        const res = await Promise.allSettled(changed.map((c) => c.node.config('SET', 'notify-keyspace-events', on ? c.next : c.orig)));
-        if (!on) return;
-        const failed = changed.flatMap((c, i) => {
-          const r = res[i];
-          return r.status === 'rejected' ? [{ c, err: (r.reason as Error).message }] : [];
-        });
-        for (const { c, err } of failed) {
-          configErr = err;
-          const now = await c.node.config('GET', 'notify-keyspace-events')
-            .then((x) => String((x as unknown as string[])?.[1] ?? ''))
-            .catch(() => null);
-          if (now === c.orig) changed.splice(changed.indexOf(c), 1);
-        }
-      };
-
-      if (!sampled || !changed.length) {
-        // Thấp điểm (hoặc cờ đã bật sẵn phía server — app không thêm tải ở phía bật cờ):
-        // bật cả cửa sổ, dừng khi hết thời gian HOẶC đã đủ mẫu — cái nào tới trước.
-        await setFlags(true);
-        await Promise.race([sleep(Math.max(0, deadline - Date.now())), enough]);
+      if (other) {
+        capture = { ok: false, reason: 'busy', detail: `Có kết nối khác đang nghe sự kiện keymiss trên ${other} — một phiên phân tích khác (dev-box / vhs-monitor) hoặc công cụ khác đang chạy` };
       } else {
-        // Cao điểm: bắt theo lát. Mỗi lát bật cờ tới khi đủ BURST_EVENTS mẫu (hoặc hết thời
-        // lượng dự tính), tắt ngay, rồi nghỉ để trung bình ≤ MAX_MISS_RATE sự kiện/giây.
-        // Tốc độ miss đo lại sau mỗi lát — đột biến giữa chừng thì lát sau tự ngắn lại.
-        let rate = missRate;
-        let bursts = 0;
-        let onMs = 0;
-        while (Date.now() < deadline && captured < MAX_EVENTS && changed.length) {
-          const start = captured;
-          const ms = Math.min(MAX_BURST_MS, Math.max(MIN_BURST_MS, (BURST_EVENTS / Math.max(1, rate)) * 1000));
-          const full = new Promise<void>((r) => { burstFull = r; });
-          burstTarget = start + BURST_EVENTS;
-          const s = Date.now();
-          await setFlags(true);
-          await Promise.race([sleep(ms), full, enough]);
-          await setFlags(false);
-          burstTarget = Infinity;
-          const took = Math.max(1, Date.now() - s);
-          bursts++;
-          onMs += took;
-          // Sự kiện đã nằm trong bộ đệm vẫn tới sau khi tắt — chờ một nhịp để đếm đủ cho lát này.
-          await sleep(Math.min(50, rtt * 2 + 5));
-          const got = captured - start;
-          if (got > 0) rate = (got / took) * 1000;
-          await sleep(Math.max(100, Math.min(deadline - Date.now(), (got / MAX_MISS_RATE) * 1000 - took)));
+        for (const n of nodes) {
+          try {
+            const r = (await n.config('GET', 'notify-keyspace-events')) as unknown as string[];
+            const orig = String(r?.[1] ?? '');
+            originalFlags ??= orig;
+            const next = withMissFlags(orig);
+            if (next !== orig) changed.push({ node: n, orig, next });
+          } catch (e) {
+            // CONFIG bị khoá (Redis managed) — vẫn nghe thử: có thể cờ đã bật sẵn phía server.
+            configErr = (e as Error).message;
+          }
         }
-        sampling = { missRate, bursts, onMs };
+        // Node không cho CONFIG SET (managed cho GET mà chặn SET) thì bỏ khỏi danh sách — vẫn nghe
+        // các node còn lại; lỗi lúc TẮT để finally trả lại lần nữa và báo nếu vẫn hỏng.
+        // Chỉ bỏ khi ĐỌC LẠI thấy cờ vẫn là giá trị cũ: SET báo lỗi (quá giờ, rớt kết nối) nhưng
+        // thực ra đã áp dụng thì node phải ở lại để finally trả lại — không để cờ bật mãi.
+        // Ghi dấu "đang bật" TRƯỚC khi bật (lib/redisKeymissGuard): app chết giữa chừng thì
+        // lần quét sau thấy dấu, biết đúng giá trị cũ và hỏi người dùng có tắt không.
+        await markPending(changed.map((c) => ({ connectionId: conn.id, addr: addrOf(c.node), orig: c.orig, at: Date.now() })));
+        marked = changed.map((c) => addrOf(c.node));
+        const setFlags = async (on: boolean) => {
+          const res = await Promise.allSettled(changed.map((c) => c.node.config('SET', 'notify-keyspace-events', on ? c.next : c.orig)));
+          if (!on) return;
+          const failed = changed.flatMap((c, i) => {
+            const r = res[i];
+            return r.status === 'rejected' ? [{ c, err: (r.reason as Error).message }] : [];
+          });
+          for (const { c, err } of failed) {
+            configErr = err;
+            const now = await c.node.config('GET', 'notify-keyspace-events')
+              .then((x) => String((x as unknown as string[])?.[1] ?? ''))
+              .catch(() => null);
+            if (now === c.orig) changed.splice(changed.indexOf(c), 1);
+          }
+        };
+
+        if (!sampled || !changed.length) {
+          // Thấp điểm (hoặc cờ đã bật sẵn phía server — app không thêm tải ở phía bật cờ):
+          // bật cả cửa sổ, dừng khi hết thời gian HOẶC đã đủ mẫu — cái nào tới trước.
+          await setFlags(true);
+          await Promise.race([sleep(Math.max(0, deadline - Date.now())), enough]);
+        } else {
+          // Cao điểm: bắt theo lát. Mỗi lát bật cờ tới khi đủ BURST_EVENTS mẫu (hoặc hết thời
+          // lượng dự tính), tắt ngay, rồi nghỉ để trung bình ≤ MAX_MISS_RATE sự kiện/giây.
+          // Tốc độ miss đo lại sau mỗi lát — đột biến giữa chừng thì lát sau tự ngắn lại.
+          let rate = missRate;
+          let bursts = 0;
+          let onMs = 0;
+          while (Date.now() < deadline && captured < MAX_EVENTS && changed.length) {
+            const start = captured;
+            const ms = Math.min(MAX_BURST_MS, Math.max(MIN_BURST_MS, (BURST_EVENTS / Math.max(1, rate)) * 1000));
+            const full = new Promise<void>((r) => { burstFull = r; });
+            burstTarget = start + BURST_EVENTS;
+            const s = Date.now();
+            await setFlags(true);
+            await Promise.race([sleep(ms), full, enough]);
+            await setFlags(false);
+            burstTarget = Infinity;
+            const took = Math.max(1, Date.now() - s);
+            bursts++;
+            onMs += took;
+            // Sự kiện đã nằm trong bộ đệm vẫn tới sau khi tắt — chờ một nhịp để đếm đủ cho lát này.
+            await sleep(Math.min(50, rtt * 2 + 5));
+            const got = captured - start;
+            if (got > 0) rate = (got / took) * 1000;
+            await sleep(Math.max(100, Math.min(deadline - Date.now(), (got / MAX_MISS_RATE) * 1000 - took)));
+          }
+          sampling = { missRate, bursts, onMs };
+        }
       }
     } finally {
       for (const s of subs) s.disconnect();
@@ -293,12 +312,15 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
         try {
           await node.config('SET', 'notify-keyspace-events', orig);
         } catch (e) {
-          restoreError = `${node.options.host}:${node.options.port} — ${(e as Error).message}`;
+          restoreError = `${addrOf(node)} — ${(e as Error).message}`;
+          restoreFailed.push(addrOf(node));
         }
       }
+      // Trả lại được thì xoá dấu; hỏng thì giữ — quét 10 phút sẽ nhắc tới khi có người tắt.
+      await clearPending(conn.id, marked.filter((a) => !restoreFailed.includes(a))).catch(() => {});
     }
     if (captured === 0 && configErr) capture = { ok: false, reason: 'config', detail: configErr };
-    else if (captured === 0 && subErr) capture = { ok: false, reason: 'noEvents', detail: `PSUBSCRIBE lỗi: ${subErr}` };
+    else if (captured === 0 && subErr) capture = { ok: false, reason: 'noEvents', detail: `SUBSCRIBE lỗi: ${subErr}` };
   }
 
   const after = await totals(nodes);

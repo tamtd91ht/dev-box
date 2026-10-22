@@ -39,8 +39,14 @@ export default function AutomationHost() {
   useEffect(() => {
     watcher.start();
     return automation.onToast((t) => {
-      setToasts((list) => [t, ...list].slice(0, MAX_VISIBLE));
-      const ttl = LIFETIME[t.level];
+      // Toast hỏi quyết định không bị đẩy rơi bởi toast thường mới tới.
+      setToasts((list) => {
+        const next = [t, ...list];
+        const keep = next.filter((x) => x.actions?.length);
+        return [...keep, ...next.filter((x) => !x.actions?.length)].slice(0, Math.max(MAX_VISIBLE, keep.length));
+      });
+      // Toast có nút hành động chờ người dùng chọn — không tự tắt.
+      const ttl = t.actions?.length ? 0 : LIFETIME[t.level];
       if (ttl > 0) setTimeout(() => dismiss(t.id), ttl);
     });
   }, [dismiss]);
@@ -49,7 +55,28 @@ export default function AutomationHost() {
 
   return (
     <div className="auto-toasts" role="status" aria-live="polite">
-      {toasts.map((t) => (
+      {toasts.map((t) => (t.actions?.length ? (
+        <div key={t.id} className={`auto-toast has-actions lv-${t.level}`} role="alertdialog" aria-label={t.title}>
+          <span className="at-ico" aria-hidden>{ICON[t.level]}</span>
+          <span className="at-body">
+            <span className="at-title">{t.title}</span>
+            {t.body ? <span className="at-text">{t.body}</span> : null}
+            <span className="at-actions">
+              {t.actions.map((a) => (
+                <button
+                  key={a.label}
+                  type="button"
+                  className={`at-act${a.primary ? ' primary' : ''}`}
+                  onClick={() => { dismiss(t.id); void a.run(); }}
+                >
+                  {a.label}
+                </button>
+              ))}
+            </span>
+            <span className="at-meta">{t.ruleName}</span>
+          </span>
+        </div>
+      ) : (
         <button
           key={t.id}
           type="button"
@@ -67,7 +94,7 @@ export default function AutomationHost() {
             </span>
           </span>
         </button>
-      ))}
+      )))}
     </div>
   );
 }

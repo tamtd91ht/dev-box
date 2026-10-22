@@ -35,13 +35,17 @@ const MECHANISM = (
         <code>E</code> (kênh keyevent) và <code>m</code> (key-miss, có từ Redis 6.0). Chỉ thêm loại sự kiện miss, không bật các loại khác.
       </li>
       <li>
-        <b>Nghe:</b> một kết nối riêng <code>PSUBSCRIBE __keyevent@*__:keymiss</code>. Mỗi khi một lệnh <b>đọc</b> không tìm thấy
-        key, Redis gửi đúng tên key đó (kênh cho biết db). App chỉ nhận tên key, không đọc giá trị.
+        <b>Nghe:</b> một kết nối riêng <code>SUBSCRIBE __keyevent@&lt;db&gt;__:keymiss</code> (từng db). Mỗi khi một lệnh <b>đọc</b>{' '}
+        không tìm thấy key, Redis gửi đúng tên key đó. App chỉ nhận tên key, không đọc giá trị.{' '}
+        <b>Trước khi bật cờ</b>, <code>PUBSUB NUMSUB</code> đếm người nghe: còn kết nối khác đang nghe (phiên phân tích ở app / máy khác)
+        thì <b>không bật</b> — hai phiên chồng nhau sẽ trả lại nhầm cờ của nhau.
       </li>
       <li>
         <b>Dừng và trả lại:</b> hết thời gian bắt bạn chọn, hoặc đủ 20.000 mẫu thì dừng sớm — huỷ nghe, đặt lại{' '}
         <code>notify-keyspace-events</code> về giá trị cũ (trong <code>finally</code>, kể cả khi lỗi). Không trả lại được thì kết quả
-        có mục đỏ kèm lệnh để chạy tay.
+        có mục đỏ kèm lệnh để chạy tay. Trước khi bật, app ghi <b>dấu "đang bật"</b> ra đĩa (kèm giá trị cũ), trả lại xong mới xoá —
+        app chết giữa chừng thì lần quét nền <b>10 phút một lần</b> thấy cờ còn bật và hiện thông báo hỏi bạn có tắt không (không tự tắt).
+        Kiểm tra tay bất cứ lúc nào: nút <b>🔎 Cờ key-miss</b> trong chi tiết Redis của Monitor.
       </li>
       <li>
         <b>Gom thành dạng key:</b> tách tên key theo <code>: / | #</code>, thay phần biến thiên bằng ký hiệu — số → <code>{'{n}'}</code>,

@@ -6,7 +6,9 @@
 import type { RedisMissDiagnosis } from '@/lib/redisDiagnoseRules';
 import type { RedisFragDiagnosis } from '@/lib/redisFragRules';
 import type { RedisMemDiagnosis } from '@/lib/redisMemRules';
-export type { RedisMissDiagnosis, RedisFragDiagnosis, RedisMemDiagnosis };
+import type { RedisClientsDiagnosis } from '@/lib/redisClientsRules';
+import type { KeymissState, ReleaseResult } from '@/lib/redisKeymissGuard';
+export type { RedisMissDiagnosis, RedisFragDiagnosis, RedisMemDiagnosis, RedisClientsDiagnosis, KeymissState, ReleaseResult };
 
 import { apiFetch } from './apiFetch';
 
@@ -177,6 +179,15 @@ export function redisDiagnoseMem(
   return redisAction<RedisMemDiagnosis>('diagnoseMem', { connectionId, ...opts });
 }
 
+/**
+ * Số client: còn bao xa maxclients, kết nối mới mỗi giây, bị từ chối. `list` = thêm
+ * CLIENT LIST (O(số client) trên luồng chính — server chỉ chạy khi ít client, CPU còn dư)
+ * để gom theo máy nguồn / tên / thời gian rảnh.
+ */
+export function redisDiagnoseClients(connectionId: string, opts: { list?: boolean } = {}): Promise<RedisClientsDiagnosis> {
+  return redisAction<RedisClientsDiagnosis>('diagnoseClients', { connectionId, ...opts });
+}
+
 /** Test a not-yet-saved connection straight from the form (single or cluster). */
 export function testRedisConnection(input: {
   mode: RedisMode;
@@ -252,4 +263,21 @@ export function humanizeTtl(ttl: number): string {
   if (ttl < 3600) return `${Math.floor(ttl / 60)}m ${ttl % 60}s`;
   if (ttl < 86400) return `${Math.floor(ttl / 3600)}h ${Math.floor((ttl % 3600) / 60)}m`;
   return `${Math.floor(ttl / 86400)}d ${Math.floor((ttl % 86400) / 3600)}h`;
+}
+
+// ── Cờ key-miss (phân tích hit rate bật tạm) ─────────────────────────────
+
+/** Quét mọi kết nối đã lưu: kết nối nào đang bật cờ key-miss mà không do phiên đang chạy. */
+export function redisKeymissScan(): Promise<KeymissState[]> {
+  return redisAction<KeymissState[]>('keymissScan', {});
+}
+
+/** Cờ key-miss trên từng master của một kết nối + ai đang nghe (chỉ đọc). */
+export function redisKeymissCheck(connectionId: string): Promise<KeymissState> {
+  return redisAction<KeymissState>('keymissCheck', { connectionId });
+}
+
+/** Tắt cờ key-miss (về giá trị cũ nếu có dấu, không thì bỏ cờ m). `addr` bỏ trống = mọi node. */
+export function redisKeymissRelease(connectionId: string, addr?: string): Promise<ReleaseResult[]> {
+  return redisAction<ReleaseResult[]>('keymissRelease', { connectionId, addr });
 }

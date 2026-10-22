@@ -100,7 +100,7 @@ export const RULES: Record<InfraStack, Rule[]> = {
     { metric: 'memUsedPct', label: 'RAM đã dùng', unit: '%', dir: 'gt', warn: 80, crit: 90, why: 'Gần chạm maxmemory — sắp evict key hoặc từ chối ghi. Bấm Phân tích để biết RAM nằm ở đâu, đầy thì sao, tăng nhanh cỡ nào và dạng key nào chiếm.' },
     { metric: 'fragmentation', label: 'Phân mảnh bộ nhớ', unit: '', dir: 'gt', warn: 1.8, crit: 3, why: 'RSS lớn hơn nhiều so với dữ liệu thật — bấm Phân tích để biết phần thừa nằm ở đâu (lỗ giữa object, trang chưa trả OS, fork/THP) và cách thu hồi.', when: { metric: 'memUsedMb', min: 256, label: 'RAM đã dùng', unit: 'MB' } },
     { metric: 'hitRatePct', label: 'Hit rate', unit: '%', dir: 'lt', warn: 50, why: 'Phần lớn lượt tra trượt cache (tính gần đây, không phải cộng dồn) — bấm Phân tích để biết dạng key nào miss.' },
-    { metric: 'clients', label: 'Client đang kết nối', unit: '', dir: 'gt', warn: 5000, crit: 9000, why: 'Gần chạm maxclients.' },
+    { metric: 'clients', label: 'Client đang kết nối', unit: '', dir: 'gt', warn: 5000, crit: 9000, why: 'Gần chạm maxclients — bấm Phân tích để so với maxclients thật, xem kết nối đến từ đâu, có rò / mở-đóng liên tục không.' },
   ],
   kafka: [
     { metric: 'noController', label: 'Controller', unit: '', dir: 'gt', crit: 0, say: (v) => (v ? 'không có' : 'có'), why: 'Cụm không có controller — mất quorum, không bầu được leader.' },

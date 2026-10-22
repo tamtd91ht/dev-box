@@ -7,7 +7,7 @@
 //
 //   npx tsx scripts/check-redis-diagnose.ts
 
-import { analyzeRedisMisses, keyPattern, type MissPattern, type RedisMissFacts } from '../lib/redisDiagnoseRules';
+import { analyzeRedisMisses, keyPattern, keymissOn, stripKeymiss, type MissPattern, type RedisMissFacts } from '../lib/redisDiagnoseRules';
 
 let failures = 0;
 const check = (cond: boolean, m: string): void => {
@@ -101,6 +101,19 @@ check(find(facts({ capture: { ok: false, reason: 'config', detail: 'unknown comm
   check(!d.findings.some((x) => x.id === 'partial'), 'bắt theo lát → không báo trùng "chỉ bắt được một phần"');
   check(d.patterns[0]?.sharePct === 83.3, 'tỉ lệ dạng key tính trên số mẫu bắt được');
 }
+
+// ── Phiên khác đang nghe keymiss ──
+{
+  const d = analyzeRedisMisses(facts({ capture: { ok: false, reason: 'busy', detail: 'Có kết nối khác đang nghe sự kiện keymiss trên 10.0.0.5:6379' }, captured: 0 }));
+  const f = d.findings.find((x) => x.id === 'no-capture')!;
+  check(f.title.includes('không bật cờ') && f.evidence.some((e) => e.includes('10.0.0.5')), 'phiên khác đang nghe → không bật cờ, nêu node');
+}
+
+// ── Cờ notify-keyspace-events ──
+check(keymissOn('Em') && keymissOn('KEA m'.replace(' ', '')) && !keymissOn('Ex') && !keymissOn('m'), 'keymiss bật cần m + K/E');
+check(stripKeymiss('Em') === '', 'chỉ có Em (do app thêm) → tắt hẳn ""');
+check(stripKeymiss('Exm') === 'Ex', 'Exm → giữ Ex của người khác, chỉ bỏ m');
+check(stripKeymiss('KEAm') === 'KEA', 'KEAm → KEA');
 
 // ── Hiện tại hay chuyện cũ ──
 {

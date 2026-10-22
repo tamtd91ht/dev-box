@@ -54,6 +54,14 @@ export interface AutomationSnapshot {
   rev: number;
 }
 
+/** Nút trên toast — chạy xong toast tự đóng. */
+export interface ToastAction {
+  label: string;
+  /** Nút chính (tô màu nhấn). */
+  primary?: boolean;
+  run: () => void | Promise<void>;
+}
+
 /** A notify action that fired — the shell turns these into toasts. */
 export interface AutomationToast {
   id: string;
@@ -63,6 +71,8 @@ export interface AutomationToast {
   ruleName: string;
   dryRun: boolean;
   at: number;
+  /** Có nút hành động → toast ở lại tới khi người dùng chọn (không tự tắt, bấm thân không đóng). */
+  actions?: ToastAction[];
 }
 
 type Listener = () => void;
@@ -717,6 +727,24 @@ class AutomationRuntime {
       at: Date.now(),
     });
     // Git auto-pull & friends ride the `system` group's setting.
+    if (this.osAllowed('system')) this.osNotify(title, body, level !== 'info');
+  }
+
+  /**
+   * Toast hỏi người dùng một quyết định (vd "Tắt cờ key-miss?") — ở lại tới khi bấm một nút.
+   * App không tự làm gì; mỗi nút là một lựa chọn của người dùng.
+   */
+  actionNotify(level: NotifyAction['level'], title: string, body: string, source: string, actions: ToastAction[]): void {
+    this.toast({
+      id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      level,
+      title,
+      body,
+      ruleName: source,
+      dryRun: false,
+      at: Date.now(),
+      actions,
+    });
     if (this.osAllowed('system')) this.osNotify(title, body, level !== 'info');
   }
 

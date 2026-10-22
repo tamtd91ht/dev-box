@@ -22,8 +22,7 @@
 
 import type Redis from 'ioredis';
 import type { RedisConnection } from '@/lib/redisConnections';
-import { getClient, isCluster, parseInfo } from '@/lib/redisClient';
-import { masters } from '@/lib/redisDiagnose';
+import { getClient, isCluster, masters, parseInfo } from '@/lib/redisClient';
 import { keyPattern } from '@/lib/redisDiagnoseRules';
 import { analyzeRedisMem, type MemNode, type MemPattern, type MemSample, type MemTopClient, type RedisMemDiagnosis } from '@/lib/redisMemRules';
 

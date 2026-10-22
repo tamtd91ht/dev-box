@@ -12,6 +12,23 @@
 
 import { buildPlan, fmtBytes, fmtN, fmtSec, pct, share, sortFindings, type Finding, type PlanStep } from '@/lib/diagnose';
 
+// ── Cờ notify-keyspace-events ────────────────────────────────────────────
+
+/** Các lớp sự kiện (không gồm K / E là "kênh nào"); A là bí danh nhiều lớp. */
+const EVENT_CLASSES = /[g$lshzxetdnmA]/;
+
+/** Sự kiện keymiss có đang phát không: cần cờ m VÀ ít nhất một kênh (K hoặc E). */
+export const keymissOn = (flags: string): boolean => flags.includes('m') && /[KE]/.test(flags);
+
+/**
+ * Giá trị để TẮT keymiss khi không biết giá trị gốc: bỏ m; không còn lớp sự kiện nào
+ * thì bỏ luôn K / E (chỉ còn kênh mà không có sự kiện là vô nghĩa) → ''.
+ */
+export function stripKeymiss(flags: string): string {
+  const rest = flags.replace(/m/g, '');
+  return EVENT_CLASSES.test(rest) ? rest : '';
+}
+
 // ── Chuẩn hoá tên key thành dạng ─────────────────────────────────────────
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -225,7 +242,7 @@ export function analyzeRedisMisses(f: RedisMissFacts, at = Date.now()): RedisMis
         : why === 'load'
           ? `Không bật bắt key-miss: Redis đang quá tải (${f.capture.detail ?? '?'}) — để bảo vệ production`
           : why === 'busy'
-          ? 'Đang có một phiên phân tích khác trên kết nối này'
+          ? 'Đang có một phiên phân tích khác — không bật cờ để hai phiên không trả lại nhầm cấu hình của nhau'
           : why === 'config'
             ? 'Server chặn CONFIG — không bật tạm được sự kiện key-miss'
             : 'Không nhận được sự kiện key-miss nào dù có miss',
@@ -233,16 +250,17 @@ export function analyzeRedisMisses(f: RedisMissFacts, at = Date.now()): RedisMis
         why === 'version' ? 'Sự kiện keymiss (cờ "m" của notify-keyspace-events) có từ Redis 6.0' : '',
         why === 'config' ? `CONFIG lỗi: ${f.capture.detail ?? '?'} (thường gặp ở Redis managed: ElastiCache, Azure Cache…)` : '',
         why === 'noEvents' ? `Cửa sổ ${f.durationSec}s có ${fmtN(f.window?.misses ?? 0)} miss theo INFO nhưng không nhận được sự kiện nào${f.capture.detail ? ` (${f.capture.detail})` : ''}` : '',
-        why === 'busy' ? 'Chờ phiên kia xong (nó sẽ tự trả lại cấu hình) rồi phân tích lại' : '',
+        why === 'busy' ? f.capture.detail ?? 'Có phiên khác đang chạy trên kết nối này' : '',
+        why === 'busy' ? 'Chờ phiên kia xong (nó sẽ tự trả lại cấu hình) rồi phân tích lại; nếu không còn ai chạy mà vẫn báo, dùng "Cờ key-miss" để kiểm tra' : '',
         why === 'load' ? 'Giờ cao điểm app vẫn bắt được bằng cách bắt theo lát ngắn — chỉ dừng khi luồng chính đã gần kín CPU, hoặc mạng tới Redis chậm tới mức một lát ngắn nhất cũng sinh quá nhiều sự kiện' : '',
       ].filter(Boolean),
       fix: why === 'version' || why === 'load'
         ? `${why === 'load' ? 'Chạy lại khi CPU Redis dịu xuống (hoặc từ máy gần Redis hơn nếu RTT cao), hoặc ' :'Nâng Redis lên ≥ 6.0; trong lúc chờ, '}ghi log / đếm key miss ở phía ứng dụng (chỗ GET trả về rỗng) theo dạng key để biết loại nào miss — không tốn gì phía Redis.`
         : why === 'config'
           ? 'Bật notify-keyspace-events có chứa "Em" qua cấu hình của nhà cung cấp (parameter group / redis.conf). Khi đã bật sẵn, app chỉ cần nghe — không phải CONFIG SET.'
-          : why === 'busy' ? undefined : 'Kiểm tra user có quyền PSUBSCRIBE (ACL) và notify-keyspace-events chứa "Em".',
+          : why === 'busy' ? undefined : 'Kiểm tra user có quyền SUBSCRIBE / PUBSUB (ACL) và notify-keyspace-events chứa "Em".',
       sql: why === 'config' || why === 'noEvents'
-        ? "CONFIG SET notify-keyspace-events Em   # hoặc khai trong redis.conf / parameter group\nPSUBSCRIBE __keyevent@*__:keymiss     # kiểm tra tay: mỗi miss in ra tên key"
+        ? "CONFIG SET notify-keyspace-events Em   # hoặc khai trong redis.conf / parameter group\nSUBSCRIBE __keyevent@0__:keymiss      # kiểm tra tay: mỗi miss ở db 0 in ra tên key"
         : undefined,
       step: why === 'busy' ? undefined : { phase: 'observe', text: why === 'version' ? 'Nâng Redis ≥ 6.0 (hoặc log key miss phía ứng dụng) để biết dạng key nào miss'
         : why === 'load' ? 'Đếm key miss theo dạng ở phía ứng dụng (hoặc phân tích lại khi CPU Redis dịu xuống)'

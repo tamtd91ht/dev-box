@@ -14,8 +14,7 @@
 
 import type Redis from 'ioredis';
 import type { RedisConnection } from '@/lib/redisConnections';
-import { parseInfo } from '@/lib/redisClient';
-import { masters } from '@/lib/redisDiagnose';
+import { masters, parseInfo } from '@/lib/redisClient';
 import { analyzeRedisFrag, type FragNode, type RedisFragDiagnosis } from '@/lib/redisFragRules';
 
 const SAMPLE_SEC = 3;

@@ -15,6 +15,12 @@
 //              chỉ đọc INFO + CONFIG GET, mỗi node có timeout (lib/redisFragDiagnose)
 //     'diagnoseMem'    { connectionId, sample?, history? } → { ok, result: RedisMemDiagnosis }
 //              chỉ đọc; sample=true thêm SCAN + MEMORY USAGE có giới hạn (lib/redisMemDiagnose)
+//     'keymissScan'    {}                          → { ok, result: KeymissState[] }  mọi kết nối đã lưu
+//     'keymissCheck'   { connectionId }            → { ok, result: KeymissState }
+//     'keymissRelease' { connectionId, addr? }     → { ok, result: ReleaseResult[] }
+//              cờ key-miss mà phân tích hit rate bật tạm: kiểm tra / tắt khi người dùng bấm (lib/redisKeymissGuard)
+//     'diagnoseClients' { connectionId, list? }    → { ok, result: RedisClientsDiagnosis }
+//              chỉ đọc; list=true thêm CLIENT LIST khi ít client + CPU còn dư (lib/redisClientsDiagnose)
 //
 // `db` is the logical DB index (0–15) chosen at browse time; it defaults to 0 and is
 // forced to 0 for cluster connections (Redis Cluster only has DB 0). 'test' probes a
@@ -31,6 +37,8 @@ import { getConnection } from '@/lib/redisConnections';
 import { diagnoseMisses } from '@/lib/redisDiagnose';
 import { diagnoseFragmentation } from '@/lib/redisFragDiagnose';
 import { diagnoseMemory } from '@/lib/redisMemDiagnose';
+import { diagnoseClients } from '@/lib/redisClientsDiagnose';
+import { checkKeymiss, releaseKeymiss, scanKeymiss } from '@/lib/redisKeymissGuard';
 
 export const runtime = 'nodejs';
 
@@ -66,6 +74,15 @@ export async function POST(req: NextRequest) {
         { ok: false, error: (err as Error).message || 'Connection test failed', detail: String(err) },
         { status: 502 },
       );
+    }
+  }
+
+  // Quét cờ key-miss trên MỌI kết nối đã lưu (KeymissFlagHost, 10 phút/lần) — không cần connectionId.
+  if (action === 'keymissScan') {
+    try {
+      return NextResponse.json({ ok: true, result: await scanKeymiss() });
+    } catch (err) {
+      return NextResponse.json({ ok: false, error: (err as Error).message || 'Scan failed' }, { status: 502 });
     }
   }
 
@@ -120,6 +137,15 @@ export async function POST(req: NextRequest) {
         break;
       case 'diagnoseFrag': // phân mảnh bộ nhớ nằm ở đâu (Monitor → Phân tích phân mảnh), chỉ đọc
         result = await diagnoseFragmentation(conn);
+        break;
+      case 'keymissCheck': // cờ key-miss còn bật không, ai đang nghe (chỉ đọc)
+        result = await checkKeymiss(conn);
+        break;
+      case 'keymissRelease': // tắt cờ key-miss — chỉ khi người dùng bấm
+        result = await releaseKeymiss(conn, body.addr ? String(body.addr) : undefined);
+        break;
+      case 'diagnoseClients': // kết nối đến từ đâu, gần maxclients chưa (Monitor → Phân tích client), chỉ đọc
+        result = await diagnoseClients(conn, { list: body.list === true });
         break;
       case 'diagnoseMem': // RAM nằm ở đâu, đầy thì sao, dạng key nào chiếm (Monitor → Phân tích RAM), chỉ đọc
         result = await diagnoseMemory(conn, {

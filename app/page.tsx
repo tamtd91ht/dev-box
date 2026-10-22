@@ -35,6 +35,7 @@ import RemoteWorkspaceRaw from '@/components/RemoteWorkspace';
 import AutomationWorkspaceRaw from '@/components/automation/AutomationWorkspace';
 import AutomationHost from '@/components/AutomationHost';
 import GitAutoPullHost from '@/components/GitAutoPullHost';
+import KeymissFlagHost from '@/components/KeymissFlagHost';
 import MailWatchHost from '@/components/MailWatchHost';
 import WorkWorkspaceRaw from '@/components/WorkWorkspace';
 import WorkAlertHost from '@/components/WorkAlertHost';
@@ -1045,6 +1046,10 @@ export default function Home() {
       {/* Tiến trình nền: server tự pull mọi Git project 10 phút/lần; host này
           poll kết quả và báo urgent khi có repo conflict. */}
       <GitAutoPullHost />
+
+      {/* Tiến trình nền: 10 phút/lần kiểm tra cờ key-miss của Redis (phân tích hit rate bật tạm)
+          còn bật không — thấy thì toast HỎI có tắt không, không tự tắt. */}
+      <KeymissFlagHost />
 
       {/* Tiến trình nền: server đếm mail chưa đọc 10 phút/lần → badge tab Mail. */}
       <MailWatchHost onUnread={setMailUnread} />

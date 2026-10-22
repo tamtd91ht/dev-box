@@ -59,6 +59,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   USAGE trên tối đa 2.000 key theo lô nhỏ có nghỉ → dạng key nào chiếm bao nhiêu % dữ liệu, % không
   TTL, key lớn trong mẫu; bỏ qua khi CPU luồng chính ≥ 80%, tự dừng nếu một lô chậm bất thường,
   trần 20 giây. Luật kiểm bằng `npm run check:redis-mem`.
+- **Monitor Redis: nút “Phân tích” trên cảnh báo số client.** So với `maxclients` thật (cảnh báo
+  Monitor dùng ngưỡng cố định 5.000 / 9.000 — còn xa trần thì nói rõ và gợi ý ngưỡng theo
+  maxclients), đang từ chối kết nối hay chỉ là số cộng dồn cũ, kết nối mới mỗi giây (ứng dụng không
+  dùng pool), `timeout` / `tcp-keepalive`. Nút **👥 Xem client theo nguồn** (bấm mới chạy):
+  `CLIENT LIST` gom theo máy nguồn / tên client / thời gian rảnh / tuổi kết nối / pub/sub — chỉ chạy
+  sau một bước xác nhận có ước tính thời gian chiếm luồng chính, chỉ khi node ≤ 5.000 client và
+  CPU luồng chính < 80%, cụm thì lần lượt từng node; chỉ trả số đếm.
+  Luật kiểm bằng `npm run check:redis-clients`.
+- **Redis: không để cờ key-miss chạy ngầm trên production.** Phân tích hit rate là chỗ duy nhất
+  ghi cấu hình Redis (bật tạm `notify-keyspace-events` "m"); giờ có ba lớp chặn sót:
+  (1) nghe đúng từng kênh `__keyevent@<db>__:keymiss` bằng SUBSCRIBE và `PUBSUB NUMSUB` trước khi
+  bật — có kết nối khác đang nghe (phiên ở dev-box / vhs-monitor khác, công cụ khác) thì không bật,
+  tránh hai phiên trả lại nhầm cờ của nhau; (2) ghi dấu “đang bật” kèm giá trị cũ ra đĩa trước khi
+  bật, trả lại xong mới xoá; (3) **quét nền 10 phút/lần** mọi kết nối Redis đã lưu (chỉ CONFIG GET +
+  PUBSUB NUMSUB) — thấy cờ bật mà không ai nghe thì **toast hỏi** “Tắt cờ / Nhắc lại sau / Để
+  nguyên”, không bao giờ tự tắt. Kiểm tra tay bất cứ lúc nào: nút **🔎 Cờ key-miss** trong chi tiết
+  Redis của Monitor (từng node, ai đang nghe, dấu từ lần nào, nút Tắt). Tắt = trả đúng giá trị cũ
+  nếu có dấu, không thì chỉ bỏ cờ m. Toast giờ hỗ trợ nút hành động (`automation.actionNotify`).
 
 ### Fixed
 

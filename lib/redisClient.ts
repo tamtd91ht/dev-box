@@ -155,6 +155,20 @@ export function getClient(conn: RedisConnection, db = 0): AnyRedis {
   return client;
 }
 
+/**
+ * Các node MASTER để chạy lệnh theo từng node (INFO / CONFIG / SCAN…): single → chính
+ * client db 0; cluster → mọi master. Dùng chung cho các bộ phân tích của Monitor.
+ */
+export async function masters(conn: RedisConnection): Promise<Redis[]> {
+  const base = getClient(conn, 0);
+  if (isCluster(conn) && base instanceof Cluster) {
+    if (base.status !== 'ready') await base.ping();
+    return base.nodes('master');
+  }
+  if ((base as Redis).status !== 'ready') await (base as Redis).ping();
+  return [base as Redis];
+}
+
 // ── Monitor (INFO: memory / clients / ops / hit-rate — 30s poll) ─────────────
 
 export interface RedisNodeStats {

@@ -2,7 +2,7 @@
 
 // Ngăn chi tiết một tài nguyên (bấm vào thẻ / dòng bảng): nguyên nhân, lịch sử
 // trạng thái, toàn bộ chỉ số kèm đồ thị nhỏ, và số liệu riêng của Kafka.
-// Cảnh báo nào có bộ phân tích nguyên nhân (cache hit PostgreSQL, hit rate / phân mảnh / RAM Redis, lag Kafka, cụm ES) thì có
+// Cảnh báo nào có bộ phân tích nguyên nhân (cache hit PostgreSQL, hit rate / phân mảnh / RAM / client Redis, lag Kafka, cụm ES) thì có
 // nút "Phân tích" ngay trên dòng nguyên nhân.
 
 import { useEffect, useMemo, useState } from 'react';
@@ -16,6 +16,8 @@ import PgCacheDiagnosis from './PgCacheDiagnosis';
 import RedisMissDiagnosis from './RedisMissDiagnosis';
 import RedisFragDiagnosis from './RedisFragDiagnosis';
 import RedisMemDiagnosis from './RedisMemDiagnosis';
+import RedisClientsDiagnosis from './RedisClientsDiagnosis';
+import KeymissFlagsPanel from './KeymissFlagsPanel';
 import KafkaLagDiagnosis from './KafkaLagDiagnosis';
 import EsDiagnosisPanel from './EsDiagnosis';
 import { focusFromRow } from '@/lib/monitor/focus';
@@ -66,7 +68,7 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
   useEffect(() => { setDiagMetric(null); }, [res.key]);
   // ES không nằm ở đây: có một nút luôn hiện ngay dưới phần nguyên nhân (kể cả khi cụm xanh).
   const canDiagnose = (metric: string): boolean =>
-    (res.stack === 'pg' && metric === 'cacheHitPct') || (res.stack === 'redis' && (metric === 'hitRatePct' || metric === 'fragmentation' || metric === 'memUsedPct'))
+    (res.stack === 'pg' && metric === 'cacheHitPct') || (res.stack === 'redis' && (metric === 'hitRatePct' || metric === 'fragmentation' || metric === 'memUsedPct' || metric === 'clients'))
     || (res.stack === 'kafka' && KAFKA_LAG_METRICS.has(metric));
   // Kafka: group có lag để chọn, mặc định group gắn với cảnh báo nặng nhất (cùng cách nút "Mở Kafka").
   const lagGroups = useMemo(
@@ -141,6 +143,17 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
               ))}
             </ul>
           )}
+          {res.stack === 'redis' ? (
+            <button
+              type="button"
+              className="mon-btn mon-es-diag"
+              onClick={() => setDiagMetric('keymiss')}
+              disabled={diagMetric === 'keymiss'}
+              title="Kiểm tra cờ key-miss (notify-keyspace-events m) mà phân tích hit rate bật tạm còn bật không — chỉ đọc; tắt khi bạn bấm."
+            >
+              🔎 Cờ key-miss
+            </button>
+          ) : null}
           {res.stack === 'es' ? (
             <button
               type="button"
@@ -160,6 +173,8 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
         {diagMetric === 'memUsedPct' && res.stack === 'redis'
           ? <RedisMemDiagnosis key={res.key} connectionId={res.id} history={memHistory} />
           : null}
+        {diagMetric === 'keymiss' && res.stack === 'redis' ? <KeymissFlagsPanel key={res.key} connectionId={res.id} /> : null}
+        {diagMetric === 'clients' && res.stack === 'redis' ? <RedisClientsDiagnosis key={res.key} connectionId={res.id} /> : null}
         {diagOpen && res.stack === 'es' ? <EsDiagnosisPanel key={res.key} connectionId={res.id} /> : null}
         {diagOpen && res.stack === 'kafka' && defaultGroup
           ? <KafkaLagDiagnosis key={res.key} connectionId={res.id} groups={lagGroups} initialGroup={defaultGroup} />
