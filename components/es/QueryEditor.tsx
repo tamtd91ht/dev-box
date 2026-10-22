@@ -32,6 +32,7 @@ import {
   type EsSuggestion,
 } from '@/lib/esDsl';
 import { defineEsThemes, useEsTheme, ES_MONO } from './esMonaco';
+import { hasRefs, maskRefs } from '@/lib/esQueryVars';
 
 const SCHEME = 'es-query';
 
@@ -55,7 +56,13 @@ const TEMPLATES_BY_MODE: Record<QueryEditorMode, typeof ES_TEMPLATES> = {
 // không có trong map thì không phải ô query ES → không gợi ý. Dùng WeakMap trên
 // chính đối tượng model nên không phụ thuộc cách monaco chuẩn hoá uri, và model
 // bị dispose là tự rụng khỏi map.
-const metaByModel = new WeakMap<MonacoEditorNs.ITextModel, { fields: EsField[]; mode: QueryEditorMode }>();
+const metaByModel = new WeakMap<MonacoEditorNs.ITextModel, { fields: EsField[]; mode: QueryEditorMode; vars: QueryVarName[] }>();
+
+/** Biến truy vấn gợi ý khi gõ `{{` (lib/esQueryVars). */
+export interface QueryVarName { name: string; detail: string }
+
+/** Đang gõ dở placeholder `{{…` ngay trước con trỏ. */
+const VAR_PREFIX_RE = /\{\{\s*([\w.]*)$/;
 
 const wired = new WeakSet<object>();
 let seq = 0;
@@ -76,10 +83,38 @@ function ensureEsSetup(monaco: Monaco) {
   monaco.languages.registerCompletionItemProvider('json', {
     // Chỉ mở khi đang gõ token thật (mở nháy, `.` đi tới sub-field). Có `{ [ , :`
     // và dấu cách thì vừa bấm `{` đã bật bảng gợi ý — dễ chèn nhầm cả clause.
-    triggerCharacters: ['"', '.'],
-    provideCompletionItems(model: MonacoEditorNs.ITextModel, position: MonacoPosition) {
+    // `{` chỉ để bắt `{{` (biến truy vấn) — một `{` đơn không gợi ý gì, xem nhánh dưới.
+    triggerCharacters: ['"', '.', '{'],
+    provideCompletionItems(model: MonacoEditorNs.ITextModel, position: MonacoPosition, ctxInfo: { triggerCharacter?: string }) {
       const meta = metaByModel.get(model);
       if (!meta) return { suggestions: [] }; // model .json khác (tab Code) — không đụng vào
+
+      // Trong placeholder `{{…`: chỉ gợi ý tên biến (field sau dấu `.` để người dùng tự gõ).
+      const linePrefix = model.getValueInRange({
+        startLineNumber: position.lineNumber, startColumn: 1, endLineNumber: position.lineNumber, endColumn: position.column,
+      });
+      const vm = VAR_PREFIX_RE.exec(linePrefix);
+      if (vm) {
+        if (vm[1].includes('.') || meta.vars.length === 0) return { suggestions: [] };
+        const range = {
+          startLineNumber: position.lineNumber, startColumn: position.column - vm[1].length,
+          endLineNumber: position.lineNumber, endColumn: position.column,
+        };
+        // Đã có `}}` ngay sau con trỏ (auto-close / gõ lại tên) thì đừng chèn thêm.
+        const after = model.getValueInRange({
+          startLineNumber: position.lineNumber, startColumn: position.column, endLineNumber: position.lineNumber, endColumn: position.column + 2,
+        });
+        return {
+          suggestions: meta.vars.map((v) => ({
+            label: v.name,
+            kind: K.Variable,
+            detail: `biến · ${v.detail}`,
+            insertText: after === '}}' ? v.name : `${v.name}}}`,
+            range,
+          })),
+        };
+      }
+      if (ctxInfo.triggerCharacter === '{') return { suggestions: [] };
 
       const text = model.getValue();
       const ctx = esQueryContext(text, model.getOffsetAt(position));
@@ -131,11 +166,23 @@ export interface QueryEditorProps {
   mode?: QueryEditorMode;
   /** Giãn ô soạn hết chiều cao khung cha (cột trái tab Dữ liệu) thay vì cao theo số dòng. */
   fill?: boolean;
+  /** Biến truy vấn gợi ý khi gõ `{{` — có biến thì placeholder `{{…}}` cũng không bị coi là lỗi cú pháp. */
+  varNames?: QueryVarName[];
 }
 
-export default function QueryEditor({ value, onChange, onRun, fields = [], label, placeholder, mode = 'query', fill = false }: QueryEditorProps) {
+const NO_VARS: QueryVarName[] = [];
+
+/** Format chịu được placeholder `{{q1.x}}` đứng trần: đổi tạm thành chuỗi, format, rồi trả lại. */
+function formatWithVars(text: string) {
+  const { masked, restore } = maskRefs(text);
+  const r = formatEsQuery(masked);
+  return r.ok ? { ...r, text: restore(r.text) } : r;
+}
+
+export default function QueryEditor({ value, onChange, onRun, fields = [], label, placeholder, mode = 'query', fill = false, varNames = NO_VARS }: QueryEditorProps) {
   const theme = useEsTheme();
   const editorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<Monaco | null>(null);
   const [modelPath] = useState(() => `${SCHEME}:/browser/q-${++seq}.json`);
   const [problem, setProblem] = useState<string | null>(null);
   const [formatErr, setFormatErr] = useState<string | null>(null);
@@ -147,14 +194,14 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
   // Provider chạy ngoài vòng đời React → đẩy field + mode vào registry mỗi lần đổi.
   useEffect(() => {
     const model = editorRef.current?.getModel();
-    if (model) metaByModel.set(model, { fields, mode });
-  }, [fields, mode, mounted]);
+    if (model) metaByModel.set(model, { fields, mode, vars: varNames });
+  }, [fields, mode, varNames, mounted]);
 
   const lines = Math.max(3, Math.min(value.split('\n').length + 1, 18));
   const height = lines * 19 + 14;
 
   const doFormat = useCallback(() => {
-    const r = formatEsQuery(value);
+    const r = formatWithVars(value);
     if (!r.ok) { setFormatErr(r.error ?? 'JSON không hợp lệ'); return; }
     setFormatErr(null);
     if (r.text !== value) onChange(r.text);
@@ -197,13 +244,23 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
           onChange={(v) => { onChange(v ?? ''); setFormatErr(null); }}
           beforeMount={ensureEsSetup}
           onValidate={(markers) => {
+            // Placeholder `{{q1.x}}` đứng trần không phải JSON — nếu thay nó bằng chuỗi mà body hợp lệ thì lỗi
+            // của trình kiểm JSON chỉ là do placeholder: xoá cả gạch đỏ lẫn dòng báo lỗi.
+            const model = editorRef.current?.getModel();
+            const text = model?.getValue() ?? '';
+            if (markers.length && model && monacoRef.current && hasRefs(text) && formatEsQuery(maskRefs(text).masked).ok) {
+              monacoRef.current.editor.setModelMarkers(model, 'json', []);
+              setProblem(null);
+              return;
+            }
             const err = markers.find((m) => m.severity === 8 /* MarkerSeverity.Error */);
             setProblem(err ? `dòng ${err.startLineNumber}: ${err.message}` : null);
           }}
           onMount={(editor, monaco) => {
             editorRef.current = editor;
+            monacoRef.current = monaco;
             const model = editor.getModel();
-            if (model) metaByModel.set(model, { fields, mode });
+            if (model) metaByModel.set(model, { fields, mode, vars: varNames });
             setMounted(true);
             editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runRef.current());
             editor.addAction({
@@ -211,7 +268,7 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
               label: 'Format JSON query',
               keybindings: [monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
               run: (ed) => {
-                const r = formatEsQuery(ed.getValue());
+                const r = formatWithVars(ed.getValue());
                 if (!r.ok) { setFormatErr(r.error ?? 'JSON không hợp lệ'); return; }
                 setFormatErr(null);
                 ed.executeEdits('es-format', [{ range: ed.getModel()!.getFullModelRange(), text: r.text }]);

@@ -20,6 +20,7 @@
     "bot:status": "tsx bot/status-cli.ts",
     "bot:test": "tsx bot/smoke.test.ts",
     "check:automation": "tsx scripts/check-automation-meta.ts",
+    "check:es-vars": "tsx scripts/check-es-query-vars.ts",
     "check:rate": "tsx scripts/check-rate-math.ts",
     "check:monitor": "tsx scripts/check-monitor.ts",
     "check:pg-diagnose": "tsx scripts/check-pg-diagnose.ts",

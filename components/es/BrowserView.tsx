@@ -33,6 +33,9 @@ import { flattenEsMapping, type EsField } from '@/lib/esDsl';
 import ExportModal from './ExportModal';
 import QueryEditor from './QueryEditor';
 import AggsResult from './AggsResult';
+import QueryVarsModal from './QueryVarsModal';
+import { loadQueryVars, saveQueryVars, resolveVars, hasRefs, describeStats, type QueryVar, type VarStat } from '@/lib/esQueryVars';
+import { usePresetSync } from '@/lib/presetSync';
 import JsonViewer from './JsonViewer';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from '../Splitter';
@@ -49,6 +52,9 @@ export interface BrowserViewProps {
 }
 
 type IdxTab = 'docs' | 'mapping' | 'info';
+
+/** Body đã thay biến có thể rất dài (hàng nghìn giá trị) — chỉ hiện phần đầu. */
+const RESOLVED_PREVIEW_MAX = 20_000;
 
 const healthColor = (h: string) =>
   h === 'green' ? 'var(--ok)' : h === 'red' ? 'var(--err)' : 'var(--warn, #d5a021)';
@@ -155,6 +161,11 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
   /** Ô trên hàng tab nhận thanh điều khiển của tab đang xem (portal). */
   const [slot, setSlot] = useState<HTMLElement | null>(null);
 
+  // Biến truy vấn — dùng chung cho mọi tab (lib/esQueryVars).
+  const [vars, setVars] = useState<QueryVar[]>(() => loadQueryVars());
+  const [varsOpen, setVarsOpen] = useState(false);
+  usePresetSync('es.queryvars', useCallback(() => setVars(loadQueryVars()), []));
+
   return (
     <div className="es-dtabs-wrap">
       <div className="es-dtabs" role="tablist">
@@ -181,6 +192,10 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
         {/* Điều khiển của tab ĐANG XEM (☰ · chọn index · ⧉ · Documents/Mapping/Info)
             được portal vào đây — một hàng thay cho ba hàng xếp chồng trước kia. */}
         <span className="es-dtabs-slot" ref={setSlot} />
+        <button className="chip-btn" onClick={() => setVarsOpen(true)}
+          title={'Biến truy vấn: lấy giá trị từ query ở ES / Mongo / PG khác rồi dùng trong body, vd. {{q1.tenantId}}'}>
+          𝑥 Biến{vars.length ? ` (${vars.length})` : ''}
+        </button>
         <SessionHistory
           scope="es"
           connectionId={connectionId}
@@ -208,9 +223,18 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
             restoreBody={restore && restore.tabId === t.id ? restore : null}
             onRecordSession={() => setSessBump((n) => n + 1)}
             toolbarSlot={t.id === activeId ? slot : null}
+            vars={vars}
           />
         </div>
       ))}
+
+      {varsOpen && (
+        <QueryVarsModal
+          vars={vars}
+          onClose={() => setVarsOpen(false)}
+          onSave={(list) => { saveQueryVars(list); setVars(list); setVarsOpen(false); }}
+        />
+      )}
     </div>
   );
 }
@@ -232,13 +256,15 @@ interface BrowserSessionProps {
   onRecordSession: () => void;
   /** Chỗ trên hàng tab để đặt thanh điều khiển (chỉ tab đang xem có; null = vẽ tại chỗ). */
   toolbarSlot: HTMLElement | null;
+  /** Biến truy vấn dùng được trong body (`{{q1.field}}`). */
+  vars: QueryVar[];
 }
 
 /** Một phiên truy vấn: index + body + kết quả + mapping của riêng một tab. */
 function BrowserSession({
   connectionId, tabId, index: selected, onPickIndex,
   indices, idxLoading, onReloadIndices, onOpenInNewTab,
-  restoreBody, onRecordSession, toolbarSlot,
+  restoreBody, onRecordSession, toolbarSlot, vars,
 }: BrowserSessionProps) {
   /** Tiền tố khoá model Monaco cho mọi khung JSON của phiên này. Gồm cả index
    *  vì đổi index là nội dung khác hẳn, đừng dùng lại model cũ.
@@ -268,6 +294,26 @@ function BrowserSession({
   const rx = useResultExpand();
   const flt = useResultFilter(result?.docs, (d) => d.json);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Body đã thay biến của lần chạy gần nhất + body gốc sinh ra nó. Prev/Next và Export dùng lại bản này. */
+  const [resolved, setResolved] = useState<{ from: string; text: string; stats: VarStat[] } | null>(null);
+  const [varNote, setVarNote] = useState<string | null>(null);
+  const [showResolved, setShowResolved] = useState(false);
+
+  /**
+   * Body thật sự gửi đi: không có `{{…}}` thì nguyên văn; có thì chạy các biến rồi thay. `reuse` = lật trang —
+   * dùng lại kết quả biến của lần Search trước (nếu body chưa đổi) để các trang khớp nhau.
+   */
+  const bodyToSend = useCallback(async (reuse = false): Promise<string> => {
+    if (!hasRefs(body)) { setResolved(null); return body; }
+    if (reuse && resolved?.from === body) return resolved.text;
+    try {
+      const r = await resolveVars(body, vars, { onProgress: setVarNote });
+      setResolved({ from: body, text: r.text, stats: r.stats });
+      return r.text;
+    } finally {
+      setVarNote(null);
+    }
+  }, [body, vars, resolved]);
 
   /**
    * Điền body từ một phiên vừa khôi phục. Theo `seq` chứ không theo nội dung:
@@ -287,7 +333,8 @@ function BrowserSession({
     if (!selected) return;
     setBusy(true); setError(null); setCountInfo(null);
     try {
-      const r = await searchEs(connectionId, selected, { body, from: over?.from });
+      const sent = await bodyToSend(over?.from !== undefined);
+      const r = await searchEs(connectionId, selected, { body: sent, from: over?.from });
       setResult(r);
       // Ghi phiên: index + body, KHÔNG ghi hits trả về.
       const state: EsSession = { subView: 'browser', index: selected, query: body };
@@ -299,17 +346,17 @@ function BrowserSession({
       onRecordSession();
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [connectionId, selected, body, onRecordSession]);
+  }, [connectionId, selected, body, bodyToSend, onRecordSession]);
 
   const runCount = useCallback(async () => {
     if (!selected) return;
     setBusy(true); setError(null);
     try {
-      const r = await countEs(connectionId, selected, '', body);
+      const r = await countEs(connectionId, selected, '', await bodyToSend());
       setCountInfo(`${fmtCount(r.count)} document${r.count === 1 ? '' : 's'} · ${r.tookMs}ms`);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
-  }, [connectionId, selected, body]);
+  }, [connectionId, selected, bodyToSend]);
 
   const loadMapping = useCallback(async () => {
     if (!selected) return;
@@ -327,7 +374,7 @@ function BrowserSession({
     setShowTree(false); // nhường chỗ cho kết quả — mở lại bằng ☰
     setIdxTab('docs');
     setBody('');
-    setResult(null); setCountInfo(null); setMapping(null); setFields([]); setError(null);
+    setResult(null); setCountInfo(null); setMapping(null); setFields([]); setError(null); setResolved(null);
   }, [onPickIndex]);
 
   // Mapping nạp ngầm ngay khi chọn index (không chặn UI, lỗi thì im lặng) — cần
@@ -438,6 +485,7 @@ function BrowserSession({
                     onChange={setBody}
                     onRun={() => void runSearch()}
                     fields={fields}
+                    varNames={vars.map((v) => ({ name: v.name, detail: v.field ? `${v.name}.${v.field}` : v.object || v.kind }))}
                     label={`Body _search — như Kibana Dev Tools (trống = match_all)${fields.length ? ` · ${fields.length} field từ mapping` : ''}`}
                     placeholder='{ "query": { "term": { "field": "value" } }, "aggs": { … }, "sort": [{ "createdAt": "desc" }], "size": 50 }'
                   />
@@ -447,8 +495,24 @@ function BrowserSession({
                     </button>
                     <button className="ghost sm" disabled={busy} onClick={() => void runCount()}>Count</button>
                     {countInfo && <span className="badge">{countInfo}</span>}
+                    {varNote && <span className="badge"><span className="spinner" aria-hidden /> {varNote}</span>}
                     <span className="es-hint" style={{ marginLeft: 'auto' }}>size ≤ 200 · size 0 = chỉ lấy aggs · script bị chặn</span>
                   </div>
+                  {resolved && resolved.from === body && (
+                    <div className="xhint" style={{ padding: '2px 4px' }}>
+                      𝑥 {describeStats(resolved.stats)}{' '}
+                      <button className="chip-btn" onClick={() => setShowResolved((x) => !x)}>
+                        {showResolved ? 'Ẩn' : 'Xem'} body đã thay biến
+                      </button>
+                      {showResolved && (
+                        <pre className="code" style={{ maxHeight: 240, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                          {resolved.text.length > RESOLVED_PREVIEW_MAX
+                            ? `${resolved.text.slice(0, RESOLVED_PREVIEW_MAX)}\n… (còn ${(resolved.text.length - RESOLVED_PREVIEW_MAX).toLocaleString('en-US')} ký tự)`
+                            : resolved.text}
+                        </pre>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="es-resultpane">
@@ -466,10 +530,12 @@ function BrowserSession({
                             document; size=0 (chỉ lấy aggs) thì không có gì để xuất. */}
                         <button
                           className="chip-btn"
-                          disabled={busy || result.docs.length === 0}
+                          disabled={busy || result.docs.length === 0 || (hasRefs(body) && resolved?.from !== body)}
                           title={result.docs.length === 0
                             ? 'Không có document nào để xuất'
-                            : 'Xuất TOÀN BỘ kết quả khớp query ra .xlsx (chọn cột trong hộp thoại)'}
+                            : hasRefs(body) && resolved?.from !== body
+                              ? 'Body có biến đã sửa sau lần chạy trước — bấm Search lại để thay biến rồi xuất'
+                              : 'Xuất TOÀN BỘ kết quả khớp query ra .xlsx (chọn cột trong hộp thoại)'}
                           onClick={() => setExportOpen(true)}
                         >⬇ Export</button>
                         <button className="chip-btn" disabled={busy || result.size === 0 || result.from === 0}
@@ -551,8 +617,8 @@ function BrowserSession({
           // Truyền BODY nguyên bản chứ không phải query rời: tab này cho gõ cả
           // sort/_source/size kiểu Dev Tools, tách lấy mỗi `query` sẽ xuất ra
           // một tập kết quả KHÁC với cái người dùng đang nhìn.
-          body={body}
-          querySummary={body.trim() ? 'body _search đang gõ' : 'match_all'}
+          body={resolved?.from === body ? resolved.text : body}
+          querySummary={body.trim() ? (resolved?.from === body ? 'body _search đang gõ (đã thay biến)' : 'body _search đang gõ') : 'match_all'}
           // Gợi ý field: mapping (đầy đủ) + tên field có thật trong kết quả.
           fieldSuggestions={[
             ...fields.map((f) => ({ value: f.path, hint: f.type })),
