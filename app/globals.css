@@ -11478,3 +11478,18 @@ html.tf-page nextjs-portal { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .crit-bell, .crit-name { animation: none; }
 }
+
+/* ── Biến truy vấn (tab ES → Dữ liệu, components/es/QueryVarsModal) ── */
+.qv-guide { border: 1px solid var(--glass-brd); border-radius: 10px; background: var(--glass-bg); padding: 8px 12px; margin-bottom: 12px; font-size: 12.5px; }
+.qv-guide > summary { cursor: pointer; font-weight: 600; }
+.qv-guide p { margin: 8px 0; }
+.qv-guide code { font-family: var(--mono); font-size: 11.5px; }
+.qv-steps { margin: 8px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.qv-example { display: flex; align-items: stretch; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+.qv-example > div { flex: 1 1 180px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.qv-ex-h { font-size: 11px; color: var(--muted); }
+.qv-ex-code { flex: 1; display: block; padding: 6px 8px; border-radius: 6px; background: var(--code-bg, rgba(127,127,127,.12)); white-space: pre; overflow-x: auto; }
+.qv-ex-arrow { align-self: center; color: var(--muted); font-size: 16px; }
+.qv-syntax { border-collapse: collapse; width: 100%; margin: 6px 0 8px; }
+.qv-syntax td { padding: 3px 8px 3px 0; vertical-align: top; border-top: 1px solid var(--glass-brd); }
+.qv-syntax td:first-child { white-space: nowrap; }

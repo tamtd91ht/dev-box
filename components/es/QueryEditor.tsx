@@ -168,9 +168,25 @@ export interface QueryEditorProps {
   fill?: boolean;
   /** Biến truy vấn gợi ý khi gõ `{{` — có biến thì placeholder `{{…}}` cũng không bị coi là lỗi cú pháp. */
   varNames?: QueryVarName[];
+  /** Yêu cầu chèn một biến (nút "Chèn vào body" ở hộp Biến) — đổi `seq` là chèn một lần. */
+  insertVar?: { name: string; field: string; seq: number } | null;
+  /** Báo đã chèn xong `seq` — cha nhớ lại để ô mount lại không chèn lần nữa. */
+  onInsertDone?: (seq: number) => void;
 }
 
 const NO_VARS: QueryVarName[] = [];
+
+/** Thoát ký tự đặc biệt của cú pháp snippet Monaco trong chữ điền sẵn. */
+const snippetText = (s: string) => s.replace(/[$}\\]/g, (c) => `\\${c}`);
+
+/**
+ * Chèn biến: ô trống → dựng sẵn cả khung `terms` (con trỏ đứng ở tên field của index này để sửa ngay — điền sẵn tên
+ * field của biến vì hai bên hay trùng tên); ô đã có nội dung → chỉ chèn `{{tên}}` tại con trỏ.
+ */
+function varSnippet(empty: boolean, name: string, field: string): string {
+  if (!empty) return `{{${name}}}`;
+  return `{\n  "query": {\n    "terms": {\n      "\${1:${snippetText(field.replace(/\.keyword$/i, '') || 'field')}}": {{${name}}}\n    }\n  }\n}`;
+}
 
 /** Format chịu được placeholder `{{q1.x}}` đứng trần: đổi tạm thành chuỗi, format, rồi trả lại. */
 function formatWithVars(text: string) {
@@ -179,7 +195,7 @@ function formatWithVars(text: string) {
   return r.ok ? { ...r, text: restore(r.text) } : r;
 }
 
-export default function QueryEditor({ value, onChange, onRun, fields = [], label, placeholder, mode = 'query', fill = false, varNames = NO_VARS }: QueryEditorProps) {
+export default function QueryEditor({ value, onChange, onRun, fields = [], label, placeholder, mode = 'query', fill = false, varNames = NO_VARS, insertVar = null, onInsertDone }: QueryEditorProps) {
   const theme = useEsTheme();
   const editorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
@@ -217,6 +233,17 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
     if (snippets?.insert) snippets.insert(body);
     else ed.trigger('es-tpl', 'type', { text: body.replace(/\$\{\d+:([^}]*)\}/g, '$1').replace(/\$0/g, '') });
   }, [onChange]);
+
+  // Chèn biến theo yêu cầu từ ngoài — theo `seq`, chèn lại cùng biến lần nữa vẫn chạy.
+  const insertedSeq = useRef(0);
+  useEffect(() => {
+    if (!insertVar || !mounted || insertVar.seq === insertedSeq.current) return;
+    insertedSeq.current = insertVar.seq;
+    const empty = !(editorRef.current?.getValue() ?? value).trim();
+    insertTemplate(varSnippet(empty, insertVar.name, insertVar.field));
+    onInsertDone?.(insertVar.seq);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insertVar, mounted]);
 
   return (
     <div className={`es-qed${fill ? ' fill' : ''}`}>
@@ -315,6 +342,7 @@ export default function QueryEditor({ value, onChange, onRun, fields = [], label
       )}
       <p className="es-hint es-qed-hint">
         Ctrl+Space gợi ý · Enter/Tab nhận gợi ý · Tab nhảy chỗ điền · Ctrl+Enter chạy · Shift+Alt+F format
+        {varNames.length > 0 && <> · gõ <code>{'{{'}</code> để chèn biến</>}
       </p>
     </div>
   );

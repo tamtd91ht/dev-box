@@ -14,7 +14,7 @@
 // Everything here is read-only: _search / _count / _mapping, all bounded
 // server-side (size ≤200, from+size ≤10k, 15s timeout, scripting rejected).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   listEsIndices,
@@ -165,6 +165,9 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
   const [vars, setVars] = useState<QueryVar[]>(() => loadQueryVars());
   const [varsOpen, setVarsOpen] = useState(false);
   usePresetSync('es.queryvars', useCallback(() => setVars(loadQueryVars()), []));
+  /** Yêu cầu chèn biến vào ô body của một tab (nút "Lưu & chèn vào body"). */
+  const [varInsert, setVarInsert] = useState<{ tabId: string; name: string; field: string; seq: number } | null>(null);
+  const activeIndex = tabs.find((t) => t.id === activeId)?.index ?? '';
 
   return (
     <div className="es-dtabs-wrap">
@@ -224,6 +227,7 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
             onRecordSession={() => setSessBump((n) => n + 1)}
             toolbarSlot={t.id === activeId ? slot : null}
             vars={vars}
+            insertVar={varInsert && varInsert.tabId === t.id ? varInsert : null}
           />
         </div>
       ))}
@@ -233,6 +237,11 @@ export default function BrowserView({ connectionId, initialIndex }: BrowserViewP
           vars={vars}
           onClose={() => setVarsOpen(false)}
           onSave={(list) => { saveQueryVars(list); setVars(list); setVarsOpen(false); }}
+          insertBlocked={activeIndex ? null : 'Tab đang xem chưa chọn index — chọn index trước rồi mới chèn được'}
+          onInsert={(list, v) => {
+            saveQueryVars(list); setVars(list); setVarsOpen(false);
+            setVarInsert((p) => ({ tabId: activeId, name: v.name, field: v.field, seq: (p?.seq ?? 0) + 1 }));
+          }}
         />
       )}
     </div>
@@ -258,13 +267,15 @@ interface BrowserSessionProps {
   toolbarSlot: HTMLElement | null;
   /** Biến truy vấn dùng được trong body (`{{q1.field}}`). */
   vars: QueryVar[];
+  /** Biến cần chèn vào ô body (null = không có). */
+  insertVar: { name: string; field: string; seq: number } | null;
 }
 
 /** Một phiên truy vấn: index + body + kết quả + mapping của riêng một tab. */
 function BrowserSession({
   connectionId, tabId, index: selected, onPickIndex,
   indices, idxLoading, onReloadIndices, onOpenInNewTab,
-  restoreBody, onRecordSession, toolbarSlot, vars,
+  restoreBody, onRecordSession, toolbarSlot, vars, insertVar,
 }: BrowserSessionProps) {
   /** Tiền tố khoá model Monaco cho mọi khung JSON của phiên này. Gồm cả index
    *  vì đổi index là nội dung khác hẳn, đừng dùng lại model cũ.
@@ -298,6 +309,14 @@ function BrowserSession({
   const [resolved, setResolved] = useState<{ from: string; text: string; stats: VarStat[] } | null>(null);
   const [varNote, setVarNote] = useState<string | null>(null);
   const [showResolved, setShowResolved] = useState(false);
+  const varNames = useMemo(
+    () => vars.map((v) => ({ name: v.name, detail: v.field ? `${v.name}.${v.field}` : v.object || v.kind })),
+    [vars],
+  );
+  // Chèn biến: đang ở Mapping/Info thì về Documents để ô body hiện ra nhận chèn. `insertDone` giữ seq đã chèn
+  // để ô body mount lại (đổi qua lại Documents) không chèn lần nữa.
+  const insertDone = useRef(0);
+  useEffect(() => { if (insertVar && insertVar.seq > insertDone.current) setIdxTab('docs'); }, [insertVar]);
 
   /**
    * Body thật sự gửi đi: không có `{{…}}` thì nguyên văn; có thì chạy các biến rồi thay. `reuse` = lật trang —
@@ -485,7 +504,9 @@ function BrowserSession({
                     onChange={setBody}
                     onRun={() => void runSearch()}
                     fields={fields}
-                    varNames={vars.map((v) => ({ name: v.name, detail: v.field ? `${v.name}.${v.field}` : v.object || v.kind }))}
+                    varNames={varNames}
+                    insertVar={insertVar && insertVar.seq > insertDone.current ? insertVar : null}
+                    onInsertDone={(seq) => { insertDone.current = seq; }}
                     label={`Body _search — như Kibana Dev Tools (trống = match_all)${fields.length ? ` · ${fields.length} field từ mapping` : ''}`}
                     placeholder='{ "query": { "term": { "field": "value" } }, "aggs": { … }, "sort": [{ "createdAt": "desc" }], "size": 50 }'
                   />
@@ -733,26 +754,31 @@ function IndexPicker({ indices, value, onPick }: {
  *
  *  Phần mở ra dùng <JsonViewer> (Monaco read-only) chứ không phải <pre>: có tô
  *  màu JSON và Ctrl+F tìm trong CẢ document, kể cả phần đang cuộn khuất. Editor
- *  chỉ được dựng khi thẻ đã mở, nên một trang 200 document không tạo 200 editor. */
-function DocCard({ json, truncated, index, docKey }: {
+ *  chỉ được dựng khi thẻ đã mở, nên một trang 200 document không tạo 200 editor.
+ *
+ *  memo + chỉ format khi MỞ: trước đây mỗi lần phiên re-render (busy, đếm, gõ…) cả 200 thẻ đều chạy lại prettyDoc
+ *  (parse + stringify cả document) và gọt khoảng trắng trên NGUYÊN chuỗi JSON chỉ để lấy 160 ký tự xem trước —
+ *  document lớn là chiếm luồng chính, ô nhập trông như bị khoá. */
+const DocCard = memo(function DocCard({ json, truncated, index, docKey }: {
   json: string; truncated: boolean; index: number;
   /** Khoá duy nhất cho model Monaco của thẻ này. */
   docKey: string;
 }) {
   const [open, setOpen] = useState(false);
-  const pretty = prettyDoc(json);
-  const oneLine = json.replace(/\s+/g, ' ');
+  const pretty = useMemo(() => (open ? prettyDoc(json) : ''), [open, json]);
+  // Gọt khoảng trắng trên một đoạn đầu đủ dài thay vì cả chuỗi (gom khoảng trắng chỉ làm chuỗi NGẮN đi).
+  const oneLine = useMemo(() => json.slice(0, 400).replace(/\s+/g, ' '), [json]);
   return (
     <div className="es-doc">
       <div className="es-doc-head" onClick={() => setOpen((v) => !v)}>
         <span className="es-tree-caret">{open ? '▾' : '▸'}</span>
         <span className="es-doc-idx">#{index + 1}</span>
-        {!open && <code className="es-doc-preview">{oneLine.length > 160 ? `${oneLine.slice(0, 160)}…` : oneLine}</code>}
+        {!open && <code className="es-doc-preview">{oneLine.length > 160 || json.length > 400 ? `${oneLine.slice(0, 160)}…` : oneLine}</code>}
         {truncated && <span className="badge" style={{ color: 'var(--err)' }}>truncated</span>}
         <button
           className="chip-btn"
           title="Copy JSON"
-          onClick={(e) => { e.stopPropagation(); void navigator.clipboard?.writeText(pretty); }}
+          onClick={(e) => { e.stopPropagation(); void navigator.clipboard?.writeText(pretty || prettyDoc(json)); }}
         >⧉</button>
       </div>
       {open && (
@@ -764,4 +790,4 @@ function DocCard({ json, truncated, index, docKey }: {
       )}
     </div>
   );
-}
+});

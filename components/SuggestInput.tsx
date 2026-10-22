@@ -8,6 +8,7 @@
 // đi tiếp như bình thường (Enter gửi form, Tab sang ô kế).
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 export interface SuggestOption {
   value: string;
@@ -110,6 +111,11 @@ export default function SuggestInput(props: SuggestInputProps) {
     }
   }
 
+  // Popup đã có toạ độ (fixed, theo viewport) thì đưa ra <body>: tổ tiên có `backdrop-filter` / `transform` (vd.
+  // `.modal`) biến `position: fixed` thành tương đối theo CHÍNH nó — popup lệch chỗ rồi bị overflow của modal cắt
+  // mất (gặp ở ô Index/alias của hộp Biến truy vấn). Chưa có toạ độ thì vẽ tại chỗ như cũ.
+  const portal = (el: React.ReactElement) => (pos && typeof document !== 'undefined' ? createPortal(el, document.body) : el);
+
   return (
     <div className="json-suggest-wrap" ref={wrap} style={{ position: 'relative', minWidth: 0 }}>
       <input
@@ -125,8 +131,8 @@ export default function SuggestInput(props: SuggestInputProps) {
         onBlur={() => { setFocus(false); setForced(false); }}
         onKeyDown={onKeyDown}
       />
-      {matches.length > 0 && (
-        <div className="json-suggest" role="listbox" style={pos ?? undefined}>
+      {matches.length > 0 && portal(
+        <div className="json-suggest" role="listbox" style={pos ? { ...pos, zIndex: 1000 } : undefined}>
           {matches.map((m, i) => (
             <button
               key={m.value}
@@ -142,7 +148,7 @@ export default function SuggestInput(props: SuggestInputProps) {
             </button>
           ))}
           <span className="json-suggest-hint">↑↓ chọn · Tab/Enter điền · Esc bỏ qua</span>
-        </div>
+        </div>,
       )}
     </div>
   );
