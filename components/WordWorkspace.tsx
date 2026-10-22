@@ -9,12 +9,15 @@
 // Bấm Lưu là gửi op log lên server; server đọc lại .docx từ đĩa rồi phát lại
 // từng op lên word/document.xml, nên MỌI đoạn không đụng tới đều giữ nguyên
 // 100% định dạng gốc. Lưu là thao tác GHI duy nhất, sau OFFICE_ALLOW_WRITE +
-// hộp thoại xác nhận + backup `.bak`.
+// hộp thoại xác nhận (ghi đè thẳng, không tạo `.bak`).
+//
+// Giao diện mô phỏng Microsoft Word: ribbon File/Home/Insert/Layout/View
+// (WordRibbon), trang giấy trắng trên nền xám, thanh trạng thái dưới cùng.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import FolderPicker from './FolderPicker';
 import OfficeNewFileModal from './OfficeNewFileModal';
-import WordFormatBar from './WordFormatBar';
+import WordRibbon, { WordStatusBar } from './WordRibbon';
 import WordDocView, { type Block, type CellRef, type DocWidth, type TextRange } from './WordDocView';
 import WordFindPanel from './WordFindPanel';
 import WordOutline from './WordOutline';
@@ -23,9 +26,9 @@ import WordInsertTableModal from './WordInsertTableModal';
 import WordPageSetupModal from './WordPageSetupModal';
 import { fmtBytes } from '@/lib/sheet';
 import {
-  applyParaPatch, commonRunFormat, mergeRuns, patchRunRange, runsText,
+  applyParaPatch, commonRunFormat, mergeRuns, patchRunRange, runsText, splitRuns,
   fetchWordFlags, openWordFile, createWordFile, saveWordFile, statWordFile, openWordExternal,
-  type HeaderFooter, type PageSetup, type ParaFormatPatch, type RunFormatPatch,
+  type HeaderFooter, type PageSetup, type ParaFormat, type ParaFormatPatch, type RunFormatPatch,
   type RunSpan, type TableCell, type WordFlags, type WordOp, type WordOpenResult,
   type WordTemplate,
 } from '@/lib/word';
@@ -160,6 +163,11 @@ function spliceRuns(prev: RunSpan[], next: string): RunSpan[] {
   ]);
 }
 
+/** Nội dung đoạn sau khi sửa — giữ định dạng từng cụm như commitEdit. */
+function editedRuns(cur: { runs: RunSpan[] }, text: string): RunSpan[] {
+  return runsText(cur.runs) === text ? cur.runs : spliceRuns(cur.runs, text);
+}
+
 /**
  * Editor này là MỘT tài liệu. Mở nhiều file = mount nhiều instance (xem
  * OfficeWorkspace) — mọi state file nằm trong đây nên các tab hoàn toàn độc lập.
@@ -190,6 +198,8 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
 
   const [sel, setSel] = useState<number | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
+  /** Chỗ đặt con trỏ khi mở đoạn `editing` (null = cuối đoạn). */
+  const [caret, setCaret] = useState<number | null>(null);
   const [range, setRange] = useState<TextRange | null>(null);
   const [cell, setCell] = useState<CellRef | null>(null);
   const [editingCell, setEditingCell] = useState<CellRef | null>(null);
@@ -470,8 +480,111 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
       return nb;
     });
     pushOp({ op: 'insert', i: at, runs: [] });
-    setSel(at); setEditing(at);
+    setSel(at); setEditing(at); setCaret(0);
   }, [pushOp]);
+
+  // ── Gõ liền mạch như Word: Enter / Backspace / ↑ ↓ ──────────────────────────
+
+  /** Mở đoạn `i` để gõ, con trỏ ở `at` (null = cuối đoạn). */
+  const editAt = useCallback((i: number, at: number | null) => {
+    setSel(i); setEditing(i); setCaret(at); setRange(null);
+    setCell(null); setEditingCell(null);
+  }, []);
+
+  /**
+   * Enter: tách đoạn `i` tại `at` thành hai, con trỏ sang đầu đoạn mới. Đoạn mới
+   * mang định dạng đoạn cũ (danh sách nối tiếp, căn lề giữ nguyên) trừ kiểu
+   * Tiêu đề/Đề mục — giống Word, sau đề mục là văn bản thường. Enter trên mục
+   * danh sách TRỐNG thì thoát danh sách thay vì sinh thêm mục rỗng.
+   */
+  const splitPara = useCallback((i: number, text: string, at: number) => {
+    const cur = blocks[i];
+    if (!cur || cur.kind !== 'p' || cur.locked) return;
+    if (text === '' && cur.fmt?.list) {
+      setBlocks((bs) => {
+        const b = bs[i];
+        if (!b || b.kind !== 'p') return bs;
+        const nb = bs.slice();
+        nb[i] = { ...b, fmt: applyParaPatch(b.fmt, { list: null }), d: true };
+        return nb;
+      });
+      pushOp({ op: 'paraFmt', i, f: { list: null } });
+      editAt(i, 0);
+      return;
+    }
+    const runs = editedRuns(cur, text);
+    const [head, tail] = splitRuns(runs, at).map(mergeRuns);
+    let fmt: ParaFormat | undefined = cur.fmt ? { ...cur.fmt } : undefined;
+    if (fmt?.style && /^(heading|title|subtitle)/i.test(fmt.style)) delete fmt.style;
+    if (fmt && Object.keys(fmt).length === 0) fmt = undefined;
+    // Enter ở ĐẦU đoạn: đoạn hiện tại đẩy xuống nguyên vẹn, chèn đoạn trống lên trên.
+    const atStart = at === 0 && text !== '';
+    setBlocks((bs) => {
+      const b = bs[i];
+      if (!b || b.kind !== 'p') return bs;
+      const nb = bs.slice();
+      if (atStart) {
+        nb[i] = { ...b, runs, d: true };
+        nb.splice(i, 0, { kind: 'p', runs: [], ...(fmt ? { fmt } : {}), d: true });
+      } else {
+        nb[i] = { ...b, runs: head, d: true };
+        nb.splice(i + 1, 0, { kind: 'p', runs: tail, ...(fmt ? { fmt } : {}), d: true });
+      }
+      return nb;
+    });
+    if (atStart) {
+      if (runs !== cur.runs) pushOp({ op: 'set', i, runs });
+      pushOp({ op: 'insert', i, runs: [], ...(fmt ? { fmt } : {}) });
+      editAt(i + 1, 0);
+    } else {
+      if (runsText(head) !== runsText(cur.runs) || runs !== cur.runs) pushOp({ op: 'set', i, runs: head });
+      pushOp({ op: 'insert', i: i + 1, runs: tail, ...(fmt ? { fmt } : {}) });
+      editAt(i + 1, 0);
+    }
+  }, [blocks, pushOp, editAt]);
+
+  /** ↑ / ↓ ra khỏi đoạn: lưu đoạn rồi sang đoạn kế (bảng / ngắt trang thì chỉ chọn). */
+  const navPara = useCallback((i: number, dir: -1 | 1, text: string) => {
+    commitEdit(i, text);
+    const j = i + dir;
+    const next = blocks[j];
+    if (!next) { setSel(i); return; }
+    if (next.kind === 'p' && !next.locked) editAt(j, dir < 0 ? null : 0);
+    else { setSel(j); setCell(null); }
+    scrollRef.current?.querySelector(`[data-block="${j}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [blocks, commitEdit, editAt]);
+
+  /** Backspace ở đầu đoạn: gộp vào cuối đoạn trên (đoạn trên là bảng/ảnh thì chỉ xóa đoạn trống). */
+  const mergePrev = useCallback((i: number, text: string) => {
+    const cur = blocks[i];
+    if (!cur || cur.kind !== 'p' || i === 0) { commitEdit(i, text); if (cur) editAt(i, 0); return; }
+    const prev = blocks[i - 1];
+    const runs = editedRuns(cur, text);
+    if (prev?.kind === 'p' && !prev.locked) {
+      const pos = runsText(prev.runs).length;
+      const merged = mergeRuns([...prev.runs, ...runs]);
+      setBlocks((bs) => {
+        const nb = bs.slice();
+        const pb = nb[i - 1];
+        if (!pb || pb.kind !== 'p') return bs;
+        nb[i - 1] = { ...pb, runs: merged, d: true };
+        nb.splice(i, 1);
+        return nb;
+      });
+      if (runs.length > 0) pushOp({ op: 'set', i: i - 1, runs: merged });
+      pushOp({ op: 'delete', i });
+      editAt(i - 1, pos);
+      return;
+    }
+    if (text === '') {
+      setBlocks((bs) => { const nb = bs.slice(); nb.splice(i, 1); return nb; });
+      pushOp({ op: 'delete', i });
+      setEditing(null); setSel(i - 1);
+      return;
+    }
+    commitEdit(i, text);
+    editAt(i, 0);
+  }, [blocks, pushOp, commitEdit, editAt]);
 
   const deleteBlock = useCallback(() => {
     if (sel === null) return;
@@ -858,7 +971,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
       clearHistory();
       setBlocks((bs) => bs.map((b) => (b.d ? { ...b, d: undefined } : b)));
       setSaveOpen(false);
-      flash(`Đã lưu ✓${res.replaced ? ` (thay ${res.replaced} chỗ)` : ''} · backup: ${res.backupPath}`);
+      flash(`Đã lưu ✓${res.replaced ? ` (thay ${res.replaced} chỗ)` : ''}`);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -884,7 +997,19 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
         e.preventDefault();
         if (k === 'y' || e.shiftKey) doRedo(); else doUndo();
       }
-      else if (k === 'f') { e.preventDefault(); setFindOpen(true); }
+      else if (k === 'f' || k === 'h') { e.preventDefault(); setFindOpen(true); }
+      else if (k === 'l' || k === 'e' || k === 'r' || k === 'j') {
+        e.preventDefault();
+        const jc = ({ l: 'l', e: 'c', r: 'r', j: 'j' } as const)[k];
+        applyParaFormat({ jc });
+      }
+      else if (k === ']' || k === '[') {
+        e.preventDefault();
+        const SZ = [8, 9, 10, 11, 12, 13, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72];
+        const fs = activeFs.current ?? 12;
+        const next = k === ']' ? SZ.find((x) => x > fs) : [...SZ].reverse().find((x) => x < fs);
+        if (next) applyRunFormat({ fs: next });
+      }
       else if (k === 'b') { e.preventDefault(); applyRunFormat({ b: 1 }); }
       else if (k === 'i') { e.preventDefault(); applyRunFormat({ i: 1 }); }
       else if (k === 'u') { e.preventDefault(); applyRunFormat({ u: 1 }); }
@@ -901,7 +1026,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [file, active, applyRunFormat, doPrint, allowWrite, ops.length, zoomBy, patchView, editing, editingCell, doUndo, doRedo]);
+  }, [file, active, applyRunFormat, applyParaFormat, doPrint, allowWrite, ops.length, zoomBy, patchView, editing, editingCell, doUndo, doRedo]);
 
   // ── Dẫn xuất cho thanh công cụ ──────────────────────────────────────────────
 
@@ -922,6 +1047,9 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
     const to = range && editing === sel ? range.to : len;
     return commonRunFormat(selPara.runs, from, to);
   }, [selPara, selCell, range, editing, sel]);
+  // Ctrl+] / Ctrl+[ đọc cỡ chữ hiện tại qua ref (handler phím đăng ký trước khi tính xong).
+  const activeFs = useRef<number | undefined>(undefined);
+  activeFs.current = activeRunFormat?.fs;
 
   const outline = useMemo(() => buildOutline(blocks), [blocks]);
   const stats = useMemo(() => docStats(blocks, page), [blocks, page]);
@@ -936,7 +1064,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
           <div className="office-hero-title">Office tab đang tắt</div>
           <p className="office-hero-sub">
             Đặt <code>OFFICE_TOOL_ENABLED=true</code> trong <code>.env.local</code> rồi khởi động lại dev server để bật.
-            Muốn LƯU (ghi đè file, luôn kèm backup <code>.bak</code>) thì đặt thêm <code>OFFICE_ALLOW_WRITE=true</code> — chỉ dùng local.
+            Muốn LƯU (ghi đè file) thì đặt thêm <code>OFFICE_ALLOW_WRITE=true</code> — chỉ dùng local.
           </p>
         </div>
       </div>
@@ -966,7 +1094,6 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
             <span className="office-point">🖨 In / xuất PDF</span>
             <span className="office-point">↶ Hoàn tác / làm lại</span>
             <span className="office-point">🖼 Chèn ảnh · 📐 Khổ giấy &amp; lề</span>
-            <span className="office-point">🛟 Tự backup .bak khi lưu</span>
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
             <button className="office-cta" onClick={() => setPickerOpen(true)} disabled={busy}>
@@ -1048,149 +1175,72 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
   return (
     /* data-hist: undo/redo stack nằm trong ref (không kích hoạt render), nên histTick
        là thứ ép render lại để hai nút Hoàn tác/Làm lại bật-tắt đúng. */
-    <div className="panel sheet-panel" data-hist={histTick}>
-      <div className="sheet-toolbar">
-        <span className="picker-cwd small" title={file.path}>{file.path}</span>
-        <span className="badge">DOCX</span>
-        <span className="badge" title="Kích thước file">{fmtBytes(file.sizeBytes)}</span>
-        <button
-          className="ghost sm"
-          onClick={doUndo}
-          disabled={busy || undoRef.current.length === 0}
-          title={`Hoàn tác (Ctrl+Z)${undoRef.current.length ? ` — còn ${undoRef.current.length} bước` : ''}`}
-        >
-          ↶ Hoàn tác
-        </button>
-        <button
-          className="ghost sm"
-          onClick={doRedo}
-          disabled={busy || redoRef.current.length === 0}
-          title={`Làm lại (Ctrl+Y)${redoRef.current.length ? ` — còn ${redoRef.current.length} bước` : ''}`}
-        >
-          ↷ Làm lại
-        </button>
-        <button className="ghost sm" onClick={reload} disabled={busy} title="Đọc lại file từ đĩa">↻ Tải lại</button>
-        <button className="ghost sm" onClick={() => void openExternally()} disabled={busy}
-          title="Mở file bằng ứng dụng mặc định (Word / WPS / LibreOffice…) để làm việc nặng. Sửa xong Lưu bên đó, quay lại đây app tự nạp lại.">
-          ↗ Mở bằng Word
-        </button>
-        <button className="ghost sm" onClick={() => setPickerOpen(true)} disabled={busy} title="Mở file khác">📂 File khác</button>
-        <button
-          className="ghost sm"
-          onClick={openCreate}
-          disabled={busy || !allowWrite}
-          title={!allowWrite ? 'Tạo file cần quyền ghi — đặt OFFICE_ALLOW_WRITE=true trong .env.local' : 'Tạo file .docx mới từ mẫu có sẵn'}
-        >
-          ＋ File mới
-        </button>
-        <span style={{ flex: 1 }} />
-        {dirtyCount > 0 && <span className="badge sheet-dirty-badge">● {dirtyCount} thay đổi</span>}
-        <button className="ghost sm" onClick={() => setFindOpen((o) => !o)} title="Tìm & thay thế (Ctrl+F)">🔎 Tìm</button>
-        <button className="ghost sm" onClick={() => setPageOpen(true)} title="Khổ giấy, hướng giấy, lề">📐 Bố cục trang</button>
-        <button className="ghost sm" onClick={() => setHfOpen('header')} title="Đặt nội dung đầu trang">⌃ Đầu trang</button>
-        <button className="ghost sm" onClick={() => setHfOpen('footer')} title="Đặt chân trang và số trang tự động">⌄ Chân trang</button>
-        <button className="ghost sm" onClick={doPrint} title="Mở bản in — chọn 'Save as PDF' để xuất PDF (Ctrl+P)">🖨 In / PDF</button>
-        <button
-          className="sm"
-          onClick={() => setSaveOpen(true)}
-          disabled={busy || dirtyCount === 0 || !allowWrite}
-          title={!allowWrite
-            ? 'Ghi file đang tắt — đặt OFFICE_ALLOW_WRITE=true trong .env.local'
-            : dirtyCount === 0 ? 'Chưa có thay đổi nào' : 'Ghi đè file (backup .bak trước) — Ctrl+S'}
-        >
-          💾 Lưu (ghi đè)
-        </button>
-      </div>
-
-      <WordFormatBar
+    <div className="panel sheet-panel wd-mode" data-hist={histTick}>
+      <WordRibbon
+        filePath={file.path}
+        sizeBytes={file.sizeBytes}
+        dirty={dirtyCount}
+        saving={busy && saveOpen}
+        canSave={!busy && dirtyCount > 0 && allowWrite}
+        saveTitle={!allowWrite
+          ? 'Ghi file đang tắt — đặt OFFICE_ALLOW_WRITE=true trong .env.local'
+          : dirtyCount === 0 ? 'Chưa có thay đổi nào' : 'Lưu — ghi đè file (Ctrl+S)'}
+        onSave={() => setSaveOpen(true)}
+        canUndo={!busy && undoRef.current.length > 0}
+        canRedo={!busy && redoRef.current.length > 0}
+        onUndo={doUndo}
+        onRedo={doRedo}
         run={activeRunFormat}
         para={selPara?.fmt}
         disabled={sel === null && !cell}
         targetLabel={targetLabel}
-        hasSelection={range !== null && editing === sel}
         inTable={cell !== null}
         onRunFormat={applyRunFormat}
         onParaFormat={applyParaFormat}
+        onInsertPara={() => insertPara(sel !== null ? sel + 1 : blocks.length)}
         onInsertTable={() => setTableOpen(true)}
         onPageBreak={insertPageBreak}
+        onInsertImage={() => imgInputRef.current?.click()}
+        onHeader={() => setHfOpen('header')}
+        onFooter={() => setHfOpen('footer')}
+        onPageSetup={() => setPageOpen(true)}
         onTableRow={tableRowOp}
         onTableRowDelete={tableRowDelete}
         onTableCol={tableColOp}
         onTableColDelete={tableColDelete}
         onTableBorder={tableBorderToggle}
+        canMoveUp={!busy && sel !== null && sel > 0}
+        canMoveDown={!busy && sel !== null && sel < blocks.length - 1}
+        canDelete={!busy && sel !== null}
+        onMove={moveBlock}
+        onDeleteBlock={deleteBlock}
+        onFind={() => setFindOpen(true)}
+        onPrint={doPrint}
+        outlineOpen={outlineOpen}
+        onToggleOutline={() => setOutlineOpen((o) => !o)}
+        width={view.width}
+        onWidth={(w) => patchView({ width: w })}
+        zoom={view.zoom}
+        onZoom={zoomBy}
+        onZoomReset={() => patchView({ zoom: 100 })}
+        allowWrite={allowWrite}
+        onNewFile={openCreate}
+        onOpenFile={() => setPickerOpen(true)}
+        onReload={reload}
+        onOpenExternal={() => void openExternally()}
+        stats={stats}
       />
-
-      <div className="sheet-toolbar word-subbar">
-        <button
-          className="ghost sm"
-          onClick={() => insertPara(sel !== null ? sel + 1 : blocks.length)}
-          disabled={busy}
-          title={sel !== null ? `Thêm đoạn mới dưới khối ${sel + 1}` : 'Thêm đoạn mới ở cuối tài liệu'}
-        >
-          ＋ Thêm đoạn
-        </button>
-        <button
-          className="ghost sm"
-          onClick={() => imgInputRef.current?.click()}
-          disabled={busy}
-          title="Chèn ảnh PNG / JPEG / GIF / BMP (tối đa 8 MB) thành một đoạn riêng"
-        >
-          🖼 Chèn ảnh
-        </button>
-        <input
-          ref={imgInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/gif,image/bmp"
-          hidden
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            e.target.value = ''; // chọn lại cùng file vẫn kích hoạt onChange
-            if (f) void insertImage(f);
-          }}
-        />
-        <button className="ghost sm" onClick={() => moveBlock(-1)} disabled={busy || sel === null || sel === 0}
-          title="Đưa khối đang chọn lên trên">↑ Lên</button>
-        <button className="ghost sm" onClick={() => moveBlock(1)} disabled={busy || sel === null || sel === blocks.length - 1}
-          title="Đưa khối đang chọn xuống dưới">↓ Xuống</button>
-        <button
-          className="ghost sm"
-          onClick={deleteBlock}
-          disabled={busy || sel === null}
-          title={sel === null ? 'Bấm vào số ¶ bên trái để chọn khối cần xóa' : `Xóa khối ${sel + 1}`}
-        >
-          ✕ Xóa khối
-        </button>
-        <button className="ghost sm" onClick={() => setOutlineOpen((o) => !o)}
-          title="Bật / tắt khung mục lục bên trái">
-          {outlineOpen ? '◧' : '▢'} Mục lục
-        </button>
-        <span style={{ flex: 1 }} />
-
-        {/* Cách nhìn trang giấy — chỉ đổi hiển thị, không đụng vào nội dung file. */}
-        <select
-          className="sheet-fmt-select word-width-select"
-          value={view.width}
-          onChange={(e) => patchView({ width: e.target.value as DocWidth })}
-          title={`Bề rộng trang trên màn hình — ${WIDTHS.find((w) => w.v === view.width)?.hint}`}
-          aria-label="Bề rộng trang"
-        >
-          {WIDTHS.map((w) => <option key={w.v} value={w.v}>▭ {w.label}</option>)}
-        </select>
-        <span className="word-zoom" title="Phóng to khung soạn thảo (Ctrl + / Ctrl − / Ctrl 0) — cỡ chữ trong file KHÔNG đổi">
-          <button className="sheet-fmt-btn tiny" onClick={() => zoomBy(-1)}
-            disabled={view.zoom <= ZOOMS[0]} aria-label="Thu nhỏ">−</button>
-          <button className="sheet-fmt-btn tiny word-zoom-val" onClick={() => patchView({ zoom: 100 })}
-            title="Về 100%">{view.zoom}%</button>
-          <button className="sheet-fmt-btn tiny" onClick={() => zoomBy(1)}
-            disabled={view.zoom >= ZOOMS[ZOOMS.length - 1]} aria-label="Phóng to">＋</button>
-        </span>
-
-        <span className="badge" title="Ước tính — bố cục thật do Word quyết định">
-          {stats.words.toLocaleString('vi')} từ · {stats.chars.toLocaleString('vi')} ký tự
-          {' · '}{stats.paras} đoạn{stats.tables > 0 && ` · ${stats.tables} bảng`}
-          {' · ~'}{stats.pages} trang
-        </span>
-      </div>
+      <input
+        ref={imgInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/bmp"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = ''; // chọn lại cùng file vẫn kích hoạt onChange
+          if (f) void insertImage(f);
+        }}
+      />
 
       {file.truncated && (
         <div className="sheet-banner">
@@ -1205,19 +1255,25 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
           <button className="ghost sm" onClick={() => setExtChanged(false)} title="Giữ nguyên. Lưu từ app sẽ bị từ chối cho tới khi tải lại (tránh đè mất bản kia)">Để sau</button>
         </div>
       )}
-      {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '6px 0' }}>{err}</pre>}
-      {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '6px 0' }}>{notice}</div>}
-
-      {findOpen && (
-        <WordFindPanel
-          onFind={runFind}
-          onJump={jumpTo}
-          onReplaceAll={runReplaceAll}
-          onClose={() => { setFindOpen(false); setHits(new Set()); }}
-        />
+      {err && !saveOpen && (
+        <div className="wd-msgbar" role="alert">
+          <span>{err}</span>
+          <button type="button" onClick={() => setErr(null)} title="Đóng">✕</button>
+        </div>
       )}
 
-      <div className={`word-body${outlineOpen ? ' with-outline' : ''}`}>
+      {findOpen && (
+        <div className="wd-findwrap">
+          <WordFindPanel
+            onFind={runFind}
+            onJump={jumpTo}
+            onReplaceAll={runReplaceAll}
+            onClose={() => { setFindOpen(false); setHits(new Set()); }}
+          />
+        </div>
+      )}
+
+      <div className={`word-body wd-area${outlineOpen ? ' with-outline' : ''}`}>
         {outlineOpen && (
           <WordOutline entries={outline} current={sel} onJump={jumpTo} />
         )}
@@ -1229,6 +1285,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
           footers={footers}
           sel={sel}
           editing={editing}
+          caret={caret}
           cell={cell}
           editingCell={editingCell}
           hits={hits}
@@ -1236,16 +1293,28 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
           docWidth={view.width}
           zoom={view.zoom}
           onSelect={(i) => { setSel(i); setEditing(null); setRange(null); if (blocks[i ?? -1]?.kind !== 'tbl') setCell(null); }}
-          onEdit={(i) => { setEditing(i); setCell(null); }}
+          onEdit={(i, at) => { setEditing(i); setCaret(at); setCell(null); }}
           onCommit={commitEdit}
           onCancel={() => { setEditing(null); setRange(null); }}
           onSelectionChange={setRange}
+          onSplit={splitPara}
+          onNav={navPara}
+          onMergePrev={mergePrev}
           onPickCell={(ref) => { setCell(ref); setEditing(null); }}
           onEditCell={(ref) => { setCell(ref); setEditingCell(ref); }}
           onCommitCell={commitCell}
           onCancelCell={() => setEditingCell(null)}
         />
       </div>
+
+      <WordStatusBar
+        stats={stats}
+        zoom={view.zoom}
+        onZoom={zoomBy}
+        onZoomReset={() => patchView({ zoom: 100 })}
+        dirty={dirtyCount}
+        notice={notice}
+      />
 
       {pickerOpen && (
         <FolderPicker
@@ -1306,7 +1375,7 @@ export default function WordWorkspace({ initialPath, onDocState, active = true }
             </ul>
 
             <div className="sheet-save-note">
-              Bản gốc được sao lưu thành <code>{file.path.split(/[\\/]/).pop()}.bak</code> trước khi ghi đè
+              File gốc bị ghi đè trực tiếp, không tạo bản sao lưu
               (ghi file tạm rồi rename — không có trạng thái ghi dở). Đoạn không sửa giữ nguyên 100% định dạng.
             </div>
 

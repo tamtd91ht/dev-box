@@ -12,7 +12,7 @@
 // (paragraphs + read-only tables). 'create' makes a NEW blank .docx
 // (create-only, never overwrites) and returns it opened. 'save' re-reads the
 // file and replays the op log on word/document.xml with a stale mtime check,
-// always backing up to `<file>.bak` before an atomic overwrite. Both writes
+// then overwrites atomically (no `.bak` backup). Both writes
 // are gated by OFFICE_ALLOW_WRITE. Gated by OFFICE_TOOL_ENABLED (403 when
 // off). Audit-logged (WORD_AUDIT).
 

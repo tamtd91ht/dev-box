@@ -4,7 +4,7 @@
 //   1. Cổng ghi toàn tool (OFFICE_ALLOW_WRITE).
 //   2. Đường dẫn qua resolveTarget (chỉ .xlsx/.csv có thật, trần dung lượng).
 //   3. Kiểm tra mtime: file đã đổi từ lúc mở thì từ chối.
-//   4. Ghi bằng atomicBackupWrite: file tạm → copy bản gốc sang <file>.bak → đổi tên đè.
+//   4. Ghi bằng atomicWrite: file tạm → đổi tên đè (không tạo .bak).
 //   5. Audit log (SHEET_AUDIT).
 //
 // Đọc LẠI file từ đĩa rồi chỉ chạm vào đúng ô/định dạng/gộp ô/kích thước có trong bản
@@ -14,7 +14,7 @@ import { promises as fs } from 'fs';
 import ExcelJS from 'exceljs';
 import { pxToColWidth, pxToRowHeight, MAX_COL_PX, MAX_ROW_PX, MIN_COL_PX, MIN_ROW_PX } from './sheet';
 import { OFFICE_ALLOW_WRITE } from './officeFlags';
-import { assertNotStale, atomicBackupWrite } from './officeFiles';
+import { assertNotStale, atomicWrite } from './officeFiles';
 import { resolveTarget, parseCsv, encodeCsv } from './sheetClient';
 import type { UStyle } from './sheetUniver';
 import type { CellPatch, Rect, SheetPatch, UniverPatch } from './sheetUniverDiff';
@@ -149,7 +149,7 @@ export interface SaveUniverInput {
   grid?: unknown;
 }
 
-export interface SaveUniverResult { backupPath: string; sizeBytes: number; mtimeMs: number; cells: number }
+export interface SaveUniverResult { sizeBytes: number; mtimeMs: number; cells: number }
 
 const addr = (r: number, c: number) => `${colName(c)}${r + 1}`;
 function colName(i: number): string {
@@ -290,9 +290,9 @@ export async function saveUniverFile(input: SaveUniverInput): Promise<SaveUniver
     detail = `sheets=${patch.sheets.length},formulas=${formulas}`;
   }
 
-  const backupPath = await atomicBackupWrite(t.abs, outBuf);
+  await atomicWrite(t.abs, outBuf);
   // eslint-disable-next-line no-console
-  console.log(`SHEET_AUDIT operation=SAVE_UNIVER path=${t.abs} cells=${cells} ${detail} backup=${backupPath} ts=${new Date().toISOString()}`);
+  console.log(`SHEET_AUDIT operation=SAVE_UNIVER path=${t.abs} cells=${cells} ${detail} ts=${new Date().toISOString()}`);
   const st = await fs.stat(t.abs);
-  return { backupPath, sizeBytes: st.size, mtimeMs: st.mtimeMs, cells };
+  return { sizeBytes: st.size, mtimeMs: st.mtimeMs, cells };
 }

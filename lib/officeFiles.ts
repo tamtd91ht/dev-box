@@ -1,6 +1,6 @@
 // Server-only shared plumbing for the Office tab editors (Sheet + Word):
 // path validation (open + create-new), stale-mtime check, the create-only
-// write, and the backup-then-atomic-overwrite write path. Keeping this in
+// write, and the atomic-overwrite write path. Keeping this in
 // ONE place means every Office editor gets the exact same safety behaviour.
 
 import { promises as fs } from 'fs';
@@ -104,21 +104,17 @@ export function assertNotStale(target: OfficeTarget, sentMtimeMs: unknown): void
 }
 
 /**
- * Overwrite `abs` safely: write a temp sibling → copy the original to
- * `<file>.bak` (single backup, refreshed each save) → atomic rename over the
- * original (same volume, MOVEFILE_REPLACE_EXISTING). Returns the backup path.
+ * Overwrite `abs` safely, no backup: write a temp sibling → atomic rename over
+ * the original (same volume, MOVEFILE_REPLACE_EXISTING).
  */
-export async function atomicBackupWrite(abs: string, data: Buffer): Promise<string> {
+export async function atomicWrite(abs: string, data: Buffer): Promise<void> {
   const tmp = `${abs}.tmp-${process.pid}-${Date.now()}`;
-  const backupPath = `${abs}.bak`;
   try {
     await fs.writeFile(tmp, data);
-    await fs.copyFile(abs, backupPath);
     await fs.rename(tmp, abs);
   } finally {
     await fs.unlink(tmp).catch(() => {}); // no-op when the rename succeeded
   }
-  return backupPath;
 }
 
 /**

@@ -218,7 +218,6 @@ export interface ParaFormatPatch {
 }
 
 export interface WordSaveResult {
-  backupPath: string;
   sizeBytes: number;
   mtimeMs: number;
   /** replaceAll ops report how many hits they rewrote. */

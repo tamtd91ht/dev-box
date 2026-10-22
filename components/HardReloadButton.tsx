@@ -36,6 +36,7 @@ const PRESET_KEYS = [
   'kafka.presets',
   'mongo.quickfinds',
   'es.quickfinds',
+  'es.queryvars',
   'pg.quickfinds',
 ] as const;
 

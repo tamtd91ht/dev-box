@@ -132,7 +132,7 @@ const SPECIALS = [
 type SpecialKind = typeof SPECIALS[number]['id'];
 
 /* ── Icon (vẽ tay, currentColor + vài điểm nhấn màu như Office) ─────────── */
-const I = {
+export const I = {
   save: <svg viewBox="0 0 16 16"><path d="M2 2h9l3 3v9H2z" fill="none" stroke="currentColor" strokeWidth="1.2" /><path d="M4.5 2v3.5h6V2M4.5 14V9.5h7V14" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg>,
   undo: <svg viewBox="0 0 16 16"><path d="M5 4 2 7l3 3" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M2.5 7H10a3.5 3.5 0 0 1 0 7H7" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>,
   redo: <svg viewBox="0 0 16 16"><path d="m11 4 3 3-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M13.5 7H6a3.5 3.5 0 0 0 0 7h3" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>,
@@ -184,7 +184,7 @@ const I = {
   lock: <svg viewBox="0 0 32 32"><rect x="7" y="14" width="18" height="14" rx="2" fill="#f0b24a" stroke="#8a6d2b" /><path d="M11 14V9a5 5 0 0 1 10 0v5" fill="none" stroke="#6b6b6b" strokeWidth="2.4" /><circle cx="16" cy="21" r="2" fill="#6b4f10" /></svg>,
 };
 
-function useOutside(open: boolean, close: () => void) {
+export function useOutside(open: boolean, close: () => void) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!open) return;
@@ -198,12 +198,12 @@ function useOutside(open: boolean, close: () => void) {
 }
 
 /** Giữ focus ở lưới/ô đang sửa khi bấm nút ribbon — như Excel. */
-const keep = (e: React.MouseEvent) => e.preventDefault();
+export const keep = (e: React.MouseEvent) => e.preventDefault();
 
-interface MenuItem { label: string; icon?: ReactNode; run?: () => void; disabled?: boolean; title?: string; sep?: boolean }
+export interface MenuItem { label: string; icon?: ReactNode; run?: () => void; disabled?: boolean; title?: string; sep?: boolean }
 
 /** Nút có menu thả xuống (Insert ▾, Borders ▾, Sort & Filter ▾…). */
-function Drop({ big, icon, label, items, disabled, title, split }: {
+export function Drop({ big, icon, label, items, disabled, title, split }: {
   big?: boolean; icon?: ReactNode; label?: string; items: MenuItem[]; disabled?: boolean; title?: string;
   /** Nút tách đôi: phần chính chạy lệnh này, ▾ mở menu (như Borders, AutoSum của Excel). */
   split?: () => void;
@@ -242,7 +242,7 @@ function Drop({ big, icon, label, items, disabled, title, split }: {
   );
 }
 
-function Btn({ icon, label, big, on, disabled, title, run }: {
+export function Btn({ icon, label, big, on, disabled, title, run }: {
   icon?: ReactNode; label?: string; big?: boolean; on?: boolean; disabled?: boolean; title?: string; run?: () => void;
 }) {
   return (
@@ -287,7 +287,7 @@ function StyleBtn({ s, onPick, disabled }: { s: StyleDef; onPick: (s: StyleDef) 
 }
 
 /** Tách fragment `<>…</>` của một tab thành danh sách nhóm (key tự sinh theo thứ tự, ổn định vì bố cục mỗi tab cố định). */
-const toItems = (node: ReactNode): ReactNode[] =>
+export const toItems = (node: ReactNode): ReactNode[] =>
   Children.toArray(isValidElement(node) && node.type === Fragment ? (node.props as { children?: ReactNode }).children : node);
 
 const MORE_W = 40;      // nút "…"
@@ -297,7 +297,7 @@ const COLLAPSE_W = 30;  // nút ⌃ thu ribbon
  *  đủ chỗ thì giấu vào nút "…" ở cuối (bấm ra menu xếp dọc các nhóm đó). Chiều
  *  rộng từng nhóm nhớ theo tab; nhóm chưa đo thì hiện hết một lượt để đo rồi cắt
  *  (chạy trong layout effect nên không nháy). */
-function Ribbon({ label, items, onCollapse }: { label: string; items: ReactNode[]; onCollapse: () => void }) {
+export function Ribbon({ label, items, onCollapse }: { label: string; items: ReactNode[]; onCollapse: () => void }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const cache = useRef<Record<string, number[]>>({});
@@ -354,7 +354,7 @@ function Ribbon({ label, items, onCollapse }: { label: string; items: ReactNode[
   );
 }
 
-function Group({ label, children, launcher }: { label: string; children: ReactNode; launcher?: () => void }) {
+export function Group({ label, children, launcher }: { label: string; children: ReactNode; launcher?: () => void }) {
   return (
     <div className="xl-group">
       <div className="xl-group-body">{children}</div>

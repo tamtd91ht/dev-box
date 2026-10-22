@@ -26,6 +26,7 @@ export const PRESET_KINDS = [
   'kafka.presets',
   'mongo.quickfinds',
   'es.quickfinds',
+  'es.queryvars',
   'pg.quickfinds',
 ] as const;
 

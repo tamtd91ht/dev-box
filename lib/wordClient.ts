@@ -18,7 +18,7 @@
 //     would silently destroy that content. Deleting them is always allowed,
 //     and paragraph-level formatting on them is fine.
 //   - .doc (binary 97-2003) and .docm (macro) are refused.
-// Safety rails: OFFICE gates, size cap, stale-mtime check, `.bak` backup +
+// Safety rails: OFFICE gates, size cap, stale-mtime check, temp file +
 // atomic rename, WORD_AUDIT log line.
 
 import { promises as fs } from 'fs';
@@ -36,7 +36,7 @@ import {
   resolveNewOfficeFile,
   writeNewFile,
   assertNotStale,
-  atomicBackupWrite,
+  atomicWrite,
   openWithDefaultApp,
 } from './officeFiles';
 import {
@@ -999,7 +999,7 @@ export async function saveDocx(input: SaveDocxInput): Promise<WordSaveResult> {
   }
 
   const outBuf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-  const backupPath = await atomicBackupWrite(t.abs, Buffer.from(outBuf));
+  await atomicWrite(t.abs, Buffer.from(outBuf));
 
   const tally = ops.reduce<Record<string, number>>((acc, o) => {
     acc[o.op] = (acc[o.op] ?? 0) + 1;
@@ -1007,11 +1007,11 @@ export async function saveDocx(input: SaveDocxInput): Promise<WordSaveResult> {
   }, {});
   const summary = Object.entries(tally).map(([k, v]) => `${k}=${v}`).join(' ');
   // eslint-disable-next-line no-console
-  console.log(`WORD_AUDIT operation=SAVE path=${t.abs} ${summary} backup=${backupPath} ts=${new Date().toISOString()}`);
+  console.log(`WORD_AUDIT operation=SAVE path=${t.abs} ${summary} ts=${new Date().toISOString()}`);
 
   const st = await fs.stat(t.abs);
   return {
-    backupPath, sizeBytes: st.size, mtimeMs: st.mtimeMs,
+    sizeBytes: st.size, mtimeMs: st.mtimeMs,
     ...(replaced > 0 ? { replaced } : {}),
   };
 }

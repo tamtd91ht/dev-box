@@ -6,15 +6,15 @@
 //     'create' { dir, name }                     → { ok, result: SheetOpenResult }
 //     'save'   { path, mtimeMs, sheets: [{ name, ops[] }] } → { ok, result: SheetSaveResult }
 //     'openUniver' { path }                      → { ok, result: UniverOpenResult }   (dữ liệu cho giao diện Univer, không cắt 5.000 dòng)
-//     'saveUniver' { path, mtimeMs, patch | grid } → { ok, result }   (ghi bản vá từ giao diện Univer; cùng cổng ghi + .bak như 'save')
+//     'saveUniver' { path, mtimeMs, patch | grid } → { ok, result }   (ghi bản vá từ giao diện Univer; cùng cổng ghi như 'save')
 //     'stat'   { path }                          → { ok, result: { mtimeMs, sizeBytes } }   (dò file bị sửa ngoài app)
 //     'openExternal' { path }                    → { ok, result: { path } }   (mở bằng ứng dụng mặc định của OS)
 //
 // 'open' parses the file server-side (ExcelJS / papaparse) and ships a capped
 // JSON view. 'create' makes a NEW empty .xlsx/.csv (create-only, never
 // overwrites) and returns it opened. 'save' re-reads the file and replays the
-// op log (set cell / insert row / delete row) with a stale mtime check, always
-// backing up to `<file>.bak` before an atomic overwrite. Both writes are gated
+// op log (set cell / insert row / delete row) with a stale mtime check, then
+// overwrites atomically (no `.bak` backup). Both writes are gated
 // by SHEET_ALLOW_WRITE. Gated by SHEET_TOOL_ENABLED (403 when off).
 // Audit-logged (SHEET_AUDIT).
 

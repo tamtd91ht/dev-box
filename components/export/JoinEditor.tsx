@@ -18,7 +18,7 @@ import { flattenEsMapping } from '@/lib/esDsl';
 const KIND_LABEL: Record<JoinKind, string> = { es: 'Elasticsearch', mongo: 'MongoDB', pg: 'PostgreSQL' };
 
 /** Chạy `load` khi `enabled` và `deps` đổi; lỗi → `fallback` (gợi ý hỏng không được làm hỏng hộp thoại). */
-function useAsync<T>(load: () => Promise<T>, deps: unknown[], enabled: boolean, fallback: T): T {
+export function useAsync<T>(load: () => Promise<T>, deps: unknown[], enabled: boolean, fallback: T): T {
   const [v, setV] = useState<T>(fallback);
   useEffect(() => {
     if (!enabled) { setV(fallback); return; }
@@ -30,11 +30,11 @@ function useAsync<T>(load: () => Promise<T>, deps: unknown[], enabled: boolean, 
   return v;
 }
 
-interface JoinConn { id: string; name: string; kind: JoinKind }
+export interface JoinConn { id: string; name: string; kind: JoinKind }
 const NO_CONNS: JoinConn[] = [];
 
 /** Mọi kết nối ES · Mongo · PG của máy này. */
-function useJoinConnections(): JoinConn[] {
+export function useJoinConnections(): JoinConn[] {
   return useAsync<JoinConn[]>(async () => {
     const [m, e, p] = await Promise.all([
       fetchMongoConnections().catch(() => null),

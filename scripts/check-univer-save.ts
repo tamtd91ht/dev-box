@@ -91,9 +91,9 @@ async function main() {
 
   const saved = await saveUniverFile({ path: f, mtimeMs: doc.mtimeMs, patch: diff.patch });
 
-  await ok('lưu xong: có bản .bak, mtime mới', async () => {
+  await ok('lưu xong: mtime mới, KHÔNG tạo bản .bak', async () => {
     assert.ok(saved.mtimeMs > before.mtimeMs);
-    await fs.access(`${f}.bak`);
+    await assert.rejects(fs.access(`${f}.bak`));
   });
 
   const after = new ExcelJS.Workbook();

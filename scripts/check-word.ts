@@ -47,7 +47,7 @@ async function main() {
     assert.ok(Math.abs(re.page.mt - cm(2)) < 0.1 && Math.abs(re.page.mb - cm(2)) < 0.1);
     assert.equal(re.blocks[0].kind, 'p');
     assert.ok(JSON.stringify(re.blocks[0]).includes('Xin chào'));
-    await fs.access(`${f}.bak`);
+    await assert.rejects(fs.access(`${f}.bak`)); // lưu không còn tạo bản .bak
   });
 
   await ok('XML hợp lệ: w:pgSz đứng trước w:pgMar trong w:sectPr, pgMar đủ header/footer/gutter', async () => {

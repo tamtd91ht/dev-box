@@ -5,8 +5,8 @@
 // thay đổi chưa lưu và có nút 💾 Lưu.
 //
 // LƯU = so bản chụp hiện tại với mốc lúc nạp → "bản vá" chỉ gồm ô/định dạng/gộp ô/
-// kích thước/freeze đã đổi → server đọc lại file từ đĩa, ghi đúng phần đó, backup
-// `.bak` trước (xem lib/sheetUniverDiff + lib/sheetUniverSave). CSV gửi cả lưới giá trị.
+// kích thước/freeze đã đổi → server đọc lại file từ đĩa, ghi đúng phần đó
+// (xem lib/sheetUniverDiff + lib/sheetUniverSave). CSV gửi cả lưới giá trị.
 //
 // `version` đổi (vd file vừa được nạp lại vì bị sửa ngoài app) thì tải lại workbook;
 // riêng version do CHÍNH LẦN LƯU của ta tạo ra thì bỏ qua (state đang đúng rồi).
@@ -44,7 +44,7 @@ export default function UniverPane({
   /** Số thay đổi chưa lưu (ô + khác) — cha dùng để cảnh báo khi tải lại / đóng. */
   onDirty: (n: number) => void;
   /** Đã lưu xong: cha cập nhật mtime để không tưởng là file bị sửa ngoài app. */
-  onSaved: (r: { mtimeMs: number; sizeBytes: number; backupPath: string; cells: number }) => void;
+  onSaved: (r: { mtimeMs: number; sizeBytes: number; cells: number }) => void;
 }) {
   const [state, setState] = useState<
     { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; doc: UniverOpened }
@@ -104,7 +104,7 @@ export default function UniverPane({
     const csv = state.doc.kind === 'csv';
     const lines = [
       `Ghi đè file ${csv ? 'CSV' : 'Excel'} này với ${d.changed.toLocaleString('vi')} ô${d.otherChanges ? ` + ${d.otherChanges} thay đổi khác (gộp ô/kích thước/freeze)` : ''}?`,
-      'Bản gốc được sao lưu thành <tên file>.bak trước khi ghi.',
+      'Không tạo bản sao lưu — bản gốc bị ghi đè.',
       ...(csv ? ['CSV không có định dạng/công thức: công thức được lưu thành giá trị đang hiển thị.'] : []),
       ...d.warnings,
     ];
@@ -116,8 +116,8 @@ export default function UniverPane({
       ownMtime.current = r.mtimeMs;
       h.rebase();
       setDiff(EMPTY); onDirty(0);
-      onSaved({ mtimeMs: r.mtimeMs, sizeBytes: r.sizeBytes, backupPath: r.backupPath, cells: r.cells });
-      setNote(`Đã lưu ${r.cells.toLocaleString('vi')} ô. Bản gốc: ${r.backupPath}`);
+      onSaved({ mtimeMs: r.mtimeMs, sizeBytes: r.sizeBytes, cells: r.cells });
+      setNote(`Đã lưu ${r.cells.toLocaleString('vi')} ô.`);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -139,7 +139,7 @@ export default function UniverPane({
         canSave={!saving && dirty > 0 && !blocked && allowWrite && !!doc}
         saveTitle={!allowWrite
           ? 'Saving is disabled — set OFFICE_ALLOW_WRITE=true in .env.local'
-          : blocked ? diff.blockers.join(' ') : dirty === 0 ? 'No changes to save' : `Save (Ctrl+S) — overwrite the file, original backed up as .bak`}
+          : blocked ? diff.blockers.join(' ') : dirty === 0 ? 'No changes to save' : `Save (Ctrl+S) — overwrite the file`}
         onSave={() => void save()}
         onExit={onExit}
         onOpenExternal={onOpenExternal}

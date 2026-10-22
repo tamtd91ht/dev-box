@@ -44,7 +44,7 @@
 // Editing model giữ nguyên: working copy + OP LOG per sheet (set / insertRow /
 // deleteRow / insertCol / deleteCol / style / merge / unmerge, 1-based). Save
 // ships the ops; server re-reads file rồi replay — ô không đụng giữ nguyên
-// style/công thức. Save luôn backup `<file>.bak` trước, gated bởi
+// style/công thức. Save ghi đè thẳng (không .bak), gated bởi
 // OFFICE_ALLOW_WRITE.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
@@ -1400,7 +1400,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
       redoRef.current = [];
       setHistTick((t) => t + 1);
       setSaveOpen(false);
-      flash(`Đã lưu ✓ backup: ${res.backupPath}`);
+      flash('Đã lưu ✓');
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -1948,7 +1948,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           <div className="office-hero-title">Office tab đang tắt</div>
           <p className="office-hero-sub">
             Đặt <code>OFFICE_TOOL_ENABLED=true</code> trong <code>.env.local</code> rồi khởi động lại dev server để bật.
-            Muốn LƯU (ghi đè file, luôn kèm backup <code>.bak</code>) thì đặt thêm <code>OFFICE_ALLOW_WRITE=true</code> — chỉ dùng local.
+            Muốn LƯU (ghi đè file) thì đặt thêm <code>OFFICE_ALLOW_WRITE=true</code> — chỉ dùng local.
           </p>
         </div>
       </div>
@@ -1979,7 +1979,6 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
             <span className="office-point">➕ Chèn dòng &amp; cột 4 hướng</span>
             <span className="office-point">🎨 Font · màu · viền · căn lề</span>
             <span className="office-point">⿴ Trộn ô &amp; định dạng số</span>
-            <span className="office-point">🛟 Tự backup .bak khi lưu</span>
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
             <button className="office-cta" onClick={() => setPickerOpen(true)} disabled={busy}>
@@ -2222,7 +2221,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
           disabled={busy || dirtyCount === 0 || !allowWrite}
           title={!allowWrite
             ? 'Ghi file đang tắt — đặt OFFICE_ALLOW_WRITE=true trong .env.local'
-            : dirtyCount === 0 ? 'Chưa có thay đổi nào' : 'Ghi đè file (backup .bak trước)'}
+            : dirtyCount === 0 ? 'Chưa có thay đổi nào' : 'Ghi đè file'}
         >
           💾 Lưu (ghi đè)
         </button>
@@ -2324,7 +2323,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
             <span className="picker-cwd small" style={{ maxWidth: 220 }} title={file.path}>{file.path.split(/[\\/]/).pop()}</span>
             {dirtyCount > 0 && <span className="badge sheet-dirty-badge">● {dirtyCount}</span>}
             <button className="sm" onClick={() => setSaveOpen(true)}
-              disabled={busy || dirtyCount === 0 || !allowWrite} title="Lưu (ghi đè, backup .bak trước)">
+              disabled={busy || dirtyCount === 0 || !allowWrite} title="Lưu (ghi đè)">
               💾 Lưu
             </button>
           </>
@@ -2889,7 +2888,7 @@ export default function SheetWorkspace({ initialPath, onDocState }: SheetWorkspa
             </ul>
 
             <div className="sheet-save-note">
-              Bản gốc được sao lưu thành <code>{file.path.split(/[\\/]/).pop()}.bak</code> trước khi ghi đè
+              File gốc bị ghi đè trực tiếp, không tạo bản sao lưu .bak
               (ghi file tạm rồi rename — không có trạng thái ghi dở).
               {file.kind === 'xlsx' && ' Ô không sửa giữ nguyên style/công thức; chart/pivot/macro nâng cao có thể mất khi lưu bằng ExcelJS.'}
             </div>

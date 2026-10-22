@@ -23,6 +23,7 @@ export type PresetKind =
   | 'kafka.presets'
   | 'mongo.quickfinds'
   | 'es.quickfinds'
+  | 'es.queryvars'
   | 'pg.quickfinds';
 
 const KINDS: PresetKind[] = [
@@ -30,6 +31,7 @@ const KINDS: PresetKind[] = [
   'kafka.presets',
   'mongo.quickfinds',
   'es.quickfinds',
+  'es.queryvars',
   'pg.quickfinds',
 ];
 

@@ -10450,6 +10450,144 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* Word: ảnh trong đoạn (hiển thị) */
 .word-img { display: block; max-width: 100%; height: auto; margin: 4px auto; }
 
+/* ── Giao diện kiểu Microsoft Word (components/WordRibbon + WordDocView) ──
+   Cùng khung ribbon .xl-* với Excel, màu nhấn xanh Word. LUÔN sáng — không theo
+   theme tối của app: trang giấy trắng chữ đen trên nền xám như Word thật.
+   Bảng màu sáng đặt ngay trên .wd-mode để mục lục, ô tìm kiếm và các hộp thoại
+   con (đều dùng var(--text)…) cũng sáng theo. */
+.wd-mode {
+  --bg-0: #f3f3f3; --bg-1: #ffffff; --panel: #ffffff;
+  --glass: #f7f7f7; --glass-2: #ececec; --glass-bg: #f3f3f3;
+  --glass-brd: #d4d4d4; --glass-brd-hover: #a6a6a6;
+  --text: #1f1f1f; --muted: #555; --faint: #8a8a8a;
+  --accent: #2b579a; --accent-solid: #2b579a;
+  --ok: #107c10; --warn: #c19c00; --err: #c50f1f;
+  color-scheme: light;
+  padding: 0; gap: 0; overflow: hidden; background: #fff; border-color: #d4d4d4; color: var(--text);
+}
+.wd-mode .sheet-banner, .wd-mode .sheet-extbar { border-radius: 0; margin: 0; }
+.wd-shell { --xl-green: #2b579a; --xl-green-hover: #3c6bb0; }
+.wd-shell .xl-save:hover:not(:disabled), .wd-shell .xl-title-btn:hover { background: #e7eef8; border-color: #2b579a; }
+.wd-shell .xl-tab.ctx { color: #2b579a !important; font-weight: 600; }
+.wd-app-ico { display: inline-flex; align-items: center; margin: 0 6px 0 2px; }
+.wd-hl-ico { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; }
+.wd-hl-ico > span { display: block; width: 16px; height: 3px; }
+
+/* Gallery Styles như Word: ô "AaBbCc" + tên kiểu */
+.wd-styles {
+  display: grid; grid-template-columns: repeat(4, 76px); grid-auto-rows: 31px; gap: 2px;
+  padding: 2px; border: 1px solid var(--xl-rib-brd); background: #fff; height: max-content;
+}
+.wd-shell .wd-style {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px;
+  padding: 0 6px; border: 1px solid transparent; border-radius: 0; background: #fff; color: #000;
+  cursor: pointer; overflow: hidden; font-size: 12px; text-align: left;
+}
+.wd-shell .wd-style:hover:not(:disabled) { background: #e7eef8; }
+.wd-shell .wd-style.on { background: #dbe5f5; border-color: #2b579a; }
+.wd-style-aa { white-space: nowrap; line-height: 1.05; max-width: 100%; overflow: hidden; }
+.wd-style-name { font: 400 10px/1 "Segoe UI", system-ui, sans-serif; color: #555; font-style: normal; }
+.wd-layout-rows .wd-lbl { width: 52px; color: var(--xl-muted); }
+.wd-layout-rows .wd-val { min-width: 58px; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* Thanh báo lỗi / tìm kiếm ngay dưới ribbon */
+.wd-msgbar {
+  display: flex; align-items: center; gap: 10px; padding: 6px 12px; flex: none;
+  background: #fde7e9; color: #5c0f16; border-bottom: 1px solid #f1bbbc; font-size: 12.5px; white-space: pre-wrap;
+}
+.wd-msgbar > span { flex: 1; min-width: 0; }
+.wd-msgbar button { background: transparent; color: inherit; box-shadow: none; padding: 2px 8px; border-radius: 2px; }
+.wd-msgbar button:hover:not(:disabled) { background: rgba(0, 0, 0, .06); transform: none; box-shadow: none; }
+.wd-findwrap { flex: none; padding: 6px 10px; background: #f3f3f3; border-bottom: 1px solid #d4d4d4; }
+.wd-mode .word-find { margin: 0; border-radius: 2px; border-color: #c8c8c8; background: #fff; }
+.wd-mode .word-find-input { border-radius: 2px; background: #fff; }
+
+/* Vùng soạn thảo: nền xám, trang giấy trắng có bóng */
+.wd-mode .word-body { margin: 0; gap: 0; background: #e6e6e6; }
+.wd-mode .word-scroll { border: 0; border-radius: 0; background: #e6e6e6; }
+.wd-mode .word-outline {
+  flex: 0 0 240px; background: #fff; border: 0; border-right: 1px solid #d4d4d4; border-radius: 0;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+.wd-mode .word-outline-item { border-radius: 0; }
+.wd-mode .word-outline-item.on { background: #dbe5f5; color: #1f1f1f; box-shadow: inset 3px 0 0 #2b579a; }
+.wd-mode .word-doc {
+  margin: 18px auto 28px; gap: 0; color: #000; background: #fff;
+  border: 0; border-radius: 0; box-shadow: 0 0 0 1px #c6c6c6, 0 2px 8px rgba(0, 0, 0, .16);
+  font-size: 12pt;
+}
+.wd-mode .word-row { position: relative; gap: 0; border-radius: 0; }
+.wd-mode .word-row.sel, .wd-mode .word-row.sel.dirty { background: transparent; }
+.wd-mode .word-row.dirty { background: transparent; }
+/* Đoạn đã sửa: vạch xám ngoài lề trái như "Track Changes" của Word */
+.wd-mode .word-row.dirty::before {
+  content: ''; position: absolute; left: -14px; top: 2px; bottom: 2px; width: 2px; background: #a6a6a6;
+}
+.wd-mode .word-row.hit { box-shadow: none; background: #fff4b8; }
+.wd-mode .word-row.focus { background: #e7eef8; }
+/* Số khối nằm ngoài lề, chỉ hiện khi rê chuột — bấm để chọn cả khối */
+.wd-mode .word-gutter {
+  position: absolute; left: -44px; top: 0; width: 28px; padding: 2px 0; opacity: 0;
+  color: #8a8a8a; font-size: 10px; box-shadow: none; transition: opacity .12s;
+}
+.wd-mode .word-row:hover .word-gutter, .wd-mode .word-row.sel .word-gutter { opacity: 1; }
+.wd-mode .word-row.sel .word-gutter { color: #2b579a; }
+.wd-mode .word-gutter:hover { background: #e7eef8; color: #2b579a; transform: none; }
+.wd-mode .word-p, .wd-mode .word-edit {
+  padding: 1px 0; border-radius: 0; font-size: inherit; line-height: 1.4; color: #000;
+}
+.wd-mode .word-p:hover { background: transparent; }
+.wd-mode .word-row.sel .word-p { background: rgba(43, 87, 154, .06); }
+.wd-mode .word-edit {
+  display: block; width: 100%; margin: 0; border: 0; outline: none; resize: none; overflow: hidden;
+  background: transparent; caret-color: #000; font-family: inherit;
+}
+.wd-mode .word-edit::selection { background: #b4d2f4; }
+.wd-mode .word-p-empty { color: transparent; }
+.wd-mode .word-row:hover .word-p-empty { color: #c6c6c6; }
+.wd-mode .word-p-title { font-size: 28pt; font-weight: 400; line-height: 1.15; text-align: left; font-family: "Calibri Light", Calibri, sans-serif; }
+.wd-mode .word-p-subtitle { font-size: 11pt; color: #595959; text-align: left; }
+.wd-mode .word-p-h1 { font-size: 16pt; font-weight: 400; color: #2f5496; line-height: 1.3; margin-top: 12pt; }
+.wd-mode .word-p-h2 { font-size: 13pt; font-weight: 400; color: #2f5496; line-height: 1.3; margin-top: 6pt; }
+.wd-mode .word-p-h3 { font-size: 12pt; font-weight: 400; font-style: normal; color: #1f3763; margin-top: 6pt; }
+.wd-mode .word-p-h4 { font-size: 12pt; font-style: italic; color: #2f5496; }
+.wd-mode .word-p-quote { color: #404040; border-left: 0; padding-left: 0; text-align: center; }
+.wd-mode .word-p-caption { font-size: 9pt; color: #44546a; text-align: left; }
+.wd-mode .word-bullet { color: #000; min-width: 22px; }
+.wd-mode .word-lock-badge { background: #f3f3f3; border-color: #d4d4d4; color: #616161; }
+.wd-mode .word-pagebreak { color: #7f7f7f; font-size: 9pt; letter-spacing: 0; text-transform: none; }
+.wd-mode .word-pagebreak::before, .wd-mode .word-pagebreak::after { border-top: 1px dotted #7f7f7f; }
+.wd-mode .word-pagebreak span::before { content: '······ '; }
+.wd-mode .word-table { font-size: inherit; }
+.wd-mode .word-table td { border-color: #000; }
+.wd-mode .word-table.plain td { border-color: transparent; }
+.wd-mode .word-row:hover .word-table.plain td { border: 1px dashed #c6c6c6; }
+.wd-mode .word-table tr.head td { background: transparent; }
+.wd-mode .word-table td:hover { background: transparent; }
+.wd-mode .word-table td.sel { outline: 2px solid #2b579a; background: rgba(43, 87, 154, .06); }
+.wd-mode .word-cell-edit { border: 0; border-radius: 0; background: transparent; color: #000; font-size: inherit; resize: none; }
+.wd-mode .word-hf { color: #7f7f7f; font-size: 10pt; }
+.wd-mode .word-hf.header { border-bottom: 1px dashed #c6c6c6; margin-bottom: 14pt; }
+.wd-mode .word-hf.footer { border-top: 1px dashed #c6c6c6; margin-top: auto; padding-top: 14pt; }
+.wd-mode .word-hf-tag { background: #fff; color: #2b579a; border-color: #2b579a; }
+
+/* Thanh trạng thái dưới cùng */
+.wd-status {
+  flex: none; display: flex; align-items: center; gap: 14px; height: 24px; padding: 0 10px;
+  background: #f3f3f3; border-top: 1px solid #d4d4d4; color: #444;
+  font: 12px/1 "Segoe UI", system-ui, sans-serif; user-select: none; white-space: nowrap; overflow: hidden;
+}
+.wd-status button {
+  background: transparent; color: #444; box-shadow: none; padding: 2px 6px; border-radius: 2px;
+  font: inherit; font-weight: 400;
+}
+.wd-status button:hover:not(:disabled) { background: #dcdcdc; transform: none; box-shadow: none; }
+.wd-status-dirty { color: #8a5a00; }
+.wd-status-note { color: #107c10; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.wd-zoom-track { position: relative; width: 100px; height: 1px; background: #8a8a8a; margin: 0 -8px; }
+.wd-zoom-knob { position: absolute; top: -6px; width: 4px; height: 12px; margin-left: -2px; background: #444; }
+.wd-zoom-val { min-width: 44px; }
+
 /* ── Xuất Excel: khai cột nâng cao (thời gian theo pattern, nối cột) — port từ vhs-monitor ── */
 .xrow { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .export-join { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--glass-brd); border-radius: 10px; background: var(--glass-bg); }

@@ -6,13 +6,15 @@
 // Sửa đoạn dùng <textarea> chứ không phải contenteditable: định dạng vẫn giữ
 // theo cụm từ nhờ op `runFmt` áp lên vùng bôi đen, còn nội dung thì sửa như
 // một ô văn bản bình thường — đơn giản và không bao giờ sinh ra HTML lạ.
+// Textarea không viền, tự cao theo nội dung, và bắt phím như Word: Enter tách
+// đoạn, ↑ / ↓ ở dòng đầu / cuối sang đoạn kế, Backspace ở đầu đoạn gộp lên trên.
 
-import { forwardRef } from 'react';
+import { forwardRef, useLayoutEffect, useRef } from 'react';
 import type {
   HeaderFooter, PageSetup, ParaBlock, ParaFormat, RunFormat, RunSpan,
   TableBlock, TableCell, WordBlock,
 } from '@/lib/word';
-import { runsText } from '@/lib/word';
+import { commonRunFormat, runsText } from '@/lib/word';
 
 /** Block cộng thêm cờ "đã sửa trong phiên này" để tô nền cảnh báo. */
 export type Block = WordBlock & { d?: boolean };
@@ -126,6 +128,130 @@ export function RunsView({ runs }: { runs: RunSpan[] }) {
   );
 }
 
+/**
+ * Vị trí ký tự (offset trong văn bản thuần của đoạn) ứng với điểm bấm chuột —
+ * bấm vào giữa câu thì con trỏ nằm đúng chỗ đó như Word. Chỉ đếm chữ trong
+ * `.word-runs` (bỏ qua ký hiệu đầu dòng, nhãn khóa). null = không xác định được.
+ */
+function caretFromPoint(root: HTMLElement, x: number, y: number): number | null {
+  const runs = root.querySelector('.word-runs');
+  if (!runs) return null;
+  let node: Node | null = null;
+  let offset = 0;
+  const doc = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+  };
+  if (doc.caretPositionFromPoint) {
+    const pos = doc.caretPositionFromPoint(x, y);
+    if (pos) { node = pos.offsetNode; offset = pos.offset; }
+  } else if (document.caretRangeFromPoint) {
+    const r = document.caretRangeFromPoint(x, y);
+    if (r) { node = r.startContainer; offset = r.startOffset; }
+  }
+  if (!node || !runs.contains(node)) return null;
+  const walker = document.createTreeWalker(runs, NodeFilter.SHOW_TEXT);
+  let total = 0;
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (t === node) return total + offset;
+    total += t.textContent?.length ?? 0;
+  }
+  return null;
+}
+
+/** Ô gõ của một đoạn — textarea trong suốt, tự cao theo nội dung. */
+function ParaEditor({
+  className, style, initial, caret, onCommit, onCancel, onSelectionChange, onSplit, onNav, onMergePrev,
+}: {
+  className: string;
+  style: React.CSSProperties;
+  initial: string;
+  /** Vị trí đặt con trỏ khi mở (null / −1 = cuối đoạn). */
+  caret: number | null;
+  onCommit: (text: string) => void;
+  onCancel: () => void;
+  onSelectionChange: (range: TextRange | null) => void;
+  onSplit: (text: string, at: number) => void;
+  onNav: (dir: -1 | 1, text: string) => void;
+  onMergePrev: (text: string) => void;
+}) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  // Phím đã tự xử lý (tách / gộp / sang đoạn) → onBlur lúc textarea bị gỡ khỏi
+  // DOM KHÔNG được commit lần nữa: khi đó chỉ số đoạn đã đổi.
+  const done = useRef(false);
+
+  const fit = () => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  };
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    fit();
+    el.focus({ preventScroll: true });
+    const len = el.value.length;
+    const at = caret === null || caret < 0 ? len : Math.min(caret, len);
+    el.setSelectionRange(at, at);
+    // Chỉ chạy lúc mở ô gõ — caret đổi sau đó là của lần mở khác (key khác).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Con trỏ đang ở dòng HIỂN THỊ đầu / cuối? Đo bằng chiều cao phần chữ trước / sau con trỏ. */
+  const onEdgeLine = (el: HTMLTextAreaElement, dir: -1 | 1): boolean => {
+    const { selectionStart: a, value } = el;
+    if (dir < 0 ? a === 0 : a === value.length) return true;
+    const lh = parseFloat(getComputedStyle(el).lineHeight) || parseFloat(getComputedStyle(el).fontSize) * 1.6;
+    return el.scrollHeight < lh * 1.8; // đoạn chỉ một dòng
+  };
+
+  const finish = (fn: () => void) => { done.current = true; fn(); };
+
+  return (
+    <textarea
+      ref={ref}
+      className={className}
+      defaultValue={initial}
+      style={style}
+      rows={1}
+      spellCheck={false}
+      onInput={fit}
+      onBlur={(e) => { if (!done.current) onCommit(e.currentTarget.value); }}
+      onSelect={(e) => {
+        const el = e.currentTarget;
+        onSelectionChange(
+          el.selectionStart === el.selectionEnd ? null : { from: el.selectionStart, to: el.selectionEnd },
+        );
+      }}
+      onKeyDown={(e) => {
+        const el = e.currentTarget;
+        const { selectionStart: a, selectionEnd: b, value } = el;
+        const collapsed = a === b;
+        if (e.key === 'Escape') { finish(onCancel); return; }
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); finish(() => onCommit(value)); return; }
+        // Shift+Enter = xuống dòng trong cùng đoạn (mặc định của textarea), Enter = đoạn mới.
+        if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
+          e.preventDefault();
+          finish(() => onSplit(value.slice(0, a) + value.slice(b), a));
+          return;
+        }
+        if (e.key === 'Backspace' && collapsed && a === 0) {
+          e.preventDefault();
+          finish(() => onMergePrev(value));
+          return;
+        }
+        if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && collapsed && !e.shiftKey) {
+          const dir = e.key === 'ArrowUp' ? -1 : 1;
+          if (onEdgeLine(el, dir)) {
+            e.preventDefault();
+            finish(() => onNav(dir, value));
+          }
+        }
+      }}
+    />
+  );
+}
+
 // ── Bảng ─────────────────────────────────────────────────────────────────────
 
 const VA_CSS = { t: 'top', m: 'middle', b: 'bottom' } as const;
@@ -226,6 +352,8 @@ export interface WordDocViewProps {
   footers: HeaderFooter[];
   sel: number | null;
   editing: number | null;
+  /** Vị trí con trỏ khi mở đoạn đang sửa (null / −1 = cuối đoạn). */
+  caret: number | null;
   cell: CellRef | null;
   editingCell: CellRef | null;
   /** Vị trí các kết quả tìm kiếm đang tô sáng, theo block index. */
@@ -237,9 +365,15 @@ export interface WordDocViewProps {
   /** Phóng to khung soạn thảo, % (100 = nguyên bản). Cũng chỉ là hiển thị. */
   zoom: number;
   onSelect: (i: number | null) => void;
-  onEdit: (i: number) => void;
+  onEdit: (i: number, caret: number | null) => void;
   onCommit: (i: number, text: string) => void;
   onCancel: () => void;
+  /** Enter: tách đoạn `i` tại `at` (`text` là nội dung đã sửa, bỏ phần đang bôi đen). */
+  onSplit: (i: number, text: string, at: number) => void;
+  /** ↑ / ↓ ra khỏi đoạn: lưu text rồi sang đoạn kế. */
+  onNav: (i: number, dir: -1 | 1, text: string) => void;
+  /** Backspace ở đầu đoạn: gộp lên đoạn trên. */
+  onMergePrev: (i: number, text: string) => void;
   /** Người dùng bôi đen trong ô đang sửa → cập nhật vùng áp định dạng. */
   onSelectionChange: (range: TextRange | null) => void;
   onPickCell: (ref: CellRef) => void;
@@ -249,9 +383,9 @@ export interface WordDocViewProps {
 }
 
 const WordDocView = forwardRef<HTMLDivElement, WordDocViewProps>(function WordDocView({
-  blocks, page, headers, footers, sel, editing, cell, editingCell, hits, focusBlock,
+  blocks, page, headers, footers, sel, editing, caret, cell, editingCell, hits, focusBlock,
   docWidth, zoom,
-  onSelect, onEdit, onCommit, onCancel, onSelectionChange,
+  onSelect, onEdit, onCommit, onCancel, onSelectionChange, onSplit, onNav, onMergePrev,
   onPickCell, onEditCell, onCommitCell, onCancelCell,
 }, ref) {
   const defaultHeader = headers.find((h) => h.type === 'default');
@@ -274,8 +408,10 @@ const WordDocView = forwardRef<HTMLDivElement, WordDocViewProps>(function WordDo
           maxWidth: WIDTH_CAP[docWidth] ?? `${page.w}pt`,
           paddingLeft: `${ml}pt`,
           paddingRight: `${mr}pt`,
-          paddingTop: `${Math.min(page.mt, 54)}pt`,
-          paddingBottom: `${Math.min(page.mb, 54)}pt`,
+          paddingTop: `${Math.min(page.mt, 72)}pt`,
+          paddingBottom: `${Math.min(page.mb, 72)}pt`,
+          // Trang giấy luôn cao ít nhất một trang như Word, kể cả khi tài liệu ngắn.
+          minHeight: `${page.h}pt`,
           // `zoom` (không phải transform: scale) để bố cục được tính lại theo
           // tỉ lệ mới — chữ, bảng và cả textarea đang gõ đều to lên mà trang
           // vẫn tự vừa khung, không sinh thanh cuộn ngang như scale.
@@ -340,31 +476,28 @@ const WordDocView = forwardRef<HTMLDivElement, WordDocViewProps>(function WordDo
                 title="Bấm để chọn / bỏ chọn đoạn">{i + 1}</button>
 
               {editing === i ? (
-                <textarea
+                <ParaEditor
+                  key={i}
                   className={`word-edit${styleClass(para.fmt)}`}
-                  autoFocus
-                  defaultValue={text}
-                  style={paraStyle(para.fmt)}
-                  rows={Math.min(16, Math.max(2, text.split('\n').length + 1))}
-                  onBlur={(e) => onCommit(i, e.currentTarget.value)}
-                  onSelect={(e) => {
-                    const el = e.currentTarget;
-                    onSelectionChange(
-                      el.selectionStart === el.selectionEnd
-                        ? null
-                        : { from: el.selectionStart, to: el.selectionEnd },
-                    );
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) onCommit(i, e.currentTarget.value);
-                    else if (e.key === 'Escape') onCancel();
-                  }}
+                  initial={text}
+                  caret={caret}
+                  // Đang gõ vẫn nhìn gần giống bản hiển thị: font/cỡ/màu chung của cả đoạn.
+                  style={{ ...paraStyle(para.fmt), ...editRunStyle(para.runs) }}
+                  onCommit={(t) => onCommit(i, t)}
+                  onCancel={onCancel}
+                  onSelectionChange={onSelectionChange}
+                  onSplit={(t, at) => onSplit(i, t, at)}
+                  onNav={(dir, t) => onNav(i, dir, t)}
+                  onMergePrev={(t) => onMergePrev(i, t)}
                 />
               ) : (
                 <div
                   className={`word-p${styleClass(para.fmt)}${para.locked ? ' locked' : ''}`}
                   style={paraStyle(para.fmt)}
-                  onClick={() => { onSelect(i); if (!para.locked) onEdit(i); }}
+                  onClick={(e) => {
+                    onSelect(i);
+                    if (!para.locked) onEdit(i, caretFromPoint(e.currentTarget, e.clientX, e.clientY));
+                  }}
                   title={para.locked
                     ? `Đoạn chứa ${para.lockReason} — khóa sửa chữ để không phá hỏng nội dung đó (vẫn đổi được căn lề, kiểu đoạn, và vẫn xóa được cả đoạn)`
                     : 'Bấm để sửa'}
@@ -378,7 +511,7 @@ const WordDocView = forwardRef<HTMLDivElement, WordDocViewProps>(function WordDo
                   ))}
                   {para.runs.length === 0
                     ? (para.imgs?.length ? null : <span className="word-p-empty">¶</span>)
-                    : <RunsView runs={para.runs} />}
+                    : <span className="word-runs"><RunsView runs={para.runs} /></span>}
                 </div>
               )}
             </div>
@@ -392,6 +525,14 @@ const WordDocView = forwardRef<HTMLDivElement, WordDocViewProps>(function WordDo
 });
 
 export default WordDocView;
+
+/** Font / cỡ / màu / đậm / nghiêng chung của CẢ đoạn — áp lên ô gõ. */
+function editRunStyle(runs: RunSpan[]): React.CSSProperties {
+  const f = commonRunFormat(runs, 0, Number.MAX_SAFE_INTEGER);
+  if (!f) return {};
+  const { b, i, fc, fs, ff } = f;
+  return runStyle({ b, i, fc, fs, ff });
+}
 
 /** Ô của một bảng, hoặc undefined khi chỉ số không còn hợp lệ. */
 export function cellOf(blocks: Block[], ref: CellRef | null): TableCell | undefined {

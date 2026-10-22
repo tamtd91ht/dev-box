@@ -207,7 +207,6 @@ export const MIN_ROW_PX = 8;
 export const MAX_ROW_PX = rowHeightToPx(409.5);
 
 export interface SheetSaveResult {
-  backupPath: string;
   sizeBytes: number;
   mtimeMs: number;
 }

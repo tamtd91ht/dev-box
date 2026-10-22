@@ -12,8 +12,8 @@
 //      order. Untouched cells keep styles/widths/merges/formulas — sending the
 //      whole grid back instead would flatten every formula to its value.
 //      Known ExcelJS limits: charts/pivots/slicers may not round-trip.
-//   5. Overwrite is atomic-ish: write temp file in the same dir → copy the
-//      original to `<file>.bak` → rename temp over the original.
+//   5. Overwrite is atomic-ish: write temp file in the same dir → rename temp
+//      over the original (no `.bak` backup).
 //   6. Stale check: the client sends the mtime it opened; a mismatch refuses
 //      the save (the file changed underneath — reload first).
 
@@ -40,7 +40,7 @@ import {
   resolveNewOfficeFile,
   writeNewFile,
   assertNotStale,
-  atomicBackupWrite,
+  atomicWrite,
   openWithDefaultApp,
   type OfficeTarget,
 } from './officeFiles';
@@ -801,7 +801,7 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
     outBuf = Buffer.from(await wb.xlsx.writeBuffer());
   }
 
-  const backupPath = await atomicBackupWrite(t.abs, outBuf);
+  await atomicWrite(t.abs, outBuf);
 
   const counts = sheetOps.map((s) => {
     const n = (k: SheetOp['op']) => s.ops.filter((o) => o.op === k).length;
@@ -812,8 +812,8 @@ export async function saveFile(input: SaveSheetInput): Promise<SheetSaveResult> 
   }).join(' ');
   // Audit line → server stdout (same convention as PG_AUDIT / MONGO_AUDIT).
   // eslint-disable-next-line no-console
-  console.log(`SHEET_AUDIT operation=SAVE path=${t.abs} ${counts} backup=${backupPath} ts=${new Date().toISOString()}`);
+  console.log(`SHEET_AUDIT operation=SAVE path=${t.abs} ${counts} ts=${new Date().toISOString()}`);
 
   const st = await fs.stat(t.abs);
-  return { backupPath, sizeBytes: st.size, mtimeMs: st.mtimeMs };
+  return { sizeBytes: st.size, mtimeMs: st.mtimeMs };
 }
