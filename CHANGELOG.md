@@ -36,6 +36,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bộ đọc với Kafka (`lib/hostMetrics.ts`). Tổng quan có thanh chỉ số tô màu theo đúng luật của
   Monitor, mục máy chủ và danh sách phiên đang chạy. Thiếu quyền ở truy vấn nào thì chỉ số đó
   vắng mặt, không làm hỏng cả lần đo.
+- **Monitor Redis: phân tích hit rate chạy được cả giờ cao điểm.** Trước đây trên 2.000 miss/giây
+  là từ chối hẳn. Giờ app **bắt theo lát**: bật cờ key-miss vài chục ms đủ ~1.000 mẫu, tắt ngay,
+  nghỉ sao cho trung bình vẫn ≤ 2.000 sự kiện/giây (tải thêm như lúc thấp điểm), tốc độ đo lại sau
+  mỗi lát. Chỉ không bật khi CPU luồng chính Redis ≥ 90% hoặc RTT cao tới mức lát ngắn nhất đã quá
+  10.000 sự kiện. Kết quả có mục “bắt theo lát” nói rõ số lát, tổng thời gian bật cờ và rằng cột
+  Miss là số mẫu.
 
 ### Fixed
 

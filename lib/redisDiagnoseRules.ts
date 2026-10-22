@@ -102,6 +102,11 @@ export interface RedisMissFacts {
   expired: { total: number; window: number };
   memory: { used: number; max: number; policy: string | null };
   scan: { scanned: number; dbsize: number } | null;
+  /**
+   * Giờ cao điểm (miss vượt trần) — bắt theo lát thay vì liên tục: tốc độ miss đo trước,
+   * số lát, tổng ms cờ được bật. Số miss trong bảng là MẪU, chỉ tỉ lệ giữa các dạng có nghĩa.
+   */
+  sampling?: { missRate: number; bursts: number; onMs: number };
   /** Trả lại cờ notify-keyspace-events thất bại — người dùng phải tự chạy lệnh. */
   restoreError?: string;
 }
@@ -218,7 +223,7 @@ export function analyzeRedisMisses(f: RedisMissFacts, at = Date.now()): RedisMis
       title: why === 'version'
         ? `Redis ${f.version} chưa hỗ trợ sự kiện key-miss — chưa xác định được dạng key nào miss`
         : why === 'load'
-          ? `Không bật bắt key-miss: tốc độ miss quá cao (${f.capture.detail ?? '?'}) — để bảo vệ production`
+          ? `Không bật bắt key-miss: Redis đang quá tải (${f.capture.detail ?? '?'}) — để bảo vệ production`
           : why === 'busy'
           ? 'Đang có một phiên phân tích khác trên kết nối này'
           : why === 'config'
@@ -229,10 +234,10 @@ export function analyzeRedisMisses(f: RedisMissFacts, at = Date.now()): RedisMis
         why === 'config' ? `CONFIG lỗi: ${f.capture.detail ?? '?'} (thường gặp ở Redis managed: ElastiCache, Azure Cache…)` : '',
         why === 'noEvents' ? `Cửa sổ ${f.durationSec}s có ${fmtN(f.window?.misses ?? 0)} miss theo INFO nhưng không nhận được sự kiện nào${f.capture.detail ? ` (${f.capture.detail})` : ''}` : '',
         why === 'busy' ? 'Chờ phiên kia xong (nó sẽ tự trả lại cấu hình) rồi phân tích lại' : '',
-        why === 'load' ? 'Mỗi miss sẽ thành một lần publish trên luồng chính của Redis — ở tốc độ này sẽ làm chậm mọi lệnh khác' : '',
+        why === 'load' ? 'Giờ cao điểm app vẫn bắt được bằng cách bắt theo lát ngắn — chỉ dừng khi luồng chính đã gần kín CPU, hoặc mạng tới Redis chậm tới mức một lát ngắn nhất cũng sinh quá nhiều sự kiện' : '',
       ].filter(Boolean),
       fix: why === 'version' || why === 'load'
-        ? `${why === 'load' ? 'Chạy lại lúc thấp điểm, hoặc ' : 'Nâng Redis lên ≥ 6.0; trong lúc chờ, '}ghi log / đếm key miss ở phía ứng dụng (chỗ GET trả về rỗng) theo dạng key để biết loại nào miss — không tốn gì phía Redis.`
+        ? `${why === 'load' ? 'Chạy lại khi CPU Redis dịu xuống (hoặc từ máy gần Redis hơn nếu RTT cao), hoặc ' :'Nâng Redis lên ≥ 6.0; trong lúc chờ, '}ghi log / đếm key miss ở phía ứng dụng (chỗ GET trả về rỗng) theo dạng key để biết loại nào miss — không tốn gì phía Redis.`
         : why === 'config'
           ? 'Bật notify-keyspace-events có chứa "Em" qua cấu hình của nhà cung cấp (parameter group / redis.conf). Khi đã bật sẵn, app chỉ cần nghe — không phải CONFIG SET.'
           : why === 'busy' ? undefined : 'Kiểm tra user có quyền PSUBSCRIBE (ACL) và notify-keyspace-events chứa "Em".',
@@ -240,7 +245,7 @@ export function analyzeRedisMisses(f: RedisMissFacts, at = Date.now()): RedisMis
         ? "CONFIG SET notify-keyspace-events Em   # hoặc khai trong redis.conf / parameter group\nPSUBSCRIBE __keyevent@*__:keymiss     # kiểm tra tay: mỗi miss in ra tên key"
         : undefined,
       step: why === 'busy' ? undefined : { phase: 'observe', text: why === 'version' ? 'Nâng Redis ≥ 6.0 (hoặc log key miss phía ứng dụng) để biết dạng key nào miss'
-        : why === 'load' ? 'Đếm key miss theo dạng ở phía ứng dụng (hoặc phân tích lại lúc thấp điểm)'
+        : why === 'load' ? 'Đếm key miss theo dạng ở phía ứng dụng (hoặc phân tích lại khi CPU Redis dịu xuống)'
           : 'Bật notify-keyspace-events "Em" phía server rồi phân tích lại' },
     });
   }
@@ -302,7 +307,7 @@ export function analyzeRedisMisses(f: RedisMissFacts, at = Date.now()): RedisMis
         title: kind === 'repeat'
           ? `${where}: cùng key bị miss lặp lại (tới ${fmtN(p.topKeyMisses)} lần) — sau khi miss không ai ghi lại`
           : `${where}: được đọc nhưng không bao giờ được ghi`,
-        evidence: [...base, `Key miss nhiều nhất: ${p.topKey} (${fmtN(p.topKeyMisses)} lần trong ${f.durationSec}s)`, exist, refill].filter(Boolean),
+        evidence: [...base, `Key miss nhiều nhất: ${p.topKey} (${fmtN(p.topKeyMisses)} lần trong ${f.sampling ? 'các lát bắt' : `${f.durationSec}s`})`, exist, refill].filter(Boolean),
         fix: 'Ba khả năng, theo thứ tự hay gặp: (1) chỗ GHI dùng tên key / prefix / db khác chỗ ĐỌC — so format key ở hai phía; (2) cache-aside bỏ qua SET khi kết quả rỗng hoặc lỗi → dữ liệu "không có" bị tra lại mãi: cache cả kết quả rỗng (negative cache) với TTL ngắn; (3) key bị xoá chủ động (invalidate) quá tay.',
         sql: `${verify}\n# negative cache — ví dụ khi DB không có bản ghi:\nSET ${cliQuote(p.topKey)} "__none__" EX 60`,
         step: { phase: 'now', text: kind === 'repeat'
@@ -341,7 +346,19 @@ export function analyzeRedisMisses(f: RedisMissFacts, at = Date.now()): RedisMis
     }
   }
 
-  if (f.capture.ok && f.captured > 0 && f.window && f.window.misses > f.captured * 1.5) {
+  if (f.capture.ok && f.captured > 0 && f.sampling) {
+    const s = f.sampling;
+    out.push({
+      id: 'sampled',
+      level: 'info',
+      title: `Giờ cao điểm (~${fmtN(s.missRate)} miss/s) — đã bắt theo lát để không thêm tải`,
+      evidence: [
+        `${fmtN(s.bursts)} lát ngắn, cờ key-miss chỉ bật tổng ${fmtN(s.onMs)}ms trong ${f.durationSec}s (≈${Math.max(1, Math.round((s.onMs / Math.max(1, f.durationSec * 1000)) * 100))}% thời gian)`,
+        `Bắt được ${fmtN(f.captured)} mẫu${f.window ? ` trên ${fmtN(f.window.misses)} miss theo INFO` : ''} — cột "Miss" là số mẫu; tỉ lệ giữa các dạng vẫn dùng được`,
+        'Số lần lặp của từng key chỉ tính trong các lát → "miss lặp lại" có thể bị đánh giá thấp',
+      ],
+    });
+  } else if (f.capture.ok && f.captured > 0 && f.window && f.window.misses > f.captured * 1.5) {
     out.push({
       id: 'partial',
       level: 'info',

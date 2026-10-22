@@ -24,8 +24,11 @@ const MECHANISM = (
     </p>
     <ol className="pgd-info-steps">
       <li>
-        <b>Đo tốc độ miss trước (1 giây):</b> đọc <code>INFO</code> hai lần. Trên 2.000 miss/giây thì <b>dừng, không bật gì</b> —
-        vì bước 2 làm Redis publish thêm một message cho mỗi lần miss trên luồng chính.
+        <b>Đo trước (1 giây):</b> đọc <code>INFO</code> hai lần để có tốc độ miss và CPU luồng chính, <code>PING</code> đo độ trễ mạng.
+        Bước 2 làm Redis publish thêm một message cho mỗi lần miss trên luồng chính, nên app giữ trung bình ≤ 2.000 sự kiện/giây:
+        dưới mức đó bật liên tục; <b>giờ cao điểm thì bắt theo lát</b> — bật cờ vài chục ms đủ ~1.000 mẫu, tắt ngay, nghỉ rồi
+        lặp lại (tốc độ đo lại sau mỗi lát). Chỉ <b>không bật gì</b> khi CPU luồng chính ≥ 90%, hoặc mạng chậm tới mức một lát
+        ngắn nhất đã quá 10.000 sự kiện.
       </li>
       <li>
         <b>Bật tạm sự kiện key-miss:</b> trên từng node master, đọc giá trị cũ của <code>notify-keyspace-events</code> rồi thêm cờ{' '}
@@ -101,8 +104,9 @@ export default function RedisMissDiagnosis({ connectionId }: { connectionId: str
             <span className="mon-d-faint">Chi tiết từng bước: nút ⓘ Cơ chế.</span>
           </p>
           <p className="mon-d-faint">
-            Chỉ đọc TÊN key bị miss, không đọc giá trị. Bảo vệ production: đo tốc độ miss trước — trên 2.000 miss/giây
-            thì KHÔNG bật; đủ 20.000 mẫu là dừng sớm và trả lại cấu hình ngay. Sau đó quét SCAN tối đa 100.000 key
+            Chỉ đọc TÊN key bị miss, không đọc giá trị. Bảo vệ production: đo tốc độ miss + CPU trước — trên 2.000 miss/giây
+            (giờ cao điểm) thì bắt theo lát ngắn để tải thêm trung bình không vượt mức đó; CPU luồng chính ≥ 90% thì KHÔNG bật;
+            đủ 20.000 mẫu là dừng sớm và trả lại cấu hình ngay. Sau đó quét SCAN tối đa 100.000 key
             (lượt nhỏ, nghỉ giữa các lượt, không dùng KEYS) để đếm key cùng dạng và lấy mẫu TTL. Cần Redis ≥ 6.0.
           </p>
           <div className="rmd-actions">

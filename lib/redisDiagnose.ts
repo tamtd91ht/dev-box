@@ -15,8 +15,14 @@
 // Luật biến số liệu thành kết luận nằm ở lib/redisDiagnoseRules (thuần, kiểm được).
 //
 // AN TOÀN CHO PRODUCTION — Redis chạy lệnh trên MỘT luồng chính, nên:
-//   • Đo tốc độ miss 1s TRƯỚC khi bật sự kiện: mỗi miss sẽ thành một lần publish
-//     trên luồng chính; vượt MAX_MISS_RATE thì không bật (báo rõ, đề xuất cách khác).
+//   • Đo tốc độ miss + CPU luồng chính 1s TRƯỚC khi bật sự kiện: mỗi miss sẽ thành
+//     một lần publish trên luồng chính.
+//   • Dưới MAX_MISS_RATE: bật liên tục cả cửa sổ. Trên (giờ cao điểm): BẮT THEO LÁT —
+//     bật cờ một lát ngắn đủ ~BURST_EVENTS mẫu rồi tắt ngay, nghỉ sao cho trung bình
+//     không quá MAX_MISS_RATE sự kiện/giây. Tải thêm trung bình vẫn như lúc thấp
+//     điểm; mỗi lát chỉ vài chục ms, mẫu rải đều cả cửa sổ.
+//   • Chỉ từ chối khi luồng chính đã gần bão hoà (CPU ≥ MAX_CPU), hoặc mạng chậm tới
+//     mức lát ngắn nhất (≈ 1 RTT) đã vượt MAX_RTT_EVENTS sự kiện.
 //   • Bắt đủ MAX_EVENTS sự kiện là dừng sớm, trả lại cấu hình ngay — đủ mẫu để
 //     thấy dạng key, không kéo dài tải thêm.
 //   • SCAN có nghỉ SCAN_PAUSE_MS giữa các lượt (mỗi lượt COUNT nhỏ, không bao
@@ -41,10 +47,19 @@ const SCAN_BUDGET = 100_000;
 const SCAN_COUNT = 500;
 const SCAN_PAUSE_MS = 5;
 /**
- * Trên ngần này miss/giây thì KHÔNG bật sự kiện keymiss (mỗi miss = một publish trên
- * luồng chính). 2.000/s ≈ 1–2% CPU của Redis — ngưỡng để phân tích vẫn là "lệnh thường".
+ * Trần sự kiện keymiss TRUNG BÌNH mỗi giây (mỗi miss = một publish trên luồng chính).
+ * 2.000/s ≈ 1–2% CPU của Redis — ngưỡng để phân tích vẫn là "lệnh thường". Dưới mức
+ * này bật liên tục; trên mức này bắt theo lát để trung bình không vượt.
  */
 const MAX_MISS_RATE = 2_000;
+/** Số mẫu nhắm tới mỗi lát (chế độ bắt theo lát). */
+const BURST_EVENTS = 1_000;
+const MIN_BURST_MS = 10;
+const MAX_BURST_MS = 1_000;
+/** Lát ngắn nhất ≈ 1 RTT; tốc độ miss × RTT vượt ngần này sự kiện thì không bật. */
+const MAX_RTT_EVENTS = 10_000;
+/** CPU luồng chính (tỉ lệ 1 lõi) từ mức này trở lên = gần bão hoà, không thêm tải. */
+const MAX_CPU = 0.9;
 /** Bắt đủ ngần này sự kiện thì dừng sớm. */
 const MAX_EVENTS = 20_000;
 const CHANNEL = '__keyevent@*__:keymiss';
@@ -52,7 +67,12 @@ const CHANNEL = '__keyevent@*__:keymiss';
 /** Một phiên một kết nối: hai phiên chồng nhau sẽ "trả lại" nhầm cờ của nhau. */
 const running = new Set<string>();
 
-interface Totals { hits: number; misses: number; evicted: number; expired: number; used: number; max: number; policy: string | null; version: string }
+interface Totals {
+  hits: number; misses: number; evicted: number; expired: number; used: number; max: number; policy: string | null; version: string;
+  /** Giây CPU đã dùng của từng node — luồng chính nếu Redis ≥ 6.2 có, không thì cả tiến trình. */
+  cpu: number[];
+  at: number;
+}
 
 async function masters(conn: RedisConnection): Promise<Redis[]> {
   const base = getClient(conn, 0);
@@ -76,7 +96,31 @@ async function totals(nodes: Redis[]): Promise<Totals> {
     max: sum('maxmemory'),
     policy: infos[0]?.maxmemory_policy ?? null,
     version: infos[0]?.redis_version ?? '?',
+    cpu: infos.map((i) => i.used_cpu_user_main_thread !== undefined
+      ? (Number(i.used_cpu_user_main_thread) || 0) + (Number(i.used_cpu_sys_main_thread) || 0)
+      : (Number(i.used_cpu_user) || 0) + (Number(i.used_cpu_sys) || 0)),
+    at: Date.now(),
   };
+}
+
+/** CPU cao nhất giữa các node trong khoảng a→b (1 = một lõi chạy kín). */
+const cpuBusy = (a: Totals, b: Totals): number => {
+  const sec = Math.max(0.001, (b.at - a.at) / 1000);
+  return Math.max(0, ...b.cpu.map((c, i) => (c - (a.cpu[i] ?? c)) / sec));
+};
+
+/** RTT lớn nhất tới các node (ms, trung vị 3 lần PING) — lát bắt ngắn nhất không thể dưới ngần này. */
+async function rttMs(nodes: Redis[]): Promise<number> {
+  const one = async (n: Redis) => {
+    const t: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const s = performance.now();
+      await n.ping();
+      t.push(performance.now() - s);
+    }
+    return t.sort((x, y) => x - y)[1];
+  };
+  return Math.max(...(await Promise.all(nodes.map(one))));
 }
 
 /** Cờ cũ + E (keyevent) + m (key-miss), không trùng. */
@@ -112,6 +156,9 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
   await sleep(1000);
   const before = await totals(nodes);
   const missRate = Math.max(0, before.misses - pre.misses);
+  const cpu = cpuBusy(pre, before);
+  const rtt = await rttMs(nodes);
+  const sampled = missRate > MAX_MISS_RATE;
   const t0 = Date.now();
 
   // ── Bắt sự kiện keymiss ──
@@ -121,10 +168,14 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
   let distinctCapped = false;
   let stopEarly: () => void = () => {};
   const enough = new Promise<void>((r) => { stopEarly = r; });
+  // Chế độ theo lát: báo khi lát hiện tại đủ mẫu để tắt cờ ngay.
+  let burstTarget = Infinity;
+  let burstFull: () => void = () => {};
   const record = (channel: string, key: string) => {
     if (captured >= MAX_EVENTS) return;
     captured++;
     if (captured >= MAX_EVENTS) stopEarly();
+    if (captured >= burstTarget) burstFull();
     const db = Number(/@(\d+)__/.exec(channel)?.[1] ?? 0);
     let pg = patternOf.get(key);
     if (!pg) {
@@ -144,33 +195,25 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
   let capture: RedisMissFacts['capture'] = { ok: true };
   let originalFlags: string | null = null;
   let restoreError: string | undefined;
+  let sampling: RedisMissFacts['sampling'];
+  const fmt = (n: number) => Math.round(n).toLocaleString('vi-VN');
   if (major < 6) {
     capture = { ok: false, reason: 'version' };
     await sleep(durationSec * 1000);
-  } else if (missRate > MAX_MISS_RATE) {
-    capture = { ok: false, reason: 'load', detail: `${missRate.toLocaleString('vi-VN')} miss/giây` };
+  } else if (cpu >= MAX_CPU) {
+    capture = { ok: false, reason: 'load', detail: `CPU luồng chính ${Math.round(cpu * 100)}% — gần bão hoà` };
+    await sleep(Math.min(durationSec, 5) * 1000);
+  } else if (sampled && (missRate * rtt) / 1000 > MAX_RTT_EVENTS) {
+    capture = { ok: false, reason: 'load', detail: `${fmt(missRate)} miss/giây × RTT ${Math.round(rtt)}ms — lát ngắn nhất đã quá ${fmt(MAX_RTT_EVENTS)} sự kiện` };
     await sleep(Math.min(durationSec, 5) * 1000);
   } else {
-    const changed: { node: Redis; orig: string }[] = [];
+    const changed: { node: Redis; orig: string; next: string }[] = [];
     const subs: Redis[] = [];
     let configErr: string | null = null;
     let subErr: string | null = null;
+    const deadline = t0 + durationSec * 1000;
     try {
-      for (const n of nodes) {
-        try {
-          const r = (await n.config('GET', 'notify-keyspace-events')) as unknown as string[];
-          const orig = String(r?.[1] ?? '');
-          originalFlags ??= orig;
-          const next = withMissFlags(orig);
-          if (next !== orig) {
-            await n.config('SET', 'notify-keyspace-events', next);
-            changed.push({ node: n, orig });
-          }
-        } catch (e) {
-          // CONFIG bị khoá (Redis managed) — vẫn nghe thử: có thể cờ đã bật sẵn phía server.
-          configErr = (e as Error).message;
-        }
-      }
+      // Nghe TRƯỚC khi bật cờ — không lỡ sự kiện của lát đầu.
       for (const n of nodes) {
         const sub = n.duplicate();
         sub.on('error', () => {});
@@ -179,8 +222,62 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
         // ACL có thể chặn PSUBSCRIBE — vẫn chạy hết cửa sổ để có số liệu INFO, báo lý do sau.
         await sub.psubscribe(CHANNEL).catch((e: Error) => { subErr = e.message; });
       }
-      // Dừng khi hết thời gian HOẶC đã đủ mẫu — cái nào tới trước.
-      await Promise.race([sleep(Math.max(0, t0 + durationSec * 1000 - Date.now())), enough]);
+      for (const n of nodes) {
+        try {
+          const r = (await n.config('GET', 'notify-keyspace-events')) as unknown as string[];
+          const orig = String(r?.[1] ?? '');
+          originalFlags ??= orig;
+          const next = withMissFlags(orig);
+          if (next !== orig) changed.push({ node: n, orig, next });
+        } catch (e) {
+          // CONFIG bị khoá (Redis managed) — vẫn nghe thử: có thể cờ đã bật sẵn phía server.
+          configErr = (e as Error).message;
+        }
+      }
+      // Node không cho CONFIG SET (managed cho GET mà chặn SET) thì bỏ khỏi danh sách — vẫn nghe
+      // các node còn lại; lỗi lúc TẮT để finally trả lại lần nữa và báo nếu vẫn hỏng.
+      const setFlags = async (on: boolean) => {
+        const res = await Promise.allSettled(changed.map((c) => c.node.config('SET', 'notify-keyspace-events', on ? c.next : c.orig)));
+        if (!on) return;
+        for (let i = res.length - 1; i >= 0; i--) {
+          const r = res[i];
+          if (r.status === 'rejected') { configErr = (r.reason as Error).message; changed.splice(i, 1); }
+        }
+      };
+
+      if (!sampled || !changed.length) {
+        // Thấp điểm (hoặc cờ đã bật sẵn phía server — app không thêm tải ở phía bật cờ):
+        // bật cả cửa sổ, dừng khi hết thời gian HOẶC đã đủ mẫu — cái nào tới trước.
+        await setFlags(true);
+        await Promise.race([sleep(Math.max(0, deadline - Date.now())), enough]);
+      } else {
+        // Cao điểm: bắt theo lát. Mỗi lát bật cờ tới khi đủ BURST_EVENTS mẫu (hoặc hết thời
+        // lượng dự tính), tắt ngay, rồi nghỉ để trung bình ≤ MAX_MISS_RATE sự kiện/giây.
+        // Tốc độ miss đo lại sau mỗi lát — đột biến giữa chừng thì lát sau tự ngắn lại.
+        let rate = missRate;
+        let bursts = 0;
+        let onMs = 0;
+        while (Date.now() < deadline && captured < MAX_EVENTS) {
+          const start = captured;
+          const ms = Math.min(MAX_BURST_MS, Math.max(MIN_BURST_MS, (BURST_EVENTS / Math.max(1, rate)) * 1000));
+          const full = new Promise<void>((r) => { burstFull = r; });
+          burstTarget = start + BURST_EVENTS;
+          const s = Date.now();
+          await setFlags(true);
+          await Promise.race([sleep(ms), full, enough]);
+          await setFlags(false);
+          burstTarget = Infinity;
+          const took = Math.max(1, Date.now() - s);
+          bursts++;
+          onMs += took;
+          // Sự kiện đã nằm trong bộ đệm vẫn tới sau khi tắt — chờ một nhịp để đếm đủ cho lát này.
+          await sleep(Math.min(50, rtt * 2 + 5));
+          const got = captured - start;
+          if (got > 0) rate = (got / took) * 1000;
+          await sleep(Math.max(100, Math.min(deadline - Date.now(), (got / MAX_MISS_RATE) * 1000 - took)));
+        }
+        sampling = { missRate, bursts, onMs };
+      }
     } finally {
       for (const s of subs) s.disconnect();
       for (const { node, orig } of changed) {
@@ -301,6 +398,7 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
     expired: { total: after.expired, window: Math.max(0, after.expired - before.expired) },
     memory: { used: after.used, max: after.max, policy: after.policy },
     scan: scanOk ? { scanned, dbsize } : null,
+    sampling,
     restoreError,
   };
   return analyzeRedisMisses(facts);

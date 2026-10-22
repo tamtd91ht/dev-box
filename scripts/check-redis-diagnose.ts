@@ -87,7 +87,19 @@ check(find(facts({ capture: { ok: false, reason: 'config', detail: 'unknown comm
 {
   const d = analyzeRedisMisses(facts({ capture: { ok: false, reason: 'load', detail: '48.000 miss/giây' }, captured: 0 }));
   const f = d.findings.find((x) => x.id === 'no-capture')!;
-  check(f.title.includes('bảo vệ production') && f.fix!.includes('phía ứng dụng'), 'miss quá cao → không bật sự kiện, đề xuất đếm phía ứng dụng');
+  check(f.title.includes('bảo vệ production') && f.fix!.includes('phía ứng dụng'), 'Redis quá tải → không bật sự kiện, đề xuất đếm phía ứng dụng');
+}
+
+// ── Giờ cao điểm: bắt theo lát ──
+{
+  const d = analyzeRedisMisses(facts({
+    window: { hits: 400_000, misses: 300_000, sec: 10 }, captured: 18_000,
+    sampling: { missRate: 30_000, bursts: 18, onMs: 600 }, patterns: [pattern({ misses: 15_000 })],
+  }));
+  const s = d.findings.find((x) => x.id === 'sampled');
+  check(!!s && s.title.includes('30.000') && s.evidence.some((e) => e.includes('600ms')), 'cao điểm → nêu rõ bắt theo lát, tổng thời gian bật cờ');
+  check(!d.findings.some((x) => x.id === 'partial'), 'bắt theo lát → không báo trùng "chỉ bắt được một phần"');
+  check(d.patterns[0]?.sharePct === 83.3, 'tỉ lệ dạng key tính trên số mẫu bắt được');
 }
 
 // ── Hiện tại hay chuyện cũ ──
