@@ -3,7 +3,7 @@
 // Chạy: npm run check:es-vars — fetch được giả lập, không gọi server hay cluster nào.
 
 import assert from 'node:assert/strict';
-import { findRefs, maskRefs, resolveVars, type QueryVar } from '../lib/esQueryVars';
+import { findRefs, maskRefs, prettyResolved, resolveVars, type QueryVar } from '../lib/esQueryVars';
 
 let n = 0;
 const ok = (name: string, fn: () => void | Promise<void>) => Promise.resolve(fn()).then(() => { n++; console.log('  ✓', name); });
@@ -86,6 +86,15 @@ async function main() {
     await assert.rejects(resolveVars('"{{q1.missing}}"', vars), /không có giá trị nào/);
     const small = [v({ name: 'q1', connectionId: 'esTenants', kind: 'es', field: 'tenantId', max: 1 })];
     await assert.rejects(resolveVars('{{q1}}', small), /hơn 1 giá trị/);
+  });
+
+  await ok('prettyResolved: mảng giá trị một dòng, object vẫn thụt lề, không đụng vào chuỗi', () => {
+    const src = JSON.stringify({ query: { bool: { filter: [{ terms: { t: ['a]b', 'c  d', 1, true] } }] } }, size: 5 });
+    const out = prettyResolved(src);
+    assert.deepEqual(JSON.parse(out), JSON.parse(src));
+    assert.match(out, /"t": \["a]b", "c {2}d", 1, true\]/);
+    assert.match(out, /\n {2}"size": 5/);
+    assert.equal(prettyResolved('không phải json'), 'không phải json');
   });
 
   await ok('không có placeholder → giữ nguyên, không gọi gì', async () => {

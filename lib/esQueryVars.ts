@@ -396,6 +396,47 @@ export async function resolveVars(
   return { text: substitute(text, quote, (r) => values.get(r.name)?.get(pathOf(r)) ?? []), stats };
 }
 
+/**
+ * Pretty-print body đã thay biến để XEM CẤU TRÚC: thụt lề như thường nhưng mảng giá trị đơn (mảng biến thay vào,
+ * có thể hàng nghìn phần tử) gom lên một dòng — không thì `terms` 5.000 giá trị đẩy phần còn lại xuống 5.000 dòng.
+ * Chỉ đụng khoảng trắng có xuống dòng — JSON không có xuống dòng thật trong chuỗi nên không bao giờ sửa vào giá trị.
+ */
+export function prettyResolved(text: string): string {
+  let pretty: string;
+  try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
+  let out = '';
+  let i = 0;
+  while (i < pretty.length) {
+    const c = pretty[i];
+    if (c === '"') { const e = stringEnd(pretty, i); out += pretty.slice(i, e); i = e; continue; }
+    if (c === '[') {
+      // Mảng chỉ gồm giá trị đơn (không có [ hay { ngoài chuỗi) → gom một dòng.
+      let j = i + 1;
+      let flat = true;
+      while (j < pretty.length && pretty[j] !== ']') {
+        if (pretty[j] === '"') { j = stringEnd(pretty, j); continue; }
+        if (pretty[j] === '[' || pretty[j] === '{') { flat = false; break; }
+        j++;
+      }
+      if (flat && j < pretty.length) {
+        out += `[${pretty.slice(i + 1, j).trim().replace(/\s*\n\s*/g, ' ')}]`;
+        i = j + 1;
+        continue;
+      }
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/** Vị trí ngay sau dấu nháy đóng của chuỗi JSON bắt đầu tại `at`. */
+function stringEnd(s: string, at: number): number {
+  let k = at + 1;
+  while (k < s.length && s[k] !== '"') k += s[k] === '\\' ? 2 : 1;
+  return k + 1;
+}
+
 /** "q1.tenantId: 37 giá trị (quét 120 dòng, 85ms)" — dòng tóm tắt cho thanh trạng thái. */
 export function describeStats(stats: VarStat[]): string {
   return stats

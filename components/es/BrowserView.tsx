@@ -34,7 +34,7 @@ import ExportModal from './ExportModal';
 import QueryEditor from './QueryEditor';
 import AggsResult from './AggsResult';
 import QueryVarsModal from './QueryVarsModal';
-import { loadQueryVars, saveQueryVars, resolveVars, hasRefs, describeStats, type QueryVar, type VarStat } from '@/lib/esQueryVars';
+import { loadQueryVars, saveQueryVars, resolveVars, hasRefs, describeStats, prettyResolved, type QueryVar, type VarStat } from '@/lib/esQueryVars';
 import { usePresetSync } from '@/lib/presetSync';
 import JsonViewer from './JsonViewer';
 import { useSplit } from '@/lib/useSplit';
@@ -52,9 +52,6 @@ export interface BrowserViewProps {
 }
 
 type IdxTab = 'docs' | 'mapping' | 'info';
-
-/** Body đã thay biến có thể rất dài (hàng nghìn giá trị) — chỉ hiện phần đầu. */
-const RESOLVED_PREVIEW_MAX = 20_000;
 
 const healthColor = (h: string) =>
   h === 'green' ? 'var(--ok)' : h === 'red' ? 'var(--err)' : 'var(--warn, #d5a021)';
@@ -309,6 +306,7 @@ function BrowserSession({
   const [resolved, setResolved] = useState<{ from: string; text: string; stats: VarStat[] } | null>(null);
   const [varNote, setVarNote] = useState<string | null>(null);
   const [showResolved, setShowResolved] = useState(false);
+  const resolvedPretty = useMemo(() => (showResolved && resolved ? prettyResolved(resolved.text) : ''), [showResolved, resolved]);
   const varNames = useMemo(
     () => vars.map((v) => ({ name: v.name, detail: v.field ? `${v.name}.${v.field}` : v.object || v.kind })),
     [vars],
@@ -333,6 +331,16 @@ function BrowserSession({
       setVarNote(null);
     }
   }, [body, vars, resolved]);
+
+  /** Nút 👁: chạy biến (dùng lại kết quả nếu body chưa đổi, `fresh` = chạy lại) rồi mở hộp xem — CHƯA search. */
+  const previewVars = useCallback(async (fresh = false) => {
+    setBusy(true); setError(null);
+    try {
+      await bodyToSend(!fresh);
+      setShowResolved(true);
+    } catch (e) { setError((e as Error).message); setShowResolved(false); }
+    finally { setBusy(false); }
+  }, [bodyToSend]);
 
   /**
    * Điền body từ một phiên vừa khôi phục. Theo `seq` chứ không theo nội dung:
@@ -515,6 +523,12 @@ function BrowserSession({
                       {busy ? <span className="spinner" aria-hidden /> : '▶'} Search
                     </button>
                     <button className="ghost sm" disabled={busy} onClick={() => void runCount()}>Count</button>
+                    {hasRefs(body) && (
+                      <button className="ghost sm" disabled={busy} onClick={() => void previewVars()}
+                        title="Chạy các biến rồi xem body _search sẽ gửi đi sau khi thay giá trị — chưa search">
+                        👁 Xem body thay biến
+                      </button>
+                    )}
                     {countInfo && <span className="badge">{countInfo}</span>}
                     {varNote && <span className="badge"><span className="spinner" aria-hidden /> {varNote}</span>}
                     <span className="es-hint" style={{ marginLeft: 'auto' }}>size ≤ 200 · size 0 = chỉ lấy aggs · script bị chặn</span>
@@ -522,16 +536,35 @@ function BrowserSession({
                   {resolved && resolved.from === body && (
                     <div className="xhint" style={{ padding: '2px 4px' }}>
                       𝑥 {describeStats(resolved.stats)}{' '}
-                      <button className="chip-btn" onClick={() => setShowResolved((x) => !x)}>
-                        {showResolved ? 'Ẩn' : 'Xem'} body đã thay biến
-                      </button>
-                      {showResolved && (
-                        <pre className="code" style={{ maxHeight: 240, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                          {resolved.text.length > RESOLVED_PREVIEW_MAX
-                            ? `${resolved.text.slice(0, RESOLVED_PREVIEW_MAX)}\n… (còn ${(resolved.text.length - RESOLVED_PREVIEW_MAX).toLocaleString('en-US')} ký tự)`
-                            : resolved.text}
-                        </pre>
-                      )}
+                      <button className="chip-btn" onClick={() => setShowResolved(true)}>👁 Xem body đã thay biến</button>
+                    </div>
+                  )}
+                  {showResolved && resolved && resolved.from === body && (
+                    <div className="modal-backdrop" onClick={() => setShowResolved(false)}>
+                      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(900px, 96vw)', maxHeight: '90vh', gap: 10 }}>
+                        <div className="status-line">
+                          <h3 style={{ margin: 0, flex: 1 }}>👁 Body _search sau khi thay biến — {selected}</h3>
+                          <button className="ghost sm" onClick={() => setShowResolved(false)}>✕</button>
+                        </div>
+                        <ul className="xhint" style={{ margin: 0, paddingLeft: 18 }}>
+                          {resolved.stats.map((s) => (
+                            <li key={`${s.name}.${s.path}`}>
+                              <code>{`{{${s.name}.${s.path}}}`}</code> → <b>{s.count.toLocaleString('en-US')}</b> giá trị
+                              {' '}(quét {s.scanned.toLocaleString('en-US')} dòng, {s.tookMs}ms)
+                            </li>
+                          ))}
+                        </ul>
+                        <JsonViewer value={resolvedPretty} path={`es-resolved:/${paneKey}.json`} maxHeight={Math.round(window.innerHeight * 0.6)} />
+                        <div className="status-line" style={{ gap: 8 }}>
+                          <span className="xhint">Mảng giá trị gom một dòng cho dễ nhìn cấu trúc · Ctrl+F để tìm</span>
+                          <span style={{ marginLeft: 'auto' }} />
+                          <button className="ghost sm" disabled={busy} title="Chạy lại các biến để lấy giá trị mới nhất"
+                            onClick={() => void previewVars(true)}>↻ Chạy lại biến</button>
+                          <button className="ghost sm" title="Copy body đã thay (JSON hợp lệ — dán thẳng vào Kibana / Console được)"
+                            onClick={() => void navigator.clipboard?.writeText(resolvedPretty)}>⧉ Copy</button>
+                          <button className="sm" disabled={busy} onClick={() => { setShowResolved(false); void runSearch(); }}>▶ Search</button>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
