@@ -5,7 +5,8 @@
 
 import type { RedisMissDiagnosis } from '@/lib/redisDiagnoseRules';
 import type { RedisFragDiagnosis } from '@/lib/redisFragRules';
-export type { RedisMissDiagnosis, RedisFragDiagnosis };
+import type { RedisMemDiagnosis } from '@/lib/redisMemRules';
+export type { RedisMissDiagnosis, RedisFragDiagnosis, RedisMemDiagnosis };
 
 import { apiFetch } from './apiFetch';
 
@@ -164,6 +165,16 @@ export function redisDiagnoseMisses(connectionId: string, seconds: number): Prom
  */
 export function redisDiagnoseFrag(connectionId: string): Promise<RedisFragDiagnosis> {
   return redisAction<RedisFragDiagnosis>('diagnoseFrag', { connectionId });
+}
+
+/**
+ * RAM đang nằm ở đâu, khi đầy thì sao, tăng nhanh cỡ nào (từ `history` của Monitor).
+ * `sample` = thêm lấy mẫu key (SCAN + MEMORY USAGE có giới hạn) để biết dạng key nào chiếm RAM.
+ */
+export function redisDiagnoseMem(
+  connectionId: string, opts: { sample?: boolean; history?: { at: number; mb: number }[] } = {},
+): Promise<RedisMemDiagnosis> {
+  return redisAction<RedisMemDiagnosis>('diagnoseMem', { connectionId, ...opts });
 }
 
 /** Test a not-yet-saved connection straight from the form (single or cluster). */

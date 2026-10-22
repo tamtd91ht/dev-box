@@ -50,6 +50,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   chủ và maxmemory. Chỉ đọc: `INFO` từng section + `CONFIG GET` đúng tên, mỗi node hạn 5 giây (node
   treo thì bỏ qua và báo), không SCAN / MEMORY USAGE. Lệnh đề xuất chạy trên luồng chính đều kèm
   trần CPU thấp hoặc lưu ý thấp điểm. Luật kiểm bằng `npm run check:redis-frag`.
+- **Monitor Redis: nút “Phân tích” trên cảnh báo RAM đã dùng.** Trả lời bốn câu: RAM nằm ở đâu
+  (`MEMORY STATS`: dữ liệu / bộ đệm client — kèm client nào khi ≤ 1.000 client / bộ đệm replica /
+  backlog / cache Lua / bảng băm key), đầy thì sao (noeviction, volatile-* mà ít key có TTL, số
+  lệnh đã bị từ chối vì OOM, không đặt maxmemory), đang diễn ra gì (evict / hết hạn mỗi giây, key
+  hết hạn chưa dọn, fork khi lưu đĩa), tăng nhanh cỡ nào (hồi quy trên lịch sử RAM của Monitor →
+  còn bao lâu thì đầy). Nút **🧪 Lấy mẫu key** (bấm mới chạy): SCAN tối đa 50.000 key + MEMORY
+  USAGE trên tối đa 2.000 key theo lô nhỏ có nghỉ → dạng key nào chiếm bao nhiêu % dữ liệu, % không
+  TTL, key lớn trong mẫu; bỏ qua khi CPU luồng chính ≥ 80%, tự dừng nếu một lô chậm bất thường,
+  trần 20 giây. Luật kiểm bằng `npm run check:redis-mem`.
 
 ### Fixed
 

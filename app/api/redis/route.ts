@@ -13,6 +13,8 @@
 //              bật TẠM notify-keyspace-events "Em" trong `seconds` giây rồi trả lại (lib/redisDiagnose)
 //     'diagnoseFrag'   { connectionId }            → { ok, result: RedisFragDiagnosis }
 //              chỉ đọc INFO + CONFIG GET, mỗi node có timeout (lib/redisFragDiagnose)
+//     'diagnoseMem'    { connectionId, sample?, history? } → { ok, result: RedisMemDiagnosis }
+//              chỉ đọc; sample=true thêm SCAN + MEMORY USAGE có giới hạn (lib/redisMemDiagnose)
 //
 // `db` is the logical DB index (0–15) chosen at browse time; it defaults to 0 and is
 // forced to 0 for cluster connections (Redis Cluster only has DB 0). 'test' probes a
@@ -28,6 +30,7 @@ import { REDIS_ENABLED, normalizeDb, ping, scan, lookupKey, getValue, setTtl, se
 import { getConnection } from '@/lib/redisConnections';
 import { diagnoseMisses } from '@/lib/redisDiagnose';
 import { diagnoseFragmentation } from '@/lib/redisFragDiagnose';
+import { diagnoseMemory } from '@/lib/redisMemDiagnose';
 
 export const runtime = 'nodejs';
 
@@ -117,6 +120,14 @@ export async function POST(req: NextRequest) {
         break;
       case 'diagnoseFrag': // phân mảnh bộ nhớ nằm ở đâu (Monitor → Phân tích phân mảnh), chỉ đọc
         result = await diagnoseFragmentation(conn);
+        break;
+      case 'diagnoseMem': // RAM nằm ở đâu, đầy thì sao, dạng key nào chiếm (Monitor → Phân tích RAM), chỉ đọc
+        result = await diagnoseMemory(conn, {
+          sample: body.sample === true,
+          history: Array.isArray(body.history)
+            ? body.history.map((h: { at: unknown; mb: unknown }) => ({ at: Number(h.at), mb: Number(h.mb) })).filter((h: { at: number; mb: number }) => Number.isFinite(h.at) && Number.isFinite(h.mb)).slice(-200)
+            : [],
+        });
         break;
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });

@@ -2,7 +2,7 @@
 
 // Ngăn chi tiết một tài nguyên (bấm vào thẻ / dòng bảng): nguyên nhân, lịch sử
 // trạng thái, toàn bộ chỉ số kèm đồ thị nhỏ, và số liệu riêng của Kafka.
-// Cảnh báo nào có bộ phân tích nguyên nhân (cache hit PostgreSQL, hit rate / phân mảnh Redis, lag Kafka, cụm ES) thì có
+// Cảnh báo nào có bộ phân tích nguyên nhân (cache hit PostgreSQL, hit rate / phân mảnh / RAM Redis, lag Kafka, cụm ES) thì có
 // nút "Phân tích" ngay trên dòng nguyên nhân.
 
 import { useEffect, useMemo, useState } from 'react';
@@ -15,6 +15,7 @@ import { Spark, Timeline } from './Spark';
 import PgCacheDiagnosis from './PgCacheDiagnosis';
 import RedisMissDiagnosis from './RedisMissDiagnosis';
 import RedisFragDiagnosis from './RedisFragDiagnosis';
+import RedisMemDiagnosis from './RedisMemDiagnosis';
 import KafkaLagDiagnosis from './KafkaLagDiagnosis';
 import EsDiagnosisPanel from './EsDiagnosis';
 import { focusFromRow } from '@/lib/monitor/focus';
@@ -65,7 +66,7 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
   useEffect(() => { setDiagMetric(null); }, [res.key]);
   // ES không nằm ở đây: có một nút luôn hiện ngay dưới phần nguyên nhân (kể cả khi cụm xanh).
   const canDiagnose = (metric: string): boolean =>
-    (res.stack === 'pg' && metric === 'cacheHitPct') || (res.stack === 'redis' && (metric === 'hitRatePct' || metric === 'fragmentation'))
+    (res.stack === 'pg' && metric === 'cacheHitPct') || (res.stack === 'redis' && (metric === 'hitRatePct' || metric === 'fragmentation' || metric === 'memUsedPct'))
     || (res.stack === 'kafka' && KAFKA_LAG_METRICS.has(metric));
   // Kafka: group có lag để chọn, mặc định group gắn với cảnh báo nặng nhất (cùng cách nút "Mở Kafka").
   const lagGroups = useMemo(
@@ -73,6 +74,12 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
     [last?.kafkaGroups],
   );
   const defaultGroup = res.stack === 'kafka' ? focusFromRow(row).group ?? lagGroups[0]?.groupId ?? '' : '';
+
+  // Lịch sử RAM (tổng các node) cho xu hướng tăng của Phân tích RAM Redis.
+  const memHistory = useMemo(
+    () => st.samples.filter((s) => typeof s.metrics.memUsedMb === 'number').map((s) => ({ at: s.at, mb: s.metrics.memUsedMb })),
+    [st.samples],
+  );
 
   const groups = useMemo(
     () => [...(last?.kafkaGroups ?? [])].sort((a, b) => b.lag - a.lag).slice(0, 12),
@@ -150,6 +157,9 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
         {diagOpen && res.stack === 'pg' ? <PgCacheDiagnosis key={res.key} connectionId={res.id} /> : null}
         {diagMetric === 'hitRatePct' && res.stack === 'redis' ? <RedisMissDiagnosis key={res.key} connectionId={res.id} /> : null}
         {diagMetric === 'fragmentation' && res.stack === 'redis' ? <RedisFragDiagnosis key={res.key} connectionId={res.id} /> : null}
+        {diagMetric === 'memUsedPct' && res.stack === 'redis'
+          ? <RedisMemDiagnosis key={res.key} connectionId={res.id} history={memHistory} />
+          : null}
         {diagOpen && res.stack === 'es' ? <EsDiagnosisPanel key={res.key} connectionId={res.id} /> : null}
         {diagOpen && res.stack === 'kafka' && defaultGroup
           ? <KafkaLagDiagnosis key={res.key} connectionId={res.id} groups={lagGroups} initialGroup={defaultGroup} />
