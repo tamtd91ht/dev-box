@@ -141,6 +141,8 @@ export interface RedisNodeStats {
   opsPerSec: number;
   /** Gần đây (giữa hai lần đo); chưa đủ số liệu thì bằng số cộng dồn. */
   hitRatePct: number | null;
+  /** CHỈ gần đây; null = chưa đủ số liệu — cảnh báo Monitor dùng số này, không lùi về cộng dồn. */
+  hitRateRecentPct: number | null;
   /** Cộng dồn từ lúc khởi động. */
   hitRateTotalPct: number | null;
   fragmentationRatio: number | null;

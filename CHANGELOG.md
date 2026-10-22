@@ -80,6 +80,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Monitor Redis: cảnh báo hit rate không còn lùi về số cộng dồn.** Khi chưa đủ số liệu gần đây
+  (lần đo đầu, < 200 lượt tra trong 15 phút) chỉ số cảnh báo trước đây lấy hit rate cộng dồn từ lúc
+  khởi động — Redis ít traffic bị báo mãi bằng một đợt miss cũ. Giờ cảnh báo chỉ dùng hit rate gần
+  đây (`hitRateRecentPct`); chưa có thì không báo. Dải thông số tab Redis vẫn hiện như cũ.
+- **Phân tích hit rate không còn tự kéo hit rate xuống.** Bước kiểm “key vừa miss đã được nạp lại
+  chưa” dùng `MEMORY USAGE … SAMPLES 1` thay cho `EXISTS` — EXISTS bị Redis tính vào
+  keyspace_hits/misses nên ~200 lần tra của chính phân tích có thể kéo dài cảnh báo ở Redis ít
+  traffic. MEMORY bị chặn thì quay về EXISTS.
 - **Tab Git: project vừa là repo vừa chứa repo con giờ hiện ĐỦ, không chỉ mỗi root.**
   Bố cục rất thật: một thư mục vừa là repo (tài liệu, script, manifest dùng chung) vừa chứa
   các repo service bên trong. Bản trước ưu tiên root và **bỏ qua** repo con, với lập luận

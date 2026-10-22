@@ -183,6 +183,11 @@ export interface RedisNodeStats {
   opsPerSec: number;
   /** Hit rate GẦN ĐÂY (giữa hai lần đo) — chưa đủ số liệu thì bằng số cộng dồn. */
   hitRatePct: number | null;
+  /**
+   * CHỈ hit rate gần đây; null khi chưa đủ số liệu (lần đo đầu, < HIT_MIN_LOOKUPS lượt tra).
+   * Cảnh báo Monitor dùng số này — lùi về cộng dồn sẽ báo mãi một đợt miss cũ ở Redis ít traffic.
+   */
+  hitRateRecentPct: number | null;
   /** Hit rate cộng dồn từ lúc khởi động / CONFIG RESETSTAT. */
   hitRateTotalPct: number | null;
   fragmentationRatio: number | null;
@@ -230,6 +235,7 @@ function toStats(addr: string, info: Record<string, string>, connId?: string): R
   const hits = Number(info.keyspace_hits ?? 0);
   const misses = Number(info.keyspace_misses ?? 0);
   const total = hits + misses > 0 ? (hits / (hits + misses)) * 100 : null;
+  const recent = connId ? recentHitPct(`${connId}|${addr}`, hits, misses) : null;
   return {
     addr,
     role: String(info.role ?? '?'),
@@ -238,7 +244,8 @@ function toStats(addr: string, info: Record<string, string>, connId?: string): R
     systemMemoryBytes: Number(info.total_system_memory ?? 0),
     connectedClients: Number(info.connected_clients ?? 0),
     opsPerSec: Number(info.instantaneous_ops_per_sec ?? 0),
-    hitRatePct: (connId ? recentHitPct(`${connId}|${addr}`, hits, misses) : null) ?? total,
+    hitRatePct: recent ?? total,
+    hitRateRecentPct: recent,
     hitRateTotalPct: total,
     fragmentationRatio: info.mem_fragmentation_ratio != null ? Number(info.mem_fragmentation_ratio) : null,
     uptimeSec: Number(info.uptime_in_seconds ?? 0),

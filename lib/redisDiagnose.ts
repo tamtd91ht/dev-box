@@ -330,14 +330,26 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
   if (capture.ok && captured === 0 && (window?.misses ?? 0) > 0) capture = { ok: false, reason: 'noEvents' };
 
   // ── Kiểm lại các dạng nặng nhất ──
+  // Key vừa miss giờ đã có chưa: dùng MEMORY USAGE … SAMPLES 1 thay vì EXISTS — EXISTS bị Redis
+  // tính vào keyspace_hits / misses (và phát keymiss nếu cờ đang bật), tức chính phân tích kéo
+  // hit rate mà Monitor đang cảnh báo xuống, rõ nhất ở Redis ít traffic. MEMORY USAGE tra thẳng
+  // keyspace, không đụng thống kê; SAMPLES 1 nên rẻ cả với key tập hợp lớn. MEMORY bị chặn
+  // (Redis managed đổi tên lệnh) thì quay về EXISTS.
   const top = [...aggs.values()].sort((a, b) => b.misses - a.misses).slice(0, TOP_PATTERNS);
   const refill = new Map<Agg, { refilled: number; checked: number }>();
+  const present = async (client: ReturnType<typeof getClient>, k: string): Promise<boolean> => {
+    try {
+      return (await client.call('MEMORY', 'USAGE', k, 'SAMPLES', '1')) !== null;
+    } catch {
+      return (await client.exists(k)) > 0;
+    }
+  };
   for (const a of top) {
     const keys = [...a.keys.entries()].sort((x, y) => y[1] - x[1]).slice(0, RECHECK_PER_PATTERN).map(([k]) => k);
     try {
       const client = getClient(conn, a.db);
-      const res = await Promise.all(keys.map((k) => client.exists(k)));
-      refill.set(a, { refilled: res.filter((x) => x > 0).length, checked: keys.length });
+      const res = await Promise.all(keys.map((k) => present(client, k)));
+      refill.set(a, { refilled: res.filter(Boolean).length, checked: keys.length });
     } catch {
       refill.set(a, { refilled: 0, checked: 0 });
     }

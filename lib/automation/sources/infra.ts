@@ -155,7 +155,9 @@ async function probeRedis(id: string): Promise<ProbePayload> {
   put(m, 'memUsedPct', maxOf(nodes.map((n) => pct(n.usedMemoryBytes, n.maxMemoryBytes || n.systemMemoryBytes))));
   put(m, 'clients', sumOf(nodes.map((n) => n.connectedClients)));
   put(m, 'opsPerSec', sumOf(nodes.map((n) => n.opsPerSec)));
-  put(m, 'hitRatePct', minOf(nodes.map((n) => n.hitRatePct))); // worst node wins
+  // Chỉ hit rate GẦN ĐÂY (worst node wins); node chưa đủ số liệu thì bỏ qua — không lùi về
+  // số cộng dồn từ lúc khởi động, kẻo một đợt miss cũ (cache lạnh) bị cảnh báo mãi.
+  put(m, 'hitRatePct', minOf(nodes.map((n) => n.hitRateRecentPct)));
   put(m, 'fragmentation', maxOf(nodes.map((n) => n.fragmentationRatio)));
   return { metrics: m };
 }
