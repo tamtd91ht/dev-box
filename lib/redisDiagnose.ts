@@ -74,7 +74,7 @@ interface Totals {
   at: number;
 }
 
-async function masters(conn: RedisConnection): Promise<Redis[]> {
+export async function masters(conn: RedisConnection): Promise<Redis[]> {
   const base = getClient(conn, 0);
   if (isCluster(conn) && base instanceof Cluster) {
     if (base.status !== 'ready') await base.ping();

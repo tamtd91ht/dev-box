@@ -11,6 +11,8 @@
 //     'del'    { connectionId, db?, key }         → { ok, result: { deleted, lockKeyWarning } }
 //     'diagnoseMisses' { connectionId, seconds }   → { ok, result: RedisMissDiagnosis }
 //              bật TẠM notify-keyspace-events "Em" trong `seconds` giây rồi trả lại (lib/redisDiagnose)
+//     'diagnoseFrag'   { connectionId }            → { ok, result: RedisFragDiagnosis }
+//              chỉ đọc INFO + CONFIG GET, mỗi node có timeout (lib/redisFragDiagnose)
 //
 // `db` is the logical DB index (0–15) chosen at browse time; it defaults to 0 and is
 // forced to 0 for cluster connections (Redis Cluster only has DB 0). 'test' probes a
@@ -25,6 +27,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { REDIS_ENABLED, normalizeDb, ping, scan, lookupKey, getValue, setTtl, setValue, del, testConnection, infoStats } from '@/lib/redisClient';
 import { getConnection } from '@/lib/redisConnections';
 import { diagnoseMisses } from '@/lib/redisDiagnose';
+import { diagnoseFragmentation } from '@/lib/redisFragDiagnose';
 
 export const runtime = 'nodejs';
 
@@ -111,6 +114,9 @@ export async function POST(req: NextRequest) {
         break;
       case 'diagnoseMisses': // dạng key nào đang miss (Monitor → Phân tích hit rate)
         result = await diagnoseMisses(conn, Number(body.seconds ?? 10));
+        break;
+      case 'diagnoseFrag': // phân mảnh bộ nhớ nằm ở đâu (Monitor → Phân tích phân mảnh), chỉ đọc
+        result = await diagnoseFragmentation(conn);
         break;
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });

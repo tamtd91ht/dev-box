@@ -2,7 +2,7 @@
 
 // Ngăn chi tiết một tài nguyên (bấm vào thẻ / dòng bảng): nguyên nhân, lịch sử
 // trạng thái, toàn bộ chỉ số kèm đồ thị nhỏ, và số liệu riêng của Kafka.
-// Cảnh báo nào có bộ phân tích nguyên nhân (cache hit PostgreSQL, hit rate Redis, lag Kafka, cụm ES) thì có
+// Cảnh báo nào có bộ phân tích nguyên nhân (cache hit PostgreSQL, hit rate / phân mảnh Redis, lag Kafka, cụm ES) thì có
 // nút "Phân tích" ngay trên dòng nguyên nhân.
 
 import { useEffect, useMemo, useState } from 'react';
@@ -14,6 +14,7 @@ import {
 import { Spark, Timeline } from './Spark';
 import PgCacheDiagnosis from './PgCacheDiagnosis';
 import RedisMissDiagnosis from './RedisMissDiagnosis';
+import RedisFragDiagnosis from './RedisFragDiagnosis';
 import KafkaLagDiagnosis from './KafkaLagDiagnosis';
 import EsDiagnosisPanel from './EsDiagnosis';
 import { focusFromRow } from '@/lib/monitor/focus';
@@ -58,11 +59,13 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
   }, [last?.at, res.stack]);
 
   // Phân tích nguyên nhân — mở theo tài nguyên, chuyển sang tài nguyên khác thì đóng.
-  const [diagOpen, setDiagOpen] = useState(false);
-  useEffect(() => { setDiagOpen(false); }, [res.key]);
+  // Lưu chỉ số đã bấm: Redis có hai bộ phân tích (hit rate / phân mảnh).
+  const [diagMetric, setDiagMetric] = useState<string | null>(null);
+  const diagOpen = diagMetric !== null;
+  useEffect(() => { setDiagMetric(null); }, [res.key]);
   // ES không nằm ở đây: có một nút luôn hiện ngay dưới phần nguyên nhân (kể cả khi cụm xanh).
   const canDiagnose = (metric: string): boolean =>
-    (res.stack === 'pg' && metric === 'cacheHitPct') || (res.stack === 'redis' && metric === 'hitRatePct')
+    (res.stack === 'pg' && metric === 'cacheHitPct') || (res.stack === 'redis' && (metric === 'hitRatePct' || metric === 'fragmentation'))
     || (res.stack === 'kafka' && KAFKA_LAG_METRICS.has(metric));
   // Kafka: group có lag để chọn, mặc định group gắn với cảnh báo nặng nhất (cùng cách nút "Mở Kafka").
   const lagGroups = useMemo(
@@ -120,8 +123,8 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
                     <button
                       type="button"
                       className="mon-btn mon-reason-act"
-                      onClick={() => setDiagOpen(true)}
-                      disabled={diagOpen}
+                      onClick={() => setDiagMetric(r.metric)}
+                      disabled={diagMetric === r.metric}
                       title="Đọc thống kê của server (chỉ đọc) để tìm bảng / query / cấu hình gây ra, kèm cách khắc phục"
                     >
                       🔍 Phân tích
@@ -135,7 +138,7 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
             <button
               type="button"
               className="mon-btn mon-es-diag"
-              onClick={() => setDiagOpen(true)}
+              onClick={() => setDiagMetric('cluster')}
               disabled={diagOpen}
               title="Phân tích heap, shard, CPU, đĩa và truy vấn chậm — chạy được cả khi cụm xanh. Chỉ đọc thống kê, không chặn cụm."
             >
@@ -145,7 +148,8 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
         </section>
 
         {diagOpen && res.stack === 'pg' ? <PgCacheDiagnosis key={res.key} connectionId={res.id} /> : null}
-        {diagOpen && res.stack === 'redis' ? <RedisMissDiagnosis key={res.key} connectionId={res.id} /> : null}
+        {diagMetric === 'hitRatePct' && res.stack === 'redis' ? <RedisMissDiagnosis key={res.key} connectionId={res.id} /> : null}
+        {diagMetric === 'fragmentation' && res.stack === 'redis' ? <RedisFragDiagnosis key={res.key} connectionId={res.id} /> : null}
         {diagOpen && res.stack === 'es' ? <EsDiagnosisPanel key={res.key} connectionId={res.id} /> : null}
         {diagOpen && res.stack === 'kafka' && defaultGroup
           ? <KafkaLagDiagnosis key={res.key} connectionId={res.id} groups={lagGroups} initialGroup={defaultGroup} />

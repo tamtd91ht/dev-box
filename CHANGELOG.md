@@ -42,6 +42,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mỗi lát. Chỉ không bật khi CPU luồng chính Redis ≥ 90% hoặc RTT cao tới mức lát ngắn nhất đã quá
   10.000 sự kiện. Kết quả có mục “bắt theo lát” nói rõ số lát, tổng thời gian bật cờ và rằng cột
   Miss là số mẫu.
+- **Monitor Redis: nút “Phân tích” trên cảnh báo phân mảnh bộ nhớ.** Tách RSS thừa theo số
+  INFO memory báo sẵn — lỗ giữa object (`allocator_frag`), trang jemalloc chưa trả OS
+  (`allocator_rss`), ngoài allocator (`rss_overhead`: fork copy-on-write, THP), tỉ lệ < 1 (swap),
+  dữ liệu nhỏ (báo động giả) — rồi đề xuất đúng cách: bật/chỉnh activedefrag theo trạng thái thật
+  (tắt / đang chạy / bật mà bị ngưỡng chặn), MEMORY PURGE, tắt THP, failover; kèm bối cảnh RAM máy
+  chủ và maxmemory. Chỉ đọc: `INFO` từng section + `CONFIG GET` đúng tên, mỗi node hạn 5 giây (node
+  treo thì bỏ qua và báo), không SCAN / MEMORY USAGE. Lệnh đề xuất chạy trên luồng chính đều kèm
+  trần CPU thấp hoặc lưu ý thấp điểm. Luật kiểm bằng `npm run check:redis-frag`.
 
 ### Fixed
 

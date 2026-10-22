@@ -4,7 +4,8 @@
 // NO `ioredis`, no server-only imports.
 
 import type { RedisMissDiagnosis } from '@/lib/redisDiagnoseRules';
-export type { RedisMissDiagnosis };
+import type { RedisFragDiagnosis } from '@/lib/redisFragRules';
+export type { RedisMissDiagnosis, RedisFragDiagnosis };
 
 import { apiFetch } from './apiFetch';
 
@@ -155,6 +156,14 @@ export function redisStats(connectionId: string): Promise<RedisNodeStats[]> {
  */
 export function redisDiagnoseMisses(connectionId: string, seconds: number): Promise<RedisMissDiagnosis> {
   return redisAction<RedisMissDiagnosis>('diagnoseMisses', { connectionId, seconds });
+}
+
+/**
+ * Phân mảnh bộ nhớ nằm ở đâu (lỗ giữa object / trang chưa trả OS / fork-THP / swap)
+ * và nên làm gì. Chỉ đọc INFO + CONFIG GET; mất khoảng 3–5 giây.
+ */
+export function redisDiagnoseFrag(connectionId: string): Promise<RedisFragDiagnosis> {
+  return redisAction<RedisFragDiagnosis>('diagnoseFrag', { connectionId });
 }
 
 /** Test a not-yet-saved connection straight from the form (single or cluster). */

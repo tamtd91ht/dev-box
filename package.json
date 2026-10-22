@@ -24,6 +24,7 @@
     "check:monitor": "tsx scripts/check-monitor.ts",
     "check:pg-diagnose": "tsx scripts/check-pg-diagnose.ts",
     "check:redis-diagnose": "tsx scripts/check-redis-diagnose.ts",
+    "check:redis-frag": "tsx scripts/check-redis-frag.ts",
     "check:kafka-diagnose": "tsx scripts/check-kafka-diagnose.ts",
     "check:es-diagnose": "tsx scripts/check-es-diagnose.ts",
     "check:zalo": "tsx scripts/check-zalo-extract.ts",
