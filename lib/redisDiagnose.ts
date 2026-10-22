@@ -236,12 +236,21 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
       }
       // Node không cho CONFIG SET (managed cho GET mà chặn SET) thì bỏ khỏi danh sách — vẫn nghe
       // các node còn lại; lỗi lúc TẮT để finally trả lại lần nữa và báo nếu vẫn hỏng.
+      // Chỉ bỏ khi ĐỌC LẠI thấy cờ vẫn là giá trị cũ: SET báo lỗi (quá giờ, rớt kết nối) nhưng
+      // thực ra đã áp dụng thì node phải ở lại để finally trả lại — không để cờ bật mãi.
       const setFlags = async (on: boolean) => {
         const res = await Promise.allSettled(changed.map((c) => c.node.config('SET', 'notify-keyspace-events', on ? c.next : c.orig)));
         if (!on) return;
-        for (let i = res.length - 1; i >= 0; i--) {
+        const failed = changed.flatMap((c, i) => {
           const r = res[i];
-          if (r.status === 'rejected') { configErr = (r.reason as Error).message; changed.splice(i, 1); }
+          return r.status === 'rejected' ? [{ c, err: (r.reason as Error).message }] : [];
+        });
+        for (const { c, err } of failed) {
+          configErr = err;
+          const now = await c.node.config('GET', 'notify-keyspace-events')
+            .then((x) => String((x as unknown as string[])?.[1] ?? ''))
+            .catch(() => null);
+          if (now === c.orig) changed.splice(changed.indexOf(c), 1);
         }
       };
 
@@ -257,7 +266,7 @@ async function run(conn: RedisConnection, durationSec: number): Promise<RedisMis
         let rate = missRate;
         let bursts = 0;
         let onMs = 0;
-        while (Date.now() < deadline && captured < MAX_EVENTS) {
+        while (Date.now() < deadline && captured < MAX_EVENTS && changed.length) {
           const start = captured;
           const ms = Math.min(MAX_BURST_MS, Math.max(MIN_BURST_MS, (BURST_EVENTS / Math.max(1, rate)) * 1000));
           const full = new Promise<void>((r) => { burstFull = r; });
