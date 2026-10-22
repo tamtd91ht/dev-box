@@ -1771,6 +1771,8 @@ const EMPTY_FORM = {
   /** Cluster seed nodes as free text — one `host:port` per line. */
   nodesText: '',
   password: '',
+  /** Không dùng làm cache (lock / queue / session / pub-sub) → Monitor không cảnh báo hit rate. */
+  notCache: false,
 };
 
 type ConnForm = typeof EMPTY_FORM;
@@ -1785,6 +1787,7 @@ function formOf(c: PublicRedisConnection): ConnForm {
     port: String(c.port),
     nodesText: (c.nodes ?? []).map((n) => `${n.host}:${n.port}`).join('\n'),
     password: '',
+    notCache: !!c.notCache,
   };
 }
 
@@ -1861,6 +1864,7 @@ function ConnectionForm({ initial, editingId, busy, onBusy, onSaved, onCancel }:
       name: form.name.trim(),
       project: form.project.trim() || 'default',
       mode: form.mode,
+      notCache: form.notCache,
     };
     if (form.mode === 'cluster') body.nodes = parseNodesText(form.nodesText);
     else { body.host = form.host.trim(); body.port = Number(form.port); }
@@ -1923,6 +1927,14 @@ function ConnectionForm({ initial, editingId, busy, onBusy, onSaved, onCancel }:
           disabled={busy}
           style={fInput}
         />
+        <label
+          className="small"
+          style={{ flex: '1 1 100%', display: 'flex', alignItems: 'center', gap: 6, color: 'var(--muted)' }}
+          title="Redis dùng cho lock / queue / session / pub-sub (vd Redisson): lệnh kiểm “có chưa” trả về không có là đúng nhưng Redis vẫn tính là miss → hit rate thấp mà không có lỗi. Tick để Monitor không cảnh báo hit rate cho Redis này; các cảnh báo khác giữ nguyên."
+        >
+          <input type="checkbox" checked={form.notCache} onChange={(e) => set('notCache', e.target.checked)} disabled={busy} />
+          Không dùng làm cache (lock / queue / session / pub-sub) — bỏ cảnh báo hit rate
+        </label>
       </div>
 
       {test?.status === 'ok' && (

@@ -35,6 +35,8 @@ export interface PublicRedisConnection {
   port: number;
   nodes?: RedisNode[];
   hasPassword: boolean;
+  /** Không dùng làm cache (lock / queue / session / pub-sub) → Monitor không cảnh báo hit rate. */
+  notCache?: boolean;
 }
 
 /** Body for add/update — password optional (omit on edit to keep the stored one). */
@@ -114,11 +116,11 @@ export async function mutateRedisConnection(
 // ── Redis operations ──────────────────────────────────────────────────────────
 
 /** POST one Redis action. Throws Error(message) on a non-2xx (surfaces Redis error). */
-async function redisAction<T>(action: string, params: Record<string, unknown>): Promise<T> {
+async function redisAction<T>(action: string, params: Record<string, unknown>, timeoutMs = 60000): Promise<T> {
   const r = await apiFetch('/api/redis', {
     method: 'POST',
     body: JSON.stringify({ action, ...params }),
-    timeoutMs: 60000, // thao tác dữ liệu (scan keyspace lớn…) được phép lâu hơn CRUD config
+    timeoutMs, // mặc định 60s: thao tác dữ liệu (scan keyspace lớn…) được phép lâu hơn CRUD config
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok || (data as { ok?: boolean }).ok === false) {
@@ -160,7 +162,9 @@ export function redisStats(connectionId: string): Promise<RedisNodeStats[]> {
  * trả lại) → dạng key nào đang miss và vì sao. Mất seconds + vài giây quét.
  */
 export function redisDiagnoseMisses(connectionId: string, seconds: number): Promise<RedisMissDiagnosis> {
-  return redisAction<RedisMissDiagnosis>('diagnoseMisses', { connectionId, seconds });
+  // Hạn chờ = thời gian bắt + đo trước + quét SCAN / TTL sau đó: hạn 60s mặc định làm lựa chọn
+  // "60 giây" luôn báo hết giờ ở trình duyệt dù server vẫn chạy xong và trả lại cờ.
+  return redisAction<RedisMissDiagnosis>('diagnoseMisses', { connectionId, seconds }, (Number(seconds) + 90) * 1000);
 }
 
 /**

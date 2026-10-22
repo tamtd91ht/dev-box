@@ -47,6 +47,12 @@ export interface RedisConnection {
   nodes?: RedisNode[];
   /** Optional AUTH password — plaintext on local disk (see security model above). */
   password?: string;
+  /**
+   * Redis này KHÔNG dùng làm cache (lock / queue / session / pub-sub, vd Redisson): miss là hành vi
+   * đúng (kiểm "có chưa") nên hit rate vô nghĩa → Monitor không cảnh báo hit rate. Các cảnh báo
+   * khác (RAM, phân mảnh, client) giữ nguyên.
+   */
+  notCache?: boolean;
 }
 
 /** The client-safe projection of a connection — password stripped, presence flagged. */
@@ -135,6 +141,7 @@ interface ConnectionInput {
   /** Cluster seeds: either [{host,port}] or "host:port" strings. */
   nodes?: unknown;
   password?: unknown;
+  notCache?: unknown;
 }
 
 /** Parse one seed entry — accepts {host,port} or a "host:port" string. Throws on bad input. */
@@ -164,13 +171,14 @@ function validate(body: ConnectionInput): Omit<RedisConnection, 'id'> {
   const mode: RedisMode = body.mode === 'cluster' ? 'cluster' : 'single';
   const project = typeof body.project === 'string' && body.project.trim() ? body.project.trim() : 'default';
   const password = typeof body.password === 'string' && body.password.length ? body.password : undefined;
+  const notCache = body.notCache === true ? true : undefined;
 
   if (mode === 'cluster') {
     const rawNodes = Array.isArray(body.nodes) ? body.nodes : [];
     const nodes = rawNodes.map(parseNode);
     if (nodes.length === 0) throw new Error('cluster mode requires at least one seed node (host:port)');
     // Mirror the first seed into host/port so badges/signatures have an address.
-    return { name, project, mode, host: nodes[0].host, port: nodes[0].port, nodes, password };
+    return { name, project, mode, host: nodes[0].host, port: nodes[0].port, nodes, password, notCache };
   }
 
   const host = typeof body.host === 'string' ? body.host.trim() : '';
@@ -178,7 +186,7 @@ function validate(body: ConnectionInput): Omit<RedisConnection, 'id'> {
   const port = Number(body.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('port must be 1–65535');
 
-  return { name, project, mode, host, port, nodes: undefined, password };
+  return { name, project, mode, host, port, nodes: undefined, password, notCache };
 }
 
 /** id-safe slug from name+project; collisions resolved by suffixing. */

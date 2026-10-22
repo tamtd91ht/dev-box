@@ -78,8 +78,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Redis của Monitor (từng node, ai đang nghe, dấu từ lần nào, nút Tắt). Tắt = trả đúng giá trị cũ
   nếu có dấu, không thì chỉ bỏ cờ m. Toast giờ hỗ trợ nút hành động (`automation.actionNotify`).
 
+- **Redis: ô “Không dùng làm cache — bỏ cảnh báo hit rate” cho từng kết nối.** Redis làm lock /
+  queue / session / pub-sub (vd Redisson) kiểm “có chưa” rất nhiều — trả về không có là đúng nhưng
+  Redis vẫn tính là miss, nên hit rate thấp mà không có lỗi. Tick ô này trong form kết nối thì
+  Monitor không cảnh báo hit rate cho Redis đó; RAM / phân mảnh / client vẫn cảnh báo, dải thông số
+  tab Redis vẫn hiện hit rate.
+
 ### Fixed
 
+- **Phân tích hit rate chọn “60 giây” không còn báo hết giờ.** Hạn chờ ở trình duyệt là 60s cho
+  mọi thao tác Redis, trong khi phân tích 60s cần thêm thời gian đo trước + quét sau — trình duyệt
+  báo lỗi dù server vẫn chạy xong và trả lại cờ. Giờ hạn chờ = thời gian bắt + 90s.
 - **Monitor Redis: cảnh báo hit rate không còn lùi về số cộng dồn.** Khi chưa đủ số liệu gần đây
   (lần đo đầu, < 200 lượt tra trong 15 phút) chỉ số cảnh báo trước đây lấy hit rate cộng dồn từ lúc
   khởi động — Redis ít traffic bị báo mãi bằng một đợt miss cũ. Giờ cảnh báo chỉ dùng hit rate gần

@@ -231,7 +231,7 @@ function recentHitPct(id: string, hits: number, misses: number): number | null {
   return recent;
 }
 
-function toStats(addr: string, info: Record<string, string>, connId?: string): RedisNodeStats {
+function toStats(addr: string, info: Record<string, string>, connId?: string, notCache = false): RedisNodeStats {
   const hits = Number(info.keyspace_hits ?? 0);
   const misses = Number(info.keyspace_misses ?? 0);
   const total = hits + misses > 0 ? (hits / (hits + misses)) * 100 : null;
@@ -245,7 +245,9 @@ function toStats(addr: string, info: Record<string, string>, connId?: string): R
     connectedClients: Number(info.connected_clients ?? 0),
     opsPerSec: Number(info.instantaneous_ops_per_sec ?? 0),
     hitRatePct: recent ?? total,
-    hitRateRecentPct: recent,
+    // Redis không làm cache (RedisConnection.notCache): miss là hành vi đúng → không đưa số gần đây
+    // cho cảnh báo. Số hiển thị (hitRatePct / hitRateTotalPct) vẫn giữ để xem.
+    hitRateRecentPct: notCache ? null : recent,
     hitRateTotalPct: total,
     fragmentationRatio: info.mem_fragmentation_ratio != null ? Number(info.mem_fragmentation_ratio) : null,
     uptimeSec: Number(info.uptime_in_seconds ?? 0),
@@ -264,11 +266,11 @@ export async function infoStats(conn: RedisConnection): Promise<RedisNodeStats[]
     const masters = client.nodes('master');
     return Promise.all(masters.map(async (n) => {
       const addr = `${(n.options.host ?? '?')}:${n.options.port ?? '?'}`;
-      return toStats(addr, parseInfo(await n.info()), conn.id);
+      return toStats(addr, parseInfo(await n.info()), conn.id, !!conn.notCache);
     }));
   }
   const info = parseInfo(await (client as Redis).info());
-  return [toStats(`${conn.host}:${conn.port}`, info, conn.id)];
+  return [toStats(`${conn.host}:${conn.port}`, info, conn.id, !!conn.notCache)];
 }
 
 // ── Operations ──────────────────────────────────────────────────────────────
