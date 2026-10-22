@@ -61,6 +61,8 @@ export interface ReportColumn {
   pattern?: string;
   /** Chỉ dùng khi format = 'custom' — múi giờ IANA. */
   tz?: string;
+  /** Wrap text: nội dung dài xuống dòng trong ô thay vì tràn sang ô bên. Mặc định tắt. */
+  wrap?: boolean;
 }
 
 /** Một luật đổi giá trị: gặp `when` thì ghi ra `to`. */
@@ -562,14 +564,14 @@ export async function buildReportXlsx(
     columns.forEach((c, i) => {
       const cell = row.getCell(i + 1);
       const typed: TypedCell = c.path === NO_COLUMN_PATH
-        ? { value: r + 1, align: 'right' } // sequential row number, not a doc value
+        ? { value: r + 1, align: 'center' } // sequential row number, not a doc value
         // Đổi giá trị TRƯỚC khi định kiểu ô: luật đổi ra chữ thì ô là text,
         // đổi ra số/ngày thì vẫn thành ô số/ngày thật như mọi giá trị khác.
         : typeCell(applyValueMap(collectByPath(doc, c.path), c.map), c.format, c.sep, { unit: c.timeUnit, pattern: c.pattern, tz: c.tz });
       cell.value = typed.value;
       if (typed.numFmt) cell.numFmt = typed.numFmt;
       cell.font = { name: 'Calibri', size: 10.5 };
-      cell.alignment = { vertical: 'middle', horizontal: typed.align };
+      cell.alignment = { vertical: 'middle', horizontal: typed.align, ...(c.wrap ? { wrapText: true } : {}) };
       cell.border = border;
       if (r % 2 === 1) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C_BAND_FILL } };
       // Track a readable column width from the rendered length (capped).

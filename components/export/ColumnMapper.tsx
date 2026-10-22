@@ -16,9 +16,10 @@
 // Không ẩn ô này theo path vì lúc khai báo ta chưa biết field có phải mảng hay
 // không (phải đọc dữ liệu mới biết), ẩn/hiện nhấp nháy còn khó hiểu hơn.
 //
-// NÚT `⋯`: mở bảng đổi giá trị của riêng cột đó (xem ValueMap trong
-// lib/mongoReport.ts). Để trong ô mở rộng chứ không bày thẳng ra dòng vì phần
-// lớn cột không cần tới, mà dòng cột thì đã chật sẵn.
+// NÚT `⋯`: mở tuỳ chọn mở rộng của riêng cột đó — Wrap text (mặc định tắt) và
+// bảng đổi giá trị (xem ValueMap trong lib/mongoReport.ts). Để trong ô mở rộng
+// chứ không bày thẳng ra dòng vì phần lớn cột không cần tới, mà dòng cột thì đã
+// chật sẵn. Nút hiện số luật + dấu ↵ khi đang bật wrap, khỏi phải mở ra xem.
 
 import { useState } from 'react';
 import SuggestInput, { type SuggestOption } from '../SuggestInput';
@@ -88,7 +89,7 @@ export function hasDataColumn(columns: ColumnDraft[]): boolean {
 export function toReportColumns(columns: ColumnDraft[]): ReportColumn[] {
   return columns
     .filter((c) => c.path.trim())
-    .map(({ header, path, format, sep, map, timeUnit, pattern, tz }) => ({
+    .map(({ header, path, format, sep, map, timeUnit, pattern, tz, wrap }) => ({
       header: header.trim() || path.trim(),
       path: path.trim(),
       format,
@@ -103,6 +104,7 @@ export function toReportColumns(columns: ColumnDraft[]): ReportColumn[] {
       ...(hasValueMap(map) && map
         ? { map: { rules: map.rules.filter((r) => r.when.trim() !== '' || r.to !== ''), fallback: map.fallback } }
         : {}),
+      ...(wrap ? { wrap: true } : {}),
     }));
 }
 
@@ -162,14 +164,16 @@ export default function ColumnMapper(props: ColumnMapperProps) {
                   title={'Ký tự phân cách khi field là list object.\nVD "deviceInfos.deviceId" có 3 phần tử, gõ "-" → ô Excel ra: id1-id2-id3.\nBỏ trống = ", "'}
                   onChange={(e) => patch(c.key, { sep: e.target.value })} />
                 <button
-                  className={`chip-btn export-mapbtn${mapped ? ' on' : ''}`}
+                  className={`chip-btn export-mapbtn${mapped || c.wrap ? ' on' : ''}`}
                   disabled={disabled || c.path === NO_COLUMN_PATH}
                   aria-expanded={openMap === c.key}
-                  title={mapped
-                    ? `Đang có ${nRules} luật đổi giá trị — bấm để sửa`
-                    : 'Đổi giá trị trước khi ghi ra Excel (vd. true → Đã xoá)'}
+                  title={[
+                    'Tuỳ chọn cột: wrap text, đổi giá trị trước khi ghi ra Excel (vd. true → Đã xoá)',
+                    c.wrap ? '· đang bật wrap text' : '',
+                    mapped ? `· đang có ${nRules} luật đổi giá trị` : '',
+                  ].filter(Boolean).join('\n')}
                   onClick={() => setOpenMap((k) => (k === c.key ? null : c.key))}
-                >⋯{nRules > 0 ? ` ${nRules}` : ''}</button>
+                >⋯{nRules > 0 ? ` ${nRules}` : ''}{c.wrap ? ' ↵' : ''}</button>
                 <button className="chip-btn" title="Bỏ cột" disabled={disabled || columns.length <= 1}
                   onClick={() => {
                     setColumns((cs) => cs.filter((x) => x.key !== c.key));
@@ -204,6 +208,8 @@ export default function ColumnMapper(props: ColumnMapperProps) {
                   disabled={disabled}
                   onChange={(map) => patch(c.key, { map })}
                   onClose={() => setOpenMap(null)}
+                  wrap={!!c.wrap}
+                  onWrap={(wrap) => patch(c.key, { wrap })}
                 />
               )}
             </div>
@@ -216,16 +222,18 @@ export default function ColumnMapper(props: ColumnMapperProps) {
 }
 
 /**
- * Ô mở rộng của một cột: bảng đổi giá trị.
+ * Ô mở rộng của một cột: Wrap text + bảng đổi giá trị.
  *
  * Luôn để sẵn MỘT dòng trống ở cuối để gõ luật mới — bắt bấm "+ Thêm luật"
  * trước rồi mới gõ được là thừa một nhịp cho việc người ta làm liên tục.
  */
-function ValueMapEditor({ value, disabled, onChange, onClose }: {
+function ValueMapEditor({ value, disabled, onChange, onClose, wrap, onWrap }: {
   value?: ValueMap;
   disabled?: boolean;
   onChange: (map: ValueMap) => void;
   onClose: () => void;
+  wrap: boolean;
+  onWrap: (wrap: boolean) => void;
 }) {
   const rules = value?.rules ?? [];
   const shown = [...rules, { when: '', to: '' }];
@@ -239,9 +247,19 @@ function ValueMapEditor({ value, disabled, onChange, onClose }: {
   return (
     <div className="export-map">
       <div className="export-map-head">
+        <b>Wrap text</b>
+        <select className="input" style={{ flex: '0 0 auto', width: 'auto' }} value={wrap ? 'on' : 'off'} disabled={disabled}
+          onChange={(e) => onWrap(e.target.value === 'on')}>
+          <option value="off">Tắt</option>
+          <option value="on">Bật</option>
+        </select>
+        <span>bật thì nội dung dài xuống dòng trong ô (độ rộng cột vẫn tối đa ~50 ký tự)</span>
+        <button className="chip-btn" onClick={onClose} title="Thu lại">▲</button>
+      </div>
+
+      <div className="export-map-head">
         <b>Đổi giá trị</b>
         <span>gặp giá trị bên trái thì ô Excel ghi giá trị bên phải</span>
-        <button className="chip-btn" onClick={onClose} title="Thu lại">▲</button>
       </div>
 
       {shown.map((r, i) => (
