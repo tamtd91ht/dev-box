@@ -11073,6 +11073,9 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .rmd-dur { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .rmd-dur select { font: inherit; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--glass-brd); background: var(--glass); color: var(--text); }
 .rmd-table-wrap { overflow-x: auto; }
+.rmd-scroll { max-height: 420px; overflow-y: auto; }
+.rmd-n { width: 84px; font: inherit; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--glass-brd); background: var(--glass); color: var(--text); }
+.rmd-filter { min-width: 180px; font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--glass-brd); background: var(--glass); color: var(--text); }
 .rmd-table code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 .rmd-table-wrap .mon-mini code { font-family: var(--mono); font-size: 12px; }
 /* Kafka: chọn group / thời gian đo + số liệu tổng */

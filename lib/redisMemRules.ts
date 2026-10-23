@@ -90,6 +90,36 @@ export interface MemSample {
   stopped?: string;
 }
 
+/** Danh sách key không TTL (Phân tích RAM → "Liệt kê key không TTL", lib/redisMemDiagnose.listNoTtlKeys). */
+export interface NoTtlKey {
+  db: number;
+  key: string;
+  pattern: string;
+  /** TYPE; '?' khi không đo kịp. */
+  type: string;
+  /** MEMORY USAGE … SAMPLES 5; null khi không đo kịp (dừng sớm). */
+  bytes: number | null;
+}
+
+export interface NoTtlKeyList {
+  at: number;
+  /** N người dùng yêu cầu (đã kẹp vào giới hạn). */
+  requested: number;
+  keys: NoTtlKey[];
+  /** Key đã quét (SCAN) / đã hỏi TTL. */
+  scanned: number;
+  /** Trong số đã quét, bao nhiêu key không TTL — để ra tỉ lệ thực tế của mẫu. */
+  scannedNoTtl: number;
+  /** Tổng keyspace và tổng key không TTL theo INFO keyspace (keys − expires). */
+  dbsize: number;
+  noTtlTotal: number;
+  /** Lý do dừng sớm (chậm, hết thời gian, hết ngân sách quét) — vẫn trả phần đã có. */
+  stopped?: string;
+  /** Không chạy (CPU cao…) — lý do. */
+  refused?: string;
+  skipped: { addr: string; error: string }[];
+}
+
 export interface RedisMemFacts {
   nodes: MemNode[];
   /** memUsedMb theo thời gian từ Monitor (tổng các node). */
@@ -297,7 +327,7 @@ export function analyzeRedisMem(f: RedisMemFacts, at = Date.now()): RedisMemDiag
       level: hot ? 'warn' : 'info',
       title: `${r0(100 - ttlPct)}% key không có TTL — chỉ mất đi khi bị xoá chủ động${n.policy?.startsWith('allkeys') ? ' hoặc evict' : ''}`,
       evidence: [`${fmtN(n.keys - n.expires)} / ${fmtN(n.keys)} key không TTL${at_}`],
-      fix: 'Key cache nên có TTL (kể cả dài) để dữ liệu không dùng tự biến mất. Bấm "Lấy mẫu key" để biết dạng key nào không TTL và chiếm bao nhiêu.',
+      fix: 'Key cache nên có TTL (kể cả dài) để dữ liệu không dùng tự biến mất. Bấm "Lấy mẫu key" để biết dạng key nào không TTL và chiếm bao nhiêu; "Liệt kê key không TTL" (chọn N) để lấy danh sách key cụ thể.',
       step: { phase: 'long', text: 'Đặt TTL cho các dạng key cache đang không có TTL' },
     });
   }

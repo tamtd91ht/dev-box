@@ -24,7 +24,7 @@ import type Redis from 'ioredis';
 import type { RedisConnection } from '@/lib/redisConnections';
 import { getClient, isCluster, masters, parseInfo } from '@/lib/redisClient';
 import { keyPattern } from '@/lib/redisDiagnoseRules';
-import { analyzeRedisMem, type MemNode, type MemPattern, type MemSample, type MemTopClient, type RedisMemDiagnosis } from '@/lib/redisMemRules';
+import { analyzeRedisMem, type MemNode, type MemPattern, type MemSample, type MemTopClient, type NoTtlKey, type NoTtlKeyList, type RedisMemDiagnosis } from '@/lib/redisMemRules';
 
 const SAMPLE_SEC = 3;
 const NODE_TIMEOUT_MS = 5_000;
@@ -301,3 +301,139 @@ async function pingMs(n: Redis): Promise<number> {
   }
   return t.sort((a, b) => a - b)[1];
 }
+
+// ── Liệt kê key không TTL (người dùng bấm, chọn N) ──
+// Cảnh báo "x% key không có TTL" chỉ có tỉ lệ từ INFO keyspace; đây là danh sách tên key
+// cụ thể để xem/đặt TTL. Cùng nguyên tắc với lấy mẫu: bỏ qua nếu CPU cao, SCAN COUNT nhỏ
+// có nghỉ, TTL pipeline theo trang SCAN, trang nào chậm bất thường thì dừng; sau đó đo
+// TYPE + MEMORY USAGE cho đúng các key tìm được (lô BATCH). Không đọc giá trị key.
+
+export const NO_TTL_MAX = 10_000;
+const NO_TTL_SCAN_BUDGET = 300_000;
+const NO_TTL_TIME_MS = 30_000;
+const NO_TTL_CPU_SEC = 1;
+
+export async function listNoTtlKeys(conn: RedisConnection, want: number): Promise<NoTtlKeyList> {
+  const requested = Math.min(NO_TTL_MAX, Math.max(1, Math.floor(Number.isFinite(want) ? want : 500)));
+  const nodes = await masters(conn);
+  const skipped: { addr: string; error: string }[] = [];
+  const first = (await Promise.all(nodes.map(async (n) => {
+    try {
+      return { n, i: await withTimeout(sections(n, ['keyspace', 'cpu']), addrOf(n)), at: Date.now() };
+    } catch (e) {
+      skipped.push({ addr: addrOf(n), error: (e as Error).message });
+      return null;
+    }
+  }))).filter((x): x is { n: Redis; i: Record<string, string>; at: number } => x !== null);
+  if (!first.length) throw new Error(`Không node nào trả lời: ${skipped.map((s) => s.error).join('; ')}`);
+
+  const ks = first.map((x) => keyspace(x.i));
+  const dbsize = ks.flat().reduce((a, d) => a + d.keys, 0);
+  const noTtlTotal = ks.flat().reduce((a, d) => a + Math.max(0, d.keys - d.expires), 0);
+  const base = { at: Date.now(), requested, keys: [] as NoTtlKey[], scanned: 0, scannedNoTtl: 0, dbsize, noTtlTotal, skipped };
+  if (!noTtlTotal) return base;
+
+  await sleep(NO_TTL_CPU_SEC * 1000);
+  const cpuMax = Math.max(0, ...(await Promise.all(first.map(async (x) => {
+    const b = await withTimeout(sections(x.n, ['cpu']), addrOf(x.n)).catch(() => null);
+    return b ? (cpuOf(b) - cpuOf(x.i)) / Math.max(0.001, (Date.now() - x.at) / 1000) : 0;
+  }))));
+  if (cpuMax >= SAMPLE_MAX_CPU) {
+    return { ...base, refused: `CPU luồng chính ${Math.round(cpuMax * 100)}% — không thêm tải quét key lúc này` };
+  }
+
+  // Đích quét: cluster → từng master (db 0); single → từng db có key không TTL.
+  const targets: { client: Redis; db: number; keys: number; noTtl: number }[] = (isCluster(conn)
+    ? first.map((x, j) => ({
+      client: x.n, db: 0,
+      keys: ks[j].reduce((a, d) => a + d.keys, 0),
+      noTtl: ks[j].reduce((a, d) => a + Math.max(0, d.keys - d.expires), 0),
+    }))
+    : ks[0].map((d) => ({ client: getClient(conn, d.db) as Redis, db: d.db, keys: d.keys, noTtl: Math.max(0, d.keys - d.expires) }))
+  ).filter((t) => t.noTtl > 0);
+
+  const deadline = Date.now() + NO_TTL_TIME_MS;
+  const found: { db: number; key: string; client: Redis }[] = [];
+  let scanned = 0;
+  let scannedNoTtl = 0;
+  let stopped: string | undefined;
+  let budgetHit = false;
+
+  outer: for (const t of targets) {
+    // Chia N theo số key không TTL của đích, ngân sách quét theo số key.
+    const quota = Math.max(1, Math.ceil((requested * t.noTtl) / noTtlTotal));
+    const budget = Math.max(1_000, Math.round((NO_TTL_SCAN_BUDGET * t.keys) / Math.max(1, dbsize)));
+    const rtt = await pingMs(t.client);
+    let cursor = '0';
+    let seen = 0;
+    let got = 0;
+    try {
+      do {
+        const [next, keys] = await withTimeout(t.client.scan(cursor, 'COUNT', SCAN_COUNT), `${addrOf(t.client)} SCAN`);
+        cursor = next;
+        if (keys.length) {
+          const p = t.client.pipeline();
+          for (const k of keys) p.ttl(k);
+          const s = performance.now();
+          const res = (await withTimeout(p.exec(), `${addrOf(t.client)} TTL`)) ?? [];
+          const took = performance.now() - s;
+          seen += keys.length;
+          scanned += keys.length;
+          keys.forEach((k, j) => {
+            if (num(res[j]?.[1]) !== -1) return;
+            scannedNoTtl++;
+            if (got < quota && found.length < requested) { found.push({ db: t.db, key: k, client: t.client }); got++; }
+          });
+          if (took > rtt + SLOW_BATCH_MS) {
+            stopped = `một trang ${keys.length} key mất ${Math.round(took)}ms — Redis đang bận, dừng để không thêm tải`;
+            break outer;
+          }
+        }
+        if (found.length >= requested) break outer;
+        if (Date.now() > deadline) { stopped = `hết ${NO_TTL_TIME_MS / 1000}s dành cho quét`; break outer; }
+        await sleep(SCAN_PAUSE_MS);
+      } while (cursor !== '0' && got < quota && seen < budget);
+      if (cursor !== '0' && got < quota && seen >= budget) budgetHit = true;
+    } catch (e) {
+      stopped = (e as Error).message;
+      break;
+    }
+  }
+  if (!stopped && budgetHit && found.length < requested) {
+    stopped = `đã quét hết ngân sách ${fmtCount(NO_TTL_SCAN_BUDGET)} key`;
+  }
+
+  // TYPE + MEMORY USAGE cho các key tìm được, theo lô; chậm / hết giờ thì để trống phần còn lại.
+  const keys: NoTtlKey[] = found.map((f) => ({ db: f.db, key: f.key, pattern: keyPattern(f.key).pattern, type: '?', bytes: null }));
+  let measureStop: string | undefined;
+  const byClient = new Map<Redis, number[]>();
+  found.forEach((f, j) => { byClient.set(f.client, [...(byClient.get(f.client) ?? []), j]); });
+  measure: for (const [client, idx] of byClient) {
+    const rtt = await pingMs(client).catch(() => 0);
+    for (let s0 = 0; s0 < idx.length; s0 += BATCH) {
+      if (Date.now() > deadline + SAMPLE_TIME_MS) { measureStop = 'hết thời gian đo kích thước'; break measure; }
+      const batch = idx.slice(s0, s0 + BATCH);
+      const p = client.pipeline();
+      for (const j of batch) { p.call('MEMORY', 'USAGE', found[j].key, 'SAMPLES', '5'); p.type(found[j].key); }
+      const s = performance.now();
+      const res = await withTimeout(p.exec(), `${addrOf(client)} MEMORY USAGE`).catch(() => null);
+      const took = performance.now() - s;
+      if (!res) { measureStop = 'đo kích thước bị lỗi / quá hạn'; break measure; }
+      batch.forEach((j, b) => {
+        keys[j].bytes = num(res[b * 2]?.[1]);
+        const ty = res[b * 2 + 1]?.[1];
+        keys[j].type = typeof ty === 'string' ? ty : '?';
+      });
+      if (took > rtt + SLOW_BATCH_MS) { measureStop = `một lô đo ${batch.length} key mất ${Math.round(took)}ms — dừng đo kích thước`; break measure; }
+      await sleep(BATCH_PAUSE_MS);
+    }
+  }
+
+  keys.sort((a, b) => (b.bytes ?? -1) - (a.bytes ?? -1));
+  return {
+    ...base, at: Date.now(), keys, scanned, scannedNoTtl,
+    stopped: [stopped, measureStop].filter(Boolean).join(' · ') || undefined,
+  };
+}
+
+const fmtCount = (n: number) => n.toLocaleString('vi-VN');

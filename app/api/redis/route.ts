@@ -15,6 +15,8 @@
 //              chỉ đọc INFO + CONFIG GET, mỗi node có timeout (lib/redisFragDiagnose)
 //     'diagnoseMem'    { connectionId, sample?, history? } → { ok, result: RedisMemDiagnosis }
 //              chỉ đọc; sample=true thêm SCAN + MEMORY USAGE có giới hạn (lib/redisMemDiagnose)
+//     'listNoTtl'      { connectionId, limit? } → { ok, result: NoTtlKeyList }
+//              chỉ đọc; SCAN + TTL có giới hạn đến khi đủ `limit` key không TTL (tối đa 10.000)
 //     'keymissScan'    {}                          → { ok, result: KeymissState[] }  mọi kết nối đã lưu
 //     'keymissCheck'   { connectionId }            → { ok, result: KeymissState }
 //     'keymissRelease' { connectionId, addr? }     → { ok, result: ReleaseResult[] }
@@ -36,7 +38,7 @@ import { REDIS_ENABLED, normalizeDb, ping, scan, lookupKey, getValue, setTtl, se
 import { getConnection } from '@/lib/redisConnections';
 import { diagnoseMisses } from '@/lib/redisDiagnose';
 import { diagnoseFragmentation } from '@/lib/redisFragDiagnose';
-import { diagnoseMemory } from '@/lib/redisMemDiagnose';
+import { diagnoseMemory, listNoTtlKeys } from '@/lib/redisMemDiagnose';
 import { diagnoseClients } from '@/lib/redisClientsDiagnose';
 import { checkKeymiss, releaseKeymiss, scanKeymiss } from '@/lib/redisKeymissGuard';
 
@@ -154,6 +156,9 @@ export async function POST(req: NextRequest) {
             ? body.history.map((h: { at: unknown; mb: unknown }) => ({ at: Number(h.at), mb: Number(h.mb) })).filter((h: { at: number; mb: number }) => Number.isFinite(h.at) && Number.isFinite(h.mb)).slice(-200)
             : [],
         });
+        break;
+      case 'listNoTtl': // danh sách key không TTL (Monitor → Phân tích RAM), chỉ đọc
+        result = await listNoTtlKeys(conn, Number(body.limit ?? 500));
         break;
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });

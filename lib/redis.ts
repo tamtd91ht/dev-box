@@ -5,10 +5,10 @@
 
 import type { RedisMissDiagnosis } from '@/lib/redisDiagnoseRules';
 import type { RedisFragDiagnosis } from '@/lib/redisFragRules';
-import type { RedisMemDiagnosis } from '@/lib/redisMemRules';
+import type { RedisMemDiagnosis, NoTtlKeyList } from '@/lib/redisMemRules';
 import type { RedisClientsDiagnosis } from '@/lib/redisClientsRules';
 import type { KeymissState, ReleaseResult } from '@/lib/redisKeymissGuard';
-export type { RedisMissDiagnosis, RedisFragDiagnosis, RedisMemDiagnosis, RedisClientsDiagnosis, KeymissState, ReleaseResult };
+export type { RedisMissDiagnosis, RedisFragDiagnosis, RedisMemDiagnosis, NoTtlKeyList, RedisClientsDiagnosis, KeymissState, ReleaseResult };
 
 import { apiFetch } from './apiFetch';
 
@@ -183,6 +183,11 @@ export function redisDiagnoseMem(
   connectionId: string, opts: { sample?: boolean; history?: { at: number; mb: number }[] } = {},
 ): Promise<RedisMemDiagnosis> {
   return redisAction<RedisMemDiagnosis>('diagnoseMem', { connectionId, ...opts });
+}
+
+/** Liệt kê tối đa `limit` key không TTL (SCAN + TTL có giới hạn, kèm TYPE + MEMORY USAGE). */
+export function redisListNoTtl(connectionId: string, limit: number): Promise<NoTtlKeyList> {
+  return redisAction<NoTtlKeyList>('listNoTtl', { connectionId, limit });
 }
 
 /**

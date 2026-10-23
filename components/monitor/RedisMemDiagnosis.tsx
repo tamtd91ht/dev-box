@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { redisDiagnoseMem, type RedisMemDiagnosis } from '@/lib/redis';
 import { fmtBytes, fmtN } from '@/lib/diagnose';
 import DiagnosisView from './DiagnosisView';
+import RedisNoTtlKeys from './RedisNoTtlKeys';
 
 /** Giải thích cơ chế — khớp với lib/redisMemDiagnose.ts + lib/redisMemRules.ts. */
 const MECHANISM = (
@@ -38,6 +39,11 @@ const MECHANISM = (
       <b>Lấy mẫu key</b> (bấm mới chạy): <code>SCAN</code> tối đa 50.000 key (lượt 200, nghỉ giữa các lượt), đo <code>MEMORY USAGE … SAMPLES 5</code>{' '}
       + <code>TTL</code> trên tối đa 2.000 key rải đều, gom theo dạng key (<code>user:{'{n}'}:profile</code>) → dạng nào chiếm bao nhiêu % dữ
       liệu (ước lượng), bao nhiêu % không TTL, key lớn trong mẫu.
+    </p>
+    <p>
+      <b>Liệt kê key không TTL</b> (bấm mới chạy, chọn N ≤ 10.000): <code>SCAN</code> lượt 200 + <code>TTL</code> pipeline theo trang đến khi
+      đủ N key có TTL = -1 (trần 300.000 key quét / 30 giây), rồi <code>TYPE</code> + <code>MEMORY USAGE</code> cho đúng các key đó → bảng
+      theo dạng key, sao chép / tải CSV.
     </p>
     <p className="mon-d-faint">
       <b>An toàn production:</b> mức cơ bản chỉ dùng lệnh O(1). Lấy mẫu: bỏ qua nếu CPU luồng chính ≥ 80%; đo theo lô 50 key, lô nào
@@ -144,6 +150,8 @@ export default function RedisMemDiagnosis({ connectionId, history }: Props) {
               : d.sampleRefused ? <>Chưa lấy mẫu: {d.sampleRefused}. </> : <>INFO chỉ cho tổng số — muốn biết dạng key nào chiếm RAM thì lấy mẫu. </>}
             {sampleBtn}
           </p>
+
+          <RedisNoTtlKeys connectionId={connectionId} />
         </>
       ) : null}
       foot={d ? (
