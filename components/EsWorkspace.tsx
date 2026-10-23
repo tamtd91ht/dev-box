@@ -25,6 +25,7 @@ import { useConnRailCollapse, CollapsedConnRail } from './ConnRailCollapse';
 import OverviewView from './es/OverviewView';
 import BrowserView from './es/BrowserView';
 import QuickFindView from './es/QuickFindView';
+import AnalyzeView from './es/AnalyzeView';
 import ConsoleView from './es/ConsoleView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
@@ -34,13 +35,14 @@ import Splitter from './Splitter';
 
 const LAST_CONN_KEY = 'es.lastConn';
 
-type SubView = 'overview' | 'browser' | 'console' | 'quickfind';
+type SubView = 'overview' | 'browser' | 'console' | 'quickfind' | 'analyze';
 
 const SUB_VIEWS: { key: SubView; label: string }[] = [
   { key: 'overview', label: 'Tổng quan' },
   { key: 'browser', label: 'Dữ liệu' },
   { key: 'console', label: '⌨ Console' },
   { key: 'quickfind', label: '🔎 Tìm nhanh' },
+  { key: 'analyze', label: '🩺 Phân tích' },
 ];
 
 export default function EsWorkspace() {
@@ -57,6 +59,11 @@ export default function EsWorkspace() {
   const [pings, setPings] = useState<Record<string, number | 'err'>>({});
 
   const [subView, setSubView] = useState<SubView>('overview');
+  // Cụm đã mở tab Phân tích — chỉ mount AnalyzeView từ lúc đó (cụm đang chọn).
+  const [analyzeSeen, setAnalyzeSeen] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (subView === 'analyze' && activeId && !analyzeSeen.has(activeId)) setAnalyzeSeen(new Set([activeId]));
+  }, [subView, activeId, analyzeSeen]);
   /** Set by the Overview "open index" jump; consumed by BrowserView. */
   const [jumpIndex, setJumpIndex] = useState<string | undefined>(undefined);
 
@@ -256,6 +263,13 @@ export default function EsWorkspace() {
             )}
 
             {subView === 'console' && <ConsoleView key={activeId} connection={active} />}
+
+            {/* Phân tích cụm — ẩn chứ không unmount để quay lại vẫn còn kết quả; đổi cụm → làm lại từ đầu. */}
+            {analyzeSeen.has(activeId) && (
+              <div style={{ display: subView === 'analyze' ? 'contents' : 'none' }}>
+                <AnalyzeView key={activeId} connectionId={activeId} />
+              </div>
+            )}
 
             {/* Quick-find targets its OWN saved connection (per preset). */}
             {subView === 'quickfind' && <QuickFindView connections={connections} />}
