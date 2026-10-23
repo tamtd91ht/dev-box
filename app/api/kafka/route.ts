@@ -8,6 +8,7 @@
 //     'describeGroup' { connectionId, groupId }                → GroupDetail
 //     'consumerLag'   { connectionId }                         → KafkaConsumerLag  (every group, one sweep)
 //     'diagnoseLag'   { connectionId, groupId, seconds }       → KafkaLagDiagnosis (chỉ đọc; đo 2 lần cách `seconds` giây)
+//     'diagnoseCluster' { connectionId }                       → KafkaClusterDiagnosis (chỉ đọc metadata + min.insync.replicas)
 //     'topicGroups'   { connectionId, topic }                  → TopicConsumerGroup[]
 //     'peek'          { connectionId, topic, limit? }          → MessagePage
 //     'peekPending'   { connectionId, topic, partition, committed, limit? } → PendingPage  (a few messages a group hasn't processed; commits nothing)
@@ -40,6 +41,7 @@ import {
 } from '@/lib/kafkaClient';
 import { getConnection } from '@/lib/kafkaConnections';
 import { diagnoseLag } from '@/lib/kafkaDiagnose';
+import { diagnoseKafkaCluster } from '@/lib/kafkaClusterDiagnose';
 
 export const runtime = 'nodejs';
 
@@ -129,6 +131,9 @@ export async function POST(req: NextRequest) {
         break;
       case 'diagnoseLag': // vì sao group này lag (Monitor → Phân tích)
         result = await diagnoseLag(conn, String(body.groupId ?? ''), Number(body.seconds ?? 15));
+        break;
+      case 'diagnoseCluster': // offline / ISR / broker vắng / lệch leader / cấu hình topic rủi ro (tab Phân tích), chỉ đọc
+        result = await diagnoseKafkaCluster(conn);
         break;
       case 'topicGroups':
         result = await listTopicGroups(conn, String(body.topic ?? ''));

@@ -34,6 +34,7 @@ import DateTimeField from '@/components/DateTimeField';
 import { pendingHints } from '@/lib/kafkaPendingHints';
 import ConnTransferButton from './ConnTransferButton';
 import HealthStrip from './kafka/HealthStrip';
+import AnalyzeView from './kafka/AnalyzeView';
 import {
   loadPresets,
   addPreset,
@@ -58,7 +59,7 @@ const LAST_CONN_KEY = 'kafka.lastConn';
 /** Default number of messages a "peek" pulls. */
 const DEFAULT_PEEK = 20;
 
-type SubView = 'topics' | 'groups' | 'lag';
+type SubView = 'topics' | 'groups' | 'lag' | 'analyze';
 /** Inner tabs of a selected topic (Kafka-HQ style: messages front-and-center). */
 type TopicTab = 'messages' | 'partitions' | 'groups';
 
@@ -169,6 +170,8 @@ export default function KafkaWorkspace() {
   const [pings, setPings] = useState<Record<string, number | 'err'>>({});
 
   const [subView, setSubView] = useState<SubView>('topics');
+  // Cụm đã mở tab Phân tích — chỉ mount AnalyzeView từ lúc đó (cụm đang chọn).
+  const [analyzeSeen, setAnalyzeSeen] = useState('');
 
   // ── Topics ────────────────────────────────────────────────────────────────
   // Topic list is per-CLUSTER (not per-tab) — two tabs on the same cluster share
@@ -230,6 +233,7 @@ export default function KafkaWorkspace() {
   // Preset nằm ở configs/presets.json, localStorage chỉ là cache đồng bộ.
   const reloadPresets = useCallback(() => { setPresets(loadPresets()); }, []);
   useEffect(() => { reloadPresets(); }, [reloadPresets]);
+  useEffect(() => { if (subView === 'analyze' && activeId) setAnalyzeSeen(activeId); }, [subView, activeId]);
   usePresetSync('kafka.presets', reloadPresets);
 
   // Dropdown thì phải đóng khi bấm ra ngoài — dock nổi trước đây không cần.
@@ -807,6 +811,11 @@ export default function KafkaWorkspace() {
                 <button className={subView === 'topics' ? 'on' : ''} onClick={() => setSubView('topics')}>Topics</button>
                 <button className={subView === 'groups' ? 'on' : ''} onClick={() => setSubView('groups')}>Consumer groups</button>
                 <button className={subView === 'lag' ? 'on' : ''} onClick={() => setSubView('lag')}>Lag</button>
+                <button
+                  className={subView === 'analyze' ? 'on' : ''}
+                  onClick={() => setSubView('analyze')}
+                  title="Sức khoẻ cụm & replication · lag consumer group · kết nối broker — chỉ đọc"
+                >🩺 Phân tích</button>
               </div>
               <span className="kafka-topbar-actions">
                 {/* Tìm nhanh: nút ngang hàng Topics/Consumer groups, panel bung
@@ -869,14 +878,14 @@ export default function KafkaWorkspace() {
                     )}
                   </span>
                 )}
-                <button
+                {subView !== 'analyze' && <button
                   className="chip-btn"
                   onClick={() => {
                     if (subView === 'topics') void loadTopics(tabConnId);
                     else if (subView === 'groups') void loadGroups();
                     else void runLagCheck(); // vẫn là hành động chủ động của người dùng
                   }}
-                >↻ Tải lại</button>
+                >↻ Tải lại</button>}
               </span>
             </div>
 
@@ -1178,6 +1187,13 @@ export default function KafkaWorkspace() {
                   />
                 );
               })()}
+              </div>
+            )}
+
+            {/* Phân tích — ẩn chứ không unmount để quay lại vẫn còn kết quả; đổi cụm → làm lại từ đầu. */}
+            {analyzeSeen === activeId && (
+              <div style={{ display: subView === 'analyze' ? 'contents' : 'none' }}>
+                <AnalyzeView key={activeId} connectionId={activeId} />
               </div>
             )}
 

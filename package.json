@@ -22,6 +22,7 @@
     "check:automation": "tsx scripts/check-automation-meta.ts",
     "check:es-vars": "tsx scripts/check-es-query-vars.ts",
     "check:rate": "tsx scripts/check-rate-math.ts",
+    "check:kafka-cluster": "tsx scripts/check-kafka-cluster.ts",
     "check:monitor": "tsx scripts/check-monitor.ts",
     "check:pg-diagnose": "tsx scripts/check-pg-diagnose.ts",
     "check:redis-diagnose": "tsx scripts/check-redis-diagnose.ts",

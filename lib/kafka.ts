@@ -5,7 +5,8 @@
 
 import { apiFetch } from './apiFetch';
 import type { KafkaLagDiagnosis } from '@/lib/kafkaDiagnoseRules';
-export type { KafkaLagDiagnosis };
+import type { KafkaClusterDiagnosis } from '@/lib/kafkaClusterRules';
+export type { KafkaLagDiagnosis, KafkaClusterDiagnosis };
 
 /** A Kafka connection as returned to the browser. */
 export interface PublicKafkaConnection {
@@ -364,6 +365,11 @@ export function kafkaDiagnoseLag(connectionId: string, groupId: string, seconds:
 }
 
 /** Consumer groups that consume THIS topic (have committed offsets), with per-partition lag. */
+/** Sức khoẻ cụm / replication (tab Phân tích) — chỉ đọc metadata + min.insync.replicas. */
+export function kafkaDiagnoseCluster(connectionId: string): Promise<KafkaClusterDiagnosis> {
+  return kafkaAction<KafkaClusterDiagnosis>('diagnoseCluster', { connectionId });
+}
+
 export function listKafkaTopicGroups(connectionId: string, topic: string): Promise<TopicConsumerGroup[]> {
   return kafkaAction<TopicConsumerGroup[]>('topicGroups', { connectionId, topic });
 }
