@@ -24,6 +24,7 @@ import {
 } from '@/lib/redis';
 import ConnTransferButton from './ConnTransferButton';
 import MonitorStrip from './redis/MonitorStrip';
+import DiagnosePanel from './redis/DiagnosePanel';
 import QuickFindPanel from './redis/QuickFindPanel';
 import SessionHistory from './SessionHistory';
 import { recordSession, short, type RedisSession } from '@/lib/sessionHistory';
@@ -806,6 +807,9 @@ export default function RedisWorkspace() {
 
             {/* Live monitor (INFO 30s) — collapsed by default, per-node when cluster. */}
             <MonitorStrip connectionId={activeConn.id} />
+
+            {/* Phân tích hit rate / RAM / client / phân mảnh — chọn mục nào mới chạy mục đó. */}
+            <DiagnosePanel connectionId={activeConn.id} />
 
             {/* Search bar — pattern + DB; SCAN runs automatically (debounced), no button. */}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
