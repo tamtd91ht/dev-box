@@ -109,6 +109,14 @@ export default function MinioWorkspace() {
 
   useEffect(() => { void loadConnections(); }, [loadConnections]);
 
+  // Nơi khác thêm/sửa connection vào cùng registry (hộp "Lưu ảnh" của tab Công
+  // việc) → nạp lại để tab này thấy ngay, kể cả khi đã mount từ trước.
+  useEffect(() => {
+    const h = () => void loadConnections();
+    window.addEventListener('devbox:minio-connections-changed', h);
+    return () => window.removeEventListener('devbox:minio-connections-changed', h);
+  }, [loadConnections]);
+
   useEffect(() => {
     if (activeId) writeLocal(LAST_CONN_KEY, activeId);
   }, [activeId]);

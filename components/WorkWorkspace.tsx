@@ -36,11 +36,16 @@
 //     xong trong một TUẦN / THÁNG, có deadline + tag, xem Kanban hoặc bảng. Khác
 //     hai tab trên: dùng được cả khi CHƯA cấu hình Mongo (lưu file local) — vì vậy
 //     thanh tab con luôn hiện, kể cả ở màn cài đặt.
+//
+// ẢNH (components/work/WorkImages): mô tả task, nội dung ghi chú và ghi chú
+// trọng tâm nhận ảnh dán (Ctrl+V) / kéo thả / chọn file. Ảnh lưu local
+// (data/work-images, gitignore) hoặc MinIO — chọn ở nút ⚙ cạnh "Chèn ảnh".
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ConnectionForm from './mongo/ConnectionForm';
 import NotesPanel from './work/NotesPanel';
 import FocusPanel from './work/FocusPanel';
+import { useImageAttach, ImageBar, ImageThumbs, RichText } from './work/WorkImages';
 import { LunarTag, LunarCard, LunarReminderForm, useLunarHover, type LunarReminderInput } from './work/LunarCard';
 import { occursOn, alertText, repeatText, type LunarReminder } from '@/lib/lunarReminderCore';
 import type { PublicMongoConnection } from '@/lib/mongo';
@@ -420,6 +425,7 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
   const [project, setProject] = useState(initial?.project ?? '');
   const [name, setName] = useState(initial?.name ?? '');
   const [desc, setDesc] = useState(initial?.desc ?? '');
+  const descImg = useImageAttach(desc, setDesc);
   const [priority, setPriority] = useState<Priority>(initial?.priority ?? 'normal');
   const [tags, setTags] = useState(initial?.tags.join(', ') ?? '');
   const [start, setStart] = useState(initial?.startDate ?? startDate);
@@ -520,9 +526,12 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
           <label className="wk-field"><span>Tên công việc *</span>
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="vd Bàn giao chức năng A" autoFocus />
           </label>
-          <label className="wk-field wk-span2"><span>Mô tả chung</span>
-            <textarea className="input wk-desc" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Ghi chú phạm vi, link tài liệu…" />
-          </label>
+          {/* div chứ không phải label: bấm nút trong ImageBar không được nhảy focus vào ô. */}
+          <div className="wk-field wk-span2"><span>Mô tả chung</span>
+            <textarea className="input wk-desc" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Ghi chú phạm vi, link tài liệu… (dán ảnh chụp màn hình bằng Ctrl+V)" {...descImg.taProps} />
+            <ImageBar attach={descImg} />
+            <ImageThumbs text={desc} onChange={setDesc} />
+          </div>
           <label className="wk-field"><span>Ưu tiên</span>
             <select className="input" value={priority} onChange={(e) => setPriority(e.target.value as Priority)}>
               {(Object.keys(PRIORITY_META) as Priority[]).map((k) => <option key={k} value={k}>{PRIORITY_META[k].label}</option>)}
@@ -1226,7 +1235,7 @@ export default function WorkWorkspace() {
             {/* 'deadline' = hôm nay tới hạn (đỏ); còn lại là ghi chú mềm (vd "từ 05/08"). */}
             {badge && <span className={`wk-badge-dl${badge === 'deadline' ? '' : ' soft'}`}>{badge}</span>}
           </div>
-          {t.desc && <div className="wk-task-desc">{t.desc}</div>}
+          {t.desc && <RichText className="wk-task-desc" text={t.desc} />}
           <div className="wk-task-meta">
             {t.kind === 'daily' && fmtSpan(t) && (
               <span className="wk-span" title={`Việc trong ngày ${t.startDate.split('-').reverse().join('/')} · ${durText(slotsOf(t))}`}>

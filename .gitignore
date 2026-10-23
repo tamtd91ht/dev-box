@@ -88,6 +88,8 @@ bot/.status.json
 # (cookies/localStorage/IndexedDB/cache live here; machine-specific, never commit)
 dist/
 data/browser/
+# Công việc — ảnh đính kèm khi chọn chế độ lưu LOCAL (lib/workImages) — never commit
+data/work-images/
 electron/dist/
 
 # IDE config + ad-hoc screenshots dropped into the repo root

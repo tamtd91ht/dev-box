@@ -500,6 +500,18 @@ export default function Home() {
    *  mở bảng chọn. Giữ Ctrl khi bấm để THOÁT Ultra View và xem mỗi tab đó,
    *  lối ra nhanh khi đang cần một màn hình rộng. `mode` luôn được cập nhật để
    *  danh sách "vừa dùng" và tắt Ultra View sau đó rơi về đúng tab. */
+  // Workspace con nhảy sang tab khác (vd hộp "Lưu ảnh" của Công việc → menu
+  // MinIO): phát `devbox:open-tab` với detail là key tab — khỏi phải luồn
+  // callback qua props của từng workspace.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const key = (e as CustomEvent<string>).detail;
+      if (typeof key === 'string' && key) setMode(key);
+    };
+    window.addEventListener('devbox:open-tab', onOpen);
+    return () => window.removeEventListener('devbox:open-tab', onOpen);
+  }, []);
+
   const pickTab = useMemo(
     () => (key: string, e?: React.MouseEvent): void => {
       setMode(key);

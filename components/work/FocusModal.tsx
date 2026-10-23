@@ -4,7 +4,8 @@
 // án, tag, ghi chú, checklist việc con. Nút "Chuyển sang kỳ sau" và "Xóa" chỉ có
 // khi sửa nhiệm vụ đã tồn tại.
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
+import { useImageAttach, ImageBar, ImageThumbs } from './WorkImages';
 import {
   FOCUS_STATUSES, FOCUS_PRIORITIES, periodEnd, cleanTags,
   type FocusItem, type FocusPeriod, type FocusPriority, type FocusStatus, type FocusSub,
@@ -72,6 +73,8 @@ export default function FocusModal({
   const [tagIn, setTagIn] = useState('');
   const [subIn, setSubIn] = useState('');
   const set = (patch: Partial<FocusDraft>) => setD((x) => ({ ...x, ...patch }));
+  const setNote = useCallback((note: string) => setD((x) => ({ ...x, note })), []);
+  const noteImg = useImageAttach(d.note, setNote);
 
   const addTags = (raw: string) => {
     const add = cleanTags(raw);
@@ -155,10 +158,12 @@ export default function FocusModal({
             )}
           </div>
 
-          <label className="fc-fld"><span>Ghi chú</span>
-            <textarea className="input" rows={4} placeholder="Mô tả, tiêu chí hoàn thành, liên kết…" value={d.note}
-              onChange={(e) => set({ note: e.target.value })} style={{ resize: 'vertical' }} />
-          </label>
+          <div className="fc-fld"><span>Ghi chú</span>
+            <textarea className="input" rows={4} placeholder="Mô tả, tiêu chí hoàn thành, liên kết… (dán ảnh bằng Ctrl+V)" value={d.note}
+              onChange={(e) => set({ note: e.target.value })} style={{ resize: 'vertical' }} {...noteImg.taProps} />
+            <ImageBar attach={noteImg} />
+            <ImageThumbs text={d.note} onChange={setNote} />
+          </div>
 
           <div className="fc-fld"><span>Việc con{d.subtasks.length ? ` (${d.subtasks.filter((s) => s.done).length}/${d.subtasks.length})` : ''}</span>
             <div className="fc-subs">

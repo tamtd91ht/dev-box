@@ -15,6 +15,8 @@
 // hình kho lưu trữ là ghi chú dùng được ngay.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useImageAttach, ImageBar, ImageThumbs } from './WorkImages';
+import { imageRefs, stripImages } from '@/lib/workImageCore';
 
 export interface WorkNote {
   id: string;
@@ -74,6 +76,8 @@ export default function NotesPanel({ action }: {
   const [tagSel, setTagSel] = useState<string[]>([]);
 
   const nameRef = useRef<HTMLInputElement>(null);
+  const setBody = useCallback((body: string) => setDraft((d) => (d ? { ...d, body } : d)), []);
+  const bodyImg = useImageAttach(draft?.body ?? '', setBody);
 
   const load = useCallback(async (keepId?: string | null) => {
     try {
@@ -99,7 +103,7 @@ export default function NotesPanel({ action }: {
       if (tagSel.length > 0 && !tagSel.every((t) => n.tags.includes(t))) return false;
       if (!q) return true;
       // Tìm trên TÊN + TAG + NỘI DUNG — ghi chú là để tra lại, nội dung phải khớp được.
-      return stripVN(`${n.name} ${n.tags.join(' ')} ${n.body}`).includes(q);
+      return stripVN(`${n.name} ${n.tags.join(' ')} ${stripImages(n.body)}`).includes(q);
     });
   }, [notes, kw, tagSel]);
 
@@ -208,7 +212,8 @@ export default function NotesPanel({ action }: {
                   <span className="wk-note-tags">{n.tags.map((t) => <span key={t} className="wk-tag">#{t}</span>)}</span>
                 )}
                 {/* Dòng preview: 120 ký tự đầu, xuống dòng nén lại thành khoảng trắng. */}
-                {n.body.trim() && <span className="wk-note-prev">{n.body.replace(/\s+/g, ' ').trim().slice(0, 120)}</span>}
+                {stripImages(n.body).trim() && <span className="wk-note-prev">{stripImages(n.body).replace(/\s+/g, ' ').trim().slice(0, 120)}</span>}
+                {imageRefs(n.body).length > 0 && <span className="wk-note-time">🖼 {imageRefs(n.body).length} ảnh</span>}
                 <span className="wk-note-time">Sửa lúc {fmtTime(n.updatedAt || n.createdAt)}</span>
               </button>
               <button className="ghost sm" onClick={() => void remove(n)} disabled={busy} title="Xóa ghi chú">🗑</button>
@@ -287,15 +292,18 @@ export default function NotesPanel({ action }: {
 
             <textarea
               className="input wk-notes-body"
-              placeholder="Nội dung ghi chú…"
+              placeholder="Nội dung ghi chú… (dán ảnh chụp màn hình bằng Ctrl+V)"
               value={draft.body}
               onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+              {...bodyImg.taProps}
               onKeyDown={(e) => {
                 // Ctrl/Cmd+S — phản xạ soạn thảo, khỏi rời tay khỏi bàn phím.
                 if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); void save(); }
               }}
               spellCheck={false}
             />
+            <ImageBar attach={bodyImg} />
+            <ImageThumbs text={draft.body} onChange={setBody} />
             <div className="small" style={{ color: 'var(--muted)' }}>
               {draft.body.length.toLocaleString('vi-VN')} ký tự · Ctrl+S để lưu nhanh
               {base && ` · tạo lúc ${fmtTime(notes.find((n) => n.id === base.id)?.createdAt ?? 0)}`}
