@@ -5,9 +5,10 @@
 //
 // This file is the SHELL: connection selection + sub-view routing. Views live
 // in components/pg/*. Reads run inside READ ONLY transactions server-side; the
-// ONLY write is UPDATE-with-WHERE behind three independent gates —
-// PG_ALLOW_WRITE env (server) + per-connection readOnly (defaults ON) + a
-// typed-confirm modal with dry-run count (UI). Styling self-owned under `.pg-*`.
+// writes — UPDATE-with-WHERE (modal ở mục Dữ liệu) and free SQL (mục
+// "⚡ Thực thi SQL") — sit behind three independent gates: PG_ALLOW_WRITE env
+// (server) + per-connection readOnly (defaults ON) + dry-run then typed
+// confirm (UI). Styling self-owned under `.pg-*`.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -27,6 +28,7 @@ import ConnRail from './pg/ConnRail';
 import OverviewView from './pg/OverviewView';
 import BrowserView from './pg/BrowserView';
 import QuickFindView from './pg/QuickFindView';
+import ExecView from './pg/ExecView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
 import { onInfraFocus } from '@/lib/infraFocus';
@@ -39,12 +41,13 @@ const LAST_CONN_KEY = 'pg.lastConn';
  *  ném về Tổng quan rồi tự bấm lại sang Dữ liệu mỗi lần. */
 const LAST_VIEW_KEY = 'pg.lastView';
 
-type SubView = 'overview' | 'browser' | 'quickfind';
+type SubView = 'overview' | 'browser' | 'quickfind' | 'exec';
 
 const SUB_VIEWS: { key: SubView; label: string }[] = [
   { key: 'overview', label: 'Tổng quan' },
   { key: 'browser', label: 'Dữ liệu' },
   { key: 'quickfind', label: '🔎 Tìm nhanh' },
+  { key: 'exec', label: '⚡ Thực thi SQL' },
 ];
 
 export default function PgWorkspace() {
@@ -231,7 +234,7 @@ export default function PgWorkspace() {
                 {readOnly
                   ? <span className="badge" title="UPDATE bị chặn trên connection này (SELECT vẫn thoải mái)">🔒 read-only</span>
                   : allowWrite
-                    ? <span className="badge" style={{ color: 'var(--err)' }} title="UPDATE-with-WHERE đang mở trên connection này">✎ write armed</span>
+                    ? <span className="badge" style={{ color: 'var(--err)' }} title="Ghi đang mở trên connection này — ✎ Update ở mục Dữ liệu, SQL tự do ở mục ⚡ Thực thi SQL">✎ write armed</span>
                     : <span className="badge" title="PG_ALLOW_WRITE chưa bật — write khoá toàn tool">🔒 write off (env)</span>}
                 {subView === 'overview' && <button className="chip-btn" onClick={() => void loadOverview()}>↻ Tải lại</button>}
               </div>
@@ -261,6 +264,16 @@ export default function PgWorkspace() {
                 readOnly={readOnly}
                 allowWrite={allowWrite}
                 initialDb={jumpDb}
+              />
+            )}
+
+            {subView === 'exec' && (
+              <ExecView
+                key={activeId}
+                connectionId={activeId}
+                defaultDb={active.database}
+                readOnly={readOnly}
+                allowWrite={allowWrite}
               />
             )}
 

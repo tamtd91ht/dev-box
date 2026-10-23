@@ -15,11 +15,13 @@
 //     'quickCount' { connectionId, db, schema, table, entries[] } → { ok, result: { count } }
 //     'countWhere' { connectionId, db, schema, table, where } → { ok, result: { count } }         (update dry-run)
 //     'update'     { connectionId, db, schema, table, set[], where } → { ok, result: { updated } } (gated write)
+//     'exec'       { connectionId, db, sql, commit }       → { ok, result: PgExecResult }         (gated write; commit=false → ROLLBACK)
 //
 // Reads run inside READ ONLY transactions with statement_timeout — the
-// database itself refuses any write smuggled into a "read". 'update' is the
-// ONLY write and passes: PG_ALLOW_WRITE env + per-connection readOnly +
-// mandatory non-empty WHERE (all enforced in lib/pgClient).
+// database itself refuses any write smuggled into a "read". The writes —
+// 'update' (mandatory non-empty WHERE) and 'exec' (free SQL in one tool-owned
+// transaction) — both pass PG_ALLOW_WRITE env + per-connection readOnly (all
+// enforced in lib/pgClient).
 // Gated by PG_TOOL_ENABLED (403 when off).
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -38,6 +40,7 @@ import {
   quickCount,
   countWhere,
   updateWithWhere,
+  executeSql,
 } from '@/lib/pgClient';
 import { getConnection, buildUnsavedConnection } from '@/lib/pgConnections';
 import { diagnoseCacheHit } from '@/lib/pgDiagnose';
@@ -146,6 +149,16 @@ export async function POST(req: NextRequest) {
           });
         } catch (err) {
           const msg = (err as Error).message || 'update refused';
+          const gate = msg.includes('disabled for the whole tool') || msg.includes('is read-only');
+          return NextResponse.json({ ok: false, error: msg }, { status: gate ? 403 : 400 });
+        }
+        break;
+      }
+      case 'exec': {
+        try {
+          result = await executeSql(conn, db, body.sql, body.commit === true);
+        } catch (err) {
+          const msg = (err as Error).message || 'exec refused';
           const gate = msg.includes('disabled for the whole tool') || msg.includes('is read-only');
           return NextResponse.json({ ok: false, error: msg }, { status: gate ? 403 : 400 });
         }

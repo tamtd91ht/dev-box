@@ -12,8 +12,8 @@
 //
 // Every read runs server-side inside a READ ONLY transaction with a statement
 // timeout — the database itself refuses writes smuggled into a "read" query.
-// Results are row-capped (500). The ONLY write is the ✎ UPDATE modal
-// (triple-gated, WHERE mandatory).
+// Results are row-capped (500). The only write here is the ✎ UPDATE modal
+// (triple-gated, WHERE mandatory); free write SQL lives in ExecView.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -229,8 +229,17 @@ function BrowserViewInner({
       const r = await queryPg(connectionId, target.selected.db, eff);
       setRt(tabId, { result: r, busy: false });
     }
-    catch (e) { setRt(tabId, { error: (e as Error).message, busy: false }); }
-  }, [connectionId, activeId, tabs.tabs, setRt]);
+    catch (e) {
+      let msg = (e as Error).message;
+      // Gõ INSERT/DELETE/DDL vào đây sẽ va READ ONLY — chỉ đường sang đúng chỗ.
+      if (/read-only transaction/i.test(msg)) {
+        msg += allowWrite && !readOnly
+          ? '\n\nÔ này luôn chạy READ ONLY. Câu lệnh có ghi → mở mục “⚡ Thực thi SQL” (chạy thử rồi commit).'
+          : '\n\nÔ này luôn chạy READ ONLY. Muốn ghi: bật PG_ALLOW_WRITE + bỏ read-only ở connection, rồi dùng mục “⚡ Thực thi SQL”.';
+      }
+      setRt(tabId, { error: msg, busy: false });
+    }
+  }, [connectionId, activeId, tabs.tabs, setRt, allowWrite, readOnly]);
 
   const loadColumns = useCallback(async (tabId = activeId) => {
     const sel = tabs.tabs.find((t) => t.id === tabId)?.state.selected;

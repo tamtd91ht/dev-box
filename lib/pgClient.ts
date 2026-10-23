@@ -15,6 +15,9 @@
 //      with a NON-EMPTY WHERE clause, parameterized SET values, no other
 //      statement kind. Gates: PG_ALLOW_WRITE env + per-connection readOnly
 //      (defaults true) + typed-confirm modal in the UI. Audit-logged.
+//      Ngoài ra màn "⚡ Thực thi SQL" (executeSql) chạy SQL tự do sau CÙNG hai
+//      cổng đó, trong một transaction tool tự mở: chạy thử = ROLLBACK, ghi thật
+//      = COMMIT (UI bắt chạy thử đúng câu đó trước). Audit-logged.
 //   5. Identifiers (database/schema/table/column) are validated + quoted;
 //      values travel as bind parameters, never concatenated.
 //   6. KHÔNG ĐỂ BẢNG KẸT KHOÁ. Mọi transaction (đọc lẫn UPDATE) đặt
@@ -810,6 +813,152 @@ export async function updateWithWhere(conn: PgConnection, db: string, input: PgU
     `set=${sanitize(set.map((s) => s.column).join(','))} where=${sanitize(where)} updated=${updated} ts=${new Date().toISOString()}`,
   );
   return { updated };
+}
+
+// ── Thực thi SQL tự do (INSERT / UPDATE / DELETE / DDL) ──────────────────────
+//
+// Màn "⚡ Thực thi SQL" — cùng hai cổng với UPDATE ở trên (PG_ALLOW_WRITE +
+// readOnly của connection). Cả khối chạy trong MỘT transaction do tool mở:
+//   · commit=false → CHẠY THỬ: thực thi thật rồi ROLLBACK — biết chính xác số
+//     dòng bị ảnh hưởng / lỗi gì trước khi ghi. (Sequence đã nextval thì
+//     không lùi lại — PG vốn vậy.)
+//   · commit=true  → thực thi rồi COMMIT. Ghi audit như UPDATE.
+// Lệnh điều khiển transaction (BEGIN/COMMIT/ROLLBACK/…) bị từ chối: một COMMIT
+// lọt vào giữa sẽ biến "chạy thử" thành ghi thật. Lệnh không chạy được trong
+// transaction (VACUUM, CREATE INDEX CONCURRENTLY, CREATE DATABASE) thì PG tự
+// báo lỗi — tool này không hỗ trợ chúng.
+
+export interface PgExecStatement {
+  /** INSERT / UPDATE / DELETE / CREATE / ALTER / SELECT … (do PG trả về). */
+  command: string;
+  rowCount: number | null;
+}
+
+export interface PgExecResult extends PgQueryResult {
+  committed: boolean;
+  statements: PgExecStatement[];
+}
+
+const TX_CONTROL = /^(BEGIN|COMMIT|ROLLBACK|END|ABORT|SAVEPOINT|RELEASE|START|PREPARE|SET\s+TRANSACTION|SET\s+SESSION\s+CHARACTERISTICS)\b/i;
+
+/**
+ * Tách câu SQL thành từng lệnh, bỏ qua `;` nằm trong chuỗi '…', định danh "…",
+ * chuỗi $tag$…$tag$ và comment. Chỉ dùng để soát từ khoá đầu mỗi lệnh — câu
+ * gửi lên PG vẫn là nguyên văn người dùng gõ.
+ */
+export function splitStatements(sql: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let i = 0;
+  while (i < sql.length) {
+    const ch = sql[i];
+    const two = sql.slice(i, i + 2);
+    if (two === '--') {
+      const nl = sql.indexOf('\n', i);
+      i = nl < 0 ? sql.length : nl + 1;
+      cur += ' ';
+      continue;
+    }
+    if (two === '/*') {
+      const end = sql.indexOf('*/', i + 2);
+      i = end < 0 ? sql.length : end + 2;
+      cur += ' ';
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      // E'…' cho phép \' — không tính thì máy tách lệnh lệch pha với PG.
+      const esc = ch === "'" && /[eE]/.test(sql[i - 1] ?? '') && !/[A-Za-z0-9_$]/.test(sql[i - 2] ?? '');
+      let j = i + 1;
+      while (j < sql.length) {
+        if (esc && sql[j] === '\\') { j += 2; continue; }
+        if (sql[j] === ch) { if (sql[j + 1] === ch) { j += 2; continue; } break; }
+        j++;
+      }
+      cur += sql.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    if (ch === '$') {
+      const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
+      if (m) {
+        const end = sql.indexOf(m[0], i + m[0].length);
+        const stop = end < 0 ? sql.length : end + m[0].length;
+        cur += sql.slice(i, stop);
+        i = stop;
+        continue;
+      }
+    }
+    if (ch === ';') {
+      if (cur.trim()) out.push(cur.trim());
+      cur = '';
+      i++;
+      continue;
+    }
+    cur += ch;
+    i++;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+/** Lệnh điều khiển transaction đầu tiên trong danh sách (null = không có). */
+export function txControlStatement(stmts: string[]): string | null {
+  return stmts.find((s) => TX_CONTROL.test(s)) ?? null;
+}
+
+export async function executeSql(conn: PgConnection, db: string, rawSql: unknown, commit: boolean): Promise<PgExecResult> {
+  if (!PG_ALLOW_WRITE) {
+    throw new Error('Writes are disabled for the whole tool. Set PG_ALLOW_WRITE=true in .env.local (local dev only).');
+  }
+  if (conn.readOnly) {
+    throw new Error(`Connection "${conn.name}" is read-only. Edit the connection and untick read-only to arm writes.`);
+  }
+  const sql = String(rawSql ?? '').trim();
+  const stmts = splitStatements(sql);
+  if (stmts.length === 0) throw new Error('SQL trống');
+  const bad = txControlStatement(stmts);
+  if (bad) {
+    throw new Error(`Không cho phép lệnh điều khiển transaction ("${bad.split(/\s+/)[0]}") — tool tự mở transaction và tự COMMIT/ROLLBACK.`);
+  }
+
+  const pool = await getPool(conn, db);
+  const client = await pool.connect();
+  const t0 = Date.now();
+  let results: import('pg').QueryResult[];
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL statement_timeout = ${STMT_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`);
+    // Không bind param → simple query protocol → chạy được nhiều lệnh một lượt,
+    // node-pg trả về mảng kết quả theo từng lệnh.
+    const res = await client.query(sql) as unknown as import('pg').QueryResult | import('pg').QueryResult[];
+    results = Array.isArray(res) ? res : [res];
+    await client.query(commit ? 'COMMIT' : 'ROLLBACK');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+  const tookMs = Date.now() - t0;
+
+  const statements = results.map((r) => ({ command: r.command ?? '?', rowCount: r.rowCount ?? null }));
+  // Lưới kết quả = lệnh cuối có trả dòng (SELECT / … RETURNING).
+  const withRows = [...results].reverse().find((r) => (r.fields?.length ?? 0) > 0);
+  const rows: Record<string, unknown>[] = withRows?.rows ?? [];
+  const capped = rows.length > QUERY_ROWS_MAX;
+  const kept = rows.slice(0, QUERY_ROWS_MAX);
+  const columns = withRows?.fields?.map((f) => f.name) ?? [];
+
+  if (commit) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `PG_AUDIT operation=EXEC connection=${conn.name} db=${db || conn.database} ` +
+      `statements=${sanitize(statements.map((s) => `${s.command}:${s.rowCount ?? '-'}`).join(','))} ` +
+      `sql=${sanitize(sql)} ts=${new Date().toISOString()}`,
+    );
+  }
+  return { columns, rows: kept.map(toWire), rowCount: kept.length, capped, tookMs, committed: commit, statements };
 }
 
 /** Dry-run count for a raw WHERE (update modal). Read-only tx. */

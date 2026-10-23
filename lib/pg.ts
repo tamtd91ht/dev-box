@@ -137,6 +137,12 @@ export interface PgQueryResult {
   tookMs: number;
 }
 
+/** Kết quả màn "⚡ Thực thi SQL" — lưới = lệnh cuối có trả dòng (SELECT / RETURNING). */
+export interface PgExecResult extends PgQueryResult {
+  committed: boolean;
+  statements: { command: string; rowCount: number | null }[];
+}
+
 export interface PgQuickFindResult extends PgQueryResult {
   hasMore: boolean;
   offset: number;
@@ -280,6 +286,11 @@ export function pgUpdate(
   p: { schema: string; table: string; set: PgUpdateSet[]; where: string },
 ): Promise<{ updated: number }> {
   return pgAction<{ updated: number }>('update', { connectionId, db, ...p });
+}
+
+/** SQL tự do có ghi. commit=false → chạy thử rồi ROLLBACK; true → COMMIT. */
+export function pgExec(connectionId: string, db: string, sql: string, commit: boolean): Promise<PgExecResult> {
+  return pgAction<PgExecResult>('exec', { connectionId, db, sql, commit });
 }
 
 // ── Shared formatters ─────────────────────────────────────────────────────────
