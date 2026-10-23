@@ -37,6 +37,8 @@ export interface PublicRedisConnection {
   hasPassword: boolean;
   /** Không dùng làm cache (lock / queue / session / pub-sub) → Monitor không cảnh báo hit rate. */
   notCache?: boolean;
+  /** Cổng ghi của màn "⚡ Chạy lệnh" (mặc định true). */
+  readOnly: boolean;
 }
 
 /** Body for add/update — password optional (omit on edit to keep the stored one). */
@@ -53,6 +55,8 @@ export interface RedisConnectionInput {
 
 export interface RedisConnectionsResponse {
   enabled: boolean;
+  /** REDIS_ALLOW_WRITE — false thì màn "⚡ Chạy lệnh" khoá ngay từ UI. */
+  allowWrite: boolean;
   connections: PublicRedisConnection[];
 }
 
@@ -91,10 +95,10 @@ export interface DeleteResult {
 export async function fetchRedisConnections(): Promise<RedisConnectionsResponse> {
   try {
     const r = await apiFetch('/api/redis-connections', { timeoutMs: 15000 });
-    if (!r.ok) return { enabled: false, connections: [] };
+    if (!r.ok) return { enabled: false, allowWrite: false, connections: [] };
     return (await r.json()) as RedisConnectionsResponse;
   } catch {
-    return { enabled: false, connections: [] };
+    return { enabled: false, allowWrite: false, connections: [] };
   }
 }
 
@@ -265,6 +269,28 @@ export function setRedisValue(
 }
 
 // ── Small shared formatters (used by the workspace UI) ──────────────────────────
+
+export interface CmdKeyState {
+  key: string;
+  type: RedisKeyType;
+  /** ms; -1 = không TTL, -2 = không tồn tại. */
+  pttl: number;
+  size: number | null;
+  lock: boolean;
+}
+
+export interface CmdRunResult {
+  committed: boolean;
+  lines: { line: number; command: string; write: boolean; ok?: boolean; reply?: string; error?: string }[];
+  keys: CmdKeyState[];
+  warnings: string[];
+  tookMs: number;
+}
+
+/** Màn "⚡ Chạy lệnh": commit=false chỉ soát lệnh + đọc trạng thái key, không ghi. */
+export function runRedisCommands(connectionId: string, db: number, script: string, commit: boolean): Promise<CmdRunResult> {
+  return redisAction<CmdRunResult>('cmd', { connectionId, db, script, commit });
+}
 
 /** Humanize a TTL in seconds: -1 = no expiry, -2 = missing key. */
 export function humanizeTtl(ttl: number): string {

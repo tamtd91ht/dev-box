@@ -53,6 +53,12 @@ export interface RedisConnection {
    * khác (RAM, phân mảnh, client) giữ nguyên.
    */
   notCache?: boolean;
+  /**
+   * Cổng ghi của màn "⚡ Chạy lệnh" — TRUE (mặc định, kể cả bản ghi lưu trước khi
+   * có cờ này) thì màn đó bị server từ chối. Ghi/xoá key ở tab Dữ liệu không đi
+   * qua cổng này.
+   */
+  readOnly: boolean;
 }
 
 /** The client-safe projection of a connection — password stripped, presence flagged. */
@@ -116,6 +122,8 @@ function normalize(c: RedisConnection): RedisConnection {
     port: Number.isInteger(c.port) ? c.port : nodes[0]?.port ?? 6379,
     nodes: mode === 'cluster' ? nodes : undefined,
     password: typeof c.password === 'string' && c.password.length ? c.password : undefined,
+    notCache: c.notCache === true ? true : undefined,
+    readOnly: c.readOnly !== false,
   };
 }
 
@@ -142,6 +150,7 @@ interface ConnectionInput {
   nodes?: unknown;
   password?: unknown;
   notCache?: unknown;
+  readOnly?: unknown;
 }
 
 /** Parse one seed entry — accepts {host,port} or a "host:port" string. Throws on bad input. */
@@ -172,13 +181,15 @@ function validate(body: ConnectionInput): Omit<RedisConnection, 'id'> {
   const project = typeof body.project === 'string' && body.project.trim() ? body.project.trim() : 'default';
   const password = typeof body.password === 'string' && body.password.length ? body.password : undefined;
   const notCache = body.notCache === true ? true : undefined;
+  // Không gửi cờ → read-only (updateConnection giữ giá trị cũ thay vì ép về true).
+  const readOnly = body.readOnly !== false;
 
   if (mode === 'cluster') {
     const rawNodes = Array.isArray(body.nodes) ? body.nodes : [];
     const nodes = rawNodes.map(parseNode);
     if (nodes.length === 0) throw new Error('cluster mode requires at least one seed node (host:port)');
     // Mirror the first seed into host/port so badges/signatures have an address.
-    return { name, project, mode, host: nodes[0].host, port: nodes[0].port, nodes, password, notCache };
+    return { name, project, mode, host: nodes[0].host, port: nodes[0].port, nodes, password, notCache, readOnly };
   }
 
   const host = typeof body.host === 'string' ? body.host.trim() : '';
@@ -186,7 +197,7 @@ function validate(body: ConnectionInput): Omit<RedisConnection, 'id'> {
   const port = Number(body.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('port must be 1–65535');
 
-  return { name, project, mode, host, port, nodes: undefined, password, notCache };
+  return { name, project, mode, host, port, nodes: undefined, password, notCache, readOnly };
 }
 
 /** id-safe slug from name+project; collisions resolved by suffixing. */
@@ -217,7 +228,8 @@ export async function updateConnection(id: unknown, body: ConnectionInput): Prom
   const clean = validate(body);
   // Keep the existing password when the client omits it (edit without re-entering the secret).
   const password = clean.password ?? list[idx].password;
-  list[idx] = { id, ...clean, password };
+  const readOnly = body.readOnly === undefined ? list[idx].readOnly : clean.readOnly;
+  list[idx] = { id, ...clean, password, readOnly };
   await writeRaw(list);
   return list.map(toPublic);
 }

@@ -31,6 +31,7 @@
     "check:redis-diagnose": "tsx scripts/check-redis-diagnose.ts",
     "check:redis-frag": "tsx scripts/check-redis-frag.ts",
     "check:redis-mem": "tsx scripts/check-redis-mem.ts",
+    "check:redis-cmd": "tsx scripts/check-redis-command.ts",
     "check:redis-clients": "tsx scripts/check-redis-clients.ts",
     "check:kafka-diagnose": "tsx scripts/check-kafka-diagnose.ts",
     "check:es-diagnose": "tsx scripts/check-es-diagnose.ts",

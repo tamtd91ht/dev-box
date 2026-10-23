@@ -25,6 +25,7 @@ import {
 import ConnTransferButton from './ConnTransferButton';
 import MonitorStrip from './redis/MonitorStrip';
 import DiagnosePanel from './redis/DiagnosePanel';
+import CommandPanel from './redis/CommandPanel';
 import QuickFindPanel from './redis/QuickFindPanel';
 import SessionHistory from './SessionHistory';
 import { recordSession, short, type RedisSession } from '@/lib/sessionHistory';
@@ -148,6 +149,8 @@ export default function RedisWorkspace() {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--redis-rail', min: 180, max: 560, gap: 18 });
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  /** REDIS_ALLOW_WRITE — cổng ghi toàn tool của tab "⚡ Chạy lệnh". */
+  const [allowWrite, setAllowWrite] = useState(false);
   const [connections, setConnections] = useState<PublicRedisConnection[]>([]);
   // Gập cột kết nối để nhường chỗ cho vùng làm việc (components/ConnRailCollapse).
   const railCollapse = useConnRailCollapse('redis', connections.length);
@@ -166,8 +169,9 @@ export default function RedisWorkspace() {
   const [db, setDb] = useState(0); // logical DB index (0–15), chosen at browse time
   // Tab của kết nối đang chọn: duyệt key hay phân tích. "Phân tích" chỉ mount khi đã mở
   // lần đầu, rồi giữ nguyên (ẩn) để quay lại không mất kết quả đang xem.
-  const [view, setView] = useState<'data' | 'analyze'>('data');
+  const [view, setView] = useState<'data' | 'analyze' | 'cmd'>('data');
   const [analyzeMounted, setAnalyzeMounted] = useState(false);
+  const [cmdMounted, setCmdMounted] = useState(false);
   const [query, setQuery] = useState(''); // raw search box text (NOT a glob — see buildMatch)
   const [exact, setExact] = useState(false); // ON = match the key verbatim; OFF = *query* both sides
   /**
@@ -268,6 +272,7 @@ export default function RedisWorkspace() {
   const loadConnections = useCallback(async (preferId?: string) => {
     const res = await fetchRedisConnections();
     setEnabled(res.enabled);
+    setAllowWrite(res.allowWrite);
     setConnections(res.connections);
     if (!res.enabled) return res;
     let remembered = '';
@@ -823,7 +828,29 @@ export default function RedisWorkspace() {
                 onClick={() => { setView('analyze'); setAnalyzeMounted(true); }}
                 title="Hit rate · RAM đang dùng · client kết nối · phân mảnh bộ nhớ · cờ key-miss"
               >🔍 Phân tích</button>
+              <button
+                role="tab"
+                aria-selected={view === 'cmd'}
+                className={`redis-viewtab${view === 'cmd' ? ' on' : ''}`}
+                onClick={() => { setView('cmd'); setCmdMounted(true); }}
+                title="Chạy lệnh ghi kiểu redis-cli — chạy thử trước, rồi commit"
+              >⚡ Chạy lệnh{activeConn.readOnly || !allowWrite ? ' 🔒' : ''}</button>
             </div>
+
+            {/* Chạy lệnh — ẩn chứ không unmount (giữ kết quả); key theo kết nối để đổi kết nối là làm lại. */}
+            {cmdMounted ? (
+              <div style={{ display: view === 'cmd' ? 'contents' : 'none' }}>
+                <CommandPanel
+                  key={activeConn.id}
+                  connectionId={activeConn.id}
+                  connName={activeConn.name}
+                  isCluster={!!isClusterActive}
+                  defaultDb={db}
+                  readOnly={activeConn.readOnly !== false}
+                  allowWrite={allowWrite}
+                />
+              </div>
+            ) : null}
 
             {/* Phân tích hit rate / RAM / client / phân mảnh — chọn mục nào mới chạy mục đó. */}
             {analyzeMounted ? (
@@ -1804,6 +1831,8 @@ const EMPTY_FORM = {
   password: '',
   /** Không dùng làm cache (lock / queue / session / pub-sub) → Monitor không cảnh báo hit rate. */
   notCache: false,
+  /** Cổng ghi của tab "⚡ Chạy lệnh" — mặc định BẬT (khoá). */
+  readOnly: true,
 };
 
 type ConnForm = typeof EMPTY_FORM;
@@ -1819,6 +1848,7 @@ function formOf(c: PublicRedisConnection): ConnForm {
     nodesText: (c.nodes ?? []).map((n) => `${n.host}:${n.port}`).join('\n'),
     password: '',
     notCache: !!c.notCache,
+    readOnly: c.readOnly !== false,
   };
 }
 
@@ -1896,6 +1926,7 @@ function ConnectionForm({ initial, editingId, busy, onBusy, onSaved, onCancel }:
       project: form.project.trim() || 'default',
       mode: form.mode,
       notCache: form.notCache,
+      readOnly: form.readOnly,
     };
     if (form.mode === 'cluster') body.nodes = parseNodesText(form.nodesText);
     else { body.host = form.host.trim(); body.port = Number(form.port); }
@@ -1965,6 +1996,15 @@ function ConnectionForm({ initial, editingId, busy, onBusy, onSaved, onCancel }:
         >
           <input type="checkbox" checked={form.notCache} onChange={(e) => set('notCache', e.target.checked)} disabled={busy} />
           Không dùng làm cache (lock / queue / session / pub-sub) — bỏ cảnh báo hit rate
+        </label>
+        <label
+          className="small"
+          style={{ flex: '1 1 100%', display: 'flex', alignItems: 'center', gap: 6, color: form.readOnly ? 'var(--muted)' : 'var(--err)' }}
+          title="Khoá tab ⚡ Chạy lệnh trên connection này. Cần thêm REDIS_ALLOW_WRITE=true ở .env.local mới chạy được."
+        >
+          <input type="checkbox" checked={form.readOnly} onChange={(e) => set('readOnly', e.target.checked)} disabled={busy} />
+          Read-only — khoá tab ⚡ Chạy lệnh
+          {!form.readOnly && <em> · đã mở khoá ghi, chỉ nên bỏ chọn với Redis dev/local</em>}
         </label>
       </div>
 

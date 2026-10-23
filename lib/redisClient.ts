@@ -14,17 +14,24 @@
 //      audit-logged, and lock keys (`*:lock:*`) are flagged because deleting one
 //      can release another pod's live lock (redis-pod-coordination-idempotency).
 //   5. Single-node only — matches the "redis single" scope; no cluster client.
+//   6. Màn "⚡ Chạy lệnh" (runCommands) chạy lệnh tự do NHƯNG chỉ lệnh trong
+//      danh sách cho phép (lib/redisCommands — không FLUSH*/CONFIG/KEYS/EVAL…),
+//      sau hai cổng REDIS_ALLOW_WRITE env + readOnly của connection (mặc định
+//      bật). Chạy thử không ghi gì; commit audit-log từng lệnh ghi.
 //
 // Values from the client are passed to ioredis as distinct arguments (never a raw
 // command string), so a key name can't be interpreted as a command.
 
 import Redis, { Cluster, type RedisOptions, type ClusterNode, type ClusterOptions } from 'ioredis';
 import type { RedisConnection } from '@/lib/redisConnections';
+import { parseScript, CREATES_KEY, SETS_TTL, type ParsedCommand } from '@/lib/redisCommands';
 
 /** Either single-node or cluster ioredis client — both share the command surface we use. */
 type AnyRedis = Redis | Cluster;
 
 export const REDIS_ENABLED = /^(1|true|yes|on)$/i.test(process.env.REDIS_TOOL_ENABLED ?? '');
+/** Cổng ghi của màn "⚡ Chạy lệnh" — bật rồi vẫn còn readOnly của từng connection. */
+export const REDIS_ALLOW_WRITE = /^(1|true|yes|on)$/i.test(process.env.REDIS_ALLOW_WRITE ?? '');
 
 /** Hard TTL ceiling — 30 days, per redis-ttl-mandatory. */
 export const MAX_TTL_SECONDS = 2_592_000;
@@ -620,6 +627,131 @@ export async function del(conn: RedisConnection, db: number, key: string): Promi
     `REDIS_AUDIT operation=DELETE connection=${conn.name} host=${conn.host}:${conn.port}/${effectiveDb(conn, db)} key=${sanitize(key)} deleted=${deleted} ts=${new Date().toISOString()}`,
   );
   return { deleted, lockKeyWarning };
+}
+
+// ── Màn "⚡ Chạy lệnh" ────────────────────────────────────────────────────────
+//
+// Redis không rollback được, nên CHẠY THỬ (commit=false) không gửi lệnh nào
+// trong ô nhập: nó soát cú pháp + danh sách cho phép + luật TTL, rồi đọc trạng
+// thái hiện tại (TYPE / PTTL / kích thước) của mọi key sẽ bị đụng và nêu cảnh
+// báo (tạo key không TTL, SET xoá TTL cũ, key lock). COMMIT chạy lần lượt từng
+// dòng, dừng ở lỗi đầu tiên (không có MULTI — cluster khác slot sẽ hỏng).
+
+const CMD_REPLY_CAP = 50_000;
+const CMD_PREVIEW_KEYS = 50;
+
+export interface CmdKeyState {
+  key: string;
+  type: RedisKeyType;
+  /** ms; -1 = không TTL, -2 = không tồn tại. */
+  pttl: number;
+  size: number | null;
+  lock: boolean;
+}
+
+export interface CmdLineResult {
+  line: number;
+  command: string;
+  write: boolean;
+  ok?: boolean;
+  /** Kết quả (JSON) khi commit thành công — cắt ở CMD_REPLY_CAP. */
+  reply?: string;
+  error?: string;
+}
+
+export interface CmdRunResult {
+  committed: boolean;
+  lines: CmdLineResult[];
+  /** Chạy thử: trạng thái hiện tại của các key sẽ bị đụng. */
+  keys: CmdKeyState[];
+  warnings: string[];
+  tookMs: number;
+}
+
+function cmdLabel(c: ParsedCommand): string {
+  const s = [c.name, ...c.args].map((a) => (/[\s"']/.test(a) || a === '' ? JSON.stringify(a) : a)).join(' ');
+  return s.length > 300 ? `${s.slice(0, 300)}…` : s;
+}
+
+async function keyState(client: AnyRedis, key: string): Promise<CmdKeyState> {
+  const type = (await client.type(key)) as RedisKeyType;
+  const pttl = await client.pttl(key);
+  let size: number | null = null;
+  switch (type) {
+    case 'string': size = await client.strlen(key); break;
+    case 'list': size = await client.llen(key); break;
+    case 'set': size = await client.scard(key); break;
+    case 'zset': size = await client.zcard(key); break;
+    case 'hash': size = await client.hlen(key); break;
+    case 'stream': size = await client.xlen(key); break;
+  }
+  return { key, type, pttl, size, lock: /:lock:/i.test(key) };
+}
+
+export async function runCommands(conn: RedisConnection, db: number, script: unknown, commit: boolean): Promise<CmdRunResult> {
+  if (!REDIS_ALLOW_WRITE) {
+    throw new Error('Writes are disabled for the whole tool. Set REDIS_ALLOW_WRITE=true in .env.local (local dev only).');
+  }
+  if (conn.readOnly) {
+    throw new Error(`Connection "${conn.name}" is read-only. Edit the connection and untick read-only to arm writes.`);
+  }
+  const cmds = parseScript(String(script ?? ''));
+  const client = getClient(conn, db);
+  const t0 = Date.now();
+
+  if (!commit) {
+    const uniq = [...new Set(cmds.flatMap((c) => c.keys))];
+    const keys: CmdKeyState[] = [];
+    for (const k of uniq.slice(0, CMD_PREVIEW_KEYS)) keys.push(await keyState(client, k));
+    const byKey = new Map(keys.map((k) => [k.key, k]));
+    const warnings: string[] = [];
+    if (uniq.length > CMD_PREVIEW_KEYS) warnings.push(`Chỉ xem trước ${CMD_PREVIEW_KEYS}/${uniq.length} key.`);
+    const ttlLater = (i: number, key: string) =>
+      cmds.slice(i + 1).some((c) => SETS_TTL.has(c.name) && c.keys[0] === key);
+    cmds.forEach((c, i) => {
+      if (!c.write) return;
+      for (const k of c.keys) {
+        const st = byKey.get(k);
+        if (st?.lock) warnings.push(`Dòng ${c.line}: "${k}" là key lock — đụng vào có thể nhả lock đang giữ của pod khác.`);
+      }
+      const k0 = c.keys[0];
+      const st = byKey.get(k0);
+      if (c.name === 'SET' && !c.inlineTtl && !c.keepTtl && !ttlLater(i, k0)) {
+        warnings.push(st && st.pttl > 0
+          ? `Dòng ${c.line}: SET không kèm EX/PX/KEEPTTL sẽ XOÁ TTL hiện tại của "${k0}" → key vĩnh viễn.`
+          : `Dòng ${c.line}: SET "${k0}" không kèm EX/PX → key không TTL.`);
+      } else if (CREATES_KEY.has(c.name) && !c.inlineTtl && st?.type === 'none' && !ttlLater(i, k0)) {
+        warnings.push(`Dòng ${c.line}: ${c.name} tạo key mới "${k0}" không TTL — thêm dòng EXPIRE ${k0} <giây>.`);
+      }
+    });
+    return {
+      committed: false,
+      lines: cmds.map((c) => ({ line: c.line, command: cmdLabel(c), write: c.write })),
+      keys, warnings, tookMs: Date.now() - t0,
+    };
+  }
+
+  const lines: CmdLineResult[] = [];
+  for (const c of cmds) {
+    const base = { line: c.line, command: cmdLabel(c), write: c.write };
+    try {
+      const reply: unknown = await client.call(c.name, ...c.args);
+      let json = JSON.stringify(reply) ?? 'null';
+      if (json.length > CMD_REPLY_CAP) json = `${json.slice(0, CMD_REPLY_CAP)}…`;
+      lines.push({ ...base, ok: true, reply: json });
+      if (c.write) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `REDIS_AUDIT operation=CMD connection=${conn.name} host=${conn.host}:${conn.port}/${effectiveDb(conn, db)} ` +
+          `cmd=${c.name} keys=${sanitize(c.keys.join(','))} ts=${new Date().toISOString()}`,
+        );
+      }
+    } catch (e) {
+      lines.push({ ...base, ok: false, error: (e as Error).message });
+      break; // dừng ở lỗi đầu tiên — các dòng sau KHÔNG chạy
+    }
+  }
+  return { committed: true, lines, keys: [], warnings: [], tookMs: Date.now() - t0 };
 }
 
 /** Strip control chars + cap length so a crafted key can't inject into the audit log line. */

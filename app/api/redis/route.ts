@@ -9,6 +9,9 @@
 //     'setTtl' { connectionId, db?, key, seconds }→ { ok, result: { applied } }
 //     'set'    { connectionId, db?, key, type, value, ttl?, overwrite? } → { ok, result: { created, type } }
 //     'del'    { connectionId, db?, key }         → { ok, result: { deleted, lockKeyWarning } }
+//     'cmd'    { connectionId, db?, script, commit } → { ok, result: CmdRunResult }
+//              màn "⚡ Chạy lệnh": danh sách lệnh cho phép, cổng REDIS_ALLOW_WRITE + readOnly;
+//              commit=false chỉ soát lệnh + đọc trạng thái key (lib/redisClient runCommands)
 //     'diagnoseMisses' { connectionId, seconds }   → { ok, result: RedisMissDiagnosis }
 //              bật TẠM notify-keyspace-events "Em" trong `seconds` giây rồi trả lại (lib/redisDiagnose)
 //     'diagnoseFrag'   { connectionId }            → { ok, result: RedisFragDiagnosis }
@@ -34,7 +37,7 @@
 // it instead of the request hanging.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { REDIS_ENABLED, normalizeDb, ping, scan, lookupKey, getValue, setTtl, setValue, del, testConnection, infoStats } from '@/lib/redisClient';
+import { REDIS_ENABLED, normalizeDb, ping, scan, lookupKey, getValue, setTtl, setValue, del, testConnection, infoStats, runCommands } from '@/lib/redisClient';
 import { getConnection } from '@/lib/redisConnections';
 import { diagnoseMisses } from '@/lib/redisDiagnose';
 import { diagnoseFragmentation } from '@/lib/redisFragDiagnose';
@@ -134,6 +137,16 @@ export async function POST(req: NextRequest) {
       case 'del':
         result = await del(conn, db, String(body.key ?? ''));
         break;
+      case 'cmd': {
+        try {
+          result = await runCommands(conn, db, body.script, body.commit === true);
+        } catch (err) {
+          const msg = (err as Error).message || 'command refused';
+          const gate = msg.includes('disabled for the whole tool') || msg.includes('is read-only');
+          return NextResponse.json({ ok: false, error: msg }, { status: gate ? 403 : 400 });
+        }
+        break;
+      }
       case 'diagnoseMisses': // dạng key nào đang miss (Monitor → Phân tích hit rate)
         result = await diagnoseMisses(conn, Number(body.seconds ?? 10));
         break;

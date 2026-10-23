@@ -3668,6 +3668,15 @@ pre.kafka-drawer-body {
 .redis-monitor { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 /* Tab Phân tích của từng kết nối (Redis / ES / Kafka / Mongo — components/*/AnalyzeView, redis/DiagnosePanel) — dùng lại khung của Monitor. */
 .redis-viewtabs { display: flex; gap: 4px; margin-top: 10px; border-bottom: 1px solid var(--glass-brd); }
+.redis-cmd { margin-top: 12px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; flex: 1; min-height: 0; }
+.redis-cmd-input { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.redis-cmd-result { min-width: 0; min-height: 0; overflow: auto; }
+.redis-danger {
+  border: 1px solid color-mix(in srgb, var(--err) 55%, var(--glass-brd));
+  background: color-mix(in srgb, var(--err) 8%, transparent);
+  border-radius: 10px; padding: 9px 12px; font-size: 12.5px; line-height: 1.55;
+}
+@media (max-width: 860px) { .redis-cmd { grid-template-columns: 1fr; } }
 .redis-viewtab {
   background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px;
   padding: 6px 12px; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer;

@@ -1,6 +1,6 @@
 // /api/redis-connections — manage the local Redis connection list.
 //
-//   GET                                   → { enabled, connections[] }   (passwords stripped)
+//   GET                                   → { enabled, allowWrite, connections[] }   (passwords stripped)
 //   POST   { name, project, mode, host?, port?, nodes?, password? } → { connections[] }
 //   PUT    { id, ...same fields }          → { connections[] }   (omit password to keep stored)
 //   DELETE { id }                          → { connections[] }
@@ -13,7 +13,7 @@
 // returned to the browser — only `hasPassword: boolean`.
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { REDIS_ENABLED } from '@/lib/redisClient';
+import { REDIS_ENABLED, REDIS_ALLOW_WRITE } from '@/lib/redisClient';
 import {
   listConnections,
   addConnection,
@@ -31,9 +31,9 @@ function disabled() {
 }
 
 export async function GET() {
-  if (!REDIS_ENABLED) return NextResponse.json({ enabled: false, connections: [] });
+  if (!REDIS_ENABLED) return NextResponse.json({ enabled: false, allowWrite: false, connections: [] });
   const connections = await listConnections();
-  return NextResponse.json({ enabled: true, connections });
+  return NextResponse.json({ enabled: true, allowWrite: REDIS_ALLOW_WRITE, connections });
 }
 
 export async function POST(req: NextRequest) {
