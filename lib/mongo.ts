@@ -286,6 +286,32 @@ export function updateMongo(
   return mongoAction<UpdateResult>('update', { connectionId, db, coll, ...p });
 }
 
+export type WriteOpKind = 'insertOne' | 'insertMany' | 'updateOne' | 'updateMany' | 'replaceOne' | 'deleteOne' | 'deleteMany';
+
+/** Kết quả màn "⚡ Thực thi lệnh ghi". Chạy thử: matched + preview; commit: số đã ghi. */
+export interface WriteOpResult {
+  op: WriteOpKind;
+  committed: boolean;
+  matched: number;
+  modified?: number;
+  inserted?: number;
+  deleted?: number;
+  upsertedId?: string | null;
+  preview: WireDoc[];
+  tookMs: number;
+}
+
+/** insert / update / replace / delete. commit=false → chỉ đếm + document mẫu, không ghi. */
+export function writeOpMongo(
+  connectionId: string,
+  db: string,
+  coll: string,
+  p: { op: WriteOpKind; filter: string; body: string; upsert: boolean },
+  commit: boolean,
+): Promise<WriteOpResult> {
+  return mongoAction<WriteOpResult>('writeOp', { connectionId, db, coll, ...p, commit });
+}
+
 // ── Small shared formatters (used by the workspace UI) ───────────────────────
 
 export function fmtBytes(n: number): string {

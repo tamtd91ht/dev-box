@@ -24,6 +24,7 @@
     "check:rate": "tsx scripts/check-rate-math.ts",
     "check:kafka-cluster": "tsx scripts/check-kafka-cluster.ts",
     "check:mongo-diagnose": "tsx scripts/check-mongo-diagnose.ts",
+    "check:mongo-write": "tsx scripts/check-mongo-write.ts",
     "check:monitor": "tsx scripts/check-monitor.ts",
     "check:pg-diagnose": "tsx scripts/check-pg-diagnose.ts",
     "check:pg-exec": "tsx scripts/check-pg-exec.ts",

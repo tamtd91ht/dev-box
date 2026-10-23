@@ -13,13 +13,14 @@
 //     'count'       { connectionId, db, coll, filter? }  → { ok, result: CountResult }
 //     'aggregate'   { connectionId, db, coll, pipeline } → { ok, result: AggregateResult }
 //     'update'      { connectionId, db, coll, filter, update, mode? } → { ok, result: UpdateResult }
+//     'writeOp'     { connectionId, db, coll, op, filter?, body?, upsert?, commit } → { ok, result: WriteOpResult } (commit=false → chỉ đếm + mẫu)
 //     'diagnose'    { connectionId, kind }               → { ok, result: MongoDiagnosis }   (tab Phân tích, chỉ đọc thống kê)
 //     'longRunning' { connectionId, minSec }             → { ok, result: LongRunningResult } (thao tác chạy ≥ minSec giây, ≥ 1)
 //
-// READS are open (bounded by maxTimeMS + page caps in lib/mongoClient). 'update'
-// is the ONLY write and passes three gates: MONGO_ALLOW_WRITE env flag, the
-// per-connection readOnly flag, and mandatory non-empty filter + $-operator
-// update (all enforced in lib/mongoClient.updateWithQuery).
+// READS are open (bounded by maxTimeMS + page caps in lib/mongoClient). The
+// writes — 'update' and 'writeOp' (insert/update/replace/delete) — pass the
+// MONGO_ALLOW_WRITE env flag + the per-connection readOnly flag, plus
+// mandatory non-empty filter rules (all enforced in lib/mongoClient).
 //
 // Gated by MONGO_TOOL_ENABLED (403 when off). The browser never talks to MongoDB
 // directly — this server-side handler owns the driver client. Any driver/network
@@ -43,6 +44,7 @@ import {
   count,
   aggregate,
   updateWithQuery,
+  writeOp,
 } from '@/lib/mongoClient';
 import { getConnection, buildUnsavedConnection } from '@/lib/mongoConnections';
 
@@ -147,6 +149,21 @@ export async function POST(req: NextRequest) {
         } catch (err) {
           // Gate refusals are 403 (so the UI shows "locked", not "server broke").
           const msg = (err as Error).message || 'update refused';
+          const gate = msg.includes('disabled for the whole tool') || msg.includes('is read-only');
+          return NextResponse.json({ ok: false, error: msg }, { status: gate ? 403 : 400 });
+        }
+        break;
+      }
+      case 'writeOp': {
+        try {
+          result = await writeOp(conn, db, coll, {
+            op: body.op,
+            filter: body.filter,
+            body: body.body,
+            upsert: body.upsert,
+          }, body.commit === true);
+        } catch (err) {
+          const msg = (err as Error).message || 'write refused';
           const gate = msg.includes('disabled for the whole tool') || msg.includes('is read-only');
           return NextResponse.json({ ok: false, error: msg }, { status: gate ? 403 : 400 });
         }

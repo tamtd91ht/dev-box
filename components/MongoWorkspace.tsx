@@ -10,9 +10,10 @@
 //
 // Styling is self-owned under `.mongo-*` (appended at the end of globals.css).
 //
-// WRITE SAFETY: the ONLY write is update-with-query, behind three independent
-// gates — MONGO_ALLOW_WRITE env flag (server) + per-connection readOnly
-// (defaults ON) + a typed-confirm modal with dry-run count (UI). Reads are
+// WRITE SAFETY: the writes — update-with-query (modal ở mục Dữ liệu) and
+// insert/update/replace/delete (mục "⚡ Thực thi lệnh ghi") — sit behind three
+// independent gates: MONGO_ALLOW_WRITE env flag (server) + per-connection
+// readOnly (defaults ON) + dry-run then typed confirm (UI). Reads are
 // unrestricted in scope, bounded in cost server-side (maxTimeMS + page caps).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -33,6 +34,7 @@ import OverviewView from './mongo/OverviewView';
 import BrowserView from './mongo/BrowserView';
 import QuickFindView from './mongo/QuickFindView';
 import AnalyzeView from './mongo/AnalyzeView';
+import ExecView from './mongo/ExecView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
 import { onInfraFocus } from '@/lib/infraFocus';
@@ -44,13 +46,14 @@ const LAST_CONN_KEY = 'mongo.lastConn';
  *  ném về Tổng quan rồi tự bấm lại sang Dữ liệu mỗi lần. */
 const LAST_VIEW_KEY = 'mongo.lastView';
 
-type SubView = 'overview' | 'browser' | 'quickfind' | 'analyze';
+type SubView = 'overview' | 'browser' | 'quickfind' | 'analyze' | 'exec';
 
 const SUB_VIEWS: { key: SubView; label: string }[] = [
   { key: 'overview', label: 'Tổng quan' },
   { key: 'browser', label: 'Dữ liệu' },
   { key: 'quickfind', label: '🔎 Tìm nhanh' },
   { key: 'analyze', label: '🩺 Phân tích' },
+  { key: 'exec', label: '⚡ Thực thi lệnh ghi' },
 ];
 
 export default function MongoWorkspace() {
@@ -277,7 +280,7 @@ export default function MongoWorkspace() {
                 {readOnly
                   ? <span className="badge" title="Update bị chặn trên connection này">🔒 read-only</span>
                   : allowWrite
-                    ? <span className="badge" style={{ color: 'var(--err)' }} title="Update-with-query đang mở trên connection này">✎ write armed</span>
+                    ? <span className="badge" style={{ color: 'var(--err)' }} title="Ghi đang mở trên connection này — ✎ Update ở mục Dữ liệu, insert/update/delete ở mục ⚡ Thực thi lệnh ghi">✎ write armed</span>
                     : <span className="badge" title="MONGO_ALLOW_WRITE chưa bật — write khoá toàn tool">🔒 write off (env)</span>}
                 {subView === 'overview' && <button className="chip-btn" onClick={() => void loadOverview()}>↻ Tải lại</button>}
               </div>
@@ -316,6 +319,10 @@ export default function MongoWorkspace() {
                 NOT keyed by activeId — switching cluster in the rail keeps a
                 running quick-find intact. */}
             {subView === 'quickfind' && <QuickFindView connections={connections} />}
+
+            {subView === 'exec' && (
+              <ExecView key={activeId} connectionId={activeId} readOnly={readOnly} allowWrite={allowWrite} />
+            )}
 
             {/* Phân tích — ẩn chứ không unmount để quay lại vẫn còn kết quả; đổi kết nối → làm lại từ đầu. */}
             {analyzeSeen === activeId && activeId && (

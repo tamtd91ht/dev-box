@@ -14,6 +14,9 @@
 //      replace, no upsert. Three independent gates: MONGO_ALLOW_WRITE env flag +
 //      per-connection readOnly (defaults true) + typed-confirm modal in the UI.
 //      Every update is audit-logged to stdout (MONGO_AUDIT lines).
+//      Ngoài ra màn "⚡ Thực thi lệnh ghi" (writeOp) cho insert / update /
+//      replace / delete sau CÙNG hai cổng đó: filter bắt buộc không rỗng,
+//      chạy thử (đếm + document mẫu) trước rồi mới commit. Audit-logged.
 //   4. `$where` (arbitrary server-side JS) is rejected anywhere in any filter —
 //      project rule input-validation-sanitization.
 //
@@ -756,6 +759,193 @@ export async function updateWithQuery(conn: MongoConnection, dbName: string, col
     `matched=${res.matchedCount} modified=${res.modifiedCount} ts=${new Date().toISOString()}`,
   );
   return { matched: res.matchedCount, modified: res.modifiedCount, mode };
+}
+
+// ── Màn "⚡ Thực thi lệnh ghi": insert / update / replace / delete ───────────
+//
+// Cùng hai cổng với updateWithQuery (MONGO_ALLOW_WRITE + readOnly). Khác PG,
+// Mongo không có transaction dùng được ở mọi cụm (standalone thì không có), nên
+// CHẠY THỬ (commit=false) không thực thi gì: nó đếm số document khớp filter và
+// trả vài document mẫu sẽ bị đụng tới (insert: chính các document sắp chèn).
+// UI chỉ bật Commit sau khi chạy thử đúng lệnh đó.
+//
+// Chặn: filter rỗng ở update/replace/delete (muốn đụng cả collection thì ghi
+// rõ, vd. {"_id": {"$exists": true}}), $where/$function/$accumulator ở mọi chỗ,
+// update không phải toán tử $ (→ dùng replaceOne), insertMany quá 1000 document.
+
+export type WriteOpKind = 'insertOne' | 'insertMany' | 'updateOne' | 'updateMany' | 'replaceOne' | 'deleteOne' | 'deleteMany';
+export const WRITE_OP_KINDS: WriteOpKind[] = ['insertOne', 'insertMany', 'updateOne', 'updateMany', 'replaceOne', 'deleteOne', 'deleteMany'];
+
+export interface WriteOpInput {
+  op: unknown;
+  /** update / replace / delete. */
+  filter?: unknown;
+  /** insertOne: document · insertMany: mảng · update: toán tử $ hoặc pipeline · replaceOne: document thay thế. */
+  body?: unknown;
+  upsert?: unknown;
+}
+
+export interface WriteOpResult {
+  op: WriteOpKind;
+  committed: boolean;
+  /** Chạy thử: số document khớp filter (insert: số document sắp chèn). */
+  matched: number;
+  modified?: number;
+  inserted?: number;
+  deleted?: number;
+  upsertedId?: string | null;
+  /** Chạy thử: document mẫu sẽ bị đụng tới (≤ WRITE_PREVIEW). */
+  preview: { json: string; truncated: boolean }[];
+  tookMs: number;
+}
+
+const WRITE_PREVIEW = 20;
+const INSERT_MANY_MAX = 1000;
+const UPDATE_PIPELINE_STAGES = new Set(['$set', '$addFields', '$unset', '$project', '$replaceRoot', '$replaceWith']);
+
+function parseAny(raw: unknown, label: string): unknown {
+  if (typeof raw !== 'string') return raw;
+  const s = raw.trim();
+  if (!s) throw new Error(`${label} trống`);
+  try {
+    return BSON.EJSON.parse(s);
+  } catch (e) {
+    throw new Error(`${label} is not valid JSON/EJSON: ${(e as Error).message}`);
+  }
+}
+
+function forbidTopDollar(doc: Document, label: string): void {
+  const k = Object.keys(doc).find((x) => x.startsWith('$'));
+  if (k) throw new Error(`${label}: field "${k}" bắt đầu bằng $ — đây là document, không phải toán tử`);
+}
+
+export async function writeOp(conn: MongoConnection, dbName: string, collName: string, input: WriteOpInput, commit: boolean): Promise<WriteOpResult> {
+  if (!MONGO_ALLOW_WRITE) {
+    throw new Error('Writes are disabled for the whole tool. Set MONGO_ALLOW_WRITE=true in .env.local (local dev only).');
+  }
+  if (conn.readOnly) {
+    throw new Error(`Connection "${conn.name}" is read-only. Edit the connection and untick read-only to arm writes.`);
+  }
+  const db = requireName(dbName, 'database');
+  const coll = requireName(collName, 'collection');
+  const op = String(input.op ?? '') as WriteOpKind;
+  if (!WRITE_OP_KINDS.includes(op)) throw new Error(`lệnh không hỗ trợ: "${op}"`);
+  const upsert = input.upsert === true && (op === 'updateOne' || op === 'updateMany' || op === 'replaceOne');
+
+  // ── Kiểm đầu vào ───────────────────────────────────────────────────────────
+  let filter: Document = {};
+  if (!op.startsWith('insert')) {
+    filter = parseDoc(input.filter, 'filter');
+    if (Object.keys(filter).length === 0) {
+      throw new Error(`${op} cần filter KHÔNG rỗng — muốn đụng cả collection thì ghi rõ, vd. {"_id": {"$exists": true}}`);
+    }
+    forbidKeyDeep(filter, FILTER_FORBIDDEN, 'filter');
+  }
+
+  let docs: Document[] = [];
+  let update: Document | Document[] = {};
+  let replacement: Document = {};
+  if (op === 'insertOne') {
+    const d = parseAny(input.body, 'document');
+    if (!d || typeof d !== 'object' || Array.isArray(d)) throw new Error('insertOne cần MỘT document {…} — mảng thì dùng insertMany');
+    docs = [d as Document];
+  } else if (op === 'insertMany') {
+    const arr = parseAny(input.body, 'documents');
+    if (!Array.isArray(arr) || arr.length === 0) throw new Error('insertMany cần mảng document không rỗng [ {…}, … ]');
+    if (arr.length > INSERT_MANY_MAX) throw new Error(`insertMany tối đa ${INSERT_MANY_MAX} document một lần`);
+    docs = arr.map((d, i) => {
+      if (!d || typeof d !== 'object' || Array.isArray(d)) throw new Error(`phần tử #${i + 1} không phải document`);
+      return d as Document;
+    });
+  } else if (op === 'updateOne' || op === 'updateMany') {
+    const u = parseAny(input.body, 'update');
+    if (Array.isArray(u)) {
+      if (u.length === 0) throw new Error('update pipeline rỗng');
+      for (const st of u) {
+        const keys = st && typeof st === 'object' && !Array.isArray(st) ? Object.keys(st) : [];
+        if (keys.length !== 1 || !UPDATE_PIPELINE_STAGES.has(keys[0])) {
+          throw new Error(`update pipeline chỉ nhận stage ${[...UPDATE_PIPELINE_STAGES].join(' / ')}`);
+        }
+      }
+      update = u as Document[];
+    } else {
+      if (!u || typeof u !== 'object') throw new Error('update phải là document {"$set": …} hoặc pipeline [ … ]');
+      const keys = Object.keys(u as Document);
+      if (keys.length === 0) throw new Error('update document rỗng');
+      const bare = keys.find((k) => !k.startsWith('$'));
+      if (bare) throw new Error(`update phải dùng toán tử $ ($set, $inc, …) — "${bare}" là thay cả document, hãy dùng replaceOne`);
+      update = u as Document;
+    }
+  } else if (op === 'replaceOne') {
+    const r = parseAny(input.body, 'replacement');
+    if (!r || typeof r !== 'object' || Array.isArray(r)) throw new Error('replaceOne cần một document {…}');
+    replacement = r as Document;
+    forbidTopDollar(replacement, 'replacement');
+  }
+  for (const d of docs) forbidTopDollar(d, 'document');
+  forbidKeyDeep([docs, update, replacement], FILTER_FORBIDDEN, 'body');
+
+  const client = await getClient(conn);
+  const c = client.db(db).collection(coll);
+  const t0 = Date.now();
+
+  // ── Chạy thử: chỉ đọc ─────────────────────────────────────────────────────
+  if (!commit) {
+    if (op.startsWith('insert')) {
+      return { op, committed: false, matched: docs.length, preview: docs.slice(0, WRITE_PREVIEW).map(toWire), tookMs: Date.now() - t0 };
+    }
+    const one = op.endsWith('One');
+    const [matched, sample] = await Promise.all([
+      c.countDocuments(filter, { maxTimeMS: MAX_TIME_FIND_MS }),
+      c.find(filter, { limit: one ? 1 : WRITE_PREVIEW, maxTimeMS: MAX_TIME_FIND_MS }).toArray(),
+    ]);
+    return { op, committed: false, matched, preview: sample.map(toWire), tookMs: Date.now() - t0 };
+  }
+
+  // ── Commit ────────────────────────────────────────────────────────────────
+  const out: WriteOpResult = { op, committed: true, matched: 0, preview: [], tookMs: 0 };
+  switch (op) {
+    case 'insertOne': {
+      await c.insertOne(docs[0]);
+      out.inserted = 1; out.matched = 1;
+      break;
+    }
+    case 'insertMany': {
+      const r = await c.insertMany(docs, { ordered: true });
+      out.inserted = r.insertedCount; out.matched = docs.length;
+      break;
+    }
+    case 'updateOne':
+    case 'updateMany': {
+      const r = op === 'updateMany'
+        ? await c.updateMany(filter, update, { upsert })
+        : await c.updateOne(filter, update, { upsert });
+      out.matched = r.matchedCount; out.modified = r.modifiedCount;
+      out.upsertedId = r.upsertedId ? String(r.upsertedId) : null;
+      break;
+    }
+    case 'replaceOne': {
+      const r = await c.replaceOne(filter, replacement, { upsert });
+      out.matched = r.matchedCount; out.modified = r.modifiedCount;
+      out.upsertedId = r.upsertedId ? String(r.upsertedId) : null;
+      break;
+    }
+    case 'deleteOne':
+    case 'deleteMany': {
+      const r = op === 'deleteMany' ? await c.deleteMany(filter) : await c.deleteOne(filter);
+      out.deleted = r.deletedCount;
+      break;
+    }
+  }
+  out.tookMs = Date.now() - t0;
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `MONGO_AUDIT operation=${op} connection=${conn.name} target=${db}.${coll} upsert=${upsert} ` +
+    `filter=${sanitize(JSON.stringify(filter))} body=${sanitize(JSON.stringify(op.startsWith('insert') ? `${docs.length} doc(s)` : op === 'replaceOne' ? replacement : update))} ` +
+    `matched=${out.matched} modified=${out.modified ?? '-'} inserted=${out.inserted ?? '-'} deleted=${out.deleted ?? '-'} ts=${new Date().toISOString()}`,
+  );
+  return out;
 }
 
 /** Strip control chars + cap length so a crafted filter can't inject into the audit log line. */
