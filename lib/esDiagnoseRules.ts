@@ -168,6 +168,9 @@ const FIELDDATA_SHARE = 0.2;
 const SHARDS_PER_GB_HEAP = 20;
 const DEFAULT_MAX_SHARDS = 1000;
 const SMALL_SHARD = 1024 ** 3;
+/** Số dạng index (prefix) nêu đích danh trong cảnh báo shard nhỏ, và số tên ví dụ mỗi dạng. */
+const SMALL_TOP_PATTERNS = 20;
+const SMALL_EXAMPLES = 2;
 const HUGE_SHARD = 50 * 1024 ** 3;
 const COMPRESSED_OOPS = 31 * 1024 ** 3;
 const BREAKER_NEAR = 0.9;
@@ -539,9 +542,12 @@ PUT _cluster/settings
       id: 'small-shards',
       level: 'info',
       title: `${pct((small / totalShards) * 100)} shard nhỏ hơn 1GB (${fmtN(small)}/${fmtN(totalShards)}) — quá nhiều shard nhỏ`,
-      evidence: ['Mỗi shard tốn heap + cluster state cố định bất kể nhỏ hay lớn; shard nên 10–50GB'],
+      evidence: [
+        'Mỗi shard tốn heap + cluster state cố định bất kể nhỏ hay lớn; shard nên 10–50GB',
+        ...smallShardEvidence(f.shardSizes),
+      ],
       fix: 'Index theo ngày mà dữ liệu ít → chuyển theo tháng hoặc rollover theo dung lượng; giảm number_of_shards của template (1 shard là đủ cho index < 30GB); shrink index cũ.',
-      sql: 'PUT _index_template/<template>\n{ "index_patterns": ["<pattern>-*"], "template": { "settings": { "number_of_shards": 1 } } }',
+      sql: 'GET _cat/indices/<prefix>*?v&s=index&h=index,pri,rep,docs.count,pri.store.size,store.size\n\nPUT _index_template/<template>\n{ "index_patterns": ["<pattern>-*"], "template": { "settings": { "number_of_shards": 1 } } }',
       step: { phase: 'long', text: 'Giảm số shard nhỏ: index theo tháng / rollover theo dung lượng, 1 shard cho index nhỏ' },
     });
   }
@@ -778,4 +784,56 @@ function headline(f: EsFacts, findings: Finding[]): string {
   const st = `Cụm ${f.status}`;
   if (!cause) return `${st} — không thấy vấn đề về heap, shard, CPU, đĩa, tốc độ truy vấn trong ${f.windowSec}s đo.`;
   return `${st} — vấn đề chính: ${cause.title.charAt(0).toLowerCase()}${cause.title.slice(1)}.`;
+}
+
+/**
+ * Dạng (prefix) của tên index: bỏ phần ngày (2024.01.31 · 2024-01 · 20240131) và số
+ * rollover (-000123) → `logs-app-*`. Index theo ngày của cùng một nguồn gom về một dòng.
+ */
+export function indexPattern(name: string): string {
+  return name
+    .replace(/(?<!\d)(?:19|20)\d{2}[.\-_/]?\d{2}(?:[.\-_/]?\d{2})?(?!\d)/g, '*') // ngày / tháng
+    .replace(/([-_.])\d{6}$/, '$1*') // số rollover ILM (-000123)
+    .replace(/\*(?:[-_.]\d{1,2}(?!\d))+/g, '*') // giờ sau ngày (-01)
+    .replace(/\*(?:[-_.]*\*)+/g, '*');
+}
+
+/**
+ * Bằng chứng cho cảnh báo shard nhỏ: MỖI DẠNG INDEX một dòng (nhiều shard nhỏ nhất
+ * trước) — để top không bị lấp bởi hàng chục index ngày của cùng một prefix — kèm
+ * số index, số shard nhỏ, tổng dung lượng và vài tên ví dụ (cũ nhất · mới nhất).
+ * Đếm cả replica — đúng với cái tốn heap / cluster state.
+ */
+function smallShardEvidence(shards: EsFacts['shardSizes']): string[] {
+  const byIndex = new Map<string, { small: number; bytes: number }>();
+  for (const s of shards) {
+    const x = byIndex.get(s.index) ?? { small: 0, bytes: 0 };
+    x.bytes += s.bytes;
+    if (s.bytes < SMALL_SHARD) x.small++;
+    byIndex.set(s.index, x);
+  }
+  const byPattern = new Map<string, { names: string[]; small: number; bytes: number }>();
+  for (const [name, x] of byIndex) {
+    if (!x.small) continue;
+    const pg = indexPattern(name);
+    const p = byPattern.get(pg) ?? { names: [], small: 0, bytes: 0 };
+    p.names.push(name);
+    p.small += x.small;
+    p.bytes += x.bytes;
+    byPattern.set(pg, p);
+  }
+  const all = [...byPattern.entries()].sort((a, b) => b[1].small - a[1].small);
+  const top = all.slice(0, SMALL_TOP_PATTERNS);
+  const examples = (names: string[]): string => {
+    if (names.length === 1) return '';
+    const s = [...names].sort();
+    const pick = s.length <= SMALL_EXAMPLES ? s : [s[0], s[s.length - 1]];
+    return ` · vd ${pick.join(', ')}`;
+  };
+  return [
+    `Top ${top.length} / ${fmtN(all.length)} dạng index có shard nhỏ (gom index theo ngày / rollover cùng prefix; đếm cả replica):`,
+    ...top.map(([pg, p]) => p.names.length === 1
+      ? `${p.names[0]} — ${fmtN(p.small)} shard nhỏ · ${fmtBytes(p.bytes)}`
+      : `${pg} — ${fmtN(p.names.length)} index, ${fmtN(p.small)} shard nhỏ · ${fmtBytes(p.bytes)}${examples(p.names)}`),
+  ];
 }

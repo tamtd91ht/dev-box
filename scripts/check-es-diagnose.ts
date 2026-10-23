@@ -116,6 +116,14 @@ check(get(facts({ nodes: [node({ name: 'es-1', rejected: { search: 0, write: 340
 // ── Shard ──
 check(get(facts({ shardSizes: Array.from({ length: 2600 }, (_, i) => ({ index: `i${i}`, shard: 0, bytes: 10 * GB })) }), 'shard-limit')?.level === 'warn', '2600 shard / 3 node ≈ 87% max_shards_per_node → vàng');
 check(!!get(facts({ shardSizes: Array.from({ length: 200 }, (_, i) => ({ index: `d${i}`, shard: 0, bytes: 50 * 1024 ** 2 })) }), 'small-shards'), '200 shard 50MB → quá nhiều shard nhỏ');
+{
+  // 150 index ngày của logs-app + 30 index ngày của audit + 2 index lẻ → mỗi prefix một dòng, không lặp.
+  const days = (p: string, n: number) => Array.from({ length: n }, (_, i) => ({ index: `${p}-2024.${String(1 + Math.floor(i / 28)).padStart(2, '0')}.${String(1 + (i % 28)).padStart(2, '0')}`, shard: 0, bytes: 20 * 1024 ** 2 }));
+  const ev = get(facts({ shardSizes: [...days('logs-app', 150), ...days('audit', 30), { index: 'orders', shard: 0, bytes: 1024 ** 2 }, { index: 'users', shard: 0, bytes: 1024 ** 2 }] }), 'small-shards')!.evidence;
+  check(ev.some((e) => e.startsWith('logs-app-* — 150 index')) && ev.some((e) => e.startsWith('audit-* — 30 index')) && ev.some((e) => e.startsWith('orders —')),
+    'shard nhỏ → gom theo prefix (logs-app-* / audit-* / index lẻ), mỗi prefix một dòng');
+  check(ev.filter((e) => e.startsWith('logs-app')).length === 1, 'không lặp 20 dòng cùng prefix logs-app');
+}
 check(get(facts({ shardSizes: [{ index: 'big', shard: 0, bytes: 120 * GB }] }), 'huge-shards')!.evidence[0].includes('big[0]'), 'shard 120GB → nêu tên');
 
 // ── CPU khi KHÔNG chạy hot_threads: dựa vào luồng đang chạy của thread pool ──
