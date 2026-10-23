@@ -158,6 +158,12 @@ export function internalClient(conn: MongoConnection): Promise<MongoClient> {
   return getClient(conn);
 }
 
+/** Client cho tab Phân tích (lib/mongoDiagnose) — CHỈ chạy lệnh đọc thống kê
+ *  (serverStatus, $currentOp, $indexStats…), dùng chung pool cache ở trên. */
+export function diagnoseClient(conn: MongoConnection): Promise<MongoClient> {
+  return getClient(conn);
+}
+
 // ── EJSON parsing + safety scans ──────────────────────────────────────────────
 
 /** Parse a client-supplied EJSON/JSON string (or pass through an object). */

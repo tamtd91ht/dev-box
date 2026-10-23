@@ -79,3 +79,40 @@ export function fmtSec(s: number): string {
   if (s < 86400) return `${Math.round(s / 360) / 10} giờ`;
   return `${Math.round(s / 8640) / 10} ngày`;
 }
+
+// ── Truy vấn đang chạy lâu (ES / Mongo — tab Phân tích) ──────────────────
+
+/** Ngưỡng N giây: mặc định 5, tối thiểu 1 (đọc thường xuyên dưới 1s chỉ ra nhiễu). */
+export const LONG_RUNNING_DEFAULT_SEC = 5;
+export const LONG_RUNNING_MIN_SEC = 1;
+export const LONG_RUNNING_MAX_SEC = 86_400;
+
+/** Kẹp N về [1, 86400]; không phải số → mặc định. Dùng ở cả client lẫn server. */
+export function clampLongRunningSec(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return LONG_RUNNING_DEFAULT_SEC;
+  return Math.min(LONG_RUNNING_MAX_SEC, Math.max(LONG_RUNNING_MIN_SEC, n));
+}
+
+export interface LongRunningTable {
+  title: string;
+  /** Câu giải thích ngắn dưới tiêu đề (bảng này lấy từ đâu). */
+  note?: string;
+  columns: string[];
+  /** Cột căn phải (số). */
+  right?: number[];
+  /** Cột hiển thị dạng code, cắt ngắn, rê chuột xem đủ. */
+  code?: number[];
+  rows: { cells: string[]; tone?: 'warn' | 'down' }[];
+  /** Tổng số trước khi cắt bớt. */
+  total: number;
+}
+
+export interface LongRunningResult {
+  at: number;
+  /** N đã áp (sau khi kẹp). */
+  minSec: number;
+  tables: LongRunningTable[];
+  /** Phần không đọc được (thiếu quyền, node không trả lời…). */
+  notes: string[];
+}

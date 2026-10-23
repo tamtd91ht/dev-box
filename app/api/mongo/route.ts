@@ -13,6 +13,8 @@
 //     'count'       { connectionId, db, coll, filter? }  → { ok, result: CountResult }
 //     'aggregate'   { connectionId, db, coll, pipeline } → { ok, result: AggregateResult }
 //     'update'      { connectionId, db, coll, filter, update, mode? } → { ok, result: UpdateResult }
+//     'diagnose'    { connectionId, kind }               → { ok, result: MongoDiagnosis }   (tab Phân tích, chỉ đọc thống kê)
+//     'longRunning' { connectionId, minSec }             → { ok, result: LongRunningResult } (thao tác chạy ≥ minSec giây, ≥ 1)
 //
 // READS are open (bounded by maxTimeMS + page caps in lib/mongoClient). 'update'
 // is the ONLY write and passes three gates: MONGO_ALLOW_WRITE env flag, the
@@ -24,6 +26,8 @@
 // error is caught and returned as { ok:false, error } so the UI can render it.
 
 import { NextResponse, type NextRequest } from 'next/server';
+import { diagnoseMongo, mongoLongRunning } from '@/lib/mongoDiagnose';
+import type { MongoDiagKind } from '@/lib/mongoDiagnoseRules';
 import {
   MONGO_ENABLED,
   testConnection,
@@ -88,6 +92,12 @@ export async function POST(req: NextRequest) {
   try {
     let result: unknown;
     switch (action) {
+      case 'diagnose': // tab Phân tích: queries / indexes / memory / repl / connections — chỉ đọc thống kê
+        result = await diagnoseMongo(conn, String(body.kind ?? '') as MongoDiagKind);
+        break;
+      case 'longRunning': // thao tác đang chạy ≥ N giây — một $currentOp lọc trên server
+        result = await mongoLongRunning(conn, body.minSec);
+        break;
       case 'ping':
         result = await ping(conn);
         break;

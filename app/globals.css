@@ -3666,7 +3666,7 @@ pre.kafka-drawer-body {
 
 /* ── Redis monitor strip (INFO per node) ─────────────────────────────────── */
 .redis-monitor { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
-/* Phân tích trong từng kết nối Redis (components/redis/DiagnosePanel) — dùng lại khung của Monitor. */
+/* Tab Phân tích của từng kết nối (Redis / ES / Kafka / Mongo — components/*/AnalyzeView, redis/DiagnosePanel) — dùng lại khung của Monitor. */
 .redis-viewtabs { display: flex; gap: 4px; margin-top: 10px; border-bottom: 1px solid var(--glass-brd); }
 .redis-viewtab {
   background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px;
@@ -10752,12 +10752,12 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   display: flex; flex-direction: column; overflow: hidden;
   color: var(--text); font-size: 13px;
 }
-.mon .lv-ok, .redis-diag .lv-ok, .es-diag .lv-ok { --lv: var(--ok); }
-.mon .lv-warn, .redis-diag .lv-warn, .es-diag .lv-warn { --lv: var(--warn); }
-.mon .lv-crit, .redis-diag .lv-crit, .es-diag .lv-crit { --lv: var(--err); }
-.mon .lv-down, .redis-diag .lv-down, .es-diag .lv-down { --lv: var(--mon-down); }
-.mon .lv-unknown, .redis-diag .lv-unknown, .es-diag .lv-unknown { --lv: var(--faint); }
-.mon .mon-faint, .mon .mon-d-faint, .redis-diag .mon-d-faint, .es-diag .mon-d-faint { color: var(--muted); }
+.mon .lv-ok, .redis-diag .lv-ok { --lv: var(--ok); }
+.mon .lv-warn, .redis-diag .lv-warn { --lv: var(--warn); }
+.mon .lv-crit, .redis-diag .lv-crit { --lv: var(--err); }
+.mon .lv-down, .redis-diag .lv-down { --lv: var(--mon-down); }
+.mon .lv-unknown, .redis-diag .lv-unknown { --lv: var(--faint); }
+.mon .mon-faint, .mon .mon-d-faint, .redis-diag .mon-d-faint { color: var(--muted); }
 .mon .mon-spacer { flex: 1; }
 .mon code { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
 
@@ -11007,8 +11007,8 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .mon-d-name { font-size: 16px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mon-d-sub { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mon-d-body { flex: 1; overflow-y: auto; padding: 12px 16px 24px; display: flex; flex-direction: column; gap: 16px; }
-.mon-d-body h4, .redis-diag-body h4, .es-diag h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-.mon-d-body p, .redis-diag-body p, .es-diag p { margin: 0; }
+.mon-d-body h4, .redis-diag-body h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.mon-d-body p, .redis-diag-body p { margin: 0; }
 .mon-d-banner { padding: 9px 12px; border-radius: 8px; color: var(--lv); background: color-mix(in srgb, var(--lv) 13%, transparent); border: 1px solid color-mix(in srgb, var(--lv) 38%, transparent); }
 .mon-reasons { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .mon-reasons li { display: flex; gap: 9px; padding: 8px 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--lv) 35%, transparent); background: color-mix(in srgb, var(--lv) 8%, transparent); }
@@ -11031,7 +11031,7 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .mon-reason-act { flex: none; align-self: center; white-space: nowrap; }
 
 /* kết quả phân tích nguyên nhân (components/monitor/PgCacheDiagnosis) */
-.mon .lv-info, .redis-diag .lv-info, .es-diag .lv-info { --lv: var(--accent); }
+.mon .lv-info, .redis-diag .lv-info { --lv: var(--accent); }
 .pgd h4 { display: flex; align-items: center; gap: 10px; }
 .pgd-head-acts { margin-left: auto; display: flex; gap: 6px; text-transform: none; letter-spacing: 0; font-weight: 500; }
 .pgd-stale { opacity: .55; transition: opacity .2s; }
@@ -11115,10 +11115,6 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .esd-status.esd-red { color: var(--err); }
 .esd-query { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .esd-hot input { margin: 0 4px 0 0; vertical-align: middle; }
-/* Tab Phân tích của cụm ES (components/es/AnalyzeView) — dùng lại khung của Monitor. */
-.es-diag { --mon-down: #f43f5e; flex: 1; min-height: 0; overflow-y: auto; padding: 4px 4px 16px 0; }
-.es-diag-intro { max-width: 640px; margin: 24px auto; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
-.es-diag-intro p { line-height: 1.55; }
 .mon-es-diag { margin-top: 10px; }
 
 /* Nút "ⓘ Cơ chế" + bảng giải thích cơ chế phân tích (DiagnosisView) */

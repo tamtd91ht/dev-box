@@ -32,6 +32,7 @@ import { useConnRailCollapse, CollapsedConnRail } from './ConnRailCollapse';
 import OverviewView from './mongo/OverviewView';
 import BrowserView from './mongo/BrowserView';
 import QuickFindView from './mongo/QuickFindView';
+import AnalyzeView from './mongo/AnalyzeView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
 import { onInfraFocus } from '@/lib/infraFocus';
@@ -43,12 +44,13 @@ const LAST_CONN_KEY = 'mongo.lastConn';
  *  ném về Tổng quan rồi tự bấm lại sang Dữ liệu mỗi lần. */
 const LAST_VIEW_KEY = 'mongo.lastView';
 
-type SubView = 'overview' | 'browser' | 'quickfind';
+type SubView = 'overview' | 'browser' | 'quickfind' | 'analyze';
 
 const SUB_VIEWS: { key: SubView; label: string }[] = [
   { key: 'overview', label: 'Tổng quan' },
   { key: 'browser', label: 'Dữ liệu' },
   { key: 'quickfind', label: '🔎 Tìm nhanh' },
+  { key: 'analyze', label: '🩺 Phân tích' },
 ];
 
 export default function MongoWorkspace() {
@@ -75,6 +77,9 @@ export default function MongoWorkspace() {
     if (saved && SUB_VIEWS.some((v) => v.key === saved)) setSubView(saved as SubView);
   }, []);
   useEffect(() => { writeLocal(LAST_VIEW_KEY, subView); }, [subView]);
+  // Kết nối đã mở tab Phân tích — chỉ mount AnalyzeView từ lúc đó (kết nối đang chọn).
+  const [analyzeSeen, setAnalyzeSeen] = useState('');
+  useEffect(() => { if (subView === 'analyze' && activeId) setAnalyzeSeen(activeId); }, [subView, activeId]);
   /** Set by the Overview "open db" jump; consumed by BrowserView. */
   const [jumpDb, setJumpDb] = useState<string | undefined>(undefined);
 
@@ -311,6 +316,13 @@ export default function MongoWorkspace() {
                 NOT keyed by activeId — switching cluster in the rail keeps a
                 running quick-find intact. */}
             {subView === 'quickfind' && <QuickFindView connections={connections} />}
+
+            {/* Phân tích — ẩn chứ không unmount để quay lại vẫn còn kết quả; đổi kết nối → làm lại từ đầu. */}
+            {analyzeSeen === activeId && activeId && (
+              <div style={{ display: subView === 'analyze' ? 'contents' : 'none' }}>
+                <AnalyzeView key={activeId} connectionId={activeId} />
+              </div>
+            )}
           </>
         )}
       </main>

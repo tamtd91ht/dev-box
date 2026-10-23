@@ -4,6 +4,7 @@
 // no server-only imports.
 
 import type { EsDiagnosis } from '@/lib/esDiagnoseRules';
+import type { LongRunningResult } from '@/lib/diagnose';
 export type { EsDiagnosis };
 
 export interface PublicEsConnection {
@@ -145,6 +146,11 @@ export function listEsNodes(connectionId: string): Promise<EsNodeInfo[]> {
  * Phân tích heap / shard / CPU / đĩa / truy vấn chậm của cụm — toàn GET đọc thống
  * kê, mất ~9–12s (đo trong 8s). `hotThreads` = lấy mẫu stack (safepoint ngắn) — tắt mặc định.
  */
+/** Task đang chạy / pending task chờ master ≥ minSec giây (≥ 1) — chỉ GET. */
+export function esLongRunning(connectionId: string, minSec: number): Promise<LongRunningResult> {
+  return esAction<LongRunningResult>('longRunning', { connectionId, minSec });
+}
+
 export function esDiagnose(connectionId: string, hotThreads = false): Promise<EsDiagnosis> {
   return esAction<EsDiagnosis>('diagnose', { connectionId, hotThreads });
 }

@@ -6,6 +6,9 @@
 // Dùng chung phần gõ JSON với ô body raw của tab API — cùng một bài toán "text
 // đổi thì con trỏ đi đâu", không nên có hai bản lệch nhau.
 import { isCompletePair, remapCaret } from './jsonEdit';
+import type { MongoDiagKind, MongoDiagnosis } from './mongoDiagnoseRules';
+export type { MongoDiagKind, MongoDiagnosis };
+import type { LongRunningResult } from './diagnose';
 
 export type MongoScheme = 'mongodb' | 'mongodb+srv';
 
@@ -198,6 +201,16 @@ export function mongoServerInfo(connectionId: string): Promise<ServerInfoResult>
 
 export function mongoMonitor(connectionId: string): Promise<MongoMonitorResult> {
   return mongoAction<MongoMonitorResult>('monitor', { connectionId });
+}
+
+/** Thao tác đang chạy ≥ minSec giây (≥ 1) — một $currentOp lọc trên server. */
+export function mongoLongRunning(connectionId: string, minSec: number): Promise<LongRunningResult> {
+  return mongoAction<LongRunningResult>('longRunning', { connectionId, minSec });
+}
+
+/** Tab Phân tích — một mục (chỉ đọc thống kê, lib/mongoDiagnose). */
+export function mongoDiagnose(connectionId: string, kind: MongoDiagKind): Promise<MongoDiagnosis> {
+  return mongoAction<MongoDiagnosis>('diagnose', { connectionId, kind });
 }
 
 export function listMongoDatabases(connectionId: string): Promise<DatabaseInfo[]> {
