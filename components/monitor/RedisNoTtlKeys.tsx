@@ -18,12 +18,14 @@ export default function RedisNoTtlKeys({ connectionId }: { connectionId: string 
   const [data, setData] = useState<NoTtlKeyList>();
   const [filter, setFilter] = useState('');
   const [copied, setCopied] = useState(false);
+  // Danh sách có thể dài — thu gọn được để xem tiếp phần phía dưới.
+  const [open, setOpen] = useState(true);
 
   const run = () => {
     setBusy(true);
     setError(undefined);
     redisListNoTtl(connectionId, n)
-      .then((d) => setData(d))
+      .then((d) => { setData(d); setOpen(true); })
       .catch((e: Error) => setError(e.message))
       .finally(() => setBusy(false));
   };
@@ -91,7 +93,15 @@ export default function RedisNoTtlKeys({ connectionId }: { connectionId: string 
         </button>
         {data?.keys.length ? (
           <>
-            <input className="rmd-filter" placeholder="Lọc theo tên key…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+            <button
+              type="button"
+              className="mon-btn"
+              onClick={() => setOpen((v) => !v)}
+              title={open ? 'Ẩn bảng — giữ kết quả, mở lại lúc nào cũng được' : 'Hiện lại bảng key không TTL'}
+            >
+              {open ? '▴ Thu gọn' : `▾ Xem ${fmtN(data.keys.length)} key`}
+            </button>
+            {open ? <input className="rmd-filter" placeholder="Lọc theo tên key…" value={filter} onChange={(e) => setFilter(e.target.value)} /> : null}
             <button type="button" className="mon-btn" onClick={copyKeys}>{copied ? '✓ Đã chép' : `Sao chép ${fmtN(rows.length)} key`}</button>
             <button type="button" className="mon-btn" onClick={downloadCsv}>Tải CSV</button>
           </>
@@ -111,14 +121,14 @@ export default function RedisNoTtlKeys({ connectionId }: { connectionId: string 
           {data.skipped.length ? <> Bỏ qua: {data.skipped.map((s) => `${s.addr} (${s.error})`).join('; ')}.</> : null}
         </p>
       ) : null}
-      {groups.length ? (
-        <div className="rmd-table-wrap">
+      {open && groups.length ? (
+        <div className="rmd-table-wrap rmd-scroll-sm">
           <table className="mon-mini rmd-table">
             <thead>
               <tr><th>Dạng key</th><th className="r">Số key</th><th className="r">Tổng RAM</th><th>Ví dụ</th></tr>
             </thead>
             <tbody>
-              {groups.slice(0, 20).map((g) => (
+              {groups.map((g) => (
                 <tr key={`${g.db}|${g.pattern}`}>
                   <td><code>{g.pattern}</code>{g.db ? <span className="mon-d-faint"> · db {g.db}</span> : null}</td>
                   <td className="r">{fmtN(g.count)}</td>
@@ -130,7 +140,7 @@ export default function RedisNoTtlKeys({ connectionId }: { connectionId: string 
           </table>
         </div>
       ) : null}
-      {rows.length ? (
+      {open && rows.length ? (
         <div className="rmd-table-wrap rmd-scroll">
           <table className="mon-mini rmd-table">
             <thead>

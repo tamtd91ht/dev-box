@@ -164,6 +164,10 @@ export default function RedisWorkspace() {
 
   // ── Key browsing ──────────────────────────────────────────────────────────
   const [db, setDb] = useState(0); // logical DB index (0–15), chosen at browse time
+  // Tab của kết nối đang chọn: duyệt key hay phân tích. "Phân tích" chỉ mount khi đã mở
+  // lần đầu, rồi giữ nguyên (ẩn) để quay lại không mất kết quả đang xem.
+  const [view, setView] = useState<'data' | 'analyze'>('data');
+  const [analyzeMounted, setAnalyzeMounted] = useState(false);
   const [query, setQuery] = useState(''); // raw search box text (NOT a glob — see buildMatch)
   const [exact, setExact] = useState(false); // ON = match the key verbatim; OFF = *query* both sides
   /**
@@ -805,11 +809,33 @@ export default function RedisWorkspace() {
               <button className="ghost sm" onClick={() => doPing(activeConn.id)} title="PING">⚡ Ping</button>
             </div>
 
-            {/* Live monitor (INFO 30s) — collapsed by default, per-node when cluster. */}
-            <MonitorStrip connectionId={activeConn.id} />
+            <div className="redis-viewtabs" role="tablist">
+              <button
+                role="tab"
+                aria-selected={view === 'data'}
+                className={`redis-viewtab${view === 'data' ? ' on' : ''}`}
+                onClick={() => setView('data')}
+              >🗂 Dữ liệu</button>
+              <button
+                role="tab"
+                aria-selected={view === 'analyze'}
+                className={`redis-viewtab${view === 'analyze' ? ' on' : ''}`}
+                onClick={() => { setView('analyze'); setAnalyzeMounted(true); }}
+                title="Hit rate · RAM đang dùng · client kết nối · phân mảnh bộ nhớ · cờ key-miss"
+              >🔍 Phân tích</button>
+            </div>
 
             {/* Phân tích hit rate / RAM / client / phân mảnh — chọn mục nào mới chạy mục đó. */}
-            <DiagnosePanel connectionId={activeConn.id} />
+            {analyzeMounted ? (
+              <div style={{ display: view === 'analyze' ? 'contents' : 'none' }}>
+                <DiagnosePanel connectionId={activeConn.id} />
+              </div>
+            ) : null}
+
+            {/* Tab Dữ liệu — ẩn chứ không unmount, giữ nguyên kết quả quét / key đang xem. */}
+            <div style={{ display: view === 'data' ? 'contents' : 'none' }}>
+            {/* Live monitor (INFO 30s) — collapsed by default, per-node when cluster. */}
+            <MonitorStrip connectionId={activeConn.id} />
 
             {/* Search bar — pattern + DB; SCAN runs automatically (debounced), no button. */}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
@@ -1033,6 +1059,7 @@ export default function RedisWorkspace() {
                   </div>
                 )}
               </div>
+            </div>
             </div>
           </>
         )}
