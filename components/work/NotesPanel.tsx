@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useImageAttach, ImageBar, ImageThumbs } from './WorkImages';
-import { imageRefs, stripImages } from '@/lib/workImageCore';
+import { imageRefs, fileRefs, stripImages } from '@/lib/workImageCore';
 
 export interface WorkNote {
   id: string;
@@ -214,6 +214,7 @@ export default function NotesPanel({ action }: {
                 {/* Dòng preview: 120 ký tự đầu, xuống dòng nén lại thành khoảng trắng. */}
                 {stripImages(n.body).trim() && <span className="wk-note-prev">{stripImages(n.body).replace(/\s+/g, ' ').trim().slice(0, 120)}</span>}
                 {imageRefs(n.body).length > 0 && <span className="wk-note-time">🖼 {imageRefs(n.body).length} ảnh</span>}
+                {fileRefs(n.body).length > 0 && <span className="wk-note-time">📎 {fileRefs(n.body).length} file</span>}
                 <span className="wk-note-time">Sửa lúc {fmtTime(n.updatedAt || n.createdAt)}</span>
               </button>
               <button className="ghost sm" onClick={() => void remove(n)} disabled={busy} title="Xóa ghi chú">🗑</button>
@@ -292,7 +293,7 @@ export default function NotesPanel({ action }: {
 
             <textarea
               className="input wk-notes-body"
-              placeholder="Nội dung ghi chú… (dán ảnh chụp màn hình bằng Ctrl+V)"
+              placeholder="Nội dung ghi chú… (dán / kéo thả ảnh, file vào đây)"
               value={draft.body}
               onChange={(e) => setDraft({ ...draft, body: e.target.value })}
               {...bodyImg.taProps}

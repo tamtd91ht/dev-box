@@ -1,5 +1,6 @@
-// Server-only: kho ẢNH ĐÍNH KÈM của tab Công việc (task, ghi chú, nhiệm vụ trọng
-// tâm). Token trong văn bản + định dạng ref: xem lib/workImageCore.
+// Server-only: kho ẢNH + FILE ĐÍNH KÈM của tab Công việc (task, ghi chú, nhiệm vụ
+// trọng tâm). Token trong văn bản + định dạng ref: xem lib/workImageCore. Ảnh và
+// file dùng chung nơi lưu, chung cấu hình — chỉ khác kiểm tra đầu vào.
 //
 // HAI chế độ lưu, chọn trong hộp "Lưu ảnh" (configs/workimages.json):
 //   · 'local' (mặc định) — file trong data/work-images/<YYYY-MM>/<uuid>.<ext>.
@@ -21,7 +22,7 @@ import type { Readable } from 'stream';
 import { configPath } from './configDir';
 import { getConnection, listConnections, type PublicMinioConnection } from './minioConnections';
 import { MINIO_ENABLED, MINIO_ALLOW_WRITE, putObject, openObject, listBuckets, makeBucket, validBucket } from './minioClient';
-import { IMAGE_EXT, IMAGE_MAX_BYTES, parseRef, refType, type WorkImageMode } from './workImageCore';
+import { IMAGE_EXT, IMAGE_MAX_BYTES, FILE_MAX_BYTES, fileExt, parseRef, refType, type WorkImageMode } from './workImageCore';
 
 export interface WorkImageConfig {
   mode: WorkImageMode;
@@ -92,6 +93,21 @@ export async function saveImage(data: Buffer, contentType: string): Promise<stri
   if (!ext) throw new Error(`Không nhận kiểu file "${contentType || '?'}" — chỉ PNG, JPEG, GIF, WebP, BMP.`);
   if (!data.length) throw new Error('Ảnh rỗng.');
   if (data.length > IMAGE_MAX_BYTES) throw new Error(`Ảnh lớn hơn ${IMAGE_MAX_BYTES / 1024 / 1024} MB.`);
+  return store(data, ext, contentType);
+}
+
+/**
+ * Lưu một FILE đính kèm bất kỳ → ref. Phần mở rộng lấy từ tên gốc (đã lọc), tên
+ * gốc nằm trong token chứ không trong ref. Lưu với octet-stream: kiểu thật của
+ * file không bao giờ được dùng để hiển thị inline (xem route GET).
+ */
+export async function saveFile(data: Buffer, name: string): Promise<string> {
+  if (!data.length) throw new Error(`File "${name}" rỗng.`);
+  if (data.length > FILE_MAX_BYTES) throw new Error(`File "${name}" lớn hơn ${FILE_MAX_BYTES / 1024 / 1024} MB.`);
+  return store(data, fileExt(name), 'application/octet-stream');
+}
+
+async function store(data: Buffer, ext: string, contentType: string): Promise<string> {
   const now = new Date();
   const file = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}/${randomUUID()}.${ext}`;
 
@@ -99,7 +115,7 @@ export async function saveImage(data: Buffer, contentType: string): Promise<stri
   if (cfg.mode === 'minio') {
     if (!MINIO_ENABLED) throw new Error('Tool MinIO đang tắt — đổi chế độ lưu ảnh về local hoặc bật MINIO_TOOL_ENABLED.');
     const conn = cfg.connectionId ? await getConnection(cfg.connectionId) : null;
-    if (!conn || !cfg.bucket) throw new Error('Chưa cấu hình cụm MinIO / bucket để lưu ảnh.');
+    if (!conn || !cfg.bucket) throw new Error('Chưa cấu hình cụm MinIO / bucket để lưu ảnh / file.');
     try {
       await putObject(conn, cfg.bucket, `devbox-work/${file}`, data, contentType);
     } catch (e) {

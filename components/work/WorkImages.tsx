@@ -1,13 +1,15 @@
 'use client';
 
-// ẢNH ĐÍNH KÈM cho tab Công việc — dùng chung ở 3 chỗ: mô tả task, nội dung ghi
-// chú, ghi chú nhiệm vụ trọng tâm. Token / ref: lib/workImageCore. Lưu: lib/workImages.
+// ẢNH + FILE ĐÍNH KÈM cho tab Công việc — dùng chung ở 3 chỗ: mô tả task, nội
+// dung ghi chú, ghi chú nhiệm vụ trọng tâm. Token / ref: lib/workImageCore. Lưu: lib/workImages.
 //
-//   · useImageAttach(value, onChange) — gắn vào một <textarea> có sẵn: DÁN ảnh
-//     (chụp màn hình rồi Ctrl+V), KÉO THẢ file ảnh, hoặc nút "🖼 Chèn ảnh". Mỗi
-//     ảnh được upload rồi chèn token vào đúng vị trí con trỏ lúc dán.
+//   · useImageAttach(value, onChange) — gắn vào một <textarea> có sẵn: DÁN
+//     (chụp màn hình rồi Ctrl+V), KÉO THẢ, hoặc nút "🖼 Chèn ảnh" / "📎 Đính kèm
+//     file" — NHIỀU file một lượt. Ảnh raster ≤ 10 MB thành ảnh, còn lại thành
+//     file đính kèm (≤ 50 MB). Mỗi file upload xong thì chèn token vào đúng vị
+//     trí con trỏ lúc dán, theo đúng thứ tự đã chọn.
 //   · <ImageBar>    — nút chèn + trạng thái upload + ⚙ chọn nơi lưu.
-//   · <ImageThumbs> — dải thumbnail các ảnh có trong văn bản (✕ để gỡ).
+//   · <ImageThumbs> — thumbnail ảnh + chip file có trong văn bản (✕ để gỡ).
 //   · <RichText>    — hiển thị văn bản kèm ảnh tại chỗ (chế độ xem).
 //   · <ImageStorageModal> — chọn lưu LOCAL hay MINIO (chọn cụm có sẵn + bucket,
 //     hoặc thêm cụm mới bằng form của menu MinIO — lưu chung registry).
@@ -18,7 +20,8 @@ import ConnectionForm from '../minio/ConnectionForm';
 import { listMinioBuckets, type PublicMinioConnection } from '@/lib/minio';
 import { emitInfraFocus } from '@/lib/infraFocus';
 import {
-  IMAGE_EXT, IMAGE_MAX_BYTES, imageRefs, imageToken, imageUrl, removeImageRef, splitImages,
+  IMAGE_EXT, IMAGE_MAX_BYTES, FILE_MAX_BYTES, imageRefs, fileRefs, imageToken, fileToken, imageUrl, fileUrl,
+  removeImageRef, splitImages,
   type WorkImageMode,
 } from '@/lib/workImageCore';
 
@@ -52,6 +55,17 @@ async function uploadImage(file: File): Promise<string> {
   return (await imgApi<{ ref: string }>({ body: form })).ref;
 }
 
+async function uploadFile(file: File): Promise<string> {
+  if (file.size > FILE_MAX_BYTES) throw new Error(`"${file.name}" lớn hơn ${FILE_MAX_BYTES / 1024 / 1024} MB.`);
+  const form = new FormData();
+  form.set('file', file);
+  form.set('kind', 'file');
+  return (await imgApi<{ ref: string }>({ body: form })).ref;
+}
+
+/** Ảnh raster vừa trần ảnh → chèn dạng ẢNH; còn lại (kể cả ảnh quá to) → FILE đính kèm. */
+const asImage = (f: File): boolean => !!IMAGE_EXT[f.type] && f.size <= IMAGE_MAX_BYTES;
+
 /** Nhãn ngắn của nơi lưu hiện tại — hiện cạnh nút chèn ảnh. */
 let modeCache: string | null = null;
 const modeListeners = new Set<(s: string) => void>();
@@ -75,8 +89,9 @@ function useModeLabel(): string | null {
 
 // ── Hook gắn vào textarea ───────────────────────────────────────────────────
 
-function imageFiles(list: FileList | null | undefined): File[] {
-  return list ? [...list].filter((f) => f.type.startsWith('image/')) : [];
+/** Mọi file trong lượt dán / kéo thả / chọn — ảnh hay file thường đều nhận, NHIỀU file một lượt. */
+function droppedFiles(list: FileList | null | undefined): File[] {
+  return list ? [...list] : [];
 }
 
 export interface ImageAttach {
@@ -109,14 +124,19 @@ export function useImageAttach(value: string, onChange: (v: string) => void): Im
     let pos = ta ? ta.selectionStart : latest.current.value.length;
     setErr(null);
     setUploading((n) => n + files.length);
+    // Tuần tự chứ không song song: token chèn đúng thứ tự file đã chọn.
     for (const f of files) {
       try {
-        const ref = await uploadImage(f);
+        const img = asImage(f);
+        const ref = img ? await uploadImage(f) : await uploadFile(f);
         const cur = latest.current.value;
         const at = Math.min(pos, cur.length);
-        // Ảnh đứng riêng một dòng — đọc văn bản thô vẫn dễ.
+        // Ảnh / file đứng riêng một dòng — đọc văn bản thô vẫn dễ.
         const before = cur.slice(0, at);
-        const tok = `${before && !before.endsWith('\n') ? '\n' : ''}${imageToken(ref, f.name && f.name !== 'image.png' ? f.name : 'ảnh')}\n`;
+        const token = img
+          ? imageToken(ref, f.name && f.name !== 'image.png' ? f.name : 'ảnh')
+          : fileToken(ref, f.name || 'file');
+        const tok = `${before && !before.endsWith('\n') ? '\n' : ''}${token}\n`;
         latest.current.onChange(before + tok + cur.slice(at));
         pos = at + tok.length;
       } catch (e) {
@@ -128,15 +148,15 @@ export function useImageAttach(value: string, onChange: (v: string) => void): Im
   }, []);
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = imageFiles(e.clipboardData?.files);
+    const files = droppedFiles(e.clipboardData?.files);
     if (!files.length) return;            // dán chữ → để mặc định
     e.preventDefault();
     void insertFiles(files);
   };
   const onDrop = (e: React.DragEvent<HTMLTextAreaElement>) => {
-    const files = imageFiles(e.dataTransfer?.files);
+    const files = droppedFiles(e.dataTransfer?.files);
     if (!files.length) return;
-    e.preventDefault();                   // không thì trình duyệt mở ảnh thay cho trang
+    e.preventDefault();                   // không thì trình duyệt mở file thay cho trang
     void insertFiles(files);
   };
   const onDragOver = (e: React.DragEvent<HTMLTextAreaElement>) => {
@@ -153,17 +173,22 @@ export function useImageAttach(value: string, onChange: (v: string) => void): Im
 
 export function ImageBar({ attach }: { attach: ImageAttach }) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const anyRef = useRef<HTMLInputElement>(null);
   const [settings, setSettings] = useState(false);
   const label = useModeLabel();
   return (
     <div className="wi-bar">
-      <button type="button" className="ghost sm" onClick={() => fileRef.current?.click()} title="Chọn file ảnh để chèn">🖼 Chèn ảnh</button>
+      <button type="button" className="ghost sm" onClick={() => fileRef.current?.click()} title="Chọn một hoặc nhiều ảnh để chèn">🖼 Chèn ảnh</button>
       <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple hidden
-        onChange={(e) => { void attach.insertFiles(imageFiles(e.target.files)); e.target.value = ''; }} />
-      <span className="small wi-hint">hoặc dán (Ctrl+V) / kéo thả ảnh vào ô</span>
-      {attach.uploading > 0 && <span className="small"><span className="spinner" aria-hidden /> Đang tải {attach.uploading} ảnh…</span>}
+        onChange={(e) => { void attach.insertFiles(droppedFiles(e.target.files)); e.target.value = ''; }} />
+      <button type="button" className="ghost sm" onClick={() => anyRef.current?.click()}
+        title={`Chọn một hoặc nhiều file bất kỳ (≤ ${FILE_MAX_BYTES / 1024 / 1024} MB mỗi file)`}>📎 Đính kèm file</button>
+      <input ref={anyRef} type="file" multiple hidden
+        onChange={(e) => { void attach.insertFiles(droppedFiles(e.target.files)); e.target.value = ''; }} />
+      <span className="small wi-hint">hoặc dán (Ctrl+V) / kéo thả nhiều ảnh, file vào ô</span>
+      {attach.uploading > 0 && <span className="small"><span className="spinner" aria-hidden /> Đang tải {attach.uploading} file…</span>}
       <span style={{ flex: 1 }} />
-      <button type="button" className="ghost sm wi-mode" onClick={() => setSettings(true)} title="Chọn nơi lưu ảnh (local / MinIO)">
+      <button type="button" className="ghost sm wi-mode" onClick={() => setSettings(true)} title="Chọn nơi lưu ảnh & file (local / MinIO)">
         ⚙ {label ?? '…'}
       </button>
       {attach.err && (
@@ -215,16 +240,37 @@ function Thumb({ refId, alt, onRemove, big }: { refId: string; alt: string; onRe
   );
 }
 
-/** Dải thumbnail dưới ô soạn — chỉ hiện khi văn bản có ảnh. */
+/** Một file đính kèm: bấm để tải về (đúng tên gốc), ✕ để gỡ khỏi văn bản. */
+function FileChip({ refId, name, onRemove }: { refId: string; name: string; onRemove?: () => void }) {
+  return (
+    <span className="wi-file">
+      <a href={fileUrl(refId, name)} download={name} title={`Tải ${name}`} onClick={(e) => e.stopPropagation()}>📎 {name}</a>
+      {onRemove && (
+        <button type="button" className="wk-note-chip-x" title="Gỡ file khỏi văn bản" onClick={(e) => { e.stopPropagation(); onRemove(); }}>✕</button>
+      )}
+    </span>
+  );
+}
+
+/** Dải thumbnail ảnh + chip file dưới ô soạn — chỉ hiện khi văn bản có đính kèm. */
 export function ImageThumbs({ text, onChange }: { text: string; onChange?: (v: string) => void }) {
   const refs = imageRefs(text);
-  if (!refs.length) return null;
+  const files = fileRefs(text);
+  if (!refs.length && !files.length) return null;
+  const remove = (r: string) => (onChange ? () => onChange(removeImageRef(text, r)) : undefined);
   return (
-    <div className="wi-thumbs">
-      {refs.map((r, i) => (
-        <Thumb key={`${r}-${i}`} refId={r} alt="ảnh" onRemove={onChange ? () => onChange(removeImageRef(text, r)) : undefined} />
-      ))}
-    </div>
+    <>
+      {refs.length > 0 && (
+        <div className="wi-thumbs">
+          {refs.map((r, i) => <Thumb key={`${r}-${i}`} refId={r} alt="ảnh" onRemove={remove(r)} />)}
+        </div>
+      )}
+      {files.length > 0 && (
+        <div className="wi-files">
+          {files.map((f, i) => <FileChip key={`${f.ref}-${i}`} refId={f.ref} name={f.name} onRemove={remove(f.ref)} />)}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -236,7 +282,9 @@ export function RichText({ text, className }: { text: string; className?: string
     <div className={className}>
       {parts.map((p, i) => (p.kind === 'text'
         ? <span key={i}>{p.text.replace(/^\n|\n$/g, '')}</span>
-        : <Thumb key={i} refId={p.ref} alt={p.alt} big />))}
+        : p.kind === 'image'
+          ? <Thumb key={i} refId={p.ref} alt={p.alt} big />
+          : <span key={i} className="wi-files inline"><FileChip refId={p.ref} name={p.name} /></span>))}
     </div>
   );
 }
@@ -294,7 +342,7 @@ export function ImageStorageModal({ onClose }: { onClose: () => void }) {
     <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget && !busy) onClose(); }}>
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 'min(640px, 96vw)' }}>
         <div className="status-line" style={{ marginBottom: 8 }}>
-          <h3 style={{ margin: 0, flex: 1 }}>🖼 Nơi lưu ảnh — tab Công việc</h3>
+          <h3 style={{ margin: 0, flex: 1 }}>🖼 Nơi lưu ảnh &amp; file — tab Công việc</h3>
           <button className="ghost sm" onClick={onClose} disabled={busy}>✕</button>
         </div>
         {!view ? (
@@ -308,14 +356,14 @@ export function ImageStorageModal({ onClose }: { onClose: () => void }) {
                 <b>Lưu local</b> — file trên máy này, không commit lên git.
                 <br /><code className="small">{view.localDir}</code>
                 <br /><span className="small" style={{ color: 'var(--muted)' }}>
-                  Task / ghi chú lưu trên Mongo nên máy khác vẫn thấy văn bản, nhưng ảnh local thì chỉ máy này xem được.
+                  Task / ghi chú lưu trên Mongo nên máy khác vẫn thấy văn bản, nhưng ảnh / file local thì chỉ máy này xem được.
                 </span>
               </span>
             </label>
             <label className="wi-opt">
               <input type="radio" checked={mode === 'minio'} disabled={!view.minioEnabled} onChange={() => setMode('minio')} />
               <span>
-                <b>Lưu MinIO</b> — mọi máy dùng cùng cụm/bucket đều xem được ảnh.
+                <b>Lưu MinIO</b> — mọi máy dùng cùng cụm/bucket đều xem được ảnh &amp; file.
                 {!view.minioEnabled && <><br /><span className="small" style={{ color: 'var(--warn, #d29922)' }}>Tool MinIO đang tắt (MINIO_TOOL_ENABLED).</span></>}
               </span>
             </label>
@@ -356,7 +404,7 @@ export function ImageStorageModal({ onClose }: { onClose: () => void }) {
                   <datalist id="wi-buckets">{(buckets ?? []).map((b) => <option key={b} value={b} />)}</datalist>
                 </label>
                 <p className="small" style={{ color: 'var(--muted)', margin: 0 }}>
-                  Ảnh nằm dưới <code>devbox-work/&lt;YYYY-MM&gt;/</code> trong bucket.
+                  Ảnh &amp; file nằm dưới <code>devbox-work/&lt;YYYY-MM&gt;/</code> trong bucket.
                   {buckets && bucket.trim() && !buckets.includes(bucket.trim()) && <> Bucket <b>{bucket.trim()}</b> chưa có — sẽ được tạo khi lưu.</>}
                 </p>
                 {(!view.minioAllowWrite || conn?.readOnly) && (
@@ -371,7 +419,7 @@ export function ImageStorageModal({ onClose }: { onClose: () => void }) {
             )}
 
             <p className="small" style={{ color: 'var(--muted)', margin: 0 }}>
-              Đổi chế độ không di chuyển ảnh cũ — ảnh đã gắn vẫn đọc từ nơi nó được lưu.
+              Đổi chế độ không di chuyển ảnh / file cũ — cái đã gắn vẫn đọc từ nơi nó được lưu.
             </p>
             {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: 0 }}>{err}</pre>}
             <div style={{ display: 'flex', gap: 8 }}>

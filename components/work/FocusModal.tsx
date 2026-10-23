@@ -159,7 +159,7 @@ export default function FocusModal({
           </div>
 
           <div className="fc-fld"><span>Ghi chú</span>
-            <textarea className="input" rows={4} placeholder="Mô tả, tiêu chí hoàn thành, liên kết… (dán ảnh bằng Ctrl+V)" value={d.note}
+            <textarea className="input" rows={4} placeholder="Mô tả, tiêu chí hoàn thành, liên kết… (dán / kéo thả ảnh, file)" value={d.note}
               onChange={(e) => set({ note: e.target.value })} style={{ resize: 'vertical' }} {...noteImg.taProps} />
             <ImageBar attach={noteImg} />
             <ImageThumbs text={d.note} onChange={setNote} />

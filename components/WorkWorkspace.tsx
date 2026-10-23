@@ -37,9 +37,9 @@
 //     hai tab trên: dùng được cả khi CHƯA cấu hình Mongo (lưu file local) — vì vậy
 //     thanh tab con luôn hiện, kể cả ở màn cài đặt.
 //
-// ẢNH (components/work/WorkImages): mô tả task, nội dung ghi chú và ghi chú
-// trọng tâm nhận ảnh dán (Ctrl+V) / kéo thả / chọn file. Ảnh lưu local
-// (data/work-images, gitignore) hoặc MinIO — chọn ở nút ⚙ cạnh "Chèn ảnh".
+// ẢNH + FILE (components/work/WorkImages): mô tả task, nội dung ghi chú và ghi
+// chú trọng tâm nhận ảnh / file dán (Ctrl+V) / kéo thả / chọn — nhiều file một
+// lượt. Lưu local (data/work-images, gitignore) hoặc MinIO — chọn ở nút ⚙.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ConnectionForm from './mongo/ConnectionForm';
@@ -528,7 +528,7 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
           </label>
           {/* div chứ không phải label: bấm nút trong ImageBar không được nhảy focus vào ô. */}
           <div className="wk-field wk-span2"><span>Mô tả chung</span>
-            <textarea className="input wk-desc" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Ghi chú phạm vi, link tài liệu… (dán ảnh chụp màn hình bằng Ctrl+V)" {...descImg.taProps} />
+            <textarea className="input wk-desc" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Ghi chú phạm vi, link tài liệu… (dán / kéo thả ảnh, file vào đây)" {...descImg.taProps} />
             <ImageBar attach={descImg} />
             <ImageThumbs text={desc} onChange={setDesc} />
           </div>

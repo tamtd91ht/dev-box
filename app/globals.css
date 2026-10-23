@@ -7949,6 +7949,14 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wi-mode:hover { opacity: 1; }
 .wi-err { color: var(--err); flex-basis: 100%; overflow-wrap: anywhere; }
 .wi-thumbs { flex: none; display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.wi-files { flex: none; display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.wi-files.inline { display: inline-flex; margin: 2px 0; vertical-align: middle; }
+.wi-file {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 320px; padding: 2px 6px 2px 8px;
+  font-size: 12px; border: 1px solid var(--glass-brd); border-radius: 6px; background: var(--glass-bg);
+}
+.wi-file a { color: inherit; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wi-file a:hover { text-decoration: underline; color: var(--accent, inherit); }
 .wi-thumb { position: relative; display: inline-block; vertical-align: top; }
 .wi-thumb img {
   display: block; height: 64px; max-width: 160px; object-fit: cover; cursor: zoom-in;
