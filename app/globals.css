@@ -11913,3 +11913,6 @@ html.tf-page nextjs-portal { display: none !important; }
   --bt-chrome: color-mix(in srgb, #fff 78%, var(--bg-1));
   --bt-strip: color-mix(in srgb, var(--text) 6%, var(--bg-1));
 }
+
+/* Hàng công cụ của trang tab mới (không có viewer) — cùng kiểu hàng công cụ của tab. */
+.bt-ntp-toolbar { flex: none; }

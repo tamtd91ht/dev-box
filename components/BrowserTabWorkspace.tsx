@@ -828,6 +828,11 @@ export default function BrowserTabWorkspace({ visible = true }: {
    *  Chrome, chỉ hiện gợi ý khi người dùng gõ (↓ vẫn xem được "gần đây"). */
   const [addrFocus, setAddrFocus] = useState(false);
   const addrSug = useAddressSuggest({ query: addr, onPick: goSuggest, enabled: addrFocus, minChars: 1 });
+  /** Ô địa chỉ ở HÀNG CÔNG CỤ của trang tab mới — như Chrome, Ctrl+T là con trỏ
+   *  nằm sẵn ở ô địa chỉ phía trên. Dùng chung chữ `addr` với ô tìm giữa trang,
+   *  nhưng danh sách gợi ý riêng (mỗi ô một danh sách neo dưới chính nó). */
+  const [omniFocus, setOmniFocus] = useState(false);
+  const omniSug = useAddressSuggest({ query: addr, onPick: goSuggest, enabled: omniFocus, minChars: 1 });
 
   /** Mở dấu trang. background = chuột phải → "Mở trong tab mới": thêm tab
    *  nhưng giữ nguyên trang đang xem.
@@ -1180,8 +1185,8 @@ export default function BrowserTabWorkspace({ visible = true }: {
           ô Profile. */}
       <div className="bt-addr-wrap">
         <span className="bt-ntp-search-ico" aria-hidden>🔍</span>
-        <input ref={homeInputRef} className="input bt-addr-input" placeholder="Tìm Google hoặc nhập URL"
-          value={addrSug.preview ?? addr} autoFocus onChange={(e) => setAddr(e.target.value)}
+        <input className="input bt-addr-input" placeholder="Tìm Google hoặc nhập URL"
+          value={addrSug.preview ?? addr} onChange={(e) => setAddr(e.target.value)}
           onFocus={(e) => { setAddrFocus(true); e.currentTarget.select(); }}
           // Xem ghi chú ở ô địa chỉ của LinkViewer: KHÔNG đóng danh sách tại
           // onBlur, vì bấm vào một dòng cũng làm ô mất focus.
@@ -1398,13 +1403,52 @@ export default function BrowserTabWorkspace({ visible = true }: {
         <span className="bt-strip-fill" onDoubleClick={openNewTabPage} />
         <button ref={tabSearchBtnRef} className={`bt-tabsearch${tabSearchOpen ? ' on' : ''}`}
           onClick={() => setTabSearchOpen((v) => !v)} title="Tìm kiếm tab (Ctrl+Shift+A)">⌄</button>
-        {!slot && toolCluster}
+        {/* Trang tab mới có hàng công cụ riêng chứa cụm này; còn lại chỉ nằm
+            tạm ở đây trong nhịp viewer mới chưa kịp đăng ký ô của nó. */}
+        {!slot && activeId !== null && toolCluster}
       </div>
       {slot && createPortal(toolCluster, slot)}
 
       {/* Thanh dấu trang — cây thư mục như Chrome. Bật/tắt từ menu ⋮ /
           Ctrl+Shift+B. Đang xem một tab thì nằm DƯỚI hàng công cụ của tab đó
           (portal), ở trang tab mới thì nằm ngay dưới dải tab. */}
+      {/* Hàng công cụ của trang tab mới — ô địa chỉ gõ được ngay (Ctrl+T/Ctrl+L
+          đưa con trỏ vào đây), như Chrome. Lùi/tiến/tải lại vô hiệu: chưa có
+          trang nào. */}
+      {activeId === null && (
+        <div className="ws-toolbar ws-toolbar--chrome bt-ntp-toolbar">
+          <div className="ws-nav">
+            <button disabled title="Quay lại">←</button>
+            <button disabled title="Tiến tới">→</button>
+            <button disabled title="Tải lại">⟳</button>
+          </div>
+          <div className="ws-omni">
+            <span className="ws-omni-site ws-omni-site--other" aria-hidden>🔍</span>
+            <input
+              ref={homeInputRef}
+              className="ws-omni-input"
+              value={omniSug.preview ?? addr}
+              autoFocus
+              spellCheck={false}
+              placeholder="Tìm Google hoặc nhập URL"
+              onChange={(e) => setAddr(e.target.value)}
+              onFocus={(e) => { setOmniFocus(true); e.currentTarget.select(); }}
+              onBlur={() => setOmniFocus(false)}
+              onKeyDown={(e) => {
+                if (omniSug.onKeyDown(e)) return;
+                if (e.key === 'Enter') { if (omniSug.preview) goSuggest(omniSug.preview); else go(); }
+                else if (e.key === 'Escape') {
+                  if (addr) setAddr('');
+                  else if (hasTabs) cancelNewTab();
+                }
+              }}
+            />
+            <AddressSuggest {...omniSug.listProps} />
+          </div>
+          <div className="ws-toolbar-slot">{toolCluster}</div>
+        </div>
+      )}
+
       {showMarks && (underSlot ? createPortal(marksBar, underSlot) : marksBar)}
 
       {/* ── Vùng nội dung ──
