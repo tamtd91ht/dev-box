@@ -13,7 +13,7 @@
 //   npx tsx scripts/check-browser-session.ts
 
 import {
-  serialize, restore, TABS_KEY, type SessionTab,
+  serialize, restore, TABS_KEY, pushClosed, parseClosed, MAX_CLOSED, type SessionTab,
 } from '../lib/browserSession';
 import { bmPartition } from '../lib/bookmarks';
 
@@ -96,6 +96,30 @@ const many = Array.from({ length: 200 }, (_, i): SessionTab => ({
 check(serialize(many, 'tab-0').tabs.length === 30, 'serialize: chặn trần 30 tab (khỏi treo máy lúc mở lại)');
 check(restore(JSON.stringify({ tabs: serialize(many, 'tab-0').tabs, active: 0 }), idGen(), hostOf).tabs.length === 30,
   'restore: cũng chặn trần, kể cả khi file cất bằng tay có nhiều hơn');
+
+// ── Tab ghim ────────────────────────────────────────────────────────────────
+const pinA: SessionTab = { ...tabA, id: 'tab-1' };
+const pinB: SessionTab = { ...tabB, id: 'tab-2', pinned: true, creds: undefined };
+const sp = serialize([pinA, pinB], 'tab-1');
+check(sp.tabs[1].pinned === true && sp.tabs[0].pinned === undefined, 'serialize: cất cờ ghim, tab thường không thêm field');
+const rp = restore(JSON.stringify(sp), idGen(), hostOf);
+check(rp.tabs[0].pinned === true && rp.tabs[0].url === tabB.url, 'restore: tab ghim được dồn lên đầu dải');
+check(rp.active === rp.tabs[1].id && rp.tabs[1].url === tabA.url,
+  'restore: dồn tab ghim xong vẫn nổi ĐÚNG tab đang xem (theo tab, không theo vị trí cũ)');
+check(restore('{"tabs":[{"url":"https://a.vn/","pinned":"yes"}]}', idGen(), hostOf).tabs[0].pinned === undefined,
+  'restore: cờ ghim không phải boolean true → bỏ qua');
+
+// ── Tab đã đóng gần đây ─────────────────────────────────────────────────────
+const closed = pushClosed([], [{ ...tabB, index: 1 }, { ...tabA, index: 0 }], 1000);
+const cblob = JSON.stringify(closed);
+check(!cblob.includes('sieu-mat-khau') && !cblob.includes('creds'), 'pushClosed: KHÔNG cất creds của tab đã đóng');
+check(closed[0].url === tabA.url && closed[1].url === tabB.url, 'pushClosed: đóng một loạt → tab cuối loạt mở lại trước');
+check(pushClosed([], [{ ...tabA, url: 'about:blank', index: 0 }]).length === 0, 'pushClosed: bỏ trang không phải http(s)');
+const lots = Array.from({ length: 40 }, (_, i) => ({ ...tabA, url: `https://x${i}.vn/`, index: i }));
+check(pushClosed([], lots).length === MAX_CLOSED, `pushClosed: chặn trần ${MAX_CLOSED}`);
+check(parseClosed(cblob).length === 2 && parseClosed(cblob)[0].profile === 'noc', 'parseClosed: đọc lại đúng');
+check(parseClosed('{ hong').length === 0 && parseClosed('[{"url":"javascript:x"}]').length === 0,
+  'parseClosed: JSON hỏng / URL lạ → rỗng, không nổ');
 
 if (failures) {
   console.error(`\n${failures} kiểm tra KHÔNG đạt.`);

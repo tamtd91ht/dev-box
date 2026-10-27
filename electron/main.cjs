@@ -1047,6 +1047,79 @@ function appShortcutOf(input) {
   return null;
 }
 
+/**
+ * Phím tắt kiểu Chrome của TAB BROWSER bấm khi con trỏ ở trong trang web
+ * (Ctrl+T/W/L/F/D/P, Ctrl+±/0, Alt+←/→, F5…). Phím trong guest không nổi lên
+ * host nên bắt hộ ở đây rồi gửi 'browser:key' về renderer.
+ *
+ * BẢN SAO của lib/browserKeys.ts · browserKeyOf (renderer là TS, main là CJS
+ * nên không dùng chung được) — sửa một bên phải sửa cả bên kia;
+ * scripts/check-browser-keys.ts so hai bảng.
+ */
+function browserKeyOf(input) {
+  const ctrl = !!(input.control || input.meta);
+  const k = input.key || '';
+  const c = input.code || '';
+  if (!ctrl && !input.alt) {
+    if (k === 'F5') return input.shift ? 'hardReload' : 'reload';
+    if (k === 'F6') return 'focusOmni';
+    if (k === 'F3') return input.shift ? 'findPrev' : 'findNext';
+    return null;
+  }
+  if (input.alt && !ctrl) {
+    if (input.shift) return null;
+    if (k === 'ArrowLeft') return 'back';
+    if (k === 'ArrowRight') return 'forward';
+    if (c === 'KeyD') return 'focusOmni';
+    return null;
+  }
+  if (input.alt) return null;
+  if (input.shift) {
+    switch (c) {
+      case 'KeyT': return 'reopenTab';
+      case 'KeyR': return 'hardReload';
+      case 'KeyA': return 'tabSearch';
+      case 'KeyB': return 'toggleMarks';
+      case 'KeyG': return 'findPrev';
+      default: break;
+    }
+    if (k === '+') return 'zoomIn';
+    return null;
+  }
+  switch (c) {
+    case 'KeyT': return 'newTab';
+    case 'KeyW': return 'closeTab';
+    case 'KeyL': return 'focusOmni';
+    case 'KeyF': return 'find';
+    case 'KeyG': return 'findNext';
+    case 'KeyR': return 'reload';
+    case 'KeyD': return 'bookmark';
+    case 'KeyP': return 'print';
+    case 'KeyH': return 'history';
+    case 'PageDown': return 'nextTab';
+    case 'PageUp': return 'prevTab';
+    case 'F5': return 'hardReload';
+    default: break;
+  }
+  if (/^Digit[1-8]$/.test(c)) return `tab${c.slice(5)}`;
+  if (c === 'Digit9') return 'lastTab';
+  if (k === '=' || k === '+' || c === 'NumpadAdd') return 'zoomIn';
+  if (k === '-' || c === 'NumpadSubtract') return 'zoomOut';
+  if (k === '0' || c === 'Numpad0') return 'zoomReset';
+  return null;
+}
+
+/** Phím GIỮ CHẶT, như danh sách "reserved" của Chrome — chặn ở đây, trang
+ *  không bao giờ thấy. Phím khác (Ctrl+F/P/D/H/L, Ctrl+±…) phải tới TRANG
+ *  TRƯỚC: Google Docs, Monaco/VS Code web… tự dùng chúng. Trang bỏ qua thì
+ *  LinkViewer bắt lại ở cuối chuỗi sự kiện. Bản sao của lib/browserKeys.ts ·
+ *  RESERVED_KEYS. */
+const BROWSER_RESERVED_KEYS = new Set(['newTab', 'closeTab', 'reopenTab', 'nextTab', 'prevTab']);
+
+/** Hành động cần BÀN PHÍM ở host (gõ vào ô địa chỉ / hộp thoại) — phải rứt
+ *  focus khỏi guest trước khi báo. */
+const BROWSER_KEYS_NEED_HOST = new Set(['newTab']);
+
 /** Harden + instrument each <webview> guest as it attaches to the window. */
 function wireWebviewHardening(win) {
   const wc = win.webContents;
@@ -1368,6 +1441,21 @@ function wireWebviewHardening(win) {
       }
       // Dịch nhanh: main tự bật bảng nổi (và lấy chữ đang bôi đen trong trang này).
       if (isTranslateKey(input)) { event.preventDefault(); if (!win.isDestroyed()) void tfToggle(win, guest); return; }
+      // Phím GIỮ CHẶT kiểu Chrome của tab Browser (Ctrl+T/W/Shift+T/PageUp/
+      // PageDown) — CHỈ guest của tab Browser (popup extension cũng chung
+      // partition nhưng chạy chrome-extension://, để yên).
+      if (BROWSER_PARTITION.test(partition)) {
+        let onExt = false;
+        try { onExt = (guest.getURL() || '').startsWith('chrome-extension://'); } catch { /* guest vừa chết */ }
+        const bk = onExt ? null : browserKeyOf(input);
+        if (bk && BROWSER_RESERVED_KEYS.has(bk)) {
+          event.preventDefault();
+          if (win.isDestroyed()) return;
+          if (BROWSER_KEYS_NEED_HOST.has(bk)) { win.focus(); win.webContents.focus(); }
+          win.webContents.send('browser:key', { key: bk, id: guest.id });
+          return;
+        }
+      }
       const shortcut = appShortcutOf(input);
       if (!shortcut) return;
       event.preventDefault(); // guest không nhận phím này nữa
@@ -1381,7 +1469,35 @@ function wireWebviewHardening(win) {
       win.webContents.send('desktop:shortcut', shortcut);
     });
     guest.on('context-menu', (_e, params) => {
+      const isBrowser = BROWSER_PARTITION.test(partition);
+      const nav = guest.navigationHistory;
+      const sel = String(params.selectionText || '').replace(/\s+/g, ' ').trim();
+      // Phần riêng của tab Browser, theo menu chuột phải của Chrome:
+      //   · bấm vào chỗ trống của trang → Quay lại / Tiến tới / Tải lại;
+      //   · bôi đen chữ → "Tìm Google cho «…»" mở tab mới;
+      //   · bấm vào ảnh → mở ảnh trong tab mới / chép địa chỉ ảnh.
+      // Mở tab đi chung đường sendOpenInBrowserTab với target=_blank.
+      const browserItems = !isBrowser ? [] : [
+        ...(!params.linkURL && !sel && !params.isEditable && params.mediaType !== 'image' ? [
+          { label: 'Quay lại', accelerator: 'Alt+Left', enabled: !!nav && nav.canGoBack(), click: () => { try { nav.goBack(); } catch { /* guest vừa chết */ } } },
+          { label: 'Tiến tới', accelerator: 'Alt+Right', enabled: !!nav && nav.canGoForward(), click: () => { try { nav.goForward(); } catch { /* guest vừa chết */ } } },
+          { label: 'Tải lại', accelerator: 'Ctrl+R', click: () => { try { guest.reload(); } catch { /* guest vừa chết */ } } },
+          { type: 'separator' },
+        ] : []),
+        ...(sel && !win.isDestroyed() ? [{
+          label: `Tìm Google cho “${sel.length > 32 ? `${sel.slice(0, 32)}…` : sel}”`,
+          click: () => sendOpenInBrowserTab(win, guest, `https://www.google.com/search?q=${encodeURIComponent(sel)}`),
+        }, { type: 'separator' }] : []),
+        ...(params.mediaType === 'image' && /^https?:\/\//i.test(params.srcURL || '') ? [{
+          label: 'Mở hình ảnh trong tab mới',
+          click: () => { if (!win.isDestroyed()) sendOpenInBrowserTab(win, guest, params.srcURL); },
+        }, {
+          label: 'Sao chép địa chỉ hình ảnh',
+          click: () => { require('electron').clipboard.writeText(params.srcURL); },
+        }, { type: 'separator' }] : []),
+      ];
       const menu = Menu.buildFromTemplate([
+        ...browserItems,
         // Bôi đen chữ (vd tin nhắn Zalo) → đổ vào bảng dịch nổi.
         ...tfMenuItems(win, params.selectionText),
         { label: 'Cắt', role: 'cut', enabled: params.editFlags.canCut },

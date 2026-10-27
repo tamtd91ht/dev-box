@@ -20,6 +20,8 @@ export interface SessionTab {
   profile?: string;
   partition: string;
   creds?: { username?: string; password?: string };
+  /** Tab ghim (như Chrome): luôn nằm đầu dải, chỉ hiện favicon. */
+  pinned?: boolean;
 }
 
 /**
@@ -33,7 +35,7 @@ export interface SessionTab {
  *  • KHÔNG có `partition` — dựng lại từ `profile` khi khôi phục, xem `restore`.
  *  • KHÔNG có `id` — chỉ là số thứ tự trong một phiên, cấp lại khi khôi phục.
  */
-export interface SavedTab { name: string; url: string; profile?: string }
+export interface SavedTab { name: string; url: string; profile?: string; pinned?: boolean }
 
 export interface SavedSession { tabs: SavedTab[]; active: number }
 
@@ -52,7 +54,7 @@ export function serialize(tabs: SessionTab[], activeId: string | null): SavedSes
   const kept = tabs.slice(0, MAX_TABS);
   const at = kept.findIndex((t) => t.id === activeId);
   return {
-    tabs: kept.map((t) => ({ name: t.name, url: t.url, profile: t.profile })),
+    tabs: kept.map((t) => ({ name: t.name, url: t.url, profile: t.profile, ...(t.pinned ? { pinned: true } : {}) })),
     active: at >= 0 ? at : 0,
   };
 }
@@ -95,10 +97,64 @@ export function restore(
       // hơn — lệch một cái là tab khôi phục dùng SAI phiên đăng nhập.
       partition: bmPartition(profile),
       // creds không bao giờ khôi phục — xem ghi chú ở SavedTab.
+      ...(t.pinned === true ? { pinned: true } : {}),
     };
   });
+  // Tab ghim luôn đứng đầu — bản cất tay/cũ có thể lẫn thứ tự. Sắp ỔN ĐỊNH
+  // (giữ thứ tự tương đối trong mỗi nhóm), vị trí `active` tính lại theo id.
+  const at0 = saved?.active;
+  const activeTab = (typeof at0 === 'number' && at0 >= 0 && at0 < tabs.length) ? tabs[at0] : tabs[0];
+  tabs.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned));
+  return { tabs, active: activeTab.id };
+}
 
-  const at = saved?.active;
-  const active = (typeof at === 'number' && at >= 0 && at < tabs.length) ? tabs[at].id : tabs[0].id;
-  return { tabs, active };
+/* ── Tab đã đóng gần đây (Ctrl+Shift+T) ──────────────────────────────────
+   Như "Recently closed" của Chrome: đóng nhầm thì mở lại được, kể cả sau khi
+   tắt app. Cùng luật với SavedTab — KHÔNG cất creds. */
+
+export const CLOSED_KEY = 'devbox.browser.closed';
+
+/** Một tab vừa đóng: đủ để mở lại đúng chỗ, đúng hồ sơ. */
+export interface ClosedTab extends SavedTab {
+  /** Vị trí trên dải tab lúc đóng — mở lại thì chèn về gần đó. */
+  index: number;
+  closedAt: number;
+}
+
+/** Trần danh sách — Chrome giữ 25. */
+export const MAX_CLOSED = 25;
+
+/** Thêm các tab vừa đóng vào ĐẦU danh sách (mới nhất trước). Trang không phải
+ *  http(s) (trang trắng, chrome-extension://) thì bỏ — mở lại chẳng để làm gì. */
+export function pushClosed(list: ClosedTab[], tabs: (SessionTab & { index: number })[], now = Date.now()): ClosedTab[] {
+  const add = tabs
+    .filter((t) => /^https?:\/\//i.test(t.url))
+    .map((t): ClosedTab => ({
+      name: t.name, url: t.url, profile: t.profile, index: t.index, closedAt: now,
+      ...(t.pinned ? { pinned: true } : {}),
+    }))
+    // Đóng một loạt (đóng các tab khác) → tab cuối dải là tab "mới đóng nhất"
+    // theo nghĩa Ctrl+Shift+T mở lại theo thứ tự ngược.
+    .reverse();
+  return [...add, ...list].slice(0, MAX_CLOSED);
+}
+
+/** Đọc danh sách đã cất; JSON hỏng/thiếu field thì bỏ dòng đó, không ném lỗi. */
+export function parseClosed(raw: string | null): ClosedTab[] {
+  try {
+    const arr = raw ? JSON.parse(raw) as unknown : [];
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((t): t is ClosedTab => !!t && typeof (t as ClosedTab).url === 'string'
+        && /^https?:\/\//i.test((t as ClosedTab).url))
+      .map((t) => ({
+        name: typeof t.name === 'string' ? t.name : '',
+        url: t.url,
+        profile: typeof t.profile === 'string' && t.profile.trim() ? t.profile.trim() : undefined,
+        index: typeof t.index === 'number' && t.index >= 0 ? t.index : 0,
+        closedAt: typeof t.closedAt === 'number' ? t.closedAt : 0,
+        ...(t.pinned === true ? { pinned: true } : {}),
+      }))
+      .slice(0, MAX_CLOSED);
+  } catch { return []; }
 }

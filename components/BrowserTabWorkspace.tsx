@@ -18,7 +18,7 @@ import {
 import BrowserExtensions from './BrowserExtensions';
 import BrowserExtBar from './BrowserExtBar';
 import BookmarkBar from './BookmarkBar';
-import LinkViewer, { type TabOpener } from './LinkViewer';
+import LinkViewer, { type TabOpener, type TabMeta, type ViewerApi } from './LinkViewer';
 import PasswordManager from './PasswordManager';
 import DupTabDialog, { tabUrlKey } from './DupTabDialog';
 import { onOpenUrl } from '@/lib/openTarget';
@@ -27,7 +27,11 @@ import AddressSuggest, { useAddressSuggest } from './AddressSuggest';
 import BrowserHistory from './BrowserHistory';
 import {
   TABS_KEY, serialize as serializeSession, restore as restoreSession,
+  CLOSED_KEY, pushClosed, parseClosed, type ClosedTab,
 } from '@/lib/browserSession';
+import { browserKeyOf, NEED_HOST_KEYS, type BrowserKey } from '@/lib/browserKeys';
+import { faviconOf, hideTile, hiddenTiles, unhideAllTiles } from '@/lib/browserSiteData';
+import { historyList } from '@/lib/browserHistory';
 import { usePopupOverWebview } from '@/lib/useOverWebview';
 import {
   PROFILES_KEY, CUR_PROFILE_KEY, DEFAULT_PROFILE_ID, loadProfiles, mergeLegacy, findProfile,
@@ -39,6 +43,8 @@ import { ProfileButton, ProfileDot, ProfileManager, ProfileSelect } from './Brow
 interface Tab {
   id: string; name: string; url: string; profile?: string; partition: string;
   creds?: { username?: string; password?: string };
+  /** Tab ghim: đứng đầu dải, chỉ hiện favicon, không có nút ✕ (như Chrome). */
+  pinned?: boolean;
   /** Tab này mở từ liên kết trong tab khác → ngữ cảnh tab cha (Referer +
    *  sessionStorage) để trang đích không mất bộ lọc/phân trang. Xem `TabOpener`
    *  trong LinkViewer. Chỉ dùng cho lần tải đầu của tab. */
@@ -53,7 +59,19 @@ function tabInitial(name: string): string {
   return (Array.from(name.trim())[0] ?? '•').toUpperCase();
 }
 
-export default function BrowserTabWorkspace() {
+/** Số thứ tự trong id `tab-N` — thứ tự TẠO tab, không đổi suốt đời tab. */
+function tabSeq(id: string): number { return Number(id.slice(4)) || 0; }
+
+/** Khoá so URL "cùng trang" (bỏ #fragment và / cuối) — đánh dấu ☆/★. */
+function urlKey(url: string): string { return tabUrlKey('', normalizeUrl(url) || url); }
+
+/** Ô lối tắt ở trang tab mới — một host hay ghé, mở URL ghé nhiều nhất của host đó. */
+interface Tile { host: string; url: string; title: string; visits: number }
+
+export default function BrowserTabWorkspace({ visible = true }: {
+  /** Pane Browser đang hiện — phím tắt kiểu Chrome chỉ ăn khi đang nhìn thấy nó. */
+  visible?: boolean;
+} = {}) {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [addr, setAddr] = useState('');
   /** Hồ sơ dùng cho tab MỚI (ref: '' = mặc định). Đi theo tab đang xem, và
@@ -126,33 +144,8 @@ export default function BrowserTabWorkspace() {
 
   const [histOpen, setHistOpen] = useState(false); // modal 🕘 Lịch sử (Ctrl+H)
 
-  /** Ctrl/Cmd+Shift+B ẩn/hiện thanh dấu trang — đúng phím của Chrome.
-   *
-   *  Bắt ở `document` chứ không phải trên .bt-root: focus hầu như luôn nằm
-   *  TRONG <webview>, mà guest là process riêng nên keydown của nó không nổi
-   *  lên DOM của host. Nghe ở document thì mọi lúc con trỏ ở phần chrome của
-   *  app (thanh tab, ô địa chỉ, thanh dấu trang) phím đều ăn. */
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      if (e.shiftKey && (e.key === 'B' || e.key === 'b')) {
-        e.preventDefault();
-        toggleMarks();
-        return;
-      }
-      // Ctrl+H mở Lịch sử — đúng phím của Chrome. KHÔNG kèm Shift (Ctrl+Shift+H
-      // là phím khác hẳn), và bỏ qua khi con trỏ đang ở một ô nhập của app:
-      // vài ô dùng Ctrl+H làm xoá lùi, cướp mất thì gõ rất khó chịu.
-      if (!e.shiftKey && (e.key === 'H' || e.key === 'h')) {
-        const t = e.target as HTMLElement | null;
-        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-        e.preventDefault();
-        setHistOpen(true);
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [toggleMarks]);
+  /* Ctrl+Shift+B (thanh dấu trang) và Ctrl+H (lịch sử) giờ đi chung bảng phím
+     kiểu Chrome — xem runKey ở dưới và lib/browserKeys.ts. */
   const [menuOpen, setMenuOpen] = useState(false); // menu ⋯ (lưu/dấu trang/tràn viền)
   const [newTabOpen, setNewTabOpen] = useState(false); // panel nhập URL khi đã có tab
   const [ctx, setCtx] = useState<Ctx | null>(null); // menu chuột phải trên dấu trang
@@ -175,6 +168,28 @@ export default function BrowserTabWorkspace() {
    *  thì A quay về trang mặc định ban đầu. */
   const [reloadNonces, setReloadNonces] = useState<Record<string, number>>({});
   const rootRef = useRef<HTMLDivElement | null>(null);
+  /** Trạng thái hiển thị của từng tab (tiêu đề, favicon, đang tải, âm thanh,
+   *  zoom) — LinkViewer báo lên qua onMeta. Tách khỏi `tabs` vì đổi rất dày
+   *  (mỗi lần tải trang) mà không phải thứ cần cất xuống phiên. */
+  const [meta, setMeta] = useState<Record<string, TabMeta>>({});
+  /** Bộ điều khiển của từng viewer (phím tắt, menu ⋮ gọi vào). */
+  const apisRef = useRef<Map<string, ViewerApi>>(new Map());
+  /** Ô trống cuối hàng công cụ của từng viewer — cụm hồ sơ/extension/⋮ được
+   *  portal vào ô của TAB ĐANG XEM cho giống hàng công cụ Chrome. Đổi ô thì
+   *  tăng `slotTick` để render lại và portal sang đúng chỗ. */
+  const slotsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  /** Ô ngay dưới hàng công cụ — thanh dấu trang portal vào đây. */
+  const underSlotsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [, setSlotTick] = useState(0);
+  /** Tab đã đóng gần đây (Ctrl+Shift+T) — nạp/cất localStorage như phiên tab. */
+  const [closed, setClosed] = useState<ClosedTab[]>([]);
+  const [tabSearchOpen, setTabSearchOpen] = useState(false);
+  const tabSearchBtnRef = useRef<HTMLButtonElement | null>(null);
+  /** Kéo thả sắp xếp tab: tab đang kéo + chỗ sẽ thả (trước/sau tab nào). */
+  const dragTabRef = useRef<string | null>(null);
+  const [dropAt, setDropAt] = useState<{ id: string; after: boolean } | null>(null);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   /** Bộ đếm cấp id tab. Id KHÔNG còn dựng từ partition|url: id theo url nghĩa
    *  là không bao giờ mở được hai tab cùng một trang — mà so sánh hai bản ghi,
    *  hai môi trường cùng dashboard là nhu cầu thật. Id giờ chỉ là số thứ tự;
@@ -203,9 +218,15 @@ export default function BrowserTabWorkspace() {
         hostOf,
       );
       if (restored.length) { setTabs(restored); setActiveId(active); }
+      setClosed(parseClosed(localStorage.getItem(CLOSED_KEY)));
     } catch { /* localStorage bị chặn — mở bàn trắng, không phải lỗi đáng kêu */ }
     setHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try { localStorage.setItem(CLOSED_KEY, JSON.stringify(closed)); } catch { /* đầy thì thôi */ }
+  }, [hydrated, closed]);
 
   /* Cờ `hydrated` là STATE chứ không phải ref, và effect ghi phải chờ nó —
      cùng lý do đã ghi ở ApiWorkspace: đánh dấu bằng ref thì ngay trong lượt
@@ -421,6 +442,9 @@ export default function BrowserTabWorkspace() {
   const openTab = useCallback((rawUrl: string, opts: {
     name?: string; profile?: string; creds?: Tab['creds']; background?: boolean; forceNew?: boolean;
     opener?: TabOpener;
+    /** Chèn vào vị trí này thay vì cuối dải (mở lại tab đã đóng về chỗ cũ). */
+    at?: number;
+    pinned?: boolean;
   } = {}) => {
     const url = normalizeUrl(rawUrl);
     if (!url) return;
@@ -448,10 +472,18 @@ export default function BrowserTabWorkspace() {
 
     const id = `tab-${++tabSeqRef.current}`;
     recentOpenRef.current = { key, at: Date.now(), id };
-    setTabs((cur) => [...cur, {
-      id, name: opts.name || hostOf(url), url, profile: prof, partition, creds: opts.creds,
-      opener: opts.opener,
-    }]);
+    setTabs((cur) => {
+      const tab: Tab = {
+        id, name: opts.name || hostOf(url), url, profile: prof, partition, creds: opts.creds,
+        opener: opts.opener, ...(opts.pinned ? { pinned: true } : {}),
+      };
+      // Tab ghim luôn đứng trong nhóm ghim, tab thường luôn đứng sau nhóm đó —
+      // kẹp vị trí chèn cho khỏi lẫn hai nhóm.
+      const nPinned = cur.filter((t) => t.pinned).length;
+      let at = opts.at ?? cur.length;
+      at = tab.pinned ? Math.min(at, nPinned) : Math.max(Math.min(at, cur.length), nPinned);
+      return [...cur.slice(0, at), tab, ...cur.slice(at)];
+    });
     // Tab mới ở chế độ background: giữ nguyên tab đang xem, trừ khi chưa có
     // tab nào nổi thì đưa lên cho khỏi bấm mò.
     //
@@ -495,7 +527,24 @@ export default function BrowserTabWorkspace() {
     });
   }, [openTab]);
 
+  /** Ghi các tab sắp đóng vào "đã đóng gần đây" (Ctrl+Shift+T mở lại). Gọi
+   *  với danh sách HIỆN TẠI để biết vị trí của từng tab lúc đóng. */
+  const rememberClosed = useCallback((cur: Tab[], ids: Set<string>) => {
+    const gone = cur.map((t, index) => ({ ...t, index })).filter((t) => ids.has(t.id));
+    if (gone.length) setClosed((list) => pushClosed(list, gone));
+    // Trạng thái hiển thị của tab đã đóng — dọn cho khỏi phình.
+    setMeta((m) => {
+      if (!gone.some((t) => t.id in m)) return m;
+      const next = { ...m };
+      for (const t of gone) delete next[t.id];
+      return next;
+    });
+  }, []);
+
+  // rememberClosed đọc ảnh chụp tabsRef BÊN NGOÀI updater của setTabs: updater
+  // phải thuần (React có thể gọi hai lần), đặt setClosed trong đó là ghi đôi.
   const closeTab = useCallback((id: string) => {
+    rememberClosed(tabsRef.current, new Set([id]));
     setTabs((cur) => {
       const idx = cur.findIndex((t) => t.id === id);
       const next = cur.filter((t) => t.id !== id);
@@ -508,7 +557,66 @@ export default function BrowserTabWorkspace() {
       if (next.length === 0) setNewTabOpen(false);
       return next;
     });
+  }, [rememberClosed]);
+
+  /** Đóng nhiều tab một lượt (các tab khác / bên phải / tất cả). */
+  const closeMany = useCallback((pick: (t: Tab, i: number, all: Tab[]) => boolean, keepActive?: string) => {
+    const snap = tabsRef.current;
+    const ids = new Set(snap.filter((t, i) => pick(t, i, snap)).map((t) => t.id));
+    if (!ids.size) return;
+    rememberClosed(snap, ids);
+    setTabs((cur) => {
+      const next = cur.filter((t) => !ids.has(t.id));
+      setActiveId((a) => (keepActive ?? (a && !ids.has(a) ? a : next[next.length - 1]?.id ?? null)));
+      if (next.length === 0) setNewTabOpen(false);
+      return next;
+    });
+  }, [rememberClosed]);
+
+  /** Mở lại tab đã đóng — mặc định tab mới đóng nhất (Ctrl+Shift+T). Về đúng
+   *  vị trí cũ, đúng hồ sơ, đúng cờ ghim. */
+  const reopenClosed = useCallback((i = 0) => {
+    const c = closed[i];
+    if (!c) return;
+    setClosed((list) => list.filter((_, k) => k !== i));
+    openTab(c.url, { name: c.name || undefined, profile: c.profile, forceNew: true, at: c.index, pinned: c.pinned });
+  }, [closed, openTab]);
+
+  /** Ghim / bỏ ghim: chuyển về cuối nhóm ghim (= đầu nhóm thường khi bỏ ghim). */
+  const pinTab = useCallback((id: string, pin: boolean) => {
+    setTabs((cur) => {
+      const t = cur.find((x) => x.id === id);
+      if (!t || !!t.pinned === pin) return cur;
+      const rest = cur.filter((x) => x.id !== id);
+      const n = rest.filter((x) => x.pinned).length;
+      const moved: Tab = { ...t, pinned: pin || undefined };
+      return [...rest.slice(0, n), moved, ...rest.slice(n)];
+    });
   }, []);
+
+  /** Kéo thả: đưa tab `id` tới trước/sau tab `target`, không vượt ranh giới
+   *  nhóm ghim (Chrome cũng không cho kéo tab thường lọt vào giữa nhóm ghim). */
+  const moveTab = useCallback((id: string, target: string, after: boolean) => {
+    if (id === target) return;
+    setTabs((cur) => {
+      const src = cur.find((t) => t.id === id);
+      if (!src) return cur;
+      const rest = cur.filter((t) => t.id !== id);
+      const ti = rest.findIndex((t) => t.id === target);
+      if (ti < 0) return cur;
+      const n = rest.filter((t) => t.pinned).length;
+      let to = ti + (after ? 1 : 0);
+      to = src.pinned ? Math.min(to, n) : Math.max(to, n);
+      return [...rest.slice(0, to), src, ...rest.slice(to)];
+    });
+  }, []);
+
+  /** Tắt / bật tiếng một tab (nút loa trên tab, menu chuột phải). */
+  const toggleMute = useCallback((id: string) => {
+    const api = apisRef.current.get(id);
+    if (!api) return;
+    api.setMuted(!meta[id]?.muted);
+  }, [meta]);
 
   /**
    * NHÂN ĐÔI TAB — như "Duplicate tab" của Chrome.
@@ -536,6 +644,8 @@ export default function BrowserTabWorkspace() {
       ...src,
       id: `tab-${++tabSeqRef.current}`,
       creds: undefined,
+      // Bản nhân đôi là tab thường, đứng ngay cạnh — kể cả khi gốc là tab ghim.
+      pinned: undefined,
       // KHÔNG chép `opener`: đó là ngữ cảnh của lần mở ĐẦU tiên (ghé trang cha
       // để lấy sessionStorage rồi mới sang trang đích). Nhân đôi là "mở lại
       // đúng trang đang xem" — mang theo opener thì bản sao lại vòng qua trang
@@ -549,7 +659,8 @@ export default function BrowserTabWorkspace() {
     setTabs((cur) => {
       const i = cur.findIndex((t) => t.id === id);
       if (i < 0) return cur;
-      return [...cur.slice(0, i + 1), copy, ...cur.slice(i + 1)];
+      const at = Math.max(i + 1, cur.filter((t) => t.pinned).length);
+      return [...cur.slice(0, at), copy, ...cur.slice(at)];
     });
     setActiveId(copy.id);
     setNewTabOpen(false);
@@ -631,10 +742,62 @@ export default function BrowserTabWorkspace() {
     trackUrl(tab.id, url);
   }, [trackUrl]);
 
-  const saveBookmarkFromTab = useCallback(async (name: string, url: string, tab: Tab) => {
-    await bmAdd(url, { name, profile: tab.profile, ...tab.creds });
-    reload();
-  }, [reload]);
+  /** Dấu trang đang mở trong hộp thoại là dấu trang VỪA THÊM bằng ☆ — tiêu
+   *  đề hộp thoại đổi thành "Đã thêm dấu trang", như bong bóng của Chrome. */
+  const [justStarred, setJustStarred] = useState(false);
+
+  /**
+   * ☆ trên ô địa chỉ / Ctrl+D — như Chrome:
+   *   · trang CHƯA có dấu trang → lưu ngay vào thanh dấu trang của hồ sơ của
+   *     tab, rồi mở hộp thoại để đổi tên / chọn hồ sơ / xoá nếu lỡ tay;
+   *   · ĐÃ có → mở thẳng hộp thoại sửa dấu trang đó.
+   * Không chép `creds` của tab vào dấu trang mới: mật khẩu đi theo origin
+   * trong PasswordManager rồi.
+   */
+  const starFromTab = useCallback(async (url: string, title: string, tab: Tab) => {
+    const k = urlKey(url);
+    const pid = findProfile(profiles, tab.profile).id;
+    const mine = (b: Bookmark) => b.kind !== 'folder' && findProfile(profiles, b.profile).id === pid;
+    const existing = bookmarks.find((b) => mine(b) && urlKey(b.url) === k);
+    if (existing) { setJustStarred(false); setEdit(structuredClone(existing)); return; }
+    try {
+      const list = await bmAdd(url, { name: title, profile: tab.profile ?? '' });
+      setBookmarks(list);
+      setMarks(true);
+      const added = list
+        .filter((b) => mine(b) && urlKey(b.url) === k)
+        .reduce<Bookmark | null>((m, b) => (!m || b.order > m.order ? b : m), null);
+      if (added) { setJustStarred(true); setEdit(structuredClone(added)); }
+    } catch (e) { setErr((e as Error).message); }
+  }, [bookmarks, profiles, setMarks]);
+  const starRef = useRef(starFromTab);
+  starRef.current = starFromTab;
+  /** Bản ổn định cho BrowserTab (memo) — gọi tới bản mới nhất qua ref. */
+  const starStable = useCallback((url: string, title: string, tab: Tab) => {
+    void starRef.current(url, title, tab);
+  }, []);
+
+  const metaFromTab = useCallback((m: TabMeta, tab: Tab) => {
+    setMeta((cur) => {
+      const o = cur[tab.id];
+      if (o && o.title === m.title && o.favicon === m.favicon && o.loading === m.loading
+        && o.audible === m.audible && o.muted === m.muted && o.zoom === m.zoom) return cur;
+      return { ...cur, [tab.id]: m };
+    });
+  }, []);
+
+  const apiFromTab = useCallback((api: ViewerApi | null, tab: Tab) => {
+    if (api) apisRef.current.set(tab.id, api);
+    else apisRef.current.delete(tab.id);
+  }, []);
+
+  const slotFromTab = useCallback((el: HTMLDivElement | null, tab: Tab, under?: boolean) => {
+    const map = under ? underSlotsRef.current : slotsRef.current;
+    if (map.get(tab.id) === el) return;
+    if (el) map.set(tab.id, el);
+    else map.delete(tab.id);
+    setSlotTick((n) => n + 1);
+  }, []);
 
   const go = () => {
     if (!addr.trim()) return;
@@ -675,11 +838,9 @@ export default function BrowserTabWorkspace() {
     if (!background) setNewTabOpen(false);
   };
 
-  const closeAllTabs = () => {
-    setTabs([]); setActiveId(null);
-    // Cùng lý do như closeTab: hết tab mà panel new-tab còn bật là kẹt màn hình.
-    setNewTabOpen(false);
-  };
+  // closeMany tự tắt panel new-tab khi hết tab (cùng lý do như closeTab: hết
+  // tab mà cờ còn bật là kẹt màn hình) và ghi các tab vào "đã đóng gần đây".
+  const closeAllTabs = () => closeMany(() => true);
 
   const saveEdit = async () => {
     if (!edit) return;
@@ -709,16 +870,130 @@ export default function BrowserTabWorkspace() {
    * quay về đúng chỗ đang đọc, và webview không bị huỷ nên không tải lại trang.
    */
   const openNewTabPage = () => {
+    if (activeRef.current) prevActiveRef.current = activeRef.current;
     setNewTabOpen(true);
     setAddr('');
     setActiveId(null);
+    // Ô địa chỉ của trang tab mới có autoFocus, nhưng đang ở tab new-tab rồi
+    // (Ctrl+T lần hai) thì nó không mount lại — focus tay.
+    requestAnimationFrame(() => homeInputRef.current?.focus());
   };
+
+  /** Tab đang xem ngay trước khi bấm ＋ — đóng trang tab mới thì quay về đó. */
+  const prevActiveRef = useRef<string | null>(null);
+  const homeInputRef = useRef<HTMLInputElement | null>(null);
 
   /** Hủy trang new-tab → quay lại tab đang xem trước đó (nếu còn). */
   const cancelNewTab = () => {
     setNewTabOpen(false);
-    setActiveId((a) => a ?? tabs[tabs.length - 1]?.id ?? null);
+    const prev = prevActiveRef.current;
+    setActiveId((a) => a ?? (prev && tabs.some((t) => t.id === prev) ? prev : tabs[tabs.length - 1]?.id ?? null));
   };
+
+  /** Chọn tab theo vị trí trên dải (Ctrl+1..8, Ctrl+PageUp/Down). */
+  const selectTabAt = (i: number) => {
+    const t = tabs[i];
+    if (t) { setActiveId(t.id); setNewTabOpen(false); }
+  };
+
+  /**
+   * Một phím tắt kiểu Chrome → hành động. Hai đường vào cùng một chỗ: keydown
+   * ở host (con trỏ ở thanh tab / ô địa chỉ / trang tab mới) và 'browser:key'
+   * từ main (con trỏ trong trang web) — xem lib/browserKeys.ts.
+   * Hành động thuộc về TRANG đi qua bộ điều khiển của tab đang xem.
+   */
+  const runKey = (k: BrowserKey) => {
+    const api = activeId ? apisRef.current.get(activeId) : undefined;
+    const idx = tabs.findIndex((t) => t.id === activeId);
+    switch (k) {
+      case 'newTab': openNewTabPage(); break;
+      case 'closeTab':
+        if (activeId) closeTab(activeId);
+        else if (hasTabs) cancelNewTab();
+        break;
+      case 'reopenTab': reopenClosed(); break;
+      case 'nextTab': if (tabs.length) selectTabAt(idx < 0 ? 0 : (idx + 1) % tabs.length); break;
+      case 'prevTab': if (tabs.length) selectTabAt(idx < 0 ? tabs.length - 1 : (idx - 1 + tabs.length) % tabs.length); break;
+      case 'lastTab': selectTabAt(tabs.length - 1); break;
+      case 'focusOmni':
+        if (api) api.focusOmni();
+        else homeInputRef.current?.focus();
+        break;
+      case 'find': api?.find(); break;
+      case 'findNext': api?.findNext(1); break;
+      case 'findPrev': api?.findNext(-1); break;
+      case 'reload': api?.reload(); break;
+      case 'hardReload': api?.reload(true); break;
+      case 'back': api?.back(); break;
+      case 'forward': api?.forward(); break;
+      case 'zoomIn': api?.zoom(1); break;
+      case 'zoomOut': api?.zoom(-1); break;
+      case 'zoomReset': api?.zoom(0); break;
+      case 'bookmark': api?.star(); break;
+      case 'print': api?.print(); break;
+      case 'tabSearch': setTabSearchOpen((v) => !v); break;
+      case 'history': setHistOpen(true); break;
+      case 'toggleMarks': toggleMarks(); break;
+      default:
+        if (/^tab[1-8]$/.test(k)) selectTabAt(Number(k.slice(3)) - 1);
+    }
+  };
+  const runKeyRef = useRef(runKey);
+  runKeyRef.current = runKey;
+
+  // Phím bấm khi con trỏ ở phần khung của tab Browser. Nghe ở document vì
+  // focus có thể ở bất cứ đâu trong pane; chỉ nhận khi pane đang hiện và sự
+  // kiện thuộc về pane này (chế độ chia màn hình: Ctrl+F trong pane bên cạnh
+  // không được rơi vào đây).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!visibleRef.current || e.defaultPrevented) return;
+      const k = browserKeyOf({ key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
+      if (!k) return;
+      const t = e.target as HTMLElement | null;
+      if (t && t !== document.body && !rootRef.current?.contains(t)) return;
+      // Ctrl+H là xoá lùi trong vài ô nhập — đang gõ thì để yên cho ô.
+      if (k === 'history' && t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      e.preventDefault();
+      runKeyRef.current(k);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Phím bấm TRONG trang web. Hai nguồn: phím giữ chặt do main chặn hộ
+  // (electron/main.cjs · browserKeyOf), phím trang bỏ qua do LinkViewer bắt lại
+  // (onBrowserKey). Hành động cần gõ phím ở host (ô địa chỉ, ô tìm…) phải rứt
+  // focus khỏi guest trước — chỉ gọi input.focus() thì guest vẫn giữ bàn phím.
+  const keyFromGuest = useCallback((k: BrowserKey) => {
+    if (!visibleRef.current) return;
+    if (!NEED_HOST_KEYS.has(k)) { runKeyRef.current(k); return; }
+    const p = window.workspace?.focusHost?.();
+    if (!p) { runKeyRef.current(k); return; }
+    void p.catch(() => {}).finally(() => runKeyRef.current(k));
+  }, []);
+  useEffect(() => window.workspace?.onBrowserKey?.(({ key }) => keyFromGuest(key)), [keyFromGuest]);
+
+  /* ── Lối tắt ở trang tab mới — các host ghé nhiều nhất, như Chrome ───── */
+  const [tiles, setTiles] = useState<Tile[]>([]);
+  const [tilesHidden, setTilesHidden] = useState(0); // số ô đã ẩn, để hiện "khôi phục"
+  const onHome = activeId === null;
+  const loadTiles = useCallback(() => {
+    historyList('', 400).then((rows) => {
+      const hidden = hiddenTiles();
+      setTilesHidden(hidden.size);
+      const by = new Map<string, Tile & { best: number }>();
+      for (const r of rows) {
+        if (!r.host || hidden.has(r.host) || !/^https?:\/\//i.test(r.url)) continue;
+        const cur = by.get(r.host);
+        if (!cur) { by.set(r.host, { host: r.host, url: r.url, title: r.title, visits: r.visitCount, best: r.visitCount }); continue; }
+        cur.visits += r.visitCount;
+        if (r.visitCount > cur.best) { cur.best = r.visitCount; cur.url = r.url; cur.title = r.title || cur.title; }
+      }
+      setTiles([...by.values()].sort((a, b) => b.visits - a.visits).slice(0, 10));
+    }).catch(() => setTiles([]));
+  }, []);
+  useEffect(() => { if (onHome && visible) loadTiles(); }, [onHome, visible, loadTiles]);
 
   /** Chuột phải trên một dấu trang → mở menu ngữ cảnh tại con trỏ (toạ độ quy
    *  về gốc .bt-root vì menu position:absolute trong đó). */
@@ -775,7 +1050,8 @@ export default function BrowserTabWorkspace() {
   // gõ đi vào TRANG WEB chứ không vào ô nhập — `edit` từng bị sót, triệu chứng
   // là "sửa tên dấu trang không được, bàn phím như bị chặn". Menu ⋯ cũng vậy:
   // z-index 21 không cứu được gì trước tầng native.
-  usePopupOverWebview(!!folderAsk || menuOpen || !!dupAsk || !!edit || !!tabCtx || profMenuOpen || profMgrOpen);
+  usePopupOverWebview(!!folderAsk || menuOpen || !!dupAsk || !!edit || !!tabCtx || profMenuOpen || profMgrOpen
+    || tabSearchOpen);
 
   /** Esc đóng menu ⋯. Menu đã portal ra body nên không nhận keydown của cây
    *  con nữa — phải nghe ở window. */
@@ -890,14 +1166,15 @@ export default function BrowserTabWorkspace() {
     </div>
   );
 
-  /** Ô nhập URL + profile — dùng cho cả trang new-tab lẫn panel ＋. */
+  /** Ô tìm/địa chỉ của trang tab mới — to, bo tròn, ở giữa như Chrome. */
   const addressForm = (
-    <div className="bt-addr">
+    <div className="bt-addr bt-ntp-search">
       {/* Khung neo cho danh sách gợi ý (position:absolute). Phải bọc RIÊNG ô
           URL, không dùng cả .bt-addr: danh sách sẽ rộng bằng cả hàng, trùm qua
-          ô Profile và hai cái nút. */}
+          ô Profile. */}
       <div className="bt-addr-wrap">
-        <input className="input bt-addr-input" placeholder="Gõ địa chỉ web hoặc từ khóa tìm Google rồi Enter…"
+        <span className="bt-ntp-search-ico" aria-hidden>🔍</span>
+        <input ref={homeInputRef} className="input bt-addr-input" placeholder="Tìm Google hoặc nhập URL"
           value={addrSug.preview ?? addr} autoFocus onChange={(e) => setAddr(e.target.value)}
           onFocus={(e) => { setAddrFocus(true); e.currentTarget.select(); }}
           // Xem ghi chú ở ô địa chỉ của LinkViewer: KHÔNG đóng danh sách tại
@@ -905,126 +1182,224 @@ export default function BrowserTabWorkspace() {
           onBlur={() => setAddrFocus(false)}
           onKeyDown={(e) => {
             if (addrSug.onKeyDown(e)) return;
-            if (e.key === 'Enter') go();
+            // Enter mở ĐÚNG thứ đang hiện trong ô: đang chọn một dòng gợi ý
+            // bằng ↑↓ thì ô hiện URL dòng đó nhưng `addr` vẫn là chữ gõ dở.
+            if (e.key === 'Enter') { if (addrSug.preview) goSuggest(addrSug.preview); else go(); }
             if (e.key === 'Escape' && hasTabs) cancelNewTab();
           }} />
         <AddressSuggest {...addrSug.listProps} />
       </div>
       <ProfileSelect profiles={profiles} value={profile} onChange={setProfile}
         title="Cùng hồ sơ = chung phiên đăng nhập. Hai tài khoản khác nhau → hai hồ sơ (⚙ trong nút avatar để thêm)." />
-      {/* Bấm "▶ Mở" phải mở ĐÚNG thứ đang hiện trong ô. Đang chọn một dòng gợi
-          ý bằng ↑↓ thì ô hiện URL của dòng đó nhưng `addr` vẫn là chữ gõ dở
-          (có thể rỗng) — dựa vào `addr` thì nút xám đi hoặc mở sai trang. */}
-      <button
-        onClick={() => { if (addrSug.preview) goSuggest(addrSug.preview); else go(); }}
-        disabled={!addrSug.preview && !addr.trim()}
-      >
-        ▶ Mở
-      </button>
-      {hasTabs && <button className="ghost sm" onClick={cancelNewTab}>Hủy</button>}
     </div>
   );
 
+  const activeTab = tabs.find((t) => t.id === activeId);
+  /** Ô trống ở hàng công cụ của tab đang xem — có thì cụm hồ sơ/extension/⋮
+   *  portal vào đó; ở trang tab mới (không có viewer) thì nằm cuối dải tab. */
+  const slot = activeId ? slotsRef.current.get(activeId) : undefined;
+  const underSlot = activeId ? underSlotsRef.current.get(activeId) : undefined;
+  /** URL đã có dấu trang (của hồ sơ đang dùng) — để tab vẽ ☆ hay ★. */
+  const markedUrls = useMemo(
+    () => new Set(marks.filter((b) => b.kind !== 'folder').map((b) => urlKey(b.url))),
+    [marks],
+  );
+  /** Thứ tự RENDER viewer = thứ tự tạo tab, KHÔNG theo thứ tự trên dải. Kéo thả
+   *  / ghim đổi thứ tự dải; nếu viewer render theo đó thì React phải chuyển chỗ
+   *  nút <webview> trong DOM — mà gỡ ra gắn lại một <webview> là guest bị huỷ
+   *  và tải lại từ đầu. Tab mới luôn có số lớn nhất nên chỉ thêm vào cuối. */
+  const viewerOrder = useMemo(() => [...tabs].sort((a, b) => tabSeq(a.id) - tabSeq(b.id)), [tabs]);
+
+  /** Cụm cuối hàng công cụ, như Chrome: extension · hồ sơ · ⋮. */
+  const toolCluster = (
+    <div className="bt-cluster">
+      <BrowserExtBar
+        partition={activeTab?.partition ?? bmPartition(profile || undefined)}
+        activeUrl={activeTab?.url ?? ''}
+        onNavigate={navigateActive}
+        onManage={() => setExtOpen(true)}
+        onReloadPage={() => {
+          const cur = activeRef.current;
+          if (cur) setReloadNonces((m) => ({ ...m, [cur]: (m[cur] ?? 0) + 1 }));
+        }}
+      />
+      <ProfileButton
+        profiles={profiles} current={currentProfile}
+        open={profMenuOpen} onOpenChange={setProfMenuOpen}
+        onPick={pickProfile} onManage={() => setProfMgrOpen(true)}
+      />
+      {/* Nút ⋮ — menu của Chrome. Menu PORTAL ra <body> + position:fixed:
+          dải tab có `overflow-x: auto` (khung cắt), menu absolute bên trong
+          bị cắt cụt theo chiều cao dải nên thả xuống là mất hút. */}
+      <div className="bt-menu-wrap">
+        <button
+          ref={menuBtnRef}
+          className={`bt-kebab${menuOpen ? ' on' : ''}`}
+          onClick={() => setMenuOpen((v) => !v)}
+          title="Tuỳ chỉnh và điều khiển Browser"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+        >⋮</button>
+      </div>
+    </div>
+  );
+
+  /** Một tab trên dải — favicon/vòng xoay, tiêu đề, loa, ✕; kéo thả để sắp xếp. */
+  const tabChip = (t: Tab) => {
+    const m = meta[t.id];
+    const on = t.id === activeId;
+    const title = m?.title || t.name;
+    const icon = m?.favicon ?? faviconOf(t.url);
+    const prof = t.profile ? findProfile(profiles, t.profile) : null;
+    return (
+      <div
+        key={t.id}
+        role="tab"
+        aria-selected={on}
+        className={`bt-tab${on ? ' on' : ''}${t.pinned ? ' pinned' : ''}${
+          dropAt?.id === t.id ? (dropAt.after ? ' drop-after' : ' drop-before') : ''}`}
+        title={`${title}\n${t.url}${prof ? `\nHồ sơ: ${prof.name}` : ''}`}
+        draggable
+        onClick={() => { setActiveId(t.id); setNewTabOpen(false); }}
+        // Chuột giữa đóng tab — như Chrome. mousedown chặn kiểu cuộn tự động.
+        onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
+        onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(t.id); } }}
+        onContextMenu={(ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const host = rootRef.current?.getBoundingClientRect();
+          const MW = 240, MH = 380;
+          setTabCtx({
+            x: Math.min(ev.clientX - (host?.left ?? 0), Math.max(0, (host?.width ?? MW) - MW)),
+            y: Math.min(ev.clientY - (host?.top ?? 0), Math.max(0, (host?.height ?? MH) - MH)),
+            id: t.id,
+          });
+        }}
+        onDragStart={(e) => {
+          dragTabRef.current = t.id;
+          e.dataTransfer.setData('application/x-dbx-tab', t.id);
+          // Thả xuống thanh dấu trang = lưu dấu trang, như kéo tab của Chrome.
+          e.dataTransfer.setData('text/uri-list', t.url);
+          e.dataTransfer.setData('text/plain', t.url);
+          e.dataTransfer.effectAllowed = 'all';
+        }}
+        onDragOver={(e) => {
+          if (!dragTabRef.current || dragTabRef.current === t.id) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          const r = e.currentTarget.getBoundingClientRect();
+          const after = e.clientX > r.left + r.width / 2;
+          setDropAt((d) => (d?.id === t.id && d.after === after ? d : { id: t.id, after }));
+        }}
+        onDragLeave={() => setDropAt((d) => (d?.id === t.id ? null : d))}
+        onDrop={(e) => {
+          const src = dragTabRef.current;
+          if (!src) return;
+          e.preventDefault();
+          const r = e.currentTarget.getBoundingClientRect();
+          moveTab(src, t.id, e.clientX > r.left + r.width / 2);
+          dragTabRef.current = null;
+          setDropAt(null);
+        }}
+        onDragEnd={() => { dragTabRef.current = null; setDropAt(null); }}
+      >
+        <span className="bt-tab-ico" aria-hidden>
+          {m?.loading ? <span className="bt-spin" /> : (
+            <>
+              <span className="bt-tab-letter" style={prof ? { background: prof.color } : undefined}>{tabInitial(title)}</span>
+              {icon && (
+                // Ảnh hỏng (favicon cần cookie, host chết) thì giấu đi, chữ cái
+                // nằm bên dưới lộ ra thay.
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={icon} alt="" draggable={false}
+                  onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />
+              )}
+            </>
+          )}
+        </span>
+        {!t.pinned && <span className="bt-tab-title">{title}</span>}
+        {(m?.audible || m?.muted) && (
+          <button className={`bt-tab-audio${m.muted ? ' muted' : ''}`}
+            onClick={(e) => { e.stopPropagation(); toggleMute(t.id); }}
+            title={m.muted ? 'Bật tiếng tab' : 'Tắt tiếng tab'}>
+            {m.muted ? '🔇' : '🔊'}
+          </button>
+        )}
+        {!t.pinned && (
+          <button className="bt-tab-x" onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}
+            title="Đóng tab (Ctrl+W)">✕</button>
+        )}
+      </div>
+    );
+  };
+
+  const marksBar = (
+    <BookmarkBar
+      bookmarks={marks}
+      onOpen={(b, background) => openBookmark(b, background)}
+      onEdit={(b) => { setJustStarred(false); setEdit(structuredClone(b)); }}
+      onRemove={(b) => void removeBookmark(b)}
+      onNewFolder={(pid) => newFolder(pid)}
+      onNewFolderWith={(id, pid) => setFolderAsk({ parentId: pid, name: '', moveId: id })}
+      onMove={(id, pid, before) => void moveBookmarkTo(id, pid, before)}
+      onHideBar={hideMarks}
+      onDropUrl={(url, pid, before) => void dropUrl(url, pid, before)}
+    />
+  );
+
+  /** Ô lối tắt ở trang tab mới. */
+  const tileEl = (tl: Tile) => {
+    const icon = faviconOf(tl.url);
+    const label = tl.title || tl.host;
+    return (
+      <div key={tl.host} className="bt-tile" title={`${label}\n${tl.url}`}
+        onClick={() => openTab(tl.url, { profile })}
+        onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); openTab(tl.url, { profile, background: true }); } }}>
+        <span className="bt-tile-ico">
+          <span className="bt-tab-letter">{tabInitial(tl.host.replace(/^www\./, ''))}</span>
+          {icon && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={icon} alt="" draggable={false} onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />
+          )}
+        </span>
+        <span className="bt-tile-name">{label}</span>
+        <button className="bt-tile-x" title="Ẩn lối tắt này (không xoá lịch sử)"
+          onClick={(e) => { e.stopPropagation(); hideTile(tl.host); loadTiles(); }}>✕</button>
+      </div>
+    );
+  };
+
   return (
     <div className={`bt-root${full ? ' bt-full' : ''}`} ref={rootRef}>
-      {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '4px 0' }}>{err}</pre>}
+      {err && (
+        <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '4px 0' }}
+          onClick={() => setErr(null)} title="Bấm để ẩn">{err}</pre>
+      )}
 
-      {/* ── Có tab: thanh tab + ＋ new tab + ⋯ menu (KHÔNG còn ô địa chỉ thừa) ── */}
-      {hasTabs && (
-        <div className="lv-tabbar bt-tabbar" role="tablist">
-          {tabs.map((t) => (
-            <span
-              key={t.id}
-              className={`lv-tab${t.id === activeId ? ' on' : ''}`}
-              title={t.url}
-              // Chuột phải TRÊN TAB → menu "Nhân đôi / Đóng…", như trình duyệt.
-              // Toạ độ quy về gốc .bt-root (menu position:absolute trong đó),
-              // giống openCtx của dấu trang.
-              onContextMenu={(ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                const host = rootRef.current?.getBoundingClientRect();
-                const MW = 230, MH = 200;
-                setTabCtx({
-                  x: Math.min(ev.clientX - (host?.left ?? 0), Math.max(0, (host?.width ?? MW) - MW)),
-                  y: Math.min(ev.clientY - (host?.top ?? 0), Math.max(0, (host?.height ?? MH) - MH)),
-                  id: t.id,
-                });
-              }}
-            >
-              <button className="lv-tab-btn" onClick={() => { setActiveId(t.id); setNewTabOpen(false); }}>
-                <span className="lv-tab-ico" aria-hidden>{tabInitial(t.name)}</span>
-                <span className="lv-tab-name">{t.name}{t.profile && (
-                  <span className="bt-mark-prof" style={{
-                    background: `color-mix(in srgb, ${findProfile(profiles, t.profile).color} 22%, transparent)`,
-                    color: findProfile(profiles, t.profile).color,
-                  }}>{labelOf(t.profile)}</span>
-                )}</span>
-              </button>
-              <button className="lv-tab-x" onClick={() => closeTab(t.id)} title="Đóng tab">✕</button>
-            </span>
-          ))}
-          <button className="bt-newtab" onClick={openNewTabPage} title="Tab mới (khung dưới trống, gõ địa chỉ để mở)">＋</button>
-          <span style={{ flex: 1 }} />
-          {/* Thanh công cụ extension — icon từng extension có popup, cộng nút
-              🧩 quản lý. Đứng NGOÀI menu ⋯ như Chrome: đang ở trang bất kỳ vẫn
-              bấm được ngay. */}
-          <ProfileButton
-            profiles={profiles} current={currentProfile}
-            open={profMenuOpen} onOpenChange={setProfMenuOpen}
-            onPick={pickProfile} onManage={() => setProfMgrOpen(true)}
-          />
-          <BrowserExtBar
-            partition={tabs.find((t) => t.id === activeId)?.partition ?? bmPartition(profile || undefined)}
-            activeUrl={tabs.find((t) => t.id === activeId)?.url ?? ''}
-            onNavigate={navigateActive}
-            onManage={() => setExtOpen(true)}
-            onReloadPage={() => {
-              const cur = activeRef.current;
-              if (cur) setReloadNonces((m) => ({ ...m, [cur]: (m[cur] ?? 0) + 1 }));
-            }}
-          />
-          {/* Nút cấu hình ⋯ — như menu ba chấm của Chrome.
-              Menu PORTAL ra <body> + position:fixed, KHÔNG để absolute trong
-              .bt-menu-wrap: thanh tab (.lv-tabbar) có `overflow-x: auto`, tức là
-              một khung cắt — menu absolute bên trong bị cắt cụt theo chiều cao
-              thanh tab nên thả xuống là mất hút. Đây mới là lý do thật nút ⋯
-              không dùng được khi đang ở trong một trang. */}
-          <div className="bt-menu-wrap">
-            <button
-              ref={menuBtnRef}
-              className={`ghost sm${menuOpen ? ' on' : ''}`}
-              onClick={() => setMenuOpen((v) => !v)}
-              title="Cấu hình tab Browser"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-            >⋯</button>
+      {/* ── Dải tab kiểu Chrome: tab ghim · tab thường · ＋ · tìm tab ──
+          Luôn hiện (kể cả chưa có tab nào): trang tab mới cũng là một "tab".
+          Đúp chuột vào chỗ trống của dải = tab mới, như Chrome. */}
+      <div className="bt-strip" role="tablist">
+        {tabs.map(tabChip)}
+        {activeId === null && (
+          <div role="tab" aria-selected className="bt-tab on bt-tab--ntp" title="Thẻ mới">
+            <span className="bt-tab-ico" aria-hidden><span className="bt-tab-letter">＋</span></span>
+            <span className="bt-tab-title">Thẻ mới</span>
+            {hasTabs && <button className="bt-tab-x" onClick={cancelNewTab} title="Đóng (Ctrl+W)">✕</button>}
           </div>
-        </div>
-      )}
+        )}
+        <button className="bt-newtab" onClick={openNewTabPage} title="Tab mới (Ctrl+T)">＋</button>
+        <span className="bt-strip-fill" onDoubleClick={openNewTabPage} />
+        <button ref={tabSearchBtnRef} className={`bt-tabsearch${tabSearchOpen ? ' on' : ''}`}
+          onClick={() => setTabSearchOpen((v) => !v)} title="Tìm kiếm tab (Ctrl+Shift+A)">⌄</button>
+        {!slot && toolCluster}
+      </div>
+      {slot && createPortal(toolCluster, slot)}
 
-      {/* Panel new-tab (＋) — ô nhập địa chỉ + DẤU TRANG chọn nhanh (như trang
-          new-tab của trình duyệt thật), đóng lại khi mở xong. */}
-      {hasTabs && newTabOpen && (
-        <div className="bt-newtab-panel">
-          {addressForm}
-        </div>
-      )}
-
-      {/* Thanh dấu trang — cây thư mục như Chrome. Bật/tắt từ menu ⋯. */}
-      {showMarks && (
-        <BookmarkBar
-          bookmarks={marks}
-          onOpen={(b, background) => openBookmark(b, background)}
-          onEdit={(b) => setEdit(structuredClone(b))}
-          onRemove={(b) => void removeBookmark(b)}
-          onNewFolder={(pid) => newFolder(pid)}
-          onNewFolderWith={(id, pid) => setFolderAsk({ parentId: pid, name: '', moveId: id })}
-          onMove={(id, pid, before) => void moveBookmarkTo(id, pid, before)}
-          onHideBar={hideMarks}
-          onDropUrl={(url, pid, before) => void dropUrl(url, pid, before)}
-        />
-      )}
+      {/* Thanh dấu trang — cây thư mục như Chrome. Bật/tắt từ menu ⋮ /
+          Ctrl+Shift+B. Đang xem một tab thì nằm DƯỚI hàng công cụ của tab đó
+          (portal), ở trang tab mới thì nằm ngay dưới dải tab. */}
+      {showMarks && (underSlot ? createPortal(marksBar, underSlot) : marksBar)}
 
       {/* ── Vùng nội dung ──
           Các tab LUÔN được mount khi còn tồn tại, kể cả lúc đang ở trang
@@ -1034,7 +1409,7 @@ export default function BrowserTabWorkspace() {
       {hasTabs && (
         <div className="lv-wrap bt-viewer" hidden={activeId === null}>
           <div className="lv-body">
-            {tabs.map((t) => (
+            {viewerOrder.map((t) => (
               <BrowserTab
                 // Nonce riêng của TỪNG tab: chỉ đổi khi bấm ↻ đúng tab đó, nên
                 // chuyển tab qua lại không làm key đổi → webview không bị huỷ,
@@ -1042,6 +1417,7 @@ export default function BrowserTabWorkspace() {
                 key={`${t.id}#${reloadNonces[t.id] ?? 0}`}
                 tab={t}
                 hidden={t.id !== activeId}
+                bookmarked={markedUrls.has(urlKey(t.url))}
                 // Truyền các hàm ỔN ĐỊNH (useCallback ở trên) chứ không phải
                 // closure tạo mới mỗi lần render: BrowserTab bọc React.memo, mà
                 // memo so sánh prop theo tham chiếu — closure mới là mỗi lần gõ
@@ -1049,50 +1425,57 @@ export default function BrowserTabWorkspace() {
                 // <webview> đang mở. Đó chính là chỗ gây lag khi nhập.
                 onClose={closeTab}
                 onOpenNewTab={openTabBackground}
-                onSaveBookmark={saveBookmarkFromTab}
                 onUrlChange={trackUrlFromTab}
+                onStar={starStable}
+                onMeta={metaFromTab}
+                onApi={apiFromTab}
+                onSlot={slotFromTab}
+                onKey={keyFromGuest}
               />
             ))}
           </div>
         </div>
       )}
 
-      {/* Trang "new tab" — hiện khi chưa chọn tab nào (chưa có tab, hoặc vừa ＋).
-          Bấm ＋ thì ô địa chỉ + dấu trang đã nằm ở panel phía trên rồi, nên ở
-          đây chỉ để TRỐNG kèm một dòng nhắc: vẽ lại lần hai là hai ô giống hệt
-          nhau trên cùng màn hình, không biết gõ vào ô nào. */}
+      {/* ── Trang tab mới — như Chrome: ô tìm kiếm ở giữa, lối tắt các trang
+          hay ghé, dưới là các tab vừa đóng và dấu trang. ── */}
       {activeId === null && (
-        // `hasTabs &&` là LƯỚI AN TOÀN, không thừa: dòng "gõ địa chỉ ở ô phía
-        // trên" chỉ đúng khi thanh tab còn đó để chứa cái ô ấy. Hết tab mà vẫn
-        // rơi vào nhánh này thì màn hình kẹt hẳn — không ô nhập, không lối ra,
-        // chuyển tab khác rồi quay lại vẫn thế vì state không tự phục hồi.
-        // closeTab/closeAllTabs đã tắt cờ, nhưng chặn ở đây thì mọi đường dẫn
-        // tới trạng thái đó đều an toàn.
-        (hasTabs && newTabOpen) ? (
-          <div className="bt-home" />
-        ) : (
-          <div className="bt-home">
-            <div className="bt-home-title">🌐 Mở một trang web</div>
-            {addressForm}
-            {marksList}
-            <p className="small" style={{ color: 'var(--muted)' }}>
-              Nhiều tab mở song song; mỗi hồ sơ giữ phiên đăng nhập riêng.{' '}
-              <button className="ghost sm" onClick={() => setProfMgrOpen(true)}
-                title="Thêm / đổi tên / xoá hồ sơ (tài khoản)">👤 Hồ sơ: {currentProfile.name}</button>{' '}
-              <button className="ghost sm" onClick={() => setPwOpen(true)}
-                title="Xem/sửa mật khẩu đã lưu — tự điền khi mở lại trang">🔑 Mật khẩu đã lưu</button>{' '}
-              <button className="ghost sm" onClick={() => setExtOpen(true)}
-                title="Extension — thêm/bật/tắt cho tab Browser">🧩 Extension</button>{' '}
-              {/* Cùng công tắc với menu ⋯, nhưng menu ⋯ chỉ có khi đã mở tab —
-                  ở trang chủ mà tắt thanh dấu trang thì không còn chỗ nào bật
-                  lại được ngoài phím tắt. */}
-              <button className="ghost sm" onClick={toggleMarks}
-                title="Ẩn/hiện thanh dấu trang (Ctrl+Shift+B)">
-                🔖 {showMarks ? 'Ẩn' : 'Hiện'} thanh dấu trang
+        <div className="bt-home">
+          <div className="bt-ntp">
+            <div className="bt-ntp-brand">
+              <span className="bt-ntp-logo" aria-hidden>🌐</span>
+              <span>Browser</span>
+              <button className="bt-ntp-prof" onClick={() => setProfMgrOpen(true)}
+                title="Hồ sơ đang dùng — mỗi hồ sơ giữ phiên đăng nhập & dấu trang riêng">
+                <ProfileDot p={currentProfile} size={16} /> {currentProfile.name}
               </button>
-            </p>
+            </div>
+            {addressForm}
+            {tiles.length > 0 && (
+              <div className="bt-tiles">{tiles.map(tileEl)}</div>
+            )}
+            {tilesHidden > 0 && (
+              <button className="ghost sm bt-ntp-link"
+                onClick={() => { unhideAllTiles(); loadTiles(); }}>
+                Khôi phục {tilesHidden} lối tắt đã ẩn
+              </button>
+            )}
+            {closed.length > 0 && (
+              <div className="bt-ntp-closed">
+                <div className="bt-ntp-h">Đã đóng gần đây</div>
+                <div className="bt-home-row">
+                  {closed.slice(0, 6).map((c, i) => (
+                    <button key={`${c.url}-${c.closedAt}-${i}`} className="bt-chip" title={c.url}
+                      onClick={() => reopenClosed(i)}>
+                      ↶ {c.name || hostOf(c.url)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {marksList}
           </div>
-        )
+        </div>
       )}
 
       {/* Trình quản lý mật khẩu đã lưu */}
@@ -1123,73 +1506,132 @@ export default function BrowserTabWorkspace() {
         </div>
       )}
 
-      {/* Menu cấu hình ⋯ — portal ra <body> để thoát khỏi khung cắt
-          `overflow-x: auto` của thanh tab. Neo theo rect của nút. */}
+      {/* Menu ⋮ kiểu Chrome — portal ra <body> để thoát khỏi khung cắt
+          `overflow-x: auto` của dải tab. Neo theo rect của nút. Mục thuộc về
+          TRANG (tìm, in, thu phóng, DevTools…) gọi vào viewer của tab đang xem. */}
       {mounted && menuOpen && createPortal(
-        <>
-          <div className="bt-menu-backdrop" onMouseDown={() => setMenuOpen(false)} />
-          <div
-            className="bt-menu bt-menu-fixed"
-            role="menu"
-            style={(() => {
-              const r = menuBtnRef.current?.getBoundingClientRect();
-              const W = 250;
-              return {
-                // Canh phải theo nút, kẹp trong màn hình để không tràn mép.
-                left: Math.max(6, Math.min((r?.right ?? window.innerWidth) - W, window.innerWidth - W - 6)),
-                top: (r?.bottom ?? 40) + 4,
-              };
-            })()}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            {/* Mục bật/tắt kiểu Chrome: có dấu ✓ cho biết trạng thái hiện tại,
-                nhãn KHÔNG đổi theo trạng thái. Nhãn kiểu "Ẩn/Hiện" đọc mơ hồ —
-                không rõ đang mô tả trạng thái hay hành động sắp làm. */}
-            <button role="menuitemcheckbox" aria-checked={showMarks}
-              onClick={() => { toggleMarks(); setMenuOpen(false); }}>
-              <span className="bt-menu-check">{showMarks ? '✓' : ''}</span>
-              Hiện thanh dấu trang
-              <span className="bt-menu-key">Ctrl+Shift+B</span>
-            </button>
-            <div className="bt-menu-sep" />
-            {/* Nhân đôi tab ĐANG XEM. Chỉ bấm được khi thật có tab đang xem:
-                ở trang new-tab (activeId = null) thì chẳng có gì để nhân. */}
-            <button disabled={!activeId}
-              onClick={() => { const cur = activeId; setMenuOpen(false); if (cur) duplicateTab(cur); }}>
-              <span className="bt-menu-check" />⧉ Nhân đôi tab
-            </button>
-            <div className="bt-menu-sep" />
-            <button onClick={() => { const t = tabs.find((x) => x.id === activeId); setEdit({ id: '', name: t?.name ?? '', url: t?.url ?? '', profile: t ? (t.profile ?? '') : curRef, kind: 'link', order: 0, addedAt: '' }); setMenuOpen(false); }}>
-              <span className="bt-menu-check" />☆ Lưu trang hiện tại…
-            </button>
-            <button onClick={() => { setMarks(true); setMenuOpen(false); void dropUrl(tabs.find((x) => x.id === activeId)?.url ?? ''); }}>
-              <span className="bt-menu-check" />🔖 Lưu nhanh vào thanh dấu trang
-            </button>
-            <button onClick={() => { setMarks(true); setMenuOpen(false); newFolder(); }}>
-              <span className="bt-menu-check" />📁 Thư mục mới…
-            </button>
-            <div className="bt-menu-sep" />
-            <button onClick={() => { setHistOpen(true); setMenuOpen(false); }}>
-              <span className="bt-menu-check" />🕘 Lịch sử
-              <span className="bt-menu-key">Ctrl+H</span>
-            </button>
-            <button onClick={() => { setPwOpen(true); setMenuOpen(false); }}>
-              <span className="bt-menu-check" />🔑 Mật khẩu đã lưu
-            </button>
-            <button onClick={() => { setExtOpen(true); setMenuOpen(false); }}>
-              <span className="bt-menu-check" />🧩 Extension
-            </button>
-            <button role="menuitemcheckbox" aria-checked={full}
-              onClick={() => { setFull((v) => !v); setMenuOpen(false); }}>
-              <span className="bt-menu-check">{full ? '✓' : ''}</span>
-              Tràn viền
-            </button>
-            <div className="bt-menu-sep" />
-            <button className="danger" onClick={() => { closeAllTabs(); setMenuOpen(false); }}>
-              <span className="bt-menu-check" />✕ Đóng tất cả tab
-            </button>
-          </div>
-        </>,
+        (() => {
+          const api = activeId ? apisRef.current.get(activeId) : undefined;
+          const zoomPct = Math.round((activeId ? meta[activeId]?.zoom ?? 1 : 1) * 100);
+          const close = () => setMenuOpen(false);
+          const r = menuBtnRef.current?.getBoundingClientRect();
+          const W = 290;
+          return (
+            <>
+              <div className="bt-menu-backdrop" onMouseDown={close} />
+              <div
+                className="bt-menu bt-menu-fixed bt-menu-chrome"
+                role="menu"
+                style={{
+                  // Canh phải theo nút, kẹp trong màn hình để không tràn mép.
+                  left: Math.max(6, Math.min((r?.right ?? window.innerWidth) - W, window.innerWidth - W - 6)),
+                  top: (r?.bottom ?? 40) + 4,
+                  width: W,
+                  maxHeight: `calc(100vh - ${Math.round((r?.bottom ?? 40) + 14)}px)`,
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <button onClick={() => { close(); openNewTabPage(); }}>
+                  <span className="bt-menu-check" />Tab mới<span className="bt-menu-key">Ctrl+T</span>
+                </button>
+                <button disabled={!closed.length} onClick={() => { close(); reopenClosed(); }}>
+                  <span className="bt-menu-check" />Mở lại tab đã đóng<span className="bt-menu-key">Ctrl+Shift+T</span>
+                </button>
+                {/* Nhân đôi tab ĐANG XEM. Ở trang new-tab thì chẳng có gì để nhân. */}
+                <button disabled={!activeId}
+                  onClick={() => { const cur = activeId; close(); if (cur) duplicateTab(cur); }}>
+                  <span className="bt-menu-check" />Nhân đôi tab
+                </button>
+                <div className="bt-menu-sep" />
+                <button onClick={() => { close(); setHistOpen(true); }}>
+                  <span className="bt-menu-check" />🕘 Lịch sử<span className="bt-menu-key">Ctrl+H</span>
+                </button>
+                {/* Mục bật/tắt kiểu Chrome: có dấu ✓ cho biết trạng thái hiện tại,
+                    nhãn KHÔNG đổi theo trạng thái. */}
+                <button role="menuitemcheckbox" aria-checked={showMarks} onClick={() => { toggleMarks(); close(); }}>
+                  <span className="bt-menu-check">{showMarks ? '✓' : ''}</span>
+                  Hiện thanh dấu trang<span className="bt-menu-key">Ctrl+Shift+B</span>
+                </button>
+                <button disabled={!api} onClick={() => { close(); api?.star(); }}>
+                  <span className="bt-menu-check" />☆ Lưu dấu trang cho trang này<span className="bt-menu-key">Ctrl+D</span>
+                </button>
+                <button onClick={() => { setMarks(true); close(); newFolder(); }}>
+                  <span className="bt-menu-check" />📁 Thư mục dấu trang mới…
+                </button>
+                <button onClick={() => { close(); setPwOpen(true); }}>
+                  <span className="bt-menu-check" />🔑 Mật khẩu đã lưu
+                </button>
+                <button onClick={() => { close(); setExtOpen(true); }}>
+                  <span className="bt-menu-check" />🧩 Extension
+                </button>
+                <div className="bt-menu-sep" />
+                {/* Hàng thu phóng như Chrome: − 110% + ⛶ — bấm KHÔNG đóng menu,
+                    để bấm liên tiếp mà nhìn mức đổi. */}
+                <div className="bt-menu-zoom">
+                  <span>Thu phóng</span>
+                  <span className="bt-menu-zoom-ctl">
+                    <button disabled={!api} onClick={() => api?.zoom(-1)} title="Thu nhỏ (Ctrl+-)">−</button>
+                    <button disabled={!api || zoomPct === 100} onClick={() => api?.zoom(0)}
+                      className="bt-menu-zoom-val" title="Về 100% (Ctrl+0)">{zoomPct}%</button>
+                    <button disabled={!api} onClick={() => api?.zoom(1)} title="Phóng to (Ctrl++)">+</button>
+                    <button className={full ? 'on' : ''} onClick={() => { setFull((v) => !v); close(); }}
+                      title="Tràn viền — che khung app, trang cao tối đa (Esc để thoát)">⛶</button>
+                  </span>
+                </div>
+                <div className="bt-menu-sep" />
+                <button disabled={!api} onClick={() => { close(); api?.find(); }}>
+                  <span className="bt-menu-check" />🔍 Tìm trong trang…<span className="bt-menu-key">Ctrl+F</span>
+                </button>
+                <button disabled={!api} onClick={() => { close(); api?.print(); }}>
+                  <span className="bt-menu-check" />🖨 In…<span className="bt-menu-key">Ctrl+P</span>
+                </button>
+                <button disabled={!activeTab} onClick={() => {
+                  close(); if (activeTab) void navigator.clipboard?.writeText(activeTab.url);
+                }}>
+                  <span className="bt-menu-check" />⧉ Chép địa chỉ trang
+                </button>
+                <button disabled={!api} onClick={() => { close(); api?.openExternal(); }}>
+                  <span className="bt-menu-check" />↗ Mở bằng trình duyệt ngoài
+                </button>
+                <div className="bt-menu-sep" />
+                <div className="bt-menu-h">Công cụ khác</div>
+                <button disabled={!api} onClick={() => { close(); api?.devtools(); }}>
+                  <span className="bt-menu-check" />🔧 Công cụ cho nhà phát triển<span className="bt-menu-key">F12</span>
+                </button>
+                <button disabled={!api} onClick={() => { close(); api?.googleLogin(); }}>
+                  <span className="bt-menu-check" />Ⓖ Đăng nhập Google trong tab này
+                </button>
+                <button onClick={() => { close(); signOutProfile(currentProfile); }}>
+                  <span className="bt-menu-check" />⎋ Đăng xuất hồ sơ “{currentProfile.name}”…
+                </button>
+                <button onClick={() => { close(); setProfMgrOpen(true); }}>
+                  <span className="bt-menu-check" />👤 Quản lý hồ sơ…
+                </button>
+                <div className="bt-menu-sep" />
+                <button className="danger" disabled={!hasTabs} onClick={() => { closeAllTabs(); close(); }}>
+                  <span className="bt-menu-check" />✕ Đóng tất cả tab
+                </button>
+              </div>
+            </>
+          );
+        })(),
+        document.body,
+      )}
+
+      {/* Tìm kiếm tab (⌄ / Ctrl+Shift+A) — như Chrome: tab đang mở + đã đóng. */}
+      {mounted && tabSearchOpen && createPortal(
+        <TabSearch
+          anchor={tabSearchBtnRef.current?.getBoundingClientRect() ?? null}
+          tabs={tabs.map((t) => ({
+            id: t.id, url: t.url, title: meta[t.id]?.title || t.name,
+            icon: meta[t.id]?.favicon ?? faviconOf(t.url), on: t.id === activeId,
+          }))}
+          closed={closed}
+          onPick={(id) => { setActiveId(id); setNewTabOpen(false); setTabSearchOpen(false); }}
+          onCloseTab={closeTab}
+          onReopen={(i) => { reopenClosed(i); setTabSearchOpen(false); }}
+          onClose={() => setTabSearchOpen(false)}
+        />,
         document.body,
       )}
 
@@ -1232,15 +1674,28 @@ export default function BrowserTabWorkspace() {
         if (!t) return null;
         return (
           <div className="bt-ctx" style={{ left: tabCtx.x, top: tabCtx.y }} onClick={(e) => e.stopPropagation()}>
-            <div className="bt-ctx-head" title={t.url}>{t.name}</div>
-            <button onClick={() => { duplicateTab(t.id); setTabCtx(null); }}>
-              ⧉ Nhân đôi tab
+            <div className="bt-ctx-head" title={t.url}>{meta[t.id]?.title || t.name}</div>
+            <button onClick={() => { setTabCtx(null); openNewTabPage(); }}>
+              ＋ Tab mới
             </button>
             <button onClick={() => {
               setTabCtx(null);
-              setReloadNonces((m) => ({ ...m, [t.id]: (m[t.id] ?? 0) + 1 }));
+              const api = apisRef.current.get(t.id);
+              // Có bộ điều khiển thì tải lại tại chỗ (giữ lịch sử lùi/tiến);
+              // chưa có (guest chưa attach) thì dựng lại webview như cũ.
+              if (api) api.reload();
+              else setReloadNonces((m) => ({ ...m, [t.id]: (m[t.id] ?? 0) + 1 }));
             }}>
               ↻ Tải lại
+            </button>
+            <button onClick={() => { duplicateTab(t.id); setTabCtx(null); }}>
+              ⧉ Nhân đôi tab
+            </button>
+            <button onClick={() => { setTabCtx(null); pinTab(t.id, !t.pinned); }}>
+              📌 {t.pinned ? 'Bỏ ghim tab' : 'Ghim tab'}
+            </button>
+            <button onClick={() => { setTabCtx(null); toggleMute(t.id); }} disabled={!apisRef.current.has(t.id)}>
+              {meta[t.id]?.muted ? '🔊 Bật tiếng trang web' : '🔇 Tắt tiếng trang web'}
             </button>
             {/* Mở đúng trang này bằng tài khoản khác: vd. đang ở Claude hồ sơ A
                 thì mở thêm một tab Claude ở hồ sơ B. */}
@@ -1272,17 +1727,34 @@ export default function BrowserTabWorkspace() {
             <button className="danger" onClick={() => { const id = t.id; setTabCtx(null); closeTab(id); }}>
               ✕ Đóng tab
             </button>
-            {/* "Đóng các tab khác" chỉ có nghĩa khi thật có tab khác. */}
-            {tabs.length > 1 && (
+            {/* "Đóng các tab khác" chỉ có nghĩa khi thật có tab khác. Tab ghim
+                được giữ lại, như Chrome. */}
+            {tabs.some((x) => x.id !== t.id && !x.pinned) && (
               <button className="danger" onClick={() => {
                 const keep = t.id;
                 setTabCtx(null);
-                setTabs((cur) => cur.filter((x) => x.id === keep));
-                setActiveId(keep);
+                closeMany((x) => x.id !== keep && !x.pinned, keep);
                 setNewTabOpen(false);
               }}>
                 ✕ Đóng các tab khác
               </button>
+            )}
+            {tabs.slice(tabs.findIndex((x) => x.id === t.id) + 1).some((x) => !x.pinned) && (
+              <button className="danger" onClick={() => {
+                const keep = t.id;
+                setTabCtx(null);
+                closeMany((x, i, all) => !x.pinned && i > all.findIndex((y) => y.id === keep));
+              }}>
+                ✕ Đóng các tab bên phải
+              </button>
+            )}
+            {closed.length > 0 && (
+              <>
+                <div className="bt-menu-sep" />
+                <button onClick={() => { setTabCtx(null); reopenClosed(); }}>
+                  ↶ Mở lại tab đã đóng <span className="bt-menu-key">Ctrl+Shift+T</span>
+                </button>
+              </>
             )}
           </div>
         );
@@ -1316,7 +1788,9 @@ export default function BrowserTabWorkspace() {
       {edit && (
         <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && setEdit(null)}>
           <div className="mail-compose panel" style={{ width: 'min(520px, 94vw)' }}>
-            <div className="mail-compose-head"><b>🔖 Dấu trang</b><span style={{ flex: 1 }} />
+            <div className="mail-compose-head">
+              <b>{justStarred && edit.id ? '★ Đã thêm dấu trang' : edit.id ? '✎ Sửa dấu trang' : '🔖 Dấu trang'}</b>
+              <span style={{ flex: 1 }} />
               <button className="ghost sm" onClick={() => setEdit(null)}>✕</button></div>
             <input className="input" placeholder="URL (vd sso.example.com)" value={edit.url}
               onChange={(e) => setEdit({ ...edit, url: e.target.value })} />
@@ -1332,8 +1806,19 @@ export default function BrowserTabWorkspace() {
                 placeholder="Password (optional — 🔑 tự điền)" />
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => void saveEdit()} disabled={!edit.url.trim()}>💾 Lưu</button>
+              <button onClick={() => void saveEdit()} disabled={!edit.url.trim()}>💾 {justStarred ? 'Xong' : 'Lưu'}</button>
               <button className="ghost" onClick={() => setEdit(null)}>Hủy</button>
+              {/* Như bong bóng ☆ của Chrome: lỡ tay lưu thì xoá ngay tại đây,
+                  không cần confirm — dấu trang vừa thêm chưa có gì để mất. */}
+              {edit.id && (
+                <button className="ghost danger" style={{ marginLeft: 'auto' }} onClick={() => {
+                  const id = edit.id;
+                  const quiet = justStarred;
+                  if (!quiet && !window.confirm(`Xóa dấu trang "${edit.name}"?`)) return;
+                  setEdit(null);
+                  bmRemove(id).then(setBookmarks).catch((e) => setErr((e as Error).message));
+                }}>🗑 Xoá</button>
+              )}
             </div>
           </div>
         </div>
@@ -1354,22 +1839,40 @@ export default function BrowserTabWorkspace() {
  * cha tạo closure `() => closeTab(t.id)` thì tham chiếu đổi mỗi lần render và
  * memo vô hiệu — memo chỉ so sánh prop theo tham chiếu.
  */
-const BrowserTab = memo(function BrowserTab({ tab, hidden, onClose, onSaveBookmark, onOpenNewTab, onUrlChange }: {
+const BrowserTab = memo(function BrowserTab({
+  tab, hidden, bookmarked, onClose, onOpenNewTab, onUrlChange, onStar, onMeta, onApi, onSlot, onKey,
+}: {
   tab: Tab; hidden: boolean;
+  /** Trang đang xem đã có dấu trang — ☆ thành ★. */
+  bookmarked: boolean;
   onClose: (id: string) => void;
-  onSaveBookmark: (name: string, url: string, tab: Tab) => Promise<void>;
   onOpenNewTab: (url: string, tab: Tab, opener?: TabOpener) => void;
   /** Guest điều hướng → báo lên để cha giữ `tab.url` luôn là trang ĐANG xem
    *  ("nhân đôi tab" cần đúng trang đó, không phải trang lúc mở tab). */
   onUrlChange: (url: string, tab: Tab) => void;
+  onStar: (url: string, title: string, tab: Tab) => void;
+  onMeta: (m: TabMeta, tab: Tab) => void;
+  onApi: (api: ViewerApi | null, tab: Tab) => void;
+  onSlot: (el: HTMLDivElement | null, tab: Tab, under?: boolean) => void;
+  onKey: (k: BrowserKey) => void;
 }) {
+  /* `tab` là object mới mỗi lần tab điều hướng / ghim. Các callback dưới đây
+     đọc nó qua ref và chỉ phụ thuộc id, nên giữ nguyên danh tính suốt đời tab
+     — nhất là `slot` (callback ref: đổi danh tính là React gọi null rồi gọi
+     lại, kéo theo một lượt render thừa ở cha). */
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
   const close = useCallback(() => onClose(tab.id), [onClose, tab.id]);
   const openNew = useCallback(
-    (u: string, opener?: TabOpener) => onOpenNewTab(u, tab, opener),
-    [onOpenNewTab, tab],
+    (u: string, opener?: TabOpener) => onOpenNewTab(u, tabRef.current, opener),
+    [onOpenNewTab],
   );
-  const save = useCallback((name: string, url: string) => onSaveBookmark(name, url, tab), [onSaveBookmark, tab]);
-  const track = useCallback((u: string) => onUrlChange(u, tab), [onUrlChange, tab]);
+  const track = useCallback((u: string) => onUrlChange(u, tabRef.current), [onUrlChange]);
+  const star = useCallback((u: string, t: string) => onStar(u, t, tabRef.current), [onStar]);
+  const meta = useCallback((m: TabMeta) => onMeta(m, tabRef.current), [onMeta]);
+  const api = useCallback((a: ViewerApi | null) => onApi(a, tabRef.current), [onApi]);
+  const slot = useCallback((el: HTMLDivElement | null) => onSlot(el, tabRef.current), [onSlot]);
+  const underSlot = useCallback((el: HTMLDivElement | null) => onSlot(el, tabRef.current, true), [onSlot]);
 
   return (
     <LinkViewer
@@ -1382,13 +1885,112 @@ const BrowserTab = memo(function BrowserTab({ tab, hidden, onClose, onSaveBookma
       passwordManager
       addressBar
       history
+      browserChrome
+      bookmarked={bookmarked}
       opener={tab.opener}
       onOpenNewTab={openNew}
       onUrlChange={track}
       onClose={close}
-      onSaveLink={save}
+      onStar={star}
+      onMeta={meta}
+      onApi={api}
+      toolbarSlot={slot}
+      underToolbarSlot={underSlot}
+      onBrowserKey={onKey}
     />
   );
 });
+
+/**
+ * Bảng "Tìm kiếm tab" (⌄ / Ctrl+Shift+A) — như Chrome: gõ để lọc các tab đang
+ * mở theo tiêu đề/địa chỉ, ↑↓ Enter để nhảy tới; bên dưới là tab đã đóng gần
+ * đây để mở lại. Portal ra <body>, cha bật cờ popup-over-webview.
+ */
+function TabSearch({ anchor, tabs, closed, onPick, onCloseTab, onReopen, onClose }: {
+  anchor: DOMRect | null;
+  tabs: { id: string; url: string; title: string; icon?: string; on: boolean }[];
+  closed: ClosedTab[];
+  onPick: (id: string) => void;
+  onCloseTab: (id: string) => void;
+  onReopen: (i: number) => void;
+  onClose: () => void;
+}) {
+  const [q, setQ] = useState('');
+  const [sel, setSel] = useState(0);
+  const needle = q.trim().toLowerCase();
+  const match = (title: string, url: string) =>
+    !needle || title.toLowerCase().includes(needle) || url.toLowerCase().includes(needle);
+  const open = tabs.filter((t) => match(t.title, t.url));
+  const gone = closed.map((c, i) => ({ c, i })).filter(({ c }) => match(c.name, c.url)).slice(0, 8);
+  const total = open.length + gone.length;
+  useEffect(() => { setSel(0); }, [q]);
+
+  const activate = (k: number) => {
+    if (k < open.length) onPick(open[k].id);
+    else if (gone[k - open.length]) onReopen(gone[k - open.length].i);
+  };
+
+  const W = 380;
+  const left = Math.max(6, Math.min((anchor?.right ?? window.innerWidth) - W, window.innerWidth - W - 6));
+  return (
+    <>
+      <div className="bt-menu-backdrop" onMouseDown={onClose} />
+      <div className="bt-menu bt-menu-fixed bt-tabsearch-pop" style={{ left, top: (anchor?.bottom ?? 40) + 4, width: W }}
+        onMouseDown={(e) => e.stopPropagation()}>
+        <input className="input" autoFocus placeholder="Tìm trong các tab" value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown') { e.preventDefault(); setSel((v) => Math.min(total - 1, v + 1)); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); setSel((v) => Math.max(0, v - 1)); }
+            else if (e.key === 'Enter') { e.preventDefault(); activate(sel); }
+            else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); }
+          }} />
+        <div className="bt-tabsearch-list">
+          <div className="bt-menu-h">Tab đang mở ({open.length})</div>
+          {open.length === 0 && <div className="bt-tabsearch-empty">Không có tab nào khớp</div>}
+          {open.map((t, k) => (
+            <div key={t.id} className={`bt-tabsearch-row${k === sel ? ' sel' : ''}${t.on ? ' cur' : ''}`}
+              onMouseEnter={() => setSel(k)} onClick={() => onPick(t.id)} title={t.url}>
+              <span className="bt-tab-ico">
+                <span className="bt-tab-letter">{tabInitial(t.title)}</span>
+                {t.icon && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={t.icon} alt="" onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />
+                )}
+              </span>
+              <span className="bt-tabsearch-text">
+                <span className="bt-tabsearch-title">{t.title}</span>
+                <span className="bt-tabsearch-url">{hostOf(t.url)}</span>
+              </span>
+              <button className="bt-tab-x" title="Đóng tab"
+                onClick={(e) => { e.stopPropagation(); onCloseTab(t.id); }}>✕</button>
+            </div>
+          ))}
+          {gone.length > 0 && <div className="bt-menu-h">Đã đóng gần đây</div>}
+          {gone.map(({ c, i }, k) => (
+            <div key={`${c.url}-${c.closedAt}-${i}`}
+              className={`bt-tabsearch-row${open.length + k === sel ? ' sel' : ''}`}
+              onMouseEnter={() => setSel(open.length + k)} onClick={() => onReopen(i)} title={c.url}>
+              <span className="bt-tab-ico"><span className="bt-tab-letter">↶</span></span>
+              <span className="bt-tabsearch-text">
+                <span className="bt-tabsearch-title">{c.name || hostOf(c.url)}</span>
+                <span className="bt-tabsearch-url">{hostOf(c.url)} · {agoText(c.closedAt)}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** "3 phút trước" — mốc thời gian tương đối cho tab đã đóng. */
+function agoText(at: number): string {
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (s < 60) return 'vừa xong';
+  if (s < 3600) return `${Math.round(s / 60)} phút trước`;
+  if (s < 86400) return `${Math.round(s / 3600)} giờ trước`;
+  return `${Math.round(s / 86400)} ngày trước`;
+}
 
 function hostOf(url: string): string { try { return new URL(url).hostname; } catch { return url; } }

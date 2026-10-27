@@ -15,6 +15,7 @@ import type { CaptureSpec } from './capture';
 import type { DirectorySpec } from './directory';
 import type { LabelSpec } from './labels';
 import type { SendSpec } from './send';
+import type { BrowserKey } from '../browserKeys';
 
 /**
  * Visual identity of a workspace. Every place an account surfaces (rail group,
@@ -192,6 +193,9 @@ export interface WorkspaceBridge {
    *  Zalo chẳng hạn): phím không bubble ra host page, main process bắt hộ rồi
    *  chuyển về đây. Trả về hàm hủy đăng ký. Optional: preload cũ chưa expose. */
   onShortcut?(cb: (name: 'quickTabs' | 'prevTab' | 'ultraView') => void): () => void;
+  /** Phím tắt kiểu Chrome của tab Browser bấm TRONG trang web (lib/browserKeys.ts).
+   *  `id` = webContents của guest nhận phím. Optional: preload cũ chưa expose. */
+  onBrowserKey?(cb: (p: { key: BrowserKey; id: number }) => void): () => void;
   /** Chuột phải một file trong Explorer → "Open with → VHS DevBox". Main
    *  process gửi đường dẫn tuyệt đối xuống, app tự chọn tab theo đuôi file
    *  (xem openLocalPath trong app/page.tsx). Optional: preload cũ chưa expose. */
@@ -292,6 +296,15 @@ export interface WebviewElement extends HTMLElement {
    *  điều hướng. Dùng để thu nhỏ trang consent Google cho vừa khung. */
   setZoomFactor(factor: number): void;
   getZoomFactor(): number;
+  /** Tìm trong trang (Ctrl+F) — kết quả về qua sự kiện 'found-in-page'.
+   *  `findNext: true` = bắt đầu lượt tìm MỚI (chữ vừa đổi), false = nhảy tiếp. */
+  findInPage(text: string, options?: { forward?: boolean; findNext?: boolean; matchCase?: boolean }): number;
+  stopFindInPage(action: 'clearSelection' | 'keepSelection' | 'activateSelection'): void;
+  /** Hộp thoại in của hệ điều hành cho trang đang xem. */
+  print(options?: Record<string, unknown>): Promise<void>;
+  setAudioMuted(muted: boolean): void;
+  isAudioMuted(): boolean;
+  isCurrentlyAudible(): boolean;
 }
 
 declare global {

@@ -982,7 +982,7 @@ export default function Home() {
         )}
         {visited.browser && (
           <main className="workspace" data-webview style={pane('browser', true)} aria-hidden={!shown('browser')}>
-            <BrowserTabWorkspace />
+            <BrowserTabWorkspace visible={shown('browser')} />
           </main>
         )}
         {visited.remote && (

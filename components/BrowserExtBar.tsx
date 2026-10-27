@@ -51,6 +51,9 @@ const MIN_H = 180;
 const HEAD_H = 34;      // thanh tiêu đề popup (tên + 🔍 + ✕)
 const PAD_BOTTOM = 14;  // khoảng thở dưới nút cuối của extension
 
+/** Danh sách extension nạp gần nhất — xem chú thích ở useState(items). */
+let lastItems: ExtItem[] = [];
+
 export default function BrowserExtBar({
   partition,
   activeUrl,
@@ -69,7 +72,9 @@ export default function BrowserExtBar({
   /** Tải lại trang đang xem — sau khi nạp lại extension. */
   onReloadPage: () => void;
 }) {
-  const [items, setItems] = useState<ExtItem[]>([]);
+  // Khởi tạo từ bản đã nạp lần trước: thanh này được portal vào hàng công cụ
+  // của TAB ĐANG XEM nên đổi tab là mount lại — bắt đầu rỗng thì icon chớp tắt.
+  const [items, setItems] = useState<ExtItem[]>(() => lastItems);
   const [openId, setOpenId] = useState<string | null>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -83,7 +88,7 @@ export default function BrowserExtBar({
   const refresh = useCallback(async () => {
     try {
       const r = await window.browserExt?.list();
-      if (r?.ok) setItems(r.items as ExtItem[]);
+      if (r?.ok) { lastItems = r.items as ExtItem[]; setItems(lastItems); }
     } catch {
       /* thanh phụ trợ — im lặng */
     }

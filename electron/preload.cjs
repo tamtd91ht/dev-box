@@ -106,6 +106,15 @@ contextBridge.exposeInMainWorld('workspace', {
     ipcRenderer.on('workspace:openInLinksTab', handler);
     return () => ipcRenderer.removeListener('workspace:openInLinksTab', handler);
   },
+  /** Phím tắt kiểu Chrome của tab Browser (Ctrl+T/W/L/F, Ctrl+±/0, Alt+←…)
+   *  bấm khi con trỏ đang ở TRONG trang web — main bắt hộ ở before-input-event
+   *  (electron/main.cjs · browserKeyOf). Payload `{ key, id }`, id = webContents
+   *  của guest. Trả về hàm hủy đăng ký. */
+  onBrowserKey: (cb) => {
+    const handler = (_evt, payload) => cb(payload || {});
+    ipcRenderer.on('browser:key', handler);
+    return () => ipcRenderer.removeListener('browser:key', handler);
+  },
   /** Phím tắt khung app (Ctrl+` · Ctrl+Tab · Ctrl+Shift+U) bấm khi con trỏ đang
    *  ở TRONG một <webview>: phím không bubble ra host page nên main process bắt
    *  hộ ở before-input-event rồi chuyển về đây. Trả về hàm hủy đăng ký. */

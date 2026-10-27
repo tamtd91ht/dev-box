@@ -16,6 +16,8 @@ import type { WebviewElement } from '@/lib/workspace/types';
 import { pwMatch, pwSave, pwTouch, canEncrypt, type CredentialOpen } from '@/lib/passwords';
 import { normalizeUrl } from '@/lib/bookmarks';
 import { historyVisit, historyTitle } from '@/lib/browserHistory';
+import { browserKeyOf, stepZoom, RESERVED_KEYS, type BrowserKey, type KeyInput } from '@/lib/browserKeys';
+import { faviconOf, rememberFavicon, rememberZoom, zoomOf } from '@/lib/browserSiteData';
 import AddressSuggest, { useAddressSuggest } from './AddressSuggest';
 
 // Nhiều trang (Google sign-in, một số SSO) chặn "embedded browser" bằng cách
@@ -87,6 +89,62 @@ interface Props {
    *  phải là một guest độc lập. Trang nào thật sự cần opener (thường là popup
    *  OAuth) vẫn phải mở bằng cửa sổ ngoài. */
   opener?: TabOpener;
+  /** THANH CÔNG CỤ KIỂU CHROME (chỉ tab Browser bật):
+   *    · ⟳ thành ✕ khi đang tải, thanh tiến trình mảnh thay cho lớp phủ che
+   *      cả trang;
+   *    · ô địa chỉ có biểu tượng bảo mật (kéo được xuống thanh dấu trang), mức
+   *      thu phóng, ☆ dấu trang, 🔑;
+   *    · thanh tìm trong trang (Ctrl+F), thu phóng nhớ theo host, tắt tiếng;
+   *    · các nút hiếm dùng (Ⓖ ↗ ⎋ 🔧 ✕) dọn vào menu ⋮ của chủ khung.
+   *  Esc KHÔNG đóng tab nữa (Chrome: Esc dừng tải). Tab Links giữ nguyên cũ. */
+  browserChrome?: boolean;
+  /** Trang đang xem đã có trong dấu trang chưa — ☆ hay ★. */
+  bookmarked?: boolean;
+  /** Bấm ☆ / Ctrl+D. */
+  onStar?: (url: string, title: string) => void;
+  /** Báo tiêu đề / favicon / đang tải / âm thanh / zoom lên dải tab. */
+  onMeta?: (m: TabMeta) => void;
+  /** Đăng ký bộ điều khiển để chủ khung gọi (phím tắt, menu ⋮). null = huỷ. */
+  onApi?: (api: ViewerApi | null) => void;
+  /** Chỗ trống cuối thanh công cụ — chủ khung portal cụm hồ sơ/extension/⋮ vào
+   *  đây cho giống hàng công cụ của Chrome. */
+  toolbarSlot?: (el: HTMLDivElement | null) => void;
+  /** Chỗ trống NGAY DƯỚI hàng công cụ — chủ khung portal thanh dấu trang vào,
+   *  đúng thứ tự của Chrome: tab → công cụ → dấu trang → trang. */
+  underToolbarSlot?: (el: HTMLDivElement | null) => void;
+  /** Phím tắt kiểu Chrome bấm trong trang mà TRANG KHÔNG tự xử lý (xem
+   *  RESERVED_KEYS trong lib/browserKeys.ts) — báo lên chủ khung. */
+  onBrowserKey?: (k: BrowserKey) => void;
+}
+
+/** Trạng thái một tab mà dải tab cần vẽ. */
+export interface TabMeta {
+  title: string;
+  favicon?: string;
+  loading: boolean;
+  audible: boolean;
+  muted: boolean;
+  zoom: number;
+}
+
+/** Điều khiển một viewer từ ngoài — phím tắt và menu ⋮ của tab Browser. */
+export interface ViewerApi {
+  guestId(): number;
+  focusOmni(): void;
+  find(): void;
+  findNext(dir: 1 | -1): void;
+  reload(hard?: boolean): void;
+  stop(): void;
+  back(): void;
+  forward(): void;
+  /** +1 phóng to, -1 thu nhỏ, 0 về 100%. */
+  zoom(dir: 1 | -1 | 0): void;
+  print(): void;
+  setMuted(muted: boolean): void;
+  devtools(): void;
+  openExternal(): void;
+  googleLogin(): void;
+  star(): void;
 }
 
 /** Ngữ cảnh tab cha truyền cho tab con — xem prop `opener`. */
@@ -105,14 +163,27 @@ const hostOf = (u: string): string => { try { return new URL(u).host; } catch { 
 /** Tiền tố console mà guest dùng để báo "mở URL này ở tab mới" về host. */
 const NEWTAB_PREFIX = '[dbx-newtab] ';
 
+/** Tiền tố console báo "phím tắt trang không xử lý" về host (chế độ Chrome). */
+const KEY_PREFIX = '[dbx-key] ';
+
 /** Tự điền mật khẩu: chờ form login hiện ra tối đa bao lâu sau khi trang tải xong. */
 const FILL_WAIT_MS = 15_000;
 
 export default function LinkViewer({
   name, url, partition, onClose, onSaveLink, hidden, creds, passwordManager, profile,
   addressBar, history: trackHistory, onOpenNewTab, onUrlChange, opener,
+  browserChrome, bookmarked, onStar, onMeta, onApi, toolbarSlot, underToolbarSlot, onBrowserKey,
 }: Props) {
   const ref = useRef<WebviewElement | null>(null);
+  /** Cờ chế độ Chrome cho các listener gắn MỘT lần (deps []). */
+  const chromeRef = useRef(!!browserChrome);
+  chromeRef.current = !!browserChrome;
+  /* ── Trạng thái kiểu Chrome: tiêu đề/favicon cho dải tab, âm thanh, zoom ── */
+  const [title, setTitle] = useState('');
+  const [favicon, setFavicon] = useState<string | undefined>(() => faviconOf(url));
+  const [audible, setAudible] = useState(false);
+  const [muted, setMutedState] = useState(false);
+  const [zoom, setZoomState] = useState(1);
   /** Callback báo URL mới — đọc qua ref vì effect gắn listener chạy MỘT lần
    *  (deps []) nên closure sẽ giữ mãi bản đầu tiên. */
   const onUrlChangeRef = useRef(onUrlChange);
@@ -239,6 +310,125 @@ export default function LinkViewer({
       el.removeEventListener('did-fail-load', onFail as EventListener);
     };
   }, []);
+
+  /**
+   * Tiêu đề, favicon, âm thanh, zoom — những thứ dải tab kiểu Chrome cần vẽ.
+   *
+   * Effect riêng, gắn MỘT lần, chỉ làm việc khi bật browserChrome (đọc cờ qua
+   * ref): tab Links không tốn thêm listener nào có việc.
+   */
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const curUrl = () => { try { return el.getURL() || ''; } catch { return ''; } };
+    const onTitle = (e: Event) => {
+      const t = (e as unknown as { title?: string }).title ?? '';
+      // getTitle() trước khi có <title> trả về chính URL — không phải tiêu đề.
+      setTitle(t && t !== curUrl() ? t : '');
+    };
+    const onFavicon = (e: Event) => {
+      const icon = (e as unknown as { favicons?: string[] }).favicons?.[0];
+      if (!icon) return;
+      setFavicon(icon);
+      if (chromeRef.current) rememberFavicon(curUrl(), icon);
+    };
+    // Điều hướng toàn trang: trang mới chưa có tiêu đề/favicon của nó — lấy bản
+    // đã nhớ theo host (nếu có) cho khỏi trống, sự kiện thật sẽ đè lên sau.
+    // Zoom nhớ theo host áp lại ở đây (Chromium tự đặt lại zoom khi đổi origin).
+    const onNavigate = () => {
+      const u = curUrl();
+      setFavicon(faviconOf(u));
+      if (!chromeRef.current) return;
+      const z = zoomOf(u);
+      try { if (Math.abs(el.getZoomFactor() - z) > 0.001) el.setZoomFactor(z); } catch { /* chưa attach */ }
+      setZoomState(z);
+    };
+    // media-paused bắn TRƯỚC khi luồng âm thanh thật sự tắt — hỏi lại sau một
+    // nhịp mới ra đúng trạng thái.
+    let audioTimer: ReturnType<typeof setTimeout> | undefined;
+    const onMedia = () => {
+      const read = () => { try { setAudible(el.isCurrentlyAudible()); } catch { /* chưa attach */ } };
+      read();
+      if (audioTimer) clearTimeout(audioTimer);
+      audioTimer = setTimeout(read, 600);
+    };
+    el.addEventListener('page-title-updated', onTitle as EventListener);
+    el.addEventListener('page-favicon-updated', onFavicon as EventListener);
+    el.addEventListener('did-navigate', onNavigate);
+    el.addEventListener('media-started-playing', onMedia);
+    el.addEventListener('media-paused', onMedia);
+    return () => {
+      if (audioTimer) clearTimeout(audioTimer);
+      el.removeEventListener('page-title-updated', onTitle as EventListener);
+      el.removeEventListener('page-favicon-updated', onFavicon as EventListener);
+      el.removeEventListener('did-navigate', onNavigate);
+      el.removeEventListener('media-started-playing', onMedia);
+      el.removeEventListener('media-paused', onMedia);
+    };
+  }, []);
+
+  /**
+   * Phím tắt kiểu Chrome mà TRANG BỎ QUA.
+   *
+   * Main chỉ chặn trước các phím giữ chặt (Ctrl+T/W…). Phím còn lại phải để
+   * trang xử lý trước — đúng như Chrome: Google Docs tự mở hộp tìm khi Ctrl+F,
+   * Monaco/VS Code web dùng Ctrl+P/D/H. Cắm một listener ở `window` (cuối chuỗi
+   * nổi bọt, sau handler của trang): `defaultPrevented` = trang đã nhận, thôi;
+   * ngược lại báo về host qua console như kênh tab mới.
+   *
+   * Chỉ báo tổ hợp CÓ phím bổ trợ hoặc phím F — không bao giờ gửi chữ người
+   * dùng gõ ra ngoài trang.
+   */
+  const onBrowserKeyRef = useRef(onBrowserKey);
+  onBrowserKeyRef.current = onBrowserKey;
+  useEffect(() => {
+    if (!browserChrome) return;
+    const el = ref.current;
+    if (!el) return;
+    const arm = () => {
+      const code = `(() => {
+        if (window.__dbxKeysArmed) return;
+        window.__dbxKeysArmed = true;
+        window.addEventListener('keydown', (e) => {
+          if (e.isComposing || e.repeat && !(e.ctrlKey || e.metaKey)) return;
+          const fk = /^F[0-9]{1,2}$/.test(e.key);
+          if (!(e.ctrlKey || e.metaKey || e.altKey || fk)) return;
+          const info = JSON.stringify({
+            key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey,
+          });
+          // Đọc defaultPrevented SAU KHI sự kiện chạy xong mọi handler — kể cả
+          // handler trang gắn vào window muộn hơn listener này.
+          setTimeout(() => { if (!e.defaultPrevented) console.log(${JSON.stringify(KEY_PREFIX)} + info); }, 0);
+        }, true);
+      })()`;
+      try { void el.executeJavaScript(code, false).catch(() => {}); } catch { /* chưa attach */ }
+    };
+    const onConsole = (e: Event) => {
+      const ev = e as unknown as { message?: string; args?: unknown[] };
+      const msg = [ev.message, ...(ev.args ?? [])].find(
+        (v): v is string => typeof v === 'string' && v.startsWith(KEY_PREFIX),
+      );
+      if (!msg) return;
+      let k: BrowserKey | null = null;
+      try { k = browserKeyOf(JSON.parse(msg.slice(KEY_PREFIX.length)) as KeyInput); } catch { return; }
+      // Phím giữ chặt đã do main lo — có tới đây (main cũ) cũng không làm đôi.
+      if (k && !RESERVED_KEYS.has(k)) onBrowserKeyRef.current?.(k);
+    };
+    el.addEventListener('dom-ready', arm);
+    el.addEventListener('console-message', onConsole as EventListener);
+    arm();
+    return () => {
+      el.removeEventListener('dom-ready', arm);
+      el.removeEventListener('console-message', onConsole as EventListener);
+    };
+  }, [browserChrome]);
+
+  /** Báo trạng thái lên dải tab mỗi khi một trong các giá trị đổi. */
+  const onMetaRef = useRef(onMeta);
+  onMetaRef.current = onMeta;
+  useEffect(() => {
+    onMetaRef.current?.({ title, favicon, loading: status === 'loading', audible, muted, zoom });
+  }, [title, favicon, status, audible, muted, zoom]);
 
   /**
    * TAB MỞ TỪ LIÊN KẾT: dựng lại ngữ cảnh tab cha rồi mới đi tới trang đích.
@@ -368,11 +558,17 @@ export default function LinkViewer({
       if (e.key !== 'Escape') return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      // Kiểu Chrome: Esc dừng tải trang, KHÔNG BAO GIỜ đóng tab — trình duyệt
+      // nhiều tab mà một phím lỡ tay là mất trang đang đọc thì rất tệ.
+      if (browserChrome) {
+        if (status === 'loading') { try { ref.current?.stop(); } catch { /* chưa attach */ } }
+        return;
+      }
       onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, hidden]);
+  }, [onClose, hidden, browserChrome, status]);
 
   const retry = useCallback(() => {
     setStatus('loading');
@@ -1271,6 +1467,134 @@ export default function LinkViewer({
   const dtPaneStyle = devtoolsDock === 'bottom' ? { height: devtoolsH } : { width: devtoolsW };
   const dtCursor = devtoolsDock === 'bottom' ? 'row-resize' : 'col-resize';
 
+  /* ── Tìm trong trang (Ctrl+F) ──────────────────────────────────────────
+     Thanh nằm TRONG luồng layout ngay dưới thanh công cụ, không nổi đè lên
+     trang như Chrome: <webview> vẽ ở tầng riêng, phần tử DOM đè lên nó không
+     hiện ra (lý do của cả cơ chế data-popup-over-webview). */
+  const [findOpen, setFindOpen] = useState(false);
+  const [findText, setFindText] = useState('');
+  const [findRes, setFindRes] = useState<{ active: number; total: number } | null>(null);
+  const findRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onFound = (e: Event) => {
+      const r = (e as unknown as { result?: { activeMatchOrdinal?: number; matches?: number } }).result;
+      if (r && typeof r.matches === 'number') setFindRes({ active: r.activeMatchOrdinal ?? 0, total: r.matches });
+    };
+    el.addEventListener('found-in-page', onFound as EventListener);
+    return () => el.removeEventListener('found-in-page', onFound as EventListener);
+  }, []);
+
+  /** Chữ đổi → lượt tìm MỚI (findNext: true theo nghĩa của Electron). */
+  const runFind = useCallback((text: string) => {
+    const el = ref.current;
+    if (!el) return;
+    try {
+      if (!text) { el.stopFindInPage('clearSelection'); setFindRes(null); return; }
+      el.findInPage(text, { findNext: true });
+    } catch { /* guest chưa attach */ }
+  }, []);
+
+  const findStep = useCallback((dir: 1 | -1) => {
+    if (!findText) return;
+    try { ref.current?.findInPage(findText, { forward: dir > 0, findNext: false }); } catch { /* chưa attach */ }
+  }, [findText]);
+
+  const openFind = useCallback(() => {
+    setFindOpen(true);
+    // Mở lại thanh đang có chữ → bôi đen chữ cũ (gõ là thay luôn) và tìm lại,
+    // y như Ctrl+F lần hai của Chrome.
+    requestAnimationFrame(() => { findRef.current?.focus(); findRef.current?.select(); });
+    if (findText) runFind(findText);
+  }, [findText, runFind]);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setFindRes(null);
+    try { ref.current?.stopFindInPage('keepSelection'); } catch { /* chưa attach */ }
+  }, []);
+
+  // Điều hướng sang trang khác → kết quả tìm cũ vô nghĩa, tìm lại trên trang mới.
+  useEffect(() => {
+    if (findOpen && findText) runFind(findText);
+    // Chỉ theo URL — gõ chữ đã có onChange lo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveUrl]);
+
+  /* ── Thu phóng, âm thanh, in, dừng ──────────────────────────────────── */
+  const applyZoom = useCallback((dir: 1 | -1 | 0) => {
+    const el = ref.current;
+    if (!el) return;
+    let cur = 1;
+    try { cur = el.getZoomFactor(); } catch { return; }
+    const z = dir === 0 ? 1 : stepZoom(cur, dir);
+    try { el.setZoomFactor(z); } catch { return; }
+    setZoomState(z);
+    rememberZoom(liveUrl, z);
+  }, [liveUrl]);
+
+  const setMuted = useCallback((m: boolean) => {
+    try { ref.current?.setAudioMuted(m); setMutedState(m); } catch { /* chưa attach */ }
+  }, []);
+
+  const omniRef = useRef<HTMLInputElement | null>(null);
+  /** Vừa focus ô địa chỉ bằng chuột: chặn cú mouseup ngay sau đó, nếu không nó
+   *  đặt con trỏ vào giữa chữ và bỏ mất vùng bôi đen "chọn hết" của Chrome. */
+  const omniJustFocused = useRef(false);
+
+  const star = useCallback(() => {
+    if (!onStar) return;
+    let t = title;
+    try { t = ref.current?.getTitle?.() || title; } catch { /* chưa attach */ }
+    onStar(liveUrl, t && t !== liveUrl ? t : hostOf(liveUrl));
+  }, [onStar, liveUrl, title]);
+
+  /* Bộ điều khiển cho chủ khung. Object ỔN ĐỊNH (tạo một lần), mỗi hàm gọi qua
+     ref tới bản mới nhất — chủ khung giữ nó trong Map mà không phải đăng ký
+     lại mỗi lần viewer render. */
+  const implRef = useRef<ViewerApi | null>(null);
+  implRef.current = {
+    guestId,
+    focusOmni: () => { const i = omniRef.current; if (i) { i.focus(); i.select(); } },
+    find: openFind,
+    findNext: (dir) => { if (!findOpen) openFind(); else findStep(dir); },
+    reload: (hard) => {
+      setFailInfo('');
+      try { if (hard) ref.current?.reloadIgnoringCache(); else ref.current?.reload(); } catch { /* chưa attach */ }
+    },
+    stop: () => { try { ref.current?.stop(); } catch { /* chưa attach */ } },
+    back: () => { try { if (ref.current?.canGoBack()) ref.current.goBack(); } catch { /* chưa attach */ } },
+    forward: () => { try { if (ref.current?.canGoForward()) ref.current.goForward(); } catch { /* chưa attach */ } },
+    zoom: applyZoom,
+    print: () => { try { void ref.current?.print().catch(() => {}); } catch { /* chưa attach */ } },
+    setMuted,
+    devtools: () => { if (devtools) closeDevtools(); else openDevtools(); },
+    openExternal,
+    googleLogin: () => { setStatus('loading'); void ref.current?.loadURL('https://accounts.google.com/').catch(() => {}); },
+    star,
+  };
+  const onApiRef = useRef(onApi);
+  onApiRef.current = onApi;
+  useEffect(() => {
+    if (!onApiRef.current) return;
+    const call = <K extends keyof ViewerApi>(k: K) =>
+      ((...a: unknown[]) => (implRef.current?.[k] as (...x: unknown[]) => unknown)(...a)) as ViewerApi[K];
+    const api: ViewerApi = {
+      guestId: call('guestId'), focusOmni: call('focusOmni'), find: call('find'), findNext: call('findNext'),
+      reload: call('reload'), stop: call('stop'), back: call('back'), forward: call('forward'),
+      zoom: call('zoom'), print: call('print'), setMuted: call('setMuted'), devtools: call('devtools'),
+      openExternal: call('openExternal'), googleLogin: call('googleLogin'), star: call('star'),
+    };
+    onApiRef.current(api);
+    return () => onApiRef.current?.(null);
+  }, []);
+
+  const loading = status === 'loading';
+  const secure = /^https:/i.test(liveUrl);
+  const siteKind = /^https?:/i.test(liveUrl) ? (secure ? 'secure' : 'insecure') : 'other';
+
   const webviewAttrs: Record<string, string> = { allowpopups: 'true' };
   if (CHROME_UA) webviewAttrs.useragent = CHROME_UA;
 
@@ -1280,6 +1604,100 @@ export default function LinkViewer({
       style={hidden ? { left: '-200vw', right: 'auto', width: '100%', pointerEvents: 'none' } : undefined}
     >
       <div className="ws-view" style={{ display: 'flex' }}>
+        {browserChrome ? (
+          /* ── Hàng công cụ kiểu Chrome ── */
+          <div className="ws-toolbar ws-toolbar--chrome">
+            <div className="ws-nav">
+              <button onClick={() => ref.current?.goBack()} disabled={!canBack} title="Quay lại (Alt+←)">←</button>
+              <button onClick={() => ref.current?.goForward()} disabled={!canForward} title="Tiến tới (Alt+→)">→</button>
+              {loading ? (
+                <button onClick={() => { try { ref.current?.stop(); } catch { /* chưa attach */ } }} title="Dừng tải trang (Esc)">✕</button>
+              ) : (
+                <button
+                  onClick={(e) => implRef.current?.reload(e.shiftKey || e.ctrlKey)}
+                  title="Tải lại (Ctrl+R) · Shift+bấm: tải lại bỏ bộ nhớ đệm"
+                >⟳</button>
+              )}
+            </div>
+            <div className="ws-omni">
+              {/* Biểu tượng trang — đồng thời là TAY CẦM KÉO xuống thanh dấu
+                  trang, đúng như kéo ổ khoá trên ô địa chỉ Chrome. */}
+              <span
+                className={`ws-omni-site ws-omni-site--${siteKind}`}
+                draggable={!!liveUrl}
+                title={siteKind === 'secure'
+                  ? `Kết nối an toàn · ${hostOf(liveUrl)}\nKéo xuống thanh dấu trang để lưu`
+                  : siteKind === 'insecure'
+                    ? `Không bảo mật — kết nối không mã hoá (http)\nKéo xuống thanh dấu trang để lưu`
+                    : liveUrl}
+                onDragStart={(e) => {
+                  // Cùng hợp đồng với tay cầm 🔖 của chế độ cũ — xem ghi chú ở đó.
+                  e.dataTransfer.setData('text/uri-list', liveUrl);
+                  e.dataTransfer.setData('text/plain', liveUrl);
+                  e.dataTransfer.effectAllowed = 'all';
+                }}
+              >
+                {siteKind === 'secure' ? '🔒' : siteKind === 'insecure' ? '⚠' : 'ⓘ'}
+                {siteKind === 'insecure' && <span className="ws-omni-insecure">Không bảo mật</span>}
+              </span>
+              <input
+                ref={omniRef}
+                className="ws-omni-input"
+                // Như Chrome: lúc không gõ thì giấu "https://" và "/" cuối cho
+                // gọn, focus vào là hiện đủ URL thật để sửa / chép.
+                value={sug.preview ?? draft ?? (omniFocus ? liveUrl : prettyUrl(liveUrl))}
+                spellCheck={false}
+                placeholder="Tìm Google hoặc nhập URL"
+                title={liveUrl}
+                onChange={(e) => setDraft(e.target.value)}
+                onFocus={(e) => {
+                  setOmniFocus(true);
+                  omniJustFocused.current = true;
+                  // Chọn hết SAU lượt render đổi value (prettyUrl → URL đủ):
+                  // đổi value của ô đang focus làm mất vùng chọn.
+                  const t = e.currentTarget;
+                  requestAnimationFrame(() => t.select());
+                }}
+                onMouseUp={(e) => { if (omniJustFocused.current) { e.preventDefault(); omniJustFocused.current = false; } }}
+                onBlur={() => { setOmniFocus(false); omniJustFocused.current = false; }}
+                onKeyDown={(e) => {
+                  omniJustFocused.current = false;
+                  if (sug.onKeyDown(e)) return;
+                  // Alt+Enter: mở ở TAB MỚI, như Chrome.
+                  if (e.key === 'Enter' && e.altKey && onOpenNewTab) {
+                    const target = normalizeUrl(e.currentTarget.value);
+                    if (target) { setDraft(null); onOpenNewTab(target); e.currentTarget.blur(); }
+                  } else if (e.key === 'Enter') { navigate(e.currentTarget.value); e.currentTarget.blur(); }
+                  else if (e.key === 'Escape') { e.stopPropagation(); setDraft(null); e.currentTarget.blur(); }
+                }}
+              />
+              {Math.abs(zoom - 1) > 0.001 && (
+                <button className="ws-omni-chip" onClick={() => applyZoom(0)}
+                  title={`Thu phóng ${Math.round(zoom * 100)}% — bấm để về 100% (Ctrl+0)`}>
+                  🔍 {Math.round(zoom * 100)}%
+                </button>
+              )}
+              {passwordManager && (
+                <button className={`ws-omni-ico${matchCount > 0 ? ' on' : ''}`} onClick={() => void fillSaved()}
+                  title={matchCount > 0
+                    ? `Điền mật khẩu đã lưu cho trang này (${matchCount} tài khoản)`
+                    : 'Điền mật khẩu đã lưu (chưa có cho trang này)'}>
+                  🔑{matchCount > 1 ? <sup>{matchCount}</sup> : null}
+                </button>
+              )}
+              {onStar && (
+                <button className={`ws-omni-ico ws-omni-star${bookmarked ? ' on' : ''}`} onClick={star}
+                  title={bookmarked ? 'Sửa dấu trang (Ctrl+D)' : 'Lưu dấu trang cho trang này (Ctrl+D)'}>
+                  {bookmarked ? '★' : '☆'}
+                </button>
+              )}
+              <AddressSuggest {...sug.listProps} overWebview />
+            </div>
+            {/* Chủ khung portal cụm hồ sơ / extension / ⋮ vào đây. */}
+            <div className="ws-toolbar-slot" ref={toolbarSlot} />
+            {loading && <div className="ws-progress" aria-hidden />}
+          </div>
+        ) : (
         <div className="ws-toolbar">
           <div className="ws-nav">
             <button onClick={() => ref.current?.goBack()} disabled={!canBack} title="Quay lại">←</button>
@@ -1388,6 +1806,34 @@ export default function LinkViewer({
             <button onClick={onClose} title="Đóng (Esc)">✕</button>
           </div>
         </div>
+        )}
+
+        {browserChrome && <div className="ws-under-slot" ref={underToolbarSlot} />}
+
+        {/* Thanh tìm trong trang (Ctrl+F) */}
+        {findOpen && (
+          <div className="ws-findbar">
+            <input
+              ref={findRef}
+              className="ws-findbar-input"
+              value={findText}
+              placeholder="Tìm trong trang"
+              spellCheck={false}
+              onChange={(e) => { setFindText(e.target.value); runFind(e.target.value); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); findStep(e.shiftKey ? -1 : 1); }
+                else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeFind(); }
+              }}
+            />
+            <span className={`ws-findbar-count${findText && findRes?.total === 0 ? ' none' : ''}`}>
+              {findText ? `${findRes?.active ?? 0}/${findRes?.total ?? 0}` : ''}
+            </span>
+            <span className="ws-findbar-sep" />
+            <button onClick={() => findStep(-1)} disabled={!findRes?.total} title="Kết quả trước (Shift+Enter)">˄</button>
+            <button onClick={() => findStep(1)} disabled={!findRes?.total} title="Kết quả sau (Enter)">˅</button>
+            <button onClick={closeFind} title="Đóng (Esc)">✕</button>
+          </div>
+        )}
 
         {/* Thanh "Lưu mật khẩu?" — hiện khi bắt được form login vừa submit */}
         {offer && (
@@ -1430,7 +1876,10 @@ export default function LinkViewer({
             style={dtInset}
             {...webviewAttrs}
           />
-          {status === 'loading' && (
+          {/* Chế độ Chrome: KHÔNG phủ kín trang lúc tải — thanh tiến trình mảnh
+              dưới hàng công cụ + vòng xoay trên tab là đủ, trang cũ vẫn đọc
+              được tới khi trang mới vẽ (đúng như Chrome). */}
+          {status === 'loading' && !browserChrome && (
             <div className="ws-overlay" style={dtInset}>
               <div className="ws-spinner" />
               <p>Đang tải {name}…</p>
@@ -1475,6 +1924,13 @@ export default function LinkViewer({
       </div>
     </div>
   );
+}
+
+/** URL hiển thị gọn khi ô địa chỉ không focus, như Chrome: bỏ "https://",
+ *  "www." và dấu "/" của trang gốc. http:// giữ nguyên — đó là cảnh báo. */
+function prettyUrl(u: string): string {
+  if (!/^https:\/\//i.test(u)) return u;
+  return u.replace(/^https:\/\/(www\.)?/i, '').replace(/^([^/?#]+)\/$/, '$1');
 }
 
 /**
