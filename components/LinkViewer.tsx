@@ -16,7 +16,7 @@ import type { WebviewElement } from '@/lib/workspace/types';
 import { pwMatch, pwSave, pwTouch, canEncrypt, type CredentialOpen } from '@/lib/passwords';
 import { normalizeUrl } from '@/lib/bookmarks';
 import { historyVisit, historyTitle } from '@/lib/browserHistory';
-import { browserKeyOf, stepZoom, RESERVED_KEYS, type BrowserKey, type KeyInput } from '@/lib/browserKeys';
+import { stepZoom } from '@/lib/browserKeys';
 import { faviconOf, rememberFavicon, rememberZoom, zoomOf } from '@/lib/browserSiteData';
 import AddressSuggest, { useAddressSuggest } from './AddressSuggest';
 
@@ -112,9 +112,6 @@ interface Props {
   /** Chỗ trống NGAY DƯỚI hàng công cụ — chủ khung portal thanh dấu trang vào,
    *  đúng thứ tự của Chrome: tab → công cụ → dấu trang → trang. */
   underToolbarSlot?: (el: HTMLDivElement | null) => void;
-  /** Phím tắt kiểu Chrome bấm trong trang mà TRANG KHÔNG tự xử lý (xem
-   *  RESERVED_KEYS trong lib/browserKeys.ts) — báo lên chủ khung. */
-  onBrowserKey?: (k: BrowserKey) => void;
 }
 
 /** Trạng thái một tab mà dải tab cần vẽ. */
@@ -163,18 +160,16 @@ const hostOf = (u: string): string => { try { return new URL(u).host; } catch { 
 /** Tiền tố console mà guest dùng để báo "mở URL này ở tab mới" về host. */
 const NEWTAB_PREFIX = '[dbx-newtab] ';
 
-/** Tiền tố console báo "phím tắt trang không xử lý" về host (chế độ Chrome). */
-const KEY_PREFIX = '[dbx-key] ';
-
 /** Tự điền mật khẩu: chờ form login hiện ra tối đa bao lâu sau khi trang tải xong. */
 const FILL_WAIT_MS = 15_000;
 
 export default function LinkViewer({
   name, url, partition, onClose, onSaveLink, hidden, creds, passwordManager, profile,
   addressBar, history: trackHistory, onOpenNewTab, onUrlChange, opener,
-  browserChrome, bookmarked, onStar, onMeta, onApi, toolbarSlot, underToolbarSlot, onBrowserKey,
+  browserChrome, bookmarked, onStar, onMeta, onApi, toolbarSlot, underToolbarSlot,
 }: Props) {
   const ref = useRef<WebviewElement | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   /** Cờ chế độ Chrome cho các listener gắn MỘT lần (deps []). */
   const chromeRef = useRef(!!browserChrome);
   chromeRef.current = !!browserChrome;
@@ -337,6 +332,9 @@ export default function LinkViewer({
     // Zoom nhớ theo host áp lại ở đây (Chromium tự đặt lại zoom khi đổi origin).
     const onNavigate = () => {
       const u = curUrl();
+      // Trang mới có thể không bao giờ bắn page-title-updated (JSON thô, ảnh,
+      // text) — không xoá thì tab giữ mãi tiêu đề của trang trước.
+      setTitle('');
       setFavicon(faviconOf(u));
       if (!chromeRef.current) return;
       const z = zoomOf(u);
@@ -366,62 +364,6 @@ export default function LinkViewer({
       el.removeEventListener('media-paused', onMedia);
     };
   }, []);
-
-  /**
-   * Phím tắt kiểu Chrome mà TRANG BỎ QUA.
-   *
-   * Main chỉ chặn trước các phím giữ chặt (Ctrl+T/W…). Phím còn lại phải để
-   * trang xử lý trước — đúng như Chrome: Google Docs tự mở hộp tìm khi Ctrl+F,
-   * Monaco/VS Code web dùng Ctrl+P/D/H. Cắm một listener ở `window` (cuối chuỗi
-   * nổi bọt, sau handler của trang): `defaultPrevented` = trang đã nhận, thôi;
-   * ngược lại báo về host qua console như kênh tab mới.
-   *
-   * Chỉ báo tổ hợp CÓ phím bổ trợ hoặc phím F — không bao giờ gửi chữ người
-   * dùng gõ ra ngoài trang.
-   */
-  const onBrowserKeyRef = useRef(onBrowserKey);
-  onBrowserKeyRef.current = onBrowserKey;
-  useEffect(() => {
-    if (!browserChrome) return;
-    const el = ref.current;
-    if (!el) return;
-    const arm = () => {
-      const code = `(() => {
-        if (window.__dbxKeysArmed) return;
-        window.__dbxKeysArmed = true;
-        window.addEventListener('keydown', (e) => {
-          if (e.isComposing || e.repeat && !(e.ctrlKey || e.metaKey)) return;
-          const fk = /^F[0-9]{1,2}$/.test(e.key);
-          if (!(e.ctrlKey || e.metaKey || e.altKey || fk)) return;
-          const info = JSON.stringify({
-            key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey,
-          });
-          // Đọc defaultPrevented SAU KHI sự kiện chạy xong mọi handler — kể cả
-          // handler trang gắn vào window muộn hơn listener này.
-          setTimeout(() => { if (!e.defaultPrevented) console.log(${JSON.stringify(KEY_PREFIX)} + info); }, 0);
-        }, true);
-      })()`;
-      try { void el.executeJavaScript(code, false).catch(() => {}); } catch { /* chưa attach */ }
-    };
-    const onConsole = (e: Event) => {
-      const ev = e as unknown as { message?: string; args?: unknown[] };
-      const msg = [ev.message, ...(ev.args ?? [])].find(
-        (v): v is string => typeof v === 'string' && v.startsWith(KEY_PREFIX),
-      );
-      if (!msg) return;
-      let k: BrowserKey | null = null;
-      try { k = browserKeyOf(JSON.parse(msg.slice(KEY_PREFIX.length)) as KeyInput); } catch { return; }
-      // Phím giữ chặt đã do main lo — có tới đây (main cũ) cũng không làm đôi.
-      if (k && !RESERVED_KEYS.has(k)) onBrowserKeyRef.current?.(k);
-    };
-    el.addEventListener('dom-ready', arm);
-    el.addEventListener('console-message', onConsole as EventListener);
-    arm();
-    return () => {
-      el.removeEventListener('dom-ready', arm);
-      el.removeEventListener('console-message', onConsole as EventListener);
-    };
-  }, [browserChrome]);
 
   /** Báo trạng thái lên dải tab mỗi khi một trong các giá trị đổi. */
   const onMetaRef = useRef(onMeta);
@@ -561,7 +503,11 @@ export default function LinkViewer({
       // Kiểu Chrome: Esc dừng tải trang, KHÔNG BAO GIỜ đóng tab — trình duyệt
       // nhiều tab mà một phím lỡ tay là mất trang đang đọc thì rất tệ.
       if (browserChrome) {
-        if (status === 'loading') { try { ref.current?.stop(); } catch { /* chưa attach */ } }
+        // Chỉ khi Esc bấm TRONG khung này: pane Browser đang ẩn (đứng ở tab app
+        // khác) thì `hidden` vẫn false với tab đang chọn của nó.
+        if (status === 'loading' && t && rootRef.current?.contains(t)) {
+          try { ref.current?.stop(); } catch { /* chưa attach */ }
+        }
         return;
       }
       onClose();
@@ -1600,6 +1546,7 @@ export default function LinkViewer({
 
   return (
     <div
+      ref={rootRef}
       className="g-viewer"
       style={hidden ? { left: '-200vw', right: 'auto', width: '100%', pointerEvents: 'none' } : undefined}
     >

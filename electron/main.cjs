@@ -1114,7 +1114,35 @@ function browserKeyOf(input) {
  *  TRƯỚC: Google Docs, Monaco/VS Code web… tự dùng chúng. Trang bỏ qua thì
  *  LinkViewer bắt lại ở cuối chuỗi sự kiện. Bản sao của lib/browserKeys.ts ·
  *  RESERVED_KEYS. */
-const BROWSER_RESERVED_KEYS = new Set(['newTab', 'closeTab', 'reopenTab', 'nextTab', 'prevTab']);
+const BROWSER_RESERVED_KEYS = new Set([
+  'newTab', 'closeTab', 'reopenTab', 'nextTab', 'prevTab',
+  // Tải lại / thu phóng cũng phải chặn ở đây: app không đặt menu riêng nên menu
+  // MẶC ĐỊNH của Electron còn sống với Ctrl+R, Ctrl+Shift+R, Ctrl+±, Ctrl+0 —
+  // phím trang bỏ qua sẽ nổi lên cửa sổ và tải lại / phóng to CẢ KHUNG APP.
+  'reload', 'hardReload', 'zoomIn', 'zoomOut', 'zoomReset',
+]);
+
+/**
+ * Phím KHÔNG giữ chặt: để trang xử lý trước, trang bỏ qua thì mới làm việc
+ * của trình duyệt. Listener cắm trong ISOLATED WORLD riêng (không phải world
+ * của trang): nhiều site thay console.log bằng hàm rỗng — dùng console của
+ * trang là mất hết phím. Thêm token ngẫu nhiên vào tiền tố để trang không giả
+ * được dòng log (world của trang không đọc được mã của world này).
+ */
+const BK_WORLD = 1772;
+const BK_MARK = `[dbx-key:${require('crypto').randomBytes(6).toString('hex')}] `;
+const BK_SCRIPT = `(() => {
+  if (window.__dbxKeysArmed) return;
+  window.__dbxKeysArmed = true;
+  window.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.repeat && !(e.ctrlKey || e.metaKey)) return;
+    const fk = /^F[0-9]{1,2}$/.test(e.key);
+    if (!(e.ctrlKey || e.metaKey || e.altKey || fk)) return;
+    const info = JSON.stringify({ key: e.key, code: e.code, control: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
+    // Đọc defaultPrevented SAU KHI mọi handler của trang đã chạy.
+    setTimeout(() => { if (!e.defaultPrevented) console.log(${JSON.stringify(BK_MARK)} + info); }, 0);
+  }, true);
+})()`;
 
 /** Hành động cần BÀN PHÍM ở host (gõ vào ô địa chỉ / hộp thoại) — phải rứt
  *  focus khỏi guest trước khi báo. */
@@ -1383,6 +1411,18 @@ function wireWebviewHardening(win) {
         try { tfOpenWith(win, JSON.parse(tr.slice(TF_MARK.length))); } catch { /* dòng giả / hỏng */ }
         return;
       }
+      // Phím tắt trang bỏ qua (BK_SCRIPT) → làm việc của trình duyệt.
+      const bkm = [ev && ev.message, args[2], args[1]].find(
+        (v) => typeof v === 'string' && v.startsWith(BK_MARK),
+      );
+      if (bkm) {
+        let bk = null;
+        try { bk = browserKeyOf(JSON.parse(bkm.slice(BK_MARK.length))); } catch { /* dòng hỏng */ }
+        if (bk && !BROWSER_RESERVED_KEYS.has(bk) && BROWSER_PARTITION.test(partition) && !win.isDestroyed()) {
+          win.webContents.send('browser:key', { key: bk, id: guest.id });
+        }
+        return;
+      }
       const msg = [ev && ev.message, args[2], args[1]].find(
         (v) => typeof v === 'string' && v.startsWith('[ws-'),
       );
@@ -1413,6 +1453,10 @@ function wireWebviewHardening(win) {
       guest.insertCSS('html,body{overscroll-behavior:none}').catch(() => {});
       // Nút "文 Dịch" khi bôi đen chữ — isolated world, trang không đụng tới được.
       guest.executeJavaScriptInIsolatedWorld(TF_WORLD, [{ code: TF_SELECTION_SCRIPT }]).catch(() => {});
+      // Phím tắt kiểu Chrome mà trang bỏ qua — chỉ tab Browser (không popup extension).
+      if (BROWSER_PARTITION.test(partition) && !(guest.getURL() || '').startsWith('chrome-extension://')) {
+        guest.executeJavaScriptInIsolatedWorld(BK_WORLD, [{ code: BK_SCRIPT }]).catch(() => {});
+      }
     });
 
     // DevTools cho guest — debug trang đang xem (Network/Console/Elements):
@@ -1448,6 +1492,8 @@ function wireWebviewHardening(win) {
         let onExt = false;
         try { onExt = (guest.getURL() || '').startsWith('chrome-extension://'); } catch { /* guest vừa chết */ }
         const bk = onExt ? null : browserKeyOf(input);
+        // Giữ Ctrl+Shift+T không được mở lại cả loạt tab trong một cú.
+        if (bk === 'reopenTab' && input.isAutoRepeat) { event.preventDefault(); return; }
         if (bk && BROWSER_RESERVED_KEYS.has(bk)) {
           event.preventDefault();
           if (win.isDestroyed()) return;

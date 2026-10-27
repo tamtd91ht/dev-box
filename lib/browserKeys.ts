@@ -4,7 +4,7 @@
 //   · host page (document keydown) — con trỏ ở thanh tab, ô địa chỉ, trang tab mới;
 //   · con trỏ ở TRONG trang web: phím giữ chặt (RESERVED_KEYS) do main process
 //     chặn ở before-input-event rồi gửi 'browser:key' về; phím còn lại để trang
-//     xử lý trước, LinkViewer bắt lại nếu trang bỏ qua (xem RESERVED_KEYS).
+//     xử lý trước, main bắt lại nếu trang bỏ qua (xem RESERVED_KEYS).
 //     Bảng của main nằm ở electron/main.cjs · browserKeyOf —
 //     main là CommonJS, không import được file này, nên SỬA MỘT BÊN PHẢI SỬA
 //     CẢ BÊN KIA (scripts/check-browser-keys.ts so hai bảng với nhau).
@@ -93,13 +93,17 @@ export function browserKeyOf(k: KeyInput): BrowserKey | null {
  * Mọi phím KHÁC (Ctrl+F, Ctrl+P, Ctrl+D, Ctrl+H, Ctrl+L, Ctrl+±…) đi tới TRANG
  * TRƯỚC: trang nào tự xử lý (preventDefault — Google Docs mở hộp tìm riêng,
  * Monaco/VS Code web dùng Ctrl+P/Ctrl+D/Ctrl+H) thì thôi; trang để yên thì
- * LinkViewer bắt lại ở cuối chuỗi sự kiện và làm việc của trình duyệt. Chặn hết
+ * script trong isolated world (main.cjs · BK_SCRIPT) báo lại và host làm việc
+ * của trình duyệt. Chặn hết
  * ở main là phá đúng những web app dev hay dùng nhất.
  *
  * BẢN SAO ở electron/main.cjs · BROWSER_RESERVED_KEYS.
  */
 export const RESERVED_KEYS: ReadonlySet<BrowserKey> = new Set<BrowserKey>([
   'newTab', 'closeTab', 'reopenTab', 'nextTab', 'prevTab',
+  // Menu mặc định của Electron còn giữ các phím này cho CẢ CỬA SỔ app — để
+  // trang bỏ qua là chúng nổi lên tải lại / phóng to khung app.
+  'reload', 'hardReload', 'zoomIn', 'zoomOut', 'zoomReset',
 ]);
 
 /** Hành động cần bàn phím ở HOST (ô địa chỉ, ô tìm, hộp thoại) — đang đứng

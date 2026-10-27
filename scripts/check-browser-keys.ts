@@ -52,8 +52,10 @@ for (const [key, code] of keys) {
 }
 check(diff === 0, 'renderer và main.cjs cho CÙNG kết quả trên mọi tổ hợp');
 
-const rs = src.match(/const BROWSER_RESERVED_KEYS = new Set\(\[([^\]]*)\]\)/);
-const mainReserved = new Set((rs?.[1] ?? '').split(',').map((x) => x.trim().replace(/^'|'$/g, '')).filter(Boolean));
+const rs = src.match(/const BROWSER_RESERVED_KEYS = new Set\(\[([\s\S]*?)\]\);/);
+const mainReserved = new Set(
+  [...(rs?.[1] ?? '').replace(/\/\/.*$/gm, '').matchAll(/'([^']+)'/g)].map((x) => x[1]),
+);
 check(mainReserved.size === RESERVED_KEYS.size && [...RESERVED_KEYS].every((k) => mainReserved.has(k)),
   'danh sách phím GIỮ CHẶT khớp giữa renderer và main.cjs');
 check(!RESERVED_KEYS.has('find') && !RESERVED_KEYS.has('print') && !RESERVED_KEYS.has('bookmark'),

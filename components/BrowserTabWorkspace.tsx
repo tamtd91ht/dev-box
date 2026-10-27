@@ -575,12 +575,19 @@ export default function BrowserTabWorkspace({ visible = true }: {
 
   /** Mở lại tab đã đóng — mặc định tab mới đóng nhất (Ctrl+Shift+T). Về đúng
    *  vị trí cũ, đúng hồ sơ, đúng cờ ghim. */
+  // Đọc qua ref (gán ngay khi set): hai cú Ctrl+Shift+T tới trước khi React kịp
+  // render lại sẽ cùng thấy một `closed` cũ và mở đôi một tab.
+  const closedRef = useRef<ClosedTab[]>([]);
+  closedRef.current = closed;
   const reopenClosed = useCallback((i = 0) => {
-    const c = closed[i];
+    const list = closedRef.current;
+    const c = list[i];
     if (!c) return;
-    setClosed((list) => list.filter((_, k) => k !== i));
+    const rest = list.filter((_, k) => k !== i);
+    closedRef.current = rest;
+    setClosed(rest);
     openTab(c.url, { name: c.name || undefined, profile: c.profile, forceNew: true, at: c.index, pinned: c.pinned });
-  }, [closed, openTab]);
+  }, [openTab]);
 
   /** Ghim / bỏ ghim: chuyển về cuối nhóm ghim (= đầu nhóm thường khi bỏ ghim). */
   const pinTab = useCallback((id: string, pin: boolean) => {
@@ -961,9 +968,8 @@ export default function BrowserTabWorkspace({ visible = true }: {
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
-  // Phím bấm TRONG trang web. Hai nguồn: phím giữ chặt do main chặn hộ
-  // (electron/main.cjs · browserKeyOf), phím trang bỏ qua do LinkViewer bắt lại
-  // (onBrowserKey). Hành động cần gõ phím ở host (ô địa chỉ, ô tìm…) phải rứt
+  // Phím bấm TRONG trang web — main gửi về cả hai loại: phím giữ chặt (chặn
+  // trước trang) và phím trang bỏ qua (BK_SCRIPT trong isolated world). Hành động cần gõ phím ở host (ô địa chỉ, ô tìm…) phải rứt
   // focus khỏi guest trước — chỉ gọi input.focus() thì guest vẫn giữ bàn phím.
   const keyFromGuest = useCallback((k: BrowserKey) => {
     if (!visibleRef.current) return;
@@ -1430,7 +1436,6 @@ export default function BrowserTabWorkspace({ visible = true }: {
                 onMeta={metaFromTab}
                 onApi={apiFromTab}
                 onSlot={slotFromTab}
-                onKey={keyFromGuest}
               />
             ))}
           </div>
@@ -1840,7 +1845,7 @@ export default function BrowserTabWorkspace({ visible = true }: {
  * memo vô hiệu — memo chỉ so sánh prop theo tham chiếu.
  */
 const BrowserTab = memo(function BrowserTab({
-  tab, hidden, bookmarked, onClose, onOpenNewTab, onUrlChange, onStar, onMeta, onApi, onSlot, onKey,
+  tab, hidden, bookmarked, onClose, onOpenNewTab, onUrlChange, onStar, onMeta, onApi, onSlot,
 }: {
   tab: Tab; hidden: boolean;
   /** Trang đang xem đã có dấu trang — ☆ thành ★. */
@@ -1854,7 +1859,6 @@ const BrowserTab = memo(function BrowserTab({
   onMeta: (m: TabMeta, tab: Tab) => void;
   onApi: (api: ViewerApi | null, tab: Tab) => void;
   onSlot: (el: HTMLDivElement | null, tab: Tab, under?: boolean) => void;
-  onKey: (k: BrowserKey) => void;
 }) {
   /* `tab` là object mới mỗi lần tab điều hướng / ghim. Các callback dưới đây
      đọc nó qua ref và chỉ phụ thuộc id, nên giữ nguyên danh tính suốt đời tab
@@ -1896,7 +1900,6 @@ const BrowserTab = memo(function BrowserTab({
       onApi={api}
       toolbarSlot={slot}
       underToolbarSlot={underSlot}
-      onBrowserKey={onKey}
     />
   );
 });

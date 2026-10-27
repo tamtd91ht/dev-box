@@ -11807,9 +11807,9 @@ html.tf-page nextjs-portal { display: none !important; }
 }
 .bt-menu .bt-menu-zoom-ctl .bt-menu-zoom-val { font-size: 12px; min-width: 52px; }
 .bt-menu .bt-menu-zoom-ctl button.on { background: var(--glass-2); border-color: var(--glass-brd); }
-.bt-ctx button:disabled { opacity: .42; cursor: default; background: transparent; }
-.bt-ctx button { display: flex; align-items: center; gap: 6px; }
-.bt-ctx .bt-menu-key { margin-left: auto; }
+.bt-root .bt-ctx button:disabled { opacity: .42; cursor: default; background: transparent; }
+.bt-root .bt-ctx button { display: flex; align-items: center; gap: 6px; }
+.bt-root .bt-ctx .bt-menu-key { margin-left: auto; }
 
 /* ── Bảng tìm kiếm tab ── */
 .bt-tabsearch-pop { padding: 8px; gap: 6px; max-height: min(70vh, 560px); }
@@ -11895,9 +11895,9 @@ html.tf-page nextjs-portal { display: none !important; }
 /* Nút trong khung Browser kiểu Chrome là nút PHẲNG: bỏ bóng gradient và cú
    nhấc translateY của luật `button` gốc. Chỉ nhắm nút CÓ class (nút chính như
    "💾 Lưu" không có class → giữ nguyên kiểu nút chính của app). */
-:is(.bt-root, .bt-menu, .bt-ctx) button[class]:not(.ghost),
+:is(.bt-root, .bt-menu-chrome, .bt-tabsearch-pop) button[class]:not(.ghost),
 .ws-toolbar--chrome button, .ws-findbar button { box-shadow: none; }
-:is(.bt-root, .bt-menu, .bt-ctx) button[class]:not(.ghost):hover:not(:disabled),
+:is(.bt-root, .bt-menu-chrome, .bt-tabsearch-pop) button[class]:not(.ghost):hover:not(:disabled),
 .ws-toolbar--chrome button:hover:not(:disabled),
 .ws-findbar button:hover:not(:disabled) { transform: none; box-shadow: none; }
 
