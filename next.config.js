@@ -6,6 +6,12 @@ const HOME_GLOB = os.homedir().replace(/\\/g, '/') + '/**';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Tắt nút tròn "N" (dev tools indicator) của `next dev`: mặc định nó nổi ở
+  // góc dưới-trái và đè lên footer (CritBadge, nút Console…). Đổi góc cũng vô
+  // ích — cả bốn góc đều có thanh menu/footer. Chế độ server đã hiện ở nút
+  // footer (ServerModeButton). Lỗi build/runtime Next VẪN hiện: khi có lỗi,
+  // huy hiệu "N Issues" tự bật lên, bấm vào mở overlay như cũ.
+  devIndicators: false,
   // Standalone output CHỈ bật khi build cho Docker/k8s (NEXT_STANDALONE=1).
   // Desktop shell chạy `next start`, mà Next 15.5 tuyên bố `next start` không
   // được hỗ trợ cùng `output: standalone` — để cả hai là chạy trên đường
