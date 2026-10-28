@@ -1615,8 +1615,9 @@ function wireWebviewHardening(win) {
 // giữ toàn bộ cache biên dịch webpack/HMR trong RAM (~3GB đo thực tế trên máy
 // này) trong khi server production chỉ tốn vài trăm MB — giao diện không khác
 // gì, còn mở trang nhanh hơn vì không phải biên dịch lần đầu. Ai sửa code và
-// cần hot reload thì đặt DESKTOP_DEV=1 (npm run desktop:dev) hoặc tự chạy
-// `npm run dev` trước rồi mở app (probe :3000 sẽ dùng lại server đó).
+// cần hot reload thì chọn chế độ dev/turbo ở nút footer (lưu server-mode.json),
+// đặt DESKTOP_DEV=1 (npm run desktop:dev), hoặc tự chạy `npm run dev` trước
+// rồi mở app (probe :3000 sẽ dùng lại server đó).
 let devServer = null;
 
 /** Cổng của APP_URL — cần để hỏi "cổng có trống không", việc mà probe HTTP không trả lời được. */
@@ -1735,6 +1736,57 @@ function forgetDevServerPid() {
   try {
     fs.unlinkSync(devServerPidFile());
   } catch { /* chưa có file — kệ */ }
+  try {
+    fs.unlinkSync(devServerModeFile());
+  } catch { /* chưa có file — kệ */ }
+}
+
+// ── Chế độ server: prod / dev / turbo ──────────────────────────────────────
+//
+// Chọn trong app (nút ở footer) và LƯU RA ĐĨA, vì shortcut desktop chạy thẳng
+// electron.exe — không qua npm script nên không có DESKTOP_DEV/DESKTOP_TURBO.
+//   prod  = next build (khi code đổi) + next start — nhẹ RAM, mở nhanh
+//   dev   = next dev (webpack) — hot reload
+//   turbo = next dev --turbopack — hot reload, biên dịch nhanh hơn nhiều
+// Biến môi trường vẫn THẮNG file (ai chạy `npm run desktop:dev` là muốn dev
+// ngay lúc đó) — UI báo rõ khi đang bị biến môi trường ép.
+const SERVER_MODES = ['prod', 'dev', 'turbo'];
+const serverModeFile = () => path.join(app.getPath('userData'), 'server-mode.json');
+/** Chế độ của server ĐANG chạy do DevBox dựng — sống qua lần app thoát để
+ *  lần sau nhận lại server cũ (còn phiên terminal) vẫn biết nó chạy gì. */
+const devServerModeFile = () => path.join(app.getPath('userData'), 'devserver.mode');
+
+function savedServerMode() {
+  try {
+    const m = String(JSON.parse(fs.readFileSync(serverModeFile(), 'utf8')).mode || '');
+    return SERVER_MODES.includes(m) ? m : '';
+  } catch {
+    return '';
+  }
+}
+
+function envServerMode() {
+  if (/^(1|true)$/i.test(process.env.DESKTOP_TURBO || '')) return 'turbo';
+  if (/^(1|true)$/i.test(process.env.DESKTOP_DEV || '')) return 'dev';
+  return '';
+}
+
+/** Chế độ lần dựng server tới sẽ dùng. */
+function wantedServerMode() {
+  return envServerMode() || savedServerMode() || 'prod';
+}
+
+/** Chế độ server đang phục vụ app: prod/dev/turbo, 'external' (server không do
+ *  DevBox dựng), hoặc '' khi chưa biết. */
+let runningServerMode = '';
+
+function readDevServerMode() {
+  try {
+    const m = fs.readFileSync(devServerModeFile(), 'utf8').trim();
+    return SERVER_MODES.includes(m) ? m : '';
+  } catch {
+    return '';
+  }
 }
 
 /** PID của server mà lần chạy TRƯỚC để lại và lần này dùng lại. */
@@ -2011,6 +2063,7 @@ async function ensureProdBuild(appPath, nextBin) {
 async function ensureServer() {
   // Pointed at an external server (prod/staging URL) → never auto-start.
   if (process.env.DESKTOP_URL) {
+    runningServerMode = 'external';
     log('DevServerSkip', `DESKTOP_URL set → dùng server ngoài (${APP_URL})`);
     return;
   }
@@ -2018,6 +2071,9 @@ async function ensureServer() {
     // Có thể là server của lần chạy trước mà ta cố ý để lại (còn phiên
     // terminal). Nhận lại quyền dọn dẹp nó, nếu không nó mồ côi mãi mãi.
     adoptedPid = adoptedDevServerPid();
+    // Server cũ giữ nguyên chế độ của nó — không giết để đổi chế độ, vì nó bị
+    // để lại chính là để giữ phiên terminal. UI báo lệch, chọn "khởi động lại".
+    runningServerMode = adoptedPid ? readDevServerMode() : 'external';
     log(
       'DevServerFound',
       adoptedPid
@@ -2053,9 +2109,11 @@ async function ensureServer() {
     return;
   }
 
-  // DESKTOP_DEV=1 → giữ hot reload cho người đang sửa code. Mặc định production.
-  const wantDev = /^(1|true)$/i.test(process.env.DESKTOP_DEV || '');
-  if (!wantDev) {
+  // Chế độ chọn trong app (server-mode.json), DESKTOP_DEV/DESKTOP_TURBO thắng
+  // nếu có. Mặc định production.
+  const wanted = wantedServerMode();
+  log('ServerMode', `${wanted}${envServerMode() ? ' (ép bởi biến môi trường)' : ''}`);
+  if (wanted === 'prod') {
     if (await ensureProdBuild(appPath, nextBin)) {
       spawnNextServer(appPath, nextBin, 'start');
       return;
@@ -2064,11 +2122,11 @@ async function ensureServer() {
     // app — và log rõ để biết vì sao RAM cao trở lại.
     log('BuildFallback', 'build thất bại → tạm chạy next dev để app vẫn dùng được');
   }
-  spawnNextServer(appPath, nextBin, 'dev');
+  spawnNextServer(appPath, nextBin, 'dev', wanted === 'turbo');
 }
 
 /** Spawn `next dev` hoặc `next start` với cùng một bộ luật vòng đời/pid/log. */
-function spawnNextServer(appPath, nextBin, mode) {
+function spawnNextServer(appPath, nextBin, mode, turbo = false) {
   log(
     'ServerStarting',
     mode === 'dev'
@@ -2086,12 +2144,12 @@ function spawnNextServer(appPath, nextBin, mode) {
   } catch (err) {
     log('DevServerLogOpenError', err && err.message);
   }
-  // DESKTOP_TURBO=1 → `next dev --turbopack`: chỉ biên dịch module thật sự
-  // được request, nên khởi động nguội nhanh hơn webpack nhiều lần (webpack
-  // dev từng mất ~17s cho trang / và tới ~40s cho mỗi API route lần đầu).
+  // turbo → `next dev --turbopack`: chỉ biên dịch module thật sự được
+  // request, nên khởi động nguội nhanh hơn webpack nhiều lần (webpack dev
+  // từng mất ~17s cho trang / và tới ~40s cho mỗi API route lần đầu).
   // Chỉ áp dụng cho dev — `next build`/`next start` vẫn đi đường webpack.
-  const turbo = mode === 'dev' && /^(1|true)$/i.test(process.env.DESKTOP_TURBO || '');
-  if (turbo) log('ServerTurbopack', 'next dev chạy bằng Turbopack (DESKTOP_TURBO=1)');
+  turbo = turbo && mode === 'dev';
+  if (turbo) log('ServerTurbopack', 'next dev chạy bằng Turbopack');
   devServer = spawn(process.execPath, turbo ? [nextBin, mode, '--turbopack'] : [nextBin, mode], {
     cwd: appPath,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
@@ -2109,6 +2167,8 @@ function spawnNextServer(appPath, nextBin, mode) {
   if (typeof outFd === 'number') { try { fs.closeSync(outFd); } catch { /* kệ */ } }
   startServerLogTail(true);
   rememberDevServerPid(devServer.pid);
+  runningServerMode = mode === 'start' ? 'prod' : turbo ? 'turbo' : 'dev';
+  try { fs.writeFileSync(devServerModeFile(), runningServerMode, 'utf8'); } catch { /* chỉ để hiển thị */ }
   devServer.on('exit', (code) => {
     log('DevServerExited', String(code));
     forgetDevServerPid();
@@ -3982,6 +4042,29 @@ ipcMain.handle('desktop:hardReload', async (_evt, opts) => {
   } catch (err) {
     log('HardReloadError', err && err.message);
     return { ok: false, error: err && err.message, cleared };
+  }
+});
+
+function serverModeInfo() {
+  return {
+    saved: savedServerMode() || 'prod',
+    wanted: wantedServerMode(),
+    running: runningServerMode,
+    envForced: envServerMode(),
+  };
+}
+
+ipcMain.handle('desktop:getServerMode', () => serverModeInfo());
+
+ipcMain.handle('desktop:setServerMode', (_evt, mode) => {
+  if (!SERVER_MODES.includes(mode)) return { ok: false, error: `chế độ không hợp lệ: ${mode}`, ...serverModeInfo() };
+  try {
+    fs.mkdirSync(path.dirname(serverModeFile()), { recursive: true });
+    fs.writeFileSync(serverModeFile(), JSON.stringify({ mode, at: Date.now() }), 'utf8');
+    log('ServerModeSaved', `lần khởi động sau chạy ${mode}`);
+    return { ok: true, ...serverModeInfo() };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || 'không ghi được', ...serverModeInfo() };
   }
 });
 

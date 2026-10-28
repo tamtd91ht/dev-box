@@ -37,6 +37,7 @@ import DesktopConsole from '@/components/DesktopConsole';
 import ConfigSyncButton from '@/components/ConfigSyncButton';
 import UpdateButton from '@/components/UpdateButton';
 import HardReloadButton from '@/components/HardReloadButton';
+import ServerModeButton from '@/components/ServerModeButton';
 import { hydratePresets } from '@/lib/presetSync';
 import UpdatePrompt from '@/components/UpdatePrompt';
 import CritBadge, { useCritAlerts, type CritStack } from '@/components/monitor/CritBar';
@@ -1103,6 +1104,8 @@ export default function Home() {
           {/* Dọn cache rồi nạp lại — để phân biệt "code sai" với "đang ăn bản
               cũ" mà không phải ngồi đoán. */}
           <HardReloadButton />
+          {/* Desktop only: chế độ server (prod/dev/turbo), nhớ cho lần mở sau. */}
+          <ServerModeButton />
           {/* Desktop only: log của shell + next dev, ẩn mặc định. */}
           <DesktopConsole />
         </span>

@@ -257,6 +257,10 @@ contextBridge.exposeInMainWorld('desktopUpdate', {
    * terminal + automation chiếm hết.
    */
   hardReload: (opts) => ipcRenderer.invoke('desktop:hardReload', opts || {}),
+  /** Chế độ server (prod/dev/turbo): đang chạy, đã lưu, có bị env ép không. */
+  getServerMode: () => ipcRenderer.invoke('desktop:getServerMode'),
+  /** Lưu chế độ cho lần khởi động sau — muốn áp ngay thì gọi relaunch(). */
+  setServerMode: (mode) => ipcRenderer.invoke('desktop:setServerMode', mode),
 });
 
 // Extension cho tab Browser. Đứng riêng khỏi `workspace` vì chỉ áp cho các

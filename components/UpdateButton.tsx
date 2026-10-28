@@ -34,6 +34,22 @@ interface DesktopUpdateBridge {
   hardReload?: (opts?: { wipeBuild?: boolean; presets?: { kind: string; list: unknown[] }[] }) => Promise<{
     ok: boolean; error?: string; cleared?: string[]; needsRelaunch?: boolean;
   }>;
+  /** Chế độ server — xem ServerModeButton. Vắng mặt ở shell desktop cũ. */
+  getServerMode?: () => Promise<ServerModeInfo>;
+  setServerMode?: (mode: ServerMode) => Promise<ServerModeInfo & { ok: boolean; error?: string }>;
+}
+
+export type ServerMode = 'prod' | 'dev' | 'turbo';
+
+export interface ServerModeInfo {
+  /** Chế độ đã lưu trong server-mode.json. */
+  saved: ServerMode;
+  /** Chế độ lần dựng server tới sẽ dùng (env thắng file). */
+  wanted: ServerMode;
+  /** Server đang chạy: prod/dev/turbo, 'external' = không do DevBox dựng, '' = chưa biết. */
+  running: ServerMode | 'external' | '';
+  /** 'dev'/'turbo' khi DESKTOP_DEV/DESKTOP_TURBO đang ép, '' nếu không. */
+  envForced: ServerMode | '';
 }
 
 declare global {

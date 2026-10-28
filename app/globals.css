@@ -9474,6 +9474,16 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .hrl-pop button:hover { background: var(--glass-2); }
 .hrl-sub { font-size: 11px; color: var(--muted); font-weight: 400; }
 .hrl-sep { height: 1px; margin: 4px 2px; background: var(--glass-brd); }
+/* Chọn chế độ server (components/ServerModeButton.tsx) — mượn .hrl-pop. */
+.srvm-pop { min-width: 320px; max-width: 380px; }
+.srvm-pop button { display: block; }
+.srvm-pop button .hrl-sub { display: block; margin-top: 2px; }
+.srvm-pop button.on { background: var(--glass-2); box-shadow: inset 2px 0 0 var(--accent); }
+.srvm-tag {
+  margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 10.5px;
+  color: var(--ok); border: 1px solid currentColor;
+}
+.srvm-hint { padding: 6px 10px; font-size: 11px; color: var(--warn); line-height: 1.45; }
 .hrl-note {
   max-width: 260px; font-size: 11px; color: var(--warn);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
