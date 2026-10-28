@@ -16,6 +16,7 @@ import BrandMark from './BrandMark';
 import WorkspaceView from './WorkspaceView';
 import { WORKSPACE_PLUGINS, getPlugin } from '@/lib/workspace/plugins';
 import { isDesktop, resolveConfig } from '@/lib/workspace/config';
+import { useClientValue } from '@/lib/useClientValue';
 import type { CollectResult } from '@/lib/workspace/capture';
 import type { WorkspacePlugin } from '@/lib/workspace/types';
 import {
@@ -89,7 +90,7 @@ export function useChime(): () => void {
 export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const railSplit = useSplit({ varName: '--ws-rail', min: 120, max: 420, gap: 14 });
-  const desktop = isDesktop();
+  const desktop = useClientValue(isDesktop, false);
   const cfg = useMemo(() => resolveConfig(), []);
   const plugins = WORKSPACE_PLUGINS;
 

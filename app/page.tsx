@@ -3,41 +3,21 @@
 // VHS DevBox — infra toolbox shell. Forked from an internal all-in-one toolbox with the
 // API Explorer and the Telegram review bot removed: this build is the
 // company-wide datastore/broker manager (Webhooks · Git · Redis · Kafka ·
-// RabbitMQ · MongoDB · Elastic · PostgreSQL). Each workspace mounts lazily and
+// RabbitMQ · MongoDB · Elastic · PostgreSQL). Each workspace loads + mounts lazily and
 // stays mounted (hidden) across tab switches so long-running state survives.
 
+import dynamic from 'next/dynamic';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import WebhookReceiver from '@/components/WebhookReceiver';
-import ApiExplorerWorkspaceRaw, { type IntegrationView } from '@/components/ApiExplorerWorkspace';
+import type { IntegrationView } from '@/components/ApiExplorerWorkspace';
+import type { MonitorSummary } from '@/components/monitor/MonitorWorkspace';
+import type { OfficeApi } from '@/components/OfficeWorkspace';
+import type { ToolsApi } from '@/components/ToolsWorkspace';
 import PackManager from '@/components/PackManager';
-import GitWorkspaceRaw from '@/components/GitWorkspace';
-import CodeStudioRaw from '@/components/CodeStudio';
-import TerminalWorkspaceRaw from '@/components/TerminalWorkspace';
-import MonitorWorkspaceRaw, { type MonitorSummary } from '@/components/monitor/MonitorWorkspace';
-import RedisWorkspaceRaw from '@/components/RedisWorkspace';
-import KafkaWorkspaceRaw from '@/components/KafkaWorkspace';
-import RabbitWorkspaceRaw from '@/components/RabbitWorkspace';
-import MongoWorkspaceRaw from '@/components/MongoWorkspace';
-import EsWorkspaceRaw from '@/components/EsWorkspace';
-import PgWorkspaceRaw from '@/components/PgWorkspace';
-import MinioWorkspaceRaw from '@/components/MinioWorkspace';
-import OfficeWorkspaceRaw, { type OfficeApi } from '@/components/OfficeWorkspace';
-import GoogleWorkspaceRaw from '@/components/GoogleWorkspace';
-import MailWorkspaceRaw from '@/components/MailWorkspace';
-import LinksWorkspaceRaw from '@/components/LinksWorkspace';
-import AppsWorkspaceRaw from '@/components/AppsWorkspace';
-import ToolsWorkspaceRaw, { type ToolsApi } from '@/components/ToolsWorkspace';
-import ApiWorkspaceRaw from '@/components/ApiWorkspace';
-import BrowserTabWorkspaceRaw from '@/components/BrowserTabWorkspace';
-import BrowserWorkspaceRaw from '@/components/BrowserWorkspace';
-import ZaloApiWorkspaceRaw from '@/components/ZaloApiWorkspace';
-import RemoteWorkspaceRaw from '@/components/RemoteWorkspace';
-import AutomationWorkspaceRaw from '@/components/automation/AutomationWorkspace';
 import AutomationHost from '@/components/AutomationHost';
 import GitAutoPullHost from '@/components/GitAutoPullHost';
 import KeymissFlagHost from '@/components/KeymissFlagHost';
 import MailWatchHost from '@/components/MailWatchHost';
-import WorkWorkspaceRaw from '@/components/WorkWorkspace';
 import WorkAlertHost from '@/components/WorkAlertHost';
 import ConvertHost from '@/components/ConvertHost';
 import StockTickerHost, { StockHeaderButton } from '@/components/StockTickerHost';
@@ -72,31 +52,44 @@ import {
 // hòm thông báo, Ultra View…) mà các pane đã mở đều đang mount (chỉ bị ẩn). Không
 // memo thì mỗi lần như vậy cả chục workspace nghìn dòng bị render lại vô ích.
 // Props truyền xuống đều ổn định (không có object/hàm tạo mới mỗi lượt) nên memo ăn.
-const WorkWorkspace = memo(WorkWorkspaceRaw);
-const GitWorkspace = memo(GitWorkspaceRaw);
-const CodeStudio = memo(CodeStudioRaw);
-const TerminalWorkspace = memo(TerminalWorkspaceRaw);
-const MonitorWorkspace = memo(MonitorWorkspaceRaw);
-const RedisWorkspace = memo(RedisWorkspaceRaw);
-const KafkaWorkspace = memo(KafkaWorkspaceRaw);
-const RabbitWorkspace = memo(RabbitWorkspaceRaw);
-const MongoWorkspace = memo(MongoWorkspaceRaw);
-const EsWorkspace = memo(EsWorkspaceRaw);
-const PgWorkspace = memo(PgWorkspaceRaw);
-const MinioWorkspace = memo(MinioWorkspaceRaw);
-const OfficeWorkspace = memo(OfficeWorkspaceRaw);
-const GoogleWorkspace = memo(GoogleWorkspaceRaw);
-const MailWorkspace = memo(MailWorkspaceRaw);
-const LinksWorkspace = memo(LinksWorkspaceRaw);
-const AppsWorkspace = memo(AppsWorkspaceRaw);
-const ToolsWorkspace = memo(ToolsWorkspaceRaw);
-const ApiWorkspace = memo(ApiWorkspaceRaw);
-const BrowserTabWorkspace = memo(BrowserTabWorkspaceRaw);
-const BrowserWorkspace = memo(BrowserWorkspaceRaw);
-const ZaloApiWorkspace = memo(ZaloApiWorkspaceRaw);
-const RemoteWorkspace = memo(RemoteWorkspaceRaw);
-const ApiExplorerWorkspace = memo(ApiExplorerWorkspaceRaw);
-const AutomationWorkspace = memo(AutomationWorkspaceRaw);
+//
+// Và mỗi workspace là một chunk tải động (ssr: false): import tĩnh cả 25 cái
+// (Monaco, Univer, xterm…) bắt trang / biên dịch ~6.5k module và tải hết JS
+// ngay lúc mở app, dù phần lớn tab chưa ai bấm tới. Giờ tab nào được ghé
+// (`visited`) mới tải chunk của tab đó. Không render trên server còn cắt luôn
+// cả họ lỗi hydration kiểu đọc window.workspace ngay trong render.
+function PaneLoading() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, height: '100%', color: 'var(--muted)' }}>
+      <span className="spinner" /> Đang tải…
+    </div>
+  );
+}
+const WorkWorkspace = memo(dynamic(() => import('@/components/WorkWorkspace'), { ssr: false, loading: PaneLoading }));
+const GitWorkspace = memo(dynamic(() => import('@/components/GitWorkspace'), { ssr: false, loading: PaneLoading }));
+const CodeStudio = memo(dynamic(() => import('@/components/CodeStudio'), { ssr: false, loading: PaneLoading }));
+const TerminalWorkspace = memo(dynamic(() => import('@/components/TerminalWorkspace'), { ssr: false, loading: PaneLoading }));
+const MonitorWorkspace = memo(dynamic(() => import('@/components/monitor/MonitorWorkspace'), { ssr: false, loading: PaneLoading }));
+const RedisWorkspace = memo(dynamic(() => import('@/components/RedisWorkspace'), { ssr: false, loading: PaneLoading }));
+const KafkaWorkspace = memo(dynamic(() => import('@/components/KafkaWorkspace'), { ssr: false, loading: PaneLoading }));
+const RabbitWorkspace = memo(dynamic(() => import('@/components/RabbitWorkspace'), { ssr: false, loading: PaneLoading }));
+const MongoWorkspace = memo(dynamic(() => import('@/components/MongoWorkspace'), { ssr: false, loading: PaneLoading }));
+const EsWorkspace = memo(dynamic(() => import('@/components/EsWorkspace'), { ssr: false, loading: PaneLoading }));
+const PgWorkspace = memo(dynamic(() => import('@/components/PgWorkspace'), { ssr: false, loading: PaneLoading }));
+const MinioWorkspace = memo(dynamic(() => import('@/components/MinioWorkspace'), { ssr: false, loading: PaneLoading }));
+const OfficeWorkspace = memo(dynamic(() => import('@/components/OfficeWorkspace'), { ssr: false, loading: PaneLoading }));
+const GoogleWorkspace = memo(dynamic(() => import('@/components/GoogleWorkspace'), { ssr: false, loading: PaneLoading }));
+const MailWorkspace = memo(dynamic(() => import('@/components/MailWorkspace'), { ssr: false, loading: PaneLoading }));
+const LinksWorkspace = memo(dynamic(() => import('@/components/LinksWorkspace'), { ssr: false, loading: PaneLoading }));
+const AppsWorkspace = memo(dynamic(() => import('@/components/AppsWorkspace'), { ssr: false, loading: PaneLoading }));
+const ToolsWorkspace = memo(dynamic(() => import('@/components/ToolsWorkspace'), { ssr: false, loading: PaneLoading }));
+const ApiWorkspace = memo(dynamic(() => import('@/components/ApiWorkspace'), { ssr: false, loading: PaneLoading }));
+const BrowserTabWorkspace = memo(dynamic(() => import('@/components/BrowserTabWorkspace'), { ssr: false, loading: PaneLoading }));
+const BrowserWorkspace = memo(dynamic(() => import('@/components/BrowserWorkspace'), { ssr: false, loading: PaneLoading }));
+const ZaloApiWorkspace = memo(dynamic(() => import('@/components/ZaloApiWorkspace'), { ssr: false, loading: PaneLoading }));
+const RemoteWorkspace = memo(dynamic(() => import('@/components/RemoteWorkspace'), { ssr: false, loading: PaneLoading }));
+const ApiExplorerWorkspace = memo(dynamic(() => import('@/components/ApiExplorerWorkspace'), { ssr: false, loading: PaneLoading }));
+const AutomationWorkspace = memo(dynamic(() => import('@/components/automation/AutomationWorkspace'), { ssr: false, loading: PaneLoading }));
 
 const DEFAULT_BASE_URL = 'http://localhost:8090';
 
@@ -399,7 +392,9 @@ export default function Home() {
     const tick = () => {
       const api = office ? officeApi.current : toolsApi.current;
       if (api) { api.openFile(filePath); return; }
-      if (++tries < 40) setTimeout(tick, 50); // bỏ cuộc sau ~2s
+      // Bỏ cuộc sau ~15s: workspace là chunk tải động, lần đầu dưới `next dev`
+      // còn phải biên dịch nên 2s như trước là hụt.
+      if (++tries < 300) setTimeout(tick, 50);
     };
     tick();
   }, []);

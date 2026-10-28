@@ -49,6 +49,7 @@ import { zaloIncomingEvent } from '@/lib/zaloapi/event';
 import { buildNotiHookScript, drainNotiScript } from '@/lib/zaloapi/notiHook';
 import type { ExtractResult } from '@/lib/zaloapi/types';
 import { isDesktop } from '@/lib/workspace/config';
+import { useClientValue } from '@/lib/useClientValue';
 import { registerGuest } from '@/lib/workspace/guests';
 import { automation, useAutomation } from '@/lib/automation/useAutomation';
 import { useChime } from './BrowserWorkspace';
@@ -606,7 +607,7 @@ export default function ZaloApiWorkspace({
   /** Tab Zalo API có đang là tab hiện trên màn hình không. */
   visible?: boolean;
 } = {}) {
-  const desktop = isDesktop();
+  const desktop = useClientValue(isDesktop, false);
   const [flags, setFlags] = useState<ZaloApiFlags | null>(null);
   useEffect(() => {
     void fetchZaloApiFlags().then(setFlags).catch(() => setFlags(null));

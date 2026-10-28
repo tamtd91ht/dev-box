@@ -15,6 +15,7 @@ import {
   listHosts, addHost, updateHost, removeHost, openHost, copyPassword, copyAddress,
   isDesktop, canEncrypt, type RemoteHost, type RemoteKind, type HostForm,
 } from '@/lib/remote';
+import { useClientValue } from '@/lib/useClientValue';
 // Import từ remoteHostTypes (không có fs) chứ KHÔNG từ remoteHosts — file đó
 // đọc/ghi đĩa, bundle vào browser sẽ lỗi "Can't resolve 'fs'".
 import { KIND_META, REMOTE_KINDS } from '@/lib/remoteHostTypes';
@@ -49,8 +50,8 @@ export default function RemoteWorkspace() {
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const desktop = isDesktop();
-  const encrypts = canEncrypt();
+  const desktop = useClientValue(isDesktop, false);
+  const encrypts = useClientValue(canEncrypt, false);
 
   const reload = useCallback(async () => {
     try {

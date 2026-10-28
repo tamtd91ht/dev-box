@@ -2086,7 +2086,13 @@ function spawnNextServer(appPath, nextBin, mode) {
   } catch (err) {
     log('DevServerLogOpenError', err && err.message);
   }
-  devServer = spawn(process.execPath, [nextBin, mode], {
+  // DESKTOP_TURBO=1 → `next dev --turbopack`: chỉ biên dịch module thật sự
+  // được request, nên khởi động nguội nhanh hơn webpack nhiều lần (webpack
+  // dev từng mất ~17s cho trang / và tới ~40s cho mỗi API route lần đầu).
+  // Chỉ áp dụng cho dev — `next build`/`next start` vẫn đi đường webpack.
+  const turbo = mode === 'dev' && /^(1|true)$/i.test(process.env.DESKTOP_TURBO || '');
+  if (turbo) log('ServerTurbopack', 'next dev chạy bằng Turbopack (DESKTOP_TURBO=1)');
+  devServer = spawn(process.execPath, turbo ? [nextBin, mode, '--turbopack'] : [nextBin, mode], {
     cwd: appPath,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', outFd, outFd], // → devserver.log, tail vào Console trong app
