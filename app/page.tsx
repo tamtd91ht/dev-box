@@ -38,6 +38,7 @@ import ConfigSyncButton from '@/components/ConfigSyncButton';
 import UpdateButton from '@/components/UpdateButton';
 import HardReloadButton from '@/components/HardReloadButton';
 import ServerModeButton from '@/components/ServerModeButton';
+import { loadPane } from '@/components/PaneChunk';
 import { hydratePresets } from '@/lib/presetSync';
 import UpdatePrompt from '@/components/UpdatePrompt';
 import CritBadge, { useCritAlerts, type CritStack } from '@/components/monitor/CritBar';
@@ -59,6 +60,8 @@ import {
 // ngay lúc mở app, dù phần lớn tab chưa ai bấm tới. Giờ tab nào được ghé
 // (`visited`) mới tải chunk của tab đó. Không render trên server còn cắt luôn
 // cả họ lỗi hydration kiểu đọc window.workspace ngay trong render.
+// loadPane: chunk tải hụt (dev server vừa khởi động lại…) thì thử lại rồi báo
+// trong pane, không đỏ cả app — xem components/PaneChunk.tsx.
 function PaneLoading() {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, height: '100%', color: 'var(--muted)' }}>
@@ -66,31 +69,31 @@ function PaneLoading() {
     </div>
   );
 }
-const WorkWorkspace = memo(dynamic(() => import('@/components/WorkWorkspace'), { ssr: false, loading: PaneLoading }));
-const GitWorkspace = memo(dynamic(() => import('@/components/GitWorkspace'), { ssr: false, loading: PaneLoading }));
-const CodeStudio = memo(dynamic(() => import('@/components/CodeStudio'), { ssr: false, loading: PaneLoading }));
-const TerminalWorkspace = memo(dynamic(() => import('@/components/TerminalWorkspace'), { ssr: false, loading: PaneLoading }));
-const MonitorWorkspace = memo(dynamic(() => import('@/components/monitor/MonitorWorkspace'), { ssr: false, loading: PaneLoading }));
-const RedisWorkspace = memo(dynamic(() => import('@/components/RedisWorkspace'), { ssr: false, loading: PaneLoading }));
-const KafkaWorkspace = memo(dynamic(() => import('@/components/KafkaWorkspace'), { ssr: false, loading: PaneLoading }));
-const RabbitWorkspace = memo(dynamic(() => import('@/components/RabbitWorkspace'), { ssr: false, loading: PaneLoading }));
-const MongoWorkspace = memo(dynamic(() => import('@/components/MongoWorkspace'), { ssr: false, loading: PaneLoading }));
-const EsWorkspace = memo(dynamic(() => import('@/components/EsWorkspace'), { ssr: false, loading: PaneLoading }));
-const PgWorkspace = memo(dynamic(() => import('@/components/PgWorkspace'), { ssr: false, loading: PaneLoading }));
-const MinioWorkspace = memo(dynamic(() => import('@/components/MinioWorkspace'), { ssr: false, loading: PaneLoading }));
-const OfficeWorkspace = memo(dynamic(() => import('@/components/OfficeWorkspace'), { ssr: false, loading: PaneLoading }));
-const GoogleWorkspace = memo(dynamic(() => import('@/components/GoogleWorkspace'), { ssr: false, loading: PaneLoading }));
-const MailWorkspace = memo(dynamic(() => import('@/components/MailWorkspace'), { ssr: false, loading: PaneLoading }));
-const LinksWorkspace = memo(dynamic(() => import('@/components/LinksWorkspace'), { ssr: false, loading: PaneLoading }));
-const AppsWorkspace = memo(dynamic(() => import('@/components/AppsWorkspace'), { ssr: false, loading: PaneLoading }));
-const ToolsWorkspace = memo(dynamic(() => import('@/components/ToolsWorkspace'), { ssr: false, loading: PaneLoading }));
-const ApiWorkspace = memo(dynamic(() => import('@/components/ApiWorkspace'), { ssr: false, loading: PaneLoading }));
-const BrowserTabWorkspace = memo(dynamic(() => import('@/components/BrowserTabWorkspace'), { ssr: false, loading: PaneLoading }));
-const BrowserWorkspace = memo(dynamic(() => import('@/components/BrowserWorkspace'), { ssr: false, loading: PaneLoading }));
-const ZaloApiWorkspace = memo(dynamic(() => import('@/components/ZaloApiWorkspace'), { ssr: false, loading: PaneLoading }));
-const RemoteWorkspace = memo(dynamic(() => import('@/components/RemoteWorkspace'), { ssr: false, loading: PaneLoading }));
-const ApiExplorerWorkspace = memo(dynamic(() => import('@/components/ApiExplorerWorkspace'), { ssr: false, loading: PaneLoading }));
-const AutomationWorkspace = memo(dynamic(() => import('@/components/automation/AutomationWorkspace'), { ssr: false, loading: PaneLoading }));
+const WorkWorkspace = memo(dynamic(() => loadPane(() => import('@/components/WorkWorkspace')), { ssr: false, loading: PaneLoading }));
+const GitWorkspace = memo(dynamic(() => loadPane(() => import('@/components/GitWorkspace')), { ssr: false, loading: PaneLoading }));
+const CodeStudio = memo(dynamic(() => loadPane(() => import('@/components/CodeStudio')), { ssr: false, loading: PaneLoading }));
+const TerminalWorkspace = memo(dynamic(() => loadPane(() => import('@/components/TerminalWorkspace')), { ssr: false, loading: PaneLoading }));
+const MonitorWorkspace = memo(dynamic(() => loadPane(() => import('@/components/monitor/MonitorWorkspace')), { ssr: false, loading: PaneLoading }));
+const RedisWorkspace = memo(dynamic(() => loadPane(() => import('@/components/RedisWorkspace')), { ssr: false, loading: PaneLoading }));
+const KafkaWorkspace = memo(dynamic(() => loadPane(() => import('@/components/KafkaWorkspace')), { ssr: false, loading: PaneLoading }));
+const RabbitWorkspace = memo(dynamic(() => loadPane(() => import('@/components/RabbitWorkspace')), { ssr: false, loading: PaneLoading }));
+const MongoWorkspace = memo(dynamic(() => loadPane(() => import('@/components/MongoWorkspace')), { ssr: false, loading: PaneLoading }));
+const EsWorkspace = memo(dynamic(() => loadPane(() => import('@/components/EsWorkspace')), { ssr: false, loading: PaneLoading }));
+const PgWorkspace = memo(dynamic(() => loadPane(() => import('@/components/PgWorkspace')), { ssr: false, loading: PaneLoading }));
+const MinioWorkspace = memo(dynamic(() => loadPane(() => import('@/components/MinioWorkspace')), { ssr: false, loading: PaneLoading }));
+const OfficeWorkspace = memo(dynamic(() => loadPane(() => import('@/components/OfficeWorkspace')), { ssr: false, loading: PaneLoading }));
+const GoogleWorkspace = memo(dynamic(() => loadPane(() => import('@/components/GoogleWorkspace')), { ssr: false, loading: PaneLoading }));
+const MailWorkspace = memo(dynamic(() => loadPane(() => import('@/components/MailWorkspace')), { ssr: false, loading: PaneLoading }));
+const LinksWorkspace = memo(dynamic(() => loadPane(() => import('@/components/LinksWorkspace')), { ssr: false, loading: PaneLoading }));
+const AppsWorkspace = memo(dynamic(() => loadPane(() => import('@/components/AppsWorkspace')), { ssr: false, loading: PaneLoading }));
+const ToolsWorkspace = memo(dynamic(() => loadPane(() => import('@/components/ToolsWorkspace')), { ssr: false, loading: PaneLoading }));
+const ApiWorkspace = memo(dynamic(() => loadPane(() => import('@/components/ApiWorkspace')), { ssr: false, loading: PaneLoading }));
+const BrowserTabWorkspace = memo(dynamic(() => loadPane(() => import('@/components/BrowserTabWorkspace')), { ssr: false, loading: PaneLoading }));
+const BrowserWorkspace = memo(dynamic(() => loadPane(() => import('@/components/BrowserWorkspace')), { ssr: false, loading: PaneLoading }));
+const ZaloApiWorkspace = memo(dynamic(() => loadPane(() => import('@/components/ZaloApiWorkspace')), { ssr: false, loading: PaneLoading }));
+const RemoteWorkspace = memo(dynamic(() => loadPane(() => import('@/components/RemoteWorkspace')), { ssr: false, loading: PaneLoading }));
+const ApiExplorerWorkspace = memo(dynamic(() => loadPane(() => import('@/components/ApiExplorerWorkspace')), { ssr: false, loading: PaneLoading }));
+const AutomationWorkspace = memo(dynamic(() => loadPane(() => import('@/components/automation/AutomationWorkspace')), { ssr: false, loading: PaneLoading }));
 
 const DEFAULT_BASE_URL = 'http://localhost:8090';
 
