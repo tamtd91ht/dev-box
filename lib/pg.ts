@@ -10,8 +10,8 @@ export interface PublicPgConnection {
   id: string;
   name: string;
   project: string;
+  /** "host:port" phân cách dấu phẩy — một địa chỉ = máy đơn / HA, nhiều = cluster. */
   host: string;
-  port: number;
   database: string;
   username: string;
   tls: boolean;
@@ -212,7 +212,7 @@ async function pgAction<T>(action: string, params: Record<string, unknown>): Pro
 }
 
 export function testPgConnection(input: {
-  host: string; port: number | string; database: string; username: string; password?: string; tls?: boolean;
+  host: string; database: string; username: string; password?: string; tls?: boolean;
 }): Promise<PgTestResult> {
   return pgAction<PgTestResult>('test', input);
 }

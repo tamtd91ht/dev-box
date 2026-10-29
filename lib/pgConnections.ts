@@ -1,7 +1,8 @@
 // Server-only persistence + validation for PostgreSQL "connections".
 //
 // A connection is one PG endpoint an operator wants to browse:
-//   { id, name, project, host, port, database, username, password?, tls, readOnly }
+//   { id, name, project, host, database, username, password?, tls, readOnly }
+// `host` là "host:port" phân cách dấu phẩy (một địa chỉ = máy đơn / HA, nhiều = cluster — lib/pgHosts).
 // `database` is the DEFAULT database to connect to (PG sessions are bound to a
 // database) — the browser tree can still open sibling databases; the server
 // keys its pools per (connection, database).
@@ -19,7 +20,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { configPath } from './configDir';
-import { normalizeHostList, parseHostList } from './pgHosts';
+import { DEFAULT_PG_PORT, canonicalHostList, normalizeHostList } from './pgHosts';
 
 export interface PgConnection {
   /** Stable opaque id (used as the list key + api param). */
@@ -28,8 +29,10 @@ export interface PgConnection {
   name: string;
   /** Free-text project/grouping label (e.g. "vn", "th", "core"). */
   project: string;
+  /** "host:port" phân cách dấu phẩy, node nào cũng có cổng. */
   host: string;
-  port: number;
+  /** Cũ: cổng chung trước khi gộp vào `host`. Bản ghi đọc lên đã được gộp, không còn field này. */
+  port?: number;
   /** Default database of the session (PG requires one; usually "postgres"). */
   database: string;
   username: string;
@@ -79,13 +82,21 @@ async function writeRaw(connections: PgConnection[]): Promise<void> {
   await fs.writeFile(CONNECTIONS_FILE, JSON.stringify({ connections }, null, 2) + '\n', 'utf8');
 }
 
+/** Gộp cổng cũ vào từng node; host hỏng cú pháp thì giữ nguyên để người dùng thấy và sửa. */
+function canonicalOrRaw(host: string, port: number | undefined): string {
+  try {
+    return canonicalHostList(host, port);
+  } catch {
+    return normalizeHostList(host);
+  }
+}
+
 function normalize(c: PgConnection): PgConnection {
   return {
     id: c.id,
     name: c.name,
     project: typeof c.project === 'string' && c.project.trim() ? c.project.trim() : 'default',
-    host: typeof c.host === 'string' ? normalizeHostList(c.host) : '',
-    port: Number.isInteger(c.port) ? c.port : 5432,
+    host: typeof c.host === 'string' ? canonicalOrRaw(c.host, Number.isInteger(c.port) ? c.port : DEFAULT_PG_PORT) : '',
     database: typeof c.database === 'string' && c.database.trim() ? c.database.trim() : 'postgres',
     username: typeof c.username === 'string' ? c.username.trim() : '',
     password: typeof c.password === 'string' && c.password.length ? c.password : undefined,
@@ -142,12 +153,13 @@ function validate(body: PgConnectionInput, existing?: PgConnection): Omit<PgConn
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   if (!name) throw new Error('connection name is required');
   const project = typeof body.project === 'string' && body.project.trim() ? body.project.trim() : 'default';
-  // Host có thể là cả cluster: "pg1:5432,pg2:5432,pg3" (xem lib/pgHosts).
-  const host = typeof body.host === 'string' ? normalizeHostList(body.host) : '';
-  if (!host) throw new Error('host is required');
-  const port = Number(body.port);
+  // "host:port" phân cách dấu phẩy, có thể là cả cluster (xem lib/pgHosts). Node không ghi cổng =
+  // `port` nếu client cũ còn gửi, không thì 5432. Ném lỗi nếu có node sai cú pháp / cổng.
+  const raw = typeof body.host === 'string' ? normalizeHostList(body.host) : '';
+  if (!raw) throw new Error('host is required');
+  const port = body.port === undefined || body.port === '' ? DEFAULT_PG_PORT : Number(body.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('port must be 1–65535');
-  parseHostList(host, port); // ném lỗi nếu có node sai cú pháp / port
+  const host = canonicalHostList(raw, port);
   const database = typeof body.database === 'string' && body.database.trim() ? body.database.trim() : 'postgres';
   const username = typeof body.username === 'string' ? body.username.trim() : '';
   if (!username) throw new Error('username is required');
@@ -158,7 +170,7 @@ function validate(body: PgConnectionInput, existing?: PgConnection): Omit<PgConn
     ? (existing ? existing.readOnly : true)
     : !(body.readOnly === false || body.readOnly === 'false' || body.readOnly === 'off');
   const metricsUrls = parseMetricsUrls(body.metricsUrls);
-  return { name, project, host, port, database, username, password, tls: !!body.tls, metricsUrls, readOnly };
+  return { name, project, host, database, username, password, tls: !!body.tls, metricsUrls, readOnly };
 }
 
 /** Build a NOT-persisted connection straight from form fields (test action). */

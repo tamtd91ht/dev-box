@@ -30,7 +30,7 @@
 
 import { Client, Pool, types } from 'pg';
 import type { PgConnection } from '@/lib/pgConnections';
-import { parseHostList, type PgEndpoint } from '@/lib/pgHosts';
+import { DEFAULT_PG_PORT, parseHostList, type PgEndpoint } from '@/lib/pgHosts';
 import { fetchHostMetrics, type HostMetrics } from '@/lib/hostMetrics';
 
 // int8/numeric come back as strings by default — keep them as strings (exact),
@@ -108,7 +108,7 @@ async function probeNode(c: PgConnection, db: string, ep: PgEndpoint): Promise<'
 
 /** Node đang dùng cho connection này (đã dò + cache khi Host là cluster). */
 async function resolveEndpoint(c: PgConnection, db: string, force = false): Promise<Picked> {
-  const eps = parseHostList(c.host, c.port);
+  const eps = parseHostList(c.host, c.port ?? DEFAULT_PG_PORT);
   if (eps.length === 1) return { ep: eps[0], role: 'primary', at: Date.now() };
   const key = `${c.id}|${c.host}|${c.port}|${db}`;
   const hit = picked.get(key);
@@ -222,7 +222,7 @@ export async function testConnection(conn: PgConnection): Promise<PgTestResult> 
   const t0 = Date.now();
   // Test luôn dò lại cluster (force) để thấy đúng node/vai trò ở thời điểm này.
   const { ep, role } = await resolveEndpoint(conn, conn.database, true);
-  const nodes = parseHostList(conn.host, conn.port).length;
+  const nodes = parseHostList(conn.host, conn.port ?? DEFAULT_PG_PORT).length;
   const pool = new Pool({
     host: ep.host,
     port: ep.port,

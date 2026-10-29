@@ -1,10 +1,11 @@
 // Host dạng CLUSTER cho PostgreSQL — dùng chung cho server và browser (không import
 // gì của Node).
 //
-// Ô Host nhận một danh sách phân cách bằng dấu phẩy, giống chuỗi kết nối libpq:
-//   "10.0.0.1"                       một node
-//   "pg1:5432,pg2:5433,pg3"          cluster — node nào không ghi port thì dùng port chung
+// Ô Địa chỉ nhận "host:port" phân cách bằng dấu phẩy, giống chuỗi kết nối libpq:
+//   "10.0.0.1:5432"                  một địa chỉ — máy đơn hoặc HA (VIP / proxy)
+//   "pg1:5432,pg2:5433,pg3"          cluster — mỗi node một cổng riêng; không ghi cổng = 5432
 //   "[fd00::1]:5432,[fd00::2]"       IPv6 phải đặt trong ngoặc vuông
+// Khi lưu, mọi node được ghi kèm cổng (canonicalHostList) — không còn field port riêng.
 // Server thử lần lượt các node và ưu tiên node PRIMARY (xem resolveEndpoint ở pgClient).
 
 export interface PgEndpoint {
@@ -58,7 +59,25 @@ export function parseHostList(raw: string, defaultPort: number): PgEndpoint[] {
   return parts.map((p) => parseOne(p, defaultPort));
 }
 
+export const DEFAULT_PG_PORT = 5432;
+
+export function formatEndpoint(ep: PgEndpoint): string {
+  return `${ep.host.includes(':') ? `[${ep.host}]` : ep.host}:${ep.port}`;
+}
+
+/**
+ * Dạng lưu chuẩn "h1:5432,h2:5433" — node nào cũng có cổng. `defaultPort` chỉ dùng cho
+ * node không ghi cổng (bản ghi cũ còn field port riêng, hoặc người dùng bỏ trống cổng).
+ */
+export function canonicalHostList(raw: string, defaultPort = DEFAULT_PG_PORT): string {
+  return parseHostList(raw, defaultPort).map(formatEndpoint).join(',');
+}
+
 /** Nhãn hiển thị ngắn gọn cho danh sách kết nối. */
-export function formatHostLabel(host: string, defaultPort: number): string {
-  return host.includes(',') ? normalizeHostList(host) : `${host}:${defaultPort}`;
+export function formatHostLabel(host: string, defaultPort = DEFAULT_PG_PORT): string {
+  try {
+    return canonicalHostList(host, defaultPort);
+  } catch {
+    return normalizeHostList(host);
+  }
 }

@@ -18,7 +18,6 @@ export default function ConnectionForm({ initial, onCancel, onSaved, onError }: 
   const [name, setName] = useState(initial?.name ?? '');
   const [project, setProject] = useState(initial?.project ?? '');
   const [host, setHost] = useState(initial?.host ?? '');
-  const [port, setPort] = useState(initial?.port ?? 5432);
   const [database, setDatabase] = useState(initial?.database ?? 'postgres');
   const [username, setUsername] = useState(initial?.username ?? '');
   const [password, setPassword] = useState('');
@@ -28,7 +27,7 @@ export default function ConnectionForm({ initial, onCancel, onSaved, onError }: 
   const [busy, setBusy] = useState(false);
   const [testMsg, setTestMsg] = useState<string | null>(null);
 
-  const bodyOf = () => ({ name, project, host, port, database, username, password, tls, metricsUrls, readOnly });
+  const bodyOf = () => ({ name, project, host, database, username, password, tls, metricsUrls, readOnly });
   const canTest = !!host.trim() && !!username.trim();
 
   return (
@@ -41,14 +40,10 @@ export default function ConnectionForm({ initial, onCancel, onSaved, onError }: 
         <input className="input" value={project} onChange={(e) => setProject(e.target.value)} placeholder="vn" />
       </label>
       <div className="pg-form-row">
-        <label className="pg-field" style={{ flex: 1 }}><span>Host <em style={{ fontStyle: 'normal', color: 'var(--muted)' }}>(cluster: ngăn cách bằng dấu phẩy)</em></span>
+        <label className="pg-field" style={{ flex: 2 }}><span>Địa chỉ <em style={{ fontStyle: 'normal', color: 'var(--muted)' }}>(host:port, cluster ngăn cách bằng dấu phẩy)</em></span>
           <input className="input mono" value={host} onChange={(e) => setHost(e.target.value)}
-            placeholder="192.168.2.85  hoặc  pg1:5432,pg2:5432,pg3"
-            title="Một node, hoặc cả cluster: host1[:port],host2[:port],… — node không ghi port dùng port bên cạnh. Tự chọn node PRIMARY." />
-        </label>
-        <label className="pg-field" style={{ flex: '0 0 100px' }}><span>Port {host.includes(',') ? '(mặc định)' : ''}</span>
-          <input className="input" type="number" min={1} max={65535} value={port}
-            onChange={(e) => setPort(Number(e.target.value) || 5432)} />
+            placeholder="192.168.2.85:5432  hoặc  pg1:5432,pg2:5433,pg3:5434"
+            title="Một địa chỉ = máy đơn hoặc HA (VIP / proxy). Nhiều địa chỉ = các node của cluster, mỗi node một cổng riêng — tự chọn node PRIMARY. Không ghi cổng = 5432." />
         </label>
         <label className="pg-field" style={{ flex: 1 }}><span>Database mặc định</span>
           <input className="input mono" value={database} onChange={(e) => setDatabase(e.target.value)} placeholder="postgres" />
@@ -87,7 +82,7 @@ export default function ConnectionForm({ initial, onCancel, onSaved, onError }: 
           onClick={async () => {
             setBusy(true); setTestMsg(null);
             try {
-              const r = await testPgConnection({ host, port, database, username, password: password || undefined, tls });
+              const r = await testPgConnection({ host, database, username, password: password || undefined, tls });
               setTestMsg(`OK · PostgreSQL ${r.version} · db ${r.database} · ${r.latencyMs}ms`
                 + (r.endpoint ? ` · ${r.role === 'primary' ? 'primary' : 'standby (không có primary)'} ${r.endpoint} (${r.nodes} node)` : ''));
             } catch (e) { setTestMsg(`Lỗi: ${(e as Error).message}`); }
@@ -98,7 +93,7 @@ export default function ConnectionForm({ initial, onCancel, onSaved, onError }: 
         <button
           className="sm"
           disabled={busy || !name.trim() || !host.trim() || !username.trim()}
-          title={!name.trim() ? 'Nhập Tên trước đã' : !host.trim() ? 'Nhập host trước đã' : !username.trim() ? 'Nhập username trước đã' : (initial ? 'Lưu thay đổi' : 'Thêm server')}
+          title={!name.trim() ? 'Nhập Tên trước đã' : !host.trim() ? 'Nhập địa chỉ trước đã' : !username.trim() ? 'Nhập username trước đã' : (initial ? 'Lưu thay đổi' : 'Thêm server')}
           onClick={async () => {
             setBusy(true);
             try {

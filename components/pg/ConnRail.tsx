@@ -81,7 +81,7 @@ export default function ConnRail(props: ConnRailProps) {
                   {c.readOnly && <span title="Read-only — UPDATE bị chặn">🔒 </span>}
                   {c.name}
                 </span>
-                <span className="pg-conn-host">{formatHostLabel(c.host, c.port)}/{c.database} · {c.username}{c.tls ? ' · tls' : ''}</span>
+                <span className="pg-conn-host">{formatHostLabel(c.host)}/{c.database} · {c.username}{c.tls ? ' · tls' : ''}</span>
               </div>
               {pings[c.id] != null && (
                 <span className="badge" style={{ color: pings[c.id] === 'err' ? 'var(--err)' : 'var(--ok)' }}>

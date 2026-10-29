@@ -91,7 +91,8 @@ const LOADERS: Record<InfraStack, () => Promise<ConnOption[]>> = {
       id: c.id,
       name: c.name,
       project: c.project,
-      address: joinAddrs([`${c.host}:${c.port}/${c.database}`]),
+      // host đã là "h1:5432,h2:5433" — mỗi node một mục.
+      address: joinAddrs(c.host.split(',').map((h) => `${h}/${c.database}`)),
     })),
   minio: async () =>
     (await fetchMinioConnections()).connections.map((c) => ({
