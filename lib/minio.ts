@@ -2,6 +2,8 @@
 // same-origin /api/minio* routes (the Next server holds the S3 clients — the
 // browser never talks to MinIO directly). Browser-safe module.
 
+import { apiFetch } from './apiFetch';
+
 export interface PublicMinioConnection {
   id: string;
   name: string;
@@ -117,7 +119,7 @@ export interface MinioObjectStat {
 
 export async function fetchMinioConnections(): Promise<MinioConnectionsResponse> {
   try {
-    const r = await fetch('/api/minio-connections');
+    const r = await apiFetch('/api/minio-connections', { timeoutMs: 15000 });
     if (!r.ok) return { enabled: false, allowWrite: false, connections: [] };
     return (await r.json()) as MinioConnectionsResponse;
   } catch {

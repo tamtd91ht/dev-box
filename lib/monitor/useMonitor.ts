@@ -116,7 +116,12 @@ export function useMonitor(opts: {
   const roundNo = useRef(0);
   const lastRoundRef = useRef(0);
   const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; }, []);
+  // Phải đặt lại true khi mount: StrictMode (dev) chạy mount → cleanup → mount, nếu
+  // chỉ có cleanup thì alive kẹt false mãi → không bao giờ setLoaded, treo "Đang tải…".
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
 
   const patch = useCallback((key: string, fn: (s: ResState) => ResState) => {
     const cur = states.current[key] ?? { samples: [], busy: false };
@@ -192,6 +197,17 @@ export function useMonitor(opts: {
     timer = setTimeout(loop, lastRoundRef.current ? wait : 0);
     return () => { stop = true; if (timer) clearTimeout(timer); };
   }, [paused, visible, intervalSec, runRound]);
+
+  // Đang tạm dừng thì vòng đo không chạy → danh sách kết nối cũng không bao giờ được
+  // nạp, màn hình kẹt ở "Đang tải danh sách kết nối…". Nạp danh sách (không đo) một lần.
+  useEffect(() => {
+    if (!paused || loaded) return;
+    void Promise.all(STACK_ORDER.map((s) => listConnections(s))).then((lists) => {
+      if (!alive.current || running.current) return;
+      setResources(STACK_ORDER.flatMap((s, i) => lists[i].map((c) => toResource(s, c))));
+      setLoaded(true);
+    });
+  }, [paused, loaded]);
 
   const refreshAll = useCallback(() => { roundNo.current = 0; void runRound(); }, [runRound]);
 

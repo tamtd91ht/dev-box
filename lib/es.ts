@@ -3,6 +3,7 @@
 // to the cluster — the browser never reaches ES directly). Browser-safe: no fs,
 // no server-only imports.
 
+import { apiFetch } from './apiFetch';
 import type { EsDiagnosis } from '@/lib/esDiagnoseRules';
 import type { LongRunningResult } from '@/lib/diagnose';
 export type { EsDiagnosis };
@@ -85,7 +86,7 @@ export interface EsSearchResult {
 
 export async function fetchEsConnections(): Promise<EsConnectionsResponse> {
   try {
-    const r = await fetch('/api/es-connections');
+    const r = await apiFetch('/api/es-connections', { timeoutMs: 15000 });
     if (!r.ok) return { enabled: false, connections: [] };
     return (await r.json()) as EsConnectionsResponse;
   } catch {

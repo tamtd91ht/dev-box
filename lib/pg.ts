@@ -2,6 +2,7 @@
 // go to the same-origin /api/pg* routes (the Next server holds the pg pools —
 // the browser never connects to PostgreSQL directly). Browser-safe module.
 
+import { apiFetch } from './apiFetch';
 import type { CacheHitDiagnosis } from '@/lib/pgDiagnoseRules';
 export type { CacheHitDiagnosis };
 
@@ -173,7 +174,7 @@ export interface PgUpdateSet {
 
 export async function fetchPgConnections(): Promise<PgConnectionsResponse> {
   try {
-    const r = await fetch('/api/pg-connections');
+    const r = await apiFetch('/api/pg-connections', { timeoutMs: 15000 });
     if (!r.ok) return { enabled: false, allowWrite: false, connections: [] };
     return (await r.json()) as PgConnectionsResponse;
   } catch {

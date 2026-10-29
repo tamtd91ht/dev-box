@@ -5,6 +5,7 @@
 
 // Dùng chung phần gõ JSON với ô body raw của tab API — cùng một bài toán "text
 // đổi thì con trỏ đi đâu", không nên có hai bản lệch nhau.
+import { apiFetch } from './apiFetch';
 import { isCompletePair, remapCaret } from './jsonEdit';
 import type { MongoDiagKind, MongoDiagnosis } from './mongoDiagnoseRules';
 export type { MongoDiagKind, MongoDiagnosis };
@@ -138,7 +139,7 @@ export interface UpdateResult {
 /** GET the connection list — never throws; returns disabled on any error. */
 export async function fetchMongoConnections(): Promise<MongoConnectionsResponse> {
   try {
-    const r = await fetch('/api/mongo-connections');
+    const r = await apiFetch('/api/mongo-connections', { timeoutMs: 15000 });
     if (!r.ok) return { enabled: false, allowWrite: false, connections: [] };
     return (await r.json()) as MongoConnectionsResponse;
   } catch {

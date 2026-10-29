@@ -3,6 +3,8 @@
 // talks to the management API — the browser never sees the password). This file
 // is browser-safe: NO `fs`, no server-only imports.
 
+import { apiFetch } from './apiFetch';
+
 export interface PublicRabbitConnection {
   id: string;
   name: string;
@@ -268,7 +270,7 @@ export interface BindingDeclarationInput {
 
 export async function fetchRabbitConnections(): Promise<RabbitConnectionsResponse> {
   try {
-    const r = await fetch('/api/rabbit-connections');
+    const r = await apiFetch('/api/rabbit-connections', { timeoutMs: 15000 });
     if (!r.ok) return { enabled: false, connections: [] };
     return (await r.json()) as RabbitConnectionsResponse;
   } catch {
