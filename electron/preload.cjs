@@ -239,6 +239,8 @@ contextBridge.exposeInMainWorld('desktopConsole', {
     ipcRenderer.on('desktop:log', handler);
     return () => ipcRenderer.removeListener('desktop:log', handler);
   },
+  /** Mở Console rời (cửa sổ riêng của main) — dùng được cả khi trang Next chưa lên. */
+  openWindow: () => ipcRenderer.invoke('desktop:openLogWindow'),
 });
 
 // Tự cập nhật: sau khi nút "Cập nhật" kéo code mới về, phần vỏ desktop

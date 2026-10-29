@@ -18,7 +18,7 @@
 // renderer (lib/workspace/plugins.ts). Nothing here is hardcoded per website.
 
 const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard, net, dialog, webContents, WebContentsView, Notification } = require('electron');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const http = require('http');
 // `net` của Electron đã chiếm tên ở dòng trên — module net của Node vào tên khác.
@@ -1639,16 +1639,21 @@ function appPort() {
  * bảo "trống, cứ dựng đi", rồi `next start` chết vì EADDRINUSE.
  */
 function portFree(port) {
-  return new Promise((resolve) => {
+  // Phải thử CẢ IPv4 lẫn IPv6: Next nghe trên `::`, và trên Windows bind 0.0.0.0
+  // vẫn thành công dù [::]:3000 đang bị giữ → tưởng trống, dựng server thứ hai;
+  // `next dev` thấy 3000 bận thì lặng lẽ chạy 3001 và HAI server cùng ghi một
+  // thư mục build, xoá file của nhau (ENOENT .next-dev/server/app/page.js).
+  const tryHost = (host) => new Promise((resolve) => {
     const srv = nodeNet.createServer();
-    srv.once('error', () => resolve(false));
+    srv.once('error', (err) => resolve(host === '::' && !!err && (err.code === 'EAFNOSUPPORT' || err.code === 'EADDRNOTAVAIL')));
     srv.once('listening', () => srv.close(() => resolve(true)));
     try {
-      srv.listen(port, '0.0.0.0');
+      srv.listen({ port, host, ipv6Only: host === '::' });
     } catch {
       resolve(false);
     }
   });
+  return tryHost('0.0.0.0').then((v4) => (v4 ? tryHost('::') : false));
 }
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1805,8 +1810,66 @@ let adoptedPid = 0;
  * tự chạy trong terminal thì KHÔNG đụng tới — nó chỉ đang biên dịch lâu, giết
  * đi là phá đúng thứ người ta đang chờ.
  */
+/**
+ * PID của server `next` DevBox tự dựng đang giữ `port` — tra từ chính cổng, không
+ * cần devserver.pid. File pid có thể mất trong khi server vẫn sống (vd. một lần
+ * spawn hụt vì EADDRINUSE ghi đè rồi xoá file khi thoát): khi đó server thành mồ
+ * côi, app không nhận lại cũng không dọn được, cứ dùng tiếp một server hỏng.
+ *
+ * "Của DevBox" = chạy bằng CHÍNH electron.exe này (spawnNextServer dùng
+ * process.execPath) với next của CHÍNH thư mục app. `npm run dev` người dùng tự
+ * chạy đi bằng node.exe nên không bao giờ khớp — vẫn giữ nguyên luật không đụng
+ * tới server của người khác. Trả về pid tiến trình `next dev|start` (cha của
+ * start-server.js) để taskkill /T dọn cả cây. 0 = không có / không phải của ta.
+ */
+async function findOwnServerPidOnPort(port) {
+  const norm = (s) => String(s || '').replace(/\//g, '\\').toLowerCase();
+  const exe = norm(process.execPath);
+  const nextDir = norm(path.join(app.getAppPath(), 'node_modules', 'next', 'dist'));
+  const isOurs = (p) => p && norm(p.exe) === exe && norm(p.cmd).includes(nextDir);
+  const isCli = (p) => norm(p.cmd).includes(`${nextDir}\\bin\\next`);
+  let procs = [];
+  try {
+    if (process.platform === 'win32') {
+      const ps =
+        `$ErrorActionPreference='SilentlyContinue';` +
+        `$o=(Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen | Select-Object -First 1).OwningProcess;` +
+        `if($o){$p=Get-CimInstance Win32_Process -Filter "ProcessId=$o";` +
+        `$q=Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)";` +
+        `@($p,$q)|Where-Object{$_}|ForEach-Object{[pscustomobject]@{pid=$_.ProcessId;exe=$_.ExecutablePath;cmd=$_.CommandLine}}|ConvertTo-Json -Compress}`;
+      const out = await execFileText('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], 10000);
+      const parsed = out.trim() ? JSON.parse(out) : [];
+      procs = Array.isArray(parsed) ? parsed : [parsed];
+    } else {
+      const pid = Number((await execFileText('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], 5000)).split('\n')[0]);
+      if (!pid) return 0;
+      for (const id of [pid, Number((await execFileText('ps', ['-o', 'ppid=', '-p', String(pid)], 5000)).trim())]) {
+        if (!id) continue;
+        const cmd = (await execFileText('ps', ['-o', 'command=', '-p', String(id)], 5000)).trim();
+        procs.push({ pid: id, exe: cmd.split(' ')[0], cmd: cmd.replace(/\//g, '\\') });
+      }
+    }
+  } catch (err) {
+    log('DevServerLookupError', err && err.message);
+    return 0;
+  }
+  const [owner, parent] = procs;
+  if (!isOurs(owner)) return 0;
+  return isOurs(parent) && isCli(parent) ? Number(parent.pid) : Number(owner.pid);
+}
+
+function execFileText(file, args, timeout) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { timeout, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(String(stdout))));
+  });
+}
+
 async function reclaimStaleServer() {
-  const pid = adoptedDevServerPid();
+  let pid = adoptedDevServerPid();
+  if (!pid) {
+    pid = await findOwnServerPidOnPort(appPort());
+    if (pid) log('DevServerOrphan', `mất devserver.pid nhưng cổng ${appPort()} do server DevBox (pid ${pid}) giữ → nhận lại để dọn`);
+  }
   if (!pid) return false;
   log('DevServerStale', `cổng ${appPort()} không trả lời nhưng server lần trước (pid ${pid}) vẫn sống → dọn để lấy lại cổng`);
   killDevServerTree(pid, null);
@@ -2071,6 +2134,12 @@ async function ensureServer() {
     // Có thể là server của lần chạy trước mà ta cố ý để lại (còn phiên
     // terminal). Nhận lại quyền dọn dẹp nó, nếu không nó mồ côi mãi mãi.
     adoptedPid = adoptedDevServerPid();
+    if (!adoptedPid) {
+      // Mất devserver.pid nhưng đúng là server DevBox để lại → nhận lại và ghi pid,
+      // nếu không "Nạp lại sạch"/khởi động lại không bao giờ dọn được nó.
+      adoptedPid = await findOwnServerPidOnPort(appPort());
+      if (adoptedPid) rememberDevServerPid(adoptedPid);
+    }
     // Server cũ giữ nguyên chế độ của nó — không giết để đổi chế độ, vì nó bị
     // để lại chính là để giữ phiên terminal. UI báo lệch, chọn "khởi động lại".
     runningServerMode = adoptedPid ? readDevServerMode() : 'external';
@@ -2150,7 +2219,12 @@ function spawnNextServer(appPath, nextBin, mode, turbo = false) {
   // Chỉ áp dụng cho dev — `next build`/`next start` vẫn đi đường webpack.
   turbo = turbo && mode === 'dev';
   if (turbo) log('ServerTurbopack', 'next dev chạy bằng Turbopack');
-  devServer = spawn(process.execPath, turbo ? [nextBin, mode, '--turbopack'] : [nextBin, mode], {
+  // `-p` tường minh: cổng bận thì Next CHẾT (EADDRINUSE) thay vì tự nhảy sang
+  // 3001 — app chỉ nói chuyện với APP_URL, server ở 3001 chỉ là một bản thứ hai
+  // âm thầm giẫm lên thư mục build của bản đang chạy.
+  const args = [nextBin, mode, '-p', String(appPort())];
+  if (turbo) args.push('--turbopack');
+  devServer = spawn(process.execPath, args, {
     cwd: appPath,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', outFd, outFd], // → devserver.log, tail vào Console trong app
@@ -2169,10 +2243,15 @@ function spawnNextServer(appPath, nextBin, mode, turbo = false) {
   rememberDevServerPid(devServer.pid);
   runningServerMode = mode === 'start' ? 'prod' : turbo ? 'turbo' : 'dev';
   try { fs.writeFileSync(devServerModeFile(), runningServerMode, 'utf8'); } catch { /* chỉ để hiển thị */ }
+  const child = devServer;
   devServer.on('exit', (code) => {
     log('DevServerExited', String(code));
-    forgetDevServerPid();
-    devServer = null;
+    // Chỉ xoá file pid nếu nó còn trỏ tới CHÍNH tiến trình này — không xoá nhầm
+    // pid của server khác đã được ghi sau (server mồ côi: xem findOwnServerPidOnPort).
+    let filePid = 0;
+    try { filePid = Number(fs.readFileSync(devServerPidFile(), 'utf8').trim()); } catch { /* không có file */ }
+    if (!filePid || filePid === child.pid) forgetDevServerPid();
+    if (devServer === child) devServer = null;
   });
   devServer.on('error', (err) => log('DevServerError', err && err.message));
 }
@@ -2299,7 +2378,153 @@ const SPLASH_HTML = `<body style="margin:0;height:100vh;display:flex;flex-direct
   <div>VHS DevBox đang khởi động…</div>
   <div style="font-size:12px;color:#5c6773">Lần đầu hoặc ngay sau khi cập nhật có thể mất vài phút (đang build).</div>
   <style>@keyframes s{to{transform:rotate(360deg)}}</style>
+  ${consoleButtonHtml()}
 </body>`;
+
+// ── Console rời: xem log KHÔNG cần Next server ──────────────────────────────
+//
+// Nút Console trong footer là một phần của trang Next — server chưa lên, build
+// hỏng, trang trả 500 thì nút đó không tồn tại, mà đó lại đúng là lúc cần log
+// nhất. Cửa sổ này là trang data: do main tự dựng, đọc logBuffer qua preload
+// (desktopConsole), nên mở được từ giây đầu tiên và trong mọi trường hợp:
+//   • nút "Console" trên splash, trên trang lỗi, và chèn vào trang trả ≥ 400
+//   • phím Ctrl+Shift+L ở cửa sổ chính, bất kể trang đang hiện là gì.
+
+function consoleButtonHtml() {
+  return `<button id="dbx-console-btn" title="Xem log shell + server (Ctrl+Shift+L)" onclick="window.desktopConsole&&window.desktopConsole.openWindow()" style="position:fixed;right:14px;bottom:14px;z-index:2147483647;padding:7px 14px;border:1px solid #2a3242;border-radius:8px;background:#151a24;color:#c0caf5;font:13px system-ui;cursor:pointer">🖥 Console</button>`;
+}
+
+const LOG_WINDOW_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>DevBox Console</title>
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;height:100vh;display:flex;flex-direction:column;background:#0b0e14;color:#c0caf5;font:12px ui-monospace,Consolas,monospace}
+  #bar{display:flex;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid #1f2533;background:#11151e;font-family:system-ui}
+  #bar input[type=text]{flex:1;min-width:120px;background:#0b0e14;color:inherit;border:1px solid #2a3242;border-radius:6px;padding:4px 8px}
+  #bar select,#bar button{background:#151a24;color:inherit;border:1px solid #2a3242;border-radius:6px;padding:4px 8px;cursor:pointer}
+  #bar label{display:flex;gap:4px;align-items:center;color:#9aa4b2}
+  #out{flex:1;overflow:auto;padding:6px 8px;white-space:pre-wrap;word-break:break-all}
+  .l{line-height:1.45}.t{color:#5c6773}.s{display:inline-block;min-width:44px;color:#7aa2f7}.s.next{color:#9ece6a}
+  .err{color:#f7768e}.warn{color:#e0af68}
+</style></head><body>
+<div id="bar">
+  <input id="q" type="text" placeholder="Lọc theo chữ…">
+  <select id="src"><option value="">Tất cả</option><option value="shell">shell</option><option value="next">server</option></select>
+  <label><input id="follow" type="checkbox" checked>Bám cuối</label>
+  <button id="copy">Sao chép</button>
+  <button id="clear">Xoá màn hình</button>
+  <span id="n" style="color:#5c6773"></span>
+</div>
+<div id="out"></div>
+<script>
+  const MAX = 5000;
+  const out = document.getElementById('out'), q = document.getElementById('q'), src = document.getElementById('src');
+  const follow = document.getElementById('follow'), n = document.getElementById('n');
+  let all = [], cut = 0;
+  const strip = (s) => String(s).replace(/\\u001b\\[[0-9;?]*[A-Za-z]/g, '');
+  const cls = (s) => /error|⨯|failed|exception|ENOENT|EADDRINUSE/i.test(s) ? 'err' : /warn|⚠/i.test(s) ? 'warn' : '';
+  const hhmmss = (ts) => new Date(ts).toTimeString().slice(0, 8);
+  const match = (e) => (!src.value || e.source === src.value) && (!q.value || e.text.toLowerCase().includes(q.value.toLowerCase()));
+  function row(e) {
+    const d = document.createElement('div');
+    d.className = 'l ' + cls(e.text);
+    d.innerHTML = '<span class="t"></span> <span class="s"></span> <span class="m"></span>';
+    d.children[0].textContent = hhmmss(e.ts);
+    d.children[1].textContent = e.source === 'next' ? 'server' : e.source;
+    if (e.source === 'next') d.children[1].classList.add('next');
+    d.children[2].textContent = e.text;
+    return d;
+  }
+  function render() {
+    out.textContent = '';
+    const f = document.createDocumentFragment();
+    for (const e of all.slice(cut)) if (match(e)) f.appendChild(row(e));
+    out.appendChild(f);
+    stick();
+  }
+  function stick() { n.textContent = (all.length - cut) + ' dòng'; if (follow.checked) out.scrollTop = out.scrollHeight; }
+  function add(entry) {
+    const e = { ts: entry.ts, source: entry.source, text: strip(entry.line) };
+    all.push(e);
+    if (all.length > MAX) { all.splice(0, all.length - MAX); cut = Math.max(0, cut - 1); render(); return; }
+    if (match(e)) out.appendChild(row(e));
+    while (out.childElementCount > MAX) out.firstChild.remove();
+    stick();
+  }
+  q.oninput = src.onchange = render;
+  document.getElementById('clear').onclick = () => { cut = all.length; render(); };
+  document.getElementById('copy').onclick = () => {
+    const text = all.slice(cut).filter(match).map((e) => hhmmss(e.ts) + ' [' + e.source + '] ' + e.text).join('\\n');
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
+  out.onscroll = () => { follow.checked = out.scrollTop + out.clientHeight >= out.scrollHeight - 4; };
+  const api = window.desktopConsole;
+  if (!api) out.textContent = 'Không có cầu desktopConsole — cửa sổ này chỉ chạy trong app desktop.';
+  else {
+    const seen = new Set();
+    const live = [];
+    let ready = false;
+    api.onLine((e) => { if (ready) { if (!seen.has(e.id)) add(e); } else live.push(e); });
+    api.getAll().then((list) => {
+      for (const e of list) { seen.add(e.id); all.push({ ts: e.ts, source: e.source, text: strip(e.line) }); }
+      if (all.length > MAX) all.splice(0, all.length - MAX);
+      render();
+      ready = true;
+      for (const e of live) if (!seen.has(e.id)) add(e);
+    });
+  }
+</script></body></html>`;
+
+let logWindow = null;
+
+function openLogWindow() {
+  if (logWindow && !logWindow.isDestroyed()) {
+    if (logWindow.isMinimized()) logWindow.restore();
+    logWindow.focus();
+    return;
+  }
+  logWindow = new BrowserWindow({
+    width: 1100,
+    height: 640,
+    title: 'DevBox Console',
+    backgroundColor: '#0b0e14',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  logWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  logWindow.webContents.on('will-navigate', (e) => e.preventDefault());
+  logWindow.on('closed', () => { logWindow = null; });
+  void logWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(LOG_WINDOW_HTML));
+}
+
+ipcMain.handle('desktop:openLogWindow', () => { openLogWindow(); });
+
+const isConsoleKey = (input) =>
+  input.type === 'keyDown' && (input.control || input.meta) && input.shift && !input.alt && input.code === 'KeyL';
+
+/**
+ * Gắn vào cửa sổ chính: Ctrl+Shift+L luôn mở Console rời; trang của server trả
+ * ≥ 400 (vd. "Internal Server Error" — không có React, không có footer) thì
+ * chèn thêm nút Console nổi vào chính trang đó.
+ */
+function attachConsoleAccess(win) {
+  let status = 0;
+  win.webContents.on('before-input-event', (e, input) => {
+    if (isConsoleKey(input)) { e.preventDefault(); openLogWindow(); }
+  });
+  win.webContents.on('did-navigate', (_e, _url, code) => { status = code || 0; });
+  win.webContents.on('did-finish-load', () => {
+    if (status < 400 || !win.webContents.getURL().startsWith(APP_URL)) return;
+    const html = JSON.stringify(consoleButtonHtml());
+    win.webContents
+      .executeJavaScript(`(() => { if (!document.getElementById('dbx-console-btn') && document.body) document.body.insertAdjacentHTML('beforeend', ${html}); })()`)
+      .catch(() => {});
+  });
+}
 
 async function loadAppWithRetry(win) {
   // loadURL thất bại thì Chromium GIỮ trang đang hiện, nên splash sống qua
@@ -2323,6 +2548,7 @@ async function loadAppWithRetry(win) {
            <h2>Không kết nối được DevBox</h2>
            <p>Không mở được <code>${APP_URL}</code>.</p>
            <p>Hãy chạy <code>npm run dev</code> trước, rồi <code>npm run desktop</code> lại.</p>
+           ${consoleButtonHtml()}
          </body>`,
       ),
   );
@@ -2769,6 +2995,7 @@ function createWindow() {
   });
 
   attachTranslateFloat(win);
+  attachConsoleAccess(win);
 
   void loadAppWithRetry(win);
   return win;
