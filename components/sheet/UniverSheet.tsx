@@ -72,6 +72,13 @@ export default function UniverSheet({ workbook, onReady, onEdited }: {
     const host = hostRef.current;
     if (!host) return;
 
+    // Mỗi lần dựng Univer có <div> gắn riêng: lúc huỷ thì gỡ div này khỏi DOM ngay,
+    // còn univer.dispose() hoãn sang macrotask (xem cleanup) — nếu workbook đổi, bản
+    // mới dựng vào div mới, không giẫm lên React root của bản cũ chưa kịp huỷ.
+    const mount = document.createElement('div');
+    mount.style.cssText = 'position:absolute;inset:0';
+    host.appendChild(mount);
+
     const { univer, univerAPI } = createUniver({
       // Giao diện mô phỏng Microsoft Excel → chữ tiếng Anh như Excel, tông xanh lá
       // của Excel (viền ô chọn, nút chính). Ribbon gốc của Univer tắt (toolbar:false)
@@ -82,7 +89,7 @@ export default function UniverSheet({ workbook, onReady, onEdited }: {
       },
       theme: greenTheme,
       presets: [
-        UniverSheetsCorePreset({ container: host, toolbar: false }),
+        UniverSheetsCorePreset({ container: mount, toolbar: false }),
         UniverSheetsFilterPreset(),
         UniverSheetsSortPreset(),
         UniverSheetsFindReplacePreset(),
@@ -115,7 +122,12 @@ export default function UniverSheet({ workbook, onReady, onEdited }: {
 
     return () => {
       sub.dispose();
-      univer.dispose();
+      mount.remove();
+      // Univer tự render UI bằng React root riêng; dispose() unmount root đó đồng bộ.
+      // Cleanup này chạy giữa lúc React của app đang render/commit (vd. đổi tab ở
+      // OfficeWorkspace) → React báo "synchronously unmount a root while React was
+      // already rendering". Hoãn sang macrotask để unmount sau khi render xong.
+      setTimeout(() => univer.dispose(), 0);
     };
   }, [workbook]);
 
