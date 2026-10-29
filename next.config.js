@@ -12,6 +12,10 @@ const nextConfig = {
   // footer (ServerModeButton). Lỗi build/runtime Next VẪN hiện: khi có lỗi,
   // huy hiệu "N Issues" tự bật lên, bấm vào mở overlay như cũ.
   devIndicators: false,
+  // `next dev` in một dòng "GET /api/... 200 in Nms" cho MỌI request — Monitor,
+  // automation, các tab đo định kỳ gọi /api/* liên tục nên Console ngập log đó.
+  // Chỉ bỏ log request /api/*; lỗi biên dịch/runtime vẫn in như cũ.
+  logging: { incomingRequests: { ignore: [/^\/api\//] } },
   // Standalone output CHỈ bật khi build cho Docker/k8s (NEXT_STANDALONE=1).
   // Desktop shell chạy `next start`, mà Next 15.5 tuyên bố `next start` không
   // được hỗ trợ cùng `output: standalone` — để cả hai là chạy trên đường
