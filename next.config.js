@@ -1,4 +1,5 @@
 const os = require('os');
+const { PHASE_DEVELOPMENT_SERVER } = require('next/constants');
 
 // Thư mục home (dạng posix) — pattern loại khỏi output file tracing bên dưới.
 const HOME_GLOB = os.homedir().replace(/\\/g, '/') + '/**';
@@ -47,4 +48,11 @@ const nextConfig = {
   },
 };
 
-module.exports = nextConfig;
+// `next dev` ghi vào .next-dev, `next build`/`next start` dùng .next: chung một thư
+// mục thì đổi chế độ server (Prod ↔ Dev, nút ở footer) là hai bên đè file của nhau
+// → "Cannot find module .next/server/app/page.js". electron/main.cjs (ensureProdBuild,
+// nút Nạp lại sạch) dựa vào đúng cặp tên này.
+module.exports = (phase) => ({
+  ...nextConfig,
+  distDir: phase === PHASE_DEVELOPMENT_SERVER ? '.next-dev' : '.next',
+});

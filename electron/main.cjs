@@ -4013,7 +4013,12 @@ ipcMain.handle('desktop:hardReload', async (_evt, opts) => {
     // Nen o day chi giet + xoa, roi bao renderer goi relaunch.
     if (wipeBuild) {
       const appPath = app.getAppPath();
-      const nextDir = path.join(appPath, '.next');
+      // Dev ghi .next-dev, Prod ghi .next (next.config.js) — chỉ xoá thư mục của
+      // chế độ đang chạy, khỏi bắt Prod build lại vô cớ khi chỉ cache dev hỏng.
+      // Không rõ chế độ (server ngoài) thì xoá cả hai.
+      const dirNames = runningServerMode === 'prod' ? ['.next']
+        : runningServerMode === 'dev' || runningServerMode === 'turbo' ? ['.next-dev']
+          : ['.next', '.next-dev'];
 
       // stopDevServer() CO CHU Y GIU server song khi con phien terminal — luc do
       // .next van bi giu va xoa se that bai. Noi ro thay vi de nguoi dung bam
@@ -4027,13 +4032,15 @@ ipcMain.handle('desktop:hardReload', async (_evt, opts) => {
       }
 
       try { stopDevServer(); } catch { /* chua chay thi thoi */ }
-      try {
-        await fs.promises.rm(nextDir, { recursive: true, force: true });
-        cleared.push('.next');
-        log('HardReload', 'da xoa .next — se khoi dong lai app va bien dich lai (~10-30s)');
-      } catch (err) {
-        log('HardReloadError', `.next: ${err && err.message}`);
-        return { ok: false, error: `Khong xoa duoc .next: ${err && err.message}`, cleared };
+      for (const name of dirNames) {
+        try {
+          await fs.promises.rm(path.join(appPath, name), { recursive: true, force: true });
+          cleared.push(name);
+          log('HardReload', `da xoa ${name} — se khoi dong lai app va bien dich lai (~10-30s)`);
+        } catch (err) {
+          log('HardReloadError', `${name}: ${err && err.message}`);
+          return { ok: false, error: `Khong xoa duoc ${name}: ${err && err.message}`, cleared };
+        }
       }
     }
 

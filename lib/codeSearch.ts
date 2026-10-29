@@ -16,7 +16,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 const SKIP_DIRS = new Set([
-  'node_modules', '.git', 'target', 'build', 'dist', 'out', '.next', '.idea',
+  'node_modules', '.git', 'target', 'build', 'dist', 'out', '.next', '.next-dev', '.idea',
   'bin', 'obj', 'coverage', '__pycache__', 'vendor', '.gradle', '.mvn',
   '.settings', '.vscode', 'logs',
 ]);
