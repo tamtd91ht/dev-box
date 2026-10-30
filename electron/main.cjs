@@ -1784,6 +1784,8 @@ function wantedServerMode() {
 /** Chế độ server đang phục vụ app: prod/dev/turbo, 'external' (server không do
  *  DevBox dựng), hoặc '' khi chưa biết. */
 let runningServerMode = '';
+/** next build lần này thất bại (epoch ms) → đang chạy dev THAY prod. Footer báo đỏ, không để lặng lẽ chậm. */
+let buildFailedAt = 0;
 
 function readDevServerMode() {
   try {
@@ -2120,6 +2122,7 @@ async function ensureProdBuild(appPath, nextBin) {
     return true;
   }
   log('BuildFailed', `next build thoát mã ${code}`);
+  buildFailedAt = Date.now();
   return false;
 }
 
@@ -4285,6 +4288,7 @@ function serverModeInfo() {
     wanted: wantedServerMode(),
     running: runningServerMode,
     envForced: envServerMode(),
+    buildFailedAt,
   };
 }
 

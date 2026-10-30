@@ -3666,7 +3666,7 @@ pre.kafka-drawer-body {
 
 /* ── Redis monitor strip (INFO per node) ─────────────────────────────────── */
 .redis-monitor { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
-/* Tab Phân tích của từng kết nối (Redis / ES / Kafka / Mongo — components/*/AnalyzeView, redis/DiagnosePanel) — dùng lại khung của Monitor. */
+/* Tab Phân tích của từng kết nối (Redis / ES / Kafka / Mongo — components/<stack>/AnalyzeView, redis/DiagnosePanel) — dùng lại khung của Monitor. */
 .redis-viewtabs { display: flex; gap: 4px; margin-top: 10px; border-bottom: 1px solid var(--glass-brd); }
 .redis-cmd { margin-top: 12px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; flex: 1; min-height: 0; }
 .redis-cmd-input { display: flex; flex-direction: column; gap: 8px; min-width: 0; }

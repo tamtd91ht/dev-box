@@ -84,20 +84,26 @@ export default function ServerModeButton() {
 
   const pending = info.running !== 'external' && info.running !== info.wanted;
   const label = SHORT[info.running] ?? '❔ Server';
+  // Build prod hỏng → main lặng lẽ chạy next dev (mỗi tab biên dịch nguội lúc
+  // bấm lần đầu). Đã có lần lỗi CSS làm build hỏng cả tuần mà chỉ thấy "app chậm".
+  const buildFailed = !!info.buildFailedAt && info.running !== 'prod';
 
   return (
     <span className="hrl-wrap">
       <button
         className={`ghost sm${busy ? ' busy' : ''}`}
+        style={buildFailed ? { color: 'var(--err)' } : undefined}
         disabled={busy}
         onClick={() => setOpen((v) => !v)}
         title={
-          pending
+          buildFailed
+            ? 'next build production THẤT BẠI lúc mở app → đang tạm chạy next dev (chậm, mỗi tab biên dịch lúc bấm lần đầu). Mở ⌨ Console xem dòng BuildFailed để biết lỗi.'
+            : pending
             ? `Server đang chạy ${info.running || 'chưa rõ chế độ'} — lần khởi động sau sẽ chạy ${info.wanted}`
             : 'Chế độ chạy server Next — nhớ cho các lần mở app sau'
         }
       >
-        {busy ? '⏳ Đang khởi động lại…' : pending ? `${label} → ${SHORT[info.wanted]}` : label}
+        {busy ? '⏳ Đang khởi động lại…' : buildFailed ? `⚠ build lỗi · ${label}` : pending ? `${label} → ${SHORT[info.wanted]}` : label}
       </button>
 
       {open && !busy && (

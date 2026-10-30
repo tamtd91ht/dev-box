@@ -48,6 +48,8 @@ export interface ServerModeInfo {
   wanted: ServerMode;
   /** Server đang chạy: prod/dev/turbo, 'external' = không do DevBox dựng, '' = chưa biết. */
   running: ServerMode | 'external' | '';
+  /** next build lúc mở app thất bại (epoch ms, 0 = không) → đang chạy dev thay prod. */
+  buildFailedAt?: number;
   /** 'dev'/'turbo' khi DESKTOP_DEV/DESKTOP_TURBO đang ép, '' nếu không. */
   envForced: ServerMode | '';
 }
