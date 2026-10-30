@@ -15,6 +15,7 @@
 // các vòng — xem DEEP_EVERY.
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { whenBootIdle } from '@/lib/bootIdle';
 import { listConnections, refreshConnections, sanitizeAddress, type ConnOption } from '@/lib/automation/connections';
 import { probeStack, KAFKA_HOST_METRICS, KAFKA_LAG_METRICS, type MetricMap, type ProbeResult } from '@/lib/automation/sources/infra';
 import type { InfraStack } from '@/lib/automation/types';
@@ -194,7 +195,12 @@ export function useMonitor(opts: {
       timer = setTimeout(loop, period);
     };
     const wait = Math.max(0, lastRoundRef.current + period - Date.now());
-    timer = setTimeout(loop, lastRoundRef.current ? wait : 0);
+    if (lastRoundRef.current) timer = setTimeout(loop, wait);
+    // Vòng ĐẦU khi tab Monitor đang ẩn: chờ app khởi động xong (lib/bootIdle) —
+    // 3 probe song song + Kafka lag tới 4s mà chạy ngay thì tab người dùng vừa
+    // mở phải xếp hàng sau. Đang mở chính tab Monitor thì đo luôn.
+    else if (visible) timer = setTimeout(loop, 0);
+    else void whenBootIdle().then(() => { if (!stop) void loop(); });
     return () => { stop = true; if (timer) clearTimeout(timer); };
   }, [paused, visible, intervalSec, runRound]);
 

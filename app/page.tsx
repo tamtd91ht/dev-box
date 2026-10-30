@@ -39,6 +39,7 @@ import UpdateButton from '@/components/UpdateButton';
 import HardReloadButton from '@/components/HardReloadButton';
 import ServerModeButton from '@/components/ServerModeButton';
 import { loadPane } from '@/components/PaneChunk';
+import { AfterBoot, whenBootIdle } from '@/lib/bootIdle';
 import { hydratePresets } from '@/lib/presetSync';
 import UpdatePrompt from '@/components/UpdatePrompt';
 import CritBadge, { useCritAlerts, type CritStack } from '@/components/monitor/CritBar';
@@ -94,6 +95,56 @@ const ZaloApiWorkspace = memo(dynamic(() => loadPane(() => import('@/components/
 const RemoteWorkspace = memo(dynamic(() => loadPane(() => import('@/components/RemoteWorkspace')), { ssr: false, loading: PaneLoading }));
 const ApiExplorerWorkspace = memo(dynamic(() => loadPane(() => import('@/components/ApiExplorerWorkspace')), { ssr: false, loading: PaneLoading }));
 const AutomationWorkspace = memo(dynamic(() => loadPane(() => import('@/components/automation/AutomationWorkspace')), { ssr: false, loading: PaneLoading }));
+
+// Nạp TRƯỚC chunk của các tab, từng cái một khi trình duyệt rảnh, sau mốc khởi
+// động (lib/bootIdle) — bấm sang tab nào là có code sẵn, chỉ còn mount. Chỉ tải
+// + chạy module, KHÔNG mount nên không tab nào gọi API sớm. Giữ cùng đường dẫn
+// với danh sách dynamic ở trên (webpack gộp về cùng một chunk). Bỏ qua dưới
+// `next dev`: ở đó mỗi import là một lượt biên dịch nguội, dồn cả chục lượt sẽ
+// bắt tab người dùng vừa bấm chờ sau chúng.
+const PANE_PREFETCH: (() => Promise<unknown>)[] = [
+  () => import('@/components/WorkWorkspace'),
+  () => import('@/components/monitor/MonitorWorkspace'),
+  () => import('@/components/TerminalWorkspace'),
+  () => import('@/components/RedisWorkspace'),
+  () => import('@/components/KafkaWorkspace'),
+  () => import('@/components/RabbitWorkspace'),
+  () => import('@/components/MongoWorkspace'),
+  () => import('@/components/EsWorkspace'),
+  () => import('@/components/PgWorkspace'),
+  () => import('@/components/MinioWorkspace'),
+  () => import('@/components/GitWorkspace'),
+  () => import('@/components/MailWorkspace'),
+  () => import('@/components/LinksWorkspace'),
+  () => import('@/components/AppsWorkspace'),
+  () => import('@/components/ToolsWorkspace'),
+  () => import('@/components/ApiWorkspace'),
+  () => import('@/components/ApiExplorerWorkspace'),
+  () => import('@/components/RemoteWorkspace'),
+  () => import('@/components/BrowserTabWorkspace'),
+  () => import('@/components/GoogleWorkspace'),
+  () => import('@/components/automation/AutomationWorkspace'),
+  // Nặng nhất (Monaco, Univer) để cuối.
+  () => import('@/components/CodeStudio'),
+  () => import('@/components/OfficeWorkspace'),
+];
+
+function prefetchPanes(): () => void {
+  let stop = false;
+  void (async () => {
+    await whenBootIdle();
+    for (const load of PANE_PREFETCH) {
+      if (stop) return;
+      // Một chunk mỗi nhịp rảnh — không chiếm main thread lúc người dùng đang thao tác.
+      await new Promise<void>((r) => (typeof window.requestIdleCallback === 'function'
+        ? window.requestIdleCallback(() => r(), { timeout: 3000 })
+        : setTimeout(r, 200)));
+      if (stop) return;
+      await load().catch(() => {}); // hụt thì thôi — lúc bấm tab, loadPane tự thử lại
+    }
+  })();
+  return () => { stop = true; };
+}
 
 const DEFAULT_BASE_URL = 'http://localhost:8090';
 
@@ -590,6 +641,7 @@ export default function Home() {
   // 'workspace' + 'zaloapi' đều mount NGAY từ đầu: cả hai cần guest sống nền để
   // nhận tin (WebSocket của Zalo API) và gửi được từ tab khác — giống keepAlive.
   const [visited, setVisited] = useState<Record<string, boolean>>({ workspace: true, zaloapi: true });
+  useEffect(() => (process.env.NODE_ENV === 'production' ? prefetchPanes() : undefined), []);
   useEffect(() => {
     setVisited((v) => (v[mode] ? v : { ...v, [mode]: true }));
   }, [mode]);
@@ -1052,6 +1104,9 @@ export default function Home() {
 
       {/* Engine presence: infra watch runner + notification toasts. Lives
           outside every pane so it keeps working on any tab. */}
+      {/* Mọi host chạy nền dưới đây chỉ mount sau mốc khởi động (lib/bootIdle):
+          tab đang xem có socket + CPU trước, chúng vào sau ~2.5s. */}
+      <AfterBoot>
       <AutomationHost />
 
       {/* Tiến trình nền: server tự pull mọi Git project 10 phút/lần; host này
@@ -1071,6 +1126,7 @@ export default function Home() {
       {/* Bảng giá cổ phiếu thu nhỏ ở góc màn hình — MẶC ĐỊNH TẮT, bật ở nút 📈
           trên header. Sống ngoài mọi pane nên đổi tab vẫn thấy giá. */}
       <StockTickerHost />
+      </AfterBoot>
       {/* Chấm dịch nhanh — nổi ở mọi view (Ctrl+Shift+Y). */}
       <QuickTranslate />
 
@@ -1081,12 +1137,14 @@ export default function Home() {
 
       {/* Job chuyển đổi file chạy ngầm: host này in PDF hộ (Chromium của
           Electron) và báo đường dẫn khi xong. */}
+      <AfterBoot>
       <ConvertHost />
 
       {/* Mở app → kiểm tra Git, có bản mới thì hỏi "cập nhật không?" một lần.
           Đã mới nhất / không phải repo / mất mạng thì không hiện gì.
           Tắt bằng SELF_UPDATE_PROMPT=false trong .env.local. */}
       <UpdatePrompt />
+      </AfterBoot>
 
       {/* ── Footer ───────────────────────────────────────────────────── */}
       <footer className="appfoot">
