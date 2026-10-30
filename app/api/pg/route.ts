@@ -10,6 +10,8 @@
 //     'tables'     { connectionId, db }                    → { ok, result: PgTableInfo[] }
 //     'columns'    { connectionId, db, schema, table }     → { ok, result: PgColumnInfo[] }
 //     'indexes'    { connectionId, db, schema, table }     → { ok, result: PgIndexInfo[] }
+//     'tableCatalog' { connectionId, db }                  → { ok, result: PgTableStat[] }        (mục 📋 Bảng)
+//     'tableDetail'  { connectionId, db, schema, table }   → { ok, result: PgTableDetail }        (cột/index/constraint/FK/trigger/DDL)
 //     'query'      { connectionId, db, sql }               → { ok, result: PgQueryResult }        (READ ONLY tx)
 //     'quickFind'  { connectionId, db, schema, table, entries[], limit?, offset?, columns?, sort? } → { ok, result }
 //     'quickCount' { connectionId, db, schema, table, entries[] } → { ok, result: { count } }
@@ -35,6 +37,8 @@ import {
   listTables,
   listColumns,
   listIndexes,
+  tableCatalog,
+  tableDetail,
   query,
   quickFind,
   quickCount,
@@ -114,6 +118,12 @@ export async function POST(req: NextRequest) {
         break;
       case 'indexes':
         result = await listIndexes(conn, db, String(body.schema ?? ''), String(body.table ?? ''));
+        break;
+      case 'tableCatalog':
+        result = await tableCatalog(conn, db);
+        break;
+      case 'tableDetail':
+        result = await tableDetail(conn, db, String(body.schema ?? ''), String(body.table ?? ''));
         break;
       case 'query':
         result = await query(conn, db, body.sql);

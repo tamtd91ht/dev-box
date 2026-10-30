@@ -29,6 +29,7 @@ import OverviewView from './pg/OverviewView';
 import BrowserView from './pg/BrowserView';
 import QuickFindView from './pg/QuickFindView';
 import ExecView from './pg/ExecView';
+import TablesView from './pg/TablesView';
 
 import { readLocal, writeLocal } from '@/lib/localKeys';
 import { onInfraFocus } from '@/lib/infraFocus';
@@ -41,10 +42,11 @@ const LAST_CONN_KEY = 'pg.lastConn';
  *  ném về Tổng quan rồi tự bấm lại sang Dữ liệu mỗi lần. */
 const LAST_VIEW_KEY = 'pg.lastView';
 
-type SubView = 'overview' | 'browser' | 'quickfind' | 'exec';
+type SubView = 'overview' | 'tables' | 'browser' | 'quickfind' | 'exec';
 
 const SUB_VIEWS: { key: SubView; label: string }[] = [
   { key: 'overview', label: 'Tổng quan' },
+  { key: 'tables', label: '📋 Bảng' },
   { key: 'browser', label: 'Dữ liệu' },
   { key: 'quickfind', label: '🔎 Tìm nhanh' },
   { key: 'exec', label: '⚡ Thực thi SQL' },
@@ -78,6 +80,8 @@ export default function PgWorkspace() {
   useEffect(() => { writeLocal(LAST_VIEW_KEY, subView); }, [subView]);
   /** Set by the Overview "open db" jump; consumed by BrowserView. */
   const [jumpDb, setJumpDb] = useState<string | undefined>(undefined);
+  /** Mục "📋 Bảng" bấm "↗ Mở ở Dữ liệu" → BrowserView mở đúng bảng đó (tiêu thụ một lần). */
+  const [jumpTable, setJumpTable] = useState<{ db: string; schema: string; table: string } | undefined>(undefined);
 
   const [info, setInfo] = useState<PgTestResult | null>(null);
   const [databases, setDatabases] = useState<PgDatabaseInfo[]>([]);
@@ -130,7 +134,7 @@ export default function PgWorkspace() {
   }, [connections]);
 
   useEffect(() => {
-    setInfo(null); setDatabases([]); setStats(null); setHosts([]); setJumpDb(undefined);
+    setInfo(null); setDatabases([]); setStats(null); setHosts([]); setJumpDb(undefined); setJumpTable(undefined);
     setError(null);
   }, [activeId]);
 
@@ -264,6 +268,18 @@ export default function PgWorkspace() {
                 readOnly={readOnly}
                 allowWrite={allowWrite}
                 initialDb={jumpDb}
+                openTable={jumpTable}
+                onOpenTableConsumed={() => setJumpTable(undefined)}
+              />
+            )}
+
+            {subView === 'tables' && (
+              <TablesView
+                key={activeId}
+                connectionId={activeId}
+                defaultDb={active.database}
+                initialDb={jumpDb}
+                onOpenInBrowser={(db, schema, table) => { setJumpTable({ db, schema, table }); setSubView('browser'); }}
               />
             )}
 

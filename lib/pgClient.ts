@@ -594,6 +594,319 @@ export async function listIndexes(conn: PgConnection, db: string, schema: string
   });
 }
 
+// ── Reads: khảo sát bảng (mục "📋 Bảng") ─────────────────────────────────────
+//
+// Cùng nguyên tắc mục 6: kích thước lấy từ pg_class.relpages, số liệu hoạt động
+// từ pg_stat_user_tables / pg_stat_user_indexes — đều là đọc catalog/thống kê,
+// không xin khoá trên bảng người dùng. Định nghĩa (pg_get_*def) đọc syscache.
+
+export type PgRelKind = 'table' | 'partitioned' | 'view' | 'matview' | 'foreign';
+
+const REL_KIND: Record<string, PgRelKind> = { r: 'table', p: 'partitioned', v: 'view', m: 'matview', f: 'foreign' };
+
+const isoOrNull = (v: unknown): string | null => (v instanceof Date ? v.toISOString() : v ? String(v) : null);
+
+export interface PgTableStat {
+  schema: string;
+  name: string;
+  kind: PgRelKind;
+  /** Là partition con của một bảng partitioned (tên cha, dạng schema.table). */
+  partitionOf: string | null;
+  estRows: number;
+  /** Heap + TOAST. */
+  tableBytes: number;
+  indexBytes: number;
+  indexCount: number;
+  hasPk: boolean;
+  liveTup: number | null;
+  deadTup: number | null;
+  seqScan: number | null;
+  idxScan: number | null;
+  /** Số dòng insert+update+delete cộng dồn từ lần reset thống kê. */
+  writes: number | null;
+  lastVacuum: string | null;
+  lastAnalyze: string | null;
+  comment: string | null;
+}
+
+/** Mọi bảng / view / matview / foreign table của MỘT database, kèm thống kê. */
+export async function tableCatalog(conn: PgConnection, db: string): Promise<PgTableStat[]> {
+  const pool = await getPool(conn, db);
+  return runReadOnly(pool, async (q) => {
+    const r = await q(
+      `SELECT n.nspname AS schema, c.relname AS name, c.relkind,
+              GREATEST(c.reltuples, 0)::bigint AS est_rows,
+              (c.relpages::bigint + coalesce(t.relpages, 0)) * current_setting('block_size')::bigint AS table_bytes,
+              coalesce(ix.pages, 0) * current_setting('block_size')::bigint AS index_bytes,
+              coalesce(ix.cnt, 0) AS index_count,
+              EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'p') AS has_pk,
+              (SELECT pn.nspname || '.' || pc.relname FROM pg_inherits h
+                 JOIN pg_class pc ON pc.oid = h.inhparent JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+                WHERE h.inhrelid = c.oid AND c.relispartition LIMIT 1) AS partition_of,
+              s.n_live_tup, s.n_dead_tup, s.seq_scan, s.idx_scan,
+              (s.n_tup_ins + s.n_tup_upd + s.n_tup_del) AS writes,
+              GREATEST(s.last_vacuum, s.last_autovacuum) AS last_vacuum,
+              GREATEST(s.last_analyze, s.last_autoanalyze) AS last_analyze,
+              obj_description(c.oid, 'pg_class') AS comment
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         LEFT JOIN pg_class t ON t.oid = c.reltoastrelid
+         LEFT JOIN LATERAL (
+              SELECT sum(i.relpages)::bigint AS pages, count(*) AS cnt
+                FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid
+               WHERE x.indrelid = c.oid) ix ON true
+         LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+        WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.nspname NOT LIKE 'pg_toast%'
+          AND n.nspname NOT LIKE 'pg_temp%'
+        ORDER BY n.nspname, c.relname`,
+    );
+    return r.rows.map((row) => ({
+      schema: String(row.schema),
+      name: String(row.name),
+      kind: REL_KIND[String(row.relkind)] ?? 'table',
+      partitionOf: row.partition_of ? String(row.partition_of) : null,
+      estRows: Number(row.est_rows ?? 0),
+      tableBytes: Number(row.table_bytes ?? 0),
+      indexBytes: Number(row.index_bytes ?? 0),
+      indexCount: Number(row.index_count ?? 0),
+      hasPk: row.has_pk === true,
+      liveTup: num(row.n_live_tup),
+      deadTup: num(row.n_dead_tup),
+      seqScan: num(row.seq_scan),
+      idxScan: num(row.idx_scan),
+      writes: num(row.writes),
+      lastVacuum: isoOrNull(row.last_vacuum),
+      lastAnalyze: isoOrNull(row.last_analyze),
+      comment: row.comment === null ? null : String(row.comment),
+    }));
+  });
+}
+
+export interface PgColumnDetail {
+  name: string;
+  /** format_type — có cả độ dài/precision, vd. character varying(255). */
+  type: string;
+  nullable: boolean;
+  default: string | null;
+  /** Thứ tự trong khoá chính (1-based), null nếu không thuộc PK. */
+  pkPos: number | null;
+  /** Bảng/cột mà cột này tham chiếu tới (FK một cột) — "schema.table(col)". */
+  references: string | null;
+  identity: string | null;
+  generated: string | null;
+  comment: string | null;
+}
+
+export interface PgIndexDetail {
+  name: string;
+  definition: string;
+  primary: boolean;
+  unique: boolean;
+  valid: boolean;
+  sizeBytes: number;
+  scans: number | null;
+  /** Thuộc về một constraint (PK/UNIQUE/EXCLUDE) — DDL đã nằm trong CREATE TABLE. */
+  constraint: boolean;
+}
+
+export interface PgConstraintDetail {
+  name: string;
+  /** p = primary key, f = foreign key, u = unique, c = check, x = exclusion, n = not null (PG 18). */
+  type: string;
+  definition: string;
+}
+
+export interface PgReferencedBy {
+  name: string;
+  fromTable: string;
+  definition: string;
+}
+
+export interface PgTriggerDetail {
+  name: string;
+  definition: string;
+  enabled: boolean;
+}
+
+export interface PgTableDetail {
+  schema: string;
+  name: string;
+  kind: PgRelKind;
+  owner: string;
+  comment: string | null;
+  columns: PgColumnDetail[];
+  indexes: PgIndexDetail[];
+  constraints: PgConstraintDetail[];
+  referencedBy: PgReferencedBy[];
+  triggers: PgTriggerDetail[];
+  partitions: { name: string; bound: string }[];
+  partitionKey: string | null;
+  /** Thân view / matview (pg_get_viewdef). */
+  viewDefinition: string | null;
+  /** DDL tái dựng từ catalog — đủ để đọc hiểu / so sánh, không phải pg_dump. */
+  ddl: string;
+}
+
+/** Quote một identifier để IN RA DDL (không dùng để chạy) — tên lạ vẫn đúng cú pháp. */
+function qi(s: string): string {
+  return /^[a-z_][a-z0-9_$]*$/.test(s) ? s : `"${s.replace(/"/g, '""')}"`;
+}
+
+const sqlLit = (s: string): string => `'${s.replace(/'/g, "''")}'`;
+
+/** Cấu trúc đầy đủ của MỘT bảng/view: cột, index, constraint, FK ngược, trigger, partition, DDL. */
+export async function tableDetail(conn: PgConnection, db: string, schema: string, table: string): Promise<PgTableDetail> {
+  const pool = await getPool(conn, db);
+  return runReadOnly(pool, async (q) => {
+    const rel = await q(
+      `SELECT c.oid, c.relkind, pg_get_userbyid(c.relowner) AS owner, obj_description(c.oid, 'pg_class') AS comment,
+              CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) END AS part_key,
+              CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END AS view_def
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'v', 'm', 'f')`,
+      [schema, table],
+    );
+    if (rel.rows.length === 0) throw new Error(`Không thấy bảng ${schema}.${table} trong database ${db}`);
+    const { oid, relkind, owner, comment, part_key, view_def } = rel.rows[0];
+    const kind = REL_KIND[String(relkind)] ?? 'table';
+
+    const cols = await q(
+      `SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, NOT a.attnotnull AS nullable,
+              CASE WHEN a.attgenerated = '' THEN pg_get_expr(d.adbin, d.adrelid) END AS def,
+              CASE WHEN a.attgenerated <> '' THEN pg_get_expr(d.adbin, d.adrelid) END AS generated,
+              CASE a.attidentity WHEN 'a' THEN 'ALWAYS' WHEN 'd' THEN 'BY DEFAULT' END AS identity,
+              col_description(a.attrelid, a.attnum) AS comment,
+              (SELECT array_position(k.conkey, a.attnum) FROM pg_constraint k
+                WHERE k.conrelid = a.attrelid AND k.contype = 'p') AS pk_pos,
+              (SELECT fn.nspname || '.' || fc.relname || '(' || fa.attname || ')'
+                 FROM pg_constraint k
+                 JOIN pg_class fc ON fc.oid = k.confrelid JOIN pg_namespace fn ON fn.oid = fc.relnamespace
+                 JOIN pg_attribute fa ON fa.attrelid = k.confrelid AND fa.attnum = k.confkey[1]
+                WHERE k.conrelid = a.attrelid AND k.contype = 'f' AND k.conkey = ARRAY[a.attnum]::int2[] LIMIT 1) AS refs
+         FROM pg_attribute a
+         LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+        WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
+        ORDER BY a.attnum`,
+      [oid],
+    );
+    const columns: PgColumnDetail[] = cols.rows.map((row) => ({
+      name: String(row.name),
+      type: String(row.type),
+      nullable: row.nullable === true,
+      default: row.def === null ? null : String(row.def),
+      pkPos: row.pk_pos === null ? null : Number(row.pk_pos),
+      references: row.refs === null ? null : String(row.refs),
+      identity: row.identity === null ? null : String(row.identity),
+      generated: row.generated === null ? null : String(row.generated),
+      comment: row.comment === null ? null : String(row.comment),
+    }));
+
+    const ix = await q(
+      `SELECT i.relname AS name, pg_get_indexdef(x.indexrelid) AS def, x.indisprimary, x.indisunique, x.indisvalid,
+              i.relpages::bigint * current_setting('block_size')::bigint AS size, s.idx_scan,
+              EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = x.indexrelid AND k.conrelid = x.indrelid) AS is_con
+         FROM pg_index x
+         JOIN pg_class i ON i.oid = x.indexrelid
+         LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = x.indexrelid
+        WHERE x.indrelid = $1
+        ORDER BY x.indisprimary DESC, i.relname`,
+      [oid],
+    );
+    const indexes: PgIndexDetail[] = ix.rows.map((row) => ({
+      name: String(row.name),
+      definition: String(row.def),
+      primary: row.indisprimary === true,
+      unique: row.indisunique === true,
+      valid: row.indisvalid === true,
+      sizeBytes: Number(row.size ?? 0),
+      scans: num(row.idx_scan),
+      constraint: row.is_con === true,
+    }));
+
+    const con = await q(
+      `SELECT conname AS name, contype AS type, pg_get_constraintdef(oid, true) AS def
+         FROM pg_constraint
+        WHERE conrelid = $1 AND contype <> 'n'
+        ORDER BY CASE contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'f' THEN 2 WHEN 'c' THEN 3 ELSE 4 END, conname`,
+      [oid],
+    );
+    const constraints: PgConstraintDetail[] = con.rows.map((row) => ({
+      name: String(row.name), type: String(row.type), definition: String(row.def),
+    }));
+
+    const back = await q(
+      `SELECT k.conname AS name, n.nspname || '.' || c.relname AS from_table, pg_get_constraintdef(k.oid, true) AS def
+         FROM pg_constraint k
+         JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE k.contype = 'f' AND k.confrelid = $1 AND k.conparentid = 0
+        ORDER BY 2, 1`,
+      [oid],
+    );
+    const referencedBy: PgReferencedBy[] = back.rows.map((row) => ({
+      name: String(row.name), fromTable: String(row.from_table), definition: String(row.def),
+    }));
+
+    const trg = await q(
+      `SELECT tgname AS name, pg_get_triggerdef(oid, true) AS def, tgenabled <> 'D' AS enabled
+         FROM pg_trigger WHERE tgrelid = $1 AND NOT tgisinternal ORDER BY tgname`,
+      [oid],
+    );
+    const triggers: PgTriggerDetail[] = trg.rows.map((row) => ({
+      name: String(row.name), definition: String(row.def), enabled: row.enabled === true,
+    }));
+
+    const parts = kind === 'partitioned'
+      ? (await q(
+        `SELECT n.nspname || '.' || c.relname AS name, pg_get_expr(c.relpartbound, c.oid) AS bound
+           FROM pg_inherits h JOIN pg_class c ON c.oid = h.inhrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE h.inhparent = $1 ORDER BY 1`,
+        [oid],
+      )).rows.map((row) => ({ name: String(row.name), bound: String(row.bound ?? '') }))
+      : [];
+
+    const full = `${qi(schema)}.${qi(table)}`;
+    const viewDefinition = view_def === null || view_def === undefined ? null : String(view_def);
+    const lines: string[] = [];
+    if (kind === 'view' || kind === 'matview') {
+      lines.push(`CREATE ${kind === 'matview' ? 'MATERIALIZED VIEW' : 'VIEW'} ${full} AS\n${(viewDefinition ?? '').trim().replace(/;$/, '')};`);
+    } else {
+      const body = columns.map((c) => {
+        let s = `  ${qi(c.name)} ${c.type}`;
+        if (c.identity) s += ` GENERATED ${c.identity} AS IDENTITY`;
+        else if (c.generated) s += ` GENERATED ALWAYS AS (${c.generated}) STORED`;
+        else if (c.default !== null) s += ` DEFAULT ${c.default}`;
+        if (!c.nullable) s += ' NOT NULL';
+        return s;
+      });
+      for (const k of constraints) body.push(`  CONSTRAINT ${qi(k.name)} ${k.definition}`);
+      lines.push(`CREATE ${kind === 'foreign' ? 'FOREIGN TABLE' : 'TABLE'} ${full} (\n${body.join(',\n')}\n)${part_key ? ` PARTITION BY ${part_key}` : ''};`);
+    }
+    for (const i of indexes) if (!i.constraint) lines.push(`${i.definition};`);
+    for (const t of triggers) lines.push(`${t.definition};`);
+    if (comment) lines.push(`COMMENT ON ${kind === 'view' ? 'VIEW' : kind === 'matview' ? 'MATERIALIZED VIEW' : 'TABLE'} ${full} IS ${sqlLit(String(comment))};`);
+    for (const c of columns) if (c.comment) lines.push(`COMMENT ON COLUMN ${full}.${qi(c.name)} IS ${sqlLit(c.comment)};`);
+
+    return {
+      schema,
+      name: table,
+      kind,
+      owner: String(owner ?? ''),
+      comment: comment === null ? null : String(comment),
+      columns,
+      indexes,
+      constraints,
+      referencedBy,
+      triggers,
+      partitions: parts,
+      partitionKey: part_key ? String(part_key) : null,
+      viewDefinition,
+      ddl: lines.join('\n\n'),
+    };
+  });
+}
+
 // ── Reads: raw SQL (read-only enforced by the database) ──────────────────────
 
 export interface PgQueryResult {

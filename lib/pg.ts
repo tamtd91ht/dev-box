@@ -125,6 +125,70 @@ export interface PgIndexInfo {
   definition: string;
 }
 
+// ── Mục "📋 Bảng" — hình dạng khớp lib/pgClient (tableCatalog / tableDetail) ──
+
+export type PgRelKind = 'table' | 'partitioned' | 'view' | 'matview' | 'foreign';
+
+export interface PgTableStat {
+  schema: string;
+  name: string;
+  kind: PgRelKind;
+  partitionOf: string | null;
+  estRows: number;
+  tableBytes: number;
+  indexBytes: number;
+  indexCount: number;
+  hasPk: boolean;
+  liveTup: number | null;
+  deadTup: number | null;
+  seqScan: number | null;
+  idxScan: number | null;
+  writes: number | null;
+  lastVacuum: string | null;
+  lastAnalyze: string | null;
+  comment: string | null;
+}
+
+export interface PgColumnDetail {
+  name: string;
+  type: string;
+  nullable: boolean;
+  default: string | null;
+  pkPos: number | null;
+  references: string | null;
+  identity: string | null;
+  generated: string | null;
+  comment: string | null;
+}
+
+export interface PgIndexDetail {
+  name: string;
+  definition: string;
+  primary: boolean;
+  unique: boolean;
+  valid: boolean;
+  sizeBytes: number;
+  scans: number | null;
+  constraint: boolean;
+}
+
+export interface PgTableDetail {
+  schema: string;
+  name: string;
+  kind: PgRelKind;
+  owner: string;
+  comment: string | null;
+  columns: PgColumnDetail[];
+  indexes: PgIndexDetail[];
+  constraints: { name: string; type: string; definition: string }[];
+  referencedBy: { name: string; fromTable: string; definition: string }[];
+  triggers: { name: string; definition: string; enabled: boolean }[];
+  partitions: { name: string; bound: string }[];
+  partitionKey: string | null;
+  viewDefinition: string | null;
+  ddl: string;
+}
+
 export interface WireRow {
   json: string;
   truncated: boolean;
@@ -255,6 +319,16 @@ export function listPgColumns(connectionId: string, db: string, schema: string, 
 
 export function listPgIndexes(connectionId: string, db: string, schema: string, table: string): Promise<PgIndexInfo[]> {
   return pgAction<PgIndexInfo[]>('indexes', { connectionId, db, schema, table });
+}
+
+/** Mọi bảng/view của một database kèm kích thước + thống kê hoạt động (không xin khoá). */
+export function pgTableCatalog(connectionId: string, db: string): Promise<PgTableStat[]> {
+  return pgAction<PgTableStat[]>('tableCatalog', { connectionId, db });
+}
+
+/** Cấu trúc đầy đủ một bảng: cột, index, constraint, FK ngược, trigger, partition, DDL. */
+export function pgTableDetail(connectionId: string, db: string, schema: string, table: string): Promise<PgTableDetail> {
+  return pgAction<PgTableDetail>('tableDetail', { connectionId, db, schema, table });
 }
 
 export function queryPg(connectionId: string, db: string, sql: string): Promise<PgQueryResult> {

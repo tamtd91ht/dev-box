@@ -48,6 +48,9 @@ export interface BrowserViewProps {
   allowWrite: boolean;
   /** Database pre-selected from the Overview jump (optional). */
   initialDb?: string;
+  /** Bảng cần mở ngay (từ mục "📋 Bảng") — mở xong gọi onOpenTableConsumed. */
+  openTable?: { db: string; schema: string; table: string };
+  onOpenTableConsumed?: () => void;
 }
 
 type TableTab = 'rows' | 'columns' | 'indexes';
@@ -122,7 +125,7 @@ export default function BrowserView(props: BrowserViewProps) {
 }
 
 function BrowserViewInner({
-  connectionId, defaultDb, readOnly, allowWrite, initialDb, tabs,
+  connectionId, defaultDb, readOnly, allowWrite, initialDb, openTable, onOpenTableConsumed, tabs,
 }: BrowserViewProps & { tabs: ReturnType<typeof useQueryTabs<PgTabState>> }) {
   // Kéo thanh giữa hai cột để nới ô đang cần đọc — chỉ trong phiên này.
   const tree = useSplit({ varName: '--pg-tree', min: 160, max: 520, gap: 12 });
@@ -278,6 +281,21 @@ function BrowserViewInner({
       sql: `SELECT * FROM "${schema}"."${table}" LIMIT 50`,
     });
   }, [tabs]);
+
+  // Mục "📋 Bảng" vừa bấm "↗ Mở ở Dữ liệu": bảng đó đang mở ở tab nào thì sang
+  // tab ấy; tab đang xem còn trống thì dùng luôn; còn lại mở tab mới — không
+  // bao giờ đè câu SQL đang viết dở ở tab khác.
+  useEffect(() => {
+    if (!openTable) return;
+    const { db, schema, table } = openTable;
+    onOpenTableConsumed?.();
+    const existing = tabs.tabs.find((t) => t.state.selected?.db === db
+      && t.state.selected.schema === schema && t.state.selected.table === table);
+    if (existing) tabs.select(existing.id);
+    else if (!selected) { void expandDb(db); selectTable(db, schema, table); }
+    else openInNewTab(db, schema, table);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openTable]);
 
   // Auto-run khi lựa chọn của một tab vừa ổn định (chọn bảng mới, hoặc lần đầu
   // chuyển sang một tab khôi phục từ phiên trước).
