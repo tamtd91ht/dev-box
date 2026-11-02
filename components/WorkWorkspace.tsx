@@ -46,6 +46,7 @@ import ConnectionForm from './mongo/ConnectionForm';
 import NotesPanel from './work/NotesPanel';
 import FocusPanel from './work/FocusPanel';
 import { useImageAttach, ImageBar, ImageThumbs, RichText } from './work/WorkImages';
+import { listKeyDown, toggleBullets } from './work/listText';
 import { LunarTag, LunarCard, LunarReminderForm, useLunarHover, type LunarReminderInput } from './work/LunarCard';
 import { occursOn, alertText, repeatText, type LunarReminder } from '@/lib/lunarReminderCore';
 import type { PublicMongoConnection } from '@/lib/mongo';
@@ -426,6 +427,8 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
   const [name, setName] = useState(initial?.name ?? '');
   const [desc, setDesc] = useState(initial?.desc ?? '');
   const descImg = useImageAttach(desc, setDesc);
+  /** Ô mô tả đang phóng to (modal chiếm gần trọn màn hình, ẩn các ô khác). */
+  const [descBig, setDescBig] = useState(false);
   const [priority, setPriority] = useState<Priority>(initial?.priority ?? 'normal');
   const [tags, setTags] = useState(initial?.tags.join(', ') ?? '');
   const [start, setStart] = useState(initial?.startDate ?? startDate);
@@ -496,7 +499,7 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
 
   return (
     <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && !busy && onClose()}>
-      <div className="modal wk-form" onClick={(e) => e.stopPropagation()}>
+      <div className={`modal wk-form${descBig ? ' desc-big' : ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="status-line" style={{ marginBottom: 10 }}>
           <h3 style={{ margin: 0, flex: 1 }}>{initial ? '✎ Sửa công việc' : '＋ Thêm công việc'}</h3>
           <button className="ghost sm" onClick={onClose} disabled={busy}>✕</button>
@@ -527,8 +530,25 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="vd Bàn giao chức năng A" autoFocus />
           </label>
           {/* div chứ không phải label: bấm nút trong ImageBar không được nhảy focus vào ô. */}
-          <div className="wk-field wk-span2"><span>Mô tả chung</span>
-            <textarea className="input wk-desc" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Ghi chú phạm vi, link tài liệu… (dán / kéo thả ảnh, file vào đây)" {...descImg.taProps} />
+          <div className="wk-field wk-span2 wk-desc-field">
+            <div className="wk-desc-head">
+              <span>Mô tả chung</span>
+              <button className="ghost sm" onClick={() => toggleBullets(descImg.taRef.current)}
+                title="Bật / tắt gạch đầu dòng cho các dòng đang chọn · Enter tự thêm dòng mới, Tab / Shift+Tab thụt lề">
+                • Danh sách
+              </button>
+              <button className="ghost sm" onClick={() => { setDescBig((b) => !b); descImg.taRef.current?.focus(); }}
+                title={descBig ? 'Thu về form (Esc)' : 'Mở rộng ô mô tả to ra — tiện ghi chú dài, take note cuộc họp'}>
+                {descBig ? '🗗 Thu nhỏ' : '⛶ Mở rộng'}
+              </button>
+            </div>
+            <textarea className="input wk-desc" value={desc} onChange={(e) => setDesc(e.target.value)}
+              placeholder={'Ghi chú phạm vi, link tài liệu… (dán / kéo thả ảnh, file vào đây)\n• gõ "- " hoặc bấm "• Danh sách" để gạch đầu dòng'}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape' && descBig) { e.preventDefault(); e.stopPropagation(); setDescBig(false); return; }
+                listKeyDown(e);
+              }}
+              {...descImg.taProps} />
             <ImageBar attach={descImg} />
             <ImageThumbs text={desc} onChange={setDesc} />
           </div>

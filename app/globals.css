@@ -7747,7 +7747,8 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-task-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .wk-task-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .wk-task-name { font-size: 12.5px; overflow-wrap: anywhere; }
-.wk-task-desc { font-size: 11.5px; color: var(--muted); white-space: pre-line; overflow-wrap: anywhere; }
+/* pre-wrap chứ không pre-line: giữ dấu cách đầu dòng của gạch đầu dòng thụt lề. */
+.wk-task-desc { font-size: 11.5px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .wk-task-meta { display: flex; gap: 6px; flex-wrap: wrap; font-size: 10.5px; color: var(--muted); }
 .wk-pri {
   flex: none; font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 6px;
@@ -7807,7 +7808,18 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-span2 { grid-column: 1 / -1; }
 .wk-field { display: flex; flex-direction: column; gap: 4px; }
 .wk-field > span { font-size: 11.5px; font-weight: 600; color: var(--muted); }
-.wk-desc { min-height: 64px; resize: vertical; font: inherit; }
+.wk-desc { min-height: 150px; resize: vertical; font: inherit; line-height: 1.55; }
+.wk-desc-head { display: flex; align-items: center; gap: 6px; }
+.wk-desc-head > span { flex: 1; font-size: 11.5px; font-weight: 600; color: var(--muted); }
+/* Mở rộng ô mô tả: phóng CHÍNH modal ra gần trọn màn hình và ẩn các ô khác
+   (không dựng lớp phủ fixed — .modal có backdrop-filter nên fixed bị nhốt
+   trong modal). Textarea vẫn là phần tử cũ: con trỏ, Ctrl+Z, dán ảnh còn nguyên. */
+.wk-form.desc-big { width: 96vw; max-width: 96vw; height: 92vh; max-height: 92vh; }
+.wk-form.desc-big .wk-kindtabs,
+.wk-form.desc-big .wk-form-grid > :not(.wk-desc-field) { display: none; }
+.wk-form.desc-big .wk-form-grid { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.wk-form.desc-big .wk-desc-field { min-height: 0; }
+.wk-form.desc-big .wk-desc { flex: 1; min-height: 0; resize: none; font-size: 14px; line-height: 1.65; padding: 12px 14px; }
 .wk-setup { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
 .wk-newconn {
   display: flex; flex-direction: column; gap: 8px; padding: 10px;
