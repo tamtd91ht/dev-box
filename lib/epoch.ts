@@ -220,12 +220,66 @@ export function parseDateInput(raw: string): ParsedInput | null {
     hour: Number(m[4] ?? 0), minute: Number(m[5] ?? 0), second: Number(m[6] ?? 0),
     ms: Number((m[7] ?? '0').padEnd(3, '0')),
   };
-  // Chặn 2026-13-45: Date.UTC tự "tràn" sang tháng sau, người gõ lại tưởng đúng.
-  if (parts.month < 1 || parts.month > 12 || parts.day < 1 || parts.day > 31) return null;
-  if (parts.hour > 23 || parts.minute > 59 || parts.second > 59) return null;
-  const probe = new Date(Date.UTC(year, month - 1, day));
-  if (probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) return null;
-  return { parts };
+  return partsOk(parts) ? { parts } : null;
+}
+
+/** Chặn 2026-13-45: Date.UTC tự "tràn" sang tháng sau, người gõ lại tưởng đúng. */
+function partsOk(p: ZonedParts): boolean {
+  if (p.month < 1 || p.month > 12 || p.day < 1 || p.day > 31) return false;
+  if (p.hour > 23 || p.minute > 59 || p.second > 59) return false;
+  const probe = new Date(Date.UTC(p.year, p.month - 1, p.day));
+  return probe.getUTCMonth() === p.month - 1 && probe.getUTCDate() === p.day;
+}
+
+/** Token pattern kiểu Java/moment → nhóm regex + trường của ZonedParts. */
+const PATTERN_TOKENS: [string, string, keyof ZonedParts | 'yy'][] = [
+  ['yyyy', '(\\d{4})', 'year'], ['yy', '(\\d{2})', 'yy'],
+  ['MM', '(\\d{2})', 'month'], ['M', '(\\d{1,2})', 'month'],
+  ['dd', '(\\d{2})', 'day'], ['d', '(\\d{1,2})', 'day'],
+  ['HH', '(\\d{2})', 'hour'], ['H', '(\\d{1,2})', 'hour'],
+  ['mm', '(\\d{2})', 'minute'], ['m', '(\\d{1,2})', 'minute'],
+  ['ss', '(\\d{2})', 'second'], ['s', '(\\d{1,2})', 'second'],
+  ['SSS', '(\\d{3})', 'ms'],
+];
+
+/**
+ * Đọc chuỗi theo pattern người dùng đặt, vd `dd/MM/yyyy HH:mm:ss`.
+ * Token: yyyy yy MM M dd d HH H mm m ss s SSS; chữ trong '…' là ký tự nguyên văn
+ * (vd `yyyy-MM-dd'T'HH:mm`). Trường không có trong pattern lấy mặc định
+ * (ngày 1, 00:00:00.000). Sai pattern hoặc ngày giờ không tồn tại → null.
+ */
+export function parseWithPattern(raw: string, pattern: string): ZonedParts | null {
+  const s = raw.trim();
+  if (!s || !pattern.trim()) return null;
+  let re = '';
+  const fields: (keyof ZonedParts | 'yy')[] = [];
+  for (let i = 0; i < pattern.length;) {
+    if (pattern[i] === "'") {
+      const end = pattern.indexOf("'", i + 1);
+      const lit = pattern.slice(i + 1, end < 0 ? undefined : end);
+      re += lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      i = end < 0 ? pattern.length : end + 1;
+      continue;
+    }
+    const tok = PATTERN_TOKENS.find(([t]) => pattern.startsWith(t, i));
+    if (tok) {
+      re += tok[1];
+      fields.push(tok[2]);
+      i += tok[0].length;
+    } else {
+      re += pattern[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      i += 1;
+    }
+  }
+  const m = new RegExp(`^${re}$`).exec(s);
+  if (!m) return null;
+  const p: ZonedParts = { year: 1970, month: 1, day: 1, hour: 0, minute: 0, second: 0, ms: 0 };
+  fields.forEach((f, idx) => {
+    const n = Number(m[idx + 1]);
+    if (f === 'yy') p.year = 2000 + n;
+    else p[f] = n;
+  });
+  return partsOk(p) ? p : null;
 }
 
 // ── Hiển thị ───────────────────────────────────────────────────────────────
