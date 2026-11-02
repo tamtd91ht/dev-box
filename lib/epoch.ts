@@ -242,6 +242,41 @@ const PATTERN_TOKENS: [string, string, keyof ZonedParts | 'yy'][] = [
   ['SSS', '(\\d{3})', 'ms'],
 ];
 
+type PatternSeg = { lit: string } | { tok: (typeof PATTERN_TOKENS)[number] };
+
+/** Cắt pattern thành dãy token / chữ nguyên văn (chữ trong '…' giữ nguyên). */
+function tokenizePattern(pattern: string): PatternSeg[] {
+  const segs: PatternSeg[] = [];
+  for (let i = 0; i < pattern.length;) {
+    if (pattern[i] === "'") {
+      const end = pattern.indexOf("'", i + 1);
+      segs.push({ lit: pattern.slice(i + 1, end < 0 ? undefined : end) });
+      i = end < 0 ? pattern.length : end + 1;
+      continue;
+    }
+    const tok = PATTERN_TOKENS.find(([t]) => pattern.startsWith(t, i));
+    if (tok) {
+      segs.push({ tok });
+      i += tok[0].length;
+    } else {
+      segs.push({ lit: pattern[i] });
+      i += 1;
+    }
+  }
+  return segs;
+}
+
+/** Ghi ngày giờ ra chuỗi theo pattern — chiều ngược của parseWithPattern. */
+export function formatWithPattern(p: ZonedParts, pattern: string): string {
+  return tokenizePattern(pattern).map((seg) => {
+    if ('lit' in seg) return seg.lit;
+    const [t, , f] = seg.tok;
+    if (f === 'yy') return p2(p.year % 100);
+    const n = p[f];
+    return t === 'yyyy' ? String(n).padStart(4, '0') : t === 'SSS' ? p3(n) : t.length === 2 ? p2(n) : String(n);
+  }).join('');
+}
+
 /**
  * Đọc chuỗi theo pattern người dùng đặt, vd `dd/MM/yyyy HH:mm:ss`.
  * Token: yyyy yy MM M dd d HH H mm m ss s SSS; chữ trong '…' là ký tự nguyên văn
@@ -253,22 +288,12 @@ export function parseWithPattern(raw: string, pattern: string): ZonedParts | nul
   if (!s || !pattern.trim()) return null;
   let re = '';
   const fields: (keyof ZonedParts | 'yy')[] = [];
-  for (let i = 0; i < pattern.length;) {
-    if (pattern[i] === "'") {
-      const end = pattern.indexOf("'", i + 1);
-      const lit = pattern.slice(i + 1, end < 0 ? undefined : end);
-      re += lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      i = end < 0 ? pattern.length : end + 1;
-      continue;
-    }
-    const tok = PATTERN_TOKENS.find(([t]) => pattern.startsWith(t, i));
-    if (tok) {
-      re += tok[1];
-      fields.push(tok[2]);
-      i += tok[0].length;
+  for (const seg of tokenizePattern(pattern)) {
+    if ('lit' in seg) {
+      re += seg.lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     } else {
-      re += pattern[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      i += 1;
+      re += seg.tok[1];
+      fields.push(seg.tok[2]);
     }
   }
   const m = new RegExp(`^${re}$`).exec(s);
@@ -280,6 +305,35 @@ export function parseWithPattern(raw: string, pattern: string): ZonedParts | nul
     else p[f] = n;
   });
   return partsOk(p) ? p : null;
+}
+
+export type QuickRange = 'today' | 'yesterday' | 'lastWeek' | 'thisWeek' | 'lastMonth' | 'thisMonth';
+
+/**
+ * Khung giờ điền nhanh, tính theo LỊCH của múi giờ đã chọn (tuần bắt đầu thứ Hai):
+ *   · today / thisWeek / thisMonth → từ 00:00 ngày đầu tới hiện tại
+ *   · yesterday / lastWeek / lastMonth → trọn khung, tới 23:59:59.999 ngày cuối
+ */
+export function quickRange(kind: QuickRange, zone: string, nowMs = Date.now()): { from: ZonedParts; to: ZonedParts } {
+  const now = partsInZone(nowMs, zone);
+  /** Ngày lịch (cộng/trừ ngày tràn tháng/năm đúng nhờ Date.UTC). */
+  const day = (y: number, m: number, d: number, end = false): ZonedParts => {
+    const t = new Date(Date.UTC(y, m - 1, d));
+    return {
+      year: t.getUTCFullYear(), month: t.getUTCMonth() + 1, day: t.getUTCDate(),
+      hour: end ? 23 : 0, minute: end ? 59 : 0, second: end ? 59 : 0, ms: end ? 999 : 0,
+    };
+  };
+  const { year: y, month: m, day: d } = now;
+  const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7; // 0 = thứ Hai
+  switch (kind) {
+    case 'today': return { from: day(y, m, d), to: now };
+    case 'yesterday': return { from: day(y, m, d - 1), to: day(y, m, d - 1, true) };
+    case 'thisWeek': return { from: day(y, m, d - dow), to: now };
+    case 'lastWeek': return { from: day(y, m, d - dow - 7), to: day(y, m, d - dow - 1, true) };
+    case 'thisMonth': return { from: day(y, m, 1), to: now };
+    case 'lastMonth': return { from: day(y, m - 1, 1), to: day(y, m, 0, true) };
+  }
 }
 
 // ── Hiển thị ───────────────────────────────────────────────────────────────

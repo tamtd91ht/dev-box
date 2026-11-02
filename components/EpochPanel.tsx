@@ -17,16 +17,23 @@
 //
 // Mọi phép tính nằm ở lib/epoch.ts (hàm thuần, đi qua Intl nên đúng cả DST).
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   UNIT_LABEL, detectUnit, dayOfYear, fmtHuman, fmtIso, fmtPlain, fmtRelative,
   fromMillis, isLeapYear, isValidMs, isoWeek, localZone, offsetLabel,
-  parseDateInput, parseWithPattern, partsInZone, toMillis, zoneAbbr, zoneList, zonedPartsToMillis,
-  type EpochUnit,
+  formatWithPattern, parseDateInput, parseWithPattern, partsInZone, quickRange, toMillis, zoneAbbr, zoneList, zonedPartsToMillis,
+  type EpochUnit, type QuickRange,
 } from '@/lib/epoch';
 
 const UNITS: EpochUnit[] = ['s', 'ms', 'us', 'ns'];
 const ZONE_KEY = 'tools.epochZone';
+const VIEW_KEY = 'tools.epochView';
+
+type EpochView = 'convert' | 'range';
+const VIEWS: [EpochView, string, string][] = [
+  ['convert', '⇄ Epoch ⇄ Ngày giờ', 'Đổi một mốc epoch ⇄ ngày giờ, hai chiều'],
+  ['range', '⏱ Khung giờ → Epoch', 'Đổi khoảng from / to theo pattern ra epoch'],
+];
 
 /** Nút copy nhỏ, tự nháy ✓ 1.2s cho biết đã chép. */
 function CopyBtn({ value, title }: { value: string; title?: string }) {
@@ -89,11 +96,18 @@ export default function EpochPanel() {
   const [dateIn, setDateIn] = useState('');
   /** Đồng hồ hiện tại — null tới khi chạy ở client (tránh lệch hydrate). */
   const [now, setNow] = useState<number | null>(null);
+  /** Tab con đang mở, nhớ qua localStorage. */
+  const [view, setView] = useState<EpochView>('convert');
 
   useEffect(() => {
     const saved = window.localStorage.getItem(ZONE_KEY);
     setZone(saved || local);
+    const v = window.localStorage.getItem(VIEW_KEY);
+    if (v === 'convert' || v === 'range') setView(v);
   }, [local]);
+  useEffect(() => {
+    try { window.localStorage.setItem(VIEW_KEY, view); } catch { /* nicety */ }
+  }, [view]);
   useEffect(() => {
     try { window.localStorage.setItem(ZONE_KEY, zone); } catch { /* nicety */ }
   }, [zone]);
@@ -181,6 +195,16 @@ export default function EpochPanel() {
         </div>
       </div>
 
+      <div className="epoch-tabs" role="tablist">
+        {VIEWS.map(([k, label, hint]) => (
+          <button key={k} role="tab" aria-selected={view === k} title={hint}
+            className={`chip-btn${view === k ? ' on' : ''}`} onClick={() => setView(k)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === 'range' ? <RangePanel zone={zone} /> : (
       <div className="epoch-cols">
         {/* ── TRÁI: epoch → ngày giờ ─────────────────────────────────────── */}
         <section className="epoch-card">
@@ -294,8 +318,7 @@ export default function EpochPanel() {
           </div>
         </section>
       </div>
-
-      <RangePanel zone={zone} />
+      )}
     </div>
   );
 }
@@ -305,6 +328,68 @@ const PATTERN_PRESETS = [
   'yyyy-MM-dd HH:mm:ss', 'yyyy-MM-dd HH:mm', 'yyyy-MM-dd',
   'dd/MM/yyyy HH:mm:ss', 'dd/MM/yyyy', "yyyy-MM-dd'T'HH:mm:ss.SSS", 'yyyyMMddHHmmss',
 ];
+const QUICK_RANGES: [QuickRange, string, string][] = [
+  ['today', 'Hôm nay', '00:00 hôm nay → hiện tại'],
+  ['yesterday', 'Hôm qua', 'Trọn ngày hôm qua'],
+  ['thisWeek', 'Tuần này', '00:00 thứ Hai tuần này → hiện tại'],
+  ['lastWeek', 'Tuần trước', 'Trọn tuần trước (thứ Hai → Chủ Nhật)'],
+  ['thisMonth', 'Tháng này', '00:00 ngày 1 tháng này → hiện tại'],
+  ['lastMonth', 'Tháng trước', 'Trọn tháng trước'],
+];
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * Một đầu from / to: gõ tay theo pattern, hoặc bấm lịch để chọn —
+ *   · 📅 chọn NGÀY  → giờ tự lấy 00:00:00 (from) hoặc 23:59:59.999 (to, `endOfDay`)
+ *   · 🕘 chọn NGÀY GIỜ → lấy đúng giờ đã chọn
+ * Lịch là <input type=date|datetime-local> có sẵn của Chromium, giấu đi và mở
+ * bằng showPicker(); chọn xong ghi lại vào ô chữ theo pattern đang dùng.
+ */
+function PickerField({ label, value, onChange, pattern, endOfDay = false }: {
+  label: string; value: string; onChange: (v: string) => void; pattern: string; endOfDay?: boolean;
+}) {
+  const dateRef = useRef<HTMLInputElement>(null);
+  const dtRef = useRef<HTMLInputElement>(null);
+
+  /** Mở lịch tại mốc đang gõ (nếu đọc được) cho khỏi phải lật từ hôm nay. */
+  const open = (el: HTMLInputElement | null, withTime: boolean) => {
+    if (!el) return;
+    const p = parseWithPattern(value, pattern);
+    const d = p ? `${String(p.year).padStart(4, '0')}-${pad2(p.month)}-${pad2(p.day)}` : '';
+    el.value = !d ? '' : withTime ? `${d}T${pad2(p!.hour)}:${pad2(p!.minute)}:${pad2(p!.second)}` : d;
+    try { el.showPicker(); } catch { el.focus(); }
+  };
+
+  const pick = (raw: string, withTime: boolean) => {
+    const parts = parseDateInput(raw)?.parts;
+    if (!parts) return;
+    if (!withTime && endOfDay) Object.assign(parts, { hour: 23, minute: 59, second: 59, ms: 999 });
+    onChange(formatWithPattern(parts, pattern));
+  };
+
+  return (
+    <div className="epoch-inrow">
+      <span className="epoch-row-k">{label}</span>
+      <input className="input mono" placeholder={pattern} value={value}
+        onChange={(e) => onChange(e.target.value)} aria-label={label} />
+      <span className="epoch-picker">
+        <button className="ghost sm" disabled={!pattern.trim()} onClick={() => open(dateRef.current, false)}
+          title={`Chọn ngày trên lịch — giờ tự lấy ${endOfDay ? '23:59:59' : '00:00:00'}`}>
+          📅
+        </button>
+        <button className="ghost sm" disabled={!pattern.trim()} onClick={() => open(dtRef.current, true)}
+          title="Chọn ngày giờ trên lịch — giờ tự chọn">
+          🕘
+        </button>
+        <input ref={dateRef} type="date" className="epoch-picker-native" tabIndex={-1} aria-hidden
+          onChange={(e) => pick(e.target.value, false)} />
+        <input ref={dtRef} type="datetime-local" step={1} className="epoch-picker-native" tabIndex={-1} aria-hidden
+          onChange={(e) => pick(e.target.value, true)} />
+      </span>
+    </div>
+  );
+}
 
 /**
  * Khung giờ → epoch: gõ from / to theo pattern tự đặt, ra hai số epoch (ms
@@ -340,61 +425,76 @@ function RangePanel({ zone }: { zone: string }) {
   const sideNote = (raw: string) => (raw.trim() === '' ? '— để trống' : '⚠ không khớp pattern');
 
   return (
-    <section className="epoch-card">
-      <div className="tools-pane-head">
-        ⏱ Khung giờ → Epoch <span className="tools-pane-hint">from / to theo pattern · đọc theo múi giờ {zone}</span>
-      </div>
-      <div className="epoch-card-body">
-        <div className="epoch-inrow">
-          <span className="epoch-row-k">Pattern</span>
-          <input
-            className="input mono" list="epoch-pattern-presets" placeholder="yyyy-MM-dd HH:mm:ss"
-            value={pattern} onChange={(e) => setPattern(e.target.value)}
-            aria-label="Pattern ngày giờ"
-          />
-          <datalist id="epoch-pattern-presets">
-            {PATTERN_PRESETS.map((p) => <option key={p} value={p} />)}
-          </datalist>
-          <select className="input epoch-unitsel" value={unit}
-            onChange={(e) => setUnit(e.target.value as 'ms' | 's')} title="Đơn vị kết quả">
-            <option value="ms">{UNIT_LABEL.ms}</option>
-            <option value="s">{UNIT_LABEL.s}</option>
-          </select>
+    <div className="epoch-cols">
+      <section className="epoch-card">
+        <div className="tools-pane-head">
+          ⏱ Khung giờ <span className="tools-pane-hint">from / to theo pattern · đọc theo múi giờ {zone}</span>
         </div>
-        <p className="small epoch-note">
-          Token: <code>yyyy</code> <code>yy</code> <code>MM</code> <code>dd</code> <code>HH</code>
-          {' '}<code>mm</code> <code>ss</code> <code>SSS</code> · chữ nguyên văn để trong <code>&apos;…&apos;</code>
-        </p>
-        <div className="epoch-inrow">
-          <span className="epoch-row-k">From</span>
-          <input className="input mono" placeholder={pattern} value={fromIn}
-            onChange={(e) => setFromIn(e.target.value)} aria-label="From" />
-        </div>
-        <div className="epoch-inrow">
-          <span className="epoch-row-k">To</span>
-          <input className="input mono" placeholder={pattern} value={toIn}
-            onChange={(e) => setToIn(e.target.value)} aria-label="To" />
-        </div>
-
-        {!fromOk && !toOk ? (
-          <p className="small epoch-err">
-            {fromIn.trim() === '' && toIn.trim() === ''
-              ? 'Gõ from hoặc to (một đầu là đủ) để ra epoch.'
-              : '⚠ Chưa đầu nào khớp pattern — kiểm lại pattern hoặc chuỗi đã gõ.'}
-          </p>
-        ) : (
-          <div className="epoch-out">
-            <div className="epoch-zoneblock">
-              <Row k={`From (${unit})`} v={fromV || sideNote(fromIn)} copy={fromV} />
-              <Row k={`To (${unit})`} v={toV || sideNote(toIn)} copy={toV} />
-              {fromOk && toOk && <Row k="From,To" v={`${fromV},${toV}`} />}
-            </div>
-            {fromOk && toOk && fromMs > toMsV && (
-              <p className="small epoch-err">⚠ From đang lớn hơn To.</p>
-            )}
+        <div className="epoch-card-body">
+          <div className="epoch-inrow">
+            <span className="epoch-row-k">Pattern</span>
+            <input
+              className="input mono" list="epoch-pattern-presets" placeholder="yyyy-MM-dd HH:mm:ss"
+              value={pattern} onChange={(e) => setPattern(e.target.value)}
+              aria-label="Pattern ngày giờ"
+            />
+            <datalist id="epoch-pattern-presets">
+              {PATTERN_PRESETS.map((p) => <option key={p} value={p} />)}
+            </datalist>
+            <select className="input epoch-unitsel" value={unit}
+              onChange={(e) => setUnit(e.target.value as 'ms' | 's')} title="Đơn vị kết quả">
+              <option value="ms">{UNIT_LABEL.ms}</option>
+              <option value="s">{UNIT_LABEL.s}</option>
+            </select>
           </div>
-        )}
-      </div>
-    </section>
+          <p className="small epoch-note">
+            Token: <code>yyyy</code> <code>yy</code> <code>MM</code> <code>dd</code> <code>HH</code>
+            {' '}<code>mm</code> <code>ss</code> <code>SSS</code> · chữ nguyên văn để trong <code>&apos;…&apos;</code>
+          </p>
+          <div className="epoch-inrow">
+            <span className="epoch-row-k">Điền nhanh</span>
+            {QUICK_RANGES.map(([k, label, hint]) => (
+              <button key={k} className="chip-btn" title={`${hint} · theo múi ${zone}`}
+                disabled={!pattern.trim()}
+                onClick={() => {
+                  const r = quickRange(k, zone);
+                  setFromIn(formatWithPattern(r.from, pattern));
+                  setToIn(formatWithPattern(r.to, pattern));
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <PickerField label="From" value={fromIn} onChange={setFromIn} pattern={pattern} />
+          <PickerField label="To" value={toIn} onChange={setToIn} pattern={pattern} endOfDay />
+        </div>
+      </section>
+
+      <section className="epoch-card">
+        <div className="tools-pane-head">
+          🔢 Epoch <span className="tools-pane-hint">chỉ cần from hoặc to đọc được</span>
+        </div>
+        <div className="epoch-card-body">
+          {!fromOk && !toOk ? (
+            <p className="small epoch-err">
+              {fromIn.trim() === '' && toIn.trim() === ''
+                ? 'Gõ from hoặc to (một đầu là đủ) để ra epoch.'
+                : '⚠ Chưa đầu nào khớp pattern — kiểm lại pattern hoặc chuỗi đã gõ.'}
+            </p>
+          ) : (
+            <div className="epoch-out">
+              <div className="epoch-zoneblock">
+                <Row k={`From (${unit})`} v={fromV || sideNote(fromIn)} copy={fromV} />
+                <Row k={`To (${unit})`} v={toV || sideNote(toIn)} copy={toV} />
+                {fromOk && toOk && <Row k="From,To" v={`${fromV},${toV}`} />}
+              </div>
+              {fromOk && toOk && fromMs > toMsV && (
+                <p className="small epoch-err">⚠ From đang lớn hơn To.</p>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
   );
 }

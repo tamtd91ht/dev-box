@@ -6467,6 +6467,16 @@ iframe.tools-view-box { background: #fff; }
 
 /* ── Tab "Thời gian": đổi epoch ⇄ ngày giờ (components/EpochPanel.tsx) ──── */
 .epoch-wrap { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; overflow: auto; }
+/* Con của khung cuộn KHÔNG được co: thẻ có overflow:hidden sẽ bị bóp nhỏ và
+   cắt mất kết quả thay vì để .epoch-wrap cuộn. */
+.epoch-wrap > * { flex: none; }
+.epoch-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+/* Nút lịch cạnh ô from / to; ô date gốc giấu tại chỗ để lịch bật ra ngay dưới nút. */
+.epoch-picker { position: relative; display: inline-flex; gap: 4px; flex: none; }
+.epoch-picker-native {
+  position: absolute; left: 0; bottom: 0; width: 1px; height: 1px;
+  opacity: 0; pointer-events: none; border: 0; padding: 0;
+}
 .epoch-top {
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; flex: none;
   padding: 8px 12px; border: 1px solid var(--glass-brd); border-radius: 10px; background: var(--glass-2);
