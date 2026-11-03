@@ -2,7 +2,7 @@
 
 // Tab CÔNG VIỆC — quản lý task trên lịch tháng, lưu GLOBAL trên MongoDB.
 //
-// HAI LOẠI công việc, nhập trên CÙNG MỘT form (đổi tab ở đầu form):
+// BA LOẠI mục, nhập trên CÙNG MỘT form (đổi tab ở đầu form):
 //   · 🕘 Việc trong ngày — chỉ note đã làm gì, từ mấy giờ đến mấy giờ (khung giờ
 //     bắt buộc). Không deadline, KHÔNG cảnh báo, KHÔNG trạng thái (nó ghi việc
 //     ĐÃ LÀM nên chỉ có đúng một trạng thái — hiện ra chỉ là nhiễu; dưới DB vẫn
@@ -11,6 +11,10 @@
 //     SUỐT khoảng startDate..dlDate (xem spanDays/bySpan): ngày bắt đầu là chip
 //     đậm, các ngày giữa là chip ⏳ mờ, ngày deadline có ⏰. Panel ngày tách 3
 //     nhóm tương ứng. Đã xong / đã hủy thì thôi lấp các ngày giữa.
+//   · 📝 Ghi chú sự kiện — chuyện XẢY RA trong ngày, song song với việc đang làm
+//     (họp đột xuất, sự cố, nghỉ phép…). Từ ngày → đến ngày (kéo dài qua ngày
+//     sau được), giờ tùy chọn. Không trạng thái, không cảnh báo. Trên lịch hiện
+//     suốt khoảng đó (xem eventDays); panel ngày gom thành nhóm riêng.
 //
 // Luồng: chọn ngày trên lịch → "＋ Thêm công việc" → chọn loại → nhập dự án /
 // tên / mô tả / ưu tiên / tags / khung giờ HOẶC deadline+cảnh báo → lưu.
@@ -61,8 +65,8 @@ type WorkAlert =
   | { kind: 'offset'; minutes: number }
   | { kind: 'daily'; daysBefore: number; time: string };
 
-/** 2 loại công việc — xem WorkKind trong lib/workTasks. */
-type Kind = 'daily' | 'deadline';
+/** 3 loại — xem WorkKind trong lib/workTasks. */
+type Kind = 'daily' | 'deadline' | 'event';
 
 /** Một khung giờ 'HH:mm' → 'HH:mm' của việc trong ngày. */
 interface Slot { start: string; end: string }
@@ -80,6 +84,8 @@ interface WorkTask {
   slots: Slot[];
   startTime: string | null;
   endTime: string | null;
+  /** Chỉ 'event': ngày kết thúc (≥ startDate). startTime/endTime = giờ tùy chọn ở hai đầu. */
+  endDate?: string | null;
   dlDate: string | null;
   dlTime: string | null;
   deadlineMs: number | null;
@@ -151,7 +157,7 @@ const STATUS_META: Record<Status, { label: string; icon: string; cls: string; hi
 
 const STATUS_ORDER: Status[] = ['pending', 'active', 'done', 'cancelled'];
 
-/** 2 loại công việc — nhãn cho tab trong form + badge trên dòng task. */
+/** 3 loại — nhãn cho tab trong form + badge trên dòng task. */
 const KIND_META: Record<Kind, { label: string; short: string; icon: string; hint: string }> = {
   daily: {
     label: 'Việc trong ngày',
@@ -165,9 +171,45 @@ const KIND_META: Record<Kind, { label: string; short: string; icon: string; hint
     icon: '⏰',
     hint: 'Có mốc phải xong, kèm cảnh báo. Hiện trên lịch suốt từ ngày bắt đầu tới deadline.',
   },
+  event: {
+    label: 'Ghi chú sự kiện',
+    short: 'Sự kiện',
+    icon: '📝',
+    hint: 'Ghi lại sự kiện xảy ra song song với công việc — trong ngày hoặc kéo dài qua ngày sau. Không trạng thái, không cảnh báo.',
+  },
 };
 
-const KIND_ORDER: Kind[] = ['daily', 'deadline'];
+const KIND_ORDER: Kind[] = ['daily', 'deadline', 'event'];
+
+/** Ngày kết thúc của sự kiện (dữ liệu thiếu → coi như trong ngày). */
+const evEnd = (t: WorkTask) => (t.endDate && t.endDate >= t.startDate ? t.endDate : t.startDate);
+
+/**
+ * Các ngày SAU ngày bắt đầu mà sự kiện còn kéo dài tới (gồm ngày kết thúc).
+ * Ngày bắt đầu đã có byStart — để mỗi ngày một sự kiện chỉ hiện một lần.
+ */
+function eventDays(t: WorkTask): string[] {
+  if (t.kind !== 'event') return [];
+  const end = evEnd(t);
+  const out: string[] = [];
+  let cur = dAdd(t.startDate, 1);
+  for (let i = 0; i < 400 && cur <= end; i++) { out.push(cur); cur = dAdd(cur, 1); }
+  return out;
+}
+
+/** '05/11 09:00 → 06/11 12:00' · '09:00 → 11:00' · 'cả ngày' — thời gian của sự kiện. */
+function fmtEvent(t: WorkTask): string {
+  const end = evEnd(t);
+  if (end === t.startDate) {
+    if (t.startTime && t.endTime) return `${t.startTime} → ${t.endTime}`;
+    if (t.startTime) return `từ ${t.startTime}`;
+    if (t.endTime) return `đến ${t.endTime}`;
+    return 'cả ngày';
+  }
+  const a = `${dShort(t.startDate)}${t.startTime ? ` ${t.startTime}` : ''}`;
+  const b = `${dShort(end)}${t.endTime ? ` ${t.endTime}` : ''}`;
+  return `${a} → ${b} (${dDiff(t.startDate, end) + 1} ngày)`;
+}
 
 /** Khung giờ của task — server đã trả 'slots'; phòng bản server cũ chỉ có startTime/endTime. */
 function slotsOf(t: WorkTask): Slot[] {
@@ -410,8 +452,10 @@ function alertToChoice(a: WorkAlert | null): AlertChoice {
   return (['30', '60', '180', '1440'].includes(String(a.minutes)) ? String(a.minutes) : 'daily') as AlertChoice;
 }
 
-function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onClose }: {
+function TaskForm({ initial, kind: kind0, startDate, projects, tasks, busy, err, onSave, onClose }: {
   initial: WorkTask | null;
+  /** Loại mặc định khi THÊM mới (sửa thì theo loại của task). */
+  kind?: Kind;
   startDate: string;
   projects: string[];
   /** Toàn bộ task đang có — để dò trùng khung giờ với việc khác trong ngày. */
@@ -422,7 +466,7 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
   onClose: () => void;
 }) {
   // Loại công việc — đổi tab ở đầu form, các field chung giữ nguyên giá trị.
-  const [kind, setKind] = useState<Kind>(initial?.kind ?? 'daily');
+  const [kind, setKind] = useState<Kind>(initial?.kind ?? kind0 ?? 'daily');
   const [project, setProject] = useState(initial?.project ?? '');
   const [name, setName] = useState(initial?.name ?? '');
   const [desc, setDesc] = useState(initial?.desc ?? '');
@@ -445,6 +489,15 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
   const [choice, setChoice] = useState<AlertChoice>(initial ? alertToChoice(initial.alert) : 'daily');
   const [dDays, setDDays] = useState(initial?.alert?.kind === 'daily' ? initial.alert.daysBefore : 1);
   const [dTime, setDTime] = useState(initial?.alert?.kind === 'daily' ? initial.alert.time : '21:00');
+  // Ghi chú sự kiện: đến ngày + giờ hai đầu (tùy chọn).
+  const [evEndDate, setEvEndDate] = useState(initial?.kind === 'event' ? evEnd(initial) : '');
+  const [evStartTime, setEvStartTime] = useState(initial?.kind === 'event' ? initial.startTime ?? '' : '');
+  const [evEndTime, setEvEndTime] = useState(initial?.kind === 'event' ? initial.endTime ?? '' : '');
+  const isEvent = kind === 'event';
+  /** Ngày kết thúc thực tế: để trống / trước ngày bắt đầu khi chưa chỉnh = trong ngày. */
+  const evEndEff = evEndDate || start;
+  const evBad = isEvent && (evEndEff < start
+    || (evEndEff === start && !!evStartTime && !!evEndTime && evEndTime <= evStartTime));
 
   const setSlot = (i: number, patch: Partial<Slot>) =>
     setSlots((prev) => prev.map((s, j) => (j === i ? { ...s, ...patch } : s)));
@@ -485,9 +538,10 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
         ? { kind: 'daily', daysBefore: dDays, time: dTime }
         : { kind: 'offset', minutes: Number(choice) };
     onSave({
-      kind, project, name, desc, priority,
+      kind, project, name, desc, priority: isEvent ? 'normal' : priority,
       tags: tags.split(',').map((t) => t.trim()).filter(Boolean),
       startDate: start,
+      ...(isEvent ? { endDate: evEndEff, startTime: evStartTime, endTime: evEndTime } : {}),
       // Server bỏ qua field không thuộc loại đang chọn, nhưng gửi rỗng cho gọn.
       slots: isDaily ? [...slots].sort((a, b) => a.start.localeCompare(b.start)) : [],
       dlDate: kind === 'deadline' ? dlDate || '' : '',
@@ -501,7 +555,11 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
     <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && !busy && onClose()}>
       <div className={`modal wk-form${descBig ? ' desc-big' : ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="status-line" style={{ marginBottom: 10 }}>
-          <h3 style={{ margin: 0, flex: 1 }}>{initial ? '✎ Sửa công việc' : '＋ Thêm công việc'}</h3>
+          <h3 style={{ margin: 0, flex: 1 }}>
+            {isEvent
+              ? (initial ? '✎ Sửa ghi chú sự kiện' : '＋ Thêm ghi chú sự kiện')
+              : (initial ? '✎ Sửa công việc' : '＋ Thêm công việc')}
+          </h3>
           <button className="ghost sm" onClick={onClose} disabled={busy}>✕</button>
         </div>
 
@@ -526,13 +584,14 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
             <input className="input" list="wk-projects" value={project} onChange={(e) => setProject(e.target.value)} placeholder="vd MYPROJECT" />
             <datalist id="wk-projects">{projects.map((pj) => <option key={pj} value={pj} />)}</datalist>
           </label>
-          <label className="wk-field"><span>Tên công việc *</span>
-            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="vd Bàn giao chức năng A" autoFocus />
+          <label className="wk-field"><span>{isEvent ? 'Sự kiện *' : 'Tên công việc *'}</span>
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)}
+              placeholder={isEvent ? 'vd Sự cố DB production, họp đột xuất với khách' : 'vd Bàn giao chức năng A'} autoFocus />
           </label>
           {/* div chứ không phải label: bấm nút trong ImageBar không được nhảy focus vào ô. */}
           <div className="wk-field wk-span2 wk-desc-field">
             <div className="wk-desc-head">
-              <span>Mô tả chung</span>
+              <span>{isEvent ? 'Diễn biến / ghi chú' : 'Mô tả chung'}</span>
               <button className="ghost sm" onClick={() => toggleBullets(descImg.taRef.current)}
                 title="Bật / tắt gạch đầu dòng cho các dòng đang chọn · Enter tự thêm dòng mới, Tab / Shift+Tab thụt lề">
                 • Danh sách
@@ -552,17 +611,48 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
             <ImageBar attach={descImg} />
             <ImageThumbs text={desc} onChange={setDesc} />
           </div>
-          <label className="wk-field"><span>Ưu tiên</span>
-            <select className="input" value={priority} onChange={(e) => setPriority(e.target.value as Priority)}>
-              {(Object.keys(PRIORITY_META) as Priority[]).map((k) => <option key={k} value={k}>{PRIORITY_META[k].label}</option>)}
-            </select>
-          </label>
+          {/* Sự kiện là bản ghi chuyện đã / đang xảy ra — không có độ ưu tiên. */}
+          {!isEvent && (
+            <label className="wk-field"><span>Ưu tiên</span>
+              <select className="input" value={priority} onChange={(e) => setPriority(e.target.value as Priority)}>
+                {(Object.keys(PRIORITY_META) as Priority[]).map((k) => <option key={k} value={k}>{PRIORITY_META[k].label}</option>)}
+              </select>
+            </label>
+          )}
           <label className="wk-field"><span>Tags (phẩy)</span>
             <input className="input" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="backend, release" />
           </label>
-          <label className="wk-field"><span>{kind === 'daily' ? 'Ngày làm việc' : 'Ngày bắt đầu'}</span>
-            <input className="input" type="date" value={start} onChange={(e) => setStart(e.target.value)} />
-          </label>
+          {isEvent ? (
+            /* ── GHI CHÚ SỰ KIỆN: từ ngày (giờ) → đến ngày (giờ), giờ tùy chọn ── */
+            <>
+              <div className="wk-field"><span>Từ ngày</span>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input className="input" type="date" value={start} onChange={(e) => setStart(e.target.value)} style={{ flex: 1 }} />
+                  <input className="input" type="time" value={evStartTime} onChange={(e) => setEvStartTime(e.target.value)}
+                    style={{ width: 100 }} title="Giờ bắt đầu (tùy chọn)" />
+                </div>
+              </div>
+              <div className="wk-field"><span>Đến ngày</span>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input className="input" type="date" min={start || undefined} value={evEndEff}
+                    onChange={(e) => setEvEndDate(e.target.value)} style={{ flex: 1 }} />
+                  <input className="input" type="time" value={evEndTime} onChange={(e) => setEvEndTime(e.target.value)}
+                    style={{ width: 100 }} title="Giờ kết thúc (tùy chọn)" />
+                </div>
+              </div>
+              <span className="small wk-span2" style={{ color: evBad ? 'var(--err)' : 'var(--muted)' }}>
+                {evBad
+                  ? (evEndEff < start ? '⚠ Ngày kết thúc không được trước ngày bắt đầu.' : '⚠ Giờ kết thúc phải sau giờ bắt đầu.')
+                  : evEndEff > start
+                    ? `Kéo dài ${dDiff(start, evEndEff) + 1} ngày — hiện trên lịch suốt ${dShort(start)} → ${dShort(evEndEff)}. Giờ để trống được.`
+                    : 'Sự kiện trong ngày — chỉnh "Đến ngày" nếu kéo dài qua ngày sau. Giờ để trống được.'}
+              </span>
+            </>
+          ) : (
+            <label className="wk-field"><span>{kind === 'daily' ? 'Ngày làm việc' : 'Ngày bắt đầu'}</span>
+              <input className="input" type="date" value={start} onChange={(e) => setStart(e.target.value)} />
+            </label>
+          )}
           {/* Trạng thái CHỈ có với việc có deadline — việc trong ngày ghi lại
               việc đã làm nên chỉ có đúng một trạng thái, hiện ra là nhiễu. */}
           {kind === 'deadline' && (
@@ -580,7 +670,7 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
               </span>
             </label>
           )}
-          {kind === 'daily' ? (
+          {isEvent ? null : kind === 'daily' ? (
             /* ── VIỆC TRONG NGÀY: chỉ khung giờ, bắt buộc ── */
             <div className="wk-field wk-span2">
               <span>Khung giờ *{slots.length > 1 && !spanBad && !slotMissing && <i style={{ fontWeight: 400 }}> · tổng {durText(slots)}</i>}</span>
@@ -666,7 +756,7 @@ function TaskForm({ initial, startDate, projects, tasks, busy, err, onSave, onCl
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
           <button className="ghost sm" onClick={onClose} disabled={busy}>Hủy</button>
           <button className="sm" onClick={trySubmit}
-            disabled={busy || !name.trim() || !start || spanBad || slotMissing}>
+            disabled={busy || !name.trim() || !start || spanBad || slotMissing || evBad}>
             {busy ? <span className="spinner" aria-hidden /> : '💾'} Lưu
           </button>
         </div>
@@ -739,6 +829,7 @@ function MoveTaskPopup({
   onSave: (patch: Partial<WorkTask>) => void;
 }) {
   const isDaily = task.kind === 'daily';
+  const isEvent = task.kind === 'event';
   /** Nhiều khung giờ thì popup chỉ đổi NGÀY, giữ nguyên các khung (sửa giờ → mở form đầy đủ). */
   const taskSlots = slotsOf(task);
   const multi = taskSlots.length > 1;
@@ -750,6 +841,8 @@ function MoveTaskPopup({
   // Ngày kết quả theo chế độ đang chọn — vừa để xem trước, vừa là thứ đem lưu.
   const next = useMemo(() => {
     if (isDaily) return { startDate: toDate, dlDate: null as string | null };
+    // Sự kiện: dời CẢ KHỐI, giữ nguyên số ngày kéo dài (dlDate ở đây = ngày kết thúc mới).
+    if (isEvent) return { startDate: toDate, dlDate: dAdd(evEnd(task), dDiff(task.startDate, toDate)) };
     if (mode === 'deadline') return { startDate: task.startDate, dlDate: toDate };
     if (mode === 'start') return { startDate: toDate, dlDate: task.dlDate };
     // 'block': dịch cả hai mốc. Mốc quy chiếu là startDate, KHÔNG phải fromDate
@@ -757,10 +850,10 @@ function MoveTaskPopup({
     // vào ngày Y nghĩa là ngày BẮT ĐẦU về Y, dù ô nguồn nằm giữa khoảng.
     const delta = dDiff(task.startDate, toDate);
     return { startDate: toDate, dlDate: task.dlDate ? dAdd(task.dlDate, delta) : null };
-  }, [isDaily, mode, toDate, task.startDate, task.dlDate]);
+  }, [isDaily, isEvent, mode, toDate, task]);
 
   // sanitize() bên server cũng chặn, nhưng báo trước ngay đây thì đỡ mất công.
-  const spanBad = !isDaily && !!next.dlDate && next.dlDate < next.startDate;
+  const spanBad = !isDaily && !isEvent && !!next.dlDate && next.dlDate < next.startDate;
   const timeBad = isDaily && !multi && (!startTime || !endTime || endTime <= startTime);
 
   /** Khung giờ sẽ lưu — cũng là thứ đem dò trùng ở ngày đích. */
@@ -783,9 +876,11 @@ function MoveTaskPopup({
   const submit = () => {
     if (busy || spanBad || timeBad) return;
     if (clashes.length > 0 && !confirming) { setConfirming(true); return; }
-    onSave(isDaily
-      ? { startDate: next.startDate, slots: nextSlots }
-      : { startDate: next.startDate, dlDate: next.dlDate, dlTime: dlTime || null });
+    onSave(isEvent
+      ? { startDate: next.startDate, endDate: next.dlDate }
+      : isDaily
+        ? { startDate: next.startDate, slots: nextSlots }
+        : { startDate: next.startDate, dlDate: next.dlDate, dlTime: dlTime || null });
   };
 
   // Esc = hủy, Enter = lưu. Bắt ở window vì popup không phải modal chiếm focus.
@@ -804,7 +899,7 @@ function MoveTaskPopup({
 
   // Kẹp trong viewport để popup không rơi ra ngoài khi thả sát mép phải/dưới.
   const W = 268;
-  const H = (isDaily ? 190 : 290) + (clashes.length ? 40 + Math.min(clashes.length, 4) * 18 : 0);
+  const H = (isEvent ? 150 : isDaily ? 190 : 290) + (clashes.length ? 40 + Math.min(clashes.length, 4) * 18 : 0);
   const left = Math.max(8, Math.min(at.x + 12, window.innerWidth - W - 8));
   const top = Math.max(8, Math.min(at.y + 12, window.innerHeight - H - 8));
 
@@ -814,7 +909,7 @@ function MoveTaskPopup({
       <div className="wk-move-veil" onMouseDown={onCancel} />
       <div className="wk-move-pop" style={{ left, top, width: W }} onMouseDown={(e) => e.stopPropagation()}>
         <div className="wk-move-title" title={task.name}>
-          {isDaily ? '🕘' : STATUS_META[task.status].icon} Chuyển: <b>{task.name}</b>
+          {isEvent ? '📝' : isDaily ? '🕘' : STATUS_META[task.status].icon} Chuyển: <b>{task.name}</b>
         </div>
 
         <div className="wk-move-dates">
@@ -823,7 +918,13 @@ function MoveTaskPopup({
           <span className="wk-move-to">{dShort(toDate)}</span>
         </div>
 
-        {isDaily && multi ? (
+        {isEvent ? (
+          <div className="wk-move-preview">
+            Kết quả: <b>{next.dlDate && next.dlDate !== next.startDate
+              ? fmtEvent({ ...task, startDate: next.startDate, endDate: next.dlDate })
+              : `${dShort(next.startDate)} · ${fmtEvent({ ...task, startDate: next.startDate, endDate: next.startDate })}`}</b>
+          </div>
+        ) : isDaily && multi ? (
           <div className="wk-move-preview">
             Giữ nguyên {taskSlots.length} khung giờ: <b>{fmtSlots(taskSlots)}</b>
           </div>
@@ -904,7 +1005,8 @@ export default function WorkWorkspace() {
   const now = new Date();
   const [ym, setYm] = useState<{ y: number; m: number }>({ y: now.getFullYear(), m: now.getMonth() });
   const [selDate, setSelDate] = useState<string>(TODAY());
-  const [form, setForm] = useState<{ task: WorkTask | null } | null>(null);
+  /** kind: loại mặc định khi mở form THÊM (vd nút 📝 Ghi sự kiện). */
+  const [form, setForm] = useState<{ task: WorkTask | null; kind?: Kind } | null>(null);
 
   // ── Kéo thả công việc giữa các ô ngày ──────────────────────────────────────
   /** Chip đang được kéo + ngày của Ô NGUỒN (ô giữa khoảng chạy cũng tính). */
@@ -992,6 +1094,17 @@ export default function WorkWorkspace() {
     }
     return m;
   }, [tasks]);
+  /** Sự kiện còn kéo dài qua ngày này (các ngày SAU ngày bắt đầu). */
+  const byEventCont = useMemo(() => {
+    const m = new Map<string, WorkTask[]>();
+    for (const t of tasks) {
+      for (const day of eventDays(t)) {
+        if (!m.has(day)) m.set(day, []);
+        m.get(day)!.push(t);
+      }
+    }
+    return m;
+  }, [tasks]);
   const projects = useMemo(() => Array.from(new Set(tasks.map((t) => t.project).filter(Boolean))).sort(), [tasks]);
 
   /** 6 tuần hiển thị của tháng, Thứ 2 đầu tuần. */
@@ -1023,16 +1136,23 @@ export default function WorkWorkspace() {
   }, [weeks, reminders]);
   const remindersOn = (date: string) => remByDate.get(date) ?? (reminders ?? []).filter((r) => occursOn(r, date));
 
-  /** 3 nhóm của ngày đang chọn: bắt đầu hôm nay · đang chạy · deadline hôm nay. */
+  /** Nhóm của ngày đang chọn: bắt đầu hôm nay · đang chạy · deadline hôm nay · sự kiện. */
   const dayTasks = useMemo(() => {
-    const starts = [...(byStart.get(selDate) ?? [])].sort(
+    const all = byStart.get(selDate) ?? [];
+    const starts = all.filter((t) => t.kind !== 'event').sort(
       // Việc trong ngày xếp theo GIỜ bắt đầu; việc có deadline (không giờ) xuống dưới.
       (a, b) => (a.startTime ?? '99:99').localeCompare(b.startTime ?? '99:99'),
     );
     const running = bySpan.get(selDate) ?? [];
     const dls = (byDeadline.get(selDate) ?? []).filter((t) => t.startDate !== selDate);
-    return { starts, running, dls };
-  }, [byStart, bySpan, byDeadline, selDate]);
+    // Sự kiện: kéo dài từ hôm trước lên đầu (đang diễn ra sẵn), rồi sự kiện
+    // bắt đầu hôm nay theo giờ.
+    const events = [
+      ...[...(byEventCont.get(selDate) ?? [])].sort((a, b) => a.startDate.localeCompare(b.startDate)),
+      ...all.filter((t) => t.kind === 'event').sort((a, b) => (a.startTime ?? '').localeCompare(b.startTime ?? '')),
+    ];
+    return { starts, running, dls, events };
+  }, [byStart, bySpan, byDeadline, byEventCont, selDate]);
 
   const upcoming = useMemo(
     // Chỉ việc còn sống (đang chờ / đang diễn ra) — đã xong hay đã hủy thì
@@ -1084,7 +1204,7 @@ export default function WorkWorkspace() {
           // Việc có deadline là một KHOẢNG [startDate..dlDate] — khớp nếu khoảng
           // đó GIAO với khoảng lọc, không cần trùng đúng hai đầu mút. Việc trong
           // ngày (không dlDate) chỉ có một điểm là startDate.
-          const to = t.dlDate && t.dlDate > t.startDate ? t.dlDate : t.startDate;
+          const to = t.kind === 'event' ? evEnd(t) : t.dlDate && t.dlDate > t.startDate ? t.dlDate : t.startDate;
           if (to < range.from || t.startDate > range.to) return false;
         }
         return true;
@@ -1142,6 +1262,7 @@ export default function WorkWorkspace() {
         kind: t.kind, project: t.project, name: t.name, desc: t.desc,
         priority: t.priority, tags: t.tags, status: t.status,
         startDate: t.startDate, slots: slotsOf(t),
+        endDate: t.endDate ?? null, startTime: t.startTime, endTime: t.endTime,
         dlDate: t.dlDate, dlTime: t.dlTime, alert: t.alert,
         ...patch,
       });
@@ -1164,7 +1285,7 @@ export default function WorkWorkspace() {
   };
 
   const remove = async (t: WorkTask) => {
-    if (!window.confirm(`Xóa công việc "${t.name}"?`)) return;
+    if (!window.confirm(`Xóa ${t.kind === 'event' ? 'ghi chú sự kiện' : 'công việc'} "${t.name}"?`)) return;
     try {
       await workAction('remove', { id: t.id });
       await loadTasks();
@@ -1240,16 +1361,19 @@ export default function WorkWorkspace() {
     // dùng style st-dn (mờ + gạch ngang) — nó không phải việc "đã đóng", nó là
     // một bản ghi bình thường.
     const hasStatus = t.kind === 'deadline';
+    const isEv = t.kind === 'event';
     // Quá hạn chỉ có nghĩa với việc còn sống — đã xong/đã hủy thì thôi tô đỏ.
     const overdue = t.deadlineMs !== null && t.deadlineMs < Date.now() && meta.alerts;
     return (
-      <div key={t.id} className={hasStatus ? `wk-task st-${meta.cls}` : 'wk-task st-day'}>
+      <div key={t.id} className={hasStatus ? `wk-task st-${meta.cls}` : isEv ? 'wk-task st-ev' : 'wk-task st-day'}>
         <div className="wk-task-main">
           <div className="wk-task-line">
             {hasStatus
               ? <span className={`wk-st ${meta.cls}`} title={meta.hint}>{meta.icon} {meta.label}</span>
-              : <span className="wk-st kd" title={KIND_META.daily.hint}>{KIND_META.daily.icon} {KIND_META.daily.short}</span>}
-            <span className={`wk-pri ${PRIORITY_META[t.priority].cls}`}>{PRIORITY_META[t.priority].label}</span>
+              : isEv
+                ? <span className="wk-st ev" title={KIND_META.event.hint}>{KIND_META.event.icon} {KIND_META.event.short}</span>
+                : <span className="wk-st kd" title={KIND_META.daily.hint}>{KIND_META.daily.icon} {KIND_META.daily.short}</span>}
+            {!isEv && <span className={`wk-pri ${PRIORITY_META[t.priority].cls}`}>{PRIORITY_META[t.priority].label}</span>}
             {t.project && <span className="wk-proj">{t.project}</span>}
             <b className="wk-task-name">{t.name}</b>
             {/* 'deadline' = hôm nay tới hạn (đỏ); còn lại là ghi chú mềm (vd "từ 05/08"). */}
@@ -1257,6 +1381,7 @@ export default function WorkWorkspace() {
           </div>
           {t.desc && <RichText className="wk-task-desc" text={t.desc} />}
           <div className="wk-task-meta">
+            {isEv && <span className="wk-span" title="Thời gian sự kiện">📝 {fmtEvent(t)}</span>}
             {t.kind === 'daily' && fmtSpan(t) && (
               <span className="wk-span" title={`Việc trong ngày ${t.startDate.split('-').reverse().join('/')} · ${durText(slotsOf(t))}`}>
                 🕘 {fmtSpan(t)} {durText(slotsOf(t))}
@@ -1325,6 +1450,8 @@ export default function WorkWorkspace() {
         {sub === 'tasks' && (
           <>
             <button className="ghost sm" onClick={() => void loadTasks()} title="Tải lại">↻</button>
+            <button className="ghost sm" onClick={() => { setFormErr(null); setForm({ task: null, kind: 'event' }); }}
+              title="Ghi lại sự kiện xảy ra song song với công việc (trong ngày hoặc kéo dài qua ngày sau)">📝 Ghi sự kiện</button>
             <button className="sm" onClick={() => { setFormErr(null); setForm({ task: null }); }}>＋ Thêm công việc</button>
           </>
         )}
@@ -1424,7 +1551,10 @@ export default function WorkWorkspace() {
           {weeks.map((row, wi) => (
             <div key={wi} className="wk-cal-row">
               {row.map((cell) => {
-                const starts = byStart.get(cell.date) ?? [];
+                const startsAll = byStart.get(cell.date) ?? [];
+                const starts = startsAll.filter((t) => t.kind !== 'event');
+                // Sự kiện của ngày: kéo dài từ trước + bắt đầu hôm nay.
+                const events = [...(byEventCont.get(cell.date) ?? []), ...startsAll.filter((t) => t.kind === 'event')];
                 const running = bySpan.get(cell.date) ?? [];
                 const dls = byDeadline.get(cell.date) ?? [];
                 const isToday = cell.date === TODAY();
@@ -1461,6 +1591,7 @@ export default function WorkWorkspace() {
                     }}
                     title={[
                       cell.date,
+                      events.length ? `${events.length} sự kiện` : '',
                       running.length ? `${running.length} việc đang chạy` : '',
                       dls.length ? `${dls.length} deadline` : '',
                     ].filter(Boolean).join(' · ') + ' — double-click để thêm công việc'}
@@ -1484,6 +1615,27 @@ export default function WorkWorkspace() {
                       {(remByDate.get(cell.date)?.length ?? 0) > 2 && (
                         <span className="wk-chip more">+{remByDate.get(cell.date)!.length - 2} nhắc AL</span>
                       )}
+                      {/* Ghi chú SỰ KIỆN — màu riêng; ngày nối tiếp (kéo dài từ
+                          hôm trước) là chip viền gạch có ↪. */}
+                      {events.slice(0, 2).map((t) => {
+                        const cont = t.startDate !== cell.date;
+                        return (
+                          <span
+                            key={`ev-${t.id}`}
+                            className={`wk-chip ev${cont ? ' cont' : ''}`}
+                            draggable
+                            onDragStart={(e) => {
+                              e.stopPropagation();
+                              e.dataTransfer.effectAllowed = 'move';
+                              e.dataTransfer.setData('text/plain', t.id);
+                              setDrag({ task: t, fromDate: cell.date });
+                            }}
+                            onDragEnd={() => { setDrag(null); setDragOver(null); }}
+                            title={`📝 Sự kiện — ${t.name} · ${fmtEvent(t)} · kéo sang ô khác để dời`}
+                          >{cont ? '↪' : '📝'} {!cont && t.startTime ? <span className="wk-chip-t">{t.startTime}</span> : null} {t.name}</span>
+                        );
+                      })}
+                      {events.length > 2 && <span className="wk-chip more">+{events.length - 2} sự kiện</span>}
                       {starts.slice(0, 3).map((t) => (
                         // Việc có deadline: đã xong / đã hủy đều gạch ngang, hover cho
                         // biết trạng thái nào. Việc trong ngày KHÔNG có trạng thái —
@@ -1553,6 +1705,18 @@ export default function WorkWorkspace() {
           {dayTasks.dls.length > 0 && <div className="group-title" style={{ marginTop: 8 }}>Deadline ngày này</div>}
           {dayTasks.dls.map((t) => renderTaskRow(t, 'deadline'))}
 
+          {/* Ghi chú SỰ KIỆN — tách riêng khỏi công việc: chuyện xảy ra song
+              song trong ngày, không phải việc phải làm. */}
+          <div className="group-title" style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ flex: 1 }}>📝 Sự kiện</span>
+            <button className="ghost sm" onClick={() => { setFormErr(null); setForm({ task: null, kind: 'event' }); }}
+              title={`Ghi sự kiện ngày ${selDate.split('-').reverse().join('/')}`}>＋</button>
+          </div>
+          {dayTasks.events.length === 0 && (
+            <p className="small" style={{ color: 'var(--muted)', margin: 0 }}>Chưa có — bấm ＋ để ghi lại sự kiện (họp đột xuất, sự cố, nghỉ…).</p>
+          )}
+          {dayTasks.events.map((t) => renderTaskRow(t, t.startDate !== selDate ? `từ ${dShort(t.startDate)}` : undefined))}
+
           {reminders && (
             <>
               <div className="group-title" style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1595,6 +1759,7 @@ export default function WorkWorkspace() {
       {form && (
         <TaskForm
           initial={form.task}
+          kind={form.kind}
           startDate={selDate}
           projects={projects}
           tasks={tasks}

@@ -5,11 +5,14 @@
 // quản lý Mongo hiện có (lib/mongoConnections). File config local chỉ giữ
 // CON TRỎ (connectionId + database); collection cố định 'devbox_work_tasks'.
 //
-// HAI LOẠI công việc (field 'kind', xem WorkKind):
+// BA LOẠI mục (field 'kind', xem WorkKind):
 //   · 'daily'    việc trong ngày — khung giờ startTime–endTime, KHÔNG cảnh báo
 //                và KHÔNG trạng thái (luôn ghi 'done', UI ẩn hẳn phần này).
 //   · 'deadline' việc có deadline — dlDate/dlTime + cảnh báo, hiển thị suốt
 //                khoảng startDate..dlDate trên lịch.
+//   · 'event'    ghi chú SỰ KIỆN — chuyện xảy ra trong ngày (có thể kéo dài qua
+//                ngày sau: startDate..endDate, giờ tùy chọn), song song với
+//                công việc. Không trạng thái, không cảnh báo — như 'daily'.
 //
 // Trạng thái (4): 'pending' đang chờ · 'active' đang diễn ra · 'done' đã hoàn
 // thành · 'cancelled' đã hủy. CHỈ pending/active mới được nhắc — task đã xong
@@ -126,9 +129,19 @@ export type WorkAlert =
  * Dữ liệu cũ (trước khi tách loại) không có field này → đọc thành 'deadline'
  * (xem kindFromDoc), kể cả task không đặt deadline.
  */
-export type WorkKind = 'daily' | 'deadline';
+export type WorkKind = 'daily' | 'deadline' | 'event';
 
-export const WORK_KINDS: WorkKind[] = ['daily', 'deadline'];
+export const WORK_KINDS: WorkKind[] = ['daily', 'deadline', 'event'];
+
+/**
+ * Loại "bản ghi" — không trạng thái (luôn 'done'), không cảnh báo:
+ *   · 'daily' việc đã làm trong ngày;
+ *   · 'event' ghi chú SỰ KIỆN xảy ra trong ngày / kéo dài qua vài ngày, song
+ *     song với công việc (họp đột xuất, sự cố, nghỉ phép, mất điện…). Có
+ *     startDate..endDate, giờ bắt đầu / kết thúc tùy chọn.
+ */
+export const SILENT_KINDS: WorkKind[] = ['daily', 'event'];
+const isSilent = (k: WorkKind) => SILENT_KINDS.includes(k);
 
 /** Một khung giờ 'HH:mm' → 'HH:mm' của việc trong ngày. */
 export interface WorkSlot {
@@ -155,6 +168,12 @@ export interface WorkTask {
   slots: WorkSlot[];
   startTime: string | null;
   endTime: string | null;
+  /**
+   * Chỉ 'event': ngày KẾT THÚC sự kiện 'YYYY-MM-DD' (≥ startDate; = startDate
+   * nếu trong ngày). startTime/endTime của 'event' là giờ TÙY CHỌN ở hai đầu
+   * (endTime thuộc ngày endDate). Loại khác luôn null.
+   */
+  endDate: string | null;
   /** Deadline cam kết — ngày + giờ local, kèm epoch ms để tính cảnh báo. */
   dlDate: string | null;
   dlTime: string | null;
@@ -240,6 +259,22 @@ function sanitize(raw: Record<string, unknown>): Omit<WorkTask, 'id' | 'createdA
     endTime = slots[slots.length - 1].end;
   }
 
+  // ── Khoảng thời gian sự kiện (chỉ 'event') ────────────────────────────────
+  let endDate: string | null = null;
+  if (kind === 'event') {
+    const rawEnd = String(raw.endDate ?? '').trim() || startDate;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawEnd)) throw new Error('Ngày kết thúc không hợp lệ (YYYY-MM-DD).');
+    if (rawEnd < startDate) throw new Error('Ngày kết thúc không được trước ngày bắt đầu.');
+    endDate = rawEnd;
+    const st = String(raw.startTime ?? '').trim();
+    const et = String(raw.endTime ?? '').trim();
+    if (st && !HHMM.test(st)) throw new Error('Giờ bắt đầu không hợp lệ (HH:mm).');
+    if (et && !HHMM.test(et)) throw new Error('Giờ kết thúc không hợp lệ (HH:mm).');
+    if (st && et && endDate === startDate && et <= st) throw new Error('Giờ kết thúc phải sau giờ bắt đầu.');
+    startTime = st || null;
+    endTime = et || null;
+  }
+
   // ── Deadline + cảnh báo (chỉ 'deadline') ──────────────────────────────────
   let dlDate: string | null = null;
   let dlTime: string | null = null;
@@ -268,6 +303,7 @@ function sanitize(raw: Record<string, unknown>): Omit<WorkTask, 'id' | 'createdA
     slots,
     startTime,
     endTime,
+    endDate,
     dlDate,
     dlTime,
     deadlineMs,
@@ -286,7 +322,7 @@ function sanitize(raw: Record<string, unknown>): Omit<WorkTask, 'id' | 'createdA
  * hình dạng document) nhưng UI ẩn hẳn phần trạng thái của loại này.
  */
 function statusFromDoc(d: Document, today = todayStr()): WorkStatus {
-  if (kindFromDoc(d) === 'daily') return 'done';
+  if (isSilent(kindFromDoc(d))) return 'done';
   const raw = d.status;
   if (WORK_STATUSES.includes(raw as WorkStatus)) return raw as WorkStatus;
   if (raw === 'done') return 'done';
@@ -319,8 +355,9 @@ function fromDoc(d: Document): WorkTask {
     id: String(d._id),
     kind,
     slots: kind === 'daily' ? slotsFromDoc(d) : [],
-    startTime: kind === 'daily' && typeof d.startTime === 'string' ? d.startTime : null,
-    endTime: kind === 'daily' && typeof d.endTime === 'string' ? d.endTime : null,
+    startTime: isSilent(kind) && typeof d.startTime === 'string' ? d.startTime : null,
+    endTime: isSilent(kind) && typeof d.endTime === 'string' ? d.endTime : null,
+    endDate: kind === 'event' ? (typeof d.endDate === 'string' && d.endDate ? d.endDate : d.startDate ?? null) : null,
     project: d.project ?? '',
     name: d.name ?? '',
     desc: d.desc ?? '',
@@ -367,7 +404,7 @@ export async function addTask(raw: Record<string, unknown>): Promise<WorkTask> {
   // Mặc định: tạo cho ngày tương lai → ĐANG CHỜ; từ hôm nay trở về trước →
   // ĐANG DIỄN RA. Client vẫn có thể chỉ định thẳng trạng thái khác.
   // Việc trong ngày: KHÔNG có trạng thái để chọn — luôn 'done' (đã làm rồi).
-  const status: WorkStatus = base.kind === 'daily'
+  const status: WorkStatus = isSilent(base.kind)
     ? 'done'
     : parseStatus(raw.status) ?? (base.startDate > createdDate ? 'pending' : 'active');
   const task: WorkTask = {
@@ -379,8 +416,8 @@ export async function addTask(raw: Record<string, unknown>): Promise<WorkTask> {
     doneAt: status === 'done' || status === 'cancelled' ? Date.now() : null,
     // VIỆC TRONG NGÀY hoàn toàn im lặng (chỉ là bản ghi đã-làm-gì) — đánh dấu
     // sẵn "đã nhắc" để mọi luồng cảnh báo bỏ qua, không phụ thuộc filter query.
-    startNotifiedAt: base.kind === 'daily' ? Date.now() : null,
-    deadlineNotifiedAt: base.kind === 'daily' ? Date.now() : null,
+    startNotifiedAt: isSilent(base.kind) ? Date.now() : null,
+    deadlineNotifiedAt: isSilent(base.kind) ? Date.now() : null,
   };
   // Giờ nhắc đã Ở QUÁ KHỨ ngay lúc tạo (vd deadline 12:00 hôm nay, cảnh báo
   // trước 3h, tạo lúc 10:30) → coi như đã qua cửa sổ nhắc, KHÔNG bắn liền một
@@ -410,8 +447,8 @@ export async function updateTask(id: unknown, raw: Record<string, unknown>): Pro
   // Reset cờ nhắc — nhưng nếu lịch nhắc MỚI đã ở quá khứ thì đánh dấu luôn là
   // đã qua cửa sổ nhắc (không bắn liền ngay sau khi sửa) — cùng luật addTask.
   let deadlineNotifiedAt: number | null | undefined;
-  if (base.kind === 'daily') {
-    // Đổi sang VIỆC TRONG NGÀY → im lặng tuyệt đối (xem addTask).
+  if (isSilent(base.kind)) {
+    // Đổi sang việc trong ngày / sự kiện → im lặng tuyệt đối (xem addTask).
     deadlineNotifiedAt = Date.now();
   } else if (resetDeadline) {
     deadlineNotifiedAt = null;
@@ -423,7 +460,7 @@ export async function updateTask(id: unknown, raw: Record<string, unknown>): Pro
   // Trạng thái sửa ngay trong form (tùy chọn) — không gửi thì giữ nguyên. Loại
   // 'daily' bỏ qua mọi giá trị client gửi lên và ép 'done' (kể cả khi vừa đổi
   // loại từ deadline sang: task cũ đang 'active' phải thành 'done').
-  const nextStatus = base.kind === 'daily' ? 'done' : parseStatus(raw.status);
+  const nextStatus = isSilent(base.kind) ? 'done' : parseStatus(raw.status);
   const curStatus = statusFromDoc(cur);
   const statusPatch = nextStatus && nextStatus !== curStatus ? statusFields(nextStatus, cur) : {};
 
@@ -433,7 +470,7 @@ export async function updateTask(id: unknown, raw: Record<string, unknown>): Pro
       $set: {
         ...base,
         ...(deadlineNotifiedAt !== undefined ? { deadlineNotifiedAt } : {}),
-        ...(base.kind === 'daily'
+        ...(isSilent(base.kind)
           ? { startNotifiedAt: Date.now() }
           : resetStart ? { startNotifiedAt: null } : {}),
         // SAU cùng: mở lại task (statusFields xóa cờ đã-nhắc) phải thắng, kể cả
@@ -474,7 +511,7 @@ export async function setTaskStatus(id: unknown, status: unknown): Promise<void>
   if (!cur) throw new Error('Không tìm thấy công việc.');
   // Việc trong ngày không có trạng thái để chuyển — UI cũng không hiện nút nào,
   // nên tới được đây là client cũ hoặc gọi API tay.
-  if (kindFromDoc(cur) === 'daily') throw new Error('Việc trong ngày không có trạng thái để chuyển.');
+  if (isSilent(kindFromDoc(cur))) throw new Error('Việc trong ngày / ghi chú sự kiện không có trạng thái để chuyển.');
   await c.updateOne({ _id: tid as unknown as Document['_id'] }, { $set: statusFields(st, cur) });
 }
 
@@ -535,7 +572,8 @@ export async function runAlertSweep(now = Date.now()): Promise<WorkAlertEvent[]>
   // ghi "đã làm gì từ mấy giờ đến mấy giờ", không phải lời hẹn cần nhắc. Cờ
   // *NotifiedAt của nó cũng đã được set sẵn lúc ghi (addTask/updateTask), nên
   // đây là lớp chặn thứ hai.
-  const notDaily = { kind: { $ne: 'daily' } };
+  // Ghi chú SỰ KIỆN ('event') cũng vậy — chỉ là bản ghi chuyện đã xảy ra.
+  const notDaily = { kind: { $nin: SILENT_KINDS } };
   const alertable = { ...notDaily, status: { $in: [...ALERTABLE_STATUSES, 'open'] } };
 
   // 0) ĐANG CHỜ → ĐANG DIỄN RA khi đã tới ngày bắt đầu. "Đang chờ" nghĩa là

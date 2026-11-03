@@ -7673,6 +7673,12 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-chip.span.hi { border-color: color-mix(in srgb, var(--warn, #d29922) 55%, transparent); }
 .wk-chip.span.ur { border-color: color-mix(in srgb, var(--err) 55%, transparent); }
 .wk-chip.span.no { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+/* Ghi chú SỰ KIỆN — màu ngọc (khác hẳn task); ngày nối tiếp = viền gạch. */
+.wk-chip.ev { background: color-mix(in srgb, var(--grad-c, #0ea5e9) 22%, transparent); }
+.wk-chip.ev.cont {
+  background: transparent; border: 1px dashed color-mix(in srgb, var(--grad-c, #0ea5e9) 55%, transparent);
+  color: var(--muted);
+}
 /* Giờ bắt đầu của việc trong ngày, in ở đầu chip. */
 .wk-chip-t { font-family: var(--mono); font-size: 9px; opacity: .85; }
 
@@ -7743,6 +7749,8 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* Việc trong ngày — không trạng thái nên không mờ, không gạch ngang; vạch xám
    trung tính chỉ để phân biệt khỏi việc có deadline. */
 .wk-task.st-day { border-left: 3px solid color-mix(in srgb, var(--muted) 40%, transparent); }
+/* Ghi chú sự kiện — vạch ngọc, cùng màu chip trên lịch. */
+.wk-task.st-ev { border-left: 3px solid var(--grad-c, #0ea5e9); }
 .wk-task-acts { flex: none; display: flex; gap: 2px; }
 .wk-task-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .wk-task-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -7779,7 +7787,7 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .wk-slot { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
 /* ── Tab chọn LOẠI công việc trong form thêm/sửa ── */
-.wk-kindtabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+.wk-kindtabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; margin-bottom: 10px; }
 .wk-kindtab {
   display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left;
   padding: 7px 9px; border-radius: 9px; cursor: pointer; color: var(--muted);
@@ -7845,6 +7853,7 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 /* .kd = badge LOẠI thay cho badge trạng thái ở việc trong ngày (loại này không
    có trạng thái nào để hiện). */
 .wk-st.kd { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+.wk-st.ev { background: color-mix(in srgb, var(--grad-c, #0ea5e9) 18%, transparent); color: var(--grad-c, #0ea5e9); }
 
 .wk-st-switch { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
 .wk-st-btn {
