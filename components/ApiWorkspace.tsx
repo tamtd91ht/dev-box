@@ -34,6 +34,8 @@ import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 import JsonBox from './api/JsonBox';
+import type { editor as MonacoNs } from 'monaco-editor';
+type MonacoEditor = MonacoNs.IStandaloneCodeEditor;
 import SplitPane, { type SplitCollapsed, type SplitDir } from './api/SplitPane';
 import ResponsePane, { type ResTab } from './api/ResponsePane';
 import AuthPanel from './api/AuthPanel';
@@ -726,11 +728,18 @@ export default function ApiWorkspace() {
     });
   }, [setDraft]);
 
-  // Tự format khi ngơi tay ~700ms và body đang là JSON hợp lệ. Lúc còn dở dang
-  // (gõ nửa chừng cái key) thì JSON.parse fail nên không ai đụng vào text cả.
+  // Auto-format KHÔNG chạy lúc đang gõ trong ô: trước đây ngơi tay 700ms là
+  // format → vừa Enter giữa `{}` định gõ key thì dòng trống bị gộp mất, con
+  // trỏ văng ra ngoài `}`. Giờ chỉ format khi: dán vào (JSON minify dán từ
+  // log), rời ô, hoặc body đổi từ ngoài (import curl, mở request) lúc ô không
+  // focus. JSON đang dở dang thì parse fail nên không ai đụng vào text.
+  const bodyEd = useRef<MonacoEditor | null>(null);
+  const autoFormat = useCallback(() => {
+    if (autoFmt) formatBody();
+  }, [autoFmt, formatBody]);
   useEffect(() => {
     if (!autoFmt || draft.bodyType !== 'raw' || !looksLikeJson(draft.body)) return;
-    const t = setTimeout(formatBody, 700);
+    const t = setTimeout(() => { if (!bodyEd.current?.hasTextFocus()) formatBody(); }, 400);
     return () => clearTimeout(t);
   }, [autoFmt, draft.body, draft.bodyType, formatBody]);
 
@@ -912,7 +921,7 @@ export default function ApiWorkspace() {
                       <button className="ghost sm" onClick={formatBody} title="Format JSON 2 dấu cách">
                         ✨ Format JSON
                       </button>
-                      <label title="Tự format lại khi ngơi tay, miễn là JSON đang hợp lệ">
+                      <label title="Tự format khi dán vào hoặc rời ô, miễn là JSON đang hợp lệ (không format lúc đang gõ)">
                         <input type="checkbox" checked={autoFmt} onChange={(e) => setAutoFmt(e.target.checked)} /> auto
                       </label>
                       <span style={{ flex: 1 }} />
@@ -988,7 +997,10 @@ export default function ApiWorkspace() {
                       <JsonBox
                         path={`api-body-${cur.key}`}
                         value={draft.body}
-                        onChange={(v) => setDraft({ ...draft, body: v })}
+                        onChange={(v) => setDraft((d) => ({ ...d, body: v }))}
+                        onEditor={(e) => { bodyEd.current = e; }}
+                        onPaste={autoFormat}
+                        onBlur={autoFormat}
                         language={looksLikeJson(draft.body) || !draft.body.trim() ? 'json' : 'plaintext'}
                         vars={vars}
                         height="100%"

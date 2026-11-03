@@ -133,6 +133,69 @@ function registerVarCompletion(monaco: Monaco): void {
   }
 }
 
+// ── Đồng bộ value → editor mà KHÔNG làm văng con trỏ ───────────────────────
+//
+// Để @monaco-editor/react tự đồng bộ prop `value` thì mỗi lần prop khác nội
+// dung editor nó THAY CẢ VĂN BẢN (executeEdits toàn khung + forceMoveMarkers)
+// → con trỏ bị đẩy về cuối, nằm ngoài `}`. Hai lúc hay dính:
+//  - auto-format / nút Format đổi khoảng trắng → con trỏ nhảy ra cuối;
+//  - gõ nhanh: state React về trễ hơn editor một nhịp → bản CŨ đè lên bản mới,
+//    mất ký tự vừa gõ + con trỏ nhảy.
+// Nên ở đây chỉ đưa giá trị khởi tạo cho wrapper, còn việc đồng bộ tự làm:
+//  - bỏ qua giá trị chính editor vừa phát ra (echo của onChange);
+//  - thay đúng đoạn khác nhau (cắt phần đầu/cuối trùng), giữ undo được;
+//  - đặt lại con trỏ theo SỐ KÝ TỰ KHÔNG PHẢI KHOẢNG TRẮNG đứng trước nó —
+//    format chỉ đổi khoảng trắng nên con trỏ về đúng chỗ cũ trong JSON mới.
+
+const isWs = (c: string) => /\s/.test(c);
+
+/** Vị trí (offset) trong `next` tương ứng offset `off` của `prev`. */
+function mapOffset(prev: string, next: string, off: number): number {
+  let k = 0;
+  for (let i = 0; i < off && i < prev.length; i++) if (!isWs(prev[i])) k++;
+  if (k === 0) return 0;
+  for (let i = 0; i < next.length; i++) {
+    if (!isWs(next[i]) && --k === 0) return i + 1;
+  }
+  return next.length;
+}
+
+function syncInto(ed: editor.IStandaloneCodeEditor, next: string): void {
+  const model = ed.getModel();
+  if (!model) return;
+  const prev = model.getValue();
+  if (prev === next) return;
+  if (ed.getRawOptions().readOnly) {
+    // Ô chỉ đọc: executeEdits bị Monaco chặn trên editor readOnly → setValue.
+    ed.setValue(next);
+    return;
+  }
+  // Cắt phần đầu / cuối trùng nhau → chỉ thay đoạn giữa.
+  let a = 0;
+  const max = Math.min(prev.length, next.length);
+  while (a < max && prev[a] === next[a]) a++;
+  let b = 0;
+  while (b < max - a && prev[prev.length - 1 - b] === next[next.length - 1 - b]) b++;
+  const start = model.getPositionAt(a);
+  const end = model.getPositionAt(prev.length - b);
+  const sel = ed.getSelection();
+  const focused = ed.hasTextFocus();
+  const map = (o: number) => mapOffset(prev, next, o);
+  const anchor = sel ? map(model.getOffsetAt(sel.getStartPosition())) : 0;
+  const head = sel ? map(model.getOffsetAt(sel.getEndPosition())) : 0;
+  ed.pushUndoStop();
+  ed.executeEdits('api.sync', [{
+    range: { startLineNumber: start.lineNumber, startColumn: start.column, endLineNumber: end.lineNumber, endColumn: end.column },
+    text: next.slice(a, next.length - b),
+  }]);
+  ed.pushUndoStop();
+  if (sel && focused) {
+    const s = model.getPositionAt(anchor);
+    const e = model.getPositionAt(head);
+    ed.setSelection({ startLineNumber: s.lineNumber, startColumn: s.column, endLineNumber: e.lineNumber, endColumn: e.column });
+  }
+}
+
 /** Theo theme app (html[data-theme]) — đổi theme là editor đổi theo. */
 function useApiTheme(): string {
   const [dark, setDark] = useState(true);
@@ -161,12 +224,16 @@ export interface JsonBoxProps {
   onSubmit?: () => void;
   /** Nhận editor sau khi mount — để nút ngoài (🔍 tìm) gọi được action của Monaco. */
   onEditor?: (ed: editor.IStandaloneCodeEditor) => void;
+  /** Nhận sự kiện dán (vd tự format JSON vừa dán). */
+  onPaste?: () => void;
+  /** Editor mất focus (vd tự format khi rời ô). */
+  onBlur?: () => void;
   /** Có = ô soạn có gợi ý biến: gõ `{{`, bôi đen một biến để đổi, chuột phải → Chèn / đổi biến. */
   vars?: Record<string, string>;
 }
 
 export default function JsonBox({
-  value, onChange, path, language = 'json', height, placeholder, onSubmit, onEditor, vars,
+  value, onChange, path, language = 'json', height, placeholder, onSubmit, onEditor, vars, onPaste, onBlur,
 }: JsonBoxProps) {
   const theme = useApiTheme();
   // Giữ callback mới nhất trong ref: addCommand chỉ chạy lúc mount nên nó đóng
@@ -174,6 +241,17 @@ export default function JsonBox({
   // đi bản draft cũ.
   const submitRef = useRef(onSubmit);
   submitRef.current = onSubmit;
+  const changeRef = useRef(onChange);
+  changeRef.current = onChange;
+  const pasteRef = useRef(onPaste);
+  pasteRef.current = onPaste;
+  const blurRef = useRef(onBlur);
+  blurRef.current = onBlur;
+  /** Các giá trị editor đã phát ra mà prop chưa bắt kịp — prop bằng một trong
+   *  số đó là echo trễ nhịp (gõ nhanh), không được đồng bộ ngược đè lên. */
+  const emitted = useRef<string[]>([]);
+  /** Đang tự ghi vào model → không phát onChange cho chính lần ghi đó. */
+  const syncing = useRef(false);
 
   // Biến mới nhất cho provider (đọc qua ref, không phải đăng ký lại).
   const varsRef = useRef(vars ?? {});
@@ -189,13 +267,45 @@ export default function JsonBox({
     return () => { modelVars.delete(uri); };
   }, [ed, path, withVars]);
 
+  // Đồng bộ prop value → model (xem syncInto). Chạy lại khi đổi path: wrapper
+  // dùng lại model cũ của path đó nếu còn, có thể lệch với draft hiện tại.
+  useEffect(() => {
+    if (!ed) return;
+    const cur = ed.getModel()?.getValue();
+    if (cur === value) { emitted.current = []; return; }
+    // Echo của lần gõ trước mà editor đã đi tiếp → bỏ qua, đừng đè.
+    const i = emitted.current.indexOf(value);
+    if (i >= 0) { emitted.current = emitted.current.slice(i + 1); return; }
+    syncing.current = true;
+    try { syncInto(ed, value); } finally { syncing.current = false; }
+    emitted.current = [];
+  }, [ed, value, path]);
+
+  // Phát onChange tự quản (không qua prop onChange của wrapper — để biết đâu là
+  // echo). Đổi model (path) không phát gì: content change chỉ đến từ gõ/sửa.
+  useEffect(() => {
+    if (!ed) return;
+    const d1 = ed.onDidChangeModelContent(() => {
+      if (syncing.current || !changeRef.current) return;
+      const v = ed.getValue();
+      emitted.current.push(v);
+      if (emitted.current.length > 50) emitted.current.shift();
+      changeRef.current(v);
+    });
+    const d2 = ed.onDidPaste(() => pasteRef.current?.());
+    const d3 = ed.onDidBlurEditorText(() => blurRef.current?.());
+    return () => { d1.dispose(); d2.dispose(); d3.dispose(); };
+  }, [ed]);
+
   return (
     <Editor
       path={path}
       language={language}
       theme={theme}
-      value={value}
-      onChange={onChange ? (v) => onChange(v ?? '') : undefined}
+      // KHÔNG truyền `value` có kiểm soát: wrapper sẽ thay cả văn bản mỗi lần
+      // lệch → văng con trỏ. Chỉ dùng làm nội dung lúc tạo model; phần còn lại
+      // do effect đồng bộ ở trên lo.
+      defaultValue={value}
       beforeMount={(monaco) => { defineApiThemes(monaco); registerVarCompletion(monaco); }}
       onMount={(e: editor.IStandaloneCodeEditor, monaco: Monaco) => {
         e.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => submitRef.current?.());
