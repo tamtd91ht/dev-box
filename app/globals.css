@@ -1106,6 +1106,14 @@ button.sm { padding: 6px 12px; font-size: 12px; border-radius: 8px; }
   transition: background .15s, border-color .15s;
 }
 .ep-item:hover { background: var(--glass-2); }
+/* .ep-item dùng trên <button> (Kafka topic/group, Rabbit queue/exchange): gỡ kiểu `button` gradient toàn cục
+   (nền tím + chữ trắng) — hàng danh sách phải trong suốt như bản <div>, chữ theo theme. */
+button.ep-item {
+  width: 100%; text-align: left; font: inherit; font-weight: 400; color: var(--text);
+  background: transparent; box-shadow: none;
+}
+button.ep-item:hover:not(:disabled) { transform: none; box-shadow: none; background: var(--glass-2); }
+button.ep-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .ep-item.active {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
@@ -1763,7 +1771,7 @@ audio { width: 100%; margin-top: 12px; }
 .kafka-subnav { display: flex; gap: 4px; }
 .kafka-subnav button {
   padding: 5px 12px; font-size: 12px; border-radius: 8px; border: 1px solid transparent;
-  background: transparent; box-shadow: none;
+  background: transparent; box-shadow: none; color: var(--text); /* chữ trắng của `button` toàn cục mất hút trên nền sáng */
 }
 .kafka-subnav button:hover:not(:disabled) { transform: none; box-shadow: none; background: var(--glass-2); }
 .kafka-subnav button.on {
