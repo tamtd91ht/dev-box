@@ -11989,3 +11989,137 @@ html.tf-page nextjs-portal { display: none !important; }
 .pg-fk { margin-left: 6px; font-size: 11.5px; font-family: var(--mono); }
 .pg-table-left th, .pg-table-left td { text-align: left; vertical-align: top; }
 .pg-wrap { white-space: normal !important; word-break: break-word; min-width: 160px; }
+
+/* ── TOÀN CẢNH (components/wall/WallWorkspace): Lưới · Theo dự án · Slide ────────────────
+   Dựng trên .mon (biến --lv theo .lv-*, ô .mon-tile.mon-at, tooltip .mon-tip). */
+.wall .wall-box { flex: 1; min-height: 0; padding: 10px 14px 14px; overflow: hidden; }
+.wall .wall-box.view-grid { overflow-y: auto; }
+.wall .wall-grid { padding-top: 0; }
+.wall .mon-bar { flex-wrap: wrap; row-gap: 6px; }
+.wall .mon-bar .mon-select { padding-top: 3px; padding-bottom: 3px; }
+.wall .mon-bar select.mon-select { width: auto; max-width: 180px; flex: none; }
+.wall .mon-pop { width: 320px; max-width: calc(100vw - 24px); }
+.wall .mon-pop label, .wall-check { text-transform: none; letter-spacing: normal; font-size: 13px; font-weight: 400; color: var(--text); margin: 0; }
+.wall-check input { width: auto; margin: 0; }
+.wall-sec input { width: 72px; }
+.wall-groups { align-items: flex-start; }
+.wall-groups .mon-pop-inline { flex-direction: column; gap: 4px; }
+.wall-check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+
+/* Ô cỡ xl — chỉ có ở slide (ô cao tới 300px, đọc từ xa). */
+.mon-tile.mon-at.xl { padding: 16px 18px 16px 19px; }
+.mon-at.xl .mon-at-top { font-size: 14px; }
+.mon-at.xl .mon-at-top .mon-dot { width: 11px; height: 11px; }
+.mon-at.xl .mon-at-name { font-size: 22px; }
+.mon-at.xl .mon-at-st { font-size: 16px; }
+.mon-at.xl .mon-at-body { gap: 5px; }
+.mon-at-lv { flex: none; font-weight: 600; color: var(--lv); }
+.mon-at.lv-ok .mon-at-lv, .mon-at.lv-unknown .mon-at-lv { color: var(--muted); }
+
+/* Thanh tỉ lệ mức (đầu cột / đầu slide): mỗi đoạn dài theo số tài nguyên ở mức đó. */
+.wall-bar-lv { display: flex; gap: 2px; height: 6px; overflow: hidden; border-radius: 999px; background: var(--glass-2); }
+.wall-bar-lv span { min-width: 4px; background: var(--lv); }
+.wall-bar-lv span.lv-ok { opacity: .55; }
+.wall-bar-lv span.lv-unknown { opacity: .45; }
+.wall-count {
+  flex: none; min-width: 22px; padding: 0 6px; border-radius: 6px; background: var(--glass-2);
+  font-size: 12px; line-height: 18px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.wall-sum { font-size: 12px; color: var(--muted); }
+.wall-sum.bad { color: var(--lv); font-weight: 600; }
+
+/* ── Theo dự án: mỗi dự án một cột, cuộn trong cột; nhiều dự án thì cuộn ngang ── */
+.wall .wall-box.view-project { display: flex; }
+.wall-board { display: flex; gap: 12px; flex: 1; min-width: 0; min-height: 0; overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 4px; }
+.wall-col {
+  display: flex; flex-direction: column; flex: 1 1 300px; min-width: 300px; min-height: 0; overflow: hidden;
+  border: 1px solid var(--glass-brd); border-top: 3px solid var(--lv); border-radius: 12px; background: var(--glass);
+}
+.wall-col.lv-ok, .wall-col.lv-unknown { border-top-color: var(--glass-brd); }
+.wall-col-head { display: flex; flex-direction: column; gap: 6px; flex: none; padding: 10px 12px 10px 14px; border-bottom: 1px solid var(--glass-brd); }
+.wall-col-title { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; }
+.wall-col-title .mon-dot { background: var(--lv); }
+.wall-col.lv-crit .wall-col-title .mon-dot, .wall-col.lv-down .wall-col-title .mon-dot { animation: mon-pulse 1.6s ease-in-out infinite; }
+.wall-col-title b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wall-col-focus {
+  display: grid; place-items: center; flex: none; width: 26px; height: 26px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted); cursor: pointer; font: inherit;
+}
+.wall-col-focus:hover { background: var(--glass-2); color: var(--text); }
+.wall-col-focus.on { background: var(--accent-solid); color: #fff; }
+.wall-col-focus:focus-visible, .slide-btn:focus-visible, .slide-group:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wall-col-body { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; padding: 10px; overflow-y: auto; overscroll-behavior: contain; }
+.wall-col-group { display: flex; flex-direction: column; gap: 6px; }
+.wall-col-sub { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.wall-col-tiles { display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); grid-auto-rows: 92px; }
+
+/* ── Slide: đầu slide to (đọc từ xa) + thanh tiến trình + lưới vừa khung, không cuộn ── */
+.wall-slides { display: flex; flex-direction: column; gap: 10px; height: 100%; min-width: 0; }
+.slide-head {
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; flex: none;
+  padding: 12px 16px 12px 18px; border: 1px solid var(--glass-brd); border-left: 5px solid var(--lv); border-radius: 12px;
+  background: color-mix(in srgb, var(--lv) 8%, var(--glass));
+}
+.slide-head.lv-ok, .slide-head.lv-unknown { background: var(--glass); }
+.slide-main { display: flex; flex-direction: column; gap: 6px; flex: 1 1 360px; min-width: 0; }
+.slide-main .wall-bar-lv { max-width: 520px; height: 8px; }
+.slide-kind { font-size: clamp(11px, .4vw + 6px, 15px); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.slide-title { display: flex; align-items: center; gap: 10px; min-width: 0; margin: 0; font-size: clamp(20px, 1.1vw + 10px, 38px); line-height: 1.25; font-weight: 700; color: var(--text); }
+.slide-title .mon-dot { width: 12px; height: 12px; background: var(--lv); }
+.slide-head.lv-crit .slide-title .mon-dot, .slide-head.lv-down .slide-title .mon-dot { animation: mon-pulse 1.6s ease-in-out infinite; }
+.slide-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slide-page { flex: none; font-size: clamp(13px, .4vw + 7px, 18px); font-weight: 500; color: var(--muted); }
+.slide-sum { font-size: clamp(13px, .5vw + 6px, 22px); color: var(--muted); }
+.slide-sum.bad { color: var(--lv); font-weight: 600; }
+.slide-side { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.slide-groups { display: flex; flex-wrap: wrap; gap: 4px; padding: 3px; border-radius: 999px; background: var(--glass-2); }
+.slide-group {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border: 0; border-radius: 999px;
+  background: transparent; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer;
+}
+.slide-group.on { background: var(--accent-solid); color: #fff; font-weight: 600; }
+.slide-group:not(.on):hover { color: var(--text); }
+.slide-group-n { font-size: 12px; opacity: .8; font-variant-numeric: tabular-nums; }
+.slide-ctrl { display: flex; align-items: center; gap: 4px; }
+.slide-btn {
+  display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--glass-brd); border-radius: 8px;
+  background: var(--glass); color: var(--text); cursor: pointer; font: inherit; font-size: 15px;
+}
+.slide-btn:hover { background: var(--glass-2); border-color: var(--glass-brd-hover); }
+.slide-count { margin-left: 6px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.slide-progress { flex: none; height: 3px; overflow: hidden; border-radius: 999px; background: var(--glass-2); }
+.slide-progress span { display: block; height: 100%; background: var(--accent); transform-origin: left; animation: wall-progress linear forwards; }
+@keyframes wall-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.slide-stage { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.slide-grid { animation: wall-slide-in .35s ease-out; }
+@keyframes wall-slide-in { from { opacity: 0; transform: translateX(16px); } }
+
+/* ── Trình chiếu (toàn màn hình) ── */
+.wall.wall-fs { background: var(--bg-0); }
+.wall.wall-fs .wall-box { padding: 14px 18px 18px; }
+/* Đang chiếu slide: thanh công cụ thành lớp phủ ẩn ở mép trên (không chiếm chỗ → lưới không xô lệch).
+   Rê chuột vào dải mép trên (.wall-reveal) hoặc Tab tới một nút trong thanh thì trượt xuống. */
+.wall-reveal { position: absolute; top: 0; left: 0; right: 0; z-index: 39; height: 18px; }
+.wall-kiosk .wall-tools {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 40;
+  background: var(--bg-1); box-shadow: var(--shadow-sm);
+  opacity: 0; pointer-events: none; transform: translateY(-100%); transition: opacity .18s, transform .18s;
+}
+.wall-reveal:hover + .wall-tools, .wall-kiosk .wall-tools:hover, .wall-kiosk .wall-tools:focus-within { opacity: 1; pointer-events: auto; transform: none; }
+/* Nút trước / tạm dừng / sau chỉ mờ đi (vẫn giữ chỗ); rê chuột vào đầu slide hoặc Tab tới thì hiện. */
+.wall-kiosk .slide-btn { opacity: 0; pointer-events: none; transition: opacity .18s; }
+.wall-kiosk .slide-head:hover .slide-btn, .wall-kiosk .slide-ctrl:focus-within .slide-btn { opacity: 1; pointer-events: auto; }
+
+@media (max-width: 700px) {
+  .slide-head { gap: 10px; padding: 10px 12px 10px 14px; }
+  .slide-main { flex-basis: 100%; }
+  .slide-side { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .wall .wall-box.view-project { display: block; overflow-y: auto; }
+  .wall-board { flex-direction: column; overflow-x: visible; }
+  .wall-col { flex: none; min-width: 0; }
+  .wall-col-body { overflow: visible; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .slide-grid, .slide-progress span, .wall-col .mon-dot, .slide-title .mon-dot { animation: none; }
+  .wall-kiosk .wall-tools, .wall-kiosk .slide-btn { transition: none; }
+}

@@ -75,6 +75,7 @@ const GitWorkspace = memo(dynamic(() => loadPane(() => import('@/components/GitW
 const CodeStudio = memo(dynamic(() => loadPane(() => import('@/components/CodeStudio')), { ssr: false, loading: PaneLoading }));
 const TerminalWorkspace = memo(dynamic(() => loadPane(() => import('@/components/TerminalWorkspace')), { ssr: false, loading: PaneLoading }));
 const MonitorWorkspace = memo(dynamic(() => loadPane(() => import('@/components/monitor/MonitorWorkspace')), { ssr: false, loading: PaneLoading }));
+const WallWorkspace = memo(dynamic(() => loadPane(() => import('@/components/wall/WallWorkspace')), { ssr: false, loading: PaneLoading }));
 const RedisWorkspace = memo(dynamic(() => loadPane(() => import('@/components/RedisWorkspace')), { ssr: false, loading: PaneLoading }));
 const KafkaWorkspace = memo(dynamic(() => loadPane(() => import('@/components/KafkaWorkspace')), { ssr: false, loading: PaneLoading }));
 const RabbitWorkspace = memo(dynamic(() => loadPane(() => import('@/components/RabbitWorkspace')), { ssr: false, loading: PaneLoading }));
@@ -105,6 +106,7 @@ const AutomationWorkspace = memo(dynamic(() => loadPane(() => import('@/componen
 const PANE_PREFETCH: (() => Promise<unknown>)[] = [
   () => import('@/components/WorkWorkspace'),
   () => import('@/components/monitor/MonitorWorkspace'),
+  () => import('@/components/wall/WallWorkspace'),
   () => import('@/components/TerminalWorkspace'),
   () => import('@/components/RedisWorkspace'),
   () => import('@/components/KafkaWorkspace'),
@@ -255,6 +257,7 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'code', icon: '⌨', label: 'Code', badge: 'ide' },
   { key: 'terminal', icon: '❯', label: 'Terminal', badge: 'shell' },
   { key: 'monitor', icon: '📊', label: 'Monitor', badge: 'infra' },
+  { key: 'wall', icon: '🖥', label: 'Toàn cảnh', badge: 'slide' },
   { key: 'redis', icon: '◆', label: 'Redis', badge: 'local' },
   { key: 'kafka', icon: '≋', label: 'Kafka', badge: 'local' },
   { key: 'rabbit', icon: '🐇', label: 'RabbitMQ', badge: 'local' },
@@ -956,8 +959,14 @@ export default function Home() {
         {/* Monitor luôn mount (không chờ `visited`): cảnh báo critical ở footer cần
             vòng đo chạy ngay từ lúc mở app, dù chưa vào tab Monitor lần nào. */}
         <main className="workspace" style={pane('monitor')} aria-hidden={!shown('monitor')}>
-          <MonitorWorkspace visible={shown('monitor')} onOpenTab={pickTab} onSummary={setMonSum} />
+          {/* Toàn cảnh đọc số liệu của Monitor (lib/monitor/store) → đang xem Toàn cảnh thì đo theo nhịp của tab đang mở. */}
+          <MonitorWorkspace visible={shown('monitor') || shown('wall')} onOpenTab={pickTab} onSummary={setMonSum} />
         </main>
+        {visited.wall && (
+          <main className="workspace" style={pane('wall')} aria-hidden={!shown('wall')}>
+            <WallWorkspace visible={shown('wall')} onOpenTab={pickTab} />
+          </main>
+        )}
         {visited.redis && (
           <main className="workspace" style={pane('redis')} aria-hidden={!shown('redis')}>
             <RedisWorkspace />

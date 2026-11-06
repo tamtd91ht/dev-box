@@ -26,6 +26,7 @@ import { emitInfraFocus } from '@/lib/infraFocus';
 import { focusFromRow } from '@/lib/monitor/focus';
 import MonitorThresholds from './MonitorThresholds';
 import type { CritStack } from './CritBar';
+import { publishMonitor } from '@/lib/monitor/store';
 
 type View = 'all' | 'tiles' | 'table';
 type Density = 'full' | 'compact';
@@ -66,7 +67,7 @@ const ALL_GAP = 6;
 /** padding-top của .mon-all — trừ ra khi đo chiều cao còn lại. */
 const ALL_PAD_TOP = 10;
 
-type AllSize = 'sm' | 'md' | 'lg';
+export type AllSize = 'sm' | 'md' | 'lg' | 'xl';
 /** Cao bao nhiêu thì ô hiện thêm dòng chỉ số (xem AllTile). */
 const sizeOf = (h: number): AllSize => (h >= 124 ? 'lg' : h >= 92 ? 'md' : 'sm');
 
@@ -75,14 +76,14 @@ const sizeOf = (h: number): AllSize => (h >= 124 ? 'lg' : h >= 92 ? 'md' : 'sm')
  * (rowH kẹp ở MAX_H); chọn cách có ô "dùng được" lớn nhất = min(colW, rowH×ASPECT),
  * hoà thì lấy nhiều cột hơn. Không cách nào vừa nổi ở cỡ MIN thì dùng cỡ MIN và cuộn.
  */
-function fitAll(n: number, w: number, h: number): { cols: number; rowH: number } | null {
+export function fitAll(n: number, w: number, h: number, maxH = ALL_MAX_H): { cols: number; rowH: number } | null {
   if (n === 0 || w < ALL_MIN_W || h <= 0) return null;
   const maxCols = Math.min(n, Math.max(1, Math.floor((w + ALL_GAP) / (ALL_MIN_W + ALL_GAP))));
   let best: { cols: number; rowH: number; score: number } | null = null;
   for (let c = 1; c <= maxCols; c++) {
     const r = Math.ceil(n / c);
     const colW = (w - (c - 1) * ALL_GAP) / c;
-    const rowH = Math.min(ALL_MAX_H, Math.floor((h - (r - 1) * ALL_GAP) / r));
+    const rowH = Math.min(maxH, Math.floor((h - (r - 1) * ALL_GAP) / r));
     if (rowH < ALL_MIN_H) continue;
     const score = Math.min(colW, rowH * ALL_ASPECT);
     if (!best || score >= best.score) best = { cols: c, rowH, score };
@@ -168,6 +169,11 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
     const critStacks = order.filter((s) => bad.has(s)).map((s) => ({ stack: s, n: bad.get(s)! }));
     onSummary?.({ bad: counts.down + counts.crit, warn: counts.warn, total: rows.length, critStacks });
   }, [counts, rows, order, onSummary]);
+
+  // Chia số liệu cho màn Toàn cảnh (lib/monitor/store) — một vòng đo cho cả hai màn.
+  useEffect(() => {
+    publishMonitor({ rows, counts, loaded, roundBusy, lastRoundAt, overrides, order, refreshAll, refreshOne });
+  }, [rows, counts, loaded, roundBusy, lastRoundAt, overrides, order, refreshAll, refreshOne]);
 
   // ── Lọc ──
   const [stackFilter, setStackFilter] = useState<InfraStack[]>([]);
@@ -643,42 +649,7 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
       </div>
 
       {/* ── Tooltip nguyên nhân ── */}
-      {tip && tipRow && !selectedRow && (
-        <div
-          className={`mon-tip lv-${tipRow.ev.level}`}
-          style={{ left: tip.x, top: tip.y, transform: tip.above ? 'translateY(-100%)' : undefined }}
-          role="tooltip"
-        >
-          <div className="mon-tip-head">
-            <span className="mon-dot" aria-hidden />
-            <strong>{tipRow.res.name}</strong>
-            <span className="mon-tip-lv">{LEVEL_LABEL[tipRow.ev.level]}</span>
-          </div>
-          <div className="mon-tip-sub">
-            {STACK_META[tipRow.res.stack].icon} {STACK_META[tipRow.res.stack].label} · {tipRow.res.project}
-            {tipRow.res.address ? ` · ${tipRow.res.address}` : ''}
-          </div>
-          {tipRow.ev.reasons.length > 0 ? (
-            <ul className="mon-tip-reasons">
-              {tipRow.ev.reasons.slice(0, 5).map((r) => (
-                <li key={r.metric} className={`lv-${r.level}`}>
-                  <span className="mon-dot sm" aria-hidden />
-                  <div>{r.text}{r.why ? <div className="mon-tip-why">{r.why}</div> : null}</div>
-                </li>
-              ))}
-              {tipRow.ev.reasons.length > 5 && <li className="mon-faint">… và {tipRow.ev.reasons.length - 5} vấn đề khác</li>}
-            </ul>
-          ) : (
-            <div className="mon-tip-ok">
-              {tipRow.ev.level === 'unknown' ? 'Chưa có số liệu — đang chờ lần đo đầu.' : 'Mọi chỉ số đang trong ngưỡng.'}
-            </div>
-          )}
-          <div className="mon-tip-foot">
-            {tipRow.st.since && tipRow.ev.level !== 'unknown' ? `${LEVEL_LABEL[tipRow.ev.level]} từ ${ago(tipRow.st.since, now)} · ` : ''}
-            {tipRow.st.last ? `đo ${ago(tipRow.st.last.at, now)}` : ''} · bấm để xem chi tiết
-          </div>
-        </div>
-      )}
+      {tip && tipRow && !selectedRow && <MonTip row={tipRow} now={now} x={tip.x} y={tip.y} above={tip.above} />}
 
       {/* ── Chi tiết ── */}
       {selectedRow && (
@@ -704,6 +675,46 @@ export default function MonitorWorkspace({ visible = true, onOpenTab, onSummary 
       {showSettings && (
         <MonitorThresholds overrides={overrides} onSave={saveOverrides} onClose={() => setShowSettings(false)} />
       )}
+    </div>
+  );
+}
+
+/** Tooltip nguyên nhân của một tài nguyên (dùng chung với màn Toàn cảnh). */
+export function MonTip({ row: tipRow, now, x, y, above }: { row: Row; now: number; x: number; y: number; above: boolean }) {
+  return (
+    <div
+      className={`mon-tip lv-${tipRow.ev.level}`}
+      style={{ left: x, top: y, transform: above ? 'translateY(-100%)' : undefined }}
+      role="tooltip"
+    >
+      <div className="mon-tip-head">
+        <span className="mon-dot" aria-hidden />
+        <strong>{tipRow.res.name}</strong>
+        <span className="mon-tip-lv">{LEVEL_LABEL[tipRow.ev.level]}</span>
+      </div>
+      <div className="mon-tip-sub">
+        {STACK_META[tipRow.res.stack].icon} {STACK_META[tipRow.res.stack].label} · {tipRow.res.project}
+        {tipRow.res.address ? ` · ${tipRow.res.address}` : ''}
+      </div>
+      {tipRow.ev.reasons.length > 0 ? (
+        <ul className="mon-tip-reasons">
+          {tipRow.ev.reasons.slice(0, 5).map((r) => (
+            <li key={r.metric} className={`lv-${r.level}`}>
+              <span className="mon-dot sm" aria-hidden />
+              <div>{r.text}{r.why ? <div className="mon-tip-why">{r.why}</div> : null}</div>
+            </li>
+          ))}
+          {tipRow.ev.reasons.length > 5 && <li className="mon-faint">… và {tipRow.ev.reasons.length - 5} vấn đề khác</li>}
+        </ul>
+      ) : (
+        <div className="mon-tip-ok">
+          {tipRow.ev.level === 'unknown' ? 'Chưa có số liệu — đang chờ lần đo đầu.' : 'Mọi chỉ số đang trong ngưỡng.'}
+        </div>
+      )}
+      <div className="mon-tip-foot">
+        {tipRow.st.since && tipRow.ev.level !== 'unknown' ? `${LEVEL_LABEL[tipRow.ev.level]} từ ${ago(tipRow.st.since, now)} · ` : ''}
+        {tipRow.st.last ? `đo ${ago(tipRow.st.last.at, now)}` : ''} · bấm để xem chi tiết
+      </div>
     </div>
   );
 }
@@ -787,13 +798,19 @@ function Tile({ row, now, compact, showStack, selected, onOpen, onEnter, onLeave
   );
 }
 
-type AllTileProps = Omit<TileProps, 'compact' | 'showStack'> & { size: AllSize };
+type AllTileProps = Omit<TileProps, 'compact' | 'showStack'> & {
+  size: AllSize;
+  /** Đã nằm dưới tiêu đề dự án (Toàn cảnh › Theo dự án / slide dự án) → không lặp tên dự án. */
+  hideProject?: boolean;
+  /** Đã nằm dưới tiêu đề loại → thay huy hiệu loại bằng chữ mức. */
+  hideStack?: boolean;
+};
 
 /** Số dòng trạng thái theo cỡ ô: ô nhỏ gộp 1 dòng, ô lớn mỗi chỉ số một dòng. */
-const ALL_LINES: Record<AllSize, number> = { sm: 1, md: 2, lg: 3 };
+const ALL_LINES: Record<AllSize, number> = { sm: 1, md: 2, lg: 3, xl: 3 };
 
 /** Ô của "Toàn bộ": loại · tên · trạng thái (thêm dòng khi ô đủ cao). Chi tiết nằm ở tooltip. */
-function AllTile({ row, now, size, selected, onOpen, onEnter, onLeave }: AllTileProps) {
+export function AllTile({ row, now, size, selected, onOpen, onEnter, onLeave, hideProject, hideStack }: AllTileProps) {
   const { res, st, ev } = row;
   const meta = STACK_META[res.stack];
   const max = ALL_LINES[size];
@@ -825,8 +842,10 @@ function AllTile({ row, now, size, selected, onOpen, onEnter, onLeave }: AllTile
     >
       <div className="mon-at-top">
         <span className="mon-dot" aria-hidden />
-        <span className="mon-at-stack">{meta.icon} {meta.short}</span>
-        <span className="mon-at-proj">{res.project}</span>
+        {hideStack
+          ? <span className="mon-at-lv">{LEVEL_LABEL[ev.level]}</span>
+          : <span className="mon-at-stack">{meta.icon} {meta.short}</span>}
+        <span className="mon-at-proj">{hideProject ? '' : res.project}</span>
         {ev.reasons.length > 1 && <span className="mon-tile-n">{ev.reasons.length}</span>}
       </div>
       <div className="mon-at-name">{res.name}</div>
