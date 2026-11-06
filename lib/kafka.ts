@@ -7,6 +7,8 @@ import { apiFetch } from './apiFetch';
 import type { KafkaLagDiagnosis } from '@/lib/kafkaDiagnoseRules';
 import type { KafkaClusterDiagnosis } from '@/lib/kafkaClusterRules';
 export type { KafkaLagDiagnosis, KafkaClusterDiagnosis };
+import type { KafkaPcRow } from '@/lib/kafkaBalance';
+export type { KafkaPcRow, KafkaPcSummary, PcStatus } from '@/lib/kafkaBalance';
 
 /** A Kafka connection as returned to the browser. */
 export interface PublicKafkaConnection {
@@ -60,6 +62,8 @@ export interface GroupSummary {
   protocolType: string;
   state: string;
   members: number;
+  /** Cân bằng consumer ↔ partition (lag = null ở danh sách). Vắng = không đánh giá được. */
+  balance?: KafkaPcRow[];
 }
 
 export interface GroupPartitionLag {
@@ -67,6 +71,17 @@ export interface GroupPartitionLag {
   committed: number | null;
   logEnd: number;
   lag: number | null;
+  /** Consumer đang giữ partition ("clientId@host"); vắng = chưa giao cho ai. */
+  owner?: string;
+}
+
+/** Một consumer của group và các partition nó được giao. */
+export interface GroupConsumer {
+  memberId: string;
+  clientId: string;
+  host: string;
+  topics: string[];
+  assigned: { topic: string; partitions: number[] }[];
 }
 
 export interface GroupTopicLag {
@@ -81,6 +96,10 @@ export interface GroupDetail {
   members: { memberId: string; clientId: string; clientHost: string }[];
   topics: GroupTopicLag[];
   totalLag: number;
+  /** Consumer + phân công partition. Vắng = không phải group consumer thường. */
+  consumers?: GroupConsumer[];
+  /** Cân bằng consumer ↔ partition theo topic (lệch trước). */
+  balance?: KafkaPcRow[];
 }
 
 /** One consumer group that has committed offsets on a given topic, with its lag. */
@@ -342,6 +361,8 @@ export interface GroupLagSummary {
   stalledSince?: number;
   /** This group alone failed — its lag is UNKNOWN, not zero. */
   error?: string;
+  /** Cân bằng consumer ↔ partition của mọi cặp group · topic (kèm lag theo topic). Vắng = không đánh giá được. */
+  balance?: KafkaPcRow[];
 }
 
 export interface KafkaConsumerLag {

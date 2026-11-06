@@ -19,6 +19,8 @@ export function focusFromRow(row: Row): InfraFocus {
 
   switch (res.stack) {
     case 'kafka': {
+      // Thiếu consumer mà đang lag → màn Consumer ↔ Partition (quét lại cả cụm, lọc sẵn cặp lệch).
+      if (metric === 'pcUnderLagging') return { ...base, view: 'balance' };
       if (!metric || !KAFKA_GROUP_METRICS.has(metric)) return { ...base, view: 'topics' };
       const groups = st.last?.kafkaGroups ?? [];
       // Group đúng với loại cảnh báo: chết (lag mà 0 member) / tắc lâu nhất /

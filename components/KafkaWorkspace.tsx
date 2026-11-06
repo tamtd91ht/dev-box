@@ -35,6 +35,8 @@ import { pendingHints } from '@/lib/kafkaPendingHints';
 import ConnTransferButton from './ConnTransferButton';
 import HealthStrip from './kafka/HealthStrip';
 import AnalyzeView from './kafka/AnalyzeView';
+import { GroupAssignment, GroupBalanceCell, KafkaBalanceSection, isLopsided } from './kafka/Balance';
+import { summarizeBalance, type KafkaPcRow } from '@/lib/kafkaBalance';
 import {
   loadPresets,
   addPreset,
@@ -59,7 +61,7 @@ const LAST_CONN_KEY = 'kafka.lastConn';
 /** Default number of messages a "peek" pulls. */
 const DEFAULT_PEEK = 20;
 
-type SubView = 'topics' | 'groups' | 'lag' | 'analyze';
+type SubView = 'topics' | 'groups' | 'lag' | 'balance' | 'analyze';
 /** Inner tabs of a selected topic (Kafka-HQ style: messages front-and-center). */
 type TopicTab = 'messages' | 'partitions' | 'groups';
 
@@ -205,6 +207,10 @@ export default function KafkaWorkspace() {
   const [groupsLoading, setGroupsLoading] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [groupDetail, setGroupDetail] = useState<GroupDetail | null>(null);
+  /** Lọc danh sách group: chỉ group có cặp group · topic lệch consumer ↔ partition (thiếu / thừa). */
+  const [groupImbalance, setGroupImbalance] = useState(false);
+  /** selectGroup khai báo phía dưới — openGroup (dùng ở màn Lag / Consumer ↔ Partition) gọi qua ref. */
+  const selectGroupRef = useRef<(groupId: string) => Promise<void>>(async () => {});
   const [groupLoading, setGroupLoading] = useState(false);
   // Vài message group chưa xử lý (đọc từ committed offset của MỘT partition) — để đoán vì sao lag.
   const [pending, setPending] = useState<{
@@ -526,6 +532,30 @@ export default function KafkaWorkspace() {
       .sort((a, b) => b.totalLag - a.totalLag);
   }, [lagData, lagFilter, lagShowAll]);
 
+  // ── Consumer ↔ Partition ──────────────────────────────────────────────────
+  // Cùng lượt quét lag (lib/kafkaBalance qua kafkaClient.consumerLag) — không có lệnh gọi riêng.
+  const balanceRows = useMemo<KafkaPcRow[]>(() => lagData?.groups.flatMap((g) => g.balance ?? []) ?? [], [lagData]);
+  const balanceSummary = useMemo(() => summarizeBalance(balanceRows), [balanceRows]);
+  /** groupId → cặp đã gắn lag (lượt quét lag gần nhất) — ưu tiên hơn số của danh sách group (không có lag). */
+  const lagBalance = useMemo(() => {
+    const m = new Map<string, KafkaPcRow[]>();
+    for (const g of lagData?.groups ?? []) if (g.balance) m.set(g.groupId, g.balance);
+    return m;
+  }, [lagData]);
+  const groupRows = useMemo(() => {
+    const withBal = groups.map((g) => ({ ...g, balance: lagBalance.get(g.groupId) ?? g.balance }));
+    return groupImbalance ? withBal.filter((g) => g.balance?.some(isLopsided)) : withBal;
+  }, [groups, lagBalance, groupImbalance]);
+  const lopsidedGroups = useMemo(
+    () => groups.filter((g) => (lagBalance.get(g.groupId) ?? g.balance)?.some(isLopsided)).length,
+    [groups, lagBalance],
+  );
+  /** Mở chi tiết một group (từ màn Consumer ↔ Partition / Lag). */
+  const openGroup = useCallback((id: string) => {
+    setSubView('groups');
+    void selectGroupRef.current(id);
+  }, []);
+
   // ── Groups ──────────────────────────────────────────────────────────────────
   const loadGroups = useCallback(async () => {
     if (!activeId) return;
@@ -580,6 +610,7 @@ export default function KafkaWorkspace() {
     },
     [activeId],
   );
+  selectGroupRef.current = selectGroup;
 
   /* ── Mở từ Monitor ─────────────────────────────────────────────────────
      Cảnh báo "kafka-01 lag" → chọn đúng cụm kafka-01, mở Consumer groups với
@@ -594,7 +625,7 @@ export default function KafkaWorkspace() {
     return onInfraFocus('kafka', (f) => {
       if (!connections.some((c) => c.id === f.connId)) return;
       setActiveId(f.connId);
-      setSubView(f.view === 'groups' || f.view === 'lag' ? f.view : 'topics');
+      setSubView(f.view === 'groups' || f.view === 'lag' || f.view === 'balance' ? f.view : 'topics');
       setFocusReq({ ...f });
     });
   }, [connections]);
@@ -604,7 +635,7 @@ export default function KafkaWorkspace() {
     if (focusReq.view === 'groups') {
       void loadGroups();
       if (focusReq.group) void selectGroup(focusReq.group);
-    } else if (focusReq.view === 'lag') {
+    } else if (focusReq.view === 'lag' || focusReq.view === 'balance') {
       void runLagCheck();
     }
   }, [focusReq, activeId, loadGroups, selectGroup, runLagCheck]);
@@ -811,6 +842,11 @@ export default function KafkaWorkspace() {
                 <button className={subView === 'topics' ? 'on' : ''} onClick={() => setSubView('topics')}>Topics</button>
                 <button className={subView === 'groups' ? 'on' : ''} onClick={() => setSubView('groups')}>Consumer groups</button>
                 <button className={subView === 'lag' ? 'on' : ''} onClick={() => setSubView('lag')}>Lag</button>
+                <button
+                  className={subView === 'balance' ? 'on' : ''}
+                  onClick={() => setSubView('balance')}
+                  title="Số consumer so với số partition của từng cặp group · topic — tính cùng lượt quét lag"
+                >Consumer ↔ Partition</button>
                 <button
                   className={subView === 'analyze' ? 'on' : ''}
                   onClick={() => setSubView('analyze')}
@@ -1077,23 +1113,43 @@ export default function KafkaWorkspace() {
             {subView === 'groups' && !selectedGroup && (
               /* ── Consumer group list ─────────────────────────────────── */
               <div className="kafka-pane">
-                <div className="kafka-meta">
-                  {groupsLoading ? <span className="spinner" /> : `${groups.length} group`}
+                <div className="kafka-meta pc-filter">
+                  {groupsLoading ? <span className="spinner" /> : `${groupImbalance ? `${groupRows.length}/` : ''}${groups.length} group`}
+                  {/* Lọc nhanh: group có cặp topic lệch consumer ↔ partition (thiếu / thừa). */}
+                  <button
+                    type="button"
+                    className={`pc-chip plain${!groupImbalance ? ' on' : ''}`}
+                    aria-pressed={!groupImbalance}
+                    onClick={() => setGroupImbalance(false)}
+                  >Tất cả group</button>
+                  <button
+                    type="button"
+                    className={`pc-chip under${groupImbalance ? ' on' : ''}`}
+                    aria-pressed={groupImbalance}
+                    onClick={() => setGroupImbalance((v) => !v)}
+                    title="Group có topic mà số consumer khác số partition (thiếu hoặc thừa)"
+                  >
+                    <i aria-hidden />Lệch consumer ↔ partition{lopsidedGroups ? <b>{lopsidedGroups}</b> : null}
+                  </button>
                 </div>
                 <div className="endpoint-list kafka-scroll" style={{ flex: 1 }}>
-                  {groups.map((g) => (
+                  {groupRows.map((g) => (
                     <button
                       key={g.groupId}
-                      className="ep-item"
+                      className="ep-item pc-group-row"
                       onClick={() => void selectGroup(g.groupId)}
                     >
                       <span className="kafka-topic-name">{g.groupId}</span>
+                      <GroupBalanceCell rows={g.balance} />
                       <span className="kafka-topic-meta">
                         <span className={`kafka-state s-${g.state.toLowerCase()}`}>{g.state}</span> · {g.members}m
                       </span>
                     </button>
                   ))}
                   {!groupsLoading && groups.length === 0 && <p className="empty">Không có consumer group.</p>}
+                  {!groupsLoading && groups.length > 0 && groupRows.length === 0 && (
+                    <p className="empty">Không group nào lệch consumer ↔ partition.</p>
+                  )}
                 </div>
               </div>
             )}
@@ -1118,8 +1174,11 @@ export default function KafkaWorkspace() {
                           total lag {fmtInt(groupDetail.totalLag)}
                         </span>
                       </div>
+                      <GroupAssignment balance={groupDetail.balance} consumers={groupDetail.consumers} />
                       {groupDetail.topics.length === 0 && <p className="empty">Group chưa commit offset cho topic nào.</p>}
-                      {groupDetail.topics.map((t) => (
+                      {groupDetail.topics.map((t) => {
+                        const hasOwner = t.partitions.some((p) => p.owner);
+                        return (
                         <div key={t.topic} style={{ marginTop: 10 }}>
                           <div className="status-line" style={{ justifyContent: 'space-between' }}>
                             <span className="code">{t.topic}</span>
@@ -1136,12 +1195,17 @@ export default function KafkaWorkspace() {
                           </div>
                           <table className="kafka-table">
                             <thead>
-                              <tr><th>P</th><th>Committed</th><th>Log end</th><th>Lag</th><th /></tr>
+                              <tr><th>P</th>{hasOwner && <th className="pc-owner">Consumer</th>}<th>Committed</th><th>Log end</th><th>Lag</th><th /></tr>
                             </thead>
                             <tbody>
                               {t.partitions.map((p) => (
                                 <tr key={p.partition} className={pending?.topic === t.topic && pending.partition === p.partition ? 'active' : undefined}>
                                   <td>{p.partition}</td>
+                                  {hasOwner && (
+                                    <td className="pc-owner" title={p.owner ?? 'Chưa giao cho consumer nào'}>
+                                      {p.owner ?? <span className="pc-unk">—</span>}
+                                    </td>
+                                  )}
                                   <td>{p.committed == null ? '—' : fmtInt(p.committed)}</td>
                                   <td>{fmtInt(p.logEnd)}</td>
                                   <td style={{ color: (p.lag ?? 0) > 0 ? 'var(--err)' : undefined }}>
@@ -1157,7 +1221,8 @@ export default function KafkaWorkspace() {
                             </tbody>
                           </table>
                         </div>
-                      ))}
+                        );
+                      })}
                     </>
                   ) : null}
               </div>
@@ -1249,6 +1314,17 @@ export default function KafkaWorkspace() {
                           bỏ qua {lagData.skippedGroups} group
                         </span>
                       )}
+                      {balanceSummary.underLagging > 0 && (
+                        <button
+                          type="button"
+                          className="chip-btn pc-jump"
+                          style={{ color: 'var(--warn)' }}
+                          onClick={() => setSubView('balance')}
+                          title="Xem các cặp group · topic có ít consumer hơn partition mà đang lag"
+                        >
+                          {balanceSummary.underLagging} topic thiếu consumer mà đang lag ›
+                        </button>
+                      )}
                     </div>
                     <div className="kafka-scroll" style={{ flex: 1 }}>
                       {lagRows.length === 0 ? (
@@ -1268,7 +1344,7 @@ export default function KafkaWorkspace() {
                                 key={g.groupId}
                                 style={{ cursor: 'pointer' }}
                                 title="Bấm để xem chi tiết lag từng partition"
-                                onClick={() => { setSubView('groups'); void selectGroup(g.groupId); }}
+                                onClick={() => openGroup(g.groupId)}
                               >
                                 <td className="code">{g.groupId}</td>
                                 <td>
@@ -1295,6 +1371,46 @@ export default function KafkaWorkspace() {
                       )}
                     </div>
                   </>
+                )}
+              </div>
+            )}
+
+            {subView === 'balance' && (
+              /* ── Consumer ↔ Partition: cùng dữ liệu với màn Lag (một lượt quét cả cụm, bấm mới chạy) ── */
+              <div className="kafka-pane">
+                <div className="kafka-toolbar">
+                  <button
+                    className="sm"
+                    disabled={lagLoading}
+                    onClick={() => void runLagCheck()}
+                    title="Quét mọi consumer group trên cluster này (lag + số consumer so với số partition) — chỉ đọc"
+                  >
+                    {lagLoading ? 'Đang quét…' : lagData ? '↻ Quét lại' : '⏱ Quét cụm'}
+                  </button>
+                  {lagData && !lagLoading && (
+                    <span className="kafka-meta" style={{ margin: 0 }}>
+                      Quét lúc {fmtTs(lagData.at)} · {balanceSummary.under + balanceSummary.over + balanceSummary.none} lệch / {balanceSummary.pairs} cặp group · topic
+                      {lagData.skippedGroups > 0 && (
+                        <span className="badge" style={{ color: 'var(--warn)' }}>bỏ qua {lagData.skippedGroups} group</span>
+                      )}
+                    </span>
+                  )}
+                </div>
+                {lagLoading && <p style={{ marginTop: 10 }}><span className="spinner" /> Đang quét consumer group toàn cluster…</p>}
+                {!lagLoading && !lagData && (
+                  <p className="empty" style={{ marginTop: 10 }}>
+                    Bấm “⏱ Quét cụm” để so số consumer với số partition của từng cặp group · topic.
+                    Tối ưu: mỗi partition một consumer. Dùng chung lượt quét với màn Lag (chỉ đọc).
+                  </p>
+                )}
+                {!lagLoading && lagData && (
+                  <div className="kafka-scroll" style={{ flex: 1 }}>
+                    <KafkaBalanceSection
+                      rows={balanceRows}
+                      groupsChecked={lagBalance.size}
+                      onOpenGroup={openGroup}
+                    />
+                  </div>
                 )}
               </div>
             )}

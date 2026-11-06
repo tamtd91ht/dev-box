@@ -21,6 +21,7 @@ import KeymissFlagsPanel from './KeymissFlagsPanel';
 import KafkaLagDiagnosis from './KafkaLagDiagnosis';
 import EsDiagnosisPanel from './EsDiagnosis';
 import { focusFromRow } from '@/lib/monitor/focus';
+import { PC_TEXT, pcAdvice, pcRatioText, sortBalance } from '@/lib/kafkaBalance';
 
 interface Props {
   row: Row;
@@ -87,6 +88,8 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
     () => [...(last?.kafkaGroups ?? [])].sort((a, b) => b.lag - a.lag).slice(0, 12),
     [last?.kafkaGroups],
   );
+  // Cặp group · topic lệch consumer ↔ partition (probe chỉ giữ cặp thiếu / thừa), thiếu-mà-lag lên đầu.
+  const lopsided = useMemo(() => sortBalance((last?.kafkaGroups ?? []).flatMap((g) => g.balance ?? [])), [last?.kafkaGroups]);
 
   return (
     <aside className="mon-detail" role="dialog" aria-label={`Chi tiết ${res.name}`}>
@@ -252,6 +255,39 @@ export default function MonitorDetail({ row, now, overrides, onClose, onRefresh,
                       {g.stalledSec ? <span className="mon-d-faint"> · đứng im {fmtDuration(g.stalledSec)}</span> : null}</td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </section>
+        )}
+
+        {lopsided.length > 0 && (
+          <section>
+            <h4>
+              Consumer ↔ Partition{' '}
+              <span className="mon-d-faint">
+                ({lopsided.length} cặp group · topic lệch{lopsided.length > 12 ? ', hiện 12' : ''} — tối ưu: số consumer = số partition)
+              </span>
+            </h4>
+            <table className="mon-mini">
+              <thead>
+                <tr><th>Group · topic</th><th className="r">Partition</th><th className="r">Consumer</th><th>Trạng thái</th><th className="r">Lag</th></tr>
+              </thead>
+              <tbody>
+                {lopsided.slice(0, 12).map((r) => {
+                  const urgent = r.status === 'under' && (r.lag ?? 0) > 0;
+                  return (
+                    <tr key={`${r.groupId}\u0000${r.topic}`} className={urgent ? 'lv-warn' : ''} title={pcAdvice(r)}>
+                      <td title={`${r.groupId} · ${r.topic}`}><code>{r.groupId}</code> · {r.topic}</td>
+                      <td className="r">{r.partitions}</td>
+                      <td className="r">{r.consumers}</td>
+                      <td>
+                        {PC_TEXT[r.status]} <span className="mon-d-faint">· {pcRatioText(r)}</span>
+                        {urgent ? <span className="mon-d-faint"> · tăng consumer lên {r.partitions}</span> : null}
+                      </td>
+                      <td className="r">{r.lag === null ? '?' : fmtNum(r.lag)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </section>

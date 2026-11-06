@@ -36,6 +36,7 @@
     "check:redis-cmd": "tsx scripts/check-redis-command.ts",
     "check:redis-clients": "tsx scripts/check-redis-clients.ts",
     "check:kafka-diagnose": "tsx scripts/check-kafka-diagnose.ts",
+    "check:kafka-balance": "tsx scripts/check-kafka-balance.ts",
     "check:es-diagnose": "tsx scripts/check-es-diagnose.ts",
     "check:zalo": "tsx scripts/check-zalo-extract.ts",
     "check:json-edit": "tsx scripts/check-json-edit.ts",

@@ -28,6 +28,8 @@ import { getServers, lookup as dnsLookup } from 'dns';
 import { Resolver as PromiseResolver } from 'dns/promises';
 import { Kafka, logLevel, type Admin } from 'kafkajs';
 import type { KafkaConnection } from '@/lib/kafkaConnections';
+import { balanceOf, sortBalance, type KafkaPcRow } from '@/lib/kafkaBalance';
+import { decodeMembers, memberLabel, type RawGroupMember } from '@/lib/kafkaMembers';
 
 export const KAFKA_ENABLED = /^(1|true|yes|on)$/i.test(process.env.KAFKA_TOOL_ENABLED ?? '');
 
@@ -101,6 +103,11 @@ export interface GroupSummary {
   protocolType: string;
   state: string;
   members: number;
+  /**
+   * Cân bằng consumer ↔ partition theo topic member ĐĂNG KÝ (lib/kafkaBalance), lag = null (danh sách không đo
+   * lag). Vắng = không mô tả được / không phải group consumer thường / 0 member.
+   */
+  balance?: KafkaPcRow[];
 }
 
 export interface GroupPartitionLag {
@@ -110,6 +117,19 @@ export interface GroupPartitionLag {
   logEnd: number;
   /** logEnd - committed, or null when there is no commit. */
   lag: number | null;
+  /** Consumer đang giữ partition ("clientId@host"); vắng = chưa giao cho ai / không giải mã được. */
+  owner?: string;
+}
+
+/** Một consumer (member) của group và các partition nó được giao. */
+export interface GroupConsumer {
+  memberId: string;
+  clientId: string;
+  host: string;
+  /** Topic đăng ký (subscription). */
+  topics: string[];
+  /** Partition được giao, theo topic (bỏ topic nội bộ `__…`). */
+  assigned: { topic: string; partitions: number[] }[];
 }
 
 export interface GroupTopicLag {
@@ -124,6 +144,10 @@ export interface GroupDetail {
   members: { memberId: string; clientId: string; clientHost: string }[];
   topics: GroupTopicLag[];
   totalLag: number;
+  /** Consumer + phân công partition, nhiều partition trước, consumer rảnh cuối. Vắng = không phải group consumer thường. */
+  consumers?: GroupConsumer[];
+  /** Cân bằng consumer ↔ partition theo topic (lệch trước). */
+  balance?: KafkaPcRow[];
 }
 
 export interface TopicConsumerGroup {
@@ -772,17 +796,36 @@ export async function listGroups(conn: KafkaConnection): Promise<GroupSummary[]>
   } catch {
     // describeGroups can fail for a group mid-rebalance — fall back to list-only.
   }
+  // Cân bằng consumer ↔ partition: chỉ cần member (đã có trong describeGroups) + số partition (MỘT lượt
+  // metadata cho cả cụm). Không đo lag ở đây — lag = null; màn Lag / Consumer ↔ Partition mới gắn lag.
+  const counts = described.some((d) => d.members?.length) ? await partitionCounts(admin) : null;
   return groups
     .map((g) => {
       const d = described.find((x) => x.groupId === g.groupId);
+      const members = counts && d?.members?.length ? decodeMembers(d.protocolType, d.members as RawGroupMember[]) : null;
+      const balance = members ? balanceOf(g.groupId, members, (t) => counts?.get(t)) : [];
       return {
         groupId: g.groupId,
         protocolType: g.protocolType,
         state: d?.state ?? 'Unknown',
         members: d?.members?.length ?? 0,
+        ...(balance.length ? { balance: sortBalance(balance) } : {}),
       };
     })
     .sort((a, b) => a.groupId.localeCompare(b.groupId));
+}
+
+/**
+ * topic → số partition, MỘT lượt metadata cho cả cụm (fetchTopicMetadata không nêu topic = mọi topic). Lỗi →
+ * null: cân bằng consumer ↔ partition vắng mặt chứ không làm hỏng việc chính (danh sách group, lag).
+ */
+async function partitionCounts(admin: Admin): Promise<Map<string, number> | null> {
+  try {
+    const meta = await admin.fetchTopicMetadata();
+    return new Map(meta.topics.map((t) => [t.name, t.partitions.length]));
+  } catch {
+    return null;
+  }
 }
 
 // ── Cluster-wide consumer lag (the monitor / automation path) ────────────────
@@ -912,6 +955,12 @@ export interface GroupLagSummary {
   stalledSince?: number;
   /** Set when this group alone failed; its lag is unknown, not zero. */
   error?: string;
+  /**
+   * Cân bằng consumer ↔ partition của MỌI cặp group · topic (kể cả cân bằng; lib/kafkaBalance), lag theo topic
+   * của chính lượt quét này (null khi không đọc được). Group 0 member → cặp "không có consumer" theo topic đã
+   * commit. Vắng = không mô tả được / không phải group consumer thường / không lấy được số partition.
+   */
+  balance?: KafkaPcRow[];
 }
 
 export interface KafkaConsumerLag {
@@ -1129,6 +1178,21 @@ export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerL
     // Routine when a group is rebalancing — state/member counts degrade to Unknown.
   }
 
+  // Số partition mỗi topic — MỘT lượt metadata cho cả vòng quét, chỉ để đánh giá cân bằng consumer ↔ partition.
+  const counts = described.length ? await partitionCounts(admin) : null;
+  /** Cân bằng của một group; undefined = không đánh giá được (xem GroupLagSummary.balance). */
+  const balanceFor = (
+    d: (typeof described)[number] | undefined,
+    committedTopics: string[],
+    topicLag: Map<string, number>,
+  ): KafkaPcRow[] | undefined => {
+    if (!d || !counts) return undefined;
+    const members = decodeMembers(d.protocolType, d.members as RawGroupMember[]);
+    if (!members) return undefined;
+    const rows = balanceOf(d.groupId, members, (t) => counts.get(t), (t) => topicLag.get(t) ?? null, committedTopics);
+    return rows.length ? sortBalance(rows) : undefined;
+  };
+
   // High-watermark cache, shared across every group in THIS sweep.
   // Đọc ở READ_COMMITTED — xem ghi chú ở topicHighWatermarks.
   const highs = new Map<string, Promise<Map<number, number>>>();
@@ -1164,8 +1228,12 @@ export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerL
     try {
       committed = await admin.fetchOffsets({ groupId: g.groupId });
     } catch (e) {
-      return { ...base, error: (e as Error).message || 'fetchOffsets thất bại' };
+      // Lag không biết — cân bằng vẫn đánh giá được (chỉ cần member + số partition).
+      const balance = balanceFor(d, [], new Map());
+      return { ...base, error: (e as Error).message || 'fetchOffsets thất bại', ...(balance ? { balance } : {}) };
     }
+    /** Lag theo topic (chỉ topic đọc được high-watermark) — gắn vào cặp group · topic khi đánh giá cân bằng. */
+    const topicLags = new Map<string, number>();
 
     let partitions = 0;
     let totalLag = 0;
@@ -1238,6 +1306,7 @@ export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerL
         }
       }
       totalLag += topicLag;
+      topicLags.set(t.topic, topicLag);
       if (topicLag > worstTopicLag) {
         worstTopicLag = topicLag;
         worstTopic = t.topic;
@@ -1251,9 +1320,16 @@ export async function consumerLag(conn: KafkaConnection): Promise<KafkaConsumerL
     // Group treo bao lâu = message chờ LÂU NHẤT của nó, đọc thẳng từ log. Đây
     // là chỗ ứng viên của cửa lọc bị loại nếu hoá ra không có message thật.
     const stall = await resolveStall(conn, candidates, at, stallBudget);
+    // Topic có offset commit thật → cặp "không có consumer" khi group 0 member.
+    const balance = balanceFor(
+      d,
+      committed.filter((t) => t.partitions.some((p) => Number(p.offset) >= 0)).map((t) => t.topic),
+      topicLags,
+    );
 
     return {
       ...base,
+      ...(balance ? { balance } : {}),
       totalLag,
       worstTopic,
       worstTopicLag,
@@ -1340,6 +1416,41 @@ export async function describeGroup(conn: KafkaConnection, groupId: string): Pro
   }
   topics.sort((a, b) => a.topic.localeCompare(b.topic));
 
+  // Phân công: partition → consumer đang giữ; danh sách consumer kèm partition được giao; cân bằng theo topic.
+  const decoded = described ? decodeMembers(described.protocolType, described.members as RawGroupMember[]) : null;
+  let consumers: GroupConsumer[] | undefined;
+  let balance: KafkaPcRow[] | undefined;
+  if (decoded) {
+    const owner = new Map<string, string>();
+    consumers = decoded.map((m) => {
+      const label = memberLabel(m);
+      const assigned = Object.entries(m.assigned)
+        .filter(([t]) => !t.startsWith('__'))
+        .map(([topic, ps]) => {
+          for (const p of ps) owner.set(`${topic}:${p}`, label);
+          return { topic, partitions: [...ps].sort((a, b) => a - b) };
+        })
+        .sort((a, b) => a.topic.localeCompare(b.topic));
+      return { memberId: m.memberId, clientId: m.clientId, host: m.host, topics: m.topics, assigned };
+    });
+    // Consumer được giao nhiều partition nhất trước; consumer ngồi không (0 partition) xuống cuối.
+    const load = (c: GroupConsumer) => c.assigned.reduce((n, a) => n + a.partitions.length, 0);
+    consumers.sort((a, b) => load(b) - load(a) || a.clientId.localeCompare(b.clientId));
+    for (const t of topics) {
+      for (const p of t.partitions) {
+        const o = owner.get(`${t.topic}:${p.partition}`);
+        if (o) p.owner = o;
+      }
+    }
+    const counts = await partitionCounts(admin);
+    if (counts) {
+      const lagOf = new Map(topics.map((t) => [t.topic, t.totalLag]));
+      const committedTopics = topics.filter((t) => t.partitions.some((p) => p.committed != null)).map((t) => t.topic);
+      const rows = balanceOf(groupId, decoded, (t) => counts.get(t), (t) => lagOf.get(t) ?? null, committedTopics);
+      if (rows.length) balance = sortBalance(rows);
+    }
+  }
+
   return {
     groupId,
     state: described?.state ?? 'Unknown',
@@ -1350,6 +1461,8 @@ export async function describeGroup(conn: KafkaConnection, groupId: string): Pro
     })),
     topics,
     totalLag: topics.reduce((s, t) => s + t.totalLag, 0),
+    ...(consumers ? { consumers } : {}),
+    ...(balance ? { balance } : {}),
   };
 }
 

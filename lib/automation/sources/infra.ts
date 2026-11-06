@@ -14,6 +14,7 @@
 
 import { esHealth, listEsNodes } from '@/lib/es';
 import { kafkaClusterHealth, kafkaConsumerLag, kafkaHostMetrics, kafkaBrokerReach } from '@/lib/kafka';
+import { balanceMetrics, type KafkaPcRow } from '@/lib/kafkaBalance';
 import type {
   KafkaBrokerReach, KafkaDnsAnswer, KafkaDnsDiagnosis, KafkaDnsResult, KafkaProtocolProbe,
 } from '@/lib/kafka';
@@ -53,6 +54,11 @@ export interface KafkaGroupDetail {
   stalledSince?: number;
   /** true = lag KHÔNG đọc được (fetchOffsets lỗi) — khác với lag = 0. */
   error: boolean;
+  /**
+   * Cặp group · topic LỆCH consumer ↔ partition (thiếu / thừa; lib/kafkaBalance), tối đa
+   * BALANCE_ROWS_PER_GROUP. Chỉ giữ cặp lệch cho nhẹ; vắng = không đánh giá được hoặc mọi cặp cân bằng.
+   */
+  balance?: KafkaPcRow[];
 }
 
 /**
@@ -230,7 +236,14 @@ export const KAFKA_LAG_METRICS = new Set([
   'undescribedGroups',
   'maxStalledSec',
   'groups',
+  // Cân bằng consumer ↔ partition (lib/kafkaBalance) — tính cùng lượt quét lag.
+  'pcUnderLagging',
+  'pcMismatch',
+  'idleConsumers',
 ]);
+
+/** Giữ tối đa ngần này cặp lệch mỗi group trong kafkaGroups (đủ để xem, không phình trạng thái Monitor). */
+const BALANCE_ROWS_PER_GROUP = 20;
 
 /**
  * Chỉ số HOST của broker, lấy từ node_exporter khai trong connection
@@ -415,6 +428,10 @@ async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promis
         ...(g.stalledLag !== undefined ? { stalledLag: g.stalledLag } : {}),
         ...(g.stalledSince !== undefined ? { stalledSince: g.stalledSince } : {}),
         error: !!g.error,
+        ...(() => {
+          const lop = (g.balance ?? []).filter((r) => r.status === 'under' || r.status === 'over').slice(0, BALANCE_ROWS_PER_GROUP);
+          return lop.length ? { balance: lop } : {};
+        })(),
       }));
       put(m, 'groups', scoped.length);
       put(m, 'lagGroupsUnknown', scoped.length - ok.length);
@@ -440,6 +457,12 @@ async function probeKafka(id: string, metric?: string, opts?: ProbeOpts): Promis
       put(m, 'deadLagGroups', ok.filter((g) => g.described && g.members === 0 && g.totalLag > 0).length);
       put(m, 'rebalancingGroups', ok.filter((g) => g.described && /rebalanc|preparing/i.test(g.state)).length);
       put(m, 'undescribedGroups', ok.filter((g) => !g.described).length);
+      // Consumer ↔ partition: đếm theo cặp group · topic, KỂ CẢ group lỗi offset — số member và số partition
+      // không phụ thuộc offset (cặp của group đó chỉ thiếu lag nên không vào pcUnderLagging).
+      const pc = balanceMetrics(scoped.flatMap((g) => g.balance ?? []));
+      put(m, 'pcMismatch', pc.pcMismatch);
+      put(m, 'pcUnderLagging', pc.pcUnderLagging);
+      put(m, 'idleConsumers', pc.idleConsumers);
     } catch {
       /* cluster health alone still counts as up */
     }

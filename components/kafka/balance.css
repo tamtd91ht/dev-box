@@ -1,0 +1,144 @@
+/* ───────────── Kafka · Consumer ↔ Partition (components/kafka/Balance.tsx) ─────────────
+   Chỉ dùng token chung của globals.css (--ok/--warn/--accent/--muted/--faint/--glass…), nên tự theo theme sáng/tối.
+   Tông: thiếu-mà-lag = cam (cần làm) · thiếu-theo-kịp = cam nhạt · thừa = accent (thông tin) · không consumer = xám. */
+
+.pc { display: flex; flex-direction: column; gap: 10px; min-width: 0; margin-top: 8px; }
+.pc-pill.ok, .pc-chip.balanced, .pc-seg.balanced { --pc: var(--ok); }
+.pc-pill.warn, .pc-chip.under, .pc-seg.under, .pc-k.warn { --pc: var(--warn); }
+.pc-pill.soft { --pc: color-mix(in srgb, var(--warn) 65%, var(--muted)); }
+.pc-pill.info, .pc-chip.over, .pc-seg.over, .pc-k.info { --pc: var(--accent); }
+.pc-pill.mute, .pc-chip.none, .pc-seg.none { --pc: var(--faint); }
+
+.pc-lead { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.pc-lead b { color: var(--text); font-weight: 600; }
+.pc-k { font-weight: 600; color: var(--pc); }
+
+.pc-bar { display: flex; gap: 2px; height: 8px; overflow: hidden; border-radius: 999px; background: var(--glass-2); }
+.pc-seg { min-width: 4px; background: var(--pc); }
+.pc-seg.balanced { opacity: 0.55; }
+
+.pc-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.pc-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pc-chips-sep { width: 1px; height: 18px; margin: 0 2px; background: var(--glass-brd); }
+.pc-search { width: 220px; max-width: 100%; }
+
+/* Nút lọc: reset kiểu `button` gradient toàn cục. */
+button.pc-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--pc, var(--muted)) 40%, var(--glass-brd));
+  background: color-mix(in srgb, var(--pc, var(--muted)) 8%, transparent);
+  font: inherit; font-size: 12px; font-weight: 500; color: var(--text);
+  box-shadow: none; cursor: pointer;
+}
+button.pc-chip:hover:not(:disabled) { transform: none; box-shadow: none; border-color: var(--pc, var(--glass-brd-hover)); }
+.pc-chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--pc); }
+.pc-chip b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.pc-chip small { font-size: 11.5px; color: var(--muted); }
+button.pc-chip.plain { border-color: var(--glass-brd); background: transparent; color: var(--muted); }
+button.pc-chip.on {
+  border-color: var(--pc, var(--accent));
+  background: color-mix(in srgb, var(--pc, var(--accent)) 22%, transparent);
+  color: var(--text);
+}
+.pc-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.pc-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 1px 9px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--pc) 40%, transparent);
+  background: color-mix(in srgb, var(--pc) 10%, transparent);
+  font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--pc);
+  font-family: inherit;
+}
+.pc-pill.ok { border-color: var(--glass-brd); background: transparent; color: var(--text); }
+.pc-pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--pc); flex: none; }
+
+/* Bảng cặp group · topic. */
+.pc-table-wrap { overflow-x: auto; min-width: 0; }
+.pc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.pc-table th {
+  text-align: left; padding: 4px 10px; color: var(--muted); font-weight: 600; font-size: 11px;
+  border-bottom: 1px solid var(--glass-brd); white-space: nowrap;
+}
+.pc-table td { padding: 7px 10px; vertical-align: middle; border-bottom: 1px solid var(--glass-brd); }
+.pc-table tr.pc-click { cursor: pointer; }
+.pc-table tr.pc-click:hover td { background: var(--glass-2); }
+.pc-table tr.pc-click:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pc-name { max-width: 340px; }
+.pc-name b,
+.pc-name span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-name b { font-weight: 600; color: var(--text); font-family: var(--mono); }
+.pc-name span { margin-top: 1px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.pc-st { min-width: 170px; }
+.pc-ratio { display: block; margin-top: 3px; font-size: 11.5px; color: var(--muted); }
+.pc-ratio b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.pc-ratio b.pc-lag { color: var(--warn); }
+.pc-unk { color: var(--faint); }
+.pc-advice { display: block; max-width: 340px; margin-top: 3px; font-size: 11.5px; line-height: 1.4; color: var(--warn); white-space: normal; }
+.pc-pager { display: flex; justify-content: center; }
+
+/* Thước P ↔ C: hai vạch cùng thang. */
+.pc-meter { display: flex; flex-direction: column; gap: 3px; min-width: 130px; }
+.pc-meter-row { display: grid; grid-template-columns: 12px minmax(0, 1fr) 36px; align-items: center; gap: 6px; }
+.pc-meter-k { font-size: 10px; font-weight: 700; color: var(--faint); }
+.pc-meter-row b { font-size: 11.5px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+.pc-meter-track { display: flex; height: 6px; overflow: hidden; border-radius: 3px; background: var(--glass-2); }
+.pc-meter-track i { display: block; height: 100%; }
+.pc-meter-track i.p { background: var(--muted); opacity: 0.55; }
+.pc-meter-track i.c { background: var(--ok); }
+/* Consumer thừa: sọc accent. Partition chưa có consumer riêng: viền cam rỗng. */
+.pc-meter-track i.idle { background: repeating-linear-gradient(135deg, var(--accent) 0 3px, transparent 3px 6px); }
+.pc-meter-track i.gap { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 70%, transparent); border-radius: 0 3px 3px 0; }
+
+/* Danh sách group: ô cân bằng + bộ lọc. */
+.pc-cell { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; min-width: 0; max-width: 100%; overflow: hidden; }
+.pc-cell small { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.ep-item.pc-group-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto) auto; gap: 10px; align-items: center; }
+.ep-item.pc-group-row .pc-cell { justify-self: end; }
+.pc-filter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* Chi tiết group: phân công consumer. */
+.pc-assign { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
+.pc-assign-topics { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); }
+.pc-assign-topics > span { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.pc-assign-topics code { font-family: var(--mono); font-size: 11.5px; color: var(--text); overflow-wrap: anywhere; }
+.pc-consumers { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: 6px; }
+.pc-consumer {
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  padding: 7px 10px; border: 1px solid var(--glass-brd); border-radius: 8px;
+  background: var(--glass); font-size: 12px;
+}
+.pc-consumer.idle { border-style: dashed; opacity: 0.8; }
+.pc-consumer-head { display: flex; justify-content: space-between; gap: 8px; min-width: 0; color: var(--text); }
+.pc-consumer-head b { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.pc-consumer-head small { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pc-consumer-host { overflow: hidden; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; }
+.pc-consumer-parts { color: var(--muted); overflow-wrap: anywhere; }
+.pc-consumer-parts code { font-family: var(--mono); font-size: 11px; color: var(--text); }
+/* Cột CONSUMER (partition owner) trong bảng lag của group — .kafka-table căn phải mặc định. */
+.kafka-table td.pc-owner, .kafka-table th.pc-owner {
+  text-align: left; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted);
+}
+
+/* Nút dẫn từ màn Lag sang màn Consumer ↔ Partition. */
+button.pc-jump { padding: 2px 9px; font-size: 11px; border-radius: 999px; }
+
+@media (max-width: 760px) {
+  /* Thêm mục "Consumer ↔ Partition" làm thanh mục con dài hơn — cho xuống dòng thay vì tràn ngang. */
+  .kafka-subnav { flex-wrap: wrap; }
+  /* Bảng cặp group · topic thành thẻ: tên trên cả hàng, thước + trạng thái chia đôi bên dưới — không cuộn ngang. */
+  .pc-table thead { display: none; }
+  .pc-table,
+  .pc-table tbody { display: block; }
+  .pc-table tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px 12px; padding: 10px 4px; border-bottom: 1px solid var(--glass-brd); }
+  .pc-table td { padding: 0; border: 0; }
+  .pc-table .pc-name { grid-column: 1 / -1; max-width: none; }
+  .pc-st,
+  .pc-meter { min-width: 0; }
+  .pc-tools { align-items: stretch; flex-direction: column; }
+  .pc-search { width: 100%; }
+  .pc-chips-sep { display: none; }
+  .ep-item.pc-group-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .ep-item.pc-group-row .pc-cell { grid-column: 1 / -1; justify-self: start; }
+}

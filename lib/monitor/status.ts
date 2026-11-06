@@ -108,6 +108,7 @@ export const RULES: Record<InfraStack, Rule[]> = {
     { metric: 'underReplicated', label: 'Partition under-replicated', unit: '', dir: 'gt', warn: 0, crit: 50, why: 'Replica tụt lại sau leader — mất 1 broker nữa có thể mất dữ liệu.' },
     { metric: 'maxConsumerLag', label: 'Lag lớn nhất của một group', unit: '', dir: 'gt', warn: 10_000, crit: 100_000, why: 'Consumer xử lý không kịp tốc độ producer.' },
     { metric: 'deadLagGroups', label: 'Group có lag nhưng không consumer', unit: '', dir: 'gt', warn: 0, why: 'Có lag mà không ai tiêu thụ (0 member) — consumer đã chết/tắt.' },
+    { metric: 'pcUnderLagging', label: 'Topic thiếu consumer mà đang lag', unit: '', dir: 'gt', warn: 0, why: 'Số consumer < số partition và đang lag — mỗi consumer gánh nhiều partition nên không đuổi kịp. Tăng consumer (tối đa bằng số partition); xem tab Kafka → Consumer ↔ Partition.' },
     { metric: 'stalledGroups', label: 'Group đứng im', unit: '', dir: 'gt', warn: 0, why: 'Có message chờ lâu mà chưa được commit.' },
     { metric: 'maxStalledSec', label: 'Message chờ lâu nhất', unit: 's', dir: 'gt', warn: 300, crit: 1800 },
     { metric: 'lagGroupsUnknown', label: 'Group không đọc được lag', unit: '', dir: 'gt', warn: 0, why: 'fetchOffsets lỗi — lag của group này là ẩn số, không phải 0.' },
@@ -256,8 +257,11 @@ export interface Evaluation {
   kpis: Kpi[];
 }
 
-/** Chỉ số nổi lên mặt thẻ (tối đa 3) — thứ người trực muốn thấy đầu tiên của từng loại. */
-const KPI_METRICS: Record<InfraStack, { metric: string; label: string; unit: Unit; say?: (v: number) => string }[]> = {
+/**
+ * Chỉ số nổi lên mặt thẻ (tối đa 3, cộng chỉ số `onlyWhenNonZero` khi nó khác 0) — thứ người trực muốn thấy
+ * đầu tiên của từng loại. `onlyWhenNonZero`: chỉ số thường bằng 0 mà chỉ đáng chỗ trên thẻ khi có chuyện.
+ */
+const KPI_METRICS: Record<InfraStack, { metric: string; label: string; unit: Unit; say?: (v: number) => string; onlyWhenNonZero?: boolean }[]> = {
   redis: [
     { metric: 'memUsedPct', label: 'RAM', unit: '%' },
     { metric: 'opsPerSec', label: 'ops/s', unit: '' },
@@ -267,6 +271,8 @@ const KPI_METRICS: Record<InfraStack, { metric: string; label: string; unit: Uni
     { metric: 'brokers', label: 'broker', unit: '' },
     { metric: 'maxConsumerLag', label: 'lag max', unit: '' },
     { metric: 'underReplicated', label: 'under-rep', unit: '' },
+    // Cặp group · topic thiếu consumer mà đang lag — chỉ lên thẻ khi có (thường là 0).
+    { metric: 'pcUnderLagging', label: 'thiếu consumer', unit: '', onlyWhenNonZero: true },
   ],
   rabbit: [
     { metric: 'messagesReady', label: 'tồn', unit: '' },
@@ -376,6 +382,7 @@ export function evaluate(stack: InfraStack, probe: ProbeResult | undefined, ov?:
   for (const k of KPI_METRICS[stack]) {
     const v = m[k.metric];
     if (typeof v !== 'number') continue;
+    if (k.onlyWhenNonZero && v === 0) continue;
     const rule = byMetric.get(k.metric);
     kpis.push({
       metric: k.metric,
@@ -398,6 +405,8 @@ const EXTRA_LABELS: Record<string, { label: string; unit: Unit }> = {
   emptyGroups: { label: 'Group không member', unit: '' },
   rebalancingGroups: { label: 'Group đang rebalance', unit: '' },
   undescribedGroups: { label: 'Group chưa describe được', unit: '' },
+  pcMismatch: { label: 'Topic lệch consumer ↔ partition', unit: '' },
+  idleConsumers: { label: 'Consumer rảnh (thừa so với partition)', unit: '' },
   hostsTotal: { label: 'Host broker', unit: '' },
   opsPerSec: { label: 'Ops/giây', unit: '' },
   memUsedMb: { label: 'RAM đã dùng', unit: 'MB' },
