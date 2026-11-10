@@ -165,8 +165,8 @@ async function looksLikeRepoRoot(dir: string): Promise<boolean> {
 }
 
 /**
- * Auto-detect immediate sibling directories under `root` that are git repos.
- * Defaults to the legacy GIT_ROOT so callers that don't pass a root keep working.
+ * Auto-detect git repos under `root`, tối đa HAI cấp: `root/<repo>` và
+ * `root/<nhóm>/<repo>` (xem phần quét bên dưới). Defaults to the legacy GIT_ROOT so callers that don't pass a root keep working.
  *
  * PROJECT LÀ CHÍNH MỘT REPO — nhiều project không phải "thư mục chứa nhiều repo"
  * mà bản thân nó là một repo duy nhất (một mono-repo, hay một service lẻ). Trước
@@ -200,23 +200,47 @@ export async function detectRepos(root: string = GIT_ROOT): Promise<RepoInfo[]> 
   if (await isSelfRepo(rootAbs)) {
     repos.push({ path: rootAbs, name: path.basename(rootAbs) || rootAbs, self: true });
   }
-  let entries: string[] = [];
-  try {
-    const dirents = await fs.readdir(rootAbs, { withFileTypes: true });
-    entries = dirents.filter((d) => d.isDirectory()).map((d) => d.name);
-  } catch {
+  const entries = await listSubdirs(rootAbs);
+  if (entries === null) {
     // Thư mục không đọc được: root là repo thì vẫn trả về chính nó.
     return repos;
   }
+  // HAI CẤP: root/<repo> và root/<nhóm>/<repo> (vd root/v1/service-a). Thư mục
+  // cấp 1 đã là repo thì KHÔNG đi sâu — bên trong là code của repo đó. Cấp 1
+  // không phải repo thì coi như thư mục nhóm, quét con trực tiếp của nó. Tên
+  // repo cấp 2 là đường dẫn tương đối dùng `/` ("v1/service-a") — manifest dùng
+  // chính tên này làm path, và cloneRepo nhận lại được (validateCloneName).
   const found = await Promise.all(
-    entries.sort().map(async (name): Promise<RepoInfo | null> => {
+    entries.map(async (name): Promise<RepoInfo[]> => {
       const full = path.join(rootAbs, name);
       // Chỉ đọc file, không spawn git — xem looksLikeRepoRoot.
-      return (await looksLikeRepoRoot(full)) ? { path: full, name } : null;
+      if (await looksLikeRepoRoot(full)) return [{ path: full, name }];
+      if (SKIP_GROUP_DIR.test(name)) return [];
+      const subs = (await listSubdirs(full)) ?? [];
+      const nested = await Promise.all(
+        subs.map(async (sub): Promise<RepoInfo | null> => {
+          const subFull = path.join(full, sub);
+          return (await looksLikeRepoRoot(subFull)) ? { path: subFull, name: `${name}/${sub}` } : null;
+        }),
+      );
+      return nested.filter((r): r is RepoInfo => r !== null);
     }),
   );
-  for (const r of found) if (r) repos.push(r);
+  for (const group of found) repos.push(...group);
   return repos;
+}
+
+/** Thư mục cấp 1 không bao giờ là "nhóm repo" — khỏi tốn công quét cấp 2. */
+const SKIP_GROUP_DIR = /^(\..*|node_modules)$/;
+
+/** Tên các thư mục con trực tiếp, đã sort; `null` khi không đọc được `dir`. */
+async function listSubdirs(dir: string): Promise<string[] | null> {
+  try {
+    const dirents = await fs.readdir(dir, { withFileTypes: true });
+    return dirents.filter((d) => d.isDirectory()).map((d) => d.name).sort();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -291,10 +315,17 @@ export function validateCloneName(requested: unknown, url: string): string {
   const explicit = typeof requested === 'string' ? requested.trim() : '';
   const name = explicit || defaultCloneName(url);
   if (!name) throw new Error('không suy ra được tên thư mục từ URL — hãy nhập tên');
-  if (name !== path.basename(name) || /[/\\]/.test(name) || name === '.' || name === '..') {
-    throw new Error('tên thư mục phải là một tên đơn (không chứa / hay \\)');
+  // Cho phép tối đa HAI cấp "nhóm/repo" (vd v1/service-a) — khớp với detectRepos
+  // quét 2 cấp, để manifest ghi "v1/service-a" thì máy khác clone lại được.
+  // Chỉ nhận `/` làm phân cách; mỗi đoạn vẫn phải là một tên đơn hợp lệ.
+  if (name.includes('\\')) throw new Error('tên thư mục dùng / để phân cấp, không dùng \\');
+  const segs = name.split('/');
+  if (segs.length > 2) throw new Error('tên thư mục tối đa 2 cấp (vd: v1/ten-repo)');
+  for (const s of segs) {
+    if (!s || s === '.' || s === '..' || s !== path.basename(s) || s.startsWith('-') || s.startsWith('.')) {
+      throw new Error('tên thư mục không hợp lệ');
+    }
   }
-  if (name.startsWith('-') || name.startsWith('.')) throw new Error('tên thư mục không hợp lệ');
   return name;
 }
 

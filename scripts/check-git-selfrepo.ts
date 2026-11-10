@@ -22,7 +22,7 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFile } from 'child_process';
-import { detectRepos, isSelfRepo } from '../lib/gitCore';
+import { detectRepos, isSelfRepo, validateCloneName } from '../lib/gitCore';
 
 let failures = 0;
 const ok = (m: string): void => console.log(`✓ ${m}`);
@@ -128,6 +128,34 @@ async function main(): Promise<void> {
       (await detectRepos(path.join(tmp, 'khong-ton-tai'))).length === 0,
       'thư mục không tồn tại: quét ra 0 repo, không ném lỗi',
     );
+
+    // ── Ca 6: HAI CẤP — root/<nhóm>/<repo> ────────────────────────────────────
+    // root/top là repo cấp 1 (không đi sâu: repo cấp 2 nằm trong nó bị bỏ qua);
+    // root/v1, root/v2 là thư mục nhóm; root/v1/x/deep là cấp 3 → không quét.
+    const two = path.join(tmp, 'two-level');
+    await initRepo(path.join(two, 'top'));
+    await initRepo(path.join(two, 'top', 'inside'));
+    await initRepo(path.join(two, 'v1', 'svc-b'));
+    await initRepo(path.join(two, 'v1', 'svc-a'));
+    await initRepo(path.join(two, 'v2', 'svc-c'));
+    await initRepo(path.join(two, 'v1', 'x', 'deep'));
+    await initRepo(path.join(two, 'node_modules', 'pkg'));
+    const twoNames = (await detectRepos(two)).map((r) => r.name).join(',');
+    check(
+      twoNames === 'top,v1/svc-a,v1/svc-b,v2/svc-c',
+      `hai cấp: thấy repo cấp 1 + cấp 2, bỏ cấp 3 / trong repo / node_modules (được ${twoNames})`,
+    );
+    const lvl2 = (await detectRepos(two)).find((r) => r.name === 'v1/svc-a');
+    check(
+      lvl2?.path === path.join(two, 'v1', 'svc-a'),
+      'hai cấp: path của repo cấp 2 là đường dẫn thật trên đĩa',
+    );
+    check(validateCloneName('v1/svc-a', '') === 'v1/svc-a', 'clone: nhận tên 2 cấp v1/svc-a');
+    for (const bad of ['a/b/c', 'v1/../x', '../x', 'v1\\x', '/x', 'v1/', 'v1/.git']) {
+      let threw = false;
+      try { validateCloneName(bad, ''); } catch { threw = true; }
+      check(threw, `clone: từ chối tên "${bad}"`);
+    }
   } finally {
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
