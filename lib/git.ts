@@ -1,6 +1,8 @@
 // Client-side helpers + shared types for the Git workspace. All calls go to the
 // same-origin /api/git route (server runs the actual git commands, local only).
 
+import { apiFetch } from './apiFetch';
+
 export type FileGroup = 'staged' | 'unstaged' | 'untracked';
 
 export interface ChangedFile {
@@ -323,11 +325,10 @@ export async function mutateGitProject(
   method: 'POST' | 'PUT' | 'DELETE',
   body: Record<string, unknown>,
 ): Promise<GitProjectsState> {
-  const r = await fetch('/api/git-projects', {
-    method,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  // apiFetch, KHÔNG fetch trần: ở desktop 6 socket tới localhost hay bị SSE
+  // terminal/automation chiếm hết → request xếp hàng vô hạn, `busy` kẹt true và
+  // cả form Sửa project (ô tên, đường dẫn, nút Lưu) đứng ở trạng thái disabled.
+  const r = await apiFetch('/api/git-projects', { method, body: JSON.stringify(body) });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
   const d = data as Partial<GitProjectsState>;
