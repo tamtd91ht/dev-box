@@ -4202,7 +4202,18 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
 .ms-bell-ico { font-size: 11px; line-height: 1; }
 /* The bell rings (shakes) while the Workspace tab is NOT the active one. */
 .ms-bell.ringing .ms-bell-ico { animation: ms-bell-swing .9s ease-in-out infinite; transform-origin: 50% 12%; }
-.ms-bell.ringing { animation: ms-badge-pulse 1.4s ease-in-out infinite; }
+/* HIỆU NĂNG: quầng sáng nhấp nháy KHÔNG animate box-shadow trực tiếp (bắt vẽ lại
+   mỗi khung hình — trong .appbar có backdrop-filter thì còn blur lại cả thanh,
+   làm cả app và ô nhập bị giật). Quầng ở trạng thái đỉnh vẽ sẵn trên ::after,
+   chỉ animate opacity → chạy trên compositor, không repaint. */
+.ms-bell.ringing, .ntc-bell.has-unread { position: relative; }
+.ntc-bell.has-unread { box-shadow: 0 0 8px color-mix(in srgb, var(--err) 55%, transparent); }
+.ms-bell.ringing::after, .ntc-bell.has-unread::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: 0 0 15px color-mix(in srgb, var(--err) 90%, transparent);
+  opacity: 0; will-change: opacity;
+  animation: ms-badge-pulse 1.4s ease-in-out infinite;
+}
 /* The whole tab nudges + glows so peripheral vision catches it. */
 .modeswitch button.ms-alert { animation: ms-tab-shake 1.4s ease-in-out infinite; }
 .modeswitch button.ms-alert .ms-ico { color: var(--err); }
@@ -4215,10 +4226,7 @@ html[data-popup-over-webview] .ws-canvas { background: var(--bg-1); }
   60% { transform: rotate(-6deg); }
   75% { transform: rotate(3deg); }
 }
-@keyframes ms-badge-pulse {
-  0%, 100% { box-shadow: 0 0 8px color-mix(in srgb, var(--err) 55%, transparent); }
-  50% { box-shadow: 0 0 15px color-mix(in srgb, var(--err) 90%, transparent); }
-}
+@keyframes ms-badge-pulse { 50% { opacity: 1; } }
 @keyframes ms-tab-shake {
   0%, 88%, 100% { transform: translateX(0); }
   90% { transform: translateX(-2px); }
@@ -7167,7 +7175,6 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   background: var(--glass); border: 1px solid var(--glass-brd); color: var(--text);
 }
 .ntc-bell:hover { border-color: var(--glass-brd-hover); }
-.ntc-bell.has-unread { animation: ms-badge-pulse 1.4s ease-in-out infinite; }
 /* Panel = overlay XEM NHANH nổi giữa màn hình (không bám theo nút chuông —
    chuông có thể nằm cuối sidebar, panel absolute sẽ rơi ra ngoài viewport).
    Che nội dung phía sau là chấp nhận được: mở xem → đóng liền (✕ / click
@@ -9762,12 +9769,15 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 @keyframes stk-flash-down { 0% { background: rgba(244, 63, 94, 0.35); } 100% { background: var(--glass); } }
 
 /* Chạm ngưỡng cấu hình: viền cảnh báo thở đều + ⚠ — phải thấy được từ khoé mắt. */
-.stk-alert { border-color: var(--warn); animation: stk-breathe 1.6s ease-in-out infinite; }
-.stk-warnmark { font-size: 10px; }
-@keyframes stk-breathe {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
-  50% { box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.35); }
+.stk-alert { border-color: var(--warn); position: relative; }
+.stk-alert::after { /* opacity thay box-shadow — xem ghi chú HIỆU NĂNG ở .ms-bell */
+  content: ''; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.35);
+  opacity: 0; will-change: opacity;
+  animation: stk-breathe 1.6s ease-in-out infinite;
 }
+.stk-warnmark { font-size: 10px; }
+@keyframes stk-breathe { 50% { opacity: 1; } }
 @keyframes stk-blink { 50% { opacity: 0.3; } }
 
 /* Nút ⚙ / ▁ / ✕ trong widget — nhỏ và chìm, widget là để nhìn giá. */
@@ -10894,7 +10904,7 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 
 .mon-banner-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--lv, var(--faint));
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--lv, var(--faint)) 25%, transparent); flex: none; }
-.mon-bar-status.lv-crit .mon-banner-dot, .mon-bar-status.lv-down .mon-banner-dot { animation: mon-pulse 1.6s ease-in-out infinite; }
+.mon-bar-status.lv-crit .mon-banner-dot::after, .mon-bar-status.lv-down .mon-banner-dot::after { animation: mon-pulse 1.6s ease-in-out infinite; }
 .mon-chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .mon-chip {
   display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 999px; cursor: pointer; font: inherit;
@@ -10903,10 +10913,15 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 }
 .mon-chip .mon-dot { background: var(--lv); }
 .mon-chip:hover, .mon-chip.on { background: color-mix(in srgb, var(--lv) 26%, transparent); border-color: var(--lv); }
-@keyframes mon-pulse {
-  0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--lv) 25%, transparent); }
-  50% { box-shadow: 0 0 0 9px color-mix(in srgb, var(--lv) 8%, transparent); }
+/* opacity thay box-shadow — xem ghi chú HIỆU NĂNG ở .ms-bell. Quầng tĩnh nằm
+   sẵn trên chấm; ::after mang vòng ngoài, chỉ hiện khi có animation gắn vào. */
+.mon-dot, .mon-banner-dot { position: relative; }
+.mon-dot::after, .mon-banner-dot::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  box-shadow: 0 0 0 9px color-mix(in srgb, var(--lv, var(--faint)) 8%, transparent);
+  opacity: 0;
 }
+@keyframes mon-pulse { 50% { opacity: 1; } }
 
 .mon-bar { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-bottom: 1px solid var(--glass-brd); min-height: 40px; }
 .mon-bar-status { display: inline-flex; align-items: center; gap: 9px; min-width: 0; white-space: nowrap; }
@@ -10962,7 +10977,7 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 .mon-alert:hover, .mon-alert:focus-visible { outline: none; transform: translateY(-1px); border-color: var(--lv); box-shadow: 0 4px 16px color-mix(in srgb, var(--lv) 25%, transparent); }
 .mon-alert-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .mon-alert-top .mon-dot { width: 8px; height: 8px; box-shadow: none; }
-.mon-alert.lv-crit .mon-dot, .mon-alert.lv-down .mon-dot { animation: mon-pulse 1.6s ease-in-out infinite; }
+.mon-alert.lv-crit .mon-dot::after, .mon-alert.lv-down .mon-dot::after { animation: mon-pulse 1.6s ease-in-out infinite; }
 .mon-alert-name { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mon-alert-stack { color: var(--muted); font-size: 11.5px; white-space: nowrap; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
 .mon-alert-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -11004,7 +11019,7 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
   background: linear-gradient(180deg, color-mix(in srgb, var(--lv) 20%, transparent), color-mix(in srgb, var(--lv) 6%, transparent)), var(--glass);
 }
 .mon-tile.lv-down { border-left-style: double; border-left-width: 5px; }
-.mon-tile.lv-crit .mon-dot, .mon-tile.lv-down .mon-dot { animation: mon-pulse 1.6s ease-in-out infinite; }
+.mon-tile.lv-crit .mon-dot::after, .mon-tile.lv-down .mon-dot::after { animation: mon-pulse 1.6s ease-in-out infinite; }
 .mon-tile.busy::after { content: ''; position: absolute; top: 8px; right: 8px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: .7; animation: mon-blink 1s ease-in-out infinite; }
 @keyframes mon-blink { 50% { opacity: .15; } }
 .mon-tile-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -11253,15 +11268,21 @@ select.input.api-m--get, select.input.api-m--post, select.input.api-m--put, sele
 
 /* chấm trạng thái trên nút menu */
 .modeswitch .ms-mon { width: 8px; height: 8px; border-radius: 50%; margin-left: 5px; flex: none; }
-.modeswitch .ms-mon.bad { background: var(--err); box-shadow: 0 0 0 3px color-mix(in srgb, var(--err) 28%, transparent); animation: mon-menu-pulse 1.6s ease-in-out infinite; }
+.modeswitch .ms-mon.bad { background: var(--err); box-shadow: 0 0 0 3px color-mix(in srgb, var(--err) 28%, transparent); position: relative; }
+.modeswitch .ms-mon.bad::after { /* opacity thay box-shadow — xem ghi chú HIỆU NĂNG ở .ms-bell */
+  content: ''; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--err) 6%, transparent);
+  opacity: 0; will-change: opacity;
+  animation: mon-menu-pulse 1.6s ease-in-out infinite;
+}
 .modeswitch .ms-mon.warn { background: var(--warn); }
-@keyframes mon-menu-pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--err) 6%, transparent); } }
+@keyframes mon-menu-pulse { 50% { opacity: 1; } }
 
 @media (max-width: 760px) {
   .mon-bar { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .mon-tile, .mon-alert, .mon-banner-dot, .mon-dot, .mon-spin, .mon-tile.busy::after, .modeswitch .ms-mon.bad { animation: none !important; transition: none; }
+  .mon-tile, .mon-alert, .mon-banner-dot, .mon-dot, .mon-spin, .mon-tile.busy::after, .modeswitch .ms-mon.bad, .mon-dot::after, .mon-banner-dot::after, .modeswitch .ms-mon.bad::after { animation: none !important; transition: none; }
 }
 
 /* Menu chuột phải trên branch (tab Git) */
@@ -11591,7 +11612,7 @@ html.tf-page nextjs-portal { display: none !important; }
    bên: chữ mảnh, nhỏ, đỏ critical (không đậm), hiện nhẹ mỗi nhịp. */
 .foot-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .crit { display: inline-flex; align-items: center; gap: 7px; flex: none; }
-.crit-bell { animation-duration: 1s; }
+.crit-bell::after { animation-duration: 1s; }
 .crit-ico { width: 1em; height: 1em; flex: none; color: #ef4444; }
 .crit-name {
   min-width: 7ch; font-size: 11px; font-weight: 300; letter-spacing: .02em;
@@ -11606,7 +11627,7 @@ html.tf-page nextjs-portal { display: none !important; }
   100% { opacity: .15; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .crit-bell, .crit-name { animation: none; }
+  .crit-bell::after, .crit-name { animation: none; }
 }
 
 /* ── Biến truy vấn (tab ES → Dữ liệu, components/es/QueryVarsModal) ── */
@@ -12051,7 +12072,7 @@ html.tf-page nextjs-portal { display: none !important; }
 .wall-col-head { display: flex; flex-direction: column; gap: 6px; flex: none; padding: 10px 12px 10px 14px; border-bottom: 1px solid var(--glass-brd); }
 .wall-col-title { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; }
 .wall-col-title .mon-dot { background: var(--lv); }
-.wall-col.lv-crit .wall-col-title .mon-dot, .wall-col.lv-down .wall-col-title .mon-dot { animation: mon-pulse 1.6s ease-in-out infinite; }
+.wall-col.lv-crit .wall-col-title .mon-dot::after, .wall-col.lv-down .wall-col-title .mon-dot::after { animation: mon-pulse 1.6s ease-in-out infinite; }
 .wall-col-title b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wall-col-focus {
   display: grid; place-items: center; flex: none; width: 26px; height: 26px; border: 0; border-radius: 6px;
@@ -12078,7 +12099,7 @@ html.tf-page nextjs-portal { display: none !important; }
 .slide-kind { font-size: clamp(11px, .4vw + 6px, 15px); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .slide-title { display: flex; align-items: center; gap: 10px; min-width: 0; margin: 0; font-size: clamp(20px, 1.1vw + 10px, 38px); line-height: 1.25; font-weight: 700; color: var(--text); }
 .slide-title .mon-dot { width: 12px; height: 12px; background: var(--lv); }
-.slide-head.lv-crit .slide-title .mon-dot, .slide-head.lv-down .slide-title .mon-dot { animation: mon-pulse 1.6s ease-in-out infinite; }
+.slide-head.lv-crit .slide-title .mon-dot::after, .slide-head.lv-down .slide-title .mon-dot::after { animation: mon-pulse 1.6s ease-in-out infinite; }
 .slide-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slide-page { flex: none; font-size: clamp(13px, .4vw + 7px, 18px); font-weight: 500; color: var(--muted); }
 .slide-sum { font-size: clamp(13px, .5vw + 6px, 22px); color: var(--muted); }
@@ -12132,6 +12153,6 @@ html.tf-page nextjs-portal { display: none !important; }
   .wall-col-body { overflow: visible; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .slide-grid, .slide-progress span, .wall-col .mon-dot, .slide-title .mon-dot { animation: none; }
+  .slide-grid, .slide-progress span, .wall-col .mon-dot, .slide-title .mon-dot, .wall-col .mon-dot::after, .slide-title .mon-dot::after { animation: none; }
   .wall-kiosk .wall-tools, .wall-kiosk .slide-btn { transition: none; }
 }

@@ -163,7 +163,11 @@ const DEFAULT_BASE_URL = 'http://localhost:8090';
 function paneStyle(on: boolean, hostsWebviews = false): CSSProperties {
   if (on) return { gridColumn: '1 / -1', gridRow: '1' };
   if (!hostsWebviews) {
-    return { gridColumn: '1 / -1', gridRow: '1', visibility: 'hidden', pointerEvents: 'none' };
+    // content-visibility:hidden — trình duyệt BỎ QUA layout/paint cả cây con của
+    // pane ẩn (trước đây mọi tab đã ghé đều bị tính bố cục lại mỗi lần gõ phím),
+    // nhưng vẫn giữ state React + vị trí cuộn. Đo kích thước bằng JS (xterm fit…)
+    // vẫn đúng vì trình duyệt tính layout theo yêu cầu khi bị hỏi.
+    return { gridColumn: '1 / -1', gridRow: '1', visibility: 'hidden', pointerEvents: 'none', contentVisibility: 'hidden' };
   }
   return {
     position: 'fixed',
@@ -204,6 +208,7 @@ function ultraPaneStyle(col: number, hostsWebviews = false): CSSProperties {
     height: '100%',
     visibility: 'hidden',
     pointerEvents: 'none',
+    contentVisibility: 'hidden', // xem paneStyle
   };
 }
 
