@@ -3834,6 +3834,77 @@ const RepoPicker = memo(function RepoPicker({ repos, overview, active, focus, bu
     return repos.filter((_, i) => lowered[i].includes(q));
   }, [repos, lowered, focus, active, q]);
 
+  // Project 2 cấp (root/v1/<repo>, tên repo dạng "v1/<repo>" — xem detectRepos
+  // trong lib/gitCore.ts): gom theo thư mục cấp 1 thành nhóm mở rộng/thu gọn
+  // được, thay vì trải phẳng. Nhóm đứng ở vị trí repo đầu tiên của nó.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const toggleDir = useCallback((dir: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(dir)) next.delete(dir); else next.add(dir);
+      return next;
+    });
+  }, []);
+  type Row =
+    | { kind: 'repo'; repo: RepoInfo }
+    | { kind: 'group'; dir: string; items: RepoInfo[]; behind: number };
+  const rows = useMemo<Row[]>(() => {
+    const out: Row[] = [];
+    const groups = new Map<string, Extract<Row, { kind: 'group' }>>();
+    for (const r of visible) {
+      const slash = r.self ? -1 : r.name.indexOf('/');
+      if (slash <= 0) { out.push({ kind: 'repo', repo: r }); continue; }
+      const dir = r.name.slice(0, slash);
+      let g = groups.get(dir);
+      if (!g) {
+        g = { kind: 'group', dir, items: [], behind: 0 };
+        groups.set(dir, g);
+        out.push(g);
+      }
+      g.items.push(r);
+      g.behind += overview[r.path]?.behind ?? 0;
+    }
+    return out;
+  }, [visible, overview]);
+
+  // Repo đang mở nằm trong nhóm bị thu gọn (vd chọn qua ô tìm rồi xoá chữ) → mở nhóm đó ra.
+  useEffect(() => {
+    const cur = repos.find((r) => r.path === active);
+    const slash = cur && !cur.self ? cur.name.indexOf('/') : -1;
+    if (slash <= 0) return;
+    const dir = cur!.name.slice(0, slash);
+    setCollapsed((prev) => {
+      if (!prev.has(dir)) return prev;
+      const next = new Set(prev);
+      next.delete(dir);
+      return next;
+    });
+  }, [active, repos]);
+
+  const renderRepo = (r: RepoInfo, label: string, nested: boolean) => {
+    const ov = overview[r.path];
+    const gl = repoGlyph(ov);
+    return (
+      <button
+        key={r.path}
+        type="button"
+        className={`sg-item${nested ? ' sg-nested' : ''}${r.path === active ? ' active' : ''}`}
+        onClick={() => r.path !== active && onSelect(r.path)}
+        onDoubleClick={() => {
+          if (r.path !== active) onSelect(r.path);
+          onFocus(true);
+        }}
+        disabled={busy}
+        title={`${r.path}\nBấm đúp để chỉ hiện repo này`}
+      >
+        <span className="sg-ico" style={{ color: gl.color }} title={gl.title}>{gl.ch}</span>
+        <span className="sg-name">{label}</span>
+        {ov && ov.behind > 0 && <span className="sg-cnt warn">↓{ov.behind}</span>}
+        {ov && ov.ahead > 0 && <span className="sg-cnt">↑{ov.ahead}</span>}
+      </button>
+    );
+  };
+
   return (
     <>
       {!focus && repos.length > 5 && (
@@ -3852,28 +3923,29 @@ const RepoPicker = memo(function RepoPicker({ repos, overview, active, focus, bu
       )}
       <div className="sg-list">
         {!focus && q && visible.length === 0 && <div className="sg-empty">Không có repo nào khớp “{deferred.trim()}”</div>}
-        {visible.map((r) => {
-          const ov = overview[r.path];
-          const gl = repoGlyph(ov);
-          return (
-            <button
-              key={r.path}
-              type="button"
-              className={`sg-item${r.path === active ? ' active' : ''}`}
-              onClick={() => r.path !== active && onSelect(r.path)}
-              onDoubleClick={() => {
-                if (r.path !== active) onSelect(r.path);
-                onFocus(true);
-              }}
-              disabled={busy}
-              title={`${r.path}\nBấm đúp để chỉ hiện repo này`}
-            >
-              <span className="sg-ico" style={{ color: gl.color }} title={gl.title}>{gl.ch}</span>
-              <span className="sg-name">{r.self ? `${r.name} (gốc)` : r.name}</span>
-              {ov && ov.behind > 0 && <span className="sg-cnt warn">↓{ov.behind}</span>}
-              {ov && ov.ahead > 0 && <span className="sg-cnt">↑{ov.ahead}</span>}
-            </button>
-          );
+        {rows.map((row) => {
+          if (row.kind === 'group') {
+            // Đang tìm thì luôn mở nhóm có repo khớp — thu gọn mà giấu kết quả thì vô nghĩa.
+            const open = !!q || !collapsed.has(row.dir);
+            return (
+              <React.Fragment key={`dir:${row.dir}`}>
+                <button
+                  type="button"
+                  className="sg-item sg-group"
+                  onClick={() => toggleDir(row.dir)}
+                  title={open ? 'Thu gọn' : 'Mở rộng'}
+                  aria-expanded={open}
+                >
+                  <span className="sg-ico">{open ? '▾' : '▸'}</span>
+                  <span className="sg-name">{row.dir}/</span>
+                  {row.behind > 0 && <span className="sg-cnt warn">↓{row.behind}</span>}
+                  <span className="sg-cnt sg-group-n">{row.items.length}</span>
+                </button>
+                {open && row.items.map((r) => renderRepo(r, r.name.slice(row.dir.length + 1), true))}
+              </React.Fragment>
+            );
+          }
+          return renderRepo(row.repo, row.repo.self ? `${row.repo.name} (gốc)` : row.repo.name, false);
         })}
       </div>
     </>
