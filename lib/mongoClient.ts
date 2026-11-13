@@ -957,3 +957,192 @@ function sanitize(s: string): string {
   }
   return out;
 }
+
+// ── Sửa tay MỘT document (nút ✎ ở thẻ kết quả, mục Dữ liệu) ──────────────────
+//
+// Cùng hai cổng với các lệnh ghi khác (MONGO_ALLOW_WRITE + readOnly). Luồng:
+//   docGet     → đọc bản ĐẦY ĐỦ theo _id (kết quả Find có thể đã bị projection
+//                cắt field, hoặc bị cắt cụt ở DOC_JSON_CAP — ghi đè từ bản đó là
+//                xoá mất dữ liệu), trả về JSON để sửa.
+//   docReplace → replaceOne({_id}) với bản đã sửa, sau khi kiểm document trên
+//                server vẫn y hệt lúc mở sửa (ai đó ghi chen giữa → từ chối,
+//                không đè mất thay đổi của người khác).
+//
+// GIỮ KIỂU SỐ: JSON chỉ có một kiểu "number", trong khi BSON có Int32 / Long /
+// Double / Decimal128. Đọc ra rồi ghi lại ngây thơ sẽ biến Long thành Int32,
+// Double 5.0 thành Int32 5… nên:
+//   - bản để sửa ghi Long vượt 2^53 dạng {"$numberLong": "…"} (relaxed EJSON
+//     làm tròn mất các số này),
+//   - khi lưu, số ở vị trí nào mà bản gốc là Int32/Long/Double/Decimal128 thì
+//     ép về đúng kiểu gốc. Field mới thêm thì theo kiểu tự nhiên của số.
+
+const EDIT_DOC_CAP = 2_000_000; // ký tự — document lớn hơn thì sửa bằng ⚡ Thực thi lệnh ghi
+
+type BsonLike = { _bsontype?: string };
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+  if ((v as BsonLike)._bsontype) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/** Document → cây JSON thuần để sửa: relaxed EJSON, trừ Long ngoài vùng an toàn. */
+function toEditTree(v: unknown, depth = 0): unknown {
+  if (depth > 200) throw new Error('document lồng quá sâu để sửa tay');
+  if (Array.isArray(v)) return v.map((x) => toEditTree(x, depth + 1));
+  if (isPlainObject(v)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) out[k] = toEditTree(x, depth + 1);
+    return out;
+  }
+  const t = (v as BsonLike | null)?._bsontype;
+  if (t === 'Long') {
+    const l = v as InstanceType<typeof BSON.Long>;
+    const n = l.toNumber();
+    return Number.isSafeInteger(n) ? n : { $numberLong: l.toString() };
+  }
+  if (t === 'Int32' || t === 'Double') return (v as { valueOf(): number }).valueOf();
+  if (v === undefined) return null;
+  if (v === null || typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number') return v;
+  return BSON.EJSON.serialize(v, { relaxed: true });
+}
+
+function toEditJson(doc: Document): string {
+  return JSON.stringify(toEditTree(doc), null, 2);
+}
+
+function numOf(v: unknown): number | null {
+  if (typeof v === 'number') return v;
+  const t = (v as BsonLike | null)?._bsontype;
+  if (t === 'Int32' || t === 'Double') return (v as { valueOf(): number }).valueOf();
+  if (t === 'Long') return (v as InstanceType<typeof BSON.Long>).toNumber();
+  return null;
+}
+
+/** Ép số trong bản đã sửa về kiểu BSON của field tương ứng ở bản gốc. */
+function reconcileTypes(next: unknown, orig: unknown, depth = 0): unknown {
+  if (depth > 200) return next;
+  if (Array.isArray(next)) {
+    const o = Array.isArray(orig) ? orig : [];
+    return next.map((x, i) => reconcileTypes(x, o[i], depth + 1));
+  }
+  if (isPlainObject(next)) {
+    const o = isPlainObject(orig) ? orig : {};
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(next)) out[k] = reconcileTypes(x, o[k], depth + 1);
+    return out;
+  }
+  const n = numOf(next);
+  if (n === null) return next;
+  const ot = (orig as BsonLike | null)?._bsontype;
+  const nt = (next as BsonLike | null)?._bsontype;
+  if (ot === 'Long') {
+    if (nt === 'Long') return next;
+    if (Number.isInteger(n)) {
+      // Không đổi giá trị → giữ nguyên Long gốc (khỏi làm tròn số > 2^53).
+      const ol = orig as InstanceType<typeof BSON.Long>;
+      return ol.toNumber() === n ? ol : BSON.Long.fromNumber(n);
+    }
+    return new BSON.Double(n);
+  }
+  if (ot === 'Int32') {
+    return Number.isInteger(n) && n >= -2147483648 && n <= 2147483647 ? new BSON.Int32(n) : next;
+  }
+  if (ot === 'Double') return new BSON.Double(n);
+  if (ot === 'Decimal128' && nt !== 'Long') return BSON.Decimal128.fromString(String(n));
+  return next;
+}
+
+function requireWriteGates(conn: MongoConnection): void {
+  if (!MONGO_ALLOW_WRITE) {
+    throw new Error('Writes are disabled for the whole tool. Set MONGO_ALLOW_WRITE=true in .env.local (local dev only).');
+  }
+  if (conn.readOnly) {
+    throw new Error(`Connection "${conn.name}" is read-only. Edit the connection and untick read-only to arm writes.`);
+  }
+}
+
+function parseId(raw: unknown): unknown {
+  if (typeof raw !== 'string' || !raw.trim()) throw new Error('thiếu _id của document');
+  try {
+    return BSON.EJSON.parse(raw, { relaxed: false });
+  } catch (e) {
+    throw new Error(`_id không hợp lệ: ${(e as Error).message}`);
+  }
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  return BSON.EJSON.stringify({ v: a }, { relaxed: false }) === BSON.EJSON.stringify({ v: b }, { relaxed: false });
+}
+
+export interface DocEditResult {
+  /** JSON để sửa — cũng là "phiên bản" gửi lại lúc lưu để phát hiện ghi chen. */
+  json: string;
+}
+
+export async function getDocForEdit(conn: MongoConnection, dbName: string, collName: string, idRaw: unknown): Promise<DocEditResult> {
+  requireWriteGates(conn);
+  const db = requireName(dbName, 'database');
+  const coll = requireName(collName, 'collection');
+  const _id = parseId(idRaw);
+  const client = await getClient(conn);
+  const doc = await client.db(db).collection(coll).findOne({ _id } as Document, { maxTimeMS: MAX_TIME_FIND_MS, promoteValues: false });
+  if (!doc) throw new Error('Không tìm thấy document theo _id (đã bị xoá, hoặc _id đến từ aggregate chứ không phải document thật).');
+  const json = toEditJson(doc);
+  if (json.length > EDIT_DOC_CAP) throw new Error('Document quá lớn để sửa tay ở đây — dùng ⚡ Thực thi lệnh ghi (replaceOne / updateOne).');
+  return { json };
+}
+
+export interface DocReplaceResult {
+  matched: number;
+  modified: number;
+  tookMs: number;
+}
+
+export async function replaceDocById(
+  conn: MongoConnection, dbName: string, collName: string,
+  input: { id: unknown; expected: unknown; json: unknown },
+): Promise<DocReplaceResult> {
+  requireWriteGates(conn);
+  const db = requireName(dbName, 'database');
+  const coll = requireName(collName, 'collection');
+  const _id = parseId(input.id);
+  if (typeof input.json !== 'string' || !input.json.trim()) throw new Error('document trống');
+  if (input.json.length > EDIT_DOC_CAP) throw new Error('document quá lớn');
+
+  let parsed: unknown;
+  try {
+    parsed = BSON.EJSON.parse(input.json, { relaxed: false });
+  } catch (e) {
+    throw new Error(`JSON không hợp lệ: ${(e as Error).message}`);
+  }
+  if (!isPlainObject(parsed)) throw new Error('document phải là một object {…}');
+  forbidTopDollar(parsed, 'document');
+  forbidKeyDeep(parsed, FILTER_FORBIDDEN, 'document');
+
+  const client = await getClient(conn);
+  const c = client.db(db).collection(coll);
+  const t0 = Date.now();
+  const current = await c.findOne({ _id } as Document, { maxTimeMS: MAX_TIME_FIND_MS, promoteValues: false });
+  if (!current) throw new Error('Document không còn tồn tại (đã bị xoá trong lúc sửa).');
+  if (typeof input.expected === 'string' && toEditJson(current) !== input.expected) {
+    throw new Error('Document đã bị thay đổi trên server kể từ lúc mở sửa — mở lại ✎ để lấy bản mới rồi sửa lại (không ghi đè để khỏi mất thay đổi kia).');
+  }
+
+  const rest = reconcileTypes(parsed, current) as Record<string, unknown>;
+  // _id số: client gửi Int32 nhưng gốc có thể là Long/Double — so sau khi ép kiểu.
+  if ('_id' in rest && !sameValue(rest._id, current._id)) {
+    throw new Error('Không được đổi _id — muốn đổi _id thì chèn document mới rồi xoá document cũ.');
+  }
+  delete rest._id;
+  const replacement = { _id: current._id, ...rest } as Document;
+  const r = await c.replaceOne({ _id: current._id } as Document, replacement);
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `MONGO_AUDIT operation=docReplace connection=${conn.name} target=${db}.${coll} ` +
+    `_id=${sanitize(BSON.EJSON.stringify({ v: _id }))} matched=${r.matchedCount} modified=${r.modifiedCount} ts=${new Date().toISOString()}`,
+  );
+  return { matched: r.matchedCount, modified: r.modifiedCount, tookMs: Date.now() - t0 };
+}

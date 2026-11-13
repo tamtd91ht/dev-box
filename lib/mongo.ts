@@ -313,6 +313,21 @@ export function writeOpMongo(
   return mongoAction<WriteOpResult>('writeOp', { connectionId, db, coll, ...p, commit });
 }
 
+/** Bản đầy đủ của một document để sửa tay (theo _id, EJSON). Đi qua cổng ghi. */
+export function getMongoDocForEdit(connectionId: string, db: string, coll: string, id: string): Promise<{ json: string }> {
+  return mongoAction<{ json: string }>('docGet', { connectionId, db, coll, id });
+}
+
+export interface DocReplaceResult { matched: number; modified: number; tookMs: number }
+
+/** Ghi đè một document theo _id. `expected` = JSON lúc mở sửa — server từ chối nếu document đã đổi. */
+export function replaceMongoDoc(
+  connectionId: string, db: string, coll: string,
+  p: { id: string; expected: string; json: string },
+): Promise<DocReplaceResult> {
+  return mongoAction<DocReplaceResult>('docReplace', { connectionId, db, coll, ...p });
+}
+
 // ── Small shared formatters (used by the workspace UI) ───────────────────────
 
 export function fmtBytes(n: number): string {

@@ -12,9 +12,11 @@
 // trong RAM, không ghi xuống localStorage.
 //
 // Reads are unrestricted (find / count / aggregate / indexes / stats — all
-// server-bounded by maxTimeMS + page caps). The ONLY write is "Update…", which
-// opens UpdateModal and is triple-gated (env flag + per-connection readOnly +
-// typed confirm), with the mandatory-filter rule enforced server-side.
+// server-bounded by maxTimeMS + page caps). Writes: "Update…" (UpdateModal,
+// triple-gated: env flag + per-connection readOnly + typed confirm, mandatory
+// filter server-side) and ✎ on each result card (Find mode) — sửa tay một
+// document, ghi đè theo _id, cùng hai cổng env + readOnly, có xác nhận và chặn
+// ghi chen (xem replaceDocById ở lib/mongoClient).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -26,6 +28,8 @@ import {
   countMongo,
   aggregateMongo,
   sampleMongoFields,
+  getMongoDocForEdit,
+  replaceMongoDoc,
   prettyDoc,
   formatJsonInput,
   minifyJsonInput,
@@ -946,6 +950,12 @@ function BrowserViewInner({
                           /* A search must open every card — a hit hidden behind a
                              collapsed header would never be found. */
                           forceOpen={!!needle && (hitOffsets[i + 1] ?? totalHits) > (hitOffsets[i] ?? 0)}
+                          /* Sửa tay chỉ ở Find: kết quả aggregate thường không
+                             phải document thật ($group/$project đổi hình dạng). */
+                          edit={writeArmed && queryMode === 'find' ? {
+                            connectionId, db: selected.db, coll: selected.coll,
+                            onSaved: (msg) => { flash(msg); void runFind({ skip: result?.skip ?? 0 }); },
+                          } : null}
                         />
                       ))}
                     </div>
@@ -1069,12 +1079,99 @@ interface DocCardProps {
   activeHit: number;
   hitOffset: number;
   forceOpen: boolean;
+  /** Có giá trị khi được phép sửa tay (ghi đang mở + chế độ Find). */
+  edit: DocEditCtx | null;
+}
+
+interface DocEditCtx {
+  connectionId: string;
+  db: string;
+  coll: string;
+  onSaved: (msg: string) => void;
+}
+
+interface EditState {
+  /** _id dạng JSON/EJSON — gửi lên server làm khoá. */
+  id: string;
+  /** Bản server trả lúc mở sửa — vừa để so "có đổi gì không", vừa để chặn ghi chen. */
+  original: string;
+  text: string;
+  busy: boolean;
+  err: string | null;
+}
+
+/**
+ * Lấy _id từ JSON của thẻ. Document bị cắt cụt (truncated) không parse được,
+ * nhưng _id gần như luôn là field đầu tiên → thử bắt bằng regex.
+ */
+function extractId(json: string): string | null {
+  try {
+    const o = JSON.parse(json) as Record<string, unknown>;
+    return '_id' in o ? JSON.stringify(o._id) : null;
+  } catch {
+    const m = /^\s*\{\s*"_id"\s*:\s*(\{\s*"\$oid"\s*:\s*"[0-9a-fA-F]{24}"\s*\}|"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?)/.exec(json);
+    return m ? m[1] : null;
+  }
 }
 
 /** One document: collapsible, rendered either as a JSON tree or as raw text. */
-function DocCard({ json, truncated, index, tree, highlight, activeHit, hitOffset, forceOpen }: DocCardProps) {
+function DocCard({ json, truncated, index, tree, highlight, activeHit, hitOffset, forceOpen, edit }: DocCardProps) {
   const [open, setOpen] = useState(false);
-  const shown = open || forceOpen;
+  const [editing, setEditing] = useState<EditState | null>(null);
+  const [loadingEdit, setLoadingEdit] = useState(false);
+  const shown = open || forceOpen || !!editing;
+  const docId = useMemo(() => (edit ? extractId(json) : null), [edit, json]);
+
+  /** Mở sửa: đọc lại bản ĐẦY ĐỦ từ server — thẻ có thể đã bị projection cắt field. */
+  const startEdit = async () => {
+    if (!edit || !docId) return;
+    setLoadingEdit(true);
+    try {
+      const r = await getMongoDocForEdit(edit.connectionId, edit.db, edit.coll, docId);
+      setEditing({ id: docId, original: r.json, text: r.json, busy: false, err: null });
+      setOpen(true);
+    } catch (e) {
+      window.alert(`Không mở được document để sửa:\n${(e as Error).message}`);
+    } finally {
+      setLoadingEdit(false);
+    }
+  };
+
+  const saveEdit = async () => {
+    if (!edit || !editing || editing.busy) return;
+    try {
+      JSON.parse(editing.text);
+    } catch (e) {
+      setEditing({ ...editing, err: `JSON không hợp lệ: ${(e as Error).message}` });
+      return;
+    }
+    if (editing.text.trim() === editing.original.trim()) {
+      setEditing({ ...editing, err: 'Chưa sửa gì cả.' });
+      return;
+    }
+    if (!window.confirm(`Ghi đè document _id=${editing.id} trong ${edit.db}.${edit.coll}?\n\nThao tác này ghi thẳng vào database, không hoàn tác được.`)) return;
+    setEditing({ ...editing, busy: true, err: null });
+    try {
+      const r = await replaceMongoDoc(edit.connectionId, edit.db, edit.coll, {
+        id: editing.id, expected: editing.original, json: editing.text,
+      });
+      setEditing(null);
+      edit.onSaved(r.matched === 0
+        ? 'Không ghi được — document không còn khớp _id.'
+        : `Đã lưu document — modified ${r.modified} · ${r.tookMs}ms`);
+    } catch (e) {
+      setEditing((cur) => cur && { ...cur, busy: false, err: (e as Error).message });
+    }
+  };
+
+  const formatEdit = () => {
+    if (!editing) return;
+    try {
+      setEditing({ ...editing, text: JSON.stringify(JSON.parse(editing.text), null, 2), err: null });
+    } catch (e) {
+      setEditing({ ...editing, err: `JSON không hợp lệ: ${(e as Error).message}` });
+    }
+  };
   // Chỉ pretty-print khi THẬT SỰ cần (bấm copy, hoặc đang mở ở chế độ Raw).
   // Trước đây gọi thẳng trong thân component nên mỗi lần re-render là
   // parse + stringify cho CẢ TRANG 200 document, kể cả các thẻ đang đóng.
@@ -1113,13 +1210,47 @@ function DocCard({ json, truncated, index, tree, highlight, activeHit, hitOffset
           }}
         >{firstLine}</code>
         {truncated && <span className="badge" style={{ color: 'var(--err)' }}>truncated</span>}
+        {edit && (
+          <button
+            className="chip-btn"
+            disabled={!docId || loadingEdit || !!editing}
+            title={!docId ? 'Document không có _id — không sửa tay được' : editing ? 'Đang sửa' : 'Sửa tay document này (ghi đè theo _id)'}
+            onClick={(e) => { e.stopPropagation(); void startEdit(); }}
+          >{loadingEdit ? <span className="spinner" aria-hidden /> : '✎'}</button>
+        )}
         <button
           className="chip-btn"
           title="Copy JSON"
           onClick={(e) => { e.stopPropagation(); void navigator.clipboard?.writeText(prettyDoc(json)); }}
         >⧉</button>
       </div>
-      {shown && (
+      {editing ? (
+        <div className="mongo-doc-body mongo-doc-edit">
+          <textarea
+            className="input mono mongo-json-input"
+            spellCheck={false}
+            autoFocus
+            rows={Math.min(30, Math.max(6, editing.text.split('\n').length + 1))}
+            value={editing.text}
+            disabled={editing.busy}
+            onChange={(e) => setEditing({ ...editing, text: e.target.value, err: null })}
+            onKeyDown={(e) => {
+              if (e.key.toLowerCase() === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void saveEdit(); }
+              else if (e.key === 'Escape') { e.preventDefault(); setEditing(null); }
+              else if (e.key === 'F' && e.shiftKey && (e.ctrlKey || e.metaKey)) { e.preventDefault(); formatEdit(); }
+            }}
+          />
+          {editing.err && <span className="mongo-json-err">{editing.err}</span>}
+          <div className="status-line" style={{ gap: 8 }}>
+            <button className="sm" disabled={editing.busy} onClick={() => void saveEdit()}>
+              {editing.busy ? <span className="spinner" aria-hidden /> : '💾'} Lưu
+            </button>
+            <button className="ghost sm" disabled={editing.busy} onClick={() => setEditing(null)}>Huỷ</button>
+            <button className="chip-btn" disabled={editing.busy} title="Format JSON (Ctrl+Shift+F)" onClick={formatEdit}>⤸ Format</button>
+            <span className="xhint">Ctrl+S lưu · Esc huỷ · giữ nguyên {'{"$oid"}, {"$date"}'} · không đổi được _id</span>
+          </div>
+        </div>
+      ) : shown && (
         tree ? (
           <div className="mongo-doc-body">
             <JsonView json={json} highlight={highlight} activeHit={activeHit} hitOffset={hitOffset} />
