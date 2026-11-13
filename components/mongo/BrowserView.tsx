@@ -30,6 +30,7 @@ import {
   sampleMongoFields,
   getMongoDocForEdit,
   replaceMongoDoc,
+  deleteMongoDoc,
   prettyDoc,
   formatJsonInput,
   minifyJsonInput,
@@ -1119,6 +1120,7 @@ function DocCard({ json, truncated, index, tree, highlight, activeHit, hitOffset
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<EditState | null>(null);
   const [loadingEdit, setLoadingEdit] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const shown = open || forceOpen || !!editing;
   const docId = useMemo(() => (edit ? extractId(json) : null), [edit, json]);
 
@@ -1161,6 +1163,23 @@ function DocCard({ json, truncated, index, tree, highlight, activeHit, hitOffset
         : `Đã lưu document — modified ${r.modified} · ${r.tookMs}ms`);
     } catch (e) {
       setEditing((cur) => cur && { ...cur, busy: false, err: (e as Error).message });
+    }
+  };
+
+  const deleteDoc = async () => {
+    if (!edit || !docId || deleting) return;
+    if (!window.confirm(`XOÁ document _id=${docId} khỏi ${edit.db}.${edit.coll}?\n\nThao tác này ghi thẳng vào database, không hoàn tác được.`)) return;
+    setDeleting(true);
+    try {
+      const r = await deleteMongoDoc(edit.connectionId, edit.db, edit.coll, docId);
+      setEditing(null);
+      edit.onSaved(r.deleted === 0
+        ? 'Không xoá gì — document không còn tồn tại.'
+        : `Đã xoá document _id=${docId} · ${r.tookMs}ms`);
+    } catch (e) {
+      window.alert(`Không xoá được document:\n${(e as Error).message}`);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -1217,6 +1236,15 @@ function DocCard({ json, truncated, index, tree, highlight, activeHit, hitOffset
             title={!docId ? 'Document không có _id — không sửa tay được' : editing ? 'Đang sửa' : 'Sửa tay document này (ghi đè theo _id)'}
             onClick={(e) => { e.stopPropagation(); void startEdit(); }}
           >{loadingEdit ? <span className="spinner" aria-hidden /> : '✎'}</button>
+        )}
+        {edit && (
+          <button
+            className="chip-btn"
+            style={{ color: 'var(--err)' }}
+            disabled={!docId || deleting || !!editing?.busy}
+            title={!docId ? 'Document không có _id — không xoá được' : 'Xoá document này (theo _id)'}
+            onClick={(e) => { e.stopPropagation(); void deleteDoc(); }}
+          >{deleting ? <span className="spinner" aria-hidden /> : '🗑'}</button>
         )}
         <button
           className="chip-btn"

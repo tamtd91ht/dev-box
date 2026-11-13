@@ -1146,3 +1146,31 @@ export async function replaceDocById(
   );
   return { matched: r.matchedCount, modified: r.modifiedCount, tookMs: Date.now() - t0 };
 }
+
+export interface DocDeleteResult {
+  deleted: number;
+  tookMs: number;
+}
+
+/** Xoá MỘT document theo _id (nút 🗑 cạnh ✎). Cùng hai cổng ghi; UI bắt xác nhận trước. */
+export async function deleteDocById(conn: MongoConnection, dbName: string, collName: string, idRaw: unknown): Promise<DocDeleteResult> {
+  requireWriteGates(conn);
+  const db = requireName(dbName, 'database');
+  const coll = requireName(collName, 'collection');
+  const _id = parseId(idRaw);
+  forbidKeyDeep(_id, FILTER_FORBIDDEN, '_id');
+  // _id phải là GIÁ TRỊ, không phải toán tử ({"$ne": …} sẽ xoá nhầm document khác).
+  if (isPlainObject(_id) && Object.keys(_id).some((k) => k.startsWith('$'))) {
+    throw new Error('_id không hợp lệ — phải là giá trị cụ thể, không phải toán tử');
+  }
+  const client = await getClient(conn);
+  const t0 = Date.now();
+  const r = await client.db(db).collection(coll).deleteOne({ _id } as Document);
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `MONGO_AUDIT operation=docDelete connection=${conn.name} target=${db}.${coll} ` +
+    `_id=${sanitize(BSON.EJSON.stringify({ v: _id }))} deleted=${r.deletedCount} ts=${new Date().toISOString()}`,
+  );
+  return { deleted: r.deletedCount, tookMs: Date.now() - t0 };
+}

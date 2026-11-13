@@ -328,6 +328,11 @@ export function replaceMongoDoc(
   return mongoAction<DocReplaceResult>('docReplace', { connectionId, db, coll, ...p });
 }
 
+/** Xoá một document theo _id. */
+export function deleteMongoDoc(connectionId: string, db: string, coll: string, id: string): Promise<{ deleted: number; tookMs: number }> {
+  return mongoAction<{ deleted: number; tookMs: number }>('docDelete', { connectionId, db, coll, id });
+}
+
 // ── Small shared formatters (used by the workspace UI) ───────────────────────
 
 export function fmtBytes(n: number): string {

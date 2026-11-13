@@ -16,6 +16,7 @@
 //     'writeOp'     { connectionId, db, coll, op, filter?, body?, upsert?, commit } → { ok, result: WriteOpResult } (commit=false → chỉ đếm + mẫu)
 //     'docGet'      { connectionId, db, coll, id }       → { ok, result: { json } }   (bản đầy đủ để sửa tay, cổng ghi)
 //     'docReplace'  { connectionId, db, coll, id, expected, json } → { ok, result: DocReplaceResult } (ghi đè theo _id)
+//     'docDelete'   { connectionId, db, coll, id }       → { ok, result: DocDeleteResult } (xoá một document theo _id)
 //     'diagnose'    { connectionId, kind }               → { ok, result: MongoDiagnosis }   (tab Phân tích, chỉ đọc thống kê)
 //     'longRunning' { connectionId, minSec }             → { ok, result: LongRunningResult } (thao tác chạy ≥ minSec giây, ≥ 1)
 //
@@ -49,6 +50,7 @@ import {
   writeOp,
   getDocForEdit,
   replaceDocById,
+  deleteDocById,
 } from '@/lib/mongoClient';
 import { getConnection, buildUnsavedConnection } from '@/lib/mongoConnections';
 
@@ -174,11 +176,14 @@ export async function POST(req: NextRequest) {
         break;
       }
       case 'docGet':
-      case 'docReplace': {
+      case 'docReplace':
+      case 'docDelete': {
         try {
           result = action === 'docGet'
             ? await getDocForEdit(conn, db, coll, body.id)
-            : await replaceDocById(conn, db, coll, { id: body.id, expected: body.expected, json: body.json });
+            : action === 'docDelete'
+              ? await deleteDocById(conn, db, coll, body.id)
+              : await replaceDocById(conn, db, coll, { id: body.id, expected: body.expected, json: body.json });
         } catch (err) {
           const msg = (err as Error).message || 'write refused';
           const gate = msg.includes('disabled for the whole tool') || msg.includes('is read-only');
