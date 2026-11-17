@@ -16,7 +16,8 @@
 // triple-gated: env flag + per-connection readOnly + typed confirm, mandatory
 // filter server-side) and ✎ on each result card (Find mode) — sửa tay một
 // document, ghi đè theo _id, cùng hai cổng env + readOnly, có xác nhận và chặn
-// ghi chen (xem replaceDocById ở lib/mongoClient).
+// ghi chen (xem replaceDocById ở lib/mongoClient). Tab Indexes có "＋ Tạo index
+// (chạy nền)" — IndexBuildPanel, cùng hai cổng ghi.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -31,6 +32,7 @@ import {
   getMongoDocForEdit,
   replaceMongoDoc,
   deleteMongoDoc,
+  dropMongoIndex,
   prettyDoc,
   formatJsonInput,
   minifyJsonInput,
@@ -47,6 +49,7 @@ import {
 } from '@/lib/mongo';
 import UpdateModal from './UpdateModal';
 import ExportModal from './ExportModal';
+import IndexBuildPanel from './IndexBuildPanel';
 import JsonView, { countHits } from './JsonView';
 import FieldSuggest from './FieldSuggest';
 import { expandSnippet, FILTER_SNIPPETS, PIPELINE_SNIPPETS, type Snippet } from '@/lib/mongoSnippets';
@@ -426,6 +429,30 @@ function BrowserViewInner({
     try { setRt(tabId, { indexes: await listMongoIndexes(connectionId, sel.db, sel.coll) }); }
     catch (e) { setRt(tabId, { error: (e as Error).message }); }
   }, [connectionId, activeId, setRt]);
+
+  /** Index đang xoá (khoá các nút 🗑 khác trong lúc chờ). */
+  const [droppingIndex, setDroppingIndex] = useState<string | null>(null);
+  const dropIndex = useCallback(async (name: string, keyJson: string) => {
+    const sel = tabsRef.current.find((t) => t.id === activeId)?.state.selected;
+    if (!sel) return;
+    // Gõ lại đúng tên index mới xoá — xoá nhầm index trên production là query chậm ngay lập tức.
+    const typed = window.prompt(
+      `XOÁ index "${name}" ${keyJson} khỏi ${sel.db}.${sel.coll}?\n\n` +
+      'Query đang dựa vào index này sẽ chậm ngay; tạo lại phải build từ đầu.\nGõ lại tên index để xác nhận:',
+    );
+    if (typed === null) return;
+    if (typed.trim() !== name) { window.alert('Tên không khớp — không xoá gì.'); return; }
+    setDroppingIndex(name);
+    try {
+      const r = await dropMongoIndex(connectionId, sel.db, sel.coll, name);
+      flash(`Đã xoá index ${r.name} · ${r.tookMs}ms`);
+    } catch (e) {
+      window.alert(`Không xoá được index:\n${(e as Error).message}`);
+    } finally {
+      setDroppingIndex(null);
+      void loadIndexes(activeId);
+    }
+  }, [connectionId, activeId, flash, loadIndexes]);
 
   /** Sample the collection's field paths for the query-bar autocomplete. */
   const loadFields = useCallback(async (tabId = activeId) => {
@@ -967,9 +994,18 @@ function BrowserViewInner({
             )}
 
             {collTab === 'indexes' && (
+              <>
+              <IndexBuildPanel
+                connectionId={connectionId}
+                db={selected.db}
+                coll={selected.coll}
+                writeArmed={writeArmed}
+                lockReason={!allowWrite ? 'MONGO_ALLOW_WRITE chưa bật — write đang khoá toàn tool' : 'Connection này đang read-only'}
+                onBuilt={(m) => { flash(m); void loadIndexes(); }}
+              />
               <table className="mongo-table">
                 <thead>
-                  <tr><th style={{ textAlign: 'left' }}>Name</th><th style={{ textAlign: 'left' }}>Keys</th><th>Flags</th></tr>
+                  <tr><th style={{ textAlign: 'left' }}>Name</th><th style={{ textAlign: 'left' }}>Keys</th><th>Flags</th>{writeArmed && <th />}</tr>
                 </thead>
                 <tbody>
                   {indexes.map((ix) => (
@@ -982,11 +1018,25 @@ function BrowserViewInner({
                         {ix.partial && <span className="badge">partial</span>}{' '}
                         {ix.ttlSeconds !== undefined && <span className="badge">ttl {ix.ttlSeconds}s</span>}
                       </td>
+                      {writeArmed && (
+                        <td>
+                          {ix.name !== '_id_' && (
+                            <button
+                              className="chip-btn"
+                              style={{ color: 'var(--err)' }}
+                              disabled={droppingIndex !== null}
+                              title={`Xoá index ${ix.name}`}
+                              onClick={() => void dropIndex(ix.name, ix.keyJson)}
+                            >{droppingIndex === ix.name ? <span className="spinner" aria-hidden /> : '🗑'}</button>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   ))}
-                  {indexes.length === 0 && <tr><td colSpan={3} className="empty">Chưa tải / không có index.</td></tr>}
+                  {indexes.length === 0 && <tr><td colSpan={writeArmed ? 4 : 3} className="empty">Chưa tải / không có index.</td></tr>}
                 </tbody>
               </table>
+              </>
             )}
 
             {collTab === 'stats' && (

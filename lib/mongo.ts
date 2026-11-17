@@ -230,6 +230,49 @@ export function listMongoIndexes(connectionId: string, db: string, coll: string)
   return mongoAction<IndexInfo[]>('indexes', { connectionId, db, coll });
 }
 
+export interface IndexBuildJob {
+  id: string;
+  db: string;
+  coll: string;
+  name: string;
+  keyJson: string;
+  optionsJson: string;
+  status: 'running' | 'done' | 'error';
+  error?: string;
+  startedAt: number;
+  endedAt?: number;
+}
+
+export interface IndexBuildOp {
+  opid: string;
+  names: string[];
+  msg: string;
+  done?: number;
+  total?: number;
+  secs: number;
+}
+
+export interface IndexBuildsResult {
+  jobs: IndexBuildJob[];
+  ops: IndexBuildOp[];
+  notes: string[];
+}
+
+/** Bắn lệnh tạo index (mặc định background: true) — trả về ngay, build chạy nền trên server. Cổng ghi. */
+export function createMongoIndex(connectionId: string, db: string, coll: string, keys: string, options: string): Promise<IndexBuildJob> {
+  return mongoAction<IndexBuildJob>('indexCreate', { connectionId, db, coll, keys, options });
+}
+
+/** Xoá một index theo tên (không xoá được _id_). Cổng ghi. */
+export function dropMongoIndex(connectionId: string, db: string, coll: string, name: string): Promise<{ name: string; tookMs: number }> {
+  return mongoAction<{ name: string; tookMs: number }>('indexDrop', { connectionId, db, coll, name });
+}
+
+/** Job tạo index của collection + build đang chạy trên server (tiến độ từ $currentOp). */
+export function mongoIndexBuilds(connectionId: string, db: string, coll: string): Promise<IndexBuildsResult> {
+  return mongoAction<IndexBuildsResult>('indexBuilds', { connectionId, db, coll });
+}
+
 /** Sampled field paths of a collection — powers the query-bar autocomplete. */
 export function sampleMongoFields(connectionId: string, db: string, coll: string): Promise<FieldInfo[]> {
   return mongoAction<FieldInfo[]>('fields', { connectionId, db, coll });

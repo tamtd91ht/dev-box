@@ -24,7 +24,8 @@
 // JSON too, plus {$oid}, {$date}, …) and passed to the driver as BSON documents —
 // never concatenated into command strings.
 
-import { MongoClient, BSON, type Document, type Sort } from 'mongodb';
+import { randomUUID } from 'node:crypto';
+import { MongoClient, BSON, type CreateIndexesOptions, type Document, type IndexSpecification, type Sort } from 'mongodb';
 import type { MongoConnection } from '@/lib/mongoConnections';
 
 export const MONGO_ENABLED = /^(1|true|yes|on)$/i.test(process.env.MONGO_TOOL_ENABLED ?? '');
@@ -1173,4 +1174,266 @@ export async function deleteDocById(conn: MongoConnection, dbName: string, collN
     `_id=${sanitize(BSON.EJSON.stringify({ v: _id }))} deleted=${r.deletedCount} ts=${new Date().toISOString()}`,
   );
   return { deleted: r.deletedCount, tookMs: Date.now() - t0 };
+}
+
+// ── Tạo index CHẠY NỀN (tab Indexes) ─────────────────────────────────────────
+//
+// Cùng hai cổng ghi (MONGO_ALLOW_WRITE + readOnly). Build index trên collection
+// lớn có thể mất vài phút tới vài giờ — chờ trong một HTTP request là đứt giữa
+// chừng, nên:
+//   indexCreate → kiểm khoá + options, BẮN lệnh createIndexes rồi trả về NGAY một
+//                 job; lệnh vẫn chạy tiếp trong tiến trình Next (không await).
+//   indexBuilds → trạng thái các job của collection đó + build đang chạy thật
+//                 trên server đọc từ $currentOp (kể cả build do người khác bắn),
+//                 kèm tiến độ done/total — UI hỏi lại mỗi vài giây.
+//
+// `background: true` mặc định BẬT: server < 4.2 build không khoá cả database;
+// từ 4.2 server bỏ qua cờ này (mọi build đều là kiểu tối ưu, chỉ khoá độc quyền
+// lúc bắt đầu + lúc kết thúc) — gửi kèm vẫn vô hại.
+//
+// Job chỉ nằm trong RAM tiến trình Next: restart app thì mất danh sách job, còn
+// build trên server vẫn chạy tiếp và vẫn thấy được qua $currentOp.
+
+/** Giá trị hợp lệ cho từng field trong khoá index. */
+const INDEX_KEY_TYPES = new Set(['text', 'hashed', '2dsphere', '2d']);
+/** Options cho phép — còn lại từ chối, không chuyển thẳng xuống driver. */
+const INDEX_OPTION_KEYS = new Set([
+  'name', 'unique', 'sparse', 'expireAfterSeconds', 'partialFilterExpression',
+  'hidden', 'collation', 'weights', 'default_language', 'language_override',
+  'wildcardProjection', 'background',
+]);
+const INDEX_JOBS_MAX = 40;
+
+export interface IndexBuildJob {
+  id: string;
+  connectionId: string;
+  db: string;
+  coll: string;
+  /** Tên index (server tự đặt nếu bỏ trống — điền lại khi build xong). */
+  name: string;
+  keyJson: string;
+  optionsJson: string;
+  status: 'running' | 'done' | 'error';
+  error?: string;
+  startedAt: number;
+  endedAt?: number;
+}
+
+export interface IndexBuildOp {
+  opid: string;
+  /** Tên các index trong lệnh build này. */
+  names: string[];
+  msg: string;
+  done?: number;
+  total?: number;
+  secs: number;
+}
+
+export interface IndexBuildsResult {
+  jobs: IndexBuildJob[];
+  ops: IndexBuildOp[];
+  notes: string[];
+}
+
+// Gắn lên globalThis để HMR lúc dev nạp lại module không làm mất job đang chạy.
+const jobsHost = globalThis as typeof globalThis & { __mongoIndexJobs?: Map<string, IndexBuildJob> };
+const indexJobs = (jobsHost.__mongoIndexJobs ??= new Map<string, IndexBuildJob>());
+
+function pruneIndexJobs(): void {
+  if (indexJobs.size <= INDEX_JOBS_MAX) return;
+  // Bỏ job đã xong cũ nhất trước; job đang chạy giữ lại.
+  const finished = [...indexJobs.values()].filter((j) => j.status !== 'running').sort((a, b) => a.startedAt - b.startedAt);
+  for (const j of finished) {
+    if (indexJobs.size <= INDEX_JOBS_MAX) break;
+    indexJobs.delete(j.id);
+  }
+}
+
+function parseIndexKeys(raw: unknown): Document {
+  const keys = parseDoc(raw, 'keys');
+  const entries = Object.entries(keys);
+  if (entries.length === 0) throw new Error('Khoá index trống — ví dụ {"tenantId": 1, "createdAt": -1}');
+  if (entries.length > 32) throw new Error('Index ghép tối đa 32 field');
+  const out: Document = {};
+  for (const [k, v] of entries) {
+    if (!k || k.includes('\0')) throw new Error('Tên field trong khoá index không hợp lệ');
+    const wildcard = k === '$**' || k.endsWith('.$**');
+    const path = wildcard ? k.slice(0, -3).replace(/\.$/, '') : k;
+    if (path && path.split('.').some((p) => p === '' || p.startsWith('$'))) {
+      throw new Error(`Field "${k}" không hợp lệ (không bắt đầu bằng $, không có đoạn rỗng)`);
+    }
+    const n = numOf(v);
+    if (n === 1 || n === -1) out[k] = n;
+    else if (typeof v === 'string' && INDEX_KEY_TYPES.has(v)) out[k] = v;
+    else throw new Error(`Giá trị khoá "${k}" phải là 1, -1, "text", "hashed", "2dsphere" hoặc "2d"`);
+  }
+  return out;
+}
+
+function parseIndexOptions(raw: unknown): Document {
+  const opts = parseDoc(raw, 'options');
+  for (const k of Object.keys(opts)) {
+    if (!INDEX_OPTION_KEYS.has(k)) {
+      throw new Error(`Option "${k}" không hỗ trợ ở đây — dùng: ${[...INDEX_OPTION_KEYS].join(', ')}`);
+    }
+  }
+  if (opts.name !== undefined) {
+    if (typeof opts.name !== 'string' || !opts.name.trim() || opts.name.includes('\0') || opts.name.length > 120) {
+      throw new Error('name phải là chuỗi không rỗng, ≤ 120 ký tự');
+    }
+    opts.name = opts.name.trim();
+  }
+  for (const b of ['unique', 'sparse', 'hidden', 'background']) {
+    if (opts[b] !== undefined && typeof opts[b] !== 'boolean') throw new Error(`${b} phải là true/false`);
+  }
+  if (opts.expireAfterSeconds !== undefined) {
+    const n = numOf(opts.expireAfterSeconds);
+    if (n === null || !Number.isInteger(n) || n < 0) throw new Error('expireAfterSeconds phải là số nguyên ≥ 0');
+    opts.expireAfterSeconds = n;
+  }
+  for (const d of ['partialFilterExpression', 'collation', 'weights', 'wildcardProjection']) {
+    if (opts[d] !== undefined && !isPlainObject(opts[d])) throw new Error(`${d} phải là một object {…}`);
+  }
+  forbidKeyDeep(opts, FILTER_FORBIDDEN, 'options');
+  return opts;
+}
+
+/** Bắn lệnh tạo index rồi trả về ngay — build chạy tiếp ở nền (xem đầu mục). */
+export async function createIndexBackground(
+  conn: MongoConnection, dbName: string, collName: string,
+  input: { keys: unknown; options: unknown },
+): Promise<IndexBuildJob> {
+  requireWriteGates(conn);
+  const db = requireName(dbName, 'database');
+  const coll = requireName(collName, 'collection');
+  const keys = parseIndexKeys(input.keys);
+  const options: Document = { background: true, ...parseIndexOptions(input.options) };
+  const client = await getClient(conn);
+
+  const keyJson = JSON.stringify(keys);
+  const optionsJson = JSON.stringify(options);
+  const running = [...indexJobs.values()].find((j) =>
+    j.status === 'running' && j.connectionId === conn.id && j.db === db && j.coll === coll && j.keyJson === keyJson);
+  if (running) throw new Error(`Index ${keyJson} đang build dở trên ${db}.${coll} (bắt đầu ${new Date(running.startedAt).toLocaleTimeString()})`);
+
+  const job: IndexBuildJob = {
+    id: randomUUID(),
+    connectionId: conn.id,
+    db, coll,
+    name: typeof options.name === 'string' ? options.name : '',
+    keyJson, optionsJson,
+    status: 'running',
+    startedAt: Date.now(),
+  };
+  indexJobs.set(job.id, job);
+  pruneIndexJobs();
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `MONGO_AUDIT operation=createIndex phase=start connection=${conn.name} target=${db}.${coll} ` +
+    `keys=${sanitize(keyJson)} options=${sanitize(optionsJson)} job=${job.id} ts=${new Date().toISOString()}`,
+  );
+
+  // KHÔNG await: request trả về ngay, lệnh chạy tiếp — kết quả ghi vào job.
+  client.db(db).collection(coll).createIndex(keys as Document as IndexSpecification, options as CreateIndexesOptions)
+    .then((name) => {
+      job.status = 'done';
+      job.name = name;
+    })
+    .catch((e: unknown) => {
+      job.status = 'error';
+      job.error = (e as Error)?.message || String(e);
+    })
+    .finally(() => {
+      job.endedAt = Date.now();
+      // eslint-disable-next-line no-console
+      console.log(
+        `MONGO_AUDIT operation=createIndex phase=${job.status} connection=${conn.name} target=${db}.${coll} ` +
+        `name=${sanitize(job.name)} job=${job.id} tookMs=${job.endedAt - job.startedAt}` +
+        `${job.error ? ` error=${sanitize(job.error)}` : ''} ts=${new Date().toISOString()}`,
+      );
+    });
+
+  return { ...job };
+}
+
+export interface DropIndexResult {
+  name: string;
+  tookMs: number;
+}
+
+/** Xoá MỘT index theo tên (nút 🗑 ở bảng index). Cùng hai cổng ghi; không cho xoá _id_. */
+export async function dropIndexByName(conn: MongoConnection, dbName: string, collName: string, nameRaw: unknown): Promise<DropIndexResult> {
+  requireWriteGates(conn);
+  const db = requireName(dbName, 'database');
+  const coll = requireName(collName, 'collection');
+  const name = typeof nameRaw === 'string' ? nameRaw.trim() : '';
+  // Chỉ nhận TÊN — dropIndex('*') xoá sạch mọi index, còn truyền object khoá thì dễ nhầm.
+  if (!name || name === '*' || name.includes('\0') || name.length > 200) throw new Error('Tên index không hợp lệ');
+  if (name === '_id_') throw new Error('Không xoá được index _id_ (MongoDB bắt buộc phải có)');
+  const client = await getClient(conn);
+  const c = client.db(db).collection(coll);
+  const exists = (await c.listIndexes().toArray()).some((i) => i.name === name);
+  if (!exists) throw new Error(`Không còn index "${name}" trên ${db}.${coll} (đã bị xoá?)`);
+  const t0 = Date.now();
+  await c.dropIndex(name, { maxTimeMS: MAX_TIME_ADMIN_MS });
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `MONGO_AUDIT operation=dropIndex connection=${conn.name} target=${db}.${coll} ` +
+    `name=${sanitize(name)} ts=${new Date().toISOString()}`,
+  );
+  return { name, tookMs: Date.now() - t0 };
+}
+
+/** Job tạo index của collection + build đang chạy thật trên server ($currentOp). Chỉ đọc. */
+export async function indexBuilds(conn: MongoConnection, dbName: string, collName: string): Promise<IndexBuildsResult> {
+  const db = requireName(dbName, 'database');
+  const coll = requireName(collName, 'collection');
+  const jobs = [...indexJobs.values()]
+    .filter((j) => j.connectionId === conn.id && j.db === db && j.coll === coll)
+    .sort((a, b) => b.startedAt - a.startedAt)
+    .map((j) => ({ ...j }));
+  const notes: string[] = [];
+  const ops: IndexBuildOp[] = [];
+  try {
+    const client = await getClient(conn);
+    const rows = await client.db('admin').aggregate([
+      { $currentOp: { allUsers: true, idleConnections: false } },
+      {
+        $match: {
+          $or: [
+            { ns: `${db}.${coll}`, msg: /^Index Build/ },
+            { 'command.createIndexes': coll, ns: { $in: [`${db}.${coll}`, `${db}.$cmd`] } },
+          ],
+        },
+      },
+      { $project: { opid: 1, msg: 1, progress: 1, microsecs_running: 1, 'command.indexes.name': 1 } },
+      { $limit: 50 },
+    ], { maxTimeMS: MAX_TIME_ADMIN_MS }).toArray();
+    // Một build hiện thành nhiều op (luồng client đang chờ + luồng coordinator)
+    // — gộp theo bộ tên index, ưu tiên op có tiến độ.
+    const byNames = new Map<string, IndexBuildOp>();
+    for (const r of rows) {
+      const idx = (r.command as Document | undefined)?.indexes;
+      const names = Array.isArray(idx) ? (idx as Document[]).map((i) => String(i.name ?? '')).filter(Boolean) : [];
+      const p = r.progress as Document | undefined;
+      const op: IndexBuildOp = {
+        opid: String(r.opid ?? ''),
+        names,
+        msg: String(r.msg ?? ''),
+        done: p ? Number(p.done ?? 0) : undefined,
+        total: p ? Number(p.total ?? 0) : undefined,
+        secs: Math.round(Number(r.microsecs_running ?? 0) / 1e5) / 10,
+      };
+      const key = names.join(',') || op.opid;
+      const prev = byNames.get(key);
+      if (!prev) byNames.set(key, op);
+      else if (prev.total === undefined && op.total !== undefined) byNames.set(key, { ...op, names: op.names.length ? op.names : prev.names });
+    }
+    ops.push(...byNames.values());
+  } catch (e) {
+    notes.push(`Không đọc được tiến độ từ $currentOp: ${(e as Error).message} (cần quyền inprog)`);
+  }
+  return { jobs, ops, notes };
 }

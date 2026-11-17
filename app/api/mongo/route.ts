@@ -17,6 +17,9 @@
 //     'docGet'      { connectionId, db, coll, id }       → { ok, result: { json } }   (bản đầy đủ để sửa tay, cổng ghi)
 //     'docReplace'  { connectionId, db, coll, id, expected, json } → { ok, result: DocReplaceResult } (ghi đè theo _id)
 //     'docDelete'   { connectionId, db, coll, id }       → { ok, result: DocDeleteResult } (xoá một document theo _id)
+//     'indexCreate' { connectionId, db, coll, keys, options? } → { ok, result: IndexBuildJob } (bắn build chạy nền, cổng ghi)
+//     'indexDrop'   { connectionId, db, coll, name }     → { ok, result: DropIndexResult } (xoá index theo tên, cổng ghi)
+//     'indexBuilds' { connectionId, db, coll }           → { ok, result: IndexBuildsResult } (job + tiến độ $currentOp)
 //     'diagnose'    { connectionId, kind }               → { ok, result: MongoDiagnosis }   (tab Phân tích, chỉ đọc thống kê)
 //     'longRunning' { connectionId, minSec }             → { ok, result: LongRunningResult } (thao tác chạy ≥ minSec giây, ≥ 1)
 //
@@ -51,6 +54,9 @@ import {
   getDocForEdit,
   replaceDocById,
   deleteDocById,
+  createIndexBackground,
+  indexBuilds,
+  dropIndexByName,
 } from '@/lib/mongoClient';
 import { getConnection, buildUnsavedConnection } from '@/lib/mongoConnections';
 
@@ -127,6 +133,22 @@ export async function POST(req: NextRequest) {
       case 'indexes':
         result = await listIndexes(conn, db, coll);
         break;
+      case 'indexBuilds':
+        result = await indexBuilds(conn, db, coll);
+        break;
+      case 'indexCreate':
+      case 'indexDrop': {
+        try {
+          result = action === 'indexDrop'
+            ? await dropIndexByName(conn, db, coll, body.name)
+            : await createIndexBackground(conn, db, coll, { keys: body.keys, options: body.options });
+        } catch (err) {
+          const msg = (err as Error).message || 'createIndex refused';
+          const gate = msg.includes('disabled for the whole tool') || msg.includes('is read-only');
+          return NextResponse.json({ ok: false, error: msg }, { status: gate ? 403 : 400 });
+        }
+        break;
+      }
       case 'fields':
         result = await sampleFields(conn, db, coll);
         break;

@@ -2636,6 +2636,10 @@ pre.kafka-drawer-body {
 /* Khung sửa tay một document (nút ✎) — textarea tự cao theo số dòng, nên bỏ trần 420px. */
 .mongo-doc-edit { display: flex; flex-direction: column; gap: 6px; max-height: none; white-space: normal; }
 .mongo-doc-edit textarea { resize: vertical; white-space: pre; }
+.mongo-ixbuild { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.mongo-ixbuild-form { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--glass-brd); border-radius: 8px; }
+.mongo-ixbuild-form textarea { resize: vertical; white-space: pre; }
+.mongo-ixbuild-form label input[type=checkbox] { vertical-align: middle; }
 
 /* ── Structured JSON tree (result documents) ───────────────────────────── */
 .mongo-json { font-family: var(--mono); font-size: 12px; line-height: 1.65; }
