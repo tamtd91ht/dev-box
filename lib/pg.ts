@@ -363,6 +363,15 @@ export function pgUpdate(
   return pgAction<{ updated: number }>('update', { connectionId, db, ...p });
 }
 
+/** DELETE bắt buộc WHERE. expected = số dòng dry-run; lệch thì server ROLLBACK. */
+export function pgDelete(
+  connectionId: string,
+  db: string,
+  p: { schema: string; table: string; where: string; expected?: number },
+): Promise<{ deleted: number }> {
+  return pgAction<{ deleted: number }>('delete', { connectionId, db, ...p });
+}
+
 /** SQL tự do có ghi. commit=false → chạy thử rồi ROLLBACK; true → COMMIT. */
 export function pgExec(connectionId: string, db: string, sql: string, commit: boolean): Promise<PgExecResult> {
   return pgAction<PgExecResult>('exec', { connectionId, db, sql, commit });

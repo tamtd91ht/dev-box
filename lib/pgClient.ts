@@ -1128,6 +1128,74 @@ export async function updateWithWhere(conn: PgConnection, db: string, input: PgU
   return { updated };
 }
 
+// ── DELETE with a mandatory WHERE (cùng cổng & ràng buộc như UPDATE) ─────────
+
+export interface PgDeleteInput {
+  schema: string;
+  table: string;
+  /** Raw WHERE text (without the WHERE keyword) — MANDATORY, non-empty. */
+  where: string;
+  /**
+   * Số dòng người dùng đã thấy ở dry-run. Có giá trị → DELETE khớp số khác
+   * (dữ liệu đổi giữa lúc đếm và lúc xoá) thì ROLLBACK, không xoá gì.
+   */
+  expected?: number;
+}
+
+export interface PgDeleteResult {
+  deleted: number;
+}
+
+/**
+ * Single-table DELETE: WHERE bắt buộc (xoá cả bảng bị từ chối), không cho ";".
+ * Gate order: PG_ALLOW_WRITE env → per-connection readOnly → validation.
+ * Chạy với statement/lock timeout, ghi audit ra stdout.
+ */
+export async function deleteWithWhere(conn: PgConnection, db: string, input: PgDeleteInput): Promise<PgDeleteResult> {
+  if (!PG_ALLOW_WRITE) {
+    throw new Error('Writes are disabled for the whole tool. Set PG_ALLOW_WRITE=true in .env.local (local dev only).');
+  }
+  if (conn.readOnly) {
+    throw new Error(`Connection "${conn.name}" is read-only. Edit the connection and untick read-only to arm writes.`);
+  }
+  const schema = ident(input.schema, 'schema');
+  const table = ident(input.table, 'table');
+
+  const where = String(input.where ?? '').trim();
+  if (!where) throw new Error('DELETE requires a NON-EMPTY WHERE — a table-wide blind delete is not allowed');
+  if (where.includes(';')) throw new Error('WHERE must be a single condition — ";" is not allowed');
+  const expected = typeof input.expected === 'number' && Number.isInteger(input.expected) && input.expected >= 0
+    ? input.expected
+    : undefined;
+
+  const pool = await getPool(conn, db);
+  const client = await pool.connect();
+  let deleted = 0;
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL statement_timeout = ${STMT_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`);
+    const res = await client.query(`DELETE FROM ${schema}.${table} WHERE ${where}`);
+    deleted = res.rowCount ?? 0;
+    if (expected !== undefined && deleted !== expected) {
+      throw new Error(`DELETE khớp ${deleted} dòng nhưng dry-run báo ${expected} — dữ liệu đã đổi, đã ROLLBACK (không xoá gì). Dry-run lại rồi xoá.`);
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `PG_AUDIT operation=DELETE connection=${conn.name} target=${db || conn.database}.${input.schema}.${input.table} ` +
+    `where=${sanitize(where)} deleted=${deleted} ts=${new Date().toISOString()}`,
+  );
+  return { deleted };
+}
+
 // ── Thực thi SQL tự do (INSERT / UPDATE / DELETE / DDL) ──────────────────────
 //
 // Màn "⚡ Thực thi SQL" — cùng hai cổng với UPDATE ở trên (PG_ALLOW_WRITE +

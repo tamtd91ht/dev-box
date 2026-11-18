@@ -12,8 +12,8 @@
 //
 // Every read runs server-side inside a READ ONLY transaction with a statement
 // timeout — the database itself refuses writes smuggled into a "read" query.
-// Results are row-capped (500). The only write here is the ✎ UPDATE modal
-// (triple-gated, WHERE mandatory); free write SQL lives in ExecView.
+// Results are row-capped (500). The writes here are the ✎ UPDATE and 🗑 DELETE
+// modals (triple-gated, WHERE mandatory); free write SQL lives in ExecView.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -33,6 +33,7 @@ import {
   type WireRow,
 } from '@/lib/pg';
 import UpdateModal from './UpdateModal';
+import DeleteModal from './DeleteModal';
 import SqlEditor from './SqlEditor';
 import ColSplit from '../ColSplit';
 import { useSplit } from '@/lib/useSplit';
@@ -172,6 +173,7 @@ function BrowserViewInner({
   const rx = useResultExpand();
   const flt = useResultFilter(result?.rows, (r) => r.json);
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flash = useCallback((m: string) => {
@@ -491,6 +493,17 @@ function BrowserViewInner({
                           : 'Connection này đang read-only'}
                       onClick={() => setUpdateOpen(true)}
                     >✎ Update…{!writeArmed && ' 🔒'}</button>
+                    <button
+                      className="ghost sm"
+                      disabled={busy || !writeArmed}
+                      style={writeArmed ? { color: 'var(--err)' } : undefined}
+                      title={writeArmed
+                        ? 'DELETE FROM bảng này (bắt buộc WHERE + dry-run)'
+                        : !allowWrite
+                          ? 'PG_ALLOW_WRITE chưa bật — write đang khoá toàn tool'
+                          : 'Connection này đang read-only'}
+                      onClick={() => setDeleteOpen(true)}
+                    >🗑 Delete…{!writeArmed && ' 🔒'}</button>
                   </div>
                 </div>
 
@@ -611,6 +624,20 @@ function BrowserViewInner({
             setUpdateOpen(false);
             flash(`UPDATE xong — ${updated} dòng`);
             void runQuery(); // refresh the visible result
+          }}
+        />
+      )}
+      {deleteOpen && selected && (
+        <DeleteModal
+          connectionId={connectionId}
+          db={selected.db}
+          schema={selected.schema}
+          table={selected.table}
+          onClose={() => setDeleteOpen(false)}
+          onDone={(deleted) => {
+            setDeleteOpen(false);
+            flash(`DELETE xong — ${deleted} dòng`);
+            void runQuery();
           }}
         />
       )}
