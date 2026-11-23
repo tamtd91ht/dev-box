@@ -12383,3 +12383,77 @@ textarea.aic-kb-text {
 /* Footer xuống dòng (cửa sổ hẹp / menu dọc) thì cụm bên phải vẫn dồn sát mép
    phải — nút Trợ lý luôn ở đúng góc phải dưới chứ không trôi ra giữa. */
 .appfoot .foot-right { margin-left: auto; }
+
+/* ── Trợ lý AI: khung soạn + tin nhắn kiểu ứng dụng chat quen thuộc ─────────
+   Một hộp bo lớn: thẻ đính kèm ở trên, ô nhập tự cao ở giữa, hàng dưới là nút
+   ＋ (tải file / dán clipboard) bên trái và chọn model + nút gửi tròn bên phải.
+   Các rule dưới đây đè lên bản đầu của .aic-box/.aic-att/.aic-send ở trên. */
+.aic-compose { padding: 8px 16px 12px; gap: 8px; }
+.aic-box { border-radius: 20px; padding: 6px; background: var(--glass); box-shadow: var(--shadow-sm); }
+:root[data-theme="dark"] .aic-box { box-shadow: none; }
+textarea.aic-input { min-height: 40px; max-height: 240px; padding: 8px 10px 4px; overflow-y: auto; line-height: 22px; }
+.aic-bar { padding: 2px 2px 2px; gap: 6px; }
+.aic-plus { position: relative; }
+.aic-round {
+  width: 32px; height: 32px; padding: 0; flex: none; border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--glass-brd); box-shadow: none;
+  color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer;
+}
+.aic-round:hover:not(:disabled), .aic-round.on { color: var(--text); background: var(--glass-2); border-color: var(--glass-brd-hover); transform: none; box-shadow: none; }
+.aic-menu {
+  position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 5; min-width: 220px; padding: 6px;
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--panel); border: 1px solid var(--glass-brd); border-radius: 12px; box-shadow: var(--shadow);
+}
+.aic-menu-item {
+  display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 12px; border: 0; border-radius: 8px;
+  background: transparent; box-shadow: none; color: var(--text); font-size: 13px; font-weight: 500;
+  text-align: left; cursor: pointer; white-space: nowrap;
+}
+.aic-menu-item:hover:not(:disabled), .aic-menu-item:focus-visible { background: var(--glass-2); transform: none; box-shadow: none; }
+select.aic-model { border-color: transparent; color: var(--muted); font-weight: 500; }
+select.aic-model:hover { color: var(--text); background: var(--glass-2); }
+.aic-send { width: 32px; padding: 0; border-radius: 10px; font-size: 16px; line-height: 1; }
+.aic-send.stop { font-size: 12px; }
+.aic-disclaimer { margin: 0; text-align: center; font-size: 11px; line-height: 16px; color: var(--faint); }
+
+/* Thẻ đính kèm: ảnh là ô vuông có ảnh thu nhỏ, file là thẻ tên + nhãn loại. */
+.aic-atts { gap: 8px; padding: 6px 6px 2px; }
+.aic-att {
+  position: relative; display: flex; flex-direction: column; justify-content: space-between; gap: 4px;
+  width: 112px; height: 72px; max-width: none; padding: 8px; border-radius: 12px; font-size: 12px;
+  border: 1px solid var(--glass-brd); background: var(--panel); overflow: visible;
+}
+.aic-att.image { width: 72px; padding: 0; }
+.aic-att img { width: 100%; height: 100%; border-radius: 11px; object-fit: cover; }
+.aic-att-name {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  white-space: normal; overflow-wrap: anywhere; line-height: 16px; font-weight: 500; color: var(--text);
+}
+.aic-att-type {
+  align-self: flex-start; padding: 0 6px; border-radius: 6px; font-size: 10px; line-height: 16px; font-weight: 600;
+  letter-spacing: .04em; color: var(--muted); border: 1px solid var(--glass-brd);
+}
+.aic-att-x {
+  position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--panel); border: 1px solid var(--glass-brd); color: var(--muted); font-size: 9px;
+}
+
+/* Tin nhắn: câu hỏi là bong bóng trung tính lệch phải, trả lời là chữ trần. */
+.aic-bubble { background: var(--glass-2); border-color: transparent; border-radius: 16px; padding: 10px 14px; }
+.aic-files { gap: 6px; }
+.aic-file {
+  display: flex; flex-direction: column; justify-content: space-between; gap: 4px; width: 112px; height: 64px; padding: 8px;
+  border-radius: 12px; border: 1px solid var(--glass-brd); background: var(--glass); font-size: 12px; text-align: left;
+}
+.aic-file-img { width: 96px; height: 96px; border-radius: 12px; object-fit: cover; border: 1px solid var(--glass-brd); }
+.aic-meta { flex-wrap: wrap; row-gap: 2px; }
+.aic-act {
+  height: 24px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; box-shadow: none;
+  color: var(--muted); font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap;
+}
+.aic-act:hover:not(:disabled) { color: var(--text); background: var(--glass-2); transform: none; box-shadow: none; }
+.aic-empty-title { font-size: 22px; line-height: 28px; font-weight: 700; }
+.aic-att, .aic-file { text-align: left; }
+.aic-file { height: 72px; }

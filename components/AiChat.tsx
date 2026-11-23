@@ -36,8 +36,8 @@ interface Msg {
   error?: string;
   stopped?: boolean;
   meta?: { model: string | null; durationMs: number; sources: string[] };
-  /** Tên file gửi kèm câu hỏi (không giữ nội dung). */
-  files?: string[];
+  /** File gửi kèm câu hỏi: tên + loại (+ ảnh thu nhỏ, chỉ giữ trong phiên đang mở). */
+  files?: { name: string; kind: AiAttachment['kind']; preview?: string }[];
 }
 
 type Pending = AiAttachment & { id: string; bytes: number; preview?: string };
@@ -61,7 +61,13 @@ function loadMsgs(): Msg[] {
   try {
     const v = JSON.parse(window.sessionStorage.getItem(MSGS_KEY) ?? '[]') as Msg[];
     // Tải lại trang giữa lúc đang trả lời → câu đó coi như bị dừng.
-    return Array.isArray(v) ? v.map((m) => (m.streaming ? { ...m, streaming: false, stopped: true } : m)) : [];
+    if (!Array.isArray(v)) return [];
+    return v.map((m) => ({
+      ...m,
+      ...(m.streaming ? { streaming: false, stopped: true } : {}),
+      // Bản đầu lưu `files` là mảng tên.
+      files: m.files?.map((f) => (typeof f === 'string' ? { name: f as string, kind: 'text' as const } : f)),
+    }));
   } catch { return []; }
 }
 
@@ -96,6 +102,14 @@ async function prepare(f: File): Promise<Pending> {
   return { id: uid(), kind: 'text', name, data: text, bytes: text.length };
 }
 
+/** Nhãn loại file trên thẻ đính kèm: PDF, MD, JSON, LOG… */
+function typeLabel(a: { kind: AiAttachment['kind']; name: string }): string {
+  if (a.kind === 'pdf') return 'PDF';
+  if (a.kind === 'image') return 'ẢNH';
+  const ext = /\.([A-Za-z0-9]{1,6})$/.exec(a.name)?.[1];
+  return (ext ?? 'txt').toUpperCase();
+}
+
 const SUGGESTIONS = [
   'Giải thích giúp lỗi này (dán log hoặc ảnh chụp vào)',
   'Viết truy vấn cho dữ liệu tôi đang cần',
@@ -114,6 +128,9 @@ export default function AiChat({ screen }: { screen: string }) {
   const [dropping, setDropping] = useState(false);
   const [resizing, setResizing] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  /** Menu ＋ (tải file lên / dán từ clipboard / kho tri thức). */
+  const [menu, setMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   /** Kho tri thức — nạp một lần khi mở bảng, cập nhật sau mỗi thao tác. */
   const [kb, setKb] = useState<KbMeta[] | null>(null);
   const [kbErr, setKbErr] = useState<string | null>(null);
@@ -137,7 +154,9 @@ export default function AiChat({ screen }: { screen: string }) {
     } catch { /* nicety */ }
   }, []);
   useEffect(() => {
-    try { window.sessionStorage.setItem(MSGS_KEY, JSON.stringify(msgs.slice(-60))); } catch { /* đầy → bỏ qua */ }
+    // Ảnh thu nhỏ không lưu (nặng) — tải lại trang thì chỉ còn tên file.
+    const slim = msgs.slice(-60).map((m) => (m.files ? { ...m, files: m.files.map(({ preview: _p, ...f }) => f) } : m));
+    try { window.sessionStorage.setItem(MSGS_KEY, JSON.stringify(slim)); } catch { /* đầy → bỏ qua */ }
   }, [msgs]);
 
   const loadKb = useCallback(() => {
@@ -154,6 +173,24 @@ export default function AiChat({ screen }: { screen: string }) {
     const el = listRef.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [msgs, view]);
+
+  // Menu ＋: bấm ra ngoài hoặc Esc thì đóng.
+  useEffect(() => {
+    if (!menu) return;
+    const onDown = (e: PointerEvent) => { if (!menuRef.current?.contains(e.target as Node)) setMenu(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(false); };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('pointerdown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [menu]);
+
+  // Ô nhập tự cao theo nội dung (tới giới hạn max-height trong CSS).
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft, dock.open, view, dock.width]);
 
   // ── Đổi bề rộng: kéo mép trái ─────────────────────────────────────────────
   useEffect(() => {
@@ -202,25 +239,31 @@ export default function AiChat({ screen }: { screen: string }) {
   }, []);
 
   // ── Hỏi ───────────────────────────────────────────────────────────────────
-  const send = useCallback(async (text?: string) => {
-    const question = (text ?? draft).trim();
+  const send = useCallback(async (text?: string, base?: Msg[]) => {
+    // Chỉ có đính kèm, không gõ gì → vẫn gửi được với câu hỏi mặc định.
+    const question = (text ?? draft).trim() || (text === undefined && pending.length ? 'Xem giúp nội dung đính kèm này.' : '');
     if (!question || busy) return;
     if (question.length > AI_LIMITS.maxQuestion) {
       setNote(`Câu hỏi dài quá ${num(AI_LIMITS.maxQuestion)} ký tự — rút gọn hoặc đính kèm thành file.`);
       return;
     }
-    const atts = pending;
-    const history: AiTurn[] = msgs
+    const atts = text === undefined ? pending : [];
+    const prior = base ?? msgs;
+    const history: AiTurn[] = prior
       .filter((m) => m.content && !m.error)
       .map((m) => ({ role: m.role, content: m.content }));
     const aId = uid();
     stick.current = true;
-    setMsgs((cur) => [
-      ...cur,
-      { id: uid(), role: 'user', content: question, files: atts.length ? atts.map((a) => a.name) : undefined },
+    setMsgs([
+      ...prior,
+      {
+        id: uid(), role: 'user', content: question,
+        files: atts.length ? atts.map((a) => ({ name: a.name, kind: a.kind, preview: a.preview })) : undefined,
+      },
       { id: aId, role: 'assistant', content: '', streaming: true },
     ]);
-    setDraft(''); setPending([]); setNote(null); setBusy(true);
+    if (text === undefined) { setDraft(''); setPending([]); }
+    setNote(null); setBusy(true);
     const patch = (p: Partial<Msg> | ((m: Msg) => Partial<Msg>)) => setMsgs((cur) => cur.map((m) => (
       m.id === aId ? { ...m, ...(typeof p === 'function' ? p(m) : p) } : m
     )));
@@ -257,6 +300,41 @@ export default function AiChat({ screen }: { screen: string }) {
   }, [draft, busy, pending, msgs, screen, model]);
 
   const stopAsk = () => { if (jobRef.current) void call('stop', { id: jobRef.current }).catch(() => {}); };
+
+  /** Hỏi lại câu hỏi của một câu trả lời: bỏ cặp hỏi–đáp đó rồi gửi lại câu hỏi.
+   *  File đính kèm của lượt cũ không được gửi lại (nội dung không còn giữ). */
+  const retry = (id: string) => {
+    const i = msgs.findIndex((m) => m.id === id);
+    if (i < 1 || busy) return;
+    void send(msgs[i - 1].content, msgs.slice(0, i - 1));
+  };
+
+  /** Chữ dán vào: ngắn thì vào ô nhập, dài thì thành một file đính kèm. */
+  const pasteText = (text: string) => {
+    if (text.length < AI_LIMITS.pasteAsFileChars) { setDraft((d) => d + text); return; }
+    void addFiles([new File([text], 'văn-bản-đã-dán.txt', { type: 'text/plain' })]);
+  };
+
+  /** "Dán từ clipboard" trong menu ＋ — cho người không quen Ctrl+V. */
+  const pasteFromClipboard = async () => {
+    setMenu(false);
+    try {
+      const items = await navigator.clipboard.read();
+      const files: File[] = [];
+      let text = '';
+      for (const it of items) {
+        const img = it.types.find((t) => t.startsWith('image/'));
+        if (img) { files.push(new File([await it.getType(img)], 'dán-từ-clipboard.png', { type: img })); continue; }
+        if (it.types.includes('text/plain')) text += await (await it.getType('text/plain')).text();
+      }
+      if (files.length) await addFiles(files);
+      else if (text) pasteText(text);
+      else setNote('Clipboard đang trống hoặc không phải ảnh / chữ.');
+    } catch {
+      setNote('Không đọc được clipboard — bấm vào ô nhập rồi nhấn Ctrl+V.');
+    }
+    inputRef.current?.focus();
+  };
 
   const newChat = () => { stopAsk(); setMsgs([]); setNote(null); setPending([]); inputRef.current?.focus(); };
 
@@ -369,7 +447,7 @@ export default function AiChat({ screen }: { screen: string }) {
             {msgs.length === 0 ? (
               <div className="aic-empty">
                 <div className="aic-empty-ico" aria-hidden>✨</div>
-                <p className="aic-empty-title">Hỏi gì cũng được</p>
+                <p className="aic-empty-title">Hôm nay bạn cần gì?</p>
                 <p className="aic-empty-sub">
                   Trợ lý biết bạn đang ở màn hình nào và dùng tài liệu trong kho tri thức của bạn.
                   Nó chỉ gợi ý — không tự chạy lệnh hay sửa gì trên máy.
@@ -383,7 +461,16 @@ export default function AiChat({ screen }: { screen: string }) {
             ) : msgs.map((m) => (m.role === 'user' ? (
               <div key={m.id} className="aic-msg user">
                 {m.files && (
-                  <div className="aic-files">{m.files.map((f, i) => <span key={i} className="aic-file">📎 {f}</span>)}</div>
+                  <div className="aic-files">
+                    {m.files.map((f, i) => (f.preview
+                      ? <img key={i} className="aic-file-img" src={f.preview} alt={f.name} title={f.name} />
+                      : (
+                        <span key={i} className="aic-file" title={f.name}>
+                          <span className="aic-att-name">{f.name}</span>
+                          <span className="aic-att-type">{typeLabel(f)}</span>
+                        </span>
+                      )))}
+                  </div>
                 )}
                 <div className="aic-bubble">{m.content}</div>
               </div>
@@ -396,7 +483,7 @@ export default function AiChat({ screen }: { screen: string }) {
                 {m.error && (
                   <div className="aic-error" role="alert">
                     <span>{m.error}</span>
-                    <button className="ghost sm" onClick={() => void send(questionBefore(m.id))} disabled={busy}>Thử lại</button>
+                    <button className="ghost sm" onClick={() => retry(m.id)} disabled={busy}>Thử lại</button>
                   </div>
                 )}
                 {!m.streaming && m.content && (
@@ -408,11 +495,12 @@ export default function AiChat({ screen }: { screen: string }) {
                       </span>
                     )}
                     <span className="aic-spacer" />
-                    <button className="aic-link" onClick={() => void copyMsg(m)}>{copied === m.id ? 'Đã sao chép' : 'Sao chép'}</button>
-                    <button className="aic-link"
+                    <button className="aic-act" onClick={() => void copyMsg(m)}>{copied === m.id ? '✓ Đã sao chép' : '⧉ Sao chép'}</button>
+                    <button className="aic-act" onClick={() => retry(m.id)} disabled={busy} title="Hỏi lại câu này để nhận câu trả lời khác">↻ Thử lại</button>
+                    <button className="aic-act"
                       onClick={() => { setKbDraft({ title: questionBefore(m.id).replace(/\s+/g, ' ').slice(0, 80), content: m.content }); setView('kb'); }}
                       title="Lưu câu trả lời này thành tài liệu trong kho tri thức">
-                      Lưu vào kho
+                      ＋ Lưu vào kho
                     </button>
                   </div>
                 )}
@@ -422,25 +510,29 @@ export default function AiChat({ screen }: { screen: string }) {
 
           <footer className="aic-compose">
             {note && <div className="aic-note" role="status">{note}</div>}
-            {pending.length > 0 && (
-              <ul className="aic-atts">
-                {pending.map((p) => (
-                  <li key={p.id} className="aic-att" title={p.name}>
-                    {p.preview ? <img src={p.preview} alt="" /> : <span aria-hidden>📄</span>}
-                    <span className="aic-att-name">{p.name}</span>
-                    <button className="aic-att-x" onClick={() => setPending((cur) => cur.filter((x) => x.id !== p.id))}
-                      aria-label={`Bỏ ${p.name}`}>✕</button>
-                  </li>
-                ))}
-              </ul>
-            )}
             <div className="aic-box">
+              {pending.length > 0 && (
+                <ul className="aic-atts">
+                  {pending.map((p) => (
+                    <li key={p.id} className={`aic-att ${p.kind}`} title={p.name}>
+                      {p.preview ? <img src={p.preview} alt={p.name} /> : (
+                        <>
+                          <span className="aic-att-name">{p.name}</span>
+                          <span className="aic-att-type">{typeLabel(p)}</span>
+                        </>
+                      )}
+                      <button className="aic-att-x" onClick={() => setPending((cur) => cur.filter((x) => x.id !== p.id))}
+                        aria-label={`Bỏ ${p.name}`}>✕</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <textarea
                 ref={inputRef}
                 className="aic-input"
-                rows={2}
+                rows={1}
                 value={draft}
-                placeholder="Hỏi trợ lý… (Enter gửi · Shift+Enter xuống dòng · dán ảnh được)"
+                placeholder="Hỏi trợ lý… dán ảnh / file bằng Ctrl+V"
                 aria-label="Câu hỏi cho trợ lý"
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -448,15 +540,36 @@ export default function AiChat({ screen }: { screen: string }) {
                 }}
                 onPaste={(e) => {
                   const files = [...e.clipboardData.files];
-                  if (files.length) { e.preventDefault(); void addFiles(files); }
+                  if (files.length) { e.preventDefault(); void addFiles(files); return; }
+                  // Đoạn chữ dài (log, file cấu hình…) → thành thẻ đính kèm cho gọn ô nhập.
+                  const text = e.clipboardData.getData('text/plain');
+                  if (text.length >= AI_LIMITS.pasteAsFileChars) { e.preventDefault(); pasteText(text); }
                 }}
               />
               <div className="aic-bar">
-                <button className="aic-icon" onClick={() => fileRef.current?.click()} title="Đính kèm ảnh / file (hoặc dán, kéo thả)" aria-label="Đính kèm ảnh hoặc file">
-                  📎
-                </button>
+                <div className="aic-plus" ref={menuRef}>
+                  <button className={`aic-round${menu ? ' on' : ''}`} onClick={() => setMenu((v) => !v)}
+                    aria-haspopup="menu" aria-expanded={menu}
+                    title="Thêm ảnh, file" aria-label="Thêm ảnh hoặc file">
+                    ＋
+                  </button>
+                  {menu && (
+                    <div className="aic-menu" role="menu">
+                      <button role="menuitem" className="aic-menu-item" onClick={() => { setMenu(false); fileRef.current?.click(); }}>
+                        <span aria-hidden>📎</span> Tải ảnh hoặc file lên
+                      </button>
+                      <button role="menuitem" className="aic-menu-item" onClick={() => void pasteFromClipboard()}>
+                        <span aria-hidden>📋</span> Dán từ clipboard
+                      </button>
+                      <button role="menuitem" className="aic-menu-item" onClick={() => { setMenu(false); setView('kb'); }}>
+                        <span aria-hidden>📚</span> Mở kho tri thức
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <input ref={fileRef} type="file" multiple hidden
                   onChange={(e) => { void addFiles([...(e.target.files ?? [])]); e.target.value = ''; }} />
+                <span className="aic-spacer" />
                 <select className="aic-model" value={model} aria-label="Model trả lời"
                   title={AI_MODELS.find((m) => m.id === model)?.hint}
                   onChange={(e) => {
@@ -465,14 +578,15 @@ export default function AiChat({ screen }: { screen: string }) {
                   }}>
                   {AI_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                 </select>
-                <span className="aic-spacer" />
                 {busy ? (
-                  <button className="aic-send stop" onClick={stopAsk} title="Dừng câu trả lời">■ Dừng</button>
+                  <button className="aic-send stop" onClick={stopAsk} title="Dừng câu trả lời" aria-label="Dừng câu trả lời">■</button>
                 ) : (
-                  <button className="aic-send" onClick={() => void send()} disabled={!draft.trim()} title="Gửi (Enter)">Gửi ↑</button>
+                  <button className="aic-send" onClick={() => void send()} disabled={!draft.trim() && pending.length === 0}
+                    title="Gửi (Enter)" aria-label="Gửi câu hỏi">↑</button>
                 )}
               </div>
             </div>
+            <p className="aic-disclaimer">Trợ lý có thể sai — kiểm tra lại thông tin quan trọng. Enter gửi · Shift+Enter xuống dòng.</p>
           </footer>
         </div>
       )}

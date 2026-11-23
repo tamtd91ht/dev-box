@@ -52,10 +52,13 @@ export const AI_LIMITS = {
   maxTotalBytes: 12 * 1024 * 1024,
   /** File chữ dài hơn mức này bị cắt bớt phần đuôi. */
   maxTextChars: 400_000,
+  /** Dán đoạn chữ dài hơn mức này → thành một file đính kèm thay vì đổ vào ô nhập. */
+  pasteAsFileChars: 4000,
 };
 
 /** Alias model của Claude Code CLI — luôn trỏ bản mới nhất của dòng đó. */
 export const AI_MODELS: { id: string; label: string; hint: string }[] = [
+  { id: 'fable', label: 'Fable', hint: 'Dòng mới nhất, mạnh nhất — chậm và tốn hạn mức nhất' },
   { id: 'sonnet', label: 'Sonnet', hint: 'Cân bằng tốc độ và độ sâu' },
   { id: 'opus', label: 'Opus', hint: 'Phân tích sâu hơn, chậm và tốn hạn mức hơn' },
   { id: 'haiku', label: 'Haiku', hint: 'Nhanh, trả lời gọn' },
