@@ -96,6 +96,51 @@ const VIDEO_EXTS = new Set(['mp4', 'm4v', 'webm', 'mov', 'mkv', 'avi']);
 
 interface MediaOpen { path: string; name: string; video: boolean; url: string }
 
+// ── TAB CON ──────────────────────────────────────────────────────────────────
+// Mỗi tab format (JSON / XML / HTML / Markdown / Text) giữ NHIỀU tab con, mỗi
+// tab con là một tài liệu độc lập (nội dung, file/snippet đang mở, cờ chưa
+// lưu). Nút ＋ mở tab con trống; mở file thì tự vào tab con mới (hoặc dùng lại
+// tab con đang trống, hoặc nhảy về tab con đã mở sẵn file đó).
+// Chuyển tab con: Tab / Shift+Tab khi con trỏ KHÔNG nằm trong ô gõ (trong
+// editor Tab vẫn là thụt lề), hoặc Ctrl+PageDown / Ctrl+PageUp ở bất cứ đâu.
+// Ctrl+Tab không dùng được: khung app đã lấy nó làm "về tab app trước".
+interface SubTab {
+  id: string;
+  kind: FormatKind;
+  text: string;
+  /** Snippet trong kho đang mở (để Lưu đè). */
+  openId: string | null;
+  /** File thật đang mở (💾 Lưu ghi đè thẳng vào nó). */
+  filePath: string | null;
+  dirty: boolean;
+  /** Tab con này là player media chứ không phải editor. */
+  media: MediaOpen | null;
+}
+
+interface TabsState {
+  /** Tab format đang xem. */
+  kind: FormatKind;
+  tabs: SubTab[];
+  /** Tab con đang chọn của TỪNG tab format — đổi qua lại không mất chỗ. */
+  active: Record<FormatKind, string>;
+}
+
+let tabSeq = 0;
+const blankTab = (kind: FormatKind): SubTab => ({
+  id: `t${++tabSeq}`, kind, text: '', openId: null, filePath: null, dirty: false, media: null,
+});
+const isBlank = (t: SubTab) => !t.text && !t.openId && !t.filePath && !t.media && !t.dirty;
+/** Mỗi tab con một model Monaco riêng → giữ undo + vị trí cuộn của từng tab. */
+const modelPath = (id: string) => `devbox-tools/${id}`;
+const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p;
+
+/** Luôn có sẵn một tab con trống cho mỗi tab format. */
+function initTabs(): TabsState {
+  const tabs = KINDS.map((k) => blankTab(k.key));
+  const active = Object.fromEntries(tabs.map((t) => [t.kind, t.id])) as Record<FormatKind, string>;
+  return { kind: 'json', tabs, active };
+}
+
 /** Kích thước gọn cho hộp thoại xác nhận ghi đè: 731 B · 24 KB · 3.2 MB. */
 function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -118,7 +163,113 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
   const railSplit = useSplit({ varName: '--tools-rail', min: 150, max: 460, gap: 12 });
   // Thu gọn cột snippet đã lưu — nhường chỗ cho khung soạn/kết quả.
   const rail = useRailCollapse('tools', '--tools-rail');
-  const [kind, setKind] = useState<FormatKind>('json');
+  const [st, setSt] = useState<TabsState>(initTabs);
+  /** Bản mới nhất cho listener bàn phím (bind một lần). */
+  const stRef = useRef(st);
+  stRef.current = st;
+  const kind = st.kind;
+  /** Tab con đang xem — mọi nút trên toolbar đều tác động lên nó. */
+  const cur = st.tabs.find((t) => t.id === st.active[kind]) ?? st.tabs[0];
+  const { text, openId, dirty, media } = cur;
+  const openFilePath = cur.filePath;
+  const kindTabs = st.tabs.filter((t) => t.kind === kind);
+  /** Tab con có thay đổi chưa lưu đang chờ bấm ✕ lần hai để đóng. */
+  const [closeAsk, setCloseAsk] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  const patch = useCallback((id: string, p: Partial<SubTab>) => {
+    setSt((s) => ({ ...s, tabs: s.tabs.map((t) => (t.id === id ? { ...t, ...p } : t)) }));
+  }, []);
+  /** Lưu xong: chỉ bỏ cờ "chưa lưu" nếu trong lúc chờ ghi không gõ thêm gì. */
+  const markSaved = useCallback((id: string, savedText: string, p: Partial<SubTab> = {}) => {
+    setSt((s) => ({
+      ...s,
+      tabs: s.tabs.map((t) => (t.id === id ? { ...t, ...p, dirty: t.text !== savedText } : t)),
+    }));
+  }, []);
+  const setKind = (k: FormatKind) => { setCloseAsk(null); setSt((s) => (s.kind === k ? s : { ...s, kind: k })); };
+  const selectTab = (id: string) => {
+    setCloseAsk(null);
+    setSt((s) => {
+      const t = s.tabs.find((x) => x.id === id);
+      return t ? { ...s, kind: t.kind, active: { ...s.active, [t.kind]: id } } : s;
+    });
+  };
+  /** ＋ — tab con trống mới trong tab format đang xem. */
+  const addTab = () => {
+    setCloseAsk(null);
+    setSt((s) => {
+      const b = blankTab(s.kind);
+      return { ...s, tabs: [...s.tabs, b], active: { ...s.active, [s.kind]: b.id } };
+    });
+  };
+  /** Sang tab con kế / trước (vòng tròn) trong tab format đang xem. */
+  const cycleTab = useCallback((dir: 1 | -1) => {
+    setCloseAsk(null);
+    setSt((s) => {
+      const sibs = s.tabs.filter((t) => t.kind === s.kind);
+      if (sibs.length < 2) return s;
+      const i = sibs.findIndex((t) => t.id === s.active[s.kind]);
+      const next = sibs[(i + dir + sibs.length) % sibs.length];
+      return { ...s, active: { ...s.active, [s.kind]: next.id } };
+    });
+  }, []);
+  /**
+   * Đưa một tài liệu vào tab con của tab format `k` (null = tab đang xem) rồi
+   * nhảy tới đó: đã mở sẵn (cùng file / snippet) → về lại tab đó, nạp lại nội
+   * dung nếu nó chưa bị sửa; tab con đang chọn còn trống → dùng luôn; không
+   * thì mở tab con mới.
+   */
+  const openInTab = useCallback((k: FormatKind | null, data: Partial<SubTab>) => {
+    setCloseAsk(null);
+    setSt((s) => {
+      const kk = k ?? s.kind;
+      const same = s.tabs.find((t) => t.kind === kk && (
+        data.media ? t.media?.path === data.media.path
+          : data.filePath ? !t.media && t.filePath === data.filePath
+            : data.openId ? t.openId === data.openId
+              : false
+      ));
+      if (same) {
+        return {
+          kind: kk,
+          active: { ...s.active, [kk]: same.id },
+          tabs: same.dirty ? s.tabs : s.tabs.map((t) => (t === same ? { ...t, ...data } : t)),
+        };
+      }
+      const at = s.tabs.find((t) => t.id === s.active[kk]);
+      if (at && isBlank(at)) {
+        return { ...s, kind: kk, tabs: s.tabs.map((t) => (t === at ? { ...t, ...data } : t)) };
+      }
+      const b = { ...blankTab(kk), ...data };
+      return { kind: kk, tabs: [...s.tabs, b], active: { ...s.active, [kk]: b.id } };
+    });
+  }, []);
+  /** Đóng tab con. Tab cuối cùng của một tab format thì thay bằng tab trống. */
+  const closeTab = (id: string) => {
+    setSt((s) => {
+      const t = s.tabs.find((x) => x.id === id);
+      if (!t) return s;
+      const sibs = s.tabs.filter((x) => x.kind === t.kind);
+      let tabs = s.tabs.filter((x) => x.id !== id);
+      let active = s.active;
+      if (sibs.length === 1) {
+        const b = blankTab(t.kind);
+        tabs = [...tabs, b];
+        active = { ...active, [t.kind]: b.id };
+      } else if (s.active[t.kind] === id) {
+        const i = sibs.indexOf(t);
+        active = { ...active, [t.kind]: (sibs[i + 1] ?? sibs[i - 1]).id };
+      }
+      return { ...s, tabs, active };
+    });
+  };
+  /** ✕ — tab còn thay đổi chưa lưu thì phải bấm lần hai mới đóng. */
+  const requestClose = (t: SubTab) => {
+    if (t.dirty && closeAsk !== t.id) { setCloseAsk(t.id); return; }
+    setCloseAsk(null);
+    closeTab(t.id);
+  };
   /**
    * Công cụ RIÊNG đang mở, hay '' = đang ở editor.
    *
@@ -130,24 +281,18 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
   const [tool, setTool] = useState<'' | 'epoch' | 'replace'>('');
   /** Đang ở một công cụ riêng → giấu toàn bộ toolbar/editor của tab format. */
   const inTool = tool !== '';
-  const [text, setText] = useState('');
   const [err, setErr] = useState<string | null>(null);
   /** Bật ô xem bên phải (mặc định bật — nhớ lựa chọn qua localStorage). */
   const [split, setSplit] = useState(true);
   const [docs, setDocs] = useState<SavedDoc[]>([]);
-  const [openId, setOpenId] = useState<string | null>(null); // snippet đang mở (để Lưu đè)
-  const [dirty, setDirty] = useState(false);
   const edRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<Parameters<OnMount>[1] | null>(null);
   // Modal: 'store' = đặt tên lưu vào kho; 'file' = chọn thư mục + tên ghi file thật.
   const [modal, setModal] = useState<null | 'store' | 'file'>(null);
   const [nameInput, setNameInput] = useState('');
   const [pickDir, setPickDir] = useState<string | null>(null);
   /** 'dir' = chọn thư mục lưu · 'open' = chọn FILE trên máy để mở vào editor. */
   const [picking, setPicking] = useState<null | 'dir' | 'open'>(null);
-  /** File local đang mở (hiện tên trên toolbar; Lưu ra file sẽ prefill lại nó). */
-  const [openFilePath, setOpenFilePath] = useState<string | null>(null);
-  /** File media đang phát (thay editor bằng player tới khi đóng). */
-  const [media, setMedia] = useState<MediaOpen | null>(null);
   /** Đang ghi file (khoá nút Lưu để không bấm hai lần). */
   const [saving, setSaving] = useState(false);
   /** File đích đã tồn tại → hỏi xác nhận trước khi ghi đè. */
@@ -261,11 +406,75 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
    *  Gán thật ở dưới, sau khi các hàm lưu đã khai báo. */
   const saveShortcut = useRef<() => void>(() => {});
 
+  /** Đang tự đẩy nội dung vào editor → onChange không được tính là người gõ. */
+  const syncing = useRef(false);
+  const textRef = useRef(text);
+  textRef.current = text;
+  /** Lưới an toàn: model của tab con (giữ lại giữa các lần đổi tab) phải khớp
+   *  nội dung trong state — lệch thì state thắng. Thường thì @monaco-editor/react
+   *  đã tự lo; chỗ nó sót là khi editor vừa mount lại trên một model cũ. */
+  const syncEditor = () => {
+    const ed = edRef.current;
+    try {
+      if (!ed || !ed.getModel() || ed.getValue() === textRef.current) return;
+      syncing.current = true;
+      ed.setValue(textRef.current);
+    } catch { /* editor đã dispose */ } finally {
+      syncing.current = false;
+    }
+  };
+  // Chạy sau effect của <Editor> (con trước, cha sau) nên model đã đổi xong.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(syncEditor, [cur.id]);
+
   const onMount: OnMount = (ed, monaco) => {
     edRef.current = ed;
+    monacoRef.current = monaco;
     // Monaco nuốt Ctrl+S của trình duyệt → bind ngay trong editor.
     ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveShortcut.current());
+    syncEditor();
   };
+
+  // Tab con đã đóng → huỷ model Monaco của nó (không thì nằm lại mãi).
+  const liveIds = useRef(new Set<string>());
+  useEffect(() => {
+    const now = new Set(st.tabs.map((t) => t.id));
+    const m = monacoRef.current;
+    if (m) {
+      for (const id of liveIds.current) {
+        if (!now.has(id)) m.editor.getModel(m.Uri.parse(modelPath(id)))?.dispose();
+      }
+    }
+    liveIds.current = now;
+  }, [st.tabs]);
+
+  // Chuyển tab con bằng bàn phím: Tab / Shift+Tab khi không đứng trong ô gõ,
+  // Ctrl+PageDown / Ctrl+PageUp ở đâu cũng được (kể cả trong editor).
+  /** Đang ở công cụ riêng / hộp thoại → phím Tab trả lại cho nó. */
+  const keysOff = useRef(false);
+  keysOff.current = inTool || modal !== null || picking !== null || confirmOverwrite !== null;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const byPage = e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'PageDown' || e.key === 'PageUp');
+      const byTab = e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey;
+      if (!byPage && !byTab) return;
+      const root = rootRef.current;
+      // Pane Tools vẫn mount khi đang xem tab app khác → chỉ ăn phím khi đang hiện.
+      if (!root || keysOff.current || root.closest('[aria-hidden="true"]')) return;
+      const s = stRef.current;
+      if (s.tabs.filter((t) => t.kind === s.kind).length < 2) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && el !== document.body && !root.contains(el)) return;
+      if (byTab && el && (
+        el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.closest('.monaco-editor')
+      )) return;
+      e.preventDefault();
+      e.stopPropagation();
+      cycleTab(byTab ? (e.shiftKey ? -1 : 1) : e.key === 'PageDown' ? 1 : -1);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [cycleTab]);
 
   // Ctrl+S khi con trỏ Ở NGOÀI editor (ô xem, toolbar…).
   useEffect(() => {
@@ -282,20 +491,21 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
   const format = () => {
     const r = formatText(kind, text);
     setErr(r.ok ? null : r.error ?? 'Lỗi định dạng');
-    if (r.ok) { setText(r.text); setDirty(true); }
+    if (r.ok) patch(cur.id, { text: r.text, dirty: true });
   };
   const minify = () => {
     const r = minifyJson(text);
     setErr(r.ok ? null : r.error ?? null);
-    if (r.ok) { setText(r.text); setDirty(true); }
+    if (r.ok) patch(cur.id, { text: r.text, dirty: true });
   };
 
   const copy = async () => { try { await navigator.clipboard.writeText(text); } catch { /* ignore */ } };
 
   // ── Store snippet (JSON/text) ─────────────────────────────────────────────
-  const newDoc = () => { setText(''); setErr(null); setOpenId(null); setOpenFilePath(null); setDirty(false); };
+  /** ＋ Mới — tab con trống (tab đang xem đã trống sẵn thì khỏi mở thêm). */
+  const newDoc = () => { setErr(null); if (!isBlank(cur)) addTab(); };
 
-  const defaultExt = kind === 'json' ? '.json' : kind === 'xml' ? '.xml' : kind === 'html' ? '.html' : '.txt';
+  const defaultExt = kind === 'json' ? '.json' : kind === 'xml' ? '.xml' : kind === 'html' ? '.html' : kind === 'md' ? '.md' : '.txt';
 
   /** Mở modal đặt tên. Đang mở snippet cũ → Lưu đè thẳng khỏi hỏi tên. */
   const openStoreModal = async () => {
@@ -305,23 +515,28 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
 
   const saveStore = async (name: string) => {
     const docKind = kind === 'json' ? 'json' : 'text'; // XML/HTML lưu dạng text thô
+    // Chốt tab + nội dung lúc bấm: trong lúc chờ có thể đã chuyển sang tab con khác.
+    const id = cur.id;
+    const saved = text;
     try {
       const before = new Set(docs.map((d) => d.id));
-      const list = await dSave({ id: openId ?? undefined, name, kind: docKind, content: text });
+      const list = await dSave({ id: openId ?? undefined, name, kind: docKind, content: saved });
       setDocs(list);
-      if (!openId) setOpenId(list.find((d) => !before.has(d.id))?.id ?? null);
-      setDirty(false); setModal(null);
+      markSaved(id, saved, openId ? {} : { openId: list.find((d) => !before.has(d.id))?.id ?? null });
+      setModal(null);
     } catch (e) { setErr((e as Error).message); }
   };
 
   /** Ghi thật ra đĩa. Tách riêng khỏi saveToFile để bước xác nhận ghi đè gọi lại. */
   const writeFile = async (dir: string, filename: string) => {
+    const id = cur.id;
+    const saved = text;
     setSaving(true);
     try {
-      const { path } = await dSaveFile(dir, filename, text);
+      const { path } = await dSaveFile(dir, filename, saved);
       setErr(null); setModal(null); setConfirmOverwrite(null);
       // Từ giờ file này là "file đang mở" → lần sau 💾 Lưu ghi thẳng vào nó.
-      setOpenFilePath(path); setDirty(false);
+      markSaved(id, saved, { filePath: path });
       flash(`Đã lưu: ${path}`);
     } catch (e) {
       setErr((e as Error).message);
@@ -351,10 +566,12 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
     if (!openFilePath) return;
     const base = openFilePath.split(/[\\/]/).pop() ?? '';
     const dir = openFilePath.slice(0, openFilePath.length - base.length).replace(/[\\/]$/, '');
+    const id = cur.id;
+    const saved = text;
     setSaving(true);
     try {
-      await dSaveFile(dir, base, text);
-      setErr(null); setDirty(false);
+      await dSaveFile(dir, base, saved);
+      setErr(null); markSaved(id, saved);
       flash(`Đã lưu ${base}`);
     } catch (e) {
       setErr((e as Error).message);
@@ -376,26 +593,28 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
    *  → render đúng tab; còn lại → mở full text. */
   const openLocalFile = async (p: string) => {
     setPicking(null);
-    const name = p.split(/[\\/]/).pop() ?? p;
+    setTool(''); // đang ở Thời gian / Tìm & thay thì về editor mới thấy file
+    const name = baseName(p);
     const ext = (name.split('.').pop() ?? '').toLowerCase();
     if (AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext)) {
-      setMedia({
-        path: p,
-        name,
-        video: VIDEO_EXTS.has(ext),
-        url: `/api/docs?media&path=${encodeURIComponent(p)}`,
+      // Media không thuộc tab format nào → mở thành tab con ở tab đang xem.
+      openInTab(null, {
+        media: {
+          path: p,
+          name,
+          video: VIDEO_EXTS.has(ext),
+          url: `/api/docs?media&path=${encodeURIComponent(p)}`,
+        },
       });
       setErr(null);
       return;
     }
     try {
       const { path: full, content } = await dReadFile(p);
-      setKind(detectKind(full, content));
-      setText(content);
-      setOpenId(null);
-      setOpenFilePath(full);
-      setMedia(null);
-      setDirty(false); setErr(null);
+      openInTab(detectKind(full, content), {
+        text: content, filePath: full, openId: null, media: null, dirty: false,
+      });
+      setErr(null);
     } catch (e) { setErr((e as Error).message); }
   };
 
@@ -426,11 +645,10 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
       const known = all.filter((d) => d.path && classifyFile(d.name));
       // Loại lạ nhưng chỉ thả một file → vẫn thử mở dạng text như trước.
       if (!known.length && all.length === 1) { await openLocalFile(all[0].path); return; }
-      // Editor chỉ giữ một file: nhiều file Tools thì mở file đầu, file Office mở hết.
-      let toolsTaken = false;
+      // Thả nhiều file: mỗi file Tools một tab con, file Office sang Office.
       for (const d of known) {
         if (classifyFile(d.name)!.target === 'office') requestOpenPath(d.path);
-        else if (!toolsTaken) { toolsTaken = true; await openLocalFile(d.path); }
+        else await openLocalFile(d.path);
       }
       const skipped = all.filter((d) => !classifyFile(d.name)).map((d) => d.name);
       if (skipped.length) setErr(`Chưa có view mở được: ${skipped.join(', ')}`);
@@ -451,30 +669,50 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
     }
     try {
       const content = await f.text();
-      setKind(detectKind(f.name, content));
-      setText(content);
-      setOpenId(null); setOpenFilePath(null); setMedia(null);
-      setDirty(false); setErr(null);
+      setTool('');
+      // Có nội dung mà không có file tham chiếu → luôn là tab con mới (hoặc
+      // tab đang trống), không dò trùng được.
+      openInTab(detectKind(f.name, content), {
+        text: content, filePath: null, openId: null, media: null, dirty: false,
+      });
+      setErr(null);
       flash(`Đã mở ${f.name} — bấm “Lưu thành file…” để chọn nơi lưu.`);
     } catch (e2) {
       setErr((e2 as Error).message);
     }
-  }, [openLocalFile, flash]);
+  }, [openLocalFile, openInTab, flash]);
 
   const openDoc = (d: SavedDoc) => {
     // Snippet JSON mở ở tab JSON (format được); text mở ở tab JSON để xem/sửa
     // nhưng người dùng cứ để nguyên — không bắt buộc format.
-    setKind('json');
-    setText(d.content); setOpenId(d.id); setOpenFilePath(null); setDirty(false); setErr(null);
+    openInTab('json', { text: d.content, openId: d.id, filePath: null, media: null, dirty: false });
+    setErr(null);
   };
 
   const removeDoc = async (d: SavedDoc) => {
     if (!window.confirm(`Xóa "${d.name}"?`)) return;
-    try { setDocs(await dRemove(d.id)); if (openId === d.id) setOpenId(null); } catch (e) { setErr((e as Error).message); }
+    try {
+      setDocs(await dRemove(d.id));
+      // Tab con nào đang mở snippet này thì thành tài liệu chưa có đích lưu.
+      setSt((s) => ({ ...s, tabs: s.tabs.map((t) => (t.openId === d.id ? { ...t, openId: null } : t)) }));
+    } catch (e) { setErr((e as Error).message); }
   };
 
+  /** Tên hiện trên tab con: file / media / snippet, chưa có gì thì "Mới", "Mới 2"… */
+  let untitled = 0;
+  const tabLabels = kindTabs.map((t) => {
+    if (t.media) return { ico: t.media.video ? '🎬' : '🎵', name: t.media.name, tip: t.media.path };
+    if (t.filePath) return { ico: '📄', name: baseName(t.filePath), tip: t.filePath };
+    if (t.openId) {
+      const n = docs.find((d) => d.id === t.openId)?.name ?? 'Snippet';
+      return { ico: '🧾', name: n, tip: `Trong kho: ${n}` };
+    }
+    untitled += 1;
+    return { ico: '📝', name: untitled > 1 ? `Mới ${untitled}` : 'Mới', tip: 'Chưa lưu vào đâu' };
+  });
+
   return (
-    <div className="panel sheet-panel">
+    <div className="panel sheet-panel" ref={rootRef}>
       <div className="g-toolbar">
         <div className="office-subnav" role="tablist" aria-label="Format kind">
           {KINDS.map((k) => (
@@ -587,9 +825,43 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
         </aside>
         )}
 
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, minHeight: 0 }}>
+        {/* Dãy tab con của tab format đang xem */}
+        <div className="office-tabs" role="tablist" aria-label="Tab con">
+          {kindTabs.map((t, i) => {
+            const on = t.id === cur.id;
+            const ask = closeAsk === t.id;
+            return (
+              <div key={t.id} className={`office-tab${on ? ' on' : ''}`}
+                onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); requestClose(t); } }}>
+                <button className="office-tab-main" role="tab" aria-selected={on}
+                  onClick={() => selectTab(t.id)} title={tabLabels[i].tip}>
+                  <span className="office-tab-ico" aria-hidden>{tabLabels[i].ico}</span>
+                  <span className="office-tab-name">{tabLabels[i].name}</span>
+                  {t.dirty && <span className="office-tab-dot" title="Có thay đổi chưa lưu">●</span>}
+                </button>
+                {!(kindTabs.length === 1 && isBlank(t)) && (
+                  <button className="office-tab-x" onClick={() => requestClose(t)}
+                    onBlur={() => { if (ask) setCloseAsk(null); }}
+                    style={ask ? { color: 'var(--err)', fontWeight: 600 } : undefined}
+                    title={ask ? 'Bấm lần nữa để đóng và BỎ thay đổi chưa lưu' : 'Đóng tab con (chuột giữa)'}>
+                    {ask ? 'Bỏ thay đổi?' : '✕'}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+          <div className="office-tab-addgrp">
+            <button className="office-tab-addbtn" onClick={addTab}
+              title="Mở tab con mới · Tab / Shift+Tab (ngoài ô gõ) hoặc Ctrl+PageDown / Ctrl+PageUp để chuyển qua lại">
+              ＋
+            </button>
+          </div>
+        </div>
         {/* Editor + ô xem — hoặc player khi mở file media */}
         <div
           className={`tools-main${dragging ? ' dragging' : ''}${dropping ? ' dropping' : ''}`}
+          style={{ flex: 1 }}
           ref={mainRef}
           onDragEnter={(e) => {
             if (!isFileDrag(e)) return;
@@ -622,7 +894,7 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
               <div className="tools-media-head">
                 <b>{media.video ? '🎬' : '🎵'} {media.name}</b>
                 <span className="small" style={{ color: 'var(--muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={media.path}>{media.path}</span>
-                <button className="ghost sm" onClick={() => setMedia(null)} title="Đóng player, về editor">✕</button>
+                <button className="ghost sm" onClick={() => requestClose(cur)} title="Đóng tab con này">✕</button>
               </div>
               {media.video ? (
                 <video key={media.url} className="tools-media-el" src={media.url} controls autoPlay />
@@ -645,8 +917,9 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
                 <Editor
                   language={monacoLangFor(kind)}
                   theme="vs-dark"
+                  path={modelPath(cur.id)}
                   value={text}
-                  onChange={(v) => { setText(v ?? ''); setDirty(true); }}
+                  onChange={(v) => { if (!syncing.current) patch(cur.id, { text: v ?? '', dirty: true }); }}
                   onMount={onMount}
                   options={{
                     minimap: { enabled: false }, fontSize: 13, wordWrap: 'on',
@@ -700,6 +973,7 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
             )}
           </>
           )}
+        </div>
         </div>
         {!rail.collapsed && <Splitter {...railSplit.grip} />}
       </div>
