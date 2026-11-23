@@ -313,6 +313,23 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
   /** Ô xem đang thực sự hiện (tab hỗ trợ + người dùng bật). */
   const showView = split && SPLITTABLE.has(kind) && !media && !inTool;
 
+  // ── Mở rộng ô xem ra toàn màn hình (như F11) ───────────────────────────────
+  // Dùng Fullscreen API trên chính ô xem: nó lên top layer nên không bị panel
+  // cha (backdrop-filter) giam lại như position:fixed. Esc / F11 / nút "Thu
+  // nhỏ" để quay về; Tab / Shift+Tab vẫn chuyển tab con trong lúc toàn màn hình.
+  const viewRef = useRef<HTMLDivElement | null>(null);
+  const [full, setFull] = useState(false);
+  useEffect(() => {
+    const on = () => setFull(!!viewRef.current && document.fullscreenElement === viewRef.current);
+    document.addEventListener('fullscreenchange', on);
+    return () => document.removeEventListener('fullscreenchange', on);
+  }, []);
+  const toggleFull = useCallback(() => {
+    if (document.fullscreenElement) { void document.exitFullscreen().catch(() => {}); return; }
+    const el = viewRef.current;
+    if (el) void el.requestFullscreen().catch(() => setErr('Không mở rộng toàn màn hình được.'));
+  }, []);
+
   /** Bề rộng ô NGUỒN tính theo % — kéo thanh giữa để đổi, nhớ qua localStorage. */
   const [ratio, setRatio] = useState(50);
   const [dragging, setDragging] = useState(false);
@@ -457,10 +474,19 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
     const onKey = (e: KeyboardEvent) => {
       const byPage = e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'PageDown' || e.key === 'PageUp');
       const byTab = e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey;
-      if (!byPage && !byTab) return;
+      const byF11 = e.key === 'F11' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey;
+      if (!byPage && !byTab && !byF11) return;
       const root = rootRef.current;
       // Pane Tools vẫn mount khi đang xem tab app khác → chỉ ăn phím khi đang hiện.
       if (!root || keysOff.current || root.closest('[aria-hidden="true"]')) return;
+      if (byF11) {
+        // F11 = mở rộng / thu nhỏ ô xem (chỉ khi ô xem đang hiện).
+        if (!viewRef.current) return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggleFull();
+        return;
+      }
       const s = stRef.current;
       if (s.tabs.filter((t) => t.kind === s.kind).length < 2) return;
       const el = document.activeElement as HTMLElement | null;
@@ -474,7 +500,7 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [cycleTab]);
+  }, [cycleTab, toggleFull]);
 
   // Ctrl+S khi con trỏ Ở NGOÀI editor (ô xem, toolbar…).
   useEffect(() => {
@@ -951,10 +977,28 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
 
             {/* PHẢI — ô xem tương ứng, cập nhật ngay khi gõ */}
             {showView && (
-              <div className="tools-pane tools-view">
+              <div className="tools-pane tools-view" ref={viewRef}
+                style={full ? { background: 'var(--bg-1)', border: 0, borderRadius: 0 } : undefined}>
                 <div className="tools-pane-head">
-                  👁 {VIEW_LABEL[kind]}
-                  <span className="tools-pane-hint">tự cập nhật</span>
+                  {full && (
+                    <button className="sm" onClick={toggleFull} title="Thu nhỏ, quay lại màn hình làm việc (Esc hoặc F11)">
+                      ← Quay lại
+                    </button>
+                  )}
+                  👁 {full ? (tabLabels[kindTabs.indexOf(cur)]?.name ?? '') : VIEW_LABEL[kind]}
+                  <span className="tools-pane-hint">
+                    {full
+                      ? (kindTabs.length > 1
+                        ? `${kindTabs.indexOf(cur) + 1}/${kindTabs.length} · Tab / Shift+Tab sang file khác · Esc để thoát`
+                        : 'Esc để thoát')
+                      : 'tự cập nhật'}
+                  </span>
+                  <span style={{ flex: 1 }} />
+                  {!full && (
+                    <button className="ghost sm" onClick={toggleFull} title="Mở rộng ô xem ra toàn màn hình (F11)">
+                      ⛶ Mở rộng
+                    </button>
+                  )}
                 </div>
                 {kind === 'html' ? (
                   <iframe className="tools-view-box" sandbox="allow-same-origin" srcDoc={text} title="HTML preview" />
