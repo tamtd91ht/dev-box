@@ -122,9 +122,32 @@ function pushLog(source, line) {
   }
   // Still echo to the terminal when launched from one. When launched from the
   // desktop shortcut there is no console attached — swallow the write error.
+  const text = `[${source} ${new Date(entry.ts).toISOString()}] ${line}\n`;
   try {
-    process.stdout.write(`[${source} ${new Date(entry.ts).toISOString()}] ${line}\n`);
+    process.stdout.write(text);
   } catch {}
+  // Lines from the spawned server already land in devserver.log; persist the
+  // shell's own lifecycle log so a bad launch (black window) can be diagnosed
+  // AFTER the user closed it — the ring buffer dies with the process.
+  if (source === 'shell') writeShellLog(text);
+}
+
+// shell.log = this launch, shell.prev.log = the one before (rotated at first
+// write). Startup failures get reported after a relaunch, so the previous
+// launch's log is the one that matters.
+let shellLogFd = null;
+function writeShellLog(text) {
+  try {
+    if (shellLogFd === null) {
+      const dir = app.getPath('userData');
+      const cur = path.join(dir, 'shell.log');
+      try { fs.renameSync(cur, path.join(dir, 'shell.prev.log')); } catch { /* lần đầu */ }
+      shellLogFd = fs.openSync(cur, 'a');
+    }
+    fs.writeSync(shellLogFd, text);
+  } catch {
+    shellLogFd = -1; // disk issue — give up silently, the in-app console still has it
+  }
 }
 
 // Keep every workspace's browser profile (cookies/localStorage/IndexedDB/cache)
@@ -2529,18 +2552,70 @@ function attachConsoleAccess(win) {
   });
 }
 
+/**
+ * win.loadURL with a deadline. A load that COMMITS but whose JS/CSS never
+ * arrives (socket pool starved, server stalled mid-response) leaves the promise
+ * pending forever — no failure, so no retry, and the window stays black with
+ * no UI. That is the "first launch hangs, relaunch is fine" case: a relaunch
+ * reloads with a warm cache. Stop + retry does the same thing in-process.
+ * Dev mode compiles on first request (can take ~90s), so it gets longer.
+ */
+function loadUrlWithTimeout(win, url) {
+  const ms = runningServerMode === 'dev' || runningServerMode === 'turbo' ? 180000 : 30000;
+  let timer;
+  return Promise.race([
+    win.loadURL(url).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try { if (!win.isDestroyed()) win.webContents.stop(); } catch { /* kệ */ }
+        reject(Object.assign(new Error('load timeout'), { timeout: ms }));
+      }, ms);
+    }),
+  ]);
+}
+
+/**
+ * ensureServer() used to run exactly once. If the server it adopted died right
+ * after (previous instance's taskkill still landing), or it gave up with
+ * PortBusy, nothing ever started one and the splash waited ~10 minutes.
+ * Every 15 failed attempts: nobody answering and nothing being built/spawned
+ * → run it again.
+ */
+async function maybeRecoverServer(attempt) {
+  if (process.env.DESKTOP_URL || attempt === 0 || attempt % 15 !== 0) return;
+  if (ensureServerRunning || devServer) return; // đang build/dựng, hoặc server của ta còn sống
+  if (await probe(APP_URL)) return;
+  log('ServerRecover', `${APP_URL} không ai trả lời sau ${attempt}s và không có server nào đang chạy → khởi động lại server`);
+  adoptedPid = 0; // pid cũ đã chết — đừng để stopDevServer taskkill nhầm một pid bị tái sử dụng
+  await ensureServerGuarded();
+}
+
+let ensureServerRunning = null;
+function ensureServerGuarded() {
+  if (!ensureServerRunning) {
+    ensureServerRunning = ensureServer()
+      .catch((err) => log('ServerEnsureError', err && err.message))
+      .finally(() => { ensureServerRunning = null; });
+  }
+  return ensureServerRunning;
+}
+
 async function loadAppWithRetry(win) {
   // loadURL thất bại thì Chromium GIỮ trang đang hiện, nên splash sống qua
   // các lượt thử cho tới khi server trả lời.
   await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(SPLASH_HTML)).catch(() => {});
   // 600 lượt × 1s: đủ trùm qua một lượt `next build` dài, không chỉ dev compile.
+  const t0 = Date.now();
   for (let i = 0; i < 600; i++) {
+    if (win.isDestroyed()) return;
     try {
-      await win.loadURL(APP_URL);
-      log('AppLoaded', APP_URL);
+      await loadUrlWithTimeout(win, APP_URL);
+      log('AppLoaded', `${APP_URL} (${Math.round((Date.now() - t0) / 1000)}s)`);
       return;
     } catch (err) {
       if (i === 0) log('AppWaiting', `${APP_URL} đang khởi động (next dev biên dịch lần đầu)…`);
+      if (err && err.timeout) log('AppLoadTimeout', `trang treo quá ${err.timeout / 1000}s (chunk/CSS không về) → dừng và nạp lại`);
+      await maybeRecoverServer(i);
       await new Promise((r) => setTimeout(r, 1000));
     }
   }
@@ -4430,7 +4505,8 @@ if (!app.requestSingleInstanceLock()) {
     // build` vài phút, mà người dùng vừa bấm icon thì phải thấy ngay một cái
     // gì đó (splash của loadAppWithRetry) chứ không phải một app "không lên".
     createWindow();
-    await ensureServer(); // build (nếu cần) + start server khi :3000 chưa có ai
+    await ensureServerGuarded(); // build (nếu cần) + start server khi :3000 chưa có ai
+    log('ServerReady', `chế độ ${runningServerMode || '?'}`);
     // Theo dõi số phiên terminal đang sống — stopDevServer() đọc con số này để
     // quyết định có được phép tắt server lúc thoát app hay không.
     startTerminalPoll();

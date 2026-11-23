@@ -115,7 +115,9 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
   // guest to be alive BEFORE the user ever opens this tab. Other plugins stay lazy.
   const eagerKeys = useMemo(
     () =>
-      (cfg.lazyLoad ? allAccounts.filter((a) => !!getPlugin(a.pluginId)?.keepAlive) : allAccounts)
+      // Muted (🔕) accounts are not eager either: keeping a guest alive only to
+      // raise alerts that are muted anyway costs ~250 MB for nothing.
+      (cfg.lazyLoad ? allAccounts.filter((a) => !a.muted && !!getPlugin(a.pluginId)?.keepAlive) : allAccounts)
         .map((a) => accountKey(a.pluginId, a.instanceId))
         .slice(0, Math.max(1, cfg.maxActiveWorkspace)),
     [allAccounts, cfg.lazyLoad, cfg.maxActiveWorkspace],
@@ -207,7 +209,10 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
    * Facebook are opened on demand — their messages feed automation only while
    * their tab is mounted.
    */
-  const pinned = useCallback((key: string) => !!getPlugin(key.split('::')[0])?.keepAlive, []);
+  const pinned = useCallback(
+    (key: string) => !isMuted(key) && !!getPlugin(key.split('::')[0])?.keepAlive,
+    [isMuted],
+  );
 
   // Turning capture on must reach every keepAlive messaging account, not just
   // the ones that happened to be open. Non-keepAlive apps are deliberately left
@@ -217,7 +222,7 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
     const wanted = allAccounts
       .filter((a) => {
         const p = getPlugin(a.pluginId);
-        return !!p?.capture && !!p.keepAlive;
+        return !a.muted && !!p?.capture && !!p.keepAlive;
       })
       .map((a) => accountKey(a.pluginId, a.instanceId));
     setOpenKeys((prev) => {

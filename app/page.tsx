@@ -646,9 +646,9 @@ export default function Home() {
   // Exception: the browser Workspace mounts from startup — its whole point is
   // alerting about new messages (Zalo) while you work on OTHER tabs, so its
   // guests must be running before the tab is ever clicked.
-  // 'workspace' + 'zaloapi' đều mount NGAY từ đầu: cả hai cần guest sống nền để
-  // nhận tin (WebSocket của Zalo API) và gửi được từ tab khác — giống keepAlive.
-  const [visited, setVisited] = useState<Record<string, boolean>>({ workspace: true, zaloapi: true });
+  // 2026-11: Zalo API thôi mount từ đầu — guest của nó ~250 MB; chỉ nạp khi mở
+  // tab (listener/automation Zalo API chạy từ lúc đó).
+  const [visited, setVisited] = useState<Record<string, boolean>>({ workspace: true });
   useEffect(() => (process.env.NODE_ENV === 'production' ? prefetchPanes() : undefined), []);
   useEffect(() => {
     setVisited((v) => (v[mode] ? v : { ...v, [mode]: true }));

@@ -17,11 +17,13 @@ export interface WorkspaceAccount {
   /**
    * Ẩn thông báo của riêng tài khoản này.
    *
-   * ẨN ≠ TẮT ĐẾM. Guest vẫn chạy, vẫn đếm, vẫn thu tin cho automation y như cũ —
-   * chỉ là số đó KHÔNG dội ra ngoài nữa: không cộng vào huy hiệu nhóm, không
-   * cộng vào huy hiệu tab Workspace, không đổi tiêu đề cửa sổ, không kêu chuông.
-   * Số vẫn hiện ngay trên dòng của tài khoản đó trong rail, để mở workspace ra
-   * là biết có gì mới — đúng như yêu cầu "chỉ hiển thị trên account đó thôi".
+   * Số của nó KHÔNG dội ra ngoài: không cộng vào huy hiệu nhóm, không cộng vào
+   * huy hiệu tab Workspace, không đổi tiêu đề cửa sổ, không kêu chuông. Số chỉ
+   * hiện trên dòng của tài khoản đó trong rail.
+   *
+   * 2026-11 (tiết kiệm RAM): tài khoản đang ẩn KHÔNG còn chạy nền — không nạp
+   * lúc khởi động, không được ghim khỏi LRU (BrowserWorkspace: eagerKeys/pinned).
+   * Nên khi chưa mở, nó không đếm và không thu tin cho automation.
    *
    * Vắng mặt = false, nên tài khoản cũ đã lưu từ trước vẫn báo bình thường.
    */
