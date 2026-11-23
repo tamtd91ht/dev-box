@@ -12370,7 +12370,9 @@ textarea.aic-kb-text {
 .aic-kb-foot { display: flex; justify-content: flex-end; gap: 8px; flex: none; }
 .aic-kb-foot .ghost.sm { height: 32px; border-radius: 10px; }
 
-/* Nút mở trợ lý trên thanh menu */
+/* Nút mở trợ lý — phần tử CUỐI của footer, tức góc phải dưới cửa sổ. Footer có
+   mặt ở mọi tab và mọi vị trí menu (kể cả menu ẩn) và không bị <webview> che,
+   nên nút luôn thấy được; nút nổi tự do thì sẽ bị Zalo/Browser đè. */
 .aic-open-btn {
   display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px;
   border-radius: 10px; border: 1px solid var(--glass-brd); background: var(--glass); box-shadow: none;
@@ -12378,12 +12380,6 @@ textarea.aic-kb-text {
 }
 .aic-open-btn:hover:not(:disabled) { border-color: var(--glass-brd-hover); background: var(--glass-2); transform: none; box-shadow: none; }
 .aic-open-btn.on { border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
-
-/* Menu dọc: sidebar chỉ rộng 216px. Hàng nút không xuống dòng thì nút đầu hàng
-   (✨ Trợ lý) tràn ra ngoài và bị overflow-x:hidden của appbar CẮT MẤT — nút
-   có đó mà không ai thấy. Cho hàng nút xuống dòng, nút Trợ lý chiếm trọn một
-   hàng riêng phía trên các nút biểu tượng. */
-.shell[data-nav="left"] .appbar-right,
-.shell[data-nav="right"] .appbar-right { flex-wrap: wrap; row-gap: 8px; }
-.shell[data-nav="left"] .aic-open-btn,
-.shell[data-nav="right"] .aic-open-btn { flex: 1 0 100%; justify-content: center; }
+/* Footer xuống dòng (cửa sổ hẹp / menu dọc) thì cụm bên phải vẫn dồn sát mép
+   phải — nút Trợ lý luôn ở đúng góc phải dưới chứ không trôi ra giữa. */
+.appfoot .foot-right { margin-left: auto; }

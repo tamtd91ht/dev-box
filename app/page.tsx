@@ -908,15 +908,6 @@ export default function Home() {
             anything conditional here resizes the header and can push the tab
             strip (with the Workspace bell) out of view. */}
         <div className="appbar-right">
-          {/* Trợ lý AI: mở/đóng bảng chat neo bên phải (components/AiChat.tsx). */}
-          <button
-            className={`aic-open-btn${ai.open ? ' on' : ''}`}
-            onClick={aiDock.toggle}
-            aria-pressed={ai.open}
-            title={ai.open ? 'Đóng bảng trợ lý AI' : 'Mở trợ lý AI — hỏi về màn hình đang xem, dùng kho tri thức riêng'}
-          >
-            <span aria-hidden>✨</span> Trợ lý
-          </button>
           {/* Tiếp cận nhanh các tab đang làm — nhảy qua nhảy lại khỏi dò menu. */}
           <button
             className="qt-open-btn"
@@ -1215,6 +1206,18 @@ export default function Home() {
           <ServerModeButton />
           {/* Desktop only: log của shell + next dev, ẩn mặc định. */}
           <DesktopConsole />
+          {/* Trợ lý AI: mở/đóng bảng chat neo bên phải (components/AiChat.tsx).
+              Đặt CUỐI footer = góc phải dưới cửa sổ: luôn thấy ở mọi tab, mọi vị
+              trí menu, không bị <webview> che. (Từng nằm trên thanh menu — ở
+              menu dọc 216px nó tràn ra ngoài và làm vỡ cụm nút cuối sidebar.) */}
+          <button
+            className={`aic-open-btn${ai.open ? ' on' : ''}`}
+            onClick={aiDock.toggle}
+            aria-pressed={ai.open}
+            title={ai.open ? 'Đóng bảng trợ lý AI' : 'Mở trợ lý AI — hỏi về màn hình đang xem, dùng kho tri thức riêng'}
+          >
+            <span aria-hidden>✨</span> Trợ lý
+          </button>
         </span>
       </footer>
     </div>
