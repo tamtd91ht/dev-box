@@ -150,6 +150,9 @@ contextBridge.exposeInMainWorld('workspace', {
   /** Dịch nhanh nổi — CHỈ trang /translate-float (nằm trong WebContentsView
    *  riêng, xem attachTranslateFloat trong main.cjs) dùng; main bỏ qua mọi
    *  tin tf:* không đến từ đúng view đó. */
+  /** Trang chính báo bề rộng bảng trợ lý AI neo bên phải (0 = đóng) để main
+   *  dời chấm / bảng dịch nổi ra khỏi dải đó — xem 'tf:inset' trong main.cjs. */
+  setFloatInset: (px) => ipcRenderer.send('tf:inset', px),
   translateFloat: {
     init: (pos) => ipcRenderer.invoke('tf:init', pos),
     setSize: (w, h) => ipcRenderer.send('tf:size', w, h),

@@ -12378,3 +12378,12 @@ textarea.aic-kb-text {
 }
 .aic-open-btn:hover:not(:disabled) { border-color: var(--glass-brd-hover); background: var(--glass-2); transform: none; box-shadow: none; }
 .aic-open-btn.on { border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+/* Menu dọc: sidebar chỉ rộng 216px. Hàng nút không xuống dòng thì nút đầu hàng
+   (✨ Trợ lý) tràn ra ngoài và bị overflow-x:hidden của appbar CẮT MẤT — nút
+   có đó mà không ai thấy. Cho hàng nút xuống dòng, nút Trợ lý chiếm trọn một
+   hàng riêng phía trên các nút biểu tượng. */
+.shell[data-nav="left"] .appbar-right,
+.shell[data-nav="right"] .appbar-right { flex-wrap: wrap; row-gap: 8px; }
+.shell[data-nav="left"] .aic-open-btn,
+.shell[data-nav="right"] .aic-open-btn { flex: 1 0 100%; justify-content: center; }

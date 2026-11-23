@@ -12,9 +12,10 @@
 //
 // Phần bảng (dịch, gợi ý, đọc, xem thêm) dùng chung: components/translate/TranslatePanel.tsx.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import TranslatePanel from '@/components/translate/TranslatePanel';
 import { DEFAULT_PAIRS, shortLang, type LangPair } from '@/lib/translate';
+import { aiDock } from '@/lib/aiChat';
 
 const POS_KEY = 'qtrans.dot';
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
@@ -27,6 +28,10 @@ export default function QuickTranslate() {
   const [prefill, setPrefill] = useState<{ text: string; n: number } | undefined>();
   /** Khoảng cách chấm tới mép PHẢI / DƯỚI — đổi kích thước cửa sổ vẫn bám góc. */
   const [pos, setPos] = useState({ right: 22, bottom: 64 });
+  // Bảng trợ lý AI đang neo bên phải → mép phải "thật" lùi vào chừng đó, để
+  // chấm / bảng dịch không đè lên ô nhập của trợ lý.
+  const dock = useSyncExternalStore(aiDock.subscribe, aiDock.getSnapshot, aiDock.getServerSnapshot);
+  const inset = dock.open ? dock.width : 0;
 
   useEffect(() => {
     setFloatHost(!!window.workspace?.translateFloat);
@@ -71,7 +76,7 @@ export default function QuickTranslate() {
     if (!d.moved && Math.hypot(dx, dy) < 4) return;
     d.moved = true;
     setPos({
-      right: clamp(d.right - dx, 4, window.innerWidth - 40),
+      right: clamp(d.right - dx, 4, window.innerWidth - inset - 40),
       bottom: clamp(d.bottom - dy, 4, window.innerHeight - 40),
     });
   };
@@ -86,14 +91,14 @@ export default function QuickTranslate() {
 
   /** Bảng mở về PHÍA TRONG màn hình tính từ chấm. */
   const panelStyle = useMemo((): CSSProperties => {
-    const vw = typeof window === 'undefined' ? 1600 : window.innerWidth;
+    const vw = (typeof window === 'undefined' ? 1600 : window.innerWidth) - inset;
     const vh = typeof window === 'undefined' ? 900 : window.innerHeight;
     const s: CSSProperties = { position: 'fixed' };
-    if (pos.right < vw / 2) s.right = pos.right; else s.left = vw - pos.right - 34;
+    if (pos.right < vw / 2) s.right = pos.right + inset; else s.left = vw - pos.right - 34;
     if (pos.bottom < vh / 2) s.bottom = pos.bottom + 44; else s.top = vh - pos.bottom + 6;
     return s;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tính lại khi mở / dời chấm
-  }, [pos.right, pos.bottom, open]);
+  }, [pos.right, pos.bottom, open, inset]);
 
   if (floatHost !== false) return null;
 
@@ -101,7 +106,7 @@ export default function QuickTranslate() {
     <>
       <button
         className={`qtr-dot${open ? ' on' : ''}`}
-        style={{ position: 'fixed', right: pos.right, bottom: pos.bottom }}
+        style={{ position: 'fixed', right: pos.right + inset, bottom: pos.bottom }}
         title="Dịch nhanh (Ctrl+Shift+Y) — kéo để dời chỗ"
         aria-label="Dịch nhanh"
         aria-expanded={open}

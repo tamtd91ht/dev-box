@@ -737,6 +737,10 @@ export default function Home() {
   // mọi pane (kể cả pane có <webview>) co lại chứ không bị bảng đè — HTML
   // không nổi lên trên webview được. Xem lib/aiChat.ts.
   const ai = useSyncExternalStore(aiDock.subscribe, aiDock.getSnapshot, aiDock.getServerSnapshot);
+  // Chấm dịch nhanh của bản desktop là một view native neo theo mép phải cửa
+  // sổ → báo main bề rộng bảng để nó né ra, không đè lên ô nhập của trợ lý.
+  const aiInset = ai.open ? ai.width : 0;
+  useEffect(() => { window.workspace?.setFloatInset?.(aiInset); }, [aiInset]);
   /** Tên màn hình đang mở — gửi kèm mỗi câu hỏi để trợ lý hiểu "cái này". */
   const aiScreen = useMemo(() => {
     const name = (key: string) => {

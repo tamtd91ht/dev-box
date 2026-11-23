@@ -206,6 +206,9 @@ export interface WorkspaceBridge {
   /** Dịch nhanh nổi (WebContentsView riêng) — chỉ trang /translate-float dùng.
    *  Có mặt ⇒ bản desktop: trang chính KHÔNG tự vẽ widget dịch nữa. */
   translateFloat?: TranslateFloatApi;
+  /** Trang chính báo bề rộng bảng trợ lý AI đang neo bên phải (0 = đóng) để
+   *  chấm / bảng dịch nổi né dải đó. Optional: preload cũ chưa expose. */
+  setFloatInset?(px: number): void;
   /** Niêm phong mật khẩu bằng safeStorage (DPAPI) trước khi ghi xuống đĩa.
    *  error='unavailable' khi OS không hỗ trợ → caller lưu plaintext + cảnh báo.
    *  Optional: preload cũ chưa expose. */

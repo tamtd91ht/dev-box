@@ -2704,7 +2704,11 @@ const tfState = new WeakMap(); // BrowserWindow → state
 function tfLayout(win) {
   const st = tfState.get(win);
   if (!st || win.isDestroyed()) return;
-  const [cw, ch] = win.getContentSize();
+  const [fullW, ch] = win.getContentSize();
+  // Dải bên phải đang bị bảng trợ lý AI chiếm ('tf:inset') → coi như mép phải
+  // cửa sổ lùi vào chừng đó: chấm + bảng dịch nằm gọn trong phần còn lại,
+  // không đè lên ô nhập của trợ lý.
+  const cw = Math.max(fullW - tfInset(st, fullW), TF_DOT);
   // Vừa mở mà trang chưa kịp báo cỡ mới (vẫn là cỡ cái chấm) → dùng cỡ lần mở trước.
   const openW = st.w > TF_DOT ? st.w : st.openW || st.w;
   const openH = st.w > TF_DOT ? st.h : st.openH || st.h;
@@ -2731,6 +2735,11 @@ function tfLayout(win) {
     st.ch = ch;
     tfSend(win);
   }
+}
+
+/** Bề rộng dải bên phải phải chừa ra, kẹp để luôn còn chỗ cho chấm + bảng dịch. */
+function tfInset(st, fullW) {
+  return Math.min(Math.max(st.inset || 0, 0), Math.max(fullW - 240, 0));
 }
 
 function tfSend(win, extra) {
@@ -2973,10 +2982,20 @@ ipcMain.on('tf:dragStart', (evt) => {
 ipcMain.on('tf:dragMove', (evt, dx, dy) => {
   const t = tfFromSender(evt);
   if (!t || !t.st.drag || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
-  const [cw, ch] = t.win.getContentSize();
+  const [fullW, ch] = t.win.getContentSize();
+  const cw = fullW - tfInset(t.st, fullW);
   t.st.right = Math.min(Math.max(t.st.drag.right - dx, 0), cw - TF_DOT);
   t.st.bottom = Math.min(Math.max(t.st.drag.bottom - dy, 0), ch - TF_DOT);
   tfLayout(t.win);
+});
+// Trang CHÍNH báo bề rộng bảng trợ lý AI đang neo bên phải (0 = đã đóng).
+// Chỉ nhận từ trang chính của cửa sổ, không nhận từ view dịch hay guest.
+ipcMain.on('tf:inset', (evt, px) => {
+  const win = BrowserWindow.fromWebContents(evt.sender);
+  const st = win && tfState.get(win);
+  if (!st || evt.sender !== win.webContents) return;
+  st.inset = Math.max(Math.round(Number(px) || 0), 0);
+  tfLayout(win);
 });
 ipcMain.handle('tf:dragEnd', (evt) => {
   const t = tfFromSender(evt);
