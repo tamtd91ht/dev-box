@@ -202,27 +202,23 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
   );
 
   /**
-   * A capture-capable account must stay mounted while capture is on: only a
-   * mounted guest polls, so an evicted account silently stops feeding
-   * automation even though its rules are enabled and in scope.
+   * Only keepAlive plugins (Zalo) stay pinned. Capture no longer pins the
+   * others: each messenger guest costs 150-350 MB, and Telegram/WhatsApp/
+   * Facebook are opened on demand — their messages feed automation only while
+   * their tab is mounted.
    */
-  const pinned = useCallback(
-    (key: string) => {
-      const plugin = getPlugin(key.split('::')[0]);
-      if (!plugin) return false;
-      return !!plugin.keepAlive || (captureOn && !!plugin.capture);
-    },
-    [captureOn],
-  );
+  const pinned = useCallback((key: string) => !!getPlugin(key.split('::')[0])?.keepAlive, []);
 
-  // Turning capture on must reach EVERY messaging account, not just the ones
-  // that happened to be open — a rule scoped to "Tất cả" is otherwise silently
-  // limited to whichever account the LRU last kept. Mounted-but-not-active
-  // guests sit offscreen and keep polling, so this costs nothing visually.
+  // Turning capture on must reach every keepAlive messaging account, not just
+  // the ones that happened to be open. Non-keepAlive apps are deliberately left
+  // lazy (see `pinned`).
   useEffect(() => {
     if (!captureOn) return;
     const wanted = allAccounts
-      .filter((a) => !!getPlugin(a.pluginId)?.capture)
+      .filter((a) => {
+        const p = getPlugin(a.pluginId);
+        return !!p?.capture && !!p.keepAlive;
+      })
       .map((a) => accountKey(a.pluginId, a.instanceId));
     setOpenKeys((prev) => {
       const missing = wanted.filter((k) => !prev.includes(k));
@@ -247,6 +243,15 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
     },
     [cfg.keepAlive, cfg.maxActiveWorkspace, pinned],
   );
+
+  // openKeys is LRU-ordered (select() moves the key to the end). Rendering in
+  // that order makes React MOVE the <webview> node in the DOM, and a moved
+  // webview detaches + reloads its guest — every account switch reloaded the
+  // page. Render in the rail's fixed order instead; openKeys stays LRU.
+  const mountOrder = useMemo(() => {
+    const rank = new Map(allAccounts.map((a, i) => [accountKey(a.pluginId, a.instanceId), i]));
+    return [...openKeys].sort((a, b) => (rank.get(a) ?? 1e9) - (rank.get(b) ?? 1e9));
+  }, [openKeys, allAccounts]);
 
   const setInstanceUnread = useCallback((key: string, n: number) => {
     setUnread((prev) => (prev[key] === n ? prev : { ...prev, [key]: n }));
@@ -614,7 +619,7 @@ export default function BrowserWorkspace({ onUnread, visible = true }: Props) {
             <p>Bấm vào một mục bên trái để mở. Mỗi tài khoản có phiên đăng nhập riêng, lưu trên máy bạn.</p>
           </div>
         )}
-        {openKeys.map((key) => {
+        {mountOrder.map((key) => {
           const [pluginId, instanceId] = key.split('::');
           const plugin = getPlugin(pluginId);
           const acc = (accounts[pluginId] ?? []).find((a) => a.instanceId === instanceId);

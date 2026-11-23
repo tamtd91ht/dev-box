@@ -314,7 +314,9 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
     badge: 'personal',
     description: 'Telegram Web — đăng nhập bằng số điện thoại hoặc QR, phiên lưu ngay trên máy bạn.',
     permissions: CHAT_PERMISSIONS,
-    keepAlive: true,
+    // Không keepAlive: chỉ nạp khi mở tab (mỗi guest ~150-350 MB RAM). Chỉ Zalo
+    // là chạy nền liên tục; Telegram/WhatsApp/Facebook dùng thỉnh thoảng.
+    keepAlive: false,
     multiAccount: true, // Telegram nhiều tài khoản — mỗi cái một phiên riêng
     capture: {
       genericTitles: ['Telegram', 'Telegram Web'],
@@ -349,7 +351,7 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
     badge: 'personal',
     description: 'WhatsApp Web — quét QR bằng app trên điện thoại, phiên lưu ngay trên máy bạn.',
     permissions: CHAT_PERMISSIONS,
-    keepAlive: true,
+    keepAlive: false, // chỉ nạp khi mở tab — xem ghi chú ở Telegram
     multiAccount: true,
     capture: {
       // Toast của WhatsApp Web đi qua service worker — collector đã hook sẵn cả
@@ -390,9 +392,9 @@ export const WORKSPACE_PLUGINS: WorkspacePlugin[] = [
     description:
       'Facebook & Messenger — đăng nhập một lần, menu ☰ chọn Bảng tin hay Nhắn tin. Phiên lưu ngay trên máy bạn.',
     permissions: CHAT_PERMISSIONS,
-    // keepAlive vì workspace này CÓ Messenger: tin nhắn phải tới được khi đang
-    // ở tab khác, nếu không badge chỉ nhảy lúc mình mở lên xem.
-    keepAlive: true,
+    // Không keepAlive: guest Facebook nặng nhất (~330 MB), chỉ nạp khi mở tab.
+    // Đổi lại badge/thông báo Messenger chỉ chạy trong lúc tab đang được giữ.
+    keepAlive: false,
     multiAccount: true,
     capture: {
       // Gộp tiêu đề chung của cả hai miền — Messenger đặt tiêu đề theo tên hội
