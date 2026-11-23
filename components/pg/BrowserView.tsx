@@ -22,6 +22,7 @@ import {
   listPgColumns,
   listPgIndexes,
   queryPg,
+  pgDeleteRow,
   prettyDoc,
   fmtBytes,
   fmtCount,
@@ -239,7 +240,7 @@ function BrowserViewInner({
       // Gõ INSERT/DELETE/DDL vào đây sẽ va READ ONLY — chỉ đường sang đúng chỗ.
       if (/read-only transaction/i.test(msg)) {
         msg += allowWrite && !readOnly
-          ? '\n\nÔ này luôn chạy READ ONLY. Câu lệnh có ghi → mở mục “⚡ Thực thi SQL” (chạy thử rồi commit).'
+          ? '\n\nÔ này luôn chạy READ ONLY. Xoá dòng của bảng đang mở → nút “🗑 Delete…” bên cạnh; câu lệnh ghi khác → mục “⚡ Thực thi SQL” (chạy thử rồi commit).'
           : '\n\nÔ này luôn chạy READ ONLY. Muốn ghi: bật PG_ALLOW_WRITE + bỏ read-only ở connection, rồi dùng mục “⚡ Thực thi SQL”.';
       }
       setRt(tabId, { error: msg, busy: false });
@@ -349,6 +350,27 @@ function BrowserViewInner({
   const filteredDbs = dbs.filter((d) => !treeFilter || d.name.includes(treeFilter));
   const filteredTables = tables.filter((t) => !treeFilter || `${t.schema}.${t.name}`.includes(treeFilter));
   const writeArmed = allowWrite && !readOnly;
+  // Nút 🗑 trên từng dòng: cần bảng có PK và kết quả có đủ các cột PK.
+  const pkCols = useMemo(() => columns.filter((c) => c.pk).map((c) => c.name), [columns]);
+  const rowDeletable = writeArmed && !!selected && pkCols.length > 0
+    && !!result && pkCols.every((c) => result.columns.includes(c));
+  const [deletingRow, setDeletingRow] = useState<number | null>(null);
+  const deleteRow = async (i: number, row: Record<string, unknown> | null) => {
+    if (!selected || !row || deletingRow !== null) return;
+    const key = Object.fromEntries(pkCols.map((c) => [c, row[c]]));
+    const keyText = pkCols.map((c) => `${c} = ${JSON.stringify(row[c])}`).join(', ');
+    if (!window.confirm(`XOÁ dòng ${keyText} khỏi ${selected.db}.${selected.schema}.${selected.table}?\n\nGhi thẳng vào database, không hoàn tác được.`)) return;
+    setDeletingRow(i);
+    try {
+      const r = await pgDeleteRow(connectionId, selected.db, { schema: selected.schema, table: selected.table, key });
+      flash(r.deleted ? `Đã xoá dòng ${keyText}` : 'Không xoá gì — dòng không còn tồn tại.');
+      void runQuery();
+    } catch (e) {
+      window.alert(`Không xoá được dòng:\n${(e as Error).message}`);
+    } finally {
+      setDeletingRow(null);
+    }
+  };
   const parsedRows = useMemo(
     () => (result ? result.rows.map((r) => { try { return JSON.parse(r.json) as Record<string, unknown>; } catch { return null; } }) : []),
     [result],
@@ -529,6 +551,7 @@ function BrowserViewInner({
                         <thead>
                           <tr>
                             <th>#</th>
+                            {rowDeletable && <th />}
                             {result.columns.map((c) => <th key={c} style={{ textAlign: 'left' }}>{c}</th>)}
                           </tr>
                         </thead>
@@ -538,6 +561,17 @@ function BrowserViewInner({
                             return (
                               <tr key={i} onClick={() => setSelectedRow(r)} title="Bấm để xem JSON đầy đủ" style={{ cursor: 'pointer' }}>
                                 <td className="pg-rownum">{i + 1}</td>
+                                {rowDeletable && (
+                                  <td>
+                                    <button
+                                      className="chip-btn"
+                                      style={{ color: 'var(--err)' }}
+                                      disabled={!row || r.truncated || deletingRow !== null}
+                                      title={r.truncated ? 'Dòng bị cắt bớt — không xoá theo dòng được' : `Xoá dòng này (theo ${pkCols.join(', ')})`}
+                                      onClick={(e) => { e.stopPropagation(); void deleteRow(i, row); }}
+                                    >{deletingRow === i ? <span className="spinner" aria-hidden /> : '🗑'}</button>
+                                  </td>
+                                )}
                                 {result.columns.map((c) => (
                                   <td key={c} style={{ textAlign: 'left' }}>
                                     <span className="pg-cell"><Hl text={cellText(row?.[c])} needle={flt.needle} /></span>

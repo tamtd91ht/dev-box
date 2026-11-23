@@ -557,16 +557,23 @@ export interface PgColumnInfo {
   dataType: string;
   nullable: boolean;
   default: string | null;
+  /** Cột thuộc PRIMARY KEY — nút 🗑 trên từng dòng xoá theo các cột này. */
+  pk: boolean;
 }
 
 export async function listColumns(conn: PgConnection, db: string, schema: string, table: string): Promise<PgColumnInfo[]> {
   const pool = await getPool(conn, db);
   return runReadOnly(pool, async (q) => {
     const r = await q(
-      `SELECT column_name, data_type, is_nullable, column_default
-         FROM information_schema.columns
-        WHERE table_schema = $1 AND table_name = $2
-        ORDER BY ordinal_position`,
+      `SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
+              EXISTS (SELECT 1 FROM pg_constraint k
+                        JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = ANY(k.conkey)
+                       WHERE k.contype = 'p'
+                         AND k.conrelid = format('%I.%I', $1::text, $2::text)::regclass
+                         AND a.attname = c.column_name) AS is_pk
+         FROM information_schema.columns c
+        WHERE c.table_schema = $1 AND c.table_name = $2
+        ORDER BY c.ordinal_position`,
       [schema, table],
     );
     return r.rows.map((row) => ({
@@ -574,6 +581,7 @@ export async function listColumns(conn: PgConnection, db: string, schema: string
       dataType: String(row.data_type),
       nullable: row.is_nullable === 'YES',
       default: row.column_default === null ? null : String(row.column_default),
+      pk: row.is_pk === true,
     }));
   });
 }
@@ -928,14 +936,23 @@ export async function query(conn: PgConnection, db: string, rawSql: unknown): Pr
   if (!sql) throw new Error('SQL trống');
   const pool = await getPool(conn, db);
   const t0 = Date.now();
+  // Chỉ bọc LIMIT cho câu đọc dạng SELECT/WITH/VALUES/TABLE. Câu khác (DELETE,
+  // INSERT, EXPLAIN, SHOW…) chạy nguyên văn — bọc vào sẽ ra "syntax error at
+  // or near FROM" khó hiểu thay vì lỗi thật (vd. "cannot execute DELETE in a
+  // read-only transaction").
+  const head = sql.replace(/^(\s+|--[^\n]*\n?|\/\*[\s\S]*?\*\/)+/, '');
+  const wrappable = /^(select|with|values|table)\b/i.test(head);
   const res = await runReadOnly(pool, async (q) => {
+    if (!wrappable) return q(sql);
+    // SAVEPOINT: câu bọc lỗi thì transaction chưa bị huỷ, còn chạy thử nguyên văn được.
+    await q('SAVEPOINT __wrap');
     try {
       return await q(`SELECT * FROM (\n${sql}\n) __q LIMIT ${QUERY_ROWS_MAX + 1}`);
     } catch (e) {
-      // Not wrappable (EXPLAIN/SHOW/set-returning oddities) — run as-is.
-      // A syntax error in the USER's sql also lands here and will re-throw below.
-      const inner = await q(sql).catch(() => { throw e instanceof Error ? e : new Error(String(e)); });
-      return inner;
+      // Không bọc được (vd. WITH … DELETE) — chạy nguyên văn. Lỗi cú pháp thật
+      // của người dùng cũng rơi vào đây; khi đó báo lỗi của câu nguyên văn.
+      await q('ROLLBACK TO SAVEPOINT __wrap');
+      return q(sql);
     }
   });
   const tookMs = Date.now() - t0;
@@ -1126,6 +1143,80 @@ export async function updateWithWhere(conn: PgConnection, db: string, input: PgU
     `set=${sanitize(set.map((s) => s.column).join(','))} where=${sanitize(where)} updated=${updated} ts=${new Date().toISOString()}`,
   );
   return { updated };
+}
+
+// ── Xoá MỘT dòng theo PRIMARY KEY (nút 🗑 trên từng dòng kết quả) ──────────────
+
+export interface PgDeleteRowInput {
+  schema: string;
+  table: string;
+  /** Giá trị các cột PK của dòng cần xoá — phải đủ đúng bộ PK của bảng. */
+  key: Record<string, unknown>;
+}
+
+/**
+ * DELETE … WHERE pk = $n (bind parameter). Server tự đọc PK của bảng — client
+ * gửi thiếu/thừa cột PK thì từ chối; bảng không có PK thì không xoá theo dòng.
+ * Khớp > 1 dòng (không thể với PK thật, phòng hờ) → ROLLBACK.
+ */
+export async function deleteRowByPk(conn: PgConnection, db: string, input: PgDeleteRowInput): Promise<PgDeleteResult> {
+  if (!PG_ALLOW_WRITE) {
+    throw new Error('Writes are disabled for the whole tool. Set PG_ALLOW_WRITE=true in .env.local (local dev only).');
+  }
+  if (conn.readOnly) {
+    throw new Error(`Connection "${conn.name}" is read-only. Edit the connection and untick read-only to arm writes.`);
+  }
+  const schema = ident(input.schema, 'schema');
+  const table = ident(input.table, 'table');
+  const key = input.key && typeof input.key === 'object' ? input.key : {};
+
+  const pool = await getPool(conn, db);
+  const client = await pool.connect();
+  let deleted = 0;
+  let keyText = '';
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL statement_timeout = ${STMT_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`);
+    const pk = await client.query(
+      `SELECT a.attname FROM pg_constraint k
+         JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = ANY(k.conkey)
+        WHERE k.contype = 'p' AND k.conrelid = format('%I.%I', $1::text, $2::text)::regclass`,
+      [String(input.schema), String(input.table)],
+    );
+    const pkCols = pk.rows.map((r) => String(r.attname));
+    if (pkCols.length === 0) {
+      throw new Error(`Bảng ${input.schema}.${input.table} không có PRIMARY KEY — không xoá theo dòng được. Dùng 🗑 Delete… (WHERE).`);
+    }
+    const sent = Object.keys(key).sort();
+    if (sent.join(',') !== [...pkCols].sort().join(',')) {
+      throw new Error(`Khoá gửi lên (${sent.join(', ') || 'trống'}) không khớp PRIMARY KEY (${pkCols.join(', ')}).`);
+    }
+    const params: unknown[] = [];
+    const parts = pkCols.map((c) => {
+      const v = key[c];
+      if (v === null || v === undefined) throw new Error(`Cột PK "${c}" rỗng`);
+      params.push(typeof v === 'object' ? JSON.stringify(v) : v);
+      return `${ident(c, 'column')} = $${params.length}`;
+    });
+    keyText = pkCols.map((c) => `${c}=${JSON.stringify(key[c])}`).join(' AND ');
+    const res = await client.query(`DELETE FROM ${schema}.${table} WHERE ${parts.join(' AND ')}`, params);
+    deleted = res.rowCount ?? 0;
+    if (deleted > 1) throw new Error(`Khoá khớp ${deleted} dòng (> 1) — đã ROLLBACK, không xoá gì.`);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `PG_AUDIT operation=DELETE_ROW connection=${conn.name} target=${db || conn.database}.${input.schema}.${input.table} ` +
+    `key=${sanitize(keyText)} deleted=${deleted} ts=${new Date().toISOString()}`,
+  );
+  return { deleted };
 }
 
 // ── DELETE with a mandatory WHERE (cùng cổng & ràng buộc như UPDATE) ─────────

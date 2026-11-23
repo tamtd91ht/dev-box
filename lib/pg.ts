@@ -118,6 +118,8 @@ export interface PgColumnInfo {
   dataType: string;
   nullable: boolean;
   default: string | null;
+  /** Cột thuộc PRIMARY KEY. */
+  pk?: boolean;
 }
 
 export interface PgIndexInfo {
@@ -370,6 +372,15 @@ export function pgDelete(
   p: { schema: string; table: string; where: string; expected?: number },
 ): Promise<{ deleted: number }> {
   return pgAction<{ deleted: number }>('delete', { connectionId, db, ...p });
+}
+
+/** Xoá một dòng theo PRIMARY KEY (key = giá trị các cột PK của dòng). */
+export function pgDeleteRow(
+  connectionId: string,
+  db: string,
+  p: { schema: string; table: string; key: Record<string, unknown> },
+): Promise<{ deleted: number }> {
+  return pgAction<{ deleted: number }>('deleteRow', { connectionId, db, ...p });
 }
 
 /** SQL tự do có ghi. commit=false → chạy thử rồi ROLLBACK; true → COMMIT. */
