@@ -18,7 +18,7 @@
 // renderer (lib/workspace/plugins.ts). Nothing here is hardcoded per website.
 
 const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage, clipboard, net, dialog, webContents, WebContentsView, Notification } = require('electron');
-const { spawn, execFile } = require('child_process');
+const { spawn, spawnSync, execFile } = require('child_process');
 const fs = require('fs');
 const http = require('http');
 // `net` của Electron đã chiếm tên ở dòng trên — module net của Node vào tên khác.
@@ -26,7 +26,9 @@ const nodeNet = require('net');
 const os = require('os');
 const path = require('path');
 
-const APP_URL = process.env.DESKTOP_URL || 'http://localhost:3000';
+// DESKTOP_PORT: chạy một bản thứ hai (test) tự dựng server ở cổng khác mà
+// không đụng app đang mở trên :3000. DESKTOP_URL thì tắt hẳn việc tự dựng.
+const APP_URL = process.env.DESKTOP_URL || `http://localhost:${Number(process.env.DESKTOP_PORT) || 3000}`;
 
 // ── Mở file từ Explorer ("Open with → VHS DevBox") ─────────────────────────
 //
@@ -2338,7 +2340,12 @@ function killDevServerTree(pid, child) {
   log('DevServerStopping', String(pid));
   try {
     if (process.platform === 'win32') {
-      spawn('taskkill', ['/pid', String(pid), '/T', '/F']);
+      // ĐỒNG BỘ, có chủ đích. Bản bất đồng bộ cũ để app thoát trước khi taskkill
+      // xong: mở lại nhanh thì instance mới thấy server cũ CÒN trả lời → nhận
+      // lại nó → vài giây sau nó chết → app chạy mà không có backend (bắt được
+      // trong shell.log 2026-11-23: DevServerFound rồi :3000 câm). Thường <1s.
+      const r = spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { timeout: 8000, windowsHide: true });
+      if (r.error) log('DevServerStopError', r.error.message);
     } else {
       try {
         process.kill(-pid, 'SIGTERM'); // negative pid = the process group
@@ -2600,7 +2607,51 @@ function ensureServerGuarded() {
   return ensureServerRunning;
 }
 
+/**
+ * Server watchdog — runs for the whole session, not only during the first load.
+ * If :3000 stops answering AND the port is free (the server is gone, not just
+ * busy) AND we are not already building/spawning one, start a new server and
+ * reload every DevBox page once it answers. Covers the adopted-server-dies
+ * case, a crashed `next start`, or anything that kills it mid-session.
+ */
+let appLoadsInFlight = 0;
+let watchFails = 0;
+function probeHealth() {
+  return new Promise((resolve) => {
+    const req = http.get(`${APP_URL}/api/health`, (res) => { res.destroy(); resolve(true); });
+    req.on('error', () => resolve(false));
+    req.setTimeout(3000, () => { req.destroy(); resolve(false); });
+  });
+}
+function startServerWatchdog() {
+  if (process.env.DESKTOP_URL) return;
+  setInterval(async () => {
+    if (ensureServerRunning || appLoadsInFlight > 0 || devServer) { watchFails = 0; return; }
+    if (await probeHealth()) { watchFails = 0; return; }
+    if (++watchFails < 3) return; // ~15s câm liên tục mới tính
+    if (!(await portFree(appPort()))) return; // còn ai giữ cổng → bận/treo, không phải chết; đừng giết
+    watchFails = 0;
+    log('ServerLost', `${APP_URL} đã chết giữa phiên (cổng trống) → dựng lại server`);
+    adoptedPid = 0;
+    await ensureServerGuarded();
+    for (let i = 0; i < 600 && !(await probeHealth()); i++) await delay(1000);
+    for (const wc of webContents.getAllWebContents()) {
+      if (!wc.isDestroyed() && wc.getURL().startsWith(APP_URL)) wc.reload();
+    }
+    log('ServerRecovered', 'đã nạp lại các trang DevBox');
+  }, 5000);
+}
+
 async function loadAppWithRetry(win) {
+  appLoadsInFlight += 1;
+  try {
+    return await loadAppWithRetryInner(win);
+  } finally {
+    appLoadsInFlight -= 1;
+  }
+}
+
+async function loadAppWithRetryInner(win) {
   // loadURL thất bại thì Chromium GIỮ trang đang hiện, nên splash sống qua
   // các lượt thử cho tới khi server trả lời.
   await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(SPLASH_HTML)).catch(() => {});
@@ -4507,6 +4558,7 @@ if (!app.requestSingleInstanceLock()) {
     createWindow();
     await ensureServerGuarded(); // build (nếu cần) + start server khi :3000 chưa có ai
     log('ServerReady', `chế độ ${runningServerMode || '?'}`);
+    startServerWatchdog();
     // Theo dõi số phiên terminal đang sống — stopDevServer() đọc con số này để
     // quyết định có được phép tắt server lúc thoát app hay không.
     startTerminalPoll();
