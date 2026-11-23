@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Trợ lý AI + kho tri thức riêng.** Nút ✨ Trợ lý trên thanh menu mở bảng chat neo bên phải
+  (khung app co lại nên dùng song song được với mọi tab, kể cả Zalo/Browser). Mỗi câu hỏi gửi kèm
+  tên màn hình đang mở; trả lời hiện dần, dừng được, chọn model, đính kèm ảnh/PDF/file chữ bằng dán,
+  kéo thả hoặc nút 📎. Màn **Kho tri thức**: thêm / sửa / bật-tắt / xoá tài liệu, nhập file chữ, lưu
+  một câu trả lời thành tài liệu; tài liệu đang bật được gửi kèm mỗi câu hỏi (quá 60.000 ký tự thì
+  chỉ gửi các đoạn liên quan nhất). Chạy bằng `claude` CLI của máy, **không có công cụ**: trợ lý chỉ
+  gợi ý, không chạy lệnh hay đọc/ghi gì trên máy. Kho lưu ở `configs/ai-knowledge.json`.
 - **Tab MinIO: quản lý bucket / object ngay trong DevBox, và Monitor giám sát luôn MinIO.**
   Cấu hình server (endpoint dán URL cũng được, access/secret key, ssl, region) lưu local cùng
   kiểu với Postgres; có export/import cấu hình và nút Test. Duyệt bucket → thư mục → object,

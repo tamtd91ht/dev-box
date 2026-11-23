@@ -22,6 +22,8 @@ import WorkAlertHost from '@/components/WorkAlertHost';
 import ConvertHost from '@/components/ConvertHost';
 import StockTickerHost, { StockHeaderButton } from '@/components/StockTickerHost';
 import QuickTranslate from '@/components/QuickTranslate';
+import AiChat from '@/components/AiChat';
+import { aiDock } from '@/lib/aiChat';
 import OpenLinkDialog from '@/components/OpenLinkDialog';
 import NotificationCenter from '@/components/NotificationCenter';
 import QuickTabs, { type TabInfo } from '@/components/QuickTabs';
@@ -730,8 +732,22 @@ export default function Home() {
   const openMonitor = useCallback(() => pickTab('monitor'), [pickTab]);
   useCritAlerts(critStacks, openMonitor);
 
+  // ── Trợ lý AI ───────────────────────────────────────────────────────────────
+  // Bảng chat NEO bên phải: đệm lề phải cho .shell đúng bằng bề rộng bảng để
+  // mọi pane (kể cả pane có <webview>) co lại chứ không bị bảng đè — HTML
+  // không nổi lên trên webview được. Xem lib/aiChat.ts.
+  const ai = useSyncExternalStore(aiDock.subscribe, aiDock.getSnapshot, aiDock.getServerSnapshot);
+  /** Tên màn hình đang mở — gửi kèm mỗi câu hỏi để trợ lý hiểu "cái này". */
+  const aiScreen = useMemo(() => {
+    const name = (key: string) => {
+      const t = tabInfo(key);
+      return t ? (t.badge && t.badge !== 'pack' ? `${t.label} (${t.badge})` : t.label) : key;
+    };
+    return ultra.on && ultra.panes.length ? ultra.panes.map(name).join(' + ') : name(mode);
+  }, [tabInfo, ultra, mode]);
+
   return (
-    <div className="shell" data-nav={navPos}>
+    <div className="shell" data-nav={navPos} style={ai.open ? { paddingRight: ai.width } : undefined}>
       {/* Menu đang ẩn: dải mỏng thế chỗ — bấm là menu về. Nằm đúng ô lưới của
           appbar nên chế độ trên/trái/phải đều tự dính đúng cạnh. */}
       {navHidden && (
@@ -888,6 +904,15 @@ export default function Home() {
             anything conditional here resizes the header and can push the tab
             strip (with the Workspace bell) out of view. */}
         <div className="appbar-right">
+          {/* Trợ lý AI: mở/đóng bảng chat neo bên phải (components/AiChat.tsx). */}
+          <button
+            className={`aic-open-btn${ai.open ? ' on' : ''}`}
+            onClick={aiDock.toggle}
+            aria-pressed={ai.open}
+            title={ai.open ? 'Đóng bảng trợ lý AI' : 'Mở trợ lý AI — hỏi về màn hình đang xem, dùng kho tri thức riêng'}
+          >
+            <span aria-hidden>✨</span> Trợ lý
+          </button>
           {/* Tiếp cận nhanh các tab đang làm — nhảy qua nhảy lại khỏi dò menu. */}
           <button
             className="qt-open-btn"
@@ -924,6 +949,9 @@ export default function Home() {
       {dropMsg && (
         <div className="drop-toast" role="status" onClick={() => setDropMsg(null)}>{dropMsg}</div>
       )}
+
+      {/* Trợ lý AI — tự ẩn khi đang đóng, giữ hội thoại khi chuyển tab. */}
+      <AiChat screen={aiScreen} />
 
       {/* Màn hình tiếp cận nhanh (Ctrl+`) — nổi trên mọi workspace. */}
       <QuickTabs

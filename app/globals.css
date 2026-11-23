@@ -12163,3 +12163,218 @@ html.tf-page nextjs-portal { display: none !important; }
   .slide-grid, .slide-progress span, .wall-col .mon-dot, .slide-title .mon-dot, .wall-col .mon-dot::after, .slide-title .mon-dot::after { animation: none; }
   .wall-kiosk .wall-tools, .wall-kiosk .slide-btn { transition: none; }
 }
+
+/* ── Trợ lý AI (components/AiChat.tsx) ────────────────────────────────────
+   Bảng NEO bên phải: .shell được đệm lề phải đúng bằng bề rộng bảng (inline
+   style ở app/page.tsx) nên bảng không bao giờ nằm trên một <webview>.
+   Cấu trúc theo skill omicx-ui, màu lấy từ token của Dev Box: mỗi màn một nút
+   đặc (.aic-send / .aic-cta), còn lại là nút viền; focus luôn có viền 2px. */
+.aic {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 60;
+  display: flex; flex-direction: column; min-width: 0;
+  background: var(--panel); color: var(--text);
+  border-left: 1px solid var(--glass-brd);
+  font-size: 14px; line-height: 20px;
+  animation: aic-in .25s cubic-bezier(.32, .72, 0, 1);
+}
+@keyframes aic-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .aic { animation: none; } }
+.aic :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.aic button { transition: background .15s, border-color .15s, color .15s, transform .15s; }
+.aic button:active:not(:disabled) { transform: scale(.97); }
+.aic-spacer { flex: 1; }
+
+.aic-resize {
+  position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; z-index: 2;
+  cursor: col-resize; touch-action: none;
+}
+.aic-resize::after {
+  content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px;
+  background: transparent; transition: background .15s;
+}
+.aic-resize:hover::after, .aic.resizing .aic-resize::after, .aic-resize:focus-visible::after { background: var(--accent); }
+
+.aic-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 12px 12px 12px 16px; border-bottom: 1px solid var(--glass-brd);
+}
+.aic-title { font-size: 16px; line-height: 24px; font-weight: 600; white-space: nowrap; }
+.aic-tabs { display: flex; gap: 4px; margin-left: 4px; }
+.aic-tab {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
+  border-radius: 10px; border: 0; box-shadow: none; cursor: pointer;
+  background: var(--glass); color: var(--muted); font-size: 13px; font-weight: 500; white-space: nowrap;
+}
+.aic-tab:hover:not(:disabled) { color: var(--text); background: var(--glass-2); transform: none; box-shadow: none; }
+.aic-tab.on { background: var(--text); color: var(--panel); font-weight: 600; }
+.aic-tab.on:hover:not(:disabled) { background: var(--text); color: var(--panel); }
+.aic-count {
+  min-width: 18px; padding: 0 5px; border-radius: 6px; font-size: 11px; line-height: 16px; text-align: center;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+.aic-icon {
+  width: 32px; height: 32px; padding: 0; flex: none; border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid transparent; box-shadow: none;
+  color: var(--muted); font-size: 14px; cursor: pointer;
+}
+.aic-icon:hover:not(:disabled) { color: var(--text); background: var(--glass-2); border-color: var(--glass-brd); transform: none; box-shadow: none; }
+.aic-link {
+  padding: 2px 4px; border: 0; border-radius: 6px; background: transparent; box-shadow: none;
+  color: var(--accent); font-size: 12px; font-weight: 500; cursor: pointer;
+}
+.aic-link:hover:not(:disabled) { text-decoration: underline; transform: none; box-shadow: none; }
+
+/* Trò chuyện */
+.aic-chat { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.aic-ctx { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 16px; flex: none; border-bottom: 1px solid var(--glass-brd); }
+.aic-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 24px; padding: 0 8px;
+  border-radius: 6px; border: 0; background: var(--glass-2); box-shadow: none;
+  color: var(--muted); font-size: 12px; font-weight: 500; line-height: 16px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.aic-chip-btn { cursor: pointer; }
+.aic-chip-btn:hover:not(:disabled) { color: var(--text); background: var(--glass); transform: none; box-shadow: none; }
+.aic-list { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.aic-msg { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.aic-msg.user { align-items: flex-end; }
+.aic-bubble {
+  max-width: 88%; padding: 8px 12px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.aic-files { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.aic-file { font-size: 12px; color: var(--muted); padding: 2px 8px; border-radius: 6px; background: var(--glass-2); }
+.aic-md.md-preview { border: 0; border-radius: 0; padding: 0; overflow: visible; font-size: 14px; line-height: 1.6; }
+.aic-md pre { overflow-x: auto; }
+.aic-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 16px; color: var(--muted); }
+.aic-stopped { font-size: 12px; color: var(--muted); }
+.aic-error {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 12px;
+  background: var(--err-bg); color: var(--err); font-size: 13px;
+}
+.aic-error > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.aic-typing { display: inline-flex; gap: 4px; padding: 6px 0; }
+.aic-typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: aic-dot 1.1s infinite ease-in-out; }
+.aic-typing i:nth-child(2) { animation-delay: .15s; }
+.aic-typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes aic-dot { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .aic-typing i { animation: none; opacity: .6; } }
+
+.aic-empty { margin: auto; padding: 24px 16px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.aic-empty-ico { font-size: 28px; }
+.aic-empty-title { margin: 0; font-size: 16px; line-height: 24px; font-weight: 600; }
+.aic-empty-sub { margin: 0; max-width: 340px; font-size: 13px; line-height: 20px; color: var(--muted); }
+.aic-suggest { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; width: 100%; max-width: 340px; }
+.aic-suggest-btn {
+  padding: 8px 12px; border-radius: 12px; text-align: left; cursor: pointer; box-shadow: none;
+  background: transparent; border: 1px solid var(--glass-brd); color: var(--text); font-size: 13px; font-weight: 400;
+}
+.aic-suggest-btn:hover:not(:disabled) { background: var(--glass-2); border-color: var(--glass-brd-hover); transform: none; box-shadow: none; }
+
+.aic-compose { flex: none; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 8px; }
+.aic-box { border: 1px solid var(--glass-brd); border-radius: 12px; background: var(--glass); }
+.aic-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+textarea.aic-input {
+  display: block; width: 100%; min-height: 56px; max-height: 220px; resize: none;
+  padding: 10px 12px 4px; border: 0; background: transparent; box-shadow: none;
+  color: var(--text); font: inherit; outline: none;
+}
+textarea.aic-input:focus { border: 0; box-shadow: none; outline: none; }
+.aic-bar { display: flex; align-items: center; gap: 6px; padding: 4px 6px 6px; }
+select.aic-model {
+  width: auto; height: 32px; padding: 0 8px; border-radius: 10px; font-size: 12px;
+  background: transparent; border: 1px solid var(--glass-brd); color: var(--muted);
+}
+.aic-send, .aic-cta {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 32px; padding: 0 14px; border: 0; border-radius: 10px; box-shadow: none;
+  font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.aic-send { background: var(--accent-solid); color: var(--bg-0); }
+:root[data-theme="dark"] .aic-send { color: var(--text); }
+.aic-send.stop { background: transparent; border: 1px solid var(--glass-brd); color: var(--text); }
+.aic-cta { background: var(--ok); color: var(--bg-0); }
+.aic-send:hover:not(:disabled), .aic-cta:hover:not(:disabled) { filter: brightness(1.08); transform: none; box-shadow: none; }
+.aic-atts { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.aic-att {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 200px; height: 32px; padding: 0 4px 0 6px;
+  border-radius: 10px; border: 1px solid var(--glass-brd); background: var(--glass-2); font-size: 12px;
+}
+.aic-att img { width: 22px; height: 22px; border-radius: 6px; object-fit: cover; }
+.aic-att-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aic-att-x {
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px; background: transparent; box-shadow: none;
+  color: var(--muted); font-size: 10px; cursor: pointer;
+}
+.aic-att-x:hover:not(:disabled) { color: var(--err); background: var(--err-bg); transform: none; box-shadow: none; }
+.aic-note { padding: 8px 12px; border-radius: 12px; font-size: 13px; background: var(--warn-bg); color: var(--warn); overflow-wrap: anywhere; }
+.aic-note.ok { background: var(--ok-bg); color: var(--ok); }
+.aic-note.err { background: var(--err-bg); color: var(--err); }
+.aic-drop {
+  position: absolute; inset: 8px; z-index: 3; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; text-align: center; padding: 16px;
+  border: 2px dashed var(--accent); border-radius: 16px; font-weight: 600;
+  background: color-mix(in srgb, var(--panel) 88%, var(--accent));
+}
+
+/* Kho tri thức */
+.aic-kb { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 12px 16px 16px; }
+.aic-kb-intro { margin: 0; font-size: 13px; line-height: 20px; color: var(--muted); }
+.aic-kb-bar { display: flex; align-items: center; gap: 8px; flex: none; }
+.aic-kb-h { font-size: 16px; line-height: 24px; font-weight: 600; }
+.aic-search { flex: 1; min-width: 0; height: 32px; border-radius: 999px; padding: 0 12px; font-size: 13px; }
+.aic-meter { flex: none; padding: 12px; border-radius: 12px; border: 1px solid var(--glass-brd); display: flex; flex-direction: column; gap: 6px; }
+.aic-meter-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; line-height: 16px; color: var(--muted); }
+.aic-meter-bar { height: 6px; border-radius: 999px; background: var(--glass-2); overflow: hidden; }
+.aic-meter-bar i { display: block; height: 100%; border-radius: 999px; background: var(--ok); }
+.aic-meter.over .aic-meter-bar i { background: var(--warn); }
+.aic-meter-hint { font-size: 12px; line-height: 16px; color: var(--muted); }
+.aic-meter.over .aic-meter-hint { color: var(--warn); }
+.aic-kb-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; margin: 0 -4px; }
+.aic-doc { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--glass-brd); }
+.aic-doc.off .aic-doc-title { color: var(--muted); }
+.aic-doc-main {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 4px 6px; text-align: left;
+  background: transparent; border: 0; border-radius: 8px; box-shadow: none; cursor: pointer; color: var(--text);
+}
+.aic-doc-main:hover:not(:disabled) { background: var(--glass-2); transform: none; box-shadow: none; }
+.aic-doc-title { font-size: 14px; line-height: 20px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aic-doc-sub { font-size: 12px; line-height: 16px; font-weight: 400; color: var(--muted); }
+.aic-switch {
+  flex: none; width: 32px; height: 18px; padding: 2px; border: 0; border-radius: 999px; box-shadow: none; cursor: pointer;
+  background: var(--glass-brd-hover);
+}
+.aic-switch i { display: block; width: 14px; height: 14px; border-radius: 50%; background: var(--panel); transition: transform .15s; }
+.aic-switch.on { background: var(--ok); }
+.aic-switch.on i { transform: translateX(14px); }
+.aic-switch:hover:not(:disabled) { transform: none; box-shadow: none; filter: brightness(1.1); }
+.aic-del {
+  flex: none; height: 28px; min-width: 28px; padding: 0 8px; border: 0; border-radius: 8px; box-shadow: none;
+  background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;
+}
+.aic-del:hover:not(:disabled), .aic-del.ask { color: var(--err); background: var(--err-bg); transform: none; box-shadow: none; }
+.aic-del.ask { font-weight: 600; }
+.aic-skel { display: flex; flex-direction: column; gap: 10px; padding: 8px 4px; }
+.aic-skel i { height: 44px; border-radius: 10px; background: var(--glass-2); animation: aic-dot 1.4s infinite ease-in-out; }
+.aic-form { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.aic-label { display: flex; align-items: baseline; gap: 4px; margin-top: 6px; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--muted); }
+.aic-req { color: var(--err); }
+.aic-hint { margin-left: auto; font-weight: 400; }
+.aic-form .input { height: 36px; border-radius: 12px; }
+textarea.aic-kb-text {
+  flex: 1; min-height: 160px; resize: none; border-radius: 12px; padding: 10px 12px;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+}
+.aic-kb-foot { display: flex; justify-content: flex-end; gap: 8px; flex: none; }
+.aic-kb-foot .ghost.sm { height: 32px; border-radius: 10px; }
+
+/* Nút mở trợ lý trên thanh menu */
+.aic-open-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px;
+  border-radius: 10px; border: 1px solid var(--glass-brd); background: var(--glass); box-shadow: none;
+  color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.aic-open-btn:hover:not(:disabled) { border-color: var(--glass-brd-hover); background: var(--glass-2); transform: none; box-shadow: none; }
+.aic-open-btn.on { border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
