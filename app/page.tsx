@@ -750,6 +750,12 @@ export default function Home() {
     return ultra.on && ultra.panes.length ? ultra.panes.map(name).join(' + ') : name(mode);
   }, [tabInfo, ultra, mode]);
 
+  /** Các tab trợ lý được phép mở khi bật "Thao tác màn hình". */
+  const aiTabs = useMemo(
+    () => visibleTabs.map((t) => ({ key: t.key, label: t.label })),
+    [visibleTabs],
+  );
+
   return (
     <div className="shell" data-nav={navPos} style={ai.open ? { paddingRight: ai.width } : undefined}>
       {/* Menu đang ẩn: dải mỏng thế chỗ — bấm là menu về. Nằm đúng ô lưới của
@@ -946,7 +952,7 @@ export default function Home() {
       )}
 
       {/* Trợ lý AI — tự ẩn khi đang đóng, giữ hội thoại khi chuyển tab. */}
-      <AiChat screen={aiScreen} />
+      <AiChat screen={aiScreen} tabs={aiTabs} />
 
       {/* Màn hình tiếp cận nhanh (Ctrl+`) — nổi trên mọi workspace. */}
       <QuickTabs

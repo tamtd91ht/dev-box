@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Trợ lý AI: thao tác màn hình.** Bật công tắc 🖱 "Thao tác màn hình" trong khung chat thì trợ lý
+  tự mở tab của app, đọc chữ đang hiện trên màn hình và bấm phần tử để trả lời (vd "vào Công việc xem
+  hôm nay có deadline nào không"). Tab / tab con được bấm ngay; mọi nút khác phải bấm **Cho phép** trong
+  bảng chat. Không gõ chữ, không điền form, không chạy lệnh; không đọc được trang web nhúng (Zalo,
+  Browser). Tối đa 8 bước mỗi câu hỏi, từng bước hiện trong câu trả lời.
 - **Trợ lý AI + kho tri thức riêng.** Nút ✨ Trợ lý trên thanh menu mở bảng chat neo bên phải
   (khung app co lại nên dùng song song được với mọi tab, kể cả Zalo/Browser). Mỗi câu hỏi gửi kèm
   tên màn hình đang mở; trả lời hiện dần, dừng được, chọn model, đính kèm ảnh/PDF/file chữ bằng dán,

@@ -1,6 +1,9 @@
 // /api/ai — trợ lý AI (components/AiChat.tsx). Xem lib/aiChatServer.ts.
 //
-//   POST { action:'ask', question, history?, screen?, model?, attachments? } → { ok, id }
+//   POST { action:'ask', question, history?, screen?, model?, attachments?,
+//          agent?, tabs?, steps? } → { ok, id }
+//        agent=true: bật "thao tác màn hình" — model có thể trả về một khối
+//        <hanh_dong>; RENDERER thực hiện (lib/aiScreen.ts) rồi hỏi tiếp kèm steps.
 //   POST { action:'poll', id, from }  → { ok, result: AiPoll }   (phần chữ mới + trạng thái)
 //   POST { action:'stop', id }        → { ok }
 //

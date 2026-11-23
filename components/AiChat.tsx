@@ -14,6 +14,10 @@
 // bật được gửi kèm mỗi câu hỏi (lib/aiKnowledge.ts).
 //
 // Trợ lý không có công cụ: nó chỉ gợi ý bằng chữ, không chạy được gì trên máy.
+// Bật "Thao tác màn hình" thì nó được làm thêm ĐÚNG ba việc trong lib/aiScreen.ts
+// (mở tab, đọc chữ trên màn hình, bấm phần tử — nút không phải tab phải được
+// người dùng bấm Cho phép): mỗi câu trả lời có khối <hanh_dong> là một bước,
+// thực hiện xong thì hỏi tiếp kèm nhật ký, tối đa MAX_STEPS bước.
 //
 // UI theo cấu trúc của skill omicx-ui, dùng token màu sẵn có của Dev Box: mỗi
 // màn một nút đặc (xanh lá = tạo/lưu), còn lại là nút viền; mọi khối dữ liệu
@@ -23,6 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { apiFetch } from '@/lib/apiFetch';
 import { renderMarkdown } from '@/lib/md';
 import { fmtRel } from '@/lib/google';
+import { DENIED, describeAction, parseAction, runAction, stripAction, type AiTab } from '@/lib/aiScreen';
 import {
   AI_DEFAULT_MODEL, AI_LIMITS, AI_MAX_W, AI_MIN_W, AI_MODELS, KB_BUDGET, KB_LIMITS, aiDock,
   type AiAttachment, type AiPoll, type AiTurn, type KbDoc, type KbMeta,
@@ -36,6 +41,8 @@ interface Msg {
   error?: string;
   stopped?: boolean;
   meta?: { model: string | null; durationMs: number; sources: string[] };
+  /** Các bước trợ lý đã thao tác trên màn hình để trả lời câu này. */
+  steps?: { label: string; note?: string; state: 'doing' | 'done' | 'denied' }[];
   /** File gửi kèm câu hỏi: tên + loại (+ ảnh thu nhỏ, chỉ giữ trong phiên đang mở). */
   files?: { name: string; kind: AiAttachment['kind']; preview?: string }[];
 }
@@ -44,6 +51,9 @@ type Pending = AiAttachment & { id: string; bytes: number; preview?: string };
 
 const MSGS_KEY = 'ai.msgs';
 const MODEL_KEY = 'ai.model';
+const AGENT_KEY = 'ai.agent';
+/** Số hành động tối đa cho một câu hỏi — chặn vòng lặp vô tận. */
+const MAX_STEPS = 8;
 const POLL_MS = 300;
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const num = (n: number) => n.toLocaleString('vi-VN');
@@ -65,6 +75,8 @@ function loadMsgs(): Msg[] {
     return v.map((m) => ({
       ...m,
       ...(m.streaming ? { streaming: false, stopped: true } : {}),
+      // Bước đang làm dở lúc tải lại trang → coi như đã xong để khỏi quay mãi.
+      steps: m.steps?.map((s) => (s.state === 'doing' ? { ...s, state: 'done' as const } : s)),
       // Bản đầu lưu `files` là mảng tên.
       files: m.files?.map((f) => (typeof f === 'string' ? { name: f as string, kind: 'text' as const } : f)),
     }));
@@ -112,11 +124,11 @@ function typeLabel(a: { kind: AiAttachment['kind']; name: string }): string {
 
 const SUGGESTIONS = [
   'Giải thích giúp lỗi này (dán log hoặc ảnh chụp vào)',
-  'Viết truy vấn cho dữ liệu tôi đang cần',
+  'Vào Công việc xem hôm nay tôi có deadline nào không',
   'Tóm tắt tài liệu trong kho tri thức',
 ];
 
-export default function AiChat({ screen }: { screen: string }) {
+export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[] }) {
   const dock = useSyncExternalStore(aiDock.subscribe, aiDock.getSnapshot, aiDock.getServerSnapshot);
   const [view, setView] = useState<'chat' | 'kb'>('chat');
   const [msgs, setMsgs] = useState<Msg[]>([]);
@@ -128,6 +140,14 @@ export default function AiChat({ screen }: { screen: string }) {
   const [dropping, setDropping] = useState(false);
   const [resizing, setResizing] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  /** "Thao tác màn hình": cho trợ lý mở tab / đọc / bấm trên giao diện app. */
+  const [agent, setAgent] = useState(true);
+  /** Đang chờ người dùng cho phép một cú bấm. */
+  const [confirm, setConfirm] = useState<{ label: string; resolve: (ok: boolean) => void } | null>(null);
+  const stopRef = useRef(false);
+  /** Tên màn hình mới nhất — vòng lặp thao tác đọc lại sau mỗi lần đổi tab. */
+  const screenRef = useRef(screen);
+  screenRef.current = screen;
   /** Menu ＋ (tải file lên / dán từ clipboard / kho tri thức). */
   const [menu, setMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -151,6 +171,7 @@ export default function AiChat({ screen }: { screen: string }) {
     try {
       const m = window.localStorage.getItem(MODEL_KEY);
       if (m && AI_MODELS.some((x) => x.id === m)) setModel(m);
+      if (window.localStorage.getItem(AGENT_KEY) === '0') setAgent(false);
     } catch { /* nicety */ }
   }, []);
   useEffect(() => {
@@ -268,38 +289,81 @@ export default function AiChat({ screen }: { screen: string }) {
       m.id === aId ? { ...m, ...(typeof p === 'function' ? p(m) : p) } : m
     )));
 
+    stopRef.current = false;
+    /** Nhật ký thao tác của câu hỏi này — gửi lại ở mỗi lượt để model biết đã làm gì. */
+    const steps: { action: string; result: string }[] = [];
+    let totalMs = 0;
     try {
-      const { id } = await call<{ id: string }>('ask', {
-        question, history, screen, model,
-        attachments: atts.map(({ id: _i, bytes: _b, preview: _p, ...a }) => a),
-      }, 60000);
-      jobRef.current = id;
-      let from = 0;
-      for (;;) {
-        const r = await call<AiPoll>('poll', { id, from });
-        from = r.next;
-        if (r.text) patch((m) => ({ content: m.content + r.text }));
-        if (r.done) {
-          const stopped = r.error === 'Đã dừng.';
+      // Mỗi vòng = một lượt hỏi. Câu trả lời có khối <hanh_dong> → làm bước đó
+      // rồi hỏi tiếp; không có → đó là câu trả lời cuối.
+      for (let round = 0; ; round++) {
+        const { id } = await call<{ id: string }>('ask', {
+          question, history, screen: screenRef.current, model,
+          // File chỉ gửi ở lượt đầu; các lượt sau model đã có kết quả đọc màn hình.
+          attachments: round === 0 ? atts.map(({ id: _i, bytes: _b, preview: _p, ...a }) => a) : [],
+          ...(agent ? { agent: true, tabs, steps } : {}),
+        }, 60000);
+        jobRef.current = id;
+        let from = 0;
+        let raw = '';
+        let last: AiPoll;
+        for (;;) {
+          const r = await call<AiPoll>('poll', { id, from });
+          from = r.next;
+          if (r.text) { raw += r.text; patch({ content: stripAction(raw) }); }
+          if (r.done) { last = r; break; }
+          await sleep(POLL_MS);
+        }
+        totalMs += last.durationMs;
+        const stopped = last.error === 'Đã dừng.' || stopRef.current;
+        const action = agent && !last.error && !stopped ? parseAction(raw) : null;
+        if (!action || round >= MAX_STEPS) {
           patch({
             streaming: false,
             stopped,
-            error: r.error && !stopped ? r.error : undefined,
-            meta: r.error ? undefined : { model: r.model, durationMs: r.durationMs, sources: r.sources },
+            // CLI báo lỗi (hết hạn mức, chưa đăng nhập…) bằng chính phần chữ trả lời →
+            // chỉ hiện một lần ở ô lỗi, không lặp lại thành câu trả lời.
+            content: last.error && stripAction(raw).trim() === last.error.trim()
+              ? ''
+              : stripAction(raw) || (action ? `Đã dừng sau ${MAX_STEPS} bước thao tác mà chưa xong — hỏi lại cụ thể hơn giúp.` : ''),
+            error: last.error && !stopped ? last.error : undefined,
+            meta: last.error ? undefined : { model: last.model, durationMs: totalMs, sources: last.sources },
           });
           break;
         }
-        await sleep(POLL_MS);
+        // Một bước thao tác: hiện nhãn, thực hiện trên giao diện, ghi kết quả.
+        const label = describeAction(action, tabs);
+        patch((m) => ({ content: '', steps: [...(m.steps ?? []), { label, note: stripAction(raw) || undefined, state: 'doing' }] }));
+        const result = await runAction(action, {
+          tabs,
+          screenName: () => screenRef.current,
+          confirmClick: (what) => new Promise<boolean>((resolve) => {
+            if (stopRef.current) { resolve(false); return; }
+            setConfirm({ label: what, resolve: (ok) => { setConfirm(null); resolve(ok); } });
+          }),
+        });
+        steps.push({ action: JSON.stringify(action), result });
+        patch((m) => ({
+          steps: m.steps?.map((s, i, all) => (
+            i === all.length - 1 ? { ...s, state: result.startsWith(DENIED) ? 'denied' as const : 'done' as const } : s
+          )),
+        }));
+        if (stopRef.current) { patch({ streaming: false, stopped: true }); break; }
       }
     } catch (e) {
       patch({ streaming: false, error: (e as Error).message });
     } finally {
       jobRef.current = null;
+      setConfirm(null);
       setBusy(false);
     }
-  }, [draft, busy, pending, msgs, screen, model]);
+  }, [draft, busy, pending, msgs, model, agent, tabs]);
 
-  const stopAsk = () => { if (jobRef.current) void call('stop', { id: jobRef.current }).catch(() => {}); };
+  const stopAsk = () => {
+    stopRef.current = true;
+    confirm?.resolve(false);
+    if (jobRef.current) void call('stop', { id: jobRef.current }).catch(() => {});
+  };
 
   /** Hỏi lại câu hỏi của một câu trả lời: bỏ cặp hỏi–đáp đó rồi gửi lại câu hỏi.
    *  File đính kèm của lượt cũ không được gửi lại (nội dung không còn giữ). */
@@ -449,8 +513,8 @@ export default function AiChat({ screen }: { screen: string }) {
                 <div className="aic-empty-ico" aria-hidden>✨</div>
                 <p className="aic-empty-title">Hôm nay bạn cần gì?</p>
                 <p className="aic-empty-sub">
-                  Trợ lý biết bạn đang ở màn hình nào và dùng tài liệu trong kho tri thức của bạn.
-                  Nó chỉ gợi ý — không tự chạy lệnh hay sửa gì trên máy.
+                  Trợ lý dùng tài liệu trong kho tri thức của bạn. Bật “Thao tác màn hình” thì nó tự mở tab,
+                  đọc màn hình và bấm giúp bạn — nút nào không phải tab sẽ hỏi bạn trước.
                 </p>
                 <div className="aic-suggest">
                   {SUGGESTIONS.map((s) => (
@@ -476,6 +540,16 @@ export default function AiChat({ screen }: { screen: string }) {
               </div>
             ) : (
               <div key={m.id} className="aic-msg assistant" aria-busy={m.streaming}>
+                {m.steps && (
+                  <ol className="aic-steps">
+                    {m.steps.map((s, i) => (
+                      <li key={i} className={`aic-step ${s.state ?? 'done'}`} title={s.note}>
+                        <span aria-hidden>{s.state === 'doing' ? '…' : s.state === 'denied' ? '✕' : '✓'}</span>
+                        {s.label}{s.state === 'denied' ? ' — bạn đã từ chối' : ''}
+                      </li>
+                    ))}
+                  </ol>
+                )}
                 {m.content
                   ? <div className="md-preview aic-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
                   : m.streaming ? <span className="aic-typing" aria-label="Đang trả lời"><i /><i /><i /></span> : null}
@@ -510,6 +584,15 @@ export default function AiChat({ screen }: { screen: string }) {
 
           <footer className="aic-compose">
             {note && <div className="aic-note" role="status">{note}</div>}
+            {confirm && (
+              <div className="aic-confirm" role="alertdialog" aria-label="Trợ lý xin phép bấm một nút">
+                <p>Trợ lý muốn bấm <b>“{confirm.label}”</b> trên màn hình <b>{screen}</b>.</p>
+                <div className="aic-confirm-btns">
+                  <button className="ghost sm" onClick={() => confirm.resolve(false)}>Từ chối</button>
+                  <button className="aic-allow" autoFocus onClick={() => confirm.resolve(true)}>Cho phép</button>
+                </div>
+              </div>
+            )}
             <div className="aic-box">
               {pending.length > 0 && (
                 <ul className="aic-atts">
@@ -569,6 +652,22 @@ export default function AiChat({ screen }: { screen: string }) {
                 </div>
                 <input ref={fileRef} type="file" multiple hidden
                   onChange={(e) => { void addFiles([...(e.target.files ?? [])]); e.target.value = ''; }} />
+                <button
+                  className={`aic-agent${agent ? ' on' : ''}`}
+                  role="switch"
+                  aria-checked={agent}
+                  disabled={busy}
+                  onClick={() => {
+                    const next = !agent;
+                    setAgent(next);
+                    try { window.localStorage.setItem(AGENT_KEY, next ? '1' : '0'); } catch { /* nicety */ }
+                  }}
+                  title={agent
+                    ? 'Đang bật: trợ lý được mở tab, đọc màn hình và bấm trên giao diện app (nút không phải tab sẽ hỏi bạn trước). Bấm để tắt.'
+                    : 'Đang tắt: trợ lý chỉ trả lời bằng chữ. Bấm để cho phép nó mở tab, đọc màn hình và bấm trên giao diện app.'}
+                >
+                  <span aria-hidden>🖱</span> Thao tác màn hình
+                </button>
                 <span className="aic-spacer" />
                 <select className="aic-model" value={model} aria-label="Model trả lời"
                   title={AI_MODELS.find((m) => m.id === model)?.hint}
