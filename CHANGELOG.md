@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **STT & TTS (giọng nói ⇄ chữ).** Tab Tools có công cụ mới **🎙 Giọng nói**: thả / chọn file âm thanh
+  hay video (hoặc ghi âm) để ra chữ, và dán chữ để nghe hoặc tải file `.mp3`. Trong khung chat trợ lý
+  có nút micro (nói thay vì gõ) và nút **🔊 Đọc** dưới mỗi câu trả lời.
+  STT dùng Whisper **chạy ngay trên máy** (`@huggingface/transformers`, không cần key, âm thanh không
+  rời máy): hai model "Chính xác" (small, 240 MB) và "Nhanh" (base, 77 MB) tự tải về `data/models/` ở
+  lần dùng đầu; tối đa 30 phút mỗi lượt, chữ hiện dần theo từng đoạn, dừng được giữa chừng. Whisper
+  chạy trong tiến trình riêng (`scripts/stt-worker.cjs`) nên app không đứng hình lúc nhận dạng.
+  TTS dùng giọng đọc Google (cùng nguồn nút 🔊 của Dịch nhanh) — chữ cần đọc được gửi tới Google.
+  Cần `npm install` sau khi kéo bản này về (thêm một dependency).
 - **Trợ lý AI: thao tác màn hình.** Bật công tắc 🖱 "Thao tác màn hình" trong khung chat thì trợ lý
   tự mở tab của app, đọc chữ đang hiện trên màn hình và bấm phần tử để trả lời (vd "vào Công việc xem
   hôm nay có deadline nào không"). Tab / tab con được bấm ngay; mọi nút khác phải bấm **Cho phép** trong

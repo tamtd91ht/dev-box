@@ -32,7 +32,8 @@
 // định dạng khác, chạy ngầm bằng thư viện sẵn có hoặc AI.
 //
 // Ngoài các tab format còn hai CÔNG CỤ RIÊNG chiếm trọn thân panel (state
-// `tool`): 🕘 Thời gian (EpochPanel) và 🔁 Tìm & thay (ReplacePanel).
+// `tool`): 🕘 Thời gian (EpochPanel), 🔁 Tìm & thay (ReplacePanel) và 🎙 Giọng
+// nói (SpeechPanel — STT & TTS).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import '@/lib/monacoSetup'; // Monaco local /monaco/vs — phải config trước lần init đầu
@@ -48,6 +49,7 @@ import FolderPicker from './FolderPicker';
 import ConvertPanel from './ConvertPanel';
 import EpochPanel from './EpochPanel';
 import ReplacePanel from './ReplacePanel';
+import SpeechPanel from './SpeechPanel';
 import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
@@ -278,7 +280,7 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
    * boolean: hai cờ độc lập thì có trạng thái "cùng bật" vô nghĩa, và mỗi lần
    * thêm công cụ lại phải nhớ tắt tất cả cờ còn lại ở mọi chỗ.
    */
-  const [tool, setTool] = useState<'' | 'epoch' | 'replace'>('');
+  const [tool, setTool] = useState<'' | 'epoch' | 'replace' | 'speech'>('');
   /** Đang ở một công cụ riêng → giấu toàn bộ toolbar/editor của tab format. */
   const inTool = tool !== '';
   const [err, setErr] = useState<string | null>(null);
@@ -760,6 +762,12 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
             title="Tìm & thay chuỗi hàng loạt — chế độ thường hoặc regex">
             <span className="office-subnav-text">🔁 Tìm &amp; thay</span>
           </button>
+          <button role="tab" aria-selected={tool === 'speech'}
+            className={`office-subnav-btn${tool === 'speech' ? ' on' : ''}`}
+            onClick={() => { setTool('speech'); setErr(null); }}
+            title="STT & TTS — âm thanh thành chữ (Whisper chạy trên máy) và chữ thành âm thanh">
+            <span className="office-subnav-text">🎙 Giọng nói</span>
+          </button>
         </div>
         <span style={{ flex: 1 }} />
         {!inTool && (
@@ -822,7 +830,7 @@ export default function ToolsWorkspace({ onReady }: ToolsWorkspaceProps = {}) {
       {err && <pre className="code" style={{ color: 'var(--err)', whiteSpace: 'pre-wrap', margin: '4px 0' }}>{err}</pre>}
       {notice && <div className="badge" style={{ color: 'var(--ok)', margin: '4px 0' }}>{notice}</div>}
 
-      {tool === 'epoch' ? <EpochPanel /> : tool === 'replace' ? <ReplacePanel /> : (
+      {tool === 'epoch' ? <EpochPanel /> : tool === 'replace' ? <ReplacePanel /> : tool === 'speech' ? <SpeechPanel /> : (
       <div className="tools-body" ref={railSplit.ref} style={{ ...railSplit.style, ...rail.style }}>
         {/* Rail trái: snippet đã lưu (thu gọn được) */}
         {rail.collapsed ? (

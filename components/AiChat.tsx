@@ -19,6 +19,10 @@
 // người dùng bấm Cho phép): mỗi câu trả lời có khối <hanh_dong> là một bước,
 // thực hiện xong thì hỏi tiếp kèm nhật ký, tối đa MAX_STEPS bước.
 //
+// GIỌNG NÓI (lib/speech.ts): nút micro cạnh ô nhập ghi âm rồi chuyển thành chữ
+// bằng Whisper chạy trên máy (STT); nút "Đọc" dưới mỗi câu trả lời đọc to bằng
+// giọng Google (TTS — chữ của câu trả lời được gửi tới Google).
+//
 // UI theo cấu trúc của skill omicx-ui, dùng token màu sẵn có của Dev Box: mỗi
 // màn một nút đặc (xanh lá = tạo/lưu), còn lại là nút viền; mọi khối dữ liệu
 // có trạng thái đang tải / trống / lỗi kèm "Thử lại"; viền focus luôn thấy.
@@ -27,6 +31,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { apiFetch } from '@/lib/apiFetch';
 import { renderMarkdown } from '@/lib/md';
 import { fmtRel } from '@/lib/google';
+import { fmtDuration, mdToSpeech, speaker } from '@/lib/speech';
+import { useStt, useSttPrefs } from '@/lib/useStt';
 import { DENIED, describeAction, parseAction, runAction, stripAction, type AiTab } from '@/lib/aiScreen';
 import {
   AI_DEFAULT_MODEL, AI_LIMITS, AI_MAX_W, AI_MIN_W, AI_MODELS, KB_BUDGET, KB_LIMITS, aiDock,
@@ -148,6 +154,11 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
   /** Tên màn hình mới nhất — vòng lặp thao tác đọc lại sau mỗi lần đổi tab. */
   const screenRef = useRef(screen);
   screenRef.current = screen;
+  /** Nút micro: ghi âm → chữ (Whisper trên máy) → nối vào ô nhập. */
+  const stt = useStt();
+  const sttPrefs = useSttPrefs();
+  /** Câu trả lời nào đang được đọc to. */
+  const speak = useSyncExternalStore(speaker.subscribe, speaker.getSnapshot, speaker.getServerSnapshot);
   /** Menu ＋ (tải file lên / dán từ clipboard / kho tri thức). */
   const [menu, setMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -194,6 +205,15 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
     const el = listRef.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [msgs, view]);
+
+  // Đóng bảng thì tắt micro và ngừng đọc — không để micro thu âm khi không còn
+  // thấy nút, hay giọng đọc vang lên mà không có chỗ bấm dừng.
+  const sttCancel = stt.cancel;
+  useEffect(() => {
+    if (dock.open) return;
+    sttCancel();
+    speaker.stop();
+  }, [dock.open, sttCancel]);
 
   // Menu ＋: bấm ra ngoài hoặc Esc thì đóng.
   useEffect(() => {
@@ -400,7 +420,26 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
     inputRef.current?.focus();
   };
 
-  const newChat = () => { stopAsk(); setMsgs([]); setNote(null); setPending([]); inputRef.current?.focus(); };
+  /** Bấm micro: đang rảnh → ghi âm; đang ghi → dừng và chuyển thành chữ. */
+  const toggleMic = async () => {
+    if (stt.state.phase === 'working') return;
+    if (stt.state.phase === 'recording') {
+      const blob = await stt.stopRec();
+      if (!blob || !blob.size) return;
+      const done = await stt.transcribeBlob(blob, { model: sttPrefs.model, language: sttPrefs.language });
+      if (done?.text) {
+        setDraft((d) => (d.trim() ? `${d.trimEnd()} ${done.text}` : done.text));
+        inputRef.current?.focus();
+      } else if (done) {
+        setNote('Không nghe ra chữ nào — nói to, rõ hơn hoặc kiểm tra micro.');
+      }
+      return;
+    }
+    setNote(null);
+    void stt.startRec();
+  };
+
+  const newChat = () => { stopAsk(); speaker.stop(); setMsgs([]); setNote(null); setPending([]); inputRef.current?.focus(); };
 
   const copyMsg = async (m: Msg) => {
     try { await navigator.clipboard.writeText(m.content); setCopied(m.id); setTimeout(() => setCopied(null), 1500); } catch { /* ignore */ }
@@ -570,6 +609,10 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
                     )}
                     <span className="aic-spacer" />
                     <button className="aic-act" onClick={() => void copyMsg(m)}>{copied === m.id ? '✓ Đã sao chép' : '⧉ Sao chép'}</button>
+                    <button className="aic-act" onClick={() => void speaker.speak(m.id, mdToSpeech(m.content))}
+                      title={speak.key === m.id ? 'Dừng đọc' : 'Đọc to câu trả lời này (giọng Google — chữ được gửi tới Google)'}>
+                      {speak.key === m.id ? (speak.loading ? '… Đang tải' : '■ Dừng đọc') : '🔊 Đọc'}
+                    </button>
                     <button className="aic-act" onClick={() => retry(m.id)} disabled={busy} title="Hỏi lại câu này để nhận câu trả lời khác">↻ Thử lại</button>
                     <button className="aic-act"
                       onClick={() => { setKbDraft({ title: questionBefore(m.id).replace(/\s+/g, ' ').slice(0, 80), content: m.content }); setView('kb'); }}
@@ -584,6 +627,15 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
 
           <footer className="aic-compose">
             {note && <div className="aic-note" role="status">{note}</div>}
+            {(stt.state.error || speak.error) && (
+              <div className="aic-note err" role="alert">{stt.state.error ?? speak.error}</div>
+            )}
+            {stt.state.phase === 'working' && (
+              <div className="aic-stt" role="status">
+                <span className="spinner" aria-hidden /> <span className="aic-stt-text">{stt.state.status}</span>
+                <button className="aic-act" onClick={stt.cancel}>Dừng</button>
+              </div>
+            )}
             {confirm && (
               <div className="aic-confirm" role="alertdialog" aria-label="Trợ lý xin phép bấm một nút">
                 <p>Trợ lý muốn bấm <b>“{confirm.label}”</b> trên màn hình <b>{screen}</b>.</p>
@@ -653,6 +705,25 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
                 <input ref={fileRef} type="file" multiple hidden
                   onChange={(e) => { void addFiles([...(e.target.files ?? [])]); e.target.value = ''; }} />
                 <button
+                  className={`aic-round aic-mic${stt.state.phase === 'recording' ? ' rec' : ''}`}
+                  onClick={() => void toggleMic()}
+                  disabled={stt.state.phase === 'working'}
+                  aria-pressed={stt.state.phase === 'recording'}
+                  aria-label={stt.state.phase === 'recording' ? 'Dừng ghi âm và chuyển thành chữ' : 'Nói thay vì gõ'}
+                  title={stt.state.phase === 'recording'
+                    ? 'Đang ghi âm — bấm để dừng và chuyển thành chữ'
+                    : 'Nói thay vì gõ: ghi âm rồi chuyển thành chữ ngay trên máy (đổi ngôn ngữ / model ở Tools › Giọng nói)'}
+                >
+                  {stt.state.phase === 'recording'
+                    ? <><span className="aic-recdot" aria-hidden /> {fmtDuration(stt.state.recSeconds)}</>
+                    : '🎙'}
+                </button>
+                {stt.state.phase === 'recording' && (
+                  <button className="aic-act" onClick={stt.cancel} title="Bỏ bản ghi này">Huỷ</button>
+                )}
+                {/* Đang ghi âm thì nhường chỗ cho đồng hồ + nút Huỷ (thanh chỉ rộng ~390px). */}
+                {stt.state.phase !== 'recording' && (
+                <button
                   className={`aic-agent${agent ? ' on' : ''}`}
                   role="switch"
                   aria-checked={agent}
@@ -668,6 +739,7 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
                 >
                   <span aria-hidden>🖱</span> Thao tác màn hình
                 </button>
+                )}
                 <span className="aic-spacer" />
                 <select className="aic-model" value={model} aria-label="Model trả lời"
                   title={AI_MODELS.find((m) => m.id === model)?.hint}

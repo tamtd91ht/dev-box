@@ -12494,3 +12494,75 @@ select.aic-model:hover { color: var(--text); background: var(--glass-2); }
 }
 .aic-step.doing > span { color: var(--muted); }
 .aic-step.denied > span { color: var(--err); }
+
+/* ── Giọng nói: STT & TTS (components/SpeechPanel.tsx, nút micro ở AiChat) ──
+   Hai thẻ cạnh nhau như tab Thời gian (.epoch-cols/.epoch-card); mỗi thẻ một
+   nút đặc (.sp-cta), còn lại là nút viền. Chỉ dùng token màu của app. */
+.sp-wrap { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; overflow: auto; }
+.sp-cols { align-items: stretch; }
+.sp-card { display: flex; flex-direction: column; }
+.sp-card > .epoch-card-body { flex: 1; gap: 10px; padding: 12px; }
+.sp-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sp-cta {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 32px; padding: 0 14px; border: 0; border-radius: 10px; box-shadow: none;
+  background: var(--accent-solid); color: var(--bg-0); font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+:root[data-theme="dark"] .sp-cta { color: var(--text); }
+.sp-cta:hover:not(:disabled) { filter: brightness(1.08); transform: none; box-shadow: none; }
+.sp-wrap .ghost.sm { height: 32px; border-radius: 10px; }
+.sp-wrap :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.sp-drop {
+  display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center;
+  padding: 20px 16px; border: 1.5px dashed var(--glass-brd-hover); border-radius: 12px;
+  background: var(--glass); transition: border-color .15s, background .15s;
+}
+.sp-drop.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.sp-drop.rec { border-style: solid; border-color: color-mix(in srgb, var(--err) 55%, transparent); background: var(--err-bg); }
+.sp-drop-title { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; }
+.sp-drop-sub { margin: 0; font-size: 12px; line-height: 16px; color: var(--muted); }
+.sp-recdot, .aic-recdot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--err); flex: none;
+  animation: sp-pulse 1.1s infinite ease-in-out;
+}
+@keyframes sp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .sp-recdot, .aic-recdot { animation: none; } }
+
+.sp-opts { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.sp-field { display: flex; flex-direction: column; gap: 4px; min-width: 150px; flex: 1; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--muted); }
+.sp-field .input { height: 36px; border-radius: 12px; padding: 0 10px; font-size: 13px; }
+.sp-count { color: var(--muted); white-space: nowrap; }
+.sp-count.over { color: var(--err); }
+.sp-source { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--glass-brd); border-radius: 12px; }
+.sp-source-name { flex: 1 1 140px; min-width: 0; font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-audio { flex: 2 1 240px; min-width: 0; height: 32px; }
+.sp-progress { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--glass-brd); border-radius: 12px; }
+.sp-progress-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
+.sp-bar { height: 6px; border-radius: 999px; background: var(--glass-2); overflow: hidden; }
+.sp-bar i { display: block; height: 100%; border-radius: 999px; background: var(--accent-solid); transition: width .3s; }
+.sp-bar.busy i { animation: sp-slide 1.2s infinite ease-in-out; }
+@keyframes sp-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) { .sp-bar.busy i { animation: none; } }
+.sp-done { margin: 0; color: var(--ok); }
+.sp-warn { margin: 0; color: var(--warn); }
+.sp-error {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 12px;
+  background: var(--err-bg); color: var(--err); font-size: 13px;
+}
+.sp-error > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+textarea.sp-text {
+  flex: 1; min-height: 180px; resize: vertical; border-radius: 12px; padding: 10px 12px;
+  font-family: inherit; font-size: 14px; line-height: 1.6;
+}
+textarea.sp-text-tts { min-height: 220px; }
+.sp-actions { margin-top: auto; }
+
+/* Nút micro + dòng trạng thái STT trong khung chat trợ lý */
+.aic-mic { width: auto; min-width: 32px; padding: 0 8px; gap: 6px; font-size: 13px; font-weight: 600; }
+.aic-mic.rec { color: var(--err); border-color: color-mix(in srgb, var(--err) 55%, transparent); background: var(--err-bg); }
+.aic-stt { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 12px; background: var(--glass-2); font-size: 13px; }
+.aic-stt-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aic-stt .spinner { width: 14px; height: 14px; border-width: 2px; flex: none; }
+/* Thanh dưới khung soạn: bảng hẹp thì xuống dòng chứ không đẩy nút Gửi ra ngoài. */
+.aic-bar { flex-wrap: wrap; row-gap: 6px; }

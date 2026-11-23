@@ -54,5 +54,8 @@ const nextConfig = {
 // nút Nạp lại sạch) dựa vào đúng cặp tên này.
 module.exports = (phase) => ({
   ...nextConfig,
-  distDir: phase === PHASE_DEVELOPMENT_SERVER ? '.next-dev' : '.next',
+  // NEXT_DIST_DIR: build / chạy thử bản production vào một thư mục RIÊNG (vd
+  // `NEXT_DIST_DIR=.next-verify npx next build`) để kiểm tra mà không đè lên
+  // .next của app desktop đang mở. Bình thường không đặt biến này.
+  distDir: process.env.NEXT_DIST_DIR || (phase === PHASE_DEVELOPMENT_SERVER ? '.next-dev' : '.next'),
 });

@@ -58,6 +58,7 @@
     "check:word": "set OFFICE_ALLOW_WRITE=true&& tsx scripts/check-word.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "4.3.2",
     "@monaco-editor/react": "^4.7.0",
     "@univerjs/preset-sheets-conditional-formatting": "^1.0.3",
     "@univerjs/preset-sheets-core": "^1.0.3",
