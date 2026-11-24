@@ -68,7 +68,7 @@ export function useStt() {
   }, []);
 
   /** Âm thanh (file hoặc bản ghi) → chữ. Trả null nếu lỗi / bị dừng (lỗi nằm ở state.error). */
-  const transcribeBlob = useCallback(async (blob: Blob, opts: { model: string; language: string }): Promise<SttPoll | null> => {
+  const transcribeBlob = useCallback(async (blob: Blob, opts: { model: string; language: string; provider?: string }): Promise<SttPoll | null> => {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;

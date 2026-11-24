@@ -17,6 +17,12 @@
 // Mỗi lúc chỉ chạy MỘT job (CPU); job khác xếp hàng. Dừng = kill tiến trình con
 // (dừng ngay kể cả giữa một đoạn 30 giây, và trả RAM của model).
 //
+// ── NHÀ CUNG CẤP ─────────────────────────────────────────────────────────────
+// Hai thứ trên là nhà cung cấp MẶC ĐỊNH. Người dùng có thể thêm nhà cung cấp
+// tích hợp qua API (cấu hình động — lib/speechProviders.ts); khi một job / lượt
+// đọc mang `provider` khác 'default' thì việc được chuyển cho
+// lib/speechProviderServer.ts (gọi HTTP, không dùng Whisper / Google ở đây).
+//
 // ── TTS (chữ → âm thanh): Google translate_tts ───────────────────────────────
 // Cùng nguồn với nút 🔊 của Dịch nhanh (lib/translateServer.ts): server tải về
 // (thẻ <audio> gửi Referer localhost thì Google trả 404) rồi trả MP3 base64.
@@ -27,7 +33,9 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { STT_LANGS, STT_LIMITS, STT_MODELS, TTS_PART, type SttPoll, type SttStatus } from './speech';
+import { STT_DEFAULT_MODEL, STT_LANGS, STT_LIMITS, STT_MODELS, TTS_PART, type SttPoll, type SttStatus } from './speech';
+import { DEFAULT_PROVIDER } from './speechProviders';
+import { callStt, callTts, providerGet } from './speechProviderServer';
 
 const SAMPLE_RATE = 16_000;
 const MODEL_DIR = path.join(process.cwd(), 'data', 'models');
@@ -36,6 +44,10 @@ const KEEP_DONE_MS = 10 * 60_000;
 
 interface Job {
   id: string;
+  /** id nhà cung cấp API; null = mặc định (Whisper trên máy). */
+  provider: string | null;
+  /** Để huỷ lượt gọi API đang chờ. */
+  abort: AbortController | null;
   model: string;
   language: string;
   chunks: Buffer[];
@@ -93,14 +105,16 @@ export function sttStatus(): SttStatus {
 }
 
 export function sttStart(body: Record<string, unknown>): { id: string } {
-  const model = STT_MODELS.find((m) => m.id === body.model)?.id;
+  const provider = typeof body.provider === 'string' && body.provider && body.provider !== DEFAULT_PROVIDER ? body.provider : null;
+  // Model Whisper chỉ có nghĩa với nhà cung cấp mặc định.
+  const model = provider ? STT_DEFAULT_MODEL : STT_MODELS.find((m) => m.id === body.model)?.id;
   if (!model) throw new Error(`model: ${STT_MODELS.map((m) => m.id).join(' | ')}`);
   const language = STT_LANGS.find((l) => l.id === body.language)?.id;
   if (!language) throw new Error(`language: ${STT_LANGS.map((l) => l.id).join(' | ')}`);
   sweep();
   const job: Job = {
     id: `stt_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
-    model, language, chunks: [], bytes: 0, status: 'uploading', progress: 0, loadPct: null,
+    provider, abort: null, model, language, chunks: [], bytes: 0, status: 'uploading', progress: 0, loadPct: null,
     text: '', error: null, seconds: 0, createdAt: Date.now(), startedAt: null, endedAt: null,
   };
   store().jobs.set(job.id, job);
@@ -136,6 +150,11 @@ export function sttRun(id: unknown): { ok: true } {
   if (job.status !== 'uploading') return { ok: true };
   if (job.bytes < SAMPLE_RATE * 2 * 0.3) throw new Error('Âm thanh quá ngắn (dưới 0,3 giây).');
   job.seconds = job.bytes / 2 / SAMPLE_RATE;
+  if (job.provider) {
+    // Gọi API chỉ là chờ mạng → không cần xếp hàng sau Whisper.
+    void runApiJob(job);
+    return { ok: true };
+  }
   job.status = 'queued';
   const s = store();
   s.tail = s.tail.then(() => runJob(job)).catch(() => {});
@@ -155,9 +174,31 @@ export function sttCancel(id: unknown): void {
   const job = typeof id === 'string' ? s.jobs.get(id) : undefined;
   if (!job || job.endedAt) return;
   finish(job, 'cancelled', null);
+  job.abort?.abort();
   // Đang chạy trong tiến trình con → kill luôn: suy luận là đồng bộ, không có
   // cách nào chen ngang giữa một đoạn. Lần sau sẽ fork tiến trình mới.
   if (s.current?.job === job) killWorker();
+}
+
+// ── Job qua nhà cung cấp API ─────────────────────────────────────────────────
+
+async function runApiJob(job: Job): Promise<void> {
+  job.startedAt = Date.now();
+  job.status = 'running';
+  const pcm = Buffer.concat(job.chunks);
+  job.chunks = [];
+  job.abort = new AbortController();
+  try {
+    const p = await providerGet(job.provider, 'stt');
+    const r = await callStt(p, pcm, job.language, job.abort.signal);
+    job.text = r.text;
+    job.progress = 1;
+    finish(job, 'done', null);
+  } catch (e) {
+    finish(job, 'error', (e as Error).message); // đã bị huỷ thì finish() bỏ qua
+  } finally {
+    job.abort = null;
+  }
 }
 
 // ── Tiến trình con ───────────────────────────────────────────────────────────
@@ -290,9 +331,15 @@ async function ttsOne(part: string, lang: string, idx: number, total: number): P
 }
 
 /** Một phần văn bản (≤ TTS_PART ký tự) → các mẩu MP3 base64, phát lần lượt. */
-export async function tts(textRaw: unknown, langRaw: unknown): Promise<{ mime: string; chunks: string[] }> {
+export async function tts(textRaw: unknown, langRaw: unknown, providerRaw?: unknown): Promise<{ mime: string; chunks: string[] }> {
   const text = String(textRaw ?? '').trim();
   if (!text) throw new Error('Không có gì để đọc.');
+  if (typeof providerRaw === 'string' && providerRaw && providerRaw !== DEFAULT_PROVIDER) {
+    const p = await providerGet(providerRaw, 'tts');
+    if (text.length > (p.maxChars ?? 2000) + 200) throw new Error(`Mỗi lượt đọc của ${p.name} tối đa ${p.maxChars ?? 2000} ký tự.`);
+    const r = await callTts(p, text, String(langRaw ?? 'vi'));
+    return { mime: r.mime, chunks: r.chunks };
+  }
   if (text.length > TTS_PART + 200) throw new Error(`Mỗi lượt đọc tối đa ${TTS_PART} ký tự.`);
   const lang = String(langRaw ?? '');
   if (!/^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(lang)) throw new Error(`Mã ngôn ngữ đọc không hợp lệ: "${lang}"`);

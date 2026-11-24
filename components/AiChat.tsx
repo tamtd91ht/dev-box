@@ -33,6 +33,7 @@ import { renderMarkdown } from '@/lib/md';
 import { fmtRel } from '@/lib/google';
 import { fmtDuration, mdToSpeech, speaker } from '@/lib/speech';
 import { useStt, useSttPrefs } from '@/lib/useStt';
+import { useSpeechProviders } from '@/lib/useSpeechProviders';
 import { DENIED, describeAction, parseAction, runAction, stripAction, type AiTab } from '@/lib/aiScreen';
 import {
   AI_DEFAULT_MODEL, AI_LIMITS, AI_MAX_W, AI_MIN_W, AI_MODELS, KB_BUDGET, KB_LIMITS, aiDock,
@@ -157,6 +158,8 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
   /** Nút micro: ghi âm → chữ (Whisper trên máy) → nối vào ô nhập. */
   const stt = useStt();
   const sttPrefs = useSttPrefs();
+  /** Nhà cung cấp STT / TTS đang chọn ở Tools › Giọng nói (null = mặc định). */
+  const speechVia = useSpeechProviders();
   /** Câu trả lời nào đang được đọc to. */
   const speak = useSyncExternalStore(speaker.subscribe, speaker.getSnapshot, speaker.getServerSnapshot);
   /** Menu ＋ (tải file lên / dán từ clipboard / kho tri thức). */
@@ -426,7 +429,7 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
     if (stt.state.phase === 'recording') {
       const blob = await stt.stopRec();
       if (!blob || !blob.size) return;
-      const done = await stt.transcribeBlob(blob, { model: sttPrefs.model, language: sttPrefs.language });
+      const done = await stt.transcribeBlob(blob, { model: sttPrefs.model, language: sttPrefs.language, provider: speechVia.stt?.id });
       if (done?.text) {
         setDraft((d) => (d.trim() ? `${d.trimEnd()} ${done.text}` : done.text));
         inputRef.current?.focus();
@@ -609,8 +612,10 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
                     )}
                     <span className="aic-spacer" />
                     <button className="aic-act" onClick={() => void copyMsg(m)}>{copied === m.id ? '✓ Đã sao chép' : '⧉ Sao chép'}</button>
-                    <button className="aic-act" onClick={() => void speaker.speak(m.id, mdToSpeech(m.content))}
-                      title={speak.key === m.id ? 'Dừng đọc' : 'Đọc to câu trả lời này (giọng Google — chữ được gửi tới Google)'}>
+                    <button className="aic-act"
+                      onClick={() => void speaker.speak(m.id, mdToSpeech(m.content), 'auto',
+                        speechVia.tts ? { provider: speechVia.tts.id, partChars: speechVia.tts.maxChars } : {})}
+                      title={speak.key === m.id ? 'Dừng đọc' : `Đọc to câu trả lời này (${speechVia.tts ? speechVia.tts.name : 'giọng Google'} — chữ được gửi tới ${speechVia.tts ? speechVia.tts.name : 'Google'})`}>
                       {speak.key === m.id ? (speak.loading ? '… Đang tải' : '■ Dừng đọc') : '🔊 Đọc'}
                     </button>
                     <button className="aic-act" onClick={() => retry(m.id)} disabled={busy} title="Hỏi lại câu này để nhận câu trả lời khác">↻ Thử lại</button>
@@ -712,7 +717,9 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
                   aria-label={stt.state.phase === 'recording' ? 'Dừng ghi âm và chuyển thành chữ' : 'Nói thay vì gõ'}
                   title={stt.state.phase === 'recording'
                     ? 'Đang ghi âm — bấm để dừng và chuyển thành chữ'
-                    : 'Nói thay vì gõ: ghi âm rồi chuyển thành chữ ngay trên máy (đổi ngôn ngữ / model ở Tools › Giọng nói)'}
+                    : speechVia.stt
+                      ? `Nói thay vì gõ: ghi âm rồi gửi ${speechVia.stt.name} chuyển thành chữ (đổi nhà cung cấp ở Giọng nói)`
+                      : 'Nói thay vì gõ: ghi âm rồi chuyển thành chữ ngay trên máy (đổi ngôn ngữ / model / nhà cung cấp ở Giọng nói)'}
                 >
                   {stt.state.phase === 'recording'
                     ? <><span className="aic-recdot" aria-hidden /> {fmtDuration(stt.state.recSeconds)}</>

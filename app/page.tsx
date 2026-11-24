@@ -91,6 +91,8 @@ const MailWorkspace = memo(dynamic(() => loadPane(() => import('@/components/Mai
 const LinksWorkspace = memo(dynamic(() => loadPane(() => import('@/components/LinksWorkspace')), { ssr: false, loading: PaneLoading }));
 const AppsWorkspace = memo(dynamic(() => loadPane(() => import('@/components/AppsWorkspace')), { ssr: false, loading: PaneLoading }));
 const ToolsWorkspace = memo(dynamic(() => loadPane(() => import('@/components/ToolsWorkspace')), { ssr: false, loading: PaneLoading }));
+// STT & TTS — cùng component với Tools › Giọng nói, đưa lên menu chính cho dễ thấy.
+const SpeechPanel = memo(dynamic(() => loadPane(() => import('@/components/SpeechPanel')), { ssr: false, loading: PaneLoading }));
 const ApiWorkspace = memo(dynamic(() => loadPane(() => import('@/components/ApiWorkspace')), { ssr: false, loading: PaneLoading }));
 const BrowserTabWorkspace = memo(dynamic(() => loadPane(() => import('@/components/BrowserTabWorkspace')), { ssr: false, loading: PaneLoading }));
 const BrowserWorkspace = memo(dynamic(() => loadPane(() => import('@/components/BrowserWorkspace')), { ssr: false, loading: PaneLoading }));
@@ -280,6 +282,7 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'remote', icon: '🖥', label: 'Remote', badge: 'máy' },
   { key: 'apps', icon: '⚙', label: 'Apps', badge: 'run' },
   { key: 'tools', icon: '🧰', label: 'Tools', badge: 'fmt' },
+  { key: 'speech', icon: '🎙', label: 'Giọng nói', badge: 'stt·tts' },
   { key: 'api', icon: '📮', label: 'API', badge: 'http' },
   { key: 'webhooks', icon: '⚡', label: 'Webhooks', badge: 'tool' },
   { key: 'workspace', icon: '🧭', label: 'Workspace', badge: 'browser' },
@@ -1067,6 +1070,11 @@ export default function Home() {
         {visited.tools && (
           <main className="workspace" style={pane('tools')} aria-hidden={!shown('tools')}>
             <ToolsWorkspace onReady={onToolsReady} />
+          </main>
+        )}
+        {visited.speech && (
+          <main className="workspace" style={pane('speech')} aria-hidden={!shown('speech')}>
+            <div className="panel sheet-panel"><SpeechPanel /></div>
           </main>
         )}
         {visited.api && (

@@ -4,6 +4,7 @@
 // components/AiChat.tsx (nút micro + nút đọc câu trả lời).
 
 import { apiFetch } from './apiFetch';
+import { DEFAULT_PROVIDER, type SpeechProvider } from './speechProviders';
 
 // ── Dùng chung client/server ─────────────────────────────────────────────────
 
@@ -80,6 +81,29 @@ async function call<T>(action: string, params: Record<string, unknown> = {}, tim
 
 export const sttStatus = () => call<SttStatus>('stt.status');
 
+// ── Nhà cung cấp (lib/speechProviders.ts) ────────────────────────────────────
+
+/** Kết quả nút "Thử" — xem providerTest ở lib/speechProviderServer.ts. */
+export interface ProviderTestResult {
+  ok: boolean;
+  error: string | null;
+  debug: { method: string; url: string; status: number | null; contentType: string; body: string; bytes: number; ms: number } | null;
+  text?: string;
+  audio?: { mime: string; chunks: string[] };
+}
+
+export const providersList = () => call<SpeechProvider[]>('providers.list');
+export const providerSave = (provider: SpeechProvider) => call<SpeechProvider[]>('providers.save', { provider });
+export const providerRemove = (id: string) => call<SpeechProvider[]>('providers.remove', { id });
+export const providerTest = (provider: SpeechProvider, sample: { text?: string; pcm?: string; language?: string }) =>
+  call<ProviderTestResult>('providers.test', { provider, ...sample }, 120_000);
+
+/** PCM (tối đa `maxSeconds` giây đầu) → base64, cho nút "Thử" của nhà cung cấp STT. */
+export function pcmSampleBase64(pcm: Int16Array, maxSeconds = 45): string {
+  const cut = pcm.subarray(0, Math.min(pcm.length, maxSeconds * 16_000));
+  return toBase64(new Uint8Array(cut.buffer, cut.byteOffset, cut.byteLength));
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ── STT: giải mã âm thanh trong trình duyệt ──────────────────────────────────
@@ -131,6 +155,8 @@ function toBase64(bytes: Uint8Array): string {
 export interface TranscribeOptions {
   model: string;
   language: string;
+  /** id nhà cung cấp API; bỏ trống / 'default' = Whisper trên máy. */
+  provider?: string;
   /** Gọi mỗi nhịp poll (và trong lúc gửi âm thanh lên, với status 'uploading'). */
   onUpdate?: (p: SttPoll) => void;
   signal?: AbortSignal;
@@ -139,7 +165,9 @@ export interface TranscribeOptions {
 /** PCM → chữ. Ném Error khi lỗi; huỷ qua `signal` thì ném Error('Đã dừng.'). */
 export async function transcribe(pcm: Int16Array, opts: TranscribeOptions): Promise<SttPoll> {
   const seconds = pcm.length / SAMPLE_RATE;
-  const { id } = await call<{ id: string }>('stt.start', { model: opts.model, language: opts.language });
+  const { id } = await call<{ id: string }>('stt.start', {
+    model: opts.model, language: opts.language, provider: opts.provider ?? DEFAULT_PROVIDER,
+  });
   const cancel = () => { void call('stt.cancel', { id }).catch(() => {}); };
   const aborted = () => opts.signal?.aborted === true;
   try {
@@ -260,24 +288,27 @@ export function guessLang(text: string): string {
   return 'en';
 }
 
-/** Cắt văn bản dài thành các phần ≤ TTS_PART ký tự, ưu tiên cuối câu. */
-export function ttsParts(text: string): string[] {
+/** Nhà cung cấp đọc + cỡ mỗi lần gọi. Mặc định: Google, TTS_PART ký tự. */
+export interface TtsVia { provider?: string; partChars?: number }
+
+/** Cắt văn bản dài thành các phần ≤ `size` ký tự, ưu tiên cuối câu. */
+export function ttsParts(text: string, size = TTS_PART): string[] {
   const out: string[] = [];
   let rest = text.replace(/\s+/g, ' ').trim().slice(0, TTS_MAX_CHARS);
   while (rest) {
-    if (rest.length <= TTS_PART) { out.push(rest); break; }
-    const head = rest.slice(0, TTS_PART);
+    if (rest.length <= size) { out.push(rest); break; }
+    const head = rest.slice(0, size);
     let cut = Math.max(head.lastIndexOf('. '), head.lastIndexOf('! '), head.lastIndexOf('? '), head.lastIndexOf('。'));
-    if (cut < TTS_PART * 0.5) cut = head.lastIndexOf(' ');
-    if (cut < TTS_PART * 0.3) cut = TTS_PART - 1;
+    if (cut < size * 0.5) cut = head.lastIndexOf(' ');
+    if (cut < size * 0.3) cut = size - 1;
     out.push(rest.slice(0, cut + 1).trim());
     rest = rest.slice(cut + 1).trim();
   }
   return out.filter(Boolean);
 }
 
-const ttsPart = (text: string, lang: string) =>
-  call<{ mime: string; chunks: string[] }>('tts', { text, lang }, 60_000);
+const ttsPart = (text: string, lang: string, provider?: string) =>
+  call<{ mime: string; chunks: string[] }>('tts', { text, lang, provider: provider ?? DEFAULT_PROVIDER }, 120_000);
 
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -287,17 +318,22 @@ function b64ToBytes(b64: string): Uint8Array {
 }
 
 /** Cả văn bản → một file MP3 (nối các khung MP3 lại — phát được ở mọi trình phát). */
-export async function ttsToBlob(text: string, lang: string, onProgress?: (done: number, total: number) => void): Promise<Blob> {
-  const parts = ttsParts(text);
+export async function ttsToBlob(text: string, lang: string, onProgress?: (done: number, total: number) => void, via: TtsVia = {}): Promise<Blob> {
+  const parts = ttsParts(text, via.partChars);
   if (!parts.length) throw new Error('Không có gì để đọc.');
   const real = lang === 'auto' ? guessLang(text) : lang;
   const bytes: Uint8Array[] = [];
+  let mime = 'audio/mpeg';
   for (let i = 0; i < parts.length; i++) {
-    const r = await ttsPart(parts[i], real);
+    const r = await ttsPart(parts[i], real, via.provider);
+    mime = r.mime || mime;
     for (const c of r.chunks) bytes.push(b64ToBytes(c));
     onProgress?.(i + 1, parts.length);
   }
-  return new Blob(bytes as BlobPart[], { type: 'audio/mpeg' });
+  // Ghép thẳng các phần: đúng với MP3 (chuỗi khung độc lập). Định dạng có header
+  // (WAV…) thì trình phát chỉ đọc phần đầu — nhà cung cấp trả WAV nên để văn bản
+  // vừa một lần gọi (tăng "Ký tự mỗi lần gọi").
+  return new Blob(bytes as BlobPart[], { type: mime });
 }
 
 // ── TTS: trình phát dùng chung (mỗi lúc chỉ một nguồn phát) ──────────────────
@@ -330,22 +366,22 @@ export const speaker = {
   },
 
   /** Đọc `text`. Gọi lại với cùng `key` khi đang đọc = dừng. */
-  async speak(key: string, text: string, lang = 'auto'): Promise<void> {
+  async speak(key: string, text: string, lang = 'auto', via: TtsVia = {}): Promise<void> {
     if (state.key === key) { speaker.stop(); return; }
     speaker.stop();
-    const parts = ttsParts(text);
+    const parts = ttsParts(text, via.partChars);
     if (!parts.length) return;
     const my = ++token;
     const real = lang === 'auto' ? guessLang(text) : lang;
     set({ key, loading: true, error: null });
     try {
       // Tải trước phần kế tiếp trong lúc đang phát phần hiện tại → không hẫng giữa chừng.
-      let pending = ttsPart(parts[0], real);
+      let pending = ttsPart(parts[0], real, via.provider);
       for (let i = 0; i < parts.length; i++) {
         const cur = await pending;
         if (my !== token) return;
         if (i + 1 < parts.length) {
-          pending = ttsPart(parts[i + 1], real);
+          pending = ttsPart(parts[i + 1], real, via.provider);
           pending.catch(() => {}); // lỗi sẽ được bắt ở vòng sau
         }
         set({ key, loading: false, error: null });

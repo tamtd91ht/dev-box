@@ -17,6 +17,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   được giữa chừng; thư mục cha chưa phải project thì có thể thêm luôn thành project của tab Git. Quét
   dùng token GitLab đã lưu theo host (thiếu thì nhập ngay trong hộp thoại, scope `read_api`); clone dùng
   credential git của máy.
+- **STT & TTS: nhiều nhà cung cấp, tích hợp qua API bằng cấu hình động.** Mỗi cột của công cụ Giọng nói
+  có ô chọn nhà cung cấp; mặc định vẫn là Whisper trên máy (STT) và giọng Google (TTS). Nút
+  **⚙ Nhà cung cấp** mở hộp thoại thêm nhà cung cấp khác: tên, endpoint, authentication (Bearer / API key
+  trong header hoặc trên URL / Basic), headers, body (JSON, form, urlencoded, file âm thanh, chuỗi thô) và
+  response (đường dẫn JSON tới chữ; hoặc audio dạng file, base64, URL). Input đưa vào bằng biến
+  `{{audio}}`, `{{audio_base64}}`, `{{text}}`, `{{language}}`… cùng biến tự đặt (model, voice…); nút **Thử**
+  gọi thật và hiện nguyên phản hồi của API để dò đường dẫn output. Có sẵn hai mẫu kiểu OpenAI. Nhà cung
+  cấp đang chọn cũng được nút micro và nút Đọc của trợ lý dùng. Cấu hình (kèm khoá API) lưu ở
+  `configs/speech-providers.json`.
+- Mục **🎙 Giọng nói** trên menu chính (trước đây chỉ là tab con trong Tools).
 - **STT & TTS (giọng nói ⇄ chữ).** Tab Tools có công cụ mới **🎙 Giọng nói**: thả / chọn file âm thanh
   hay video (hoặc ghi âm) để ra chữ, và dán chữ để nghe hoặc tải file `.mp3`. Trong khung chat trợ lý
   có nút micro (nói thay vì gõ) và nút **🔊 Đọc** dưới mỗi câu trả lời.

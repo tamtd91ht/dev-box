@@ -9,15 +9,23 @@
 //           đọc của Google (cùng nguồn với nút 🔊 của Dịch nhanh) — chữ được gửi
 //           tới Google, nên đừng đưa nội dung mật vào đây.
 //
+// NHÀ CUNG CẤP: mỗi cột có ô chọn nhà cung cấp. Mặc định là hai thứ trên; nút
+// "⚙ Nhà cung cấp" mở hộp thoại thêm nhà cung cấp tích hợp qua API bằng cấu
+// hình động (components/SpeechProviderManager.tsx). Lựa chọn dùng chung với
+// nút micro / nút Đọc của trợ lý (lib/useSpeechProviders.ts).
+//
 // Ngôn ngữ + model STT nhớ chung với nút micro của trợ lý (lib/useStt.ts).
 // Mỗi cột chỉ một nút đặc; mọi khối có trạng thái đang chạy / trống / lỗi.
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
-  STT_LANGS, STT_LIMITS, STT_MODELS, TTS_LANGS, TTS_MAX_CHARS, fmtDuration, speaker, sttStatus, ttsToBlob,
+  STT_LANGS, STT_LIMITS, STT_MODELS, TTS_LANGS, TTS_MAX_CHARS, decodeToPcm16k, fmtDuration, pcmSampleBase64, speaker, sttStatus, ttsToBlob,
   type SttStatus,
 } from '@/lib/speech';
+import { DEFAULT_PROVIDER, DEFAULT_PROVIDER_NAME, type ProviderKind } from '@/lib/speechProviders';
+import { speechProviders, useSpeechProviders } from '@/lib/useSpeechProviders';
 import { useStt, useSttPrefs } from '@/lib/useStt';
+import SpeechProviderManager from './SpeechProviderManager';
 
 const TTS_LANG_KEY = 'speech.ttsLang';
 const SPEAK_KEY = 'tools-tts';
@@ -38,6 +46,9 @@ export default function SpeechPanel() {
   // ── STT ────────────────────────────────────────────────────────────────────
   const stt = useStt();
   const prefs = useSttPrefs();
+  const providers = useSpeechProviders();
+  /** Hộp thoại quản lý nhà cung cấp đang mở cho loại nào (null = đóng). */
+  const [manage, setManage] = useState<ProviderKind | null>(null);
   const [models, setModels] = useState<SttStatus['models'] | null>(null);
   const [source, setSource] = useState<{ blob: Blob; name: string; url: string } | null>(null);
   const [text, setText] = useState('');
@@ -59,13 +70,13 @@ export default function SpeechPanel() {
     setSttNote(null);
     setText('');
     if (!keepSource) setSource({ blob, name, url: URL.createObjectURL(blob) });
-    const done = await stt.transcribeBlob(blob, { model: prefs.model, language: prefs.language });
+    const done = await stt.transcribeBlob(blob, { model: prefs.model, language: prefs.language, provider: providers.stt?.id });
     if (done) {
       setText(done.text);
       if (!done.text) setSttNote('Không nghe ra chữ nào — âm thanh quá nhỏ, toàn nhạc/tiếng ồn, hoặc chọn sai ngôn ngữ.');
       loadModels(); // model vừa tải xong → đổi nhãn "đã tải"
     }
-  }, [stt, prefs.model, prefs.language, loadModels]);
+  }, [stt, prefs.model, prefs.language, providers.stt?.id, loadModels]);
 
   const pickFiles = (files: File[]) => {
     const f = files[0];
@@ -107,6 +118,8 @@ export default function SpeechPanel() {
 
   const playing = speak.key === SPEAK_KEY;
   const tooLong = ttsText.length > TTS_MAX_CHARS;
+  /** Nhà cung cấp đọc đang chọn (rỗng = Google) + cỡ mỗi lần gọi của nó. */
+  const ttsVia = providers.tts ? { provider: providers.tts.id, partChars: providers.tts.maxChars } : {};
   const canSpeak = ttsText.trim() !== '' && !tooLong;
 
   const exportMp3 = async () => {
@@ -114,8 +127,9 @@ export default function SpeechPanel() {
     setTtsErr(null);
     setExporting({ done: 0, total: 1 });
     try {
-      const blob = await ttsToBlob(ttsText, ttsLang, (done, total) => setExporting({ done, total }));
-      const name = `doc-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.mp3`;
+      const blob = await ttsToBlob(ttsText, ttsLang, (done, total) => setExporting({ done, total }), ttsVia);
+      const ext = /wav/.test(blob.type) ? 'wav' : /ogg|opus/.test(blob.type) ? 'ogg' : /aac|mp4/.test(blob.type) ? 'm4a' : 'mp3';
+      const name = `doc-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`;
       setMp3({ url: URL.createObjectURL(blob), name });
       download(blob, name);
     } catch (e) {
@@ -131,7 +145,10 @@ export default function SpeechPanel() {
         {/* ── STT ─────────────────────────────────────────────────────────── */}
         <section className="epoch-card sp-card">
           <div className="tools-pane-head">
-            🎙 Âm thanh → Chữ <span className="tools-pane-hint">STT · Whisper chạy trên máy, âm thanh không gửi đi đâu</span>
+            🎙 Âm thanh → Chữ{' '}
+            <span className="tools-pane-hint">
+              {providers.stt ? `STT · âm thanh được gửi tới ${providers.stt.name}` : 'STT · Whisper chạy trên máy, âm thanh không gửi đi đâu'}
+            </span>
           </div>
           <div className="epoch-card-body">
             <div
@@ -175,12 +192,24 @@ export default function SpeechPanel() {
             </div>
 
             <div className="sp-opts">
+              <label className="sp-field sp-field-wide">
+                <span>Nhà cung cấp</span>
+                <select className="input" value={providers.stt?.id ?? DEFAULT_PROVIDER} disabled={working || recording}
+                  onChange={(e) => speechProviders.select('stt', e.target.value)}>
+                  <option value={DEFAULT_PROVIDER}>{DEFAULT_PROVIDER_NAME.stt}</option>
+                  {providers.of('stt').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </label>
+              <button className="ghost sm" onClick={() => setManage('stt')} title="Thêm / sửa nhà cung cấp tích hợp qua API">⚙ Nhà cung cấp</button>
+            </div>
+            <div className="sp-opts">
               <label className="sp-field">
                 <span>Ngôn ngữ nói</span>
                 <select className="input" value={prefs.language} disabled={working || recording} onChange={(e) => prefs.setLanguage(e.target.value)}>
                   {STT_LANGS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
                 </select>
               </label>
+              {!providers.stt && (
               <label className="sp-field">
                 <span>Model</span>
                 <select className="input" value={prefs.model} disabled={working || recording} onChange={(e) => prefs.setModel(e.target.value)}>
@@ -189,8 +218,14 @@ export default function SpeechPanel() {
                     : STT_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                 </select>
               </label>
+              )}
             </div>
-            {curModel && (
+            {providers.stt && (
+              <p className="small epoch-note">
+                Nhận dạng bằng API của {providers.stt.name} ({providers.stt.endpoint.replace(/^https?:\/\//, '').split(/[/?]/)[0]}) — âm thanh rời máy, không có tiến độ từng đoạn.
+              </p>
+            )}
+            {!providers.stt && curModel && (
               <p className="small epoch-note">
                 {curModel.hint} · {curModel.cached ? 'đã có sẵn trên máy' : `sẽ tải ${curModel.sizeMb} MB ở lần dùng đầu (cần mạng)`}.
               </p>
@@ -255,7 +290,10 @@ export default function SpeechPanel() {
         {/* ── TTS ─────────────────────────────────────────────────────────── */}
         <section className="epoch-card sp-card">
           <div className="tools-pane-head">
-            🔊 Chữ → Âm thanh <span className="tools-pane-hint">TTS · giọng đọc Google, chữ được gửi tới Google</span>
+            🔊 Chữ → Âm thanh{' '}
+            <span className="tools-pane-hint">
+              {providers.tts ? `TTS · chữ được gửi tới ${providers.tts.name}` : 'TTS · giọng đọc Google, chữ được gửi tới Google'}
+            </span>
           </div>
           <div className="epoch-card-body">
             <textarea
@@ -265,6 +303,17 @@ export default function SpeechPanel() {
               aria-label="Chữ cần đọc"
               onChange={(e) => { setTtsText(e.target.value); setTtsErr(null); }}
             />
+            <div className="sp-opts">
+              <label className="sp-field sp-field-wide">
+                <span>Nhà cung cấp</span>
+                <select className="input" value={providers.tts?.id ?? DEFAULT_PROVIDER}
+                  onChange={(e) => { speaker.stop(); speechProviders.select('tts', e.target.value); }}>
+                  <option value={DEFAULT_PROVIDER}>{DEFAULT_PROVIDER_NAME.tts}</option>
+                  {providers.of('tts').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </label>
+              <button className="ghost sm" onClick={() => setManage('tts')} title="Thêm / sửa nhà cung cấp tích hợp qua API">⚙ Nhà cung cấp</button>
+            </div>
             <div className="sp-opts">
               <label className="sp-field">
                 <span>Ngôn ngữ đọc</span>
@@ -284,12 +333,12 @@ export default function SpeechPanel() {
             )}
             <div className="sp-row sp-actions">
               <button className="sp-cta" disabled={!canSpeak && !playing}
-                onClick={() => void speaker.speak(SPEAK_KEY, ttsText, ttsLang)}>
+                onClick={() => void speaker.speak(SPEAK_KEY, ttsText, ttsLang, ttsVia)}>
                 {playing ? (speak.loading ? '… Đang tải' : '■ Dừng') : '▶ Nghe'}
               </button>
               <button className="ghost sm" disabled={!canSpeak || exporting !== null} onClick={() => void exportMp3()}
                 title="Ghép toàn bộ thành một file MP3 và tải về">
-                {exporting ? `Đang tạo file… ${exporting.done}/${exporting.total}` : '⬇ Tải .mp3'}
+                {exporting ? `Đang tạo file… ${exporting.done}/${exporting.total}` : '⬇ Tải file'}
               </button>
               <span style={{ flex: 1 }} />
               <button className="ghost sm" disabled={!ttsText} onClick={() => { setTtsText(''); setTtsErr(null); }}>Xoá</button>
@@ -304,6 +353,15 @@ export default function SpeechPanel() {
           </div>
         </section>
       </div>
+
+      {manage && (
+        <SpeechProviderManager
+          kind={manage}
+          onClose={() => setManage(null)}
+          // Mẫu để thử nhà cung cấp STT: chính file đang mở ở cột trái.
+          getSttSample={async () => (source ? pcmSampleBase64(await decodeToPcm16k(source.blob)) : null)}
+        />
+      )}
     </div>
   );
 }
