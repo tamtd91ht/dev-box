@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Git: Clone cả group GitLab.** Trong tab Git → **⚙ Quản lý** có nút **⇊ Clone cả group…**: dán đường dẫn
+  hoặc ID của một group (URL đầy đủ, `nhom/nhom-con`, hay số ID kèm host), app quét mọi repo của group
+  gồm cả nhóm con và liệt kê ra. Tick repo cần lấy (có **Chọn tất cả** / **Bỏ chọn tất cả**, ô lọc theo
+  tên), nhập branch (để trống = branch mặc định của từng repo; repo nào thiếu branch đã nhập thì tuỳ chọn
+  lùi về branch mặc định), chọn thư mục cha trên máy rồi bấm clone. Repo đã có sẵn trong thư mục cha được
+  đánh dấu "đã có" và bỏ qua; repo lỗi vẫn giữ tick để bấm thử lại. Clone chạy nền 3 repo một lúc, dừng
+  được giữa chừng; thư mục cha chưa phải project thì có thể thêm luôn thành project của tab Git. Quét
+  dùng token GitLab đã lưu theo host (thiếu thì nhập ngay trong hộp thoại, scope `read_api`); clone dùng
+  credential git của máy.
 - **STT & TTS (giọng nói ⇄ chữ).** Tab Tools có công cụ mới **🎙 Giọng nói**: thả / chọn file âm thanh
   hay video (hoặc ghi âm) để ra chữ, và dán chữ để nghe hoặc tải file `.mp3`. Trong khung chat trợ lý
   có nút micro (nói thay vì gõ) và nút **🔊 Đọc** dưới mỗi câu trả lời.

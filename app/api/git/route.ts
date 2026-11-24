@@ -41,7 +41,10 @@ import {
   renameBranch,
   revertHead,
 } from '@/lib/gitCore';
-import { getProject, allowedRoots, listProjects } from '@/lib/gitProjects';
+import { promises as fs } from 'fs';
+import { getProject, allowedRoots, listProjects, validateRoot } from '@/lib/gitProjects';
+import { scanGroup, GitLabTokenError } from '@/lib/gitlabGroups';
+import { startCloneJob, getCloneJob, cancelCloneJob } from '@/lib/gitGroupClone';
 import { recordRepo } from '@/lib/gitManifest';
 import { runReviewMr, runScanSecurity, serviceNameFromRepoPath, validateBranch } from '@/lib/reviewMr';
 import { listOpenMergeRequests, mergeMergeRequest, repoGitLabRef } from '@/lib/gitlabMr';
@@ -176,6 +179,63 @@ export async function POST(req: NextRequest) {
     // only ever used to look up an already-saved PAT.
     if (action === 'list-gitlab-namespaces') {
       return NextResponse.json(await listNamespaces(body.host));
+    }
+
+    // ── Clone cả group ────────────────────────────────────────────────────────
+    // Quét mọi repo của một group GitLab (gồm nhóm con). Chỉ đọc; token tra phía
+    // server theo host. Thiếu/sai token → 400 kèm needToken + host để UI mở ô nhập.
+    if (action === 'scan-gitlab-group') {
+      try {
+        return NextResponse.json(await scanGroup(body.group, body.host));
+      } catch (e) {
+        if (e instanceof GitLabTokenError) {
+          return NextResponse.json({ error: e.message, needToken: true, host: e.host }, { status: 400 });
+        }
+        throw e;
+      }
+    }
+
+    // Thư mục cha người dùng chọn để clone group vào: chuẩn hoá đường dẫn, báo
+    // tên nào đã có sẵn (để UI đánh dấu "đã có" thay vì để clone lỗi từng cái).
+    if (action === 'check-clone-targets') {
+      const parent = await validateRoot(body.parent);
+      const names = Array.isArray(body.names)
+        ? (body.names as unknown[]).filter((n): n is string => typeof n === 'string' && !!n).slice(0, 5000)
+        : [];
+      const existing: string[] = [];
+      await Promise.all(
+        names.map(async (n) => {
+          // Chỉ nhận tên đơn — không cho dò đường dẫn ngoài thư mục cha.
+          if (n !== path.basename(n) || n === '.' || n === '..') return;
+          try {
+            await fs.access(path.join(parent, n));
+            existing.push(n);
+          } catch {
+            /* chưa có — tốt */
+          }
+        }),
+      );
+      return NextResponse.json({ parent, existing, selfRepo: await isSelfRepo(parent) });
+    }
+
+    // Clone hàng loạt vào thư mục cha tuỳ chọn (không buộc là root của project —
+    // tool chạy local một người dùng, cùng mô hình với validateRoot khi thêm
+    // project). Chạy thành JOB NỀN, UI hỏi tiến độ — lý do ở lib/gitGroupClone.
+    if (action === 'clone-group-start') {
+      return NextResponse.json(
+        await startCloneJob({
+          parent: body.parent,
+          items: body.items,
+          branch: body.branch,
+          fallbackDefault: body.fallbackDefault,
+        }),
+      );
+    }
+    if (action === 'clone-group-status') {
+      return NextResponse.json(getCloneJob(body.jobId));
+    }
+    if (action === 'clone-group-cancel') {
+      return NextResponse.json(cancelCloneJob(body.jobId));
     }
 
     if (action === 'create-repo') {

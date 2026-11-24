@@ -44,6 +44,7 @@ import { useSplit } from '@/lib/useSplit';
 import Splitter from './Splitter';
 import { useRailCollapse, CollapsedRail, RailHideButton } from './RailCollapse';
 import DiffView from './git/DiffView';
+import GroupCloneModal, { type GroupCloneDone } from './git/GroupCloneModal';
 import { layoutGraph, GRAPH_COLORS } from '@/lib/gitGraph';
 
 const LAST_REPO_KEY = 'git.lastRepo';
@@ -143,6 +144,8 @@ export default function GitWorkspace() {
   const [manageOpen, setManageOpen] = useState(false);
   // Clone dialog — clones a remote repo into the active project's root folder.
   const [cloneOpen, setCloneOpen] = useState(false);
+  // Clone cả group GitLab — quét group, tick repo, clone hàng loạt vào thư mục cha.
+  const [groupCloneOpen, setGroupCloneOpen] = useState(false);
   // Create dialog — creates a NEW GitLab project, then clones it into that root.
   const [createOpen, setCreateOpen] = useState(false);
   const [repos, setRepos] = useState<RepoInfo[]>([]);
@@ -572,6 +575,20 @@ export default function GitWorkspace() {
     flash(`Đã clone ${res.name}`);
   }
 
+  // Một lượt clone cả group vừa xong (hộp thoại vẫn mở để xem kết quả). Thư mục
+  // cha có thể là project đang mở, project khác, hoặc project vừa được thêm.
+  async function afterGroupClone(res: GroupCloneDone) {
+    if (res.state) {
+      setProjects(res.state.projects);
+      setProjectsConfigured(res.state.configured);
+      if (res.state.base) setSafeBase(res.state.base);
+    }
+    flash(`Đã clone ${res.cloned} repo về ${res.parent}`);
+    if (!res.projectId) return;
+    if (res.projectId === projectRef.current) await loadRepos(res.projectId);
+    else setActiveProjectId(res.projectId);
+  }
+
   // A new GitLab project was created. When it was cloned too, treat it exactly
   // like a fresh clone. When the clone failed the project still exists on GitLab,
   // so the modal stays open to show the URL + the reason — don't close it here.
@@ -952,6 +969,17 @@ export default function GitWorkspace() {
         }}
       />}
 
+      {/* Không còn project nào thì dòng công cụ bên dưới biến mất — vẫn phải có
+          lối vào Clone cả group, vì nó tự chọn thư mục cha và tự thêm project. */}
+      {manageVisible && !activeProject && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button className="ghost sm" onClick={() => setGroupCloneOpen(true)}
+            title="Quét một group GitLab rồi clone nhiều repo cùng lúc">
+            ⇊ Clone cả group…
+          </button>
+        </div>
+      )}
+
       {manageVisible && activeProject && (
         <div
           className="small"
@@ -974,6 +1002,15 @@ export default function GitWorkspace() {
                 : ` · ${repos.length} repo`}
           </span>
           <span style={{ flex: 1 }} />
+          {/* Clone cả group tự chọn thư mục cha nên hiện cả khi project-là-repo. */}
+          <button
+            className="ghost sm"
+            onClick={() => setGroupCloneOpen(true)}
+            disabled={busy || !!commandRunning}
+            title="Quét một group GitLab rồi clone nhiều repo cùng lúc"
+          >
+            ⇊ Clone cả group…
+          </button>
           {/* Project-là-repo: clone/tạo repo sẽ đặt thư mục mới vào GIỮA repo đang
               mở, nên hai nút này không có nghĩa ở đây (server chặn luôn). */}
           {!selfRepo && (
@@ -1637,6 +1674,15 @@ export default function GitWorkspace() {
           existingNames={repos.map((r) => r.name)}
           onClose={() => setCloneOpen(false)}
           onCloned={afterClone}
+        />
+      )}
+
+      {groupCloneOpen && (
+        <GroupCloneModal
+          projects={projectsConfigured ? projects : []}
+          defaultParent={activeProject && !selfRepo ? activeProject.root : ''}
+          onClose={() => setGroupCloneOpen(false)}
+          onDone={afterGroupClone}
         />
       )}
 

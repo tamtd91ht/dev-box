@@ -271,6 +271,89 @@ export interface CreateRepoResult {
   cloneError: string | null;
 }
 
+/** Một repo trong group GitLab — kết quả của action `scan-gitlab-group`. */
+export interface GroupRepo {
+  id: number;
+  name: string;
+  /** Đoạn cuối URL — tên thư mục mặc định khi clone. */
+  path: string;
+  pathWithNamespace: string;
+  /** Đường dẫn tính từ group đã quét, vd "sub/repo". */
+  relativePath: string;
+  webUrl: string;
+  httpUrl: string;
+  sshUrl: string;
+  /** '' khi repo rỗng. */
+  defaultBranch: string;
+  archived: boolean;
+  emptyRepo: boolean;
+}
+
+export interface GroupScanResult {
+  host: string;
+  group: { id: number; name: string; fullPath: string; webUrl: string };
+  repos: GroupRepo[];
+  truncated: boolean;
+}
+
+/** Response của `check-clone-targets`. */
+export interface CloneTargetsCheck {
+  /** Đường dẫn thư mục cha đã chuẩn hoá phía server. */
+  parent: string;
+  /** Những tên thư mục đã tồn tại trong thư mục cha. */
+  existing: string[];
+  /** Thư mục cha chính là một repo → không clone vào được. */
+  selfRepo: boolean;
+}
+
+export type CloneItemState = 'pending' | 'running' | 'done' | 'error' | 'cancelled';
+
+/** Một repo trong job clone hàng loạt (xem lib/gitGroupClone). */
+export interface CloneJobItem {
+  /** Khoá client đặt (id project GitLab) để ghép với dòng trên UI. */
+  key: string;
+  name: string;
+  state: CloneItemState;
+  message: string;
+  path: string;
+}
+
+/** Response của `clone-group-start` / `-status` / `-cancel`. */
+export interface CloneJob {
+  id: string;
+  parent: string;
+  branch: string;
+  items: CloneJobItem[];
+  finished: boolean;
+  cancelled: boolean;
+  startedAt: number;
+  finishedAt: number;
+}
+
+/**
+ * Như gitAction nhưng đi qua apiFetch (cầu main process ở desktop — không dính
+ * pool 6 socket của renderer) và cho đặt timeout dài; lỗi giữ nguyên các field
+ * phụ của response (vd `needToken`, `host`) trên Error để UI xử lý.
+ */
+export async function gitActionLong<T = unknown>(
+  action: string,
+  params: Record<string, unknown> = {},
+  timeoutMs = 60_000,
+): Promise<T> {
+  const r = await apiFetch('/api/git', {
+    method: 'POST',
+    body: JSON.stringify({ action, ...params }),
+    timeoutMs,
+  });
+  const data = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!r.ok) {
+    const err = new Error((data.error as string) || `HTTP ${r.status}`);
+    Object.assign(err, { needToken: !!data.needToken, host: typeof data.host === 'string' ? data.host : '' });
+    throw err;
+  }
+  return data as T;
+}
+
 /** GitLab's own rule for a project path — mirrored so the form can validate
  *  before the round-trip (see validateProjectPath in lib/gitlabProjects). */
 export const GITLAB_PATH_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
