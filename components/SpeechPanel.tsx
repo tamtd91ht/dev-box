@@ -22,7 +22,7 @@ import {
   STT_LANGS, STT_LIMITS, STT_MODELS, TTS_LANGS, TTS_MAX_CHARS, decodeToPcm16k, fmtDuration, pcmSampleBase64, speaker, sttStatus, ttsToBlob,
   type SttStatus,
 } from '@/lib/speech';
-import { DEFAULT_PROVIDER, DEFAULT_PROVIDER_NAME, type ProviderKind } from '@/lib/speechProviders';
+import { DEFAULT_PROVIDER, DEFAULT_PROVIDER_NAME, extOfMime, type ProviderKind } from '@/lib/speechProviders';
 import { speechProviders, useSpeechProviders } from '@/lib/useSpeechProviders';
 import { useStt, useSttPrefs } from '@/lib/useStt';
 import SpeechProviderManager from './SpeechProviderManager';
@@ -128,7 +128,7 @@ export default function SpeechPanel() {
     setExporting({ done: 0, total: 1 });
     try {
       const blob = await ttsToBlob(ttsText, ttsLang, (done, total) => setExporting({ done, total }), ttsVia);
-      const ext = /wav/.test(blob.type) ? 'wav' : /ogg|opus/.test(blob.type) ? 'ogg' : /aac|mp4/.test(blob.type) ? 'm4a' : 'mp3';
+      const ext = extOfMime(blob.type);
       const name = `doc-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`;
       setMp3({ url: URL.createObjectURL(blob), name });
       download(blob, name);

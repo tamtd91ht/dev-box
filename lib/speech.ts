@@ -87,7 +87,10 @@ export const sttStatus = () => call<SttStatus>('stt.status');
 export interface ProviderTestResult {
   ok: boolean;
   error: string | null;
-  debug: { method: string; url: string; status: number | null; contentType: string; body: string; bytes: number; ms: number } | null;
+  debug: {
+    method: string; url: string; status: number | null; contentType: string; body: string; bytes: number; ms: number;
+    picked?: string; fetched?: string; format?: string;
+  } | null;
   text?: string;
   audio?: { mime: string; chunks: string[] };
 }
@@ -317,22 +320,70 @@ function b64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
-/** Cả văn bản → một file MP3 (nối các khung MP3 lại — phát được ở mọi trình phát). */
+/**
+ * Ghép nhiều file WAV thành một: giữ header `fmt ` của file đầu, nối dữ liệu
+ * âm thanh, viết lại kích thước. null nếu có file không phải WAV hoặc khác
+ * định dạng mẫu (sample rate, số kênh…) — khi đó không ghép được đúng.
+ */
+function mergeWav(files: Uint8Array[]): Uint8Array | null {
+  const tag = (b: Uint8Array, i: number) => String.fromCharCode(b[i], b[i + 1], b[i + 2], b[i + 3]);
+  let fmt: Uint8Array | null = null;
+  const datas: Uint8Array[] = [];
+  for (const b of files) {
+    if (b.length < 12 || tag(b, 0) !== 'RIFF' || tag(b, 8) !== 'WAVE') return null;
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    let f: Uint8Array | null = null;
+    let d: Uint8Array | null = null;
+    for (let i = 12; i + 8 <= b.length;) {
+      const id = tag(b, i);
+      let size = dv.getUint32(i + 4, true);
+      // Một số máy chủ phát dạng stream để size = 0 / 0xFFFFFFFF → lấy tới hết file.
+      if (id === 'data' && (size === 0 || i + 8 + size > b.length)) size = b.length - i - 8;
+      if (id === 'fmt ') f = b.subarray(i, i + 8 + size);
+      else if (id === 'data') { d = b.subarray(i + 8, i + 8 + size); break; }
+      i += 8 + size + (size & 1);
+    }
+    if (!f || !d) return null;
+    if (!fmt) fmt = f;
+    else if (fmt.length !== f.length || fmt.some((x, j) => x !== f![j])) return null;
+    datas.push(d);
+  }
+  if (!fmt) return null;
+  const dataLen = datas.reduce((n, d) => n + d.length, 0);
+  const out = new Uint8Array(12 + fmt.length + 8 + dataLen);
+  const dv = new DataView(out.buffer);
+  out.set([0x52, 0x49, 0x46, 0x46], 0); // RIFF
+  dv.setUint32(4, out.length - 8, true);
+  out.set([0x57, 0x41, 0x56, 0x45], 8); // WAVE
+  out.set(fmt, 12);
+  let o = 12 + fmt.length;
+  out.set([0x64, 0x61, 0x74, 0x61], o); // data
+  dv.setUint32(o + 4, dataLen, true);
+  o += 8;
+  for (const d of datas) { out.set(d, o); o += d.length; }
+  return out;
+}
+
+/** Cả văn bản → một file audio (định dạng theo nhà cung cấp; Google = MP3). */
 export async function ttsToBlob(text: string, lang: string, onProgress?: (done: number, total: number) => void, via: TtsVia = {}): Promise<Blob> {
   const parts = ttsParts(text, via.partChars);
   if (!parts.length) throw new Error('Không có gì để đọc.');
   const real = lang === 'auto' ? guessLang(text) : lang;
   const bytes: Uint8Array[] = [];
-  let mime = 'audio/mpeg';
+  let mime = '';
   for (let i = 0; i < parts.length; i++) {
     const r = await ttsPart(parts[i], real, via.provider);
-    mime = r.mime || mime;
+    mime ||= r.mime;
     for (const c of r.chunks) bytes.push(b64ToBytes(c));
     onProgress?.(i + 1, parts.length);
   }
-  // Ghép thẳng các phần: đúng với MP3 (chuỗi khung độc lập). Định dạng có header
-  // (WAV…) thì trình phát chỉ đọc phần đầu — nhà cung cấp trả WAV nên để văn bản
-  // vừa một lần gọi (tăng "Ký tự mỗi lần gọi").
+  mime ||= 'audio/mpeg';
+  // WAV có header → phải ghép dữ liệu rồi viết lại header, nối thẳng thì trình
+  // phát chỉ đọc phần đầu. MP3 / AAC ADTS là chuỗi khung độc lập → nối thẳng.
+  if (bytes.length > 1 && /wav/i.test(mime)) {
+    const merged = mergeWav(bytes);
+    if (merged) return new Blob([merged as BlobPart], { type: mime });
+  }
   return new Blob(bytes as BlobPart[], { type: mime });
 }
 

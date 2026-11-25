@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **STT / TTS qua API: đọc kết quả linh hoạt hơn.** Ở mục Response, đường dẫn JSON khai được nhiều phương án
+  ngăn bằng `|` (vd `data.url | data.link | url`) — lấy cái đầu tiên có giá trị, nên chịu được API đặt tên
+  trường khác nhau, lồng bao nhiêu cấp cũng được. TTS có thêm kiểu **"URL hoặc base64 trong JSON (tự nhận)"**
+  và ô **Định dạng audio** (Tự nhận / MP3 / WAV / OGG / M4A / AAC / FLAC / WebM); để "Tự nhận" thì đoán theo
+  đuôi file trong URL, rồi Content-Type, rồi nội dung file — trước đây file `.wav` CDN trả kiểu chung chung bị
+  gắn nhầm thành MP3. Văn bản dài phải gọi nhiều lần mà nhà cung cấp trả WAV nay được ghép thành một file WAV
+  đúng (trước chỉ nghe được phần đầu). STT có thêm kiểu **"URL file kết quả trong JSON"**: tải file đó về,
+  đọc chữ thuần hoặc đọc theo đường dẫn nếu file là JSON. Nút "Thử" hiện đường dẫn đã khớp, URL đã tải và
+  định dạng nhận ra. Có mẫu điền sẵn cho API kiểu OMI AI (body JSON, kết quả ở `data.url`). Chỉ hỗ trợ API
+  đồng bộ; kiểu job + hỏi lại kết quả để sau.
 - **Trợ lý AI đọc được mọi view.** Khi bật 🖱 "Thao tác màn hình", lệnh đọc màn hình nay lấy cả chữ bên
   trong trang web nhúng (tab Browser, Zalo, Workspace, Google Docs… gồm cả iframe), toàn bộ nội dung
   editor Monaco, 300 dòng cuối của terminal, và mọi pane đang hiện trong Ultra View — nên có thể bảo trợ lý

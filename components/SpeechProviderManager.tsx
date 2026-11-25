@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { providerRemove, providerSave, providerTest, type ProviderTestResult } from '@/lib/speech';
 import {
-  DEFAULT_PROVIDER_NAME, PROVIDER_PRESETS, PROVIDER_VARS, blankProvider, templateVars,
+  AUDIO_FORMATS, DEFAULT_PROVIDER_NAME, PROVIDER_PRESETS, PROVIDER_VARS, blankProvider, templateVars,
   type KV, type ProviderAuth, type ProviderBody, type ProviderKind, type ProviderResponse, type SpeechProvider,
 } from '@/lib/speechProviders';
 import { speechProviders, useSpeechProviders } from '@/lib/useSpeechProviders';
@@ -147,10 +147,17 @@ export default function SpeechProviderManager(props: {
     up({ body: b });
   };
   const setRespType = (type: ProviderResponse['type']) => {
+    if (!draft) return;
+    // Giữ định dạng audio đã chọn khi đổi kiểu.
+    const mime = (draft.response as { mime?: string }).mime;
     const r: ProviderResponse = type === 'json' ? { type, path: 'text' } : type === 'text' ? { type }
-      : type === 'base64' ? { type, path: 'audioContent' } : type === 'url' ? { type, path: 'url' } : { type: 'audio' };
+      : type === 'base64' ? { type, path: 'audioContent', mime }
+        : type === 'url' ? (draft.kind === 'stt' ? { type, path: 'data.url | url' } : { type, path: 'data.url | url', mime })
+          : type === 'auto' ? { type, path: 'data.url | url | audioContent | audio', mime } : { type: 'audio', mime };
     up({ response: r });
   };
+  /** Định dạng audio đang khai (rỗng = tự nhận). Giá trị lạ (bản cũ gõ tay) vẫn hiện để không mất. */
+  const curMime = (draft?.response as { mime?: string } | undefined)?.mime ?? '';
 
   const secretType = showSecret ? 'text' : 'password';
   const valid = !!draft && draft.name.trim() !== '' && /^https?:\/\/\S+$/i.test(draft.endpoint.trim());
@@ -350,33 +357,53 @@ export default function SpeechProviderManager(props: {
                       {draft.kind === 'stt' ? (
                         <>
                           <option value="json">Một trường trong JSON</option>
+                          <option value="url">URL file kết quả trong JSON</option>
                           <option value="text">Cả body là chữ</option>
                         </>
                       ) : (
                         <>
-                          <option value="audio">Body là file audio</option>
-                          <option value="base64">Audio base64 trong JSON</option>
+                          <option value="auto">URL hoặc base64 trong JSON (tự nhận)</option>
                           <option value="url">URL audio trong JSON</option>
+                          <option value="base64">Audio base64 trong JSON</option>
+                          <option value="audio">Body là file audio</option>
                         </>
                       )}
                     </select>
                   </label>
-                  {(draft.response.type === 'json' || draft.response.type === 'base64' || draft.response.type === 'url') && (
+                  {'path' in draft.response && (
                     <label className="spm-field">
-                      <span>Đường dẫn trong JSON</span>
+                      <span>Đường dẫn trong JSON <i className="spm-opt">nhiều phương án ngăn bằng |</i></span>
                       <input className="input spm-mono" value={draft.response.path}
-                        placeholder={draft.kind === 'stt' ? 'text  ·  results[0].alternatives[0].transcript  ·  segments[*].text' : 'audioContent  ·  data.url'}
+                        placeholder={draft.kind === 'stt'
+                          ? (draft.response.type === 'url' ? 'data.url | data.link | result_url' : 'text | data.text | results[0].alternatives[0].transcript')
+                          : 'data.url | data.link | audioContent'}
                         onChange={(e) => up({ response: { ...(draft.response as Extract<ProviderResponse, { path: string }>), path: e.target.value } })} />
                     </label>
                   )}
                   {draft.kind === 'tts' && (
                     <label className="spm-field spm-narrow">
-                      <span>Kiểu audio <i className="spm-opt">trống = tự nhận</i></span>
-                      <input className="input spm-mono" value={(draft.response as { mime?: string }).mime ?? ''} placeholder="audio/mpeg"
-                        onChange={(e) => up({ response: { ...draft.response, mime: e.target.value || undefined } as ProviderResponse })} />
+                      <span>Định dạng audio</span>
+                      <select className="input" value={curMime}
+                        onChange={(e) => up({ response: { ...draft.response, mime: e.target.value || undefined } as ProviderResponse })}>
+                        <option value="">Tự nhận</option>
+                        {AUDIO_FORMATS.map((f) => <option key={f.mime} value={f.mime}>{f.label} (.{f.ext})</option>)}
+                        {curMime && !AUDIO_FORMATS.some((f) => f.mime === curMime) && <option value={curMime}>{curMime}</option>}
+                      </select>
                     </label>
                   )}
                 </div>
+                {draft.kind === 'stt' && draft.response.type === 'url' && (
+                  <label className="spm-field">
+                    <span>Đường dẫn chữ trong file kết quả <i className="spm-opt">chỉ khi file là JSON — file .txt thì để trống</i></span>
+                    <input className="input spm-mono" value={draft.response.textPath ?? ''} placeholder="text | transcript | segments[*].text"
+                      onChange={(e) => up({ response: { ...(draft.response as Extract<ProviderResponse, { type: 'url' }>), textPath: e.target.value } })} />
+                  </label>
+                )}
+                <p className="spm-hint">
+                  Đường dẫn: <code>data.url</code>, <code>results[0].text</code>, <code>segments[*].text</code> (nối mọi phần tử),
+                  {' '}<code>["khoá.có.chấm"]</code>. Khai nhiều phương án <code>data.url | data.link | url</code> — lấy cái đầu tiên có giá trị.
+                  {draft.kind === 'tts' && ' Định dạng “Tự nhận”: theo đuôi file trong URL (.mp3, .wav…), rồi Content-Type, rồi nội dung file. Chọn định dạng chỉ là khai báo để phát / lưu đúng, không chuyển đổi.'}
+                </p>
                 <div className="spm-row2">
                   {draft.kind === 'tts' && (
                     <label className="spm-field spm-narrow">
@@ -424,6 +451,13 @@ export default function SpeechProviderManager(props: {
                           {test.debug.method} {test.debug.url} → {test.debug.status ?? 'không có phản hồi'}
                           {test.debug.contentType ? ` · ${test.debug.contentType}` : ''} · {test.debug.bytes.toLocaleString('vi-VN')} byte · {test.debug.ms} ms
                         </p>
+                        {(test.debug.picked || test.debug.fetched || test.debug.format) && (
+                          <p className="spm-debug-line">
+                            {test.debug.picked && <>Đọc ở <code>{test.debug.picked}</code></>}
+                            {test.debug.fetched && <> · tải {test.debug.fetched}</>}
+                            {test.debug.format && <> · định dạng {test.debug.format}</>}
+                          </p>
+                        )}
                         <pre className="spm-pre" aria-label="Phản hồi thô của API">{test.debug.body || '(body rỗng)'}</pre>
                       </>
                     )}

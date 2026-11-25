@@ -11,8 +11,15 @@
 //     model, voice). Body JSON được phân tích rồi mới thay biến nên giá trị tự
 //     được escape đúng; {{x|number}} / {{x|bool}} để ra số / true-false.
 //   · ĐỌC OUTPUT RA: `response` nói kết quả nằm ở đâu — STT: chữ ở một đường dẫn
-//     JSON (vd results[0].alternatives[0].transcript, segments[*].text) hoặc cả
-//     body; TTS: body là file audio, hoặc base64 / URL ở một đường dẫn JSON.
+//     JSON (vd results[0].alternatives[0].transcript, segments[*].text), cả body,
+//     hoặc URL tới file kết quả; TTS: body là file audio, hoặc base64 / URL (hay
+//     tự nhận một trong hai) ở một đường dẫn JSON. Đường dẫn khai được nhiều
+//     phương án ngăn bằng `|` (vd `data.url | data.link | audio`) — lấy cái đầu
+//     tiên có giá trị, nên một cấu hình chịu được tên trường khác nhau.
+//   · ĐỊNH DẠNG AUDIO (TTS): người dùng chọn (MP3, WAV…) hoặc để tự nhận — theo
+//     đuôi file trong URL, rồi Content-Type, rồi mấy byte đầu của file. Chỉ là
+//     khai báo để phát / lưu đúng, không chuyển đổi định dạng.
+//   · Chỉ API đồng bộ (một lần gọi ra kết quả); kiểu job + hỏi lại chưa hỗ trợ.
 //
 // Thực thi (gọi HTTP) nằm ở lib/speechProviderServer.ts — phía server, nên không
 // dính CORS và khoá API không nằm trong trang.
@@ -45,12 +52,18 @@ export type ProviderResponse =
   | { type: 'json'; path: string }
   /** STT: cả body là chữ. */
   | { type: 'text' }
-  /** TTS: body là file audio. `mime` để trống = lấy theo Content-Type. */
+  /** TTS: body là file audio. `mime` để trống = tự nhận. */
   | { type: 'audio'; mime?: string }
-  /** TTS: audio dạng base64 ở `path` trong JSON. */
+  /** TTS: audio dạng base64 (hoặc data: URI) ở `path` trong JSON. */
   | { type: 'base64'; path: string; mime?: string }
-  /** TTS: `path` trong JSON là URL tải audio (có hãng trả link, vài giây sau mới có file). */
-  | { type: 'url'; path: string; mime?: string };
+  /**
+   * `path` trong JSON là URL tải kết quả (có hãng trả link, vài giây sau mới có file).
+   * TTS: URL file audio. STT: URL file chữ (.txt) hoặc JSON — khi là JSON thì
+   * chữ nằm ở `textPath` trong file đó.
+   */
+  | { type: 'url'; path: string; mime?: string; textPath?: string }
+  /** TTS: giá trị ở `path` là URL hay base64 thì tự nhận. */
+  | { type: 'auto'; path: string; mime?: string };
 
 export interface SpeechProvider {
   id: string;
@@ -187,6 +200,95 @@ export function pathToText(v: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Tách khai báo nhiều đường dẫn: `data.url | data.link | audio`. Dấu `|` nằm
+ * trong ["…"] / ['…'] không tính là dấu ngăn.
+ */
+export function splitPaths(spec: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let quote: string | null = null;
+  for (const ch of spec) {
+    if (quote) { if (ch === quote) quote = null; cur += ch; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
+    if (ch === '|') { out.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+
+/**
+ * Thử lần lượt từng đường dẫn, trả giá trị (dạng chữ) đầu tiên không rỗng +
+ * đường dẫn khớp. Không có cái nào khác rỗng nhưng có trường tồn tại mà rỗng
+ * (vd STT trả "" khi im lặng) thì trả cái rỗng đó; không tới được đâu = undefined.
+ */
+export function readFirst(data: unknown, spec: string): { value: string; path: string } | undefined {
+  let empty: { value: string; path: string } | undefined;
+  for (const path of splitPaths(spec)) {
+    const v = pathToText(readPath(data, path));
+    if (v === undefined) continue;
+    if (v.trim() !== '') return { value: v, path };
+    empty ??= { value: v, path };
+  }
+  return empty;
+}
+
+// ── Định dạng audio ──────────────────────────────────────────────────────────
+
+/** Định dạng người dùng chọn được cho audio TTS. */
+export const AUDIO_FORMATS: { mime: string; ext: string; label: string }[] = [
+  { mime: 'audio/mpeg', ext: 'mp3', label: 'MP3' },
+  { mime: 'audio/wav', ext: 'wav', label: 'WAV' },
+  { mime: 'audio/ogg', ext: 'ogg', label: 'OGG / Opus' },
+  { mime: 'audio/mp4', ext: 'm4a', label: 'M4A (mp4)' },
+  { mime: 'audio/aac', ext: 'aac', label: 'AAC' },
+  { mime: 'audio/flac', ext: 'flac', label: 'FLAC' },
+  { mime: 'audio/webm', ext: 'webm', label: 'WebM' },
+];
+
+const EXT_MIME: Record<string, string> = {
+  mp3: 'audio/mpeg', mpga: 'audio/mpeg', wav: 'audio/wav', wave: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg',
+  opus: 'audio/ogg', m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac', webm: 'audio/webm',
+};
+
+/** Đuôi file trong một URL / tên file → mime audio; undefined nếu không nhận ra. */
+export function mimeFromExt(urlOrName: string): string | undefined {
+  let p: string;
+  try { p = new URL(urlOrName).pathname; } catch { p = urlOrName.split(/[?#]/)[0]; }
+  const m = /\.([a-z0-9]{2,5})$/i.exec(p);
+  return m ? EXT_MIME[m[1].toLowerCase()] : undefined;
+}
+
+/** Mime → đuôi file để lưu. */
+export function extOfMime(mime: string): string {
+  const m = mime.split(';')[0].trim().toLowerCase();
+  const hit = AUDIO_FORMATS.find((f) => f.mime === m);
+  if (hit) return hit.ext;
+  if (/wav/.test(m)) return 'wav';
+  if (/ogg|opus/.test(m)) return 'ogg';
+  if (/mp4|m4a/.test(m)) return 'm4a';
+  if (/aac/.test(m)) return 'aac';
+  if (/flac/.test(m)) return 'flac';
+  if (/webm/.test(m)) return 'webm';
+  return 'mp3';
+}
+
+/** Nhận dạng định dạng audio qua mấy byte đầu; undefined nếu không chắc. */
+export function sniffAudio(b: Uint8Array): string | undefined {
+  const at = (i: number, s: string) => [...s].every((c, j) => b[i + j] === c.charCodeAt(0));
+  if (b.length < 12) return undefined;
+  if (at(0, 'RIFF') && at(8, 'WAVE')) return 'audio/wav';
+  if (at(0, 'OggS')) return 'audio/ogg';
+  if (at(0, 'fLaC')) return 'audio/flac';
+  if (at(4, 'ftyp')) return 'audio/mp4';
+  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return 'audio/webm';
+  if (at(0, 'ID3')) return 'audio/mpeg';
+  if (b[0] === 0xff && (b[1] & 0xf6) === 0xf0) return 'audio/aac'; // ADTS
+  if (b[0] === 0xff && (b[1] & 0xe0) === 0xe0 && (b[1] & 0x06) !== 0) return 'audio/mpeg';
+  return undefined;
+}
+
 // ── Kiểm cấu hình + mẫu điền sẵn ─────────────────────────────────────────────
 
 const cleanKV = (rows: unknown): KV[] => (Array.isArray(rows) ? rows : [])
@@ -229,18 +331,28 @@ export function normalizeProvider(input: unknown): SpeechProvider {
   if (method === 'GET' && body.type !== 'none') throw new Error('Method GET không gửi body — chọn POST hoặc đặt Body là "Không có".');
 
   const r = (p.response ?? {}) as ProviderResponse;
+  const pathOf = (v: unknown) => splitPaths(str(v, 600)).join(' | ');
+  const mime = str((r as { mime?: string }).mime, 80).trim().toLowerCase() || undefined;
   let response: ProviderResponse;
   if (kind === 'stt') {
-    response = r.type === 'text' ? { type: 'text' } : { type: 'json', path: str((r as { path?: string }).path, 400).trim() };
-    if (response.type === 'json' && !response.path) throw new Error('Response: thiếu đường dẫn tới chữ nhận dạng (vd text).');
-  } else {
-    const mime = str((r as { mime?: string }).mime, 80).trim() || undefined;
-    if (r.type === 'base64' || r.type === 'url') {
-      const path = str(r.path, 400).trim();
-      if (!path) throw new Error(`Response: thiếu đường dẫn tới ${r.type === 'url' ? 'URL audio' : 'audio base64'}.`);
-      response = { type: r.type, path, mime };
-    } else response = { type: 'audio', mime };
-  }
+    if (r.type === 'text') response = { type: 'text' };
+    else if (r.type === 'url') {
+      const path = pathOf(r.path);
+      if (!path) throw new Error('Response: thiếu đường dẫn tới URL file kết quả (vd data.url).');
+      const textPath = pathOf(r.textPath);
+      response = { type: 'url', path, ...(textPath ? { textPath } : {}) };
+    } else {
+      response = { type: 'json', path: pathOf((r as { path?: string }).path) };
+      if (!response.path) throw new Error('Response: thiếu đường dẫn tới chữ nhận dạng (vd text).');
+    }
+  } else if (r.type === 'base64' || r.type === 'url' || r.type === 'auto') {
+    const path = pathOf(r.path);
+    if (!path) {
+      const what = r.type === 'url' ? 'URL audio' : r.type === 'base64' ? 'audio base64' : 'URL / base64 audio';
+      throw new Error(`Response: thiếu đường dẫn tới ${what} (vd data.url).`);
+    }
+    response = { type: r.type, path, mime };
+  } else response = { type: 'audio', mime };
 
   const maxChars = Math.min(20_000, Math.max(100, Math.round(Number(p.maxChars) || 2000)));
   const timeoutSec = Math.min(600, Math.max(5, Math.round(Number(p.timeoutSec) || (kind === 'stt' ? 180 : 60))));
@@ -290,6 +402,29 @@ export const PROVIDER_PRESETS: { id: string; label: string; make: () => SpeechPr
       response: { type: 'audio', mime: 'audio/mpeg' },
       vars: [{ key: 'model', value: 'tts-1' }, { key: 'voice', value: 'alloy' }],
       maxChars: 4000,
+    }),
+  },
+  {
+    id: 'json-link-tts',
+    label: 'TTS trả JSON chứa link / base64 audio (vd OMI AI)',
+    make: () => ({
+      ...blankProvider('tts'),
+      name: 'OMI AI TTS',
+      endpoint: 'https://your-tts-host/text-to-speech/v1',
+      auth: { type: 'header', name: 'apikey', value: '' },
+      body: { type: 'json', template: JSON.stringify({
+        config: { speed: '{{speed|number}}', speech_emotion: '{{emotion}}' },
+        model_id: '{{model}}',
+        text: '{{text}}',
+        voice_id: '{{voice}}',
+      }, null, 2) },
+      response: { type: 'auto', path: 'data.url | data.link | url' },
+      vars: [
+        { key: 'model', value: 'tts-standard' },
+        { key: 'voice', value: 'northern_female_ngocanh' },
+        { key: 'speed', value: '1.0' },
+        { key: 'emotion', value: 'neutral' },
+      ],
     }),
   },
 ];

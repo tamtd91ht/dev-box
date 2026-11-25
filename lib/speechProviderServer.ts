@@ -14,7 +14,7 @@ import { promises as fs } from 'fs';
 import { randomUUID } from 'crypto';
 import { configPath } from './configDir';
 import {
-  PROVIDER_LIMITS, fillJson, fillString, normalizeProvider, pathToText, readPath,
+  PROVIDER_LIMITS, fillJson, fillString, mimeFromExt, normalizeProvider, readFirst, sniffAudio,
   type ProviderKind, type SpeechProvider,
 } from './speechProviders';
 
@@ -79,6 +79,12 @@ export interface CallDebug {
   body: string;
   bytes: number;
   ms: number;
+  /** Đường dẫn (trong các phương án `a | b`) đã đọc ra kết quả. */
+  picked?: string;
+  /** URL kết quả đã tải thêm (TTS: file audio; STT: file chữ). */
+  fetched?: string;
+  /** TTS: định dạng audio dùng để phát / lưu + nó đến từ đâu. */
+  format?: string;
 }
 
 /** PCM 16 kHz mono 16-bit → file WAV. */
@@ -189,11 +195,40 @@ async function doFetch(p: SpeechProvider, builtins: Record<string, string>, wav:
 }
 
 function parseJson(buf: Buffer, p: SpeechProvider, debug: CallDebug): unknown {
-  if (buf.length > MAX_TEXT_BYTES) throw Object.assign(new Error(`Phản hồi của ${p.name} lớn quá ${MAX_TEXT_BYTES / 1048576} MB.`), { debug });
+  if (buf.length > MAX_TEXT_BYTES) throw fail(`Phản hồi của ${p.name} lớn quá ${MAX_TEXT_BYTES / 1048576} MB.`, debug);
   try { return JSON.parse(buf.toString('utf8')); } catch {
-    throw Object.assign(new Error(`Phản hồi của ${p.name} không phải JSON — kiểm lại mục Response (đang chọn đọc theo đường dẫn JSON).`), { debug });
+    throw fail(`Phản hồi của ${p.name} không phải JSON — kiểm lại mục Response (đang chọn đọc theo đường dẫn JSON).`, debug);
   }
 }
+
+const fail = (msg: string, debug: CallDebug) => Object.assign(new Error(msg), { debug });
+const isUrl = (v: string) => /^https?:\/\/\S+$/i.test(v);
+
+/**
+ * Tải file kết quả từ URL mà API trả về. Có hãng trả link ngay nhưng vài giây
+ * sau file mới sẵn → HTTP lỗi / file rỗng thì thử lại vài lần.
+ */
+async function download(url: string, maxBytes: number, debug: CallDebug, signal?: AbortSignal): Promise<{ buf: Buffer; contentType: string }> {
+  debug.fetched = url;
+  let last = '';
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (signal?.aborted) throw fail('Đã dừng.', debug);
+    if (attempt) await new Promise((res) => setTimeout(res, 1500));
+    let a: Response;
+    try {
+      const t = AbortSignal.timeout(30_000);
+      a = await fetch(url, { signal: signal ? AbortSignal.any([signal, t]) : t });
+    } catch (e) { last = (e as Error).message; continue; }
+    if (!a.ok) { last = `HTTP ${a.status}`; continue; }
+    const buf = Buffer.from(await a.arrayBuffer());
+    if (!buf.length) { last = 'file rỗng'; continue; }
+    if (buf.length > maxBytes) throw fail(`File kết quả lớn quá ${Math.round(maxBytes / 1048576)} MB.`, debug);
+    return { buf, contentType: a.headers.get('content-type') ?? '' };
+  }
+  throw fail(`Không tải được kết quả từ URL ${url.slice(0, 200)} (${last}).`, debug);
+}
+
+const cleanText = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 /** STT qua API: PCM → chữ. Lỗi ném ra có kèm `.debug` nếu đã gọi được. */
 export async function callStt(p: SpeechProvider, pcm: Buffer, language: string, signal?: AbortSignal): Promise<{ text: string; debug: CallDebug }> {
@@ -204,58 +239,102 @@ export async function callStt(p: SpeechProvider, pcm: Buffer, language: string, 
     filename: 'audio.wav', mime: 'audio/wav',
     seconds: (pcm.length / 2 / SAMPLE_RATE).toFixed(2),
   }, wav, signal);
-  if (p.response.type === 'text') return { text: buf.toString('utf8').trim(), debug };
-  if (p.response.type !== 'json') throw Object.assign(new Error('Response của nhà cung cấp STT phải là "JSON" hoặc "Chữ thuần".'), { debug });
-  const text = pathToText(readPath(parseJson(buf, p, debug), p.response.path));
-  if (text === undefined) {
-    throw Object.assign(new Error(`Không thấy chữ ở đường dẫn "${p.response.path}" trong phản hồi của ${p.name} — xem phản hồi và sửa đường dẫn ở mục Response.`), { debug });
+  const r = p.response;
+  if (r.type === 'text') return { text: buf.toString('utf8').trim(), debug };
+  if (r.type !== 'json' && r.type !== 'url') throw fail('Response của nhà cung cấp STT phải là "JSON", "URL file kết quả" hoặc "Chữ thuần".', debug);
+  const hit = readFirst(parseJson(buf, p, debug), r.path);
+  const what = r.type === 'url' ? 'URL file kết quả' : 'chữ';
+  if (!hit) throw fail(`Không thấy ${what} ở đường dẫn "${r.path}" trong phản hồi của ${p.name} — xem phản hồi và sửa đường dẫn ở mục Response.`, debug);
+  debug.picked = hit.path;
+  if (r.type === 'json') return { text: cleanText(hit.value), debug };
+
+  // Kết quả là link tới file chữ (.txt) hoặc JSON.
+  const url = hit.value.trim();
+  if (!isUrl(url)) throw fail(`Giá trị ở "${hit.path}" không phải URL: ${url.slice(0, 120)}`, debug);
+  const file = await download(url, MAX_TEXT_BYTES, debug, signal);
+  const raw = file.buf.toString('utf8').replace(/^﻿/, '');
+  debug.body += `\n\n── File kết quả (${url}) ──\n${snippet(raw)}`;
+  let json: unknown;
+  let isJson = false;
+  if (/json/i.test(file.contentType) || /^\s*[[{"]/.test(raw)) {
+    try { json = JSON.parse(raw); isJson = true; } catch { /* chữ thuần */ }
   }
-  return { text: text.replace(/\s+/g, ' ').trim(), debug };
+  if (!isJson) {
+    if (r.textPath) throw fail(`File kết quả không phải JSON nên không đọc được đường dẫn "${r.textPath}" — xoá ô đó nếu file là chữ thuần.`, debug);
+    return { text: cleanText(raw), debug };
+  }
+  if (typeof json === 'string') return { text: cleanText(json), debug };
+  if (!r.textPath) throw fail('File kết quả là JSON — điền “Đường dẫn chữ trong file” ở mục Response (vd text).', debug);
+  const inner = readFirst(json, r.textPath);
+  if (!inner) throw fail(`Không thấy chữ ở đường dẫn "${r.textPath}" trong file kết quả.`, debug);
+  debug.picked = `${hit.path} → ${inner.path}`;
+  return { text: cleanText(inner.value), debug };
 }
 
-function audioMime(cfg: string | undefined, contentType: string): string {
-  if (cfg) return cfg;
-  const ct = contentType.split(';')[0].trim().toLowerCase();
-  return ct.startsWith('audio/') ? ct : 'audio/mpeg';
+const MIME_ALIAS: Record<string, string> = {
+  'audio/x-wav': 'audio/wav', 'audio/wave': 'audio/wav', 'audio/vnd.wave': 'audio/wav',
+  'audio/mp3': 'audio/mpeg', 'audio/x-mp3': 'audio/mpeg', 'audio/x-m4a': 'audio/mp4', 'audio/x-flac': 'audio/flac',
+};
+
+/**
+ * Định dạng audio để phát / lưu. Thứ tự: người dùng chọn → đuôi file trong URL
+ * → mime của data: URI → Content-Type → mấy byte đầu của file → MP3.
+ */
+function pickMime(cfg: string | undefined, audio: Buffer, hints: { url?: string; dataUri?: string; contentType?: string }): { mime: string; from: string } {
+  if (cfg) return { mime: cfg, from: 'đã chọn' };
+  const ext = hints.url ? mimeFromExt(hints.url) : undefined;
+  if (ext) return { mime: ext, from: 'theo đuôi file trong URL' };
+  const norm = (m: string) => { const x = m.split(';')[0].trim().toLowerCase(); return MIME_ALIAS[x] ?? x; };
+  if (hints.dataUri && norm(hints.dataUri).startsWith('audio/')) return { mime: norm(hints.dataUri), from: 'theo data: URI' };
+  const ct = norm(hints.contentType ?? '');
+  if (ct.startsWith('audio/')) return { mime: ct, from: 'theo Content-Type' };
+  const s = sniffAudio(audio);
+  if (s) return { mime: s, from: 'theo nội dung file' };
+  return { mime: 'audio/mpeg', from: 'không nhận ra — mặc định' };
 }
 
 /** TTS qua API: một phần chữ → audio base64. */
 export async function callTts(p: SpeechProvider, text: string, language: string, signal?: AbortSignal): Promise<{ mime: string; chunks: string[]; debug: CallDebug }> {
   const { buf, debug, texty } = await doFetch(p, { text, language }, null, signal);
   const r = p.response;
+  const done = (audio: Buffer, pick: { mime: string; from: string }) => {
+    debug.format = `${pick.mime} (${pick.from})`;
+    return { mime: pick.mime, chunks: [audio.toString('base64')], debug };
+  };
   if (r.type === 'audio') {
-    if (texty) throw Object.assign(new Error(`${p.name} trả về chữ / JSON chứ không phải file audio — đổi mục Response sang "base64 trong JSON" hoặc "URL trong JSON".`), { debug });
-    if (!buf.length) throw Object.assign(new Error(`${p.name} trả về audio rỗng.`), { debug });
-    if (buf.length > MAX_AUDIO_BYTES) throw Object.assign(new Error('File audio trả về quá lớn.'), { debug });
-    return { mime: audioMime(r.mime, debug.contentType), chunks: [buf.toString('base64')], debug };
+    if (texty && !sniffAudio(buf)) throw fail(`${p.name} trả về chữ / JSON chứ không phải file audio — đổi mục Response sang “URL hoặc base64 trong JSON”.`, debug);
+    if (!buf.length) throw fail(`${p.name} trả về audio rỗng.`, debug);
+    if (buf.length > MAX_AUDIO_BYTES) throw fail('File audio trả về quá lớn.', debug);
+    return done(buf, pickMime(r.mime, buf, { contentType: debug.contentType }));
   }
-  if (r.type !== 'base64' && r.type !== 'url') throw Object.assign(new Error('Response của nhà cung cấp TTS phải là audio, base64 hoặc URL.'), { debug });
-  const v = pathToText(readPath(parseJson(buf, p, debug), r.path));
-  if (!v) {
-    throw Object.assign(new Error(`Không thấy ${r.type === 'url' ? 'URL audio' : 'audio base64'} ở đường dẫn "${r.path}" trong phản hồi của ${p.name}.`), { debug });
+  if (r.type !== 'base64' && r.type !== 'url' && r.type !== 'auto') throw fail('Response của nhà cung cấp TTS phải là audio, base64, URL hoặc tự nhận.', debug);
+  const hit = readFirst(parseJson(buf, p, debug), r.path);
+  const what = r.type === 'url' ? 'URL audio' : r.type === 'base64' ? 'audio base64' : 'URL / base64 audio';
+  if (!hit || !hit.value.trim()) throw fail(`Không thấy ${what} ở đường dẫn "${r.path}" trong phản hồi của ${p.name} — xem phản hồi và sửa đường dẫn ở mục Response.`, debug);
+  debug.picked = hit.path;
+  const v = hit.value.trim();
+
+  if (r.type === 'url' && !isUrl(v)) throw fail(`Giá trị ở "${hit.path}" không phải URL: ${v.slice(0, 120)}`, debug);
+  if (r.type === 'url' || (r.type === 'auto' && isUrl(v))) {
+    const f = await download(v, MAX_AUDIO_BYTES, debug, signal);
+    if (isTexty(f.contentType) && !sniffAudio(f.buf)) {
+      throw fail(`URL ở "${hit.path}" trả về chữ chứ không phải audio: ${snippet(f.buf.toString('utf8'), 200)}`, debug);
+    }
+    return done(f.buf, pickMime(r.mime, f.buf, { url: v, contentType: f.contentType }));
   }
-  if (r.type === 'base64') {
-    const m = /^data:([^;,]+)[^,]*,(.*)$/s.exec(v.trim());
-    const b64 = (m ? m[2] : v).replace(/\s+/g, '');
-    if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(b64)) throw Object.assign(new Error(`Giá trị ở "${r.path}" không phải base64.`), { debug });
-    return { mime: r.mime ?? m?.[1] ?? 'audio/mpeg', chunks: [b64.replace(/-/g, '+').replace(/_/g, '/')], debug };
+
+  // base64 thường, base64url, hoặc data:audio/…;base64,…
+  const m = /^data:([^;,]+)[^,]*,(.*)$/s.exec(v);
+  const b64 = (m ? m[2] : v).replace(/\s+/g, '');
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(b64)) {
+    throw fail(r.type === 'auto'
+      ? `Giá trị ở "${hit.path}" không phải URL cũng không phải base64: ${v.slice(0, 120)}`
+      : `Giá trị ở "${hit.path}" không phải base64.`, debug);
   }
-  if (!/^https?:\/\//i.test(v)) throw Object.assign(new Error(`Giá trị ở "${r.path}" không phải URL: ${v.slice(0, 120)}`), { debug });
-  // Có hãng trả link ngay nhưng vài giây sau file mới sẵn → thử lại vài lần.
-  let last = '';
-  for (let attempt = 0; attempt < 8; attempt++) {
-    if (signal?.aborted) throw Object.assign(new Error('Đã dừng.'), { debug });
-    if (attempt) await new Promise((res) => setTimeout(res, 1500));
-    try {
-      const a = await fetch(v, { signal: AbortSignal.timeout(30_000) });
-      if (!a.ok) { last = `HTTP ${a.status}`; continue; }
-      const ab = Buffer.from(await a.arrayBuffer());
-      if (!ab.length) { last = 'file rỗng'; continue; }
-      if (ab.length > MAX_AUDIO_BYTES) throw new Error('File audio quá lớn.');
-      return { mime: audioMime(r.mime, a.headers.get('content-type') ?? ''), chunks: [ab.toString('base64')], debug };
-    } catch (e) { last = (e as Error).message; }
-  }
-  throw Object.assign(new Error(`Không tải được audio từ URL ${p.name} trả về (${last}).`), { debug });
+  const audio = Buffer.from(b64.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  if (!audio.length) throw fail(`${p.name} trả về audio rỗng.`, debug);
+  if (audio.length > MAX_AUDIO_BYTES) throw fail('File audio trả về quá lớn.', debug);
+  return done(audio, pickMime(r.mime, audio, { dataUri: m?.[1] }));
 }
 
 // ── Thử cấu hình (chưa cần lưu) ──────────────────────────────────────────────
