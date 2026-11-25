@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Trợ lý AI đọc được mọi view.** Khi bật 🖱 "Thao tác màn hình", lệnh đọc màn hình nay lấy cả chữ bên
+  trong trang web nhúng (tab Browser, Zalo, Workspace, Google Docs… gồm cả iframe), toàn bộ nội dung
+  editor Monaco, 300 dòng cuối của terminal, và mọi pane đang hiện trong Ultra View — nên có thể bảo trợ lý
+  "tóm tắt / phân tích trang này, log này, màn hình này". Chỉ đọc: vẫn không bấm hay gõ vào bên trong
+  trang web / editor / terminal; số liệu chỉ vẽ trên biểu đồ canvas thì chưa đọc được.
 - **Git: Clone cả group GitLab.** Trong tab Git → **⚙ Quản lý** có nút **⇊ Clone cả group…**: dán đường dẫn
   hoặc ID của một group (URL đầy đủ, `nhom/nhom-con`, hay số ID kèm host), app quét mọi repo của group
   gồm cả nhóm con và liệt kê ra. Tick repo cần lấy (có **Chọn tất cả** / **Bỏ chọn tất cả**, ô lọc theo

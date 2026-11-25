@@ -111,6 +111,8 @@ export default function XTermView({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    // Trợ lý AI (lib/aiScreen.ts) đọc chữ terminal qua buffer — canvas không có innerText.
+    (host as HTMLElement & { __xterm?: Terminal }).__xterm = term;
     termRef.current = term;
     fitRef.current = fit;
 
@@ -206,6 +208,7 @@ export default function XTermView({
       scrollSub.dispose();
       wroteSub.dispose();
       es.close();
+      delete (host as HTMLElement & { __xterm?: Terminal }).__xterm;
       term.dispose();
     };
   }, [id, base, fontSize]);
