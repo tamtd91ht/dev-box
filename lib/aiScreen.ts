@@ -16,7 +16,8 @@
 // Không gõ phím, không điền form, không chạy lệnh, không đọc/ghi file, không
 // chạm vào chính bảng trợ lý. Trang web nhúng (<webview> Browser, Zalo…) đang
 // hiện thì CHỈ ĐỌC chữ (executeJavaScript / cầu execInFrames, gồm cả iframe);
-// phần tử trong trang web không bấm được.
+// phần tử trong trang web không bấm được. Mỗi bước còn gửi kèm ẢNH CHỤP màn
+// hình (captureScreen) để model nhìn phần vẽ bằng canvas — Google Sheets, biểu đồ.
 // Chữ đọc từ màn hình là DỮ LIỆU không tin được (mail, tin nhắn, log… có thể
 // chứa câu "hãy bấm nút X") — system prompt dặn model không làm theo, và chốt
 // chặn thật là bước xin phép ở trên.
@@ -24,7 +25,11 @@
 export type AiAction =
   | { type: 'open_tab'; tab: string }
   | { type: 'read_screen' }
-  | { type: 'click'; n: number };
+  | { type: 'click'; n: number }
+  | { type: 'scroll'; area: number; direction: ScrollDir; pages: number };
+
+export type ScrollDir = 'down' | 'up' | 'right' | 'left';
+const SCROLL_DIRS: ScrollDir[] = ['down', 'up', 'right', 'left'];
 
 export interface AiTab { key: string; label: string }
 
@@ -44,6 +49,16 @@ export function parseAction(raw: string): AiAction | null {
     if (o.type === 'open_tab' && typeof o.tab === 'string') return { type: 'open_tab', tab: o.tab };
     if (o.type === 'read_screen') return { type: 'read_screen' };
     if (o.type === 'click' && Number.isInteger(o.n)) return { type: 'click', n: Number(o.n) };
+    if (o.type === 'scroll' && SCROLL_DIRS.includes(o.direction as ScrollDir)) {
+      const pages = Number(o.pages);
+      return {
+        type: 'scroll',
+        area: Number.isInteger(o.area) ? Number(o.area) : 1,
+        direction: o.direction as ScrollDir,
+        // "end" / số lớn → cuộn tới cuối; giới hạn để một bước không nhảy quá xa.
+        pages: o.pages === 'end' ? 1000 : Number.isFinite(pages) && pages > 0 ? Math.min(pages, 1000) : 1,
+      };
+    }
   } catch { /* JSON hỏng → coi như không có hành động */ }
   return null;
 }
@@ -224,6 +239,245 @@ function readTerminals(root: HTMLElement): string[] {
   return out;
 }
 
+// ── Vùng cuộn ────────────────────────────────────────────────────────────────
+//
+// Chữ và ảnh chụp chỉ có phần ĐANG HIỆN. Bảng dài, Sheets nhiều cột… phải cuộn
+// mới thấy, nên mỗi lần đọc màn hình còn liệt kê các VÙNG CUỘN ĐƯỢC (đánh số,
+// kèm vị trí đang đứng và còn bao nhiêu phía sau) và model có hành động
+// `scroll` — cuộn không đổi dữ liệu nên không cần hỏi người dùng.
+//   · Vùng trong giao diện app: el.scrollBy.
+//   · Vùng trong trang web nhúng: scrollBy trong guest; trang không nhúc nhích
+//     (canvas, trang chỉ nghe wheel) → lăn chuột thật qua main (workspace:wheel).
+//     Trang không có phần tử cuộn nào (thuần canvas) vẫn có một vùng "cả khung
+//     trang" để lăn chuột vào giữa.
+
+interface ScrollInfo {
+  x: number; y: number; w: number; h: number;
+  top: number; left: number; sh: number; sw: number; ch: number; cw: number;
+  label: string;
+}
+
+type ScrollArea =
+  | { kind: 'web'; wv: WebviewEl; k: number; info: ScrollInfo; page: string }
+  | { kind: 'app'; el: HTMLElement; info: ScrollInfo };
+
+/** Vùng cuộn của lần đọc màn hình gần nhất — `scroll area` trỏ vào đây. */
+let lastScroll: ScrollArea[] = [];
+
+const MAX_SCROLL_AREAS = 8;
+
+/** Chạy trong guest: đánh dấu + mô tả các vùng cuộn được đang hiện.
+ *  k = 0 là cả trang (document.scrollingElement); k ≥ 1 là phần tử con, gắn
+ *  data-dbx-scroll để lần cuộn sau tìm lại. */
+const DETECT_SCROLL_JS = `(() => {
+  const vw = innerWidth, vh = innerHeight, out = [];
+  for (const e of document.querySelectorAll('[data-dbx-scroll]')) e.removeAttribute('data-dbx-scroll');
+  const lab = (el) => {
+    const a = (el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+    if (a) return a.slice(0, 60);
+    const c = typeof el.className === 'string' ? el.className.trim().split(/\\s+/).slice(0, 2).join('.') : '';
+    return (el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (c ? '.' + c : '')).slice(0, 60);
+  };
+  const info = (el, r, label) => ({ x: r.left, y: r.top, w: r.width, h: r.height,
+    top: el.scrollTop, left: el.scrollLeft, sh: el.scrollHeight, sw: el.scrollWidth,
+    ch: el.clientHeight, cw: el.clientWidth, label });
+  const se = document.scrollingElement || document.documentElement;
+  if (se && (se.scrollHeight > vh + 4 || se.scrollWidth > vw + 4)) {
+    const i = info(se, { left: 0, top: 0, width: vw, height: vh }, 'cả trang');
+    i.ch = vh; i.cw = vw;
+    out.push(Object.assign({ k: 0 }, i));
+  }
+  const cands = [];
+  for (const el of document.querySelectorAll('body *')) {
+    if (el.scrollHeight <= el.clientHeight + 8 && el.scrollWidth <= el.clientWidth + 8) continue;
+    if (el === se) continue;
+    const cs = getComputedStyle(el);
+    const oy = /(auto|scroll|overlay)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 8;
+    const ox = /(auto|scroll|overlay)/.test(cs.overflowX) && el.scrollWidth > el.clientWidth + 8;
+    if (!oy && !ox) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8 || r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) continue;
+    cands.push({ el, r, a: r.width * r.height });
+  }
+  cands.sort((p, q) => q.a - p.a);
+  cands.slice(0, ${MAX_SCROLL_AREAS}).forEach((c, i) => {
+    c.el.setAttribute('data-dbx-scroll', String(i + 1));
+    out.push(Object.assign({ k: i + 1 }, info(c.el, c.r, lab(c.el))));
+  });
+  return out;
+})()`;
+
+/** Chạy trong guest: cuộn vùng k một đoạn (dx, dy). Trả vị trí trước/sau. */
+const scrollJs = (k: number, dx: number, dy: number) => `(() => {
+  const el = ${k} === 0 ? (document.scrollingElement || document.documentElement)
+    : document.querySelector('[data-dbx-scroll="${k}"]');
+  if (!el) return null;
+  const b = [el.scrollLeft, el.scrollTop];
+  el.scrollBy({ left: ${dx}, top: ${dy}, behavior: 'instant' });
+  return { before: b, after: [el.scrollLeft, el.scrollTop] };
+})()`;
+
+/** Tả vị trí cuộn cho model: đang ở đâu, còn bao nhiêu màn hình mỗi phía. */
+function describePos(i: ScrollInfo): string {
+  if (!i.sh && !i.sw) return 'không rõ vị trí (trang tự vẽ — lăn chuột rồi xem ảnh chụp)';
+  const part = (pos: number, size: number, view: number, back: string, fwd: string) => {
+    if (size <= view + 8) return '';
+    const before = pos / view;
+    const after = Math.max(0, (size - view - pos) / view);
+    const pct = Math.round((pos / Math.max(1, size - view)) * 100);
+    return `${pct}% — ${before < 0.05 ? `đang ở đầu (${back})` : `~${before.toFixed(1)} màn hình ${back}`}, ${after < 0.05 ? `đã tới cuối (${fwd})` : `còn ~${after.toFixed(1)} màn hình ${fwd}`}`;
+  };
+  const v = part(i.top, i.sh, i.ch, 'phía trên', 'phía dưới');
+  const h = part(i.left, i.sw, i.cw, 'bên trái', 'bên phải');
+  return [v && `dọc ${v}`, h && `ngang ${h}`].filter(Boolean).join('; ') || 'không còn gì để cuộn';
+}
+
+/** Vùng cuộn trong giao diện app (bỏ editor / terminal — đã đọc đủ nội dung). */
+function appScrollAreas(pane: HTMLElement): ScrollArea[] {
+  const cands: { el: HTMLElement; a: number }[] = [];
+  const all = [pane, ...pane.querySelectorAll<HTMLElement>('*')];
+  for (const el of all) {
+    if (el.scrollHeight <= el.clientHeight + 8 && el.scrollWidth <= el.clientWidth + 8) continue;
+    if (el.closest('.monaco-editor, .xterm, webview')) continue;
+    const cs = getComputedStyle(el);
+    const oy = /(auto|scroll|overlay)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 8;
+    const ox = /(auto|scroll|overlay)/.test(cs.overflowX) && el.scrollWidth > el.clientWidth + 8;
+    if ((!oy && !ox) || !onScreen(el)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 40 || r.height < 40) continue;
+    cands.push({ el, a: r.width * r.height });
+  }
+  cands.sort((p, q) => q.a - p.a);
+  return cands.slice(0, MAX_SCROLL_AREAS).map(({ el }) => {
+    const r = el.getBoundingClientRect();
+    return {
+      kind: 'app' as const,
+      el,
+      info: {
+        x: r.left, y: r.top, w: r.width, h: r.height,
+        top: el.scrollTop, left: el.scrollLeft, sh: el.scrollHeight, sw: el.scrollWidth,
+        ch: el.clientHeight, cw: el.clientWidth,
+        // Không dùng labelOf (innerText của cả khung — dài, vô nghĩa làm nhãn).
+        label: (el.getAttribute('aria-label') || '').trim().slice(0, 60)
+          || [el.tagName.toLowerCase(), ...el.className.toString().split(/\s+/).filter(Boolean).slice(0, 2)].join('.'),
+      },
+    };
+  });
+}
+
+/** Vùng cuộn trong một trang web nhúng. Không tìm được gì → một vùng "cả khung
+ *  trang" (k = -1) để lăn chuột vào giữa — trang thuần canvas. */
+async function webScrollAreas(wv: WebviewEl, page: string): Promise<ScrollArea[]> {
+  let found: (ScrollInfo & { k: number })[] = [];
+  try { found = ((await wv.executeJavaScript(DETECT_SCROLL_JS)) as (ScrollInfo & { k: number })[]) ?? []; }
+  catch { /* chưa tải xong */ }
+  const r = wv.getBoundingClientRect();
+  if (!found.length) {
+    found = [{ k: -1, x: 0, y: 0, w: r.width, h: r.height, top: 0, left: 0, sh: 0, sw: 0, ch: r.height, cw: r.width, label: 'cả khung trang' }];
+  }
+  return found.map(({ k, ...info }) => ({ kind: 'web' as const, wv, k, info, page }));
+}
+
+function scrollAreaLine(a: ScrollArea, n: number): string {
+  const where = a.kind === 'web' ? `trang web "${a.page}"` : 'giao diện app';
+  return `[${n}] ${a.info.label} (${where}) — ${describePos(a.info)}`;
+}
+
+/** Cuộn vùng số n (của lần đọc gần nhất). Trả câu mô tả kết quả. */
+async function doScroll(n: number, dir: ScrollDir, pages: number): Promise<string> {
+  const a = lastScroll[n - 1];
+  if (!a) return `Không có vùng cuộn số ${n}. Đọc lại màn hình để lấy danh sách vùng cuộn mới.`;
+  const vert = dir === 'down' || dir === 'up';
+  const sign = dir === 'down' || dir === 'right' ? 1 : -1;
+  const step = Math.max(40, Math.round((vert ? a.info.ch : a.info.cw) * 0.85));
+  const dist = sign * step * pages;
+  const dx = vert ? 0 : dist;
+  const dy = vert ? dist : 0;
+
+  if (a.kind === 'app') {
+    if (!a.el.isConnected) return 'Vùng cuộn này không còn trên màn hình. Đọc lại màn hình.';
+    const before = [a.el.scrollLeft, a.el.scrollTop];
+    a.el.scrollBy({ left: dx, top: dy, behavior: 'instant' as ScrollBehavior });
+    await sleep(300);
+    const moved = before[0] !== a.el.scrollLeft || before[1] !== a.el.scrollTop;
+    return moved ? `Đã cuộn ${a.info.label} (${dir}).` : `Vùng ${a.info.label} không cuộn thêm được theo hướng ${dir} — đã ở mép.`;
+  }
+
+  // Trang web nhúng: thử scrollBy trước; không nhúc nhích thì lăn chuột thật.
+  // Vùng chỉ là THANH CUỘN mảnh tách rời nội dung (Google Sheets vẽ lưới bằng
+  // canvas, thanh cuộn là div riêng): scrollBy trên thanh đó chưa chắc kéo lưới
+  // theo → lăn chuột thẳng vào giữa trang, đúng như người dùng làm.
+  const thin = a.info.w < 40 || a.info.h < 40;
+  let moved = false;
+  if (a.k >= 0 && !thin) {
+    try {
+      const r = (await a.wv.executeJavaScript(scrollJs(a.k, dx, dy))) as { before: number[]; after: number[] } | null;
+      moved = !!r && (r.before[0] !== r.after[0] || r.before[1] !== r.after[1]);
+    } catch { /* trang vừa điều hướng */ }
+  }
+  let via = 'scrollBy';
+  if (!moved) {
+    const wheel = window.workspace?.wheel;
+    let id = -1;
+    try { id = a.wv.getWebContentsId(); } catch { /* chưa attach */ }
+    if (!wheel || id <= 0) return 'Trang này không cuộn được bằng script và app không lăn chuột được (bản desktop cũ?).';
+    const wr = a.wv.getBoundingClientRect();
+    const cx = thin ? wr.width / 2 : a.info.x + a.info.w / 2;
+    const cy = thin ? wr.height / 2 : a.info.y + a.info.h / 2;
+    // Mỗi cú lăn tối đa ~một màn hình; "tới cuối" thì lăn nhiều cú.
+    const ticks = Math.min(Math.ceil(Math.abs(pages)), 12);
+    for (let i = 0; i < ticks; i++) {
+      const res = await wheel(id, cx, cy, vert ? 0 : sign * step, vert ? sign * step : 0);
+      if (!res?.ok) return `Lăn chuột lỗi: ${res?.error ?? 'không rõ'}`;
+      await sleep(120);
+    }
+    via = 'lăn chuột';
+  }
+  await sleep(600); // trang tự vẽ (Sheets) cần một nhịp để vẽ lại vùng mới
+  return `Đã cuộn ${a.info.label} trong trang "${a.page}" (${dir}, ${pages >= 1000 ? 'tới cuối' : `${pages} màn hình`}, bằng ${via}). Xem ảnh chụp mới gửi kèm.`;
+}
+
+export interface ScreenShot { name: string; mediaType: 'image/jpeg'; data: string }
+
+/** ẢNH CHỤP màn hình đang xem — để model NHÌN những gì vẽ bằng canvas (ô Google
+ *  Sheets, biểu đồ…) mà innerText không có. Trang web nhúng đang hiện → chụp
+ *  thẳng guest; không có → chụp vùng các pane của cửa sổ chính. Chạy ngoài
+ *  Electron (preload cũ / trình duyệt thường) → [] và chỉ còn phần chữ. */
+export async function captureScreen(): Promise<ScreenShot[]> {
+  const cap = window.workspace?.captureScreen;
+  if (!cap) return [];
+  const panes = visiblePanes();
+  if (!panes.length) return [];
+
+  const ids: number[] = [];
+  for (const pane of panes) {
+    for (const wv of pane.querySelectorAll<WebviewEl>('webview')) {
+      if (!onScreen(wv)) continue;
+      try { const id = wv.getWebContentsId(); if (id > 0) ids.push(id); } catch { /* chưa attach */ }
+    }
+  }
+  // Hợp các pane đang hiện (Ultra View: nhiều pane cạnh nhau).
+  const rs = panes.map((p) => p.getBoundingClientRect());
+  const x = Math.min(...rs.map((r) => r.left));
+  const y = Math.min(...rs.map((r) => r.top));
+  const rect = {
+    x, y,
+    width: Math.min(window.innerWidth, Math.max(...rs.map((r) => r.right))) - x,
+    height: Math.min(window.innerHeight, Math.max(...rs.map((r) => r.bottom))) - y,
+  };
+  try {
+    const res = await cap(rect, ids);
+    return (res?.shots ?? []).map((s, i) => ({
+      name: s.kind === 'web' ? `ảnh-chụp-trang-${i + 1}.jpg` : 'ảnh-chụp-màn-hình.jpg',
+      mediaType: 'image/jpeg' as const,
+      data: s.data,
+    }));
+  } catch (e) {
+    console.warn('[aiScreen] chụp màn hình lỗi', e);
+    return [];
+  }
+}
+
 /** Ảnh chụp CHỮ của (các) pane đang xem + danh sách phần tử bấm được (đánh số).
  *  Đọc thêm những vùng innerText không thấy: trang web nhúng (<webview> —
  *  Browser, Zalo, Workspace, Google Docs…), editor Monaco, terminal xterm.
@@ -234,6 +488,7 @@ export async function snapshot(screenName: string): Promise<string> {
 
   const texts: string[] = [];
   const extras: string[] = [];
+  const scrolls: ScrollArea[] = [];
   let webCount = 0;
   let cut = false;
   for (const pane of panes) {
@@ -243,7 +498,13 @@ export async function snapshot(screenName: string): Promise<string> {
 
     const webviews = [...pane.querySelectorAll<WebviewEl>('webview')].filter(onScreen);
     webCount += webviews.length;
-    for (const wv of webviews.slice(0, 3)) extras.push(await readWebview(wv));
+    for (const wv of webviews.slice(0, 3)) {
+      extras.push(await readWebview(wv));
+      let page = '';
+      try { page = wv.getTitle?.() || new URL(wv.getURL?.() ?? '').hostname; } catch { /* chưa attach */ }
+      scrolls.push(...(await webScrollAreas(wv, page || 'trang web')));
+    }
+    try { scrolls.push(...appScrollAreas(pane)); } catch { /* bỏ qua */ }
     try { extras.push(...readEditors(pane)); } catch { /* monaco chưa tải */ }
     try { extras.push(...readTerminals(pane)); } catch { /* terminal đã huỷ */ }
   }
@@ -260,11 +521,12 @@ export async function snapshot(screenName: string): Promise<string> {
     }
   }
   lastItems = items;
+  lastScroll = scrolls.slice(0, MAX_SCROLL_AREAS * 2);
 
   const notes: string[] = [];
   if (panes.length > 1) notes.push(`Đang hiện ${panes.length} pane cùng lúc (Ultra View) — đọc cả ${panes.length}.`);
   if (webCount) notes.push('Có trang web nhúng — chữ bên trong ở phần "Trang web nhúng" bên dưới; phần tử trong trang web KHÔNG bấm được.');
-  if (panes.some((p) => p.querySelector('canvas:not(.xterm canvas)'))) notes.push('Có biểu đồ / vùng vẽ canvas — số liệu chỉ vẽ trên đó thì không đọc được, chỉ đọc được chữ quanh nó.');
+  if (panes.some((p) => p.querySelector('canvas:not(.xterm canvas)'))) notes.push('Có biểu đồ / vùng vẽ canvas — số liệu vẽ trên đó không có trong phần chữ; xem ẢNH CHỤP màn hình gửi kèm.');
   if (cut) notes.push(`Chữ trên màn hình dài hơn ${MAX_TEXT} ký tự — đã cắt bớt phần sau.`);
 
   return [
@@ -274,6 +536,8 @@ export async function snapshot(screenName: string): Promise<string> {
     // Nội dung chính (trang web / editor / terminal) đặt TRƯỚC chữ giao diện:
     // kết quả mỗi bước bị server cắt theo độ dài, phần quan trọng phải nằm đầu.
     ...extras,
+    '--- Vùng cuộn được (dùng số trong ngoặc cho hành động scroll; còn phần khuất thì cuộn để đọc tiếp) ---',
+    lastScroll.length ? lastScroll.map((a, i) => scrollAreaLine(a, i + 1)).join('\n') : '(không có — mọi thứ đã hiện hết)',
     '--- Chữ giao diện đang hiện ---',
     text || '(trống)',
     '--- Phần tử bấm được (dùng số trong ngoặc cho hành động click) ---',
@@ -295,6 +559,10 @@ export interface ActionHost {
 export function describeAction(a: AiAction, tabs: AiTab[]): string {
   if (a.type === 'open_tab') return `Mở tab ${tabs.find((t) => t.key === a.tab)?.label ?? a.tab}`;
   if (a.type === 'read_screen') return 'Đọc màn hình';
+  if (a.type === 'scroll') {
+    const dir = { down: 'xuống', up: 'lên', right: 'sang phải', left: 'sang trái' }[a.direction];
+    return `Cuộn ${dir}${a.pages >= 1000 ? ' tới cuối' : a.pages !== 1 ? ` ${a.pages} màn hình` : ''} — ${lastScroll[a.area - 1]?.info.label ?? `vùng #${a.area}`}`;
+  }
   return `Bấm “${lastItems[a.n - 1]?.label ?? `#${a.n}`}”`;
 }
 
@@ -314,6 +582,10 @@ export async function runAction(a: AiAction, host: ActionHost): Promise<string> 
     if (a.type === 'read_screen') {
       await settle(2500);
       return await snapshot(host.screenName());
+    }
+    if (a.type === 'scroll') {
+      const done = await doScroll(a.area, a.direction, a.pages);
+      return `${done}\n${await snapshot(host.screenName())}`;
     }
     const it = lastItems[a.n - 1];
     if (!it || !it.el.isConnected || !isShown(it.el)) {

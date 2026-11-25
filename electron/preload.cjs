@@ -33,6 +33,13 @@ contextBridge.exposeInMainWorld('workspace', {
    */
   execInFrames: (targetId, code) => ipcRenderer.invoke('workspace:execInFrames', targetId, code),
   /**
+   * Trợ lý AI: chụp ảnh các guest <webview> đang hiện (theo webContentsId) và/hoặc
+   * một vùng của cửa sổ chính — xem workspace:captureScreen trong main.cjs.
+   */
+  captureScreen: (rect, guestIds) => ipcRenderer.invoke('workspace:captureScreen', rect, guestIds),
+  /** Trợ lý AI: lăn chuột tại (x, y) — toạ độ trong guest — xem workspace:wheel trong main.cjs. */
+  wheel: (targetId, x, y, dx, dy) => ipcRenderer.invoke('workspace:wheel', targetId, x, y, dx, dy),
+  /**
    * 🔕: báo main danh sách partition Workspace đang ẨN THÔNG BÁO + cờ toàn cục.
    * Main chặn quyền `notifications` của guest tương ứng — xem main.cjs.
    */

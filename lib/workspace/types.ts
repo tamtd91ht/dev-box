@@ -152,6 +152,18 @@ export interface WorkspaceBridge {
     error?: string;
     frames?: { url: string; value: unknown }[];
   }>;
+  /** Trợ lý AI: chụp ảnh (JPEG base64) các guest đang hiện; không có guest
+   *  nào thì chụp vùng `rect` (CSS px) của cửa sổ chính. Preload cũ → undefined. */
+  captureScreen?(
+    rect: { x: number; y: number; width: number; height: number } | null,
+    guestIds: number[],
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    shots: { kind: 'web' | 'app'; url?: string; data: string }[];
+  }>;
+  /** Trợ lý AI: lăn chuột tại (x, y) trong guest; dy > 0 = cuộn xuống, dx > 0 = sang phải. */
+  wheel?(targetId: number, x: number, y: number, dx: number, dy: number): Promise<{ ok: boolean; error?: string; via?: string }>;
   /** 🔕: báo main danh sách partition Workspace đang ẨN THÔNG BÁO (dạng
    *  'ws-<plugin>-<instance>', không kèm 'persist:') + cờ tắt toàn cục. Main
    *  chặn quyền `notifications` của đúng guest đó — notification Windows từ

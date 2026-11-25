@@ -34,7 +34,7 @@ import { fmtRel } from '@/lib/google';
 import { fmtDuration, mdToSpeech, speaker } from '@/lib/speech';
 import { useStt, useSttPrefs } from '@/lib/useStt';
 import { useSpeechProviders } from '@/lib/useSpeechProviders';
-import { DENIED, describeAction, parseAction, runAction, stripAction, type AiTab } from '@/lib/aiScreen';
+import { DENIED, captureScreen, describeAction, parseAction, runAction, stripAction, type AiTab, type ScreenShot } from '@/lib/aiScreen';
 import {
   AI_DEFAULT_MODEL, AI_LIMITS, AI_MAX_W, AI_MIN_W, AI_MODELS, KB_BUDGET, KB_LIMITS, aiDock,
   type AiAttachment, type AiPoll, type AiTurn, type KbDoc, type KbMeta,
@@ -60,7 +60,8 @@ const MSGS_KEY = 'ai.msgs';
 const MODEL_KEY = 'ai.model';
 const AGENT_KEY = 'ai.agent';
 /** Số hành động tối đa cho một câu hỏi — chặn vòng lặp vô tận. */
-const MAX_STEPS = 8;
+/** Đọc hết một bảng dài cần cuộn nhiều lần — 8 bước cũ không đủ. */
+const MAX_STEPS = 20;
 const POLL_MS = 300;
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const num = (n: number) => n.toLocaleString('vi-VN');
@@ -314,7 +315,9 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
 
     stopRef.current = false;
     /** Nhật ký thao tác của câu hỏi này — gửi lại ở mỗi lượt để model biết đã làm gì. */
-    const steps: { action: string; result: string }[] = [];
+    const steps: { action: string; result: string; note?: string }[] = [];
+    /** Ảnh chụp màn hình sau bước gần nhất — gửi kèm lượt kế (chỉ ảnh MỚI NHẤT). */
+    let shots: ScreenShot[] = [];
     let totalMs = 0;
     try {
       // Mỗi vòng = một lượt hỏi. Câu trả lời có khối <hanh_dong> → làm bước đó
@@ -322,8 +325,11 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
       for (let round = 0; ; round++) {
         const { id } = await call<{ id: string }>('ask', {
           question, history, screen: screenRef.current, model,
-          // File chỉ gửi ở lượt đầu; các lượt sau model đã có kết quả đọc màn hình.
-          attachments: round === 0 ? atts.map(({ id: _i, bytes: _b, preview: _p, ...a }) => a) : [],
+          // File chỉ gửi ở lượt đầu; các lượt sau gửi ảnh chụp màn hình sau bước
+          // vừa làm (để model NHÌN phần vẽ canvas: Google Sheets, biểu đồ…).
+          attachments: round === 0
+            ? atts.map(({ id: _i, bytes: _b, preview: _p, ...a }) => a)
+            : shots.map((s) => ({ kind: 'image' as const, name: s.name, mediaType: s.mediaType, data: s.data })),
           ...(agent ? { agent: true, tabs, steps } : {}),
         }, 60000);
         jobRef.current = id;
@@ -365,7 +371,11 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
             setConfirm({ label: what, resolve: (ok) => { setConfirm(null); resolve(ok); } });
           }),
         });
-        steps.push({ action: JSON.stringify(action), result });
+        // Ghi chú của model trước hành động (dữ liệu đã gom được qua các lần
+        // cuộn) đi kèm nhật ký — ảnh chụp cũ không gửi lại, chỉ còn ghi chú này.
+        steps.push({ action: JSON.stringify(action), result, note: stripAction(raw).slice(0, 4000) || undefined });
+        // Bị từ chối bấm thì màn hình không đổi — vẫn chụp lại cho đơn giản.
+        shots = await captureScreen();
         patch((m) => ({
           steps: m.steps?.map((s, i, all) => (
             i === all.length - 1 ? { ...s, state: result.startsWith(DENIED) ? 'denied' as const : 'done' as const } : s

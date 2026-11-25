@@ -3401,6 +3401,88 @@ ipcMain.handle('workspace:execInFrames', (evt, targetId, code) => {
   }
 });
 
+// ── Trợ lý AI: chụp ảnh màn hình đang xem (lib/aiScreen.ts) ─────────────────
+//
+// Đọc chữ (innerText) không thấy được những gì VẼ bằng canvas — ô của Google
+// Sheets, biểu đồ, bảng tính… Như Claude in Chrome, trợ lý được gửi kèm ẢNH
+// CHỤP màn hình để model tự nhìn. Chụp:
+//   · từng guest <webview> đang hiện (capturePage của chính guest — chắc chắn
+//     có nội dung trang, không phụ thuộc cách host ghép lớp native), và
+//   · vùng pane của cửa sổ chính khi không có webview.
+// Chỉ nhận guest thuộc ĐÚNG trang đang gọi (như execInFrames). Ảnh thu nhỏ về
+// tối đa 1400px ngang, JPEG — đủ đọc chữ mà không phình request.
+ipcMain.handle('workspace:captureScreen', async (evt, rect, guestIds) => {
+  const MAX_W = 1400;
+  const encode = (img) => {
+    if (!img || img.isEmpty()) return null;
+    const { width } = img.getSize();
+    const out = width > MAX_W ? img.resize({ width: MAX_W, quality: 'good' }) : img;
+    return out.toJPEG(75).toString('base64');
+  };
+  const shots = [];
+  try {
+    for (const id of (Array.isArray(guestIds) ? guestIds : []).slice(0, 2)) {
+      const target = webContents.fromId(Number(id));
+      if (!target || target.isDestroyed() || target.hostWebContents !== evt.sender) continue;
+      try {
+        const data = encode(await target.capturePage());
+        if (data) shots.push({ kind: 'web', url: target.getURL(), data });
+      } catch { /* guest vừa đóng */ }
+    }
+    if (!shots.length && rect && rect.width > 0 && rect.height > 0) {
+      const r = {
+        x: Math.max(0, Math.round(rect.x)), y: Math.max(0, Math.round(rect.y)),
+        width: Math.round(rect.width), height: Math.round(rect.height),
+      };
+      const data = encode(await evt.sender.capturePage(r));
+      if (data) shots.push({ kind: 'app', data });
+    }
+    return { ok: true, shots };
+  } catch (err) {
+    return { ok: false, error: err && err.message, shots };
+  }
+});
+
+// ── Trợ lý AI: cuộn bằng con lăn trong guest (lib/aiScreen.ts) ──────────────
+//
+// Trang tự vẽ (canvas, Google Sheets…) hoặc chặn scrollBy chỉ nghe sự kiện
+// WHEEL thật. Bắn qua CDP Input.dispatchMouseEvent (deltaY > 0 = cuộn xuống,
+// quy ước rõ ràng); không attach được debugger (đang bị client khác giữ) thì lùi
+// về sendInputEvent — quy ước của Blink ngược dấu (deltaY < 0 = xuống).
+// Chỉ nhận guest thuộc ĐÚNG trang đang gọi. Cuộn không đổi dữ liệu nên không
+// cần hỏi người dùng.
+ipcMain.handle('workspace:wheel', async (evt, targetId, x, y, dx, dy) => {
+  try {
+    const target = webContents.fromId(Number(targetId));
+    if (!target || target.isDestroyed()) return { ok: false, error: 'gone' };
+    if (target.hostWebContents !== evt.sender) return { ok: false, error: 'not your guest' };
+    const px = Math.max(0, Math.round(Number(x) || 0));
+    const py = Math.max(0, Math.round(Number(y) || 0));
+    const ddx = Math.max(-5000, Math.min(5000, Number(dx) || 0));
+    const ddy = Math.max(-5000, Math.min(5000, Number(dy) || 0));
+    const dbg = target.debugger;
+    let attached = false;
+    try {
+      if (!dbg.isAttached()) { dbg.attach('1.3'); attached = true; }
+      await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: px, y: py });
+      await dbg.sendCommand('Input.dispatchMouseEvent', {
+        type: 'mouseWheel', x: px, y: py, deltaX: ddx, deltaY: ddy,
+      });
+      return { ok: true, via: 'cdp' };
+    } catch {
+      target.sendInputEvent({ type: 'mouseMove', x: px, y: py });
+      target.sendInputEvent({
+        type: 'mouseWheel', x: px, y: py, deltaX: -ddx, deltaY: -ddy, canScroll: true,
+      });
+      return { ok: true, via: 'input' };
+    } finally {
+      if (attached) { try { dbg.detach(); } catch { /* guest vừa đóng */ } }
+    }
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
 // ── DevTools dock TRONG khung, như Chrome ──────────────────────────────────
 //
 // `openDevTools()` trên guest <webview> LUÔN bung CỬA SỔ RỜI: Electron ép dock
