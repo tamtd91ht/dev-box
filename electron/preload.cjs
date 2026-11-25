@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('workspace', {
   captureScreen: (rect, guestIds) => ipcRenderer.invoke('workspace:captureScreen', rect, guestIds),
   /** Trợ lý AI: lăn chuột tại (x, y) — toạ độ trong guest — xem workspace:wheel trong main.cjs. */
   wheel: (targetId, x, y, dx, dy) => ipcRenderer.invoke('workspace:wheel', targetId, x, y, dx, dy),
+  /** Trợ lý AI: CSV / TXT xuất của Google Sheets / Docs / Slides guest đang mở — xem main.cjs. */
+  exportGoogleDoc: (targetId) => ipcRenderer.invoke('workspace:exportGoogleDoc', targetId),
   /**
    * 🔕: báo main danh sách partition Workspace đang ẨN THÔNG BÁO + cờ toàn cục.
    * Main chặn quyền `notifications` của guest tương ứng — xem main.cjs.

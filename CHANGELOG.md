@@ -12,7 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "tổng hợp sheet này" ở tab Browser rồi chuyển sang Công việc hay bất kỳ menu nào khác, trợ lý vẫn đọc,
   cuộn và chụp đúng màn hình cũ ở nền — không kéo bạn quay lại, không đọc nhầm màn hình mới. Áp dụng cho mọi
   menu: trang web nhúng chụp thẳng trang ở nền; màn hình thường thì đọc chữ theo cấu trúc trang và dựng ảnh
-  từ giao diện. Trong lúc chạy nền trợ lý không mở tab khác; cần bấm nút thì bảng trợ lý tự mở để xin phép.
+  từ giao diện. View đang chạy nền được giữ "sống" (vẫn dựng giao diện, trang web vẫn vẽ) để cuộn và chụp
+  đúng. Trợ lý cần xem menu khác thì mở nó **ở nền** — màn hình bạn đang xem không đổi; xong câu hỏi, các
+  view trợ lý tự mở thêm (trừ view bạn đang ở) được đề nghị **Tắt các view này / Giữ lại** để giải phóng bộ
+  nhớ. Cần bấm nút thì bảng trợ lý tự mở để xin phép.
+  **Google Sheets / Docs / Slides** đọc thẳng dữ liệu xuất của Google (CSV của sheet đang mở, chữ của Docs /
+  Slides) bằng phiên đăng nhập của chính tab đó — có toàn bộ dữ liệu, không phải cuộn, chạy nền vẫn đủ.
 - **STT / TTS qua API: đọc kết quả linh hoạt hơn.** Ở mục Response, đường dẫn JSON khai được nhiều phương án
   ngăn bằng `|` (vd `data.url | data.link | url`) — lấy cái đầu tiên có giá trị, nên chịu được API đặt tên
   trường khác nhau, lồng bao nhiêu cấp cũng được. TTS có thêm kiểu **"URL hoặc base64 trong JSON (tự nhận)"**

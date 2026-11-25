@@ -3443,6 +3443,53 @@ ipcMain.handle('workspace:captureScreen', async (evt, rect, guestIds) => {
   }
 });
 
+// ── Trợ lý AI: lấy dữ liệu XUẤT của Google Sheets / Docs / Slides đang mở ────
+//
+// Sheets vẽ ô bằng canvas: muốn đọc hết phải cuộn + chụp ảnh từng màn — chậm,
+// và khi tab bị ẩn (người dùng đã chuyển menu, guest nằm ngoài khung nhìn)
+// Chromium ngừng vẽ khung đó nên cuộn xong ảnh không đổi. Google có sẵn đường
+// xuất CSV / TXT của đúng tài liệu đang mở: tải bằng session của CHÍNH guest đó
+// (cookie đăng nhập của người dùng) là có toàn bộ dữ liệu, không cần cuộn, chạy
+// nền vẫn được. Renderer KHÔNG được đưa URL vào: main tự dựng URL xuất từ URL
+// guest đang mở và chỉ cho docs.google.com — không thành cầu fetch tuỳ ý mang
+// cookie người dùng.
+const GOOGLE_EXPORT_MAX = 3 * 1024 * 1024;
+function googleExportUrl(pageUrl) {
+  let u;
+  try { u = new URL(pageUrl); } catch { return null; }
+  if (u.protocol !== 'https:' || u.hostname !== 'docs.google.com') return null;
+  // /u/1/ = tài khoản Google thứ 2… trong cùng phiên — giữ nguyên để xuất bằng đúng tài khoản đó.
+  const m = /^\/(?:a\/[^/]+\/)?(spreadsheets|document|presentation)\/(u\/\d+\/)?d\/([\w-]{10,})/.exec(u.pathname);
+  if (!m) return null;
+  const [, kind, acct = '', id] = m;
+  const base = `https://docs.google.com/${kind}/${acct}d/${id}`;
+  if (kind === 'spreadsheets') {
+    const gid = /(?:^|[#&?])gid=(\d+)/.exec(u.hash + '&' + u.search)?.[1];
+    return { kind: 'sheet', url: `${base}/export?format=csv${gid ? `&gid=${gid}` : ''}` };
+  }
+  if (kind === 'document') return { kind: 'doc', url: `${base}/export?format=txt` };
+  return { kind: 'slides', url: `${base}/export/txt` };
+}
+ipcMain.handle('workspace:exportGoogleDoc', async (evt, targetId) => {
+  try {
+    const target = webContents.fromId(Number(targetId));
+    if (!target || target.isDestroyed()) return { ok: false, error: 'gone' };
+    if (target.hostWebContents !== evt.sender) return { ok: false, error: 'not your guest' };
+    const ex = googleExportUrl(target.getURL());
+    if (!ex) return { ok: false, error: 'not a Google Sheets/Docs/Slides page' };
+    const res = await target.session.fetch(ex.url, { redirect: 'follow' });
+    const type = res.headers.get('content-type') || '';
+    if (!res.ok) return { ok: false, kind: ex.kind, error: `HTTP ${res.status}` };
+    // Trang HTML = bị đẩy về trang đăng nhập / không có quyền tải xuống.
+    if (/text\/html/i.test(type)) return { ok: false, kind: ex.kind, error: 'Google không cho tải xuống (chưa đăng nhập trong tab này hoặc chủ sở hữu tắt quyền tải xuống)' };
+    const buf = Buffer.from(await res.arrayBuffer());
+    const truncated = buf.length > GOOGLE_EXPORT_MAX;
+    return { ok: true, kind: ex.kind, text: buf.subarray(0, GOOGLE_EXPORT_MAX).toString('utf8'), truncated };
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
 // ── Trợ lý AI: cuộn bằng con lăn trong guest (lib/aiScreen.ts) ──────────────
 //
 // Trang tự vẽ (canvas, Google Sheets…) hoặc chặn scrollBy chỉ nghe sự kiện

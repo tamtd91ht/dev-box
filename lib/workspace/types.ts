@@ -162,6 +162,9 @@ export interface WorkspaceBridge {
     error?: string;
     shots: { kind: 'web' | 'app'; url?: string; data: string }[];
   }>;
+  /** Trợ lý AI: dữ liệu xuất (CSV sheet đang mở / TXT của Docs, Slides) của guest đang ở Google
+   *  Sheets / Docs / Slides — tải bằng session của guest, URL do main tự dựng. */
+  exportGoogleDoc?(targetId: number): Promise<{ ok: boolean; kind?: 'sheet' | 'doc' | 'slides'; text?: string; truncated?: boolean; error?: string }>;
   /** Trợ lý AI: lăn chuột tại (x, y) trong guest; dy > 0 = cuộn xuống, dx > 0 = sang phải. */
   wheel?(targetId: number, x: number, y: number, dx: number, dy: number): Promise<{ ok: boolean; error?: string; via?: string }>;
   /** 🔕: báo main danh sách partition Workspace đang ẨN THÔNG BÁO (dạng

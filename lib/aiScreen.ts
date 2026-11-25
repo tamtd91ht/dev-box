@@ -100,29 +100,97 @@ const isTab = (el: HTMLElement) =>
 // Công việc thì trợ lý vẫn đọc / cuộn / chụp đúng sheet A ở nền, không kéo
 // người dùng quay lại, không đọc nhầm màn Công việc. Làm được vì pane đã ghé
 // vẫn mount khi ẩn (page.tsx) và guest <webview> tắt backgroundThrottling
-// (main.cjs) — vẫn chạy, vẫn vẽ, capturePage vẫn chụp được.
-// Giới hạn khi người dùng đã rời màn hình đích: không mở tab (sẽ giật màn hình
-// của người dùng); màn hình thường (không phải trang web) thì chỉ đọc chữ,
-// không chụp ảnh được (cửa sổ chính chỉ chụp được thứ đang hiện).
+// (main.cjs) — vẫn chạy. Pane đích được gắn data-ai-target để globals.css giữ
+// nó SỐNG khi ẩn: pane thường vẫn layout, pane <webview> chạm 1 px vào khung
+// nhìn để Chromium không ngừng vẽ.
+// open_tab cũng chạy NỀN: mount view đó (ẩn) và đọc, KHÔNG đổi màn hình người
+// dùng đang xem. View trợ lý tự mở (trước đó chưa mở) được ghi lại để khi xong
+// người dùng bấm "Tắt các view này" mà giải phóng bộ nhớ (AiChat).
 
 interface Target {
   panes: HTMLElement[];
-  /** <webview> đang hiện lúc ghim — vd đúng tab Browser đang mở sheet A. */
+  /** <webview> đang hiện trong pane lúc ghim — vd đúng tab Browser đang mở sheet A. */
   webviews: WebviewEl[];
   name: string;
 }
 
 let target: Target | null = null;
+/** View trợ lý tự mở ở nền trong câu hỏi này (key → tên) — chưa mở trước đó. */
+const openedViews = new Map<string, string>();
+
+const intersects = (a: DOMRect, b: DOMRect) =>
+  a.width > 0 && a.height > 0 && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+
+/** <webview> đang là "mặt trước" của pane (vd tab Browser đang chọn): nằm trong
+ *  khung của pane. Tab nền bị đẩy -200vw trong pane nên không giao với pane.
+ *  Dùng được cả khi pane đang ẩn (toạ độ tương đối vẫn đúng). */
+function activeWebviews(pane: HTMLElement): WebviewEl[] {
+  const pr = pane.getBoundingClientRect();
+  return [...pane.querySelectorAll<WebviewEl>('webview')].filter((w) => isShown(w) && intersects(w.getBoundingClientRect(), pr));
+}
+
+function setTarget(t: Target | null): void {
+  for (const p of target?.panes ?? []) p.removeAttribute('data-ai-target');
+  target = t;
+  for (const p of t?.panes ?? []) p.setAttribute('data-ai-target', '');
+}
 
 /** Ghim màn hình đang hiện làm đích cho câu hỏi sắp chạy. */
 export function pinTarget(name: string): void {
+  openedViews.clear();
   const panes = visiblePanes();
-  const webviews = panes.flatMap((p) => [...p.querySelectorAll<WebviewEl>('webview')].filter(onScreen));
-  target = { panes, webviews, name };
+  setTarget({ panes, webviews: panes.flatMap((p) => [...p.querySelectorAll<WebviewEl>('webview')].filter(onScreen)), name });
 }
 
-/** Câu hỏi xong / dừng: bỏ ghim — lần sau đọc theo màn hình đang hiện. */
-export function releaseTarget(): void { target = null; }
+/** Câu hỏi xong / dừng: bỏ ghim (pane về ẩn như thường) — lần sau đọc theo màn hình đang hiện. */
+export function releaseTarget(): void { setTarget(null); }
+
+/** View trợ lý đã tự mở ở nền trong câu hỏi vừa xong mà người dùng KHÔNG đang xem
+ *  — đề nghị tắt cho nhẹ máy. Gọi trước releaseTarget. */
+export function openedViewsToClose(): { key: string; label: string }[] {
+  const vis = new Set(visiblePanes());
+  const out: { key: string; label: string }[] = [];
+  for (const [key, label] of openedViews) {
+    const pane = document.querySelector<HTMLElement>(`.body > main.workspace[data-pane="${CSS.escape(key)}"]`);
+    if (pane && vis.has(pane)) continue; // người dùng đang ở view này → giữ
+    out.push({ key, label });
+  }
+  return out;
+}
+
+/** Tắt (unmount) các view — page.tsx bỏ qua view đang hiện. */
+export function closeViews(keys: string[]): void {
+  window.dispatchEvent(new CustomEvent<string[]>('devbox:unmount-tabs', { detail: keys }));
+}
+
+/** Mở một view ở NỀN (mount, không đổi màn hình) và chờ pane của nó có mặt. */
+async function mountView(key: string): Promise<{ pane: HTMLElement | null; was: boolean }> {
+  let was = true;
+  window.dispatchEvent(new CustomEvent('devbox:mount-tab', { detail: { key, reply: (w: boolean) => { was = w; } } }));
+  const sel = `.body > main.workspace[data-pane="${CSS.escape(key)}"]`;
+  for (let i = 0; i < 40; i++) {
+    const pane = document.querySelector<HTMLElement>(sel);
+    if (pane) return { pane, was };
+    await sleep(200);
+  }
+  return { pane: null, was };
+}
+
+/** Chờ trang web trong pane vừa mount tải xong (tối đa ~10 s). */
+async function waitWebviews(pane: HTMLElement): Promise<void> {
+  for (let i = 0; i < 40; i++) {
+    const wvs = activeWebviews(pane);
+    if (!pane.querySelector('webview')) return;
+    let ready = wvs.length > 0;
+    for (const w of wvs) {
+      try {
+        if (w.getWebContentsId() <= 0 || (await w.executeJavaScript('document.readyState')) !== 'complete') ready = false;
+      } catch { ready = false; }
+    }
+    if (ready) return;
+    await sleep(250);
+  }
+}
 
 /** Tên màn hình đích (đang ghim) — gửi làm ngữ cảnh "màn hình đang mở". */
 export const targetName = (fallback: string) => target?.name ?? fallback;
@@ -250,11 +318,43 @@ async function readWebview(wv: WebviewEl): Promise<string> {
   let text = parts.join('\n\n--- (khung con) ---\n\n');
   const cut = text.length > MAX_WEB_TEXT;
   if (cut) text = text.slice(0, MAX_WEB_TEXT);
+  const exported = id > 0 ? await readGoogleExport(id, url) : '';
   return [
     `--- Trang web nhúng: ${title || '(không tiêu đề)'} — ${url} ---`,
-    text || '(trống)',
-    cut ? `(Đã cắt bớt — trang dài hơn ${MAX_WEB_TEXT} ký tự.)` : '',
+    exported,
+    exported ? '--- Chữ hiện trên trang (giao diện) ---' : '',
+    // Có dữ liệu xuất thì chữ giao diện của Sheets (menu, thanh công cụ) ít giá trị — rút gọn.
+    exported ? (text || '(trống)').slice(0, 3000) : text || '(trống)',
+    cut && !exported ? `(Đã cắt bớt — trang dài hơn ${MAX_WEB_TEXT} ký tự.)` : '',
   ].filter(Boolean).join('\n');
+}
+
+const MAX_EXPORT_TEXT = 45_000;
+const GOOGLE_DOC_RE = /^https:\/\/docs\.google\.com\/(?:a\/[^/]+\/)?(spreadsheets|document|presentation)\/(?:u\/\d+\/)?d\//;
+
+/** Google Sheets / Docs / Slides: TOÀN BỘ dữ liệu của tài liệu đang mở (CSV của sheet đang xem / TXT),
+ *  lấy qua đường xuất của Google bằng phiên đăng nhập của chính tab đó (main.cjs exportGoogleDoc).
+ *  Không cần cuộn, không cần trang đang hiện — chạy nền vẫn đọc đủ. Không phải trang Google → ''. */
+async function readGoogleExport(id: number, url: string): Promise<string> {
+  if (!GOOGLE_DOC_RE.test(url)) return '';
+  const ex = window.workspace?.exportGoogleDoc;
+  if (!ex) return '';
+  const what = /\/spreadsheets\//.test(url) ? 'sheet' : /\/document\//.test(url) ? 'doc' : 'slides';
+  try {
+    const r = await ex(id);
+    if (!r?.ok || !r.text) {
+      return `--- Dữ liệu xuất của Google ${what}: KHÔNG lấy được (${r?.error ?? 'không rõ'}) — đọc bằng cách cuộn + xem ảnh chụp. ---`;
+    }
+    let t = r.text.replace(/\r\n/g, '\n').trim();
+    const cut = r.truncated || t.length > MAX_EXPORT_TEXT;
+    if (t.length > MAX_EXPORT_TEXT) t = t.slice(0, MAX_EXPORT_TEXT);
+    const head = what === 'sheet'
+      ? '--- Dữ liệu xuất của Google Sheets: TOÀN BỘ sheet (tab) đang mở, dạng CSV — dùng phần này, KHÔNG cần cuộn để đọc ô ---'
+      : `--- Dữ liệu xuất của Google ${what === 'doc' ? 'Docs' : 'Slides'}: TOÀN BỘ nội dung, dạng chữ — dùng phần này, KHÔNG cần cuộn ---`;
+    return [head, t, cut ? `(Đã cắt bớt — dữ liệu dài hơn ${MAX_EXPORT_TEXT} ký tự; phần sau chưa có.)` : ''].filter(Boolean).join('\n');
+  } catch (e) {
+    return `--- Dữ liệu xuất của Google ${what}: lỗi (${(e as Error).message}) ---`;
+  }
 }
 
 /** Mọi pane đang hiện — Ultra View có thể hiện nhiều pane cùng lúc. */
@@ -661,7 +761,7 @@ export async function snapshot(screenName: string): Promise<string> {
   lastScroll = scrolls.slice(0, MAX_SCROLL_AREAS * 2);
 
   const notes: string[] = [];
-  if (background) notes.push(`Đang chạy NỀN: người dùng đã chuyển sang màn hình khác; bạn vẫn đọc / cuộn đúng màn hình "${name}" lúc người dùng hỏi. Không mở tab khác được trong lúc này.`);
+  if (background) notes.push(`Đang chạy NỀN: người dùng đang ở màn hình khác; bạn đọc / cuộn đúng màn hình "${name}" ở nền, người dùng không thấy và không bị làm phiền.`);
   if (panes.length > 1) notes.push(`Đang hiện ${panes.length} pane cùng lúc (Ultra View) — đọc cả ${panes.length}.`);
   if (webCount) notes.push('Có trang web nhúng — chữ bên trong ở phần "Trang web nhúng" bên dưới; phần tử trong trang web KHÔNG bấm được.');
   if (panes.some((p) => p.querySelector('canvas:not(.xterm canvas)'))) notes.push('Có biểu đồ / vùng vẽ canvas — số liệu vẽ trên đó không có trong phần chữ; xem ẢNH CHỤP màn hình gửi kèm.');
@@ -713,16 +813,17 @@ export async function runAction(a: AiAction, host: ActionHost): Promise<string> 
     if (a.type === 'open_tab') {
       const tab = host.tabs.find((t) => t.key === a.tab);
       if (!tab) return `Không có tab "${a.tab}". Các tab hợp lệ: ${host.tabs.map((t) => t.key).join(', ')}.`;
-      // Người dùng đã chuyển sang màn khác (đang chạy nền): mở tab là giật màn
-      // hình của họ — từ chối, để model trả lời với dữ liệu đã có.
-      if (!targetVisible()) {
-        return `Không mở tab ${tab.label}: người dùng đang làm việc ở màn hình khác, bạn đang chạy NỀN trên "${targetName(host.screenName())}". Trả lời bằng dữ liệu đã đọc được, hoặc nói người dùng mở ${tab.label} rồi hỏi lại.`;
-      }
-      window.dispatchEvent(new CustomEvent<string>('devbox:open-tab', { detail: tab.key }));
+      // Mở ở NỀN: mount view (ẩn), KHÔNG đổi màn hình người dùng đang xem.
+      const { pane, was } = await mountView(tab.key);
+      if (!pane) return `Không mở được ${tab.label} ở nền (màn hình này chỉ dựng khi người dùng mở trực tiếp). Nói người dùng mở ${tab.label} rồi hỏi lại.`;
+      if (!was) openedViews.set(tab.key, tab.label);
+      // Đích chuyển sang view vừa mở (pane đích cũ thôi được giữ sống).
+      setTarget({ panes: [pane], webviews: [], name: tab.label });
       await settle();
-      // Đích chuyển theo: từ giờ bám vào màn hình vừa mở.
-      if (target) { await sleep(150); pinTarget(host.screenName()); }
-      return `Đã mở tab ${tab.label}.\n${await snapshot(host.screenName())}`;
+      await waitWebviews(pane);
+      if (target) target.webviews = activeWebviews(pane);
+      const where = targetVisible() ? '' : ' ở NỀN — người dùng vẫn ở màn hình của họ';
+      return `Đã mở ${tab.label}${where}.\n${await snapshot(host.screenName())}`;
     }
     if (a.type === 'read_screen') {
       await settle(2500);

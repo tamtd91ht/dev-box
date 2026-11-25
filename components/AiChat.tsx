@@ -34,7 +34,10 @@ import { fmtRel } from '@/lib/google';
 import { fmtDuration, mdToSpeech, speaker } from '@/lib/speech';
 import { useStt, useSttPrefs } from '@/lib/useStt';
 import { useSpeechProviders } from '@/lib/useSpeechProviders';
-import { DENIED, captureScreen, describeAction, parseAction, pinTarget, releaseTarget, runAction, stripAction, targetName, type AiTab, type ScreenShot } from '@/lib/aiScreen';
+import {
+  DENIED, captureScreen, closeViews, describeAction, openedViewsToClose, parseAction, pinTarget, releaseTarget,
+  runAction, stripAction, targetName, type AiTab, type ScreenShot,
+} from '@/lib/aiScreen';
 import {
   AI_DEFAULT_MODEL, AI_LIMITS, AI_MAX_W, AI_MIN_W, AI_MODELS, KB_BUDGET, KB_LIMITS, aiDock,
   type AiAttachment, type AiPoll, type AiTurn, type KbDoc, type KbMeta,
@@ -52,6 +55,8 @@ interface Msg {
   steps?: { label: string; note?: string; state: 'doing' | 'done' | 'denied' }[];
   /** File gửi kèm câu hỏi: tên + loại (+ ảnh thu nhỏ, chỉ giữ trong phiên đang mở). */
   files?: { name: string; kind: AiAttachment['kind']; preview?: string }[];
+  /** View trợ lý đã tự mở ở nền cho câu này — đề nghị tắt cho nhẹ máy (lib/aiScreen.ts). */
+  cleanup?: { views: { key: string; label: string }[]; state: 'ask' | 'closed' | 'kept' };
 }
 
 type Pending = AiAttachment & { id: string; bytes: number; preview?: string };
@@ -393,6 +398,9 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
       patch({ streaming: false, error: (e as Error).message });
     } finally {
       jobRef.current = null;
+      // View trợ lý tự mở ở nền mà người dùng không đang xem → hỏi có tắt không.
+      const toClose = agent ? openedViewsToClose() : [];
+      if (toClose.length) patch({ cleanup: { views: toClose, state: 'ask' } });
       releaseTarget();
       setConfirm(null);
       setBusy(false);
@@ -613,6 +621,35 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
                   ? <div className="md-preview aic-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
                   : m.streaming ? <span className="aic-typing" aria-label="Đang trả lời"><i /><i /><i /></span> : null}
                 {m.stopped && <div className="aic-stopped">Đã dừng.</div>}
+                {m.cleanup && !m.streaming && (
+                  <div className="aic-cleanup" role="group" aria-label="Tắt các view trợ lý đã mở">
+                    {m.cleanup.state === 'ask' ? (
+                      <>
+                        <span>
+                          Trợ lý đã mở ở nền: <b>{m.cleanup.views.map((v) => v.label).join(', ')}</b>.
+                          Tắt để nhẹ máy? (trạng thái chưa lưu trong các view này sẽ mất)
+                        </span>
+                        <span className="aic-cleanup-actions">
+                          <button
+                            className="sm"
+                            onClick={() => {
+                              closeViews(m.cleanup!.views.map((v) => v.key));
+                              setMsgs((cur) => cur.map((x) => (x.id === m.id && x.cleanup ? { ...x, cleanup: { ...x.cleanup, state: 'closed' } } : x)));
+                            }}
+                          >Tắt các view này</button>
+                          <button
+                            className="ghost sm"
+                            onClick={() => setMsgs((cur) => cur.map((x) => (x.id === m.id && x.cleanup ? { ...x, cleanup: { ...x.cleanup, state: 'kept' } } : x)))}
+                          >Giữ lại</button>
+                        </span>
+                      </>
+                    ) : (
+                      <span className="aic-cleanup-done">
+                        {m.cleanup.state === 'closed' ? '✓ Đã tắt' : 'Đã giữ lại'}: {m.cleanup.views.map((v) => v.label).join(', ')}
+                      </span>
+                    )}
+                  </div>
+                )}
                 {m.error && (
                   <div className="aic-error" role="alert">
                     <span>{m.error}</span>

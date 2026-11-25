@@ -672,6 +672,43 @@ export default function Home() {
     });
   }, [ultra]);
 
+  // Trợ lý AI CHẠY NỀN (lib/aiScreen.ts): mở một view mà KHÔNG đổi màn hình
+  // người dùng đang xem — chỉ mount pane (ẩn) để trợ lý đọc; và tắt (unmount)
+  // các view trợ lý đã tự mở khi người dùng bấm "Tắt các view này".
+  //   devbox:mount-tab    detail { key, reply(wasMounted) } — reply gọi đồng bộ
+  //   devbox:unmount-tabs detail string[] — bỏ qua view đang xem / trong Ultra View
+  const visitedRef = useRef(visited);
+  visitedRef.current = visited;
+  const shownRef = useRef<(key: string) => boolean>(() => false);
+  shownRef.current = shown;
+  useEffect(() => {
+    const onMount = (e: Event) => {
+      const d = (e as CustomEvent<{ key?: unknown; reply?: (was: boolean) => void }>).detail;
+      if (!d || typeof d.key !== 'string' || !d.key) return;
+      const key = d.key;
+      d.reply?.(!!visitedRef.current[key]);
+      setVisited((v) => (v[key] ? v : { ...v, [key]: true }));
+    };
+    const onUnmount = (e: Event) => {
+      const keys = (e as CustomEvent<unknown>).detail;
+      if (!Array.isArray(keys)) return;
+      // workspace (Zalo…) luôn mount từ đầu để nhận tin — không bao giờ gỡ.
+      const drop = keys.filter((k): k is string => typeof k === 'string' && k !== 'workspace' && !shownRef.current(k));
+      if (!drop.length) return;
+      setVisited((v) => {
+        const next = { ...v };
+        for (const k of drop) delete next[k];
+        return next;
+      });
+    };
+    window.addEventListener('devbox:mount-tab', onMount);
+    window.addEventListener('devbox:unmount-tabs', onUnmount);
+    return () => {
+      window.removeEventListener('devbox:mount-tab', onMount);
+      window.removeEventListener('devbox:unmount-tabs', onUnmount);
+    };
+  }, []);
+
   // Bố cục đã lưu có thể trỏ tới một pack đã bị gỡ: khoá đó không dựng ra pane
   // nào nhưng vẫn được đếm vào số cột, để lại một cột trống. Dọn nó đi.
   // Chỉ chạy khi packs đã nạp xong, không thì lượt render đầu (packs rỗng) sẽ
@@ -974,83 +1011,83 @@ export default function Home() {
           Không bật thì không có thuộc tính, lưới giữ nguyên như cũ. */}
       <div className="body" data-ultra={ultra.on ? ultra.panes.length : undefined}>
         {visited.work && (
-          <main className="workspace" style={pane('work')} aria-hidden={!shown('work')}>
+          <main className="workspace" data-pane="work" style={pane('work')} aria-hidden={!shown('work')}>
             <WorkWorkspace />
           </main>
         )}
         {visited.git && (
-          <main className="workspace" style={pane('git')} aria-hidden={!shown('git')}>
+          <main className="workspace" data-pane="git" style={pane('git')} aria-hidden={!shown('git')}>
             <GitWorkspace />
           </main>
         )}
         {visited.code && (
-          <main className="workspace" style={pane('code')} aria-hidden={!shown('code')}>
+          <main className="workspace" data-pane="code" style={pane('code')} aria-hidden={!shown('code')}>
             <CodeStudio />
           </main>
         )}
         {visited.terminal && (
-          <main className="workspace" style={pane('terminal')} aria-hidden={!shown('terminal')}>
+          <main className="workspace" data-pane="terminal" style={pane('terminal')} aria-hidden={!shown('terminal')}>
             <TerminalWorkspace visible={shown('terminal')} />
           </main>
         )}
         {/* Monitor luôn mount (không chờ `visited`): cảnh báo critical ở footer cần
             vòng đo chạy ngay từ lúc mở app, dù chưa vào tab Monitor lần nào. */}
-        <main className="workspace" style={pane('monitor')} aria-hidden={!shown('monitor')}>
+        <main className="workspace" data-pane="monitor" style={pane('monitor')} aria-hidden={!shown('monitor')}>
           {/* Toàn cảnh đọc số liệu của Monitor (lib/monitor/store) → đang xem Toàn cảnh thì đo theo nhịp của tab đang mở. */}
           <MonitorWorkspace visible={shown('monitor') || shown('wall')} onOpenTab={pickTab} onSummary={setMonSum} />
         </main>
         {visited.wall && (
-          <main className="workspace" style={pane('wall')} aria-hidden={!shown('wall')}>
+          <main className="workspace" data-pane="wall" style={pane('wall')} aria-hidden={!shown('wall')}>
             <WallWorkspace visible={shown('wall')} onOpenTab={pickTab} />
           </main>
         )}
         {visited.redis && (
-          <main className="workspace" style={pane('redis')} aria-hidden={!shown('redis')}>
+          <main className="workspace" data-pane="redis" style={pane('redis')} aria-hidden={!shown('redis')}>
             <RedisWorkspace />
           </main>
         )}
         {visited.kafka && (
-          <main className="workspace" style={pane('kafka')} aria-hidden={!shown('kafka')}>
+          <main className="workspace" data-pane="kafka" style={pane('kafka')} aria-hidden={!shown('kafka')}>
             <KafkaWorkspace />
           </main>
         )}
         {visited.rabbit && (
-          <main className="workspace" style={pane('rabbit')} aria-hidden={!shown('rabbit')}>
+          <main className="workspace" data-pane="rabbit" style={pane('rabbit')} aria-hidden={!shown('rabbit')}>
             <RabbitWorkspace />
           </main>
         )}
         {visited.mongo && (
-          <main className="workspace" style={pane('mongo')} aria-hidden={!shown('mongo')}>
+          <main className="workspace" data-pane="mongo" style={pane('mongo')} aria-hidden={!shown('mongo')}>
             <MongoWorkspace />
           </main>
         )}
         {visited.es && (
-          <main className="workspace" style={pane('es')} aria-hidden={!shown('es')}>
+          <main className="workspace" data-pane="es" style={pane('es')} aria-hidden={!shown('es')}>
             <EsWorkspace />
           </main>
         )}
         {visited.pg && (
-          <main className="workspace" style={pane('pg')} aria-hidden={!shown('pg')}>
+          <main className="workspace" data-pane="pg" style={pane('pg')} aria-hidden={!shown('pg')}>
             <PgWorkspace />
           </main>
         )}
         {visited.minio && (
-          <main className="workspace" style={pane('minio')} aria-hidden={!shown('minio')}>
+          <main className="workspace" data-pane="minio" style={pane('minio')} aria-hidden={!shown('minio')}>
             <MinioWorkspace />
           </main>
         )}
         {visited.office && (
-          <main className="workspace" style={pane('office')} aria-hidden={!shown('office')}>
+          <main className="workspace" data-pane="office" style={pane('office')} aria-hidden={!shown('office')}>
             <OfficeWorkspace onReady={onOfficeReady} />
           </main>
         )}
         {visited.google && (
-          <main className="workspace" style={pane('google')} aria-hidden={!shown('google')}>
+          <main className="workspace" data-pane="google" style={pane('google')} aria-hidden={!shown('google')}>
             <GoogleWorkspace />
           </main>
         )}
         {visited.mail && (
-          <main className="workspace" style={pane('mail')} aria-hidden={!shown('mail')}>
+          <main className="workspace" data-pane="mail" style={pane('mail')} aria-hidden={!shown('mail')}>
             <MailWorkspace />
           </main>
         )}
@@ -1058,52 +1095,52 @@ export default function Home() {
           /* hostsWebviews: viewer nhúng (LinkViewer) có thể đang mở khi chuyển
              tab — webview vẽ ở native layer, phải đưa offscreen chứ không
              visibility:hidden được. */
-          <main className="workspace" data-webview style={pane('links', true)} aria-hidden={!shown('links')}>
+          <main className="workspace" data-pane="links" data-webview style={pane('links', true)} aria-hidden={!shown('links')}>
             <LinksWorkspace />
           </main>
         )}
         {visited.apps && (
-          <main className="workspace" style={pane('apps')} aria-hidden={!shown('apps')}>
+          <main className="workspace" data-pane="apps" style={pane('apps')} aria-hidden={!shown('apps')}>
             <AppsWorkspace visible={shown('apps')} />
           </main>
         )}
         {visited.tools && (
-          <main className="workspace" style={pane('tools')} aria-hidden={!shown('tools')}>
+          <main className="workspace" data-pane="tools" style={pane('tools')} aria-hidden={!shown('tools')}>
             <ToolsWorkspace onReady={onToolsReady} />
           </main>
         )}
         {visited.speech && (
-          <main className="workspace" style={pane('speech')} aria-hidden={!shown('speech')}>
+          <main className="workspace" data-pane="speech" style={pane('speech')} aria-hidden={!shown('speech')}>
             <div className="panel sheet-panel"><SpeechPanel /></div>
           </main>
         )}
         {visited.api && (
-          <main className="workspace" style={pane('api')} aria-hidden={!shown('api')}>
+          <main className="workspace" data-pane="api" style={pane('api')} aria-hidden={!shown('api')}>
             <ApiWorkspace />
           </main>
         )}
         {visited.browser && (
-          <main className="workspace" data-webview style={pane('browser', true)} aria-hidden={!shown('browser')}>
+          <main className="workspace" data-pane="browser" data-webview style={pane('browser', true)} aria-hidden={!shown('browser')}>
             <BrowserTabWorkspace visible={shown('browser')} />
           </main>
         )}
         {visited.remote && (
-          <main className="workspace" style={pane('remote')} aria-hidden={!shown('remote')}>
+          <main className="workspace" data-pane="remote" style={pane('remote')} aria-hidden={!shown('remote')}>
             <RemoteWorkspace />
           </main>
         )}
         {visited.workspace && (
-          <main className="workspace" data-webview style={pane('workspace', true)} aria-hidden={!shown('workspace')}>
+          <main className="workspace" data-pane="workspace" data-webview style={pane('workspace', true)} aria-hidden={!shown('workspace')}>
             <BrowserWorkspace onUnread={setWsUnread} visible={shown('workspace')} />
           </main>
         )}
         {visited.zaloapi && (
-          <main className="workspace" data-webview style={pane('zaloapi', true)} aria-hidden={!shown('zaloapi')}>
+          <main className="workspace" data-pane="zaloapi" data-webview style={pane('zaloapi', true)} aria-hidden={!shown('zaloapi')}>
             <ZaloApiWorkspace onUnread={setZaUnread} visible={shown('zaloapi')} />
           </main>
         )}
         {visited.automation && (
-          <main className="workspace" style={pane('automation')} aria-hidden={!shown('automation')}>
+          <main className="workspace" data-pane="automation" style={pane('automation')} aria-hidden={!shown('automation')}>
             <AutomationWorkspace />
           </main>
         )}
@@ -1112,6 +1149,7 @@ export default function Home() {
           <main
             key={p.id}
             className="workspace"
+            data-pane={`pack:${p.id}`}
             style={pane(`pack:${p.id}`)}
             aria-hidden={!shown(`pack:${p.id}`)}
           >
@@ -1120,7 +1158,7 @@ export default function Home() {
         ))}
 
         {shown('packs') && (
-          <main className="workspace" style={pane('packs')}>
+          <main className="workspace" data-pane="packs" style={pane('packs')}>
             <PackManager
               packs={packs}
               onChanged={setPacks}
@@ -1130,7 +1168,7 @@ export default function Home() {
         )}
 
         {shown('webhooks') && (
-          <main className="workspace" style={pane('webhooks')}>
+          <main className="workspace" data-pane="webhooks" style={pane('webhooks')}>
             <WebhookReceiver
               baseUrl={toolBaseUrl}
               onBaseUrl={(u) => setToolConfig({ baseUrl: u })}
