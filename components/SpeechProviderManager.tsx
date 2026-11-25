@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { providerRemove, providerSave, providerTest, type ProviderTestResult } from '@/lib/speech';
 import {
-  AUDIO_FORMATS, DEFAULT_PROVIDER_NAME, PROVIDER_PRESETS, PROVIDER_VARS, blankProvider, templateVars,
+  AUDIO_FORMATS, DEFAULT_PROVIDER_NAME, PROVIDER_PRESETS, PROVIDER_VARS, blankProvider, templateVars, withScheme,
   type KV, type ProviderAuth, type ProviderBody, type ProviderKind, type ProviderResponse, type SpeechProvider,
 } from '@/lib/speechProviders';
 import { speechProviders, useSpeechProviders } from '@/lib/useSpeechProviders';
@@ -160,7 +160,7 @@ export default function SpeechProviderManager(props: {
   const curMime = (draft?.response as { mime?: string } | undefined)?.mime ?? '';
 
   const secretType = showSecret ? 'text' : 'password';
-  const valid = !!draft && draft.name.trim() !== '' && /^https?:\/\/\S+$/i.test(draft.endpoint.trim());
+  const valid = !!draft && draft.name.trim() !== '' && /^https?:\/\/\S+$/i.test(withScheme(draft.endpoint));
 
   return (
     <div className="mail-compose-backdrop" onClick={(e) => e.target === e.currentTarget && props.onClose()}>
@@ -321,7 +321,7 @@ export default function SpeechProviderManager(props: {
                       {`{{${v.name}}}`}
                     </button>
                   ))}
-                  <span className="spm-opt">biến có sẵn — bấm để chép · {'{{x|number}}'} ra số, {'{{x|bool}}'} ra true/false</span>
+                  <span className="spm-opt">biến có sẵn — bấm để chép · trong JSON viết {'"{{text}}"'} hay {'{{text}}'} đều được · {'{{x|number}}'} ra số, {'{{x|bool}}'} ra true/false</span>
                 </div>
                 <label className="spm-field spm-narrow">
                   <span>Kiểu body</span>

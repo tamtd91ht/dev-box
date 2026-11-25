@@ -146,16 +146,41 @@ function walk(v: unknown, vars: Record<string, string>): unknown {
 }
 
 /**
+ * Phân tích template JSON. Cho phép biến viết TRẦN, không ngoặc kép:
+ * `"text": {{text}}` hiểu như `"text": "{{text}}"` (ra chuỗi, tự escape),
+ * `"speed": {{speed|number}}` ra số. Ngoài chuỗi JSON, `{{` không thể là cú
+ * pháp hợp lệ nên bọc ngoặc kép cho nó không làm sai template đúng nào.
+ * Ném Error (thông báo cho người dùng) nếu vẫn không phải JSON hợp lệ.
+ */
+export function parseJsonTemplate(tpl: string): unknown {
+  let out = '';
+  let inStr = false;
+  for (let i = 0; i < tpl.length; i++) {
+    const ch = tpl[i];
+    if (inStr) {
+      out += ch;
+      if (ch === '\\') { out += tpl[i + 1] ?? ''; i++; } else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; out += ch; continue; }
+    if (ch === '{' && tpl[i + 1] === '{') {
+      const m = /^\{\{\s*[A-Za-z_][\w.-]*\s*(?:\|\s*(?:number|bool|json)\s*)?\}\}/.exec(tpl.slice(i));
+      if (m) { out += JSON.stringify(m[0]); i += m[0].length - 1; continue; }
+    }
+    out += ch;
+  }
+  try { return JSON.parse(out); } catch (e) {
+    throw new Error(`Body JSON không hợp lệ: ${(e as Error).message}`);
+  }
+}
+
+/**
  * Template JSON → chuỗi JSON đã thay biến. Phân tích TRƯỚC rồi mới thay nên
  * dấu nháy / xuống dòng trong giá trị (vd chữ cần đọc) không làm vỡ JSON.
  * Ném Error nếu template không phải JSON hợp lệ.
  */
 export function fillJson(tpl: string, vars: Record<string, string>): string {
-  let parsed: unknown;
-  try { parsed = JSON.parse(tpl); } catch (e) {
-    throw new Error(`Body JSON không hợp lệ: ${(e as Error).message}`);
-  }
-  return JSON.stringify(walk(parsed, vars));
+  return JSON.stringify(walk(parseJsonTemplate(tpl), vars));
 }
 
 // ── Đọc output theo đường dẫn ────────────────────────────────────────────────
@@ -298,14 +323,24 @@ const cleanKV = (rows: unknown): KV[] => (Array.isArray(rows) ? rows : [])
 
 const str = (v: unknown, max = PROVIDER_LIMITS.maxTemplate) => String(v ?? '').slice(0, max);
 
+/**
+ * Endpoint gõ thiếu scheme (vd `10.0.0.5:8080/tts`, `localhost:9000/v1`) → thêm
+ * `http://` — địa chỉ IP:port nội bộ thường không có TLS.
+ */
+export function withScheme(endpoint: string): string {
+  const e = endpoint.trim();
+  if (!e || /^[a-z][a-z0-9+.-]*:\/\//i.test(e)) return e;
+  return `http://${e}`;
+}
+
 /** Chuẩn hoá + kiểm một bản cấu hình từ client. Ném Error (thông báo cho người dùng). */
 export function normalizeProvider(input: unknown): SpeechProvider {
   const p = (input ?? {}) as Partial<SpeechProvider>;
   const kind: ProviderKind = p.kind === 'tts' ? 'tts' : 'stt';
   const name = str(p.name, PROVIDER_LIMITS.maxName).replace(/\s+/g, ' ').trim();
   if (!name) throw new Error('Thiếu tên nhà cung cấp.');
-  const endpoint = str(p.endpoint, 2000).trim();
-  if (!/^https?:\/\/\S+$/i.test(endpoint)) throw new Error('Endpoint phải là URL http(s)://… (có thể chứa biến {{…}}).');
+  const endpoint = withScheme(str(p.endpoint, 2000));
+  if (!/^https?:\/\/\S+$/i.test(endpoint)) throw new Error('Endpoint phải là URL http:// hoặc https://… (vd http://10.0.0.5:8080/tts; có thể chứa biến {{…}}).');
   const method = p.method === 'GET' || p.method === 'PUT' ? p.method : 'POST';
 
   const a = (p.auth ?? { type: 'none' }) as ProviderAuth;
@@ -320,7 +355,7 @@ export function normalizeProvider(input: unknown): SpeechProvider {
   let body: ProviderBody = { type: 'none' };
   if (b.type === 'json') {
     body = { type: 'json', template: str(b.template) };
-    try { JSON.parse(body.template); } catch (e) { throw new Error(`Body JSON không hợp lệ: ${(e as Error).message}`); }
+    parseJsonTemplate(body.template);
   } else if (b.type === 'form') body = { type: 'form', fields: cleanKV(b.fields) };
   else if (b.type === 'urlencoded') body = { type: 'urlencoded', fields: cleanKV(b.fields) };
   else if (b.type === 'raw') body = { type: 'raw', template: str(b.template) };
