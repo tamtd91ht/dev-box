@@ -12816,3 +12816,26 @@ textarea.spm-code { min-height: 140px; resize: vertical; border-radius: 12px; pa
   .oai-cols { height: auto; grid-template-rows: none; }
   .oai-cols > .oai-card { max-height: none; }
 }
+/* Khung request: hàng nút (Gửi, Copy cURL…) LUÔN thấy.
+   · Prompt ngắn → mọi thứ xếp từ trên xuống, hàng nút nằm ngay dưới.
+   · Prompt dài → ô prompt (field-sizing: content) CO LẠI vừa chỗ trống và tự cuộn dọc; các ô
+     khác giữ cỡ; hàng nút nằm ở đáy khung. Còn tràn nữa (Nâng cao mở, định hướng rất dài) thì
+     khung cuộn nhưng hàng nút vẫn dính đáy (sticky). */
+.oai-reqcard > .epoch-card-body { display: flex; flex-direction: column; }
+.oai-reqcard > .epoch-card-body > * { flex-shrink: 0; }
+.oai-reqcard > .epoch-card-body > .oai-prompt-field { flex: 0 1 auto; display: flex; flex-direction: column; }
+/* Tối thiểu ~9 dòng; màn thấp thì nhỏ hơn để hàng nút còn chỗ. */
+.oai-prompt-field > textarea { flex: 1 1 auto; min-height: min(9lh, 28vh); max-height: none; overflow-y: auto; }
+.oai-actions {
+  position: sticky; bottom: -12px; z-index: 2;
+  margin: 0 -12px -12px; padding: 8px 12px 12px;
+  background: linear-gradient(var(--glass), var(--glass)), var(--bg-0);
+  border-top: 1px solid var(--glass-brd);
+}
+/* Màn hẹp (một cột, cả vùng cuộn chung): ô prompt cao tối đa ~60% màn hình rồi cuộn trong ô,
+   hàng nút dính đáy màn hình khi cuộn. */
+@media (max-width: 1000px) {
+  .oai-reqcard > .epoch-card-body > .oai-prompt-field { flex: none; }
+  .oai-prompt-field > textarea { max-height: 60vh; }
+  .oai-actions { bottom: 0; }
+}

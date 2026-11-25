@@ -31,7 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **Tên request** (tuỳ chọn, lưu cùng bản nháp và lịch sử) đổi ngay trên tab: bấm đúp tên tab (hoặc chuột phải →
   Đổi tên), Enter lưu / Esc huỷ; tên dài được cắt bằng "…", rê chuột xem đủ. Bố cục dồn chiều cao: hàng trên chỉ
   có các tab request (trái) và nút **⚙ Cấu hình** (góc phải, chấm cam khi chưa có khoá); khung request và kết quả
-  cao hết màn hình, ô prompt / định hướng và ô kết quả giãn theo nội dung, chỉ cuộn khi vượt chiều cao màn hình. **Token**: trước khi gửi hiện ước tính
+  cao hết màn hình, ô prompt / định hướng và ô kết quả giãn theo nội dung, chỉ cuộn khi vượt chiều cao màn hình.
+  Hàng nút (Gửi, Copy cURL…) luôn thấy: prompt ngắn thì nằm ngay dưới, prompt dài thì ghim ở đáy khung và ô prompt
+  co lại tự cuộn; màn hẹp thì ô prompt cao tối đa ~60% màn hình, hàng nút dính đáy khi cuộn. **Token**: trước khi gửi hiện ước tính
   token input (đếm ở server bằng tokenizer của OpenAI — js-tiktoken, o200k / cl100k theo model — trên đúng các message
   sẽ gửi, cập nhật khi gõ / đính file); sau khi có kết quả hiện số thật từ API: input (kèm phần cache), output (kèm
   phần suy luận). Model luôn **chọn bằng

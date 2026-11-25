@@ -890,7 +890,7 @@ const RequestPane = memo(function RequestPane({
 
   return (
     <div className="epoch-cols oai-cols">
-      <section className={`epoch-card oai-card${dropping ? ' oai-dropping' : ''}`} {...dropProps}>
+      <section className={`epoch-card oai-card oai-reqcard${dropping ? ' oai-dropping' : ''}`} {...dropProps}>
         <div className="tools-pane-head">
           ✉ Request <span className="tools-pane-hint">nội dung được gửi tới {profile?.baseUrl ?? OPENAI_DEFAULT_BASE}</span>
         </div>
@@ -925,7 +925,7 @@ const RequestPane = memo(function RequestPane({
             </button>
           </div>
 
-          <label className="oai-field oai-grow-v">
+          <label className="oai-field oai-grow-v oai-prompt-field">
             <span>Prompt</span>
             <textarea
               className="oai-autogrow oai-autogrow-prompt"
@@ -1046,7 +1046,9 @@ const RequestPane = memo(function RequestPane({
             <p className="oai-warn">Chế độ JSON: OpenAI yêu cầu định hướng hoặc prompt có nhắc tới chữ “JSON”, nếu không request sẽ bị từ chối.</p>
           )}
 
-          <div className="oai-row">
+          {/* Hàng nút luôn thấy: ngay dưới nội dung khi prompt ngắn; prompt dài thì ghim ở đáy khung
+              (ô prompt co lại và tự cuộn) — xem .oai-actions / .oai-reqcard trong globals.css. */}
+          <div className="oai-row oai-actions">
             {run.running ? (
               <button className="sp-cta" onClick={stopRun}>■ Dừng</button>
             ) : (
