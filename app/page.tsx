@@ -93,6 +93,8 @@ const AppsWorkspace = memo(dynamic(() => loadPane(() => import('@/components/App
 const ToolsWorkspace = memo(dynamic(() => loadPane(() => import('@/components/ToolsWorkspace')), { ssr: false, loading: PaneLoading }));
 // STT & TTS — cùng component với Tools › Giọng nói, đưa lên menu chính cho dễ thấy.
 const SpeechPanel = memo(dynamic(() => loadPane(() => import('@/components/SpeechPanel')), { ssr: false, loading: PaneLoading }));
+// Gửi prompt tới OpenAI (ChatGPT qua API) — khoá API chỉ ở server (lib/openaiServer.ts).
+const OpenAiWorkspace = memo(dynamic(() => loadPane(() => import('@/components/OpenAiWorkspace')), { ssr: false, loading: PaneLoading }));
 const ApiWorkspace = memo(dynamic(() => loadPane(() => import('@/components/ApiWorkspace')), { ssr: false, loading: PaneLoading }));
 const BrowserTabWorkspace = memo(dynamic(() => loadPane(() => import('@/components/BrowserTabWorkspace')), { ssr: false, loading: PaneLoading }));
 const BrowserWorkspace = memo(dynamic(() => loadPane(() => import('@/components/BrowserWorkspace')), { ssr: false, loading: PaneLoading }));
@@ -124,6 +126,7 @@ const PANE_PREFETCH: (() => Promise<unknown>)[] = [
   () => import('@/components/LinksWorkspace'),
   () => import('@/components/AppsWorkspace'),
   () => import('@/components/ToolsWorkspace'),
+  () => import('@/components/OpenAiWorkspace'),
   () => import('@/components/ApiWorkspace'),
   () => import('@/components/ApiExplorerWorkspace'),
   () => import('@/components/RemoteWorkspace'),
@@ -283,6 +286,7 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'apps', icon: '⚙', label: 'Apps', badge: 'run' },
   { key: 'tools', icon: '🧰', label: 'Tools', badge: 'fmt' },
   { key: 'speech', icon: '🎙', label: 'Giọng nói', badge: 'stt·tts' },
+  { key: 'openai', icon: '🤖', label: 'OpenAI', badge: 'gpt' },
   { key: 'api', icon: '📮', label: 'API', badge: 'http' },
   { key: 'webhooks', icon: '⚡', label: 'Webhooks', badge: 'tool' },
   { key: 'workspace', icon: '🧭', label: 'Workspace', badge: 'browser' },
@@ -1112,6 +1116,11 @@ export default function Home() {
         {visited.speech && (
           <main className="workspace" data-pane="speech" style={pane('speech')} aria-hidden={!shown('speech')}>
             <div className="panel sheet-panel"><SpeechPanel /></div>
+          </main>
+        )}
+        {visited.openai && (
+          <main className="workspace" data-pane="openai" style={pane('openai')} aria-hidden={!shown('openai')}>
+            <div className="panel sheet-panel"><OpenAiWorkspace /></div>
           </main>
         )}
         {visited.api && (

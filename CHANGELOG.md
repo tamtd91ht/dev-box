@@ -8,6 +8,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Menu 🤖 OpenAI — gửi prompt tới ChatGPT qua API.** Tab **Cấu hình** lưu được **nhiều cấu hình** (vd Công ty,
+  Cá nhân, OpenRouter), mỗi cái có tên, khoá API, model mặc định; mục **Nâng cao** (thu gọn, tuỳ chọn) có base URL
+  (dùng dịch vụ tương thích OpenAI như proxy Azure, OpenRouter, LM Studio, Ollama), organization, project; một cấu
+  hình là mặc định; nút **Thử kết nối** lấy danh sách model bằng cấu hình đang soạn. Khi gửi request thì **chọn
+  cấu hình** rồi chọn model (danh sách model theo tài khoản của cấu hình đó). Cấu hình cũ (một khoá) tự thành cấu
+  hình "Mặc định". Màn gửi request gọn: cấu hình, model, prompt, file; **prompt mẫu, định hướng (system prompt),
+  temperature, max tokens, dạng kết quả** nằm trong mục **⚙ Nâng cao** thu gọn — dòng tiêu đề tóm tắt những gì
+  đang bật bên trong, tự mở khi chọn prompt mẫu. **Import file** vào prompt (nút 📎 hoặc kéo thả, tối đa 5 file): doc, docx, txt, csv, pdf, xlsx —
+  chữ trong file được đọc ra ở server (mammoth, word-extractor, unpdf, ExcelJS; mỗi sheet thành bảng) và gửi kèm
+  sau prompt, mỗi file một khối có tên; PDF scan không có lớp chữ thì báo rõ. Nút **⧉ Copy cURL** (bấm được khi
+  request đã điền đủ) chép lệnh cURL tương đương — cùng cấu hình, model, định hướng, prompt, tham số, file — để
+  chạy lại ở Postman / terminal mà so sánh; gửi với `"stream": false`, khoá là biến `$OPENAI_API_KEY` trừ khi chọn
+  "kèm khoá thật" (có hỏi xác nhận). Phần Kết quả hiện **thời gian xử lý** tính từ lúc bấm Gửi tới lúc có kết quả
+  đầy đủ (đồng hồ chạy trong lúc chờ; xong thì kèm lúc chữ đầu tiên về) — dưới 5 giây hiện mili giây, dưới 1 phút
+  làm tròn giây, từ 1 phút hiện phút + giây; lịch sử lưu luôn thời gian này.
+  Tab Gửi request mở được **nhiều tab** như menu API (＋ mở tab, ✕ / chuột giữa đóng, chuột phải: nhân bản, đóng
+  tab khác / bên trái / bên phải / tất cả); mỗi tab có cấu hình, model, prompt, file, kết quả riêng và chạy nền được
+  khi đang xem tab khác (nhãn tab: … đang chạy, chấm xanh xong, chấm đỏ lỗi); các tab + bản nháp được nhớ qua lần mở
+  sau. **Lịch sử** giữ **5 request gần nhất** trong trình duyệt, dùng chung mọi tab — bấm một mục là mở lại request
+  đó (cấu hình, model, định hướng, tham số, kết quả) ở tab mới.
+  Ô **Tên request** (tuỳ chọn) hiện trên tab thay cho dòng đầu của prompt. **Token**: trước khi gửi hiện ước tính
+  token input (đếm ở server bằng tokenizer của OpenAI — js-tiktoken, o200k / cl100k theo model — trên đúng các message
+  sẽ gửi, cập nhật khi gõ / đính file); sau khi có kết quả hiện số thật từ API: input (kèm phần cache), output (kèm
+  phần suy luận). Model luôn **chọn bằng
+  dropdown** (model của tài khoản lấy qua API; gợi ý sẵn khi chưa lấy được), mục cuối **Nhập tay model khác…** cho
+  model mới app chưa kịp biết — model nhập tay được nhớ cho lần sau. Khoá chỉ lưu ở `configs/openai.json` trên máy
+  (không lên git) và không bao giờ trả về trang — trang chỉ thấy dạng `sk-p…3fQa`, lỗi từ API cũng được che khoá.
+  Tab **Gửi request**: ô **Định hướng** (system prompt — vai trò, giọng văn, định dạng kết quả) + **Prompt**, chọn
+  model, temperature, max tokens, kết quả dạng chữ hoặc JSON; kết quả hiện dần (Markdown hoặc JSON đã định dạng),
+  sao chép, dừng giữa chừng, báo số token và khi bị cắt vì max tokens. **Prompt mẫu** (định hướng + tham số, có thể
+  kèm prompt) lưu để dùng lại. Ctrl+Enter để gửi.
 - **Trợ lý AI chạy nền.** Câu hỏi (khi bật 🖱 "Thao tác màn hình") bám vào màn hình lúc hỏi: bảo trợ lý
   "tổng hợp sheet này" ở tab Browser rồi chuyển sang Công việc hay bất kỳ menu nào khác, trợ lý vẫn đọc,
   cuộn và chụp đúng màn hình cũ ở nền — không kéo bạn quay lại, không đọc nhầm màn hình mới. Áp dụng cho mọi

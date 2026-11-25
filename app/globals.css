@@ -12681,3 +12681,108 @@ textarea.spm-code { min-height: 140px; resize: vertical; border-radius: 12px; pa
 }
 .spm-del:hover:not(:disabled), .spm-del.ask { color: var(--err); background: var(--err-bg); transform: none; box-shadow: none; }
 .spm-del.ask { font-weight: 600; }
+
+/* ── 🤖 OpenAI (components/OpenAiWorkspace.tsx) — cùng khuôn với Giọng nói (.sp-*) ── */
+.oai-wrap { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; overflow: auto; }
+.oai-tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.oai-tabs > button {
+  height: 32px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--glass-brd);
+  background: var(--glass); color: var(--muted); font-size: 13px; cursor: pointer; box-shadow: none;
+}
+.oai-tabs > button.on { background: var(--glass-2); color: var(--text); border-color: var(--glass-brd-hover); font-weight: 600; }
+.oai-tabs-hint { margin-left: auto; font-size: 12px; color: var(--muted); }
+.oai-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); margin-left: 4px; vertical-align: middle; }
+.oai-cols { align-items: stretch; flex: 1; min-height: 0; }
+.oai-card { display: flex; flex-direction: column; min-height: 0; }
+.oai-card > .epoch-card-body { flex: 1; padding: 12px; min-height: 0; }
+.oai-config { max-width: 760px; }
+.oai-form { display: flex; flex-direction: column; gap: 10px; }
+.oai-row { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.oai-row > .ghost.sm, .oai-row > .sp-cta { height: 32px; border-radius: 10px; }
+.oai-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); min-width: 0; }
+.oai-field > span em { font-style: normal; color: var(--faint); }
+.oai-field textarea, .oai-field input, .oai-field select { font-size: 13px; width: 100%; }
+.oai-field textarea { resize: vertical; font-family: inherit; line-height: 1.5; }
+.oai-grow { flex: 1 1 200px; }
+.oai-grow-v textarea { min-height: 160px; }
+.oai-num { flex: 0 0 120px; }
+.oai-count { font-size: 12px; color: var(--faint); }
+.oai-msg { font-size: 12px; }
+.oai-msg.ok { color: var(--ok); }
+.oai-msg.err { color: var(--err); }
+.oai-warn { margin: 0; padding: 6px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 12px; }
+.oai-error { padding: 8px 12px; border-radius: 10px; background: var(--err-bg); color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
+.oai-muted { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.oai-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 24px; max-width: 560px; }
+.oai-empty h3 { margin: 0; }
+.oai-empty p { margin: 0; color: var(--muted); }
+.oai-head-actions { margin-left: auto; display: inline-flex; gap: 6px; }
+.oai-result { overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.oai-pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.55; }
+.oai-md { font-size: 13.5px; }
+.oai-history { border-top: 1px solid var(--glass-brd); padding: 8px 12px; font-size: 12px; }
+.oai-history summary { cursor: pointer; color: var(--muted); }
+.oai-history ul { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow: auto; }
+.oai-history-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left;
+  padding: 6px 8px; border-radius: 8px; border: 1px solid transparent; background: none; box-shadow: none; cursor: pointer;
+}
+.oai-history-item:hover { background: var(--glass); border-color: var(--glass-brd); }
+.oai-history-when { color: var(--faint); font-size: 11px; }
+.oai-history-prompt { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.oai-wrap :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.oai-model-typing { display: flex; gap: 6px; align-items: center; }
+.oai-model-typing input { flex: 1; min-width: 0; font-size: 13px; }
+.oai-model-typing .ghost.sm { height: 30px; border-radius: 8px; }
+.oai-advanced { border: 1px solid var(--glass-brd); border-radius: 10px; padding: 8px 12px; background: var(--glass); }
+.oai-advanced > summary { cursor: pointer; font-size: 12.5px; color: var(--text); }
+.oai-advanced > summary em { font-style: normal; color: var(--faint); }
+.oai-advanced[open] > summary { margin-bottom: 10px; }
+/* Nhiều cấu hình OpenAI: danh sách bên trái, form bên phải. */
+.oai-config-wrap { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.oai-config-wrap > .oai-config { flex: 1 1 520px; }
+.oai-profiles { display: flex; flex-direction: column; gap: 6px; flex: 0 0 220px; }
+.oai-profiles > button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  padding: 8px 10px; border-radius: 10px; border: 1px solid var(--glass-brd); background: var(--glass);
+  color: var(--text); cursor: pointer; box-shadow: none;
+}
+.oai-profiles > button.on { border-color: var(--accent); background: var(--glass-2); }
+.oai-profile-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.oai-profile-sub { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.oai-profile-add { color: var(--muted) !important; font-size: 12.5px; border-style: dashed !important; }
+.oai-badge { font-size: 10px; font-weight: 500; padding: 1px 6px; border-radius: 999px; background: var(--ok-bg); color: var(--ok); }
+/* File import vào prompt (OpenAI). */
+.oai-files { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.oai-files > .ghost.sm { height: 30px; border-radius: 8px; }
+.oai-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 3px 4px 3px 8px; border-radius: 8px; border: 1px solid var(--glass-brd); background: var(--glass);
+  font-size: 12px; color: var(--text);
+}
+.oai-chip b { font-size: 10px; color: var(--accent); }
+.oai-chip em { font-style: normal; color: var(--faint); }
+.oai-chip > button { border: 0; background: none; box-shadow: none; padding: 0 4px; height: 20px; color: var(--muted); cursor: pointer; }
+.oai-chip > button:hover { color: var(--err); }
+.oai-chip-busy { color: var(--muted); padding-right: 8px; }
+.oai-card { position: relative; }
+.oai-dropping { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.oai-drop {
+  position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--bg-0, #000) 70%, transparent); color: var(--text); font-size: 14px; pointer-events: none;
+}
+.oai-check { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); cursor: pointer; }
+.oai-naming { padding: 8px 10px; border-radius: 10px; border: 1px dashed var(--glass-brd-hover); background: var(--glass); }
+.oai-elapsed { margin-left: 8px; font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.oai-elapsed.running { color: var(--accent); }
+.oai-elapsed em { font-style: normal; color: var(--muted); }
+/* Nhiều tab request (OpenAI) — thanh tab dùng chung class với menu API (.api-wintabs). */
+.oai-reqarea { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.oai-reqarea[hidden], .oai-tabpane[hidden] { display: none; }
+.oai-tabpane { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.oai-wintabs { flex: none; }
+.oai-tabdot { font-size: 9px; line-height: 1; }
+.oai-tabdot.ok { color: var(--ok); }
+.oai-tabdot.err { color: var(--err); }
+.oai-tokens { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; padding: 2px 8px; border-radius: 999px; background: var(--glass-2); cursor: help; }
+.oai-history-prompt b { font-weight: 600; }
