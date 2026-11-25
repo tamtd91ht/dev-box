@@ -12786,3 +12786,33 @@ textarea.spm-code { min-height: 140px; resize: vertical; border-radius: 12px; pa
 .oai-tabdot.err { color: var(--err); }
 .oai-tokens { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; padding: 2px 8px; border-radius: 999px; background: var(--glass-2); cursor: help; }
 .oai-history-prompt b { font-weight: 600; }
+/* OpenAI — bố cục dồn chiều cao: thanh tab request + ⚙ góc phải; khung request / kết quả cao hết
+   màn hình, ô prompt và kết quả giãn theo nội dung, chỉ cuộn khi vượt chiều cao màn hình. */
+.oai-wrap { overflow: hidden; gap: 8px; }
+.oai-topbar { display: flex; align-items: center; gap: 8px; flex: none; min-width: 0; }
+.oai-topbar > .oai-wintabs { flex: 1; min-width: 0; }
+.oai-wintabs .api-wintab { max-width: 220px; }
+.oai-wintabs .api-wintab-btn { min-width: 0; }
+.oai-gear {
+  position: relative; flex: none; width: 32px; height: 30px; padding: 0; border-radius: 8px;
+  border: 1px solid var(--glass-brd); background: var(--glass); color: var(--muted); font-size: 16px; cursor: pointer; box-shadow: none;
+}
+.oai-gear:hover { color: var(--text); border-color: var(--glass-brd-hover); }
+.oai-gear.on { color: var(--text); border-color: var(--accent); background: var(--glass-2); }
+.oai-gear > .oai-dot { position: absolute; top: 3px; right: 3px; margin: 0; }
+.oai-tab-rename { width: 180px; height: 26px; margin: 1px 4px; font-size: 12px; padding: 0 6px; }
+.oai-reqarea { flex: 1; min-height: 0; }
+.oai-tabpane { flex: 1; min-height: 0; overflow-y: auto; }
+.oai-config-wrap { flex: 1; min-height: 0; overflow-y: auto; align-content: flex-start; }
+.oai-cols { flex: 1; min-height: 0; height: 100%; align-items: stretch; grid-template-rows: minmax(0, 1fr); }
+.oai-cols > .oai-card { min-height: 0; max-height: 100%; display: flex; flex-direction: column; }
+.oai-cols > .oai-card > .epoch-card-body { flex: 1; min-height: 0; overflow-y: auto; }
+.oai-cols > .oai-card > .oai-history { flex: none; }
+/* Ô nhập giãn theo nội dung (Chromium field-sizing) — cuộn nằm ở khung chứa khi vượt màn hình. */
+.oai-autogrow { field-sizing: content; resize: none; overflow-y: auto; }
+.oai-autogrow-prompt { min-height: 9lh; }
+.oai-grow-v textarea { min-height: 9lh; }
+@media (max-width: 1000px) {
+  .oai-cols { height: auto; grid-template-rows: none; }
+  .oai-cols > .oai-card { max-height: none; }
+}

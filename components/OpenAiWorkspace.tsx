@@ -292,9 +292,26 @@ export default function OpenAiWorkspace() {
     save(TABS_KEY, { drafts: reqTabs.map((t) => t.draft), active: Math.max(0, reqTabs.findIndex((t) => t.key === activeKey)) });
   }, [reqTabs, activeKey]);
 
+  // Tên request do thanh tab quản (đổi tên ngay trên tab) — bản nháp từ RequestPane không ghi đè tên.
   const onDraft = useCallback((key: string, d: Draft) => {
-    setReqTabs((ts) => ts.map((t) => (t.key === key && t.draft !== d ? { ...t, draft: d } : t)));
+    setReqTabs((ts) => ts.map((t) => (t.key === key ? { ...t, draft: { ...d, name: t.draft.name } } : t)));
   }, []);
+  const [renaming, setRenaming] = useState<{ key: string; value: string } | null>(null);
+  const startRename = useCallback((key: string) => {
+    const t = reqTabs.find((x) => x.key === key);
+    if (!t) return;
+    setActiveKey(key);
+    setTab('request');
+    setRenaming({ key, value: t.draft.name });
+    reclaimFocus();
+  }, [reqTabs]);
+  const commitRename = useCallback(() => {
+    if (!renaming) return; // Enter đã lưu → ô nhập biến mất → blur gọi lại: bỏ qua
+    const { key, value } = renaming;
+    const name = value.trim().slice(0, 80);
+    setReqTabs((ts) => ts.map((t) => (t.key === key ? { ...t, draft: { ...t.draft, name } } : t)));
+    setRenaming(null);
+  }, [renaming]);
   const onStatus = useCallback((key: string, st: TabStatus) => {
     setReqTabs((ts) => ts.map((t) => (t.key === key && t.status !== st ? { ...t, status: st } : t)));
   }, []);
@@ -385,26 +402,13 @@ export default function OpenAiWorkspace() {
         if (t) reclaimFocus(t);
       }}
     >
-      <div className="oai-tabs" role="tablist" aria-label="OpenAI">
-        <button role="tab" aria-selected={tab === 'request'} className={tab === 'request' ? 'on' : ''} onClick={() => setTab('request')}>
-          ✉ Gửi request
-        </button>
-        <button role="tab" aria-selected={tab === 'config'} className={tab === 'config' ? 'on' : ''} onClick={() => setTab('config')}>
-          ⚙ Cấu hình {store && !ready && <span className="oai-dot" title="Chưa có cấu hình nào có khoá API" />}
-        </button>
-        <span className="oai-tabs-hint">
-          {store ? `${store.profiles.length} cấu hình${ready ? '' : ' · chưa có khoá API'}` : ''}
-        </span>
-      </div>
-      {loadErr && <div className="oai-error" role="alert">Không đọc được cấu hình: {loadErr}</div>}
-      {/* Các tab request LUÔN mount (chỉ ẩn) — kể cả khi đang ở Cấu hình — để request đang chạy
-          ở tab khác không bị dừng và bản nháp không mất. */}
-      <div className="oai-reqarea" hidden={tab !== 'request'}>
+      {/* Thanh trên: các tab request bên trái, ⚙ Cấu hình ở góc phải — dồn chiều cao cho request. */}
+      <div className="oai-topbar">
         <div className="api-wintabs g-shrink oai-wintabs">
           {reqTabs.map((t) => (
             <div
               key={t.key}
-              className={`api-wintab${t.key === activeKey ? ' on' : ''}`}
+              className={`api-wintab${t.key === activeKey && tab === 'request' ? ' on' : ''}`}
               onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeTabs(new Set([t.key])); } }}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -415,21 +419,61 @@ export default function OpenAiWorkspace() {
                 });
               }}
             >
-              <button className="api-wintab-btn" onClick={() => setActiveKey(t.key)} title={t.draft.prompt.slice(0, 300) || 'Request mới'}>
-                <span className="api-wintab-name">{reqTabLabel(t.draft)}</span>
-                {t.status === 'running' && <span className="small" aria-label="đang chạy">…</span>}
-                {t.status === 'done' && <span className="oai-tabdot ok" aria-label="xong">●</span>}
-                {t.status === 'error' && <span className="oai-tabdot err" aria-label="lỗi">●</span>}
-              </button>
+              {renaming?.key === t.key ? (
+                // Đổi tên ngay trên tab: Enter / bấm ra ngoài = lưu, Esc = huỷ.
+                <input
+                  className="oai-tab-rename"
+                  autoFocus
+                  value={renaming.value}
+                  maxLength={80}
+                  placeholder="Tên request"
+                  onChange={(e) => setRenaming({ key: t.key, value: e.target.value })}
+                  onFocus={(e) => e.currentTarget.select()}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+                    if (e.key === 'Escape') { e.preventDefault(); setRenaming(null); }
+                  }}
+                />
+              ) : (
+                <button
+                  className="api-wintab-btn"
+                  onClick={() => { setActiveKey(t.key); setTab('request'); }}
+                  onDoubleClick={() => startRename(t.key)}
+                  title={`${t.draft.name.trim() || t.draft.prompt.slice(0, 300) || 'Request mới'}\n(bấm đúp để đổi tên)`}
+                >
+                  <span className="api-wintab-name">{reqTabLabel(t.draft)}</span>
+                  {t.status === 'running' && <span className="small" aria-label="đang chạy">…</span>}
+                  {t.status === 'done' && <span className="oai-tabdot ok" aria-label="xong">●</span>}
+                  {t.status === 'error' && <span className="oai-tabdot err" aria-label="lỗi">●</span>}
+                </button>
+              )}
               <button className="api-wintab-x" onClick={() => closeTabs(new Set([t.key]))} title="Đóng tab (chuột giữa cũng đóng)">✕</button>
             </div>
           ))}
           <button className="ghost sm" onClick={() => openTab()} title="Tab request mới">＋</button>
         </div>
+        <button
+          className={`oai-gear${tab === 'config' ? ' on' : ''}`}
+          onClick={() => setTab(tab === 'config' ? 'request' : 'config')}
+          aria-pressed={tab === 'config'}
+          aria-label="Cấu hình OpenAI"
+          title={tab === 'config'
+            ? 'Đóng Cấu hình — quay về request'
+            : `Cấu hình OpenAI${store ? ` · ${store.profiles.length} cấu hình${ready ? '' : ' · chưa có khoá API'}` : ''}`}
+        >
+          ⚙{store && !ready && <span className="oai-dot" />}
+        </button>
+      </div>
+      {loadErr && <div className="oai-error" role="alert">Không đọc được cấu hình: {loadErr}</div>}
+      {/* Các tab request LUÔN mount (chỉ ẩn) — kể cả khi đang ở Cấu hình — để request đang chạy
+          ở tab khác không bị dừng và bản nháp không mất. */}
+      <div className="oai-reqarea" hidden={tab !== 'request'}>
         {reqTabs.map((t) => (
           <div key={t.key} className="oai-tabpane" hidden={t.key !== activeKey}>
             <RequestPane
               tabKey={t.key}
+              name={t.draft.name}
               initialDraft={t.draft}
               initialRun={t.run}
               onDraft={onDraft}
@@ -464,7 +508,8 @@ export default function OpenAiWorkspace() {
               const act = (fn: () => void) => () => { setTabMenu(null); fn(); };
               return (
                 <>
-                  <button onClick={act(() => { if (src) openTab(src.draft); })}>⧉ Nhân bản thành tab mới</button>
+                  <button onClick={act(() => startRename(key))}>✎ Đổi tên</button>
+                  <button onClick={act(() => { if (src) openTab({ ...src.draft, name: src.draft.name ? `${src.draft.name} (copy)` : '' }); })}>⧉ Nhân bản thành tab mới</button>
                   <div className="bt-menu-sep" />
                   <button onClick={act(() => closeTabs(new Set([key])))}>✕ Đóng tab này</button>
                   <button onClick={act(() => closeTabs(new Set(others), key))} disabled={!others.length}>
@@ -536,10 +581,12 @@ type TabStatus = 'idle' | 'running' | 'done' | 'error';
 /** Một tab request (menu có nhiều tab như menu API): state riêng, chạy nền được khi đang xem tab khác.
  *  memo: gõ ở một tab chỉ vẽ lại tab đó, không vẽ lại cả loạt tab (kết quả dài, Markdown). */
 const RequestPane = memo(function RequestPane({
-  tabKey, initialDraft, initialRun, onDraft, onStatus, history, onHistory, onClearHistory, onOpenTab,
+  tabKey, name, initialDraft, initialRun, onDraft, onStatus, history, onHistory, onClearHistory, onOpenTab,
   store, choicesFor, loadModels, presets, setPresets, onConfigure,
 }: {
   tabKey: string;
+  /** Tên request (đổi trên tab) — lưu vào lịch sử. */
+  name: string;
   initialDraft: Draft;
   /** Mở từ lịch sử: kết quả cũ hiện sẵn. */
   initialRun?: Run;
@@ -724,7 +771,7 @@ const RequestPane = memo(function RequestPane({
               elapsedMs: Math.round((endedAt ?? performance.now()) - submittedAt),
               ...(files.length ? { files: files.map((f) => f.name) } : {}),
               profileId, temperature: draft.temperature, maxTokens: draft.maxTokens,
-              ...(draft.name.trim() ? { name: draft.name.trim() } : {}),
+              ...(name.trim() ? { name: name.trim() } : {}),
             };
             onHistory(item);
           }
@@ -849,16 +896,6 @@ const RequestPane = memo(function RequestPane({
         </div>
         {dropping && <div className="oai-drop" aria-hidden>Thả file vào đây — doc, docx, txt, csv, pdf, xlsx</div>}
         <div className="epoch-card-body oai-form">
-          <label className="oai-field">
-            <span>Tên request <em>(tuỳ chọn — hiện trên tab; để trống thì tab lấy dòng đầu của prompt)</em></span>
-            <input
-              value={draft.name}
-              maxLength={80}
-              spellCheck={false}
-              placeholder="vd Tóm tắt báo cáo Q3"
-              onChange={(e) => setDraft({ name: e.target.value })}
-            />
-          </label>
           <div className="oai-row">
             <label className="oai-field oai-grow">
               <span>Cấu hình</span>
@@ -891,7 +928,8 @@ const RequestPane = memo(function RequestPane({
           <label className="oai-field oai-grow-v">
             <span>Prompt</span>
             <textarea
-              rows={10}
+              className="oai-autogrow oai-autogrow-prompt"
+              rows={8}
               value={draft.prompt}
               maxLength={OPENAI_LIMITS.promptChars}
               placeholder={files.length ? `Yêu cầu với file đính kèm… (để trống = "${FILE_ONLY_PROMPT}")` : 'Nội dung cần xử lý… (Ctrl+Enter để gửi)'}
@@ -977,7 +1015,8 @@ const RequestPane = memo(function RequestPane({
               <label className="oai-field">
                 <span>Định hướng <em>(system prompt — vai trò, giọng văn, định dạng kết quả mong muốn)</em></span>
                 <textarea
-                  rows={4}
+                  className="oai-autogrow"
+                  rows={3}
                   value={draft.system}
                   maxLength={OPENAI_LIMITS.systemChars}
                   placeholder="Vd: Bạn là chuyên gia review code Java. Trả lời bằng tiếng Việt, gạch đầu dòng, nêu mức độ nghiêm trọng cho mỗi vấn đề."

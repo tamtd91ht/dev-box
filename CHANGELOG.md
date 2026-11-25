@@ -28,7 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   khi đang xem tab khác (nhãn tab: … đang chạy, chấm xanh xong, chấm đỏ lỗi); các tab + bản nháp được nhớ qua lần mở
   sau. **Lịch sử** giữ **5 request gần nhất** trong trình duyệt, dùng chung mọi tab — bấm một mục là mở lại request
   đó (cấu hình, model, định hướng, tham số, kết quả) ở tab mới.
-  Ô **Tên request** (tuỳ chọn) hiện trên tab thay cho dòng đầu của prompt. **Token**: trước khi gửi hiện ước tính
+  **Tên request** (tuỳ chọn, lưu cùng bản nháp và lịch sử) đổi ngay trên tab: bấm đúp tên tab (hoặc chuột phải →
+  Đổi tên), Enter lưu / Esc huỷ; tên dài được cắt bằng "…", rê chuột xem đủ. Bố cục dồn chiều cao: hàng trên chỉ
+  có các tab request (trái) và nút **⚙ Cấu hình** (góc phải, chấm cam khi chưa có khoá); khung request và kết quả
+  cao hết màn hình, ô prompt / định hướng và ô kết quả giãn theo nội dung, chỉ cuộn khi vượt chiều cao màn hình. **Token**: trước khi gửi hiện ước tính
   token input (đếm ở server bằng tokenizer của OpenAI — js-tiktoken, o200k / cl100k theo model — trên đúng các message
   sẽ gửi, cập nhật khi gõ / đính file); sau khi có kết quả hiện số thật từ API: input (kèm phần cache), output (kèm
   phần suy luận). Model luôn **chọn bằng
