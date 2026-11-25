@@ -3354,6 +3354,25 @@ ipcMain.handle('workspace:focusHost', (evt) => {
 //
 // Tra ve mang ket qua cua tung frame (frame nao nem loi thi bo qua, khong lam
 // chet ca luot) kem url cua frame — caller tu chon cai nao dung.
+/**
+ * Promise có HẠN: quá `ms` thì ra `fallback` (không ném) và ghi log. Các lệnh vào
+ * guest (executeJavaScript, capturePage, fetch, CDP) có thể CHỜ MÃI khi trang bị
+ * ẩn / đóng băng / đang tải dở — trợ lý AI chạy nền từng treo ~30 phút ở đúng
+ * chỗ này. Lệnh gốc vẫn chạy tiếp ở nền, chỉ là không ai chờ nó nữa.
+ */
+function withDeadline(promise, ms, fallback, label) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((resolve) => {
+      timer = setTimeout(() => {
+        log('Deadline', `${label} quá ${ms} ms — bỏ qua`);
+        resolve(fallback);
+      }, ms);
+    }),
+  ]);
+}
+
 ipcMain.handle('workspace:execInFrames', (evt, targetId, code) => {
   try {
     const target = webContents.fromId(Number(targetId));
@@ -3388,7 +3407,10 @@ ipcMain.handle('workspace:execInFrames', (evt, targetId, code) => {
       let url = '';
       try { url = f.url || ''; } catch { /* frame vua bi huy */ }
       return Promise.resolve()
-        .then(() => f.executeJavaScript(code, true))
+        // Mỗi frame có hạn riêng: một iframe đứng im (đang tải, bị đóng băng) không
+        // được giữ cả lượt — trước đây Promise.all chờ nó mãi.
+        .then(() => withDeadline(f.executeJavaScript(code, true).then((v) => ({ v })), 6000, null, `execInFrames ${url.slice(0, 80)}`))
+        .then((box) => (box === null ? Promise.reject(new Error('timeout')) : box.v))
         .then((value) => ({ url, value }))
         // Frame cross-origin bi chan, hoac frame bi huy giua duong: bo qua
         // rieng frame do. Mot frame chet khong duoc lam mat ket qua cua ca
@@ -3425,7 +3447,8 @@ ipcMain.handle('workspace:captureScreen', async (evt, rect, guestIds) => {
       const target = webContents.fromId(Number(id));
       if (!target || target.isDestroyed() || target.hostWebContents !== evt.sender) continue;
       try {
-        const data = encode(await target.capturePage());
+        // capturePage chờ một khung hình MỚI — trang không vẽ (ẩn) là chờ mãi.
+        const data = encode(await withDeadline(target.capturePage(), 8000, null, 'capturePage guest'));
         if (data) shots.push({ kind: 'web', url: target.getURL(), data });
       } catch { /* guest vừa đóng */ }
     }
@@ -3434,7 +3457,7 @@ ipcMain.handle('workspace:captureScreen', async (evt, rect, guestIds) => {
         x: Math.max(0, Math.round(rect.x)), y: Math.max(0, Math.round(rect.y)),
         width: Math.round(rect.width), height: Math.round(rect.height),
       };
-      const data = encode(await evt.sender.capturePage(r));
+      const data = encode(await withDeadline(evt.sender.capturePage(r), 8000, null, 'capturePage window'));
       if (data) shots.push({ kind: 'app', data });
     }
     return { ok: true, shots };
@@ -3477,7 +3500,7 @@ ipcMain.handle('workspace:exportGoogleDoc', async (evt, targetId) => {
     if (target.hostWebContents !== evt.sender) return { ok: false, error: 'not your guest' };
     const ex = googleExportUrl(target.getURL());
     if (!ex) return { ok: false, error: 'not a Google Sheets/Docs/Slides page' };
-    const res = await target.session.fetch(ex.url, { redirect: 'follow' });
+    const res = await target.session.fetch(ex.url, { redirect: 'follow', signal: AbortSignal.timeout(20000) });
     const type = res.headers.get('content-type') || '';
     if (!res.ok) return { ok: false, kind: ex.kind, error: `HTTP ${res.status}` };
     // Trang HTML = bị đẩy về trang đăng nhập / không có quyền tải xuống.
@@ -3511,10 +3534,12 @@ ipcMain.handle('workspace:wheel', async (evt, targetId, x, y, dx, dy) => {
     let attached = false;
     try {
       if (!dbg.isAttached()) { dbg.attach('1.3'); attached = true; }
-      await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: px, y: py });
-      await dbg.sendCommand('Input.dispatchMouseEvent', {
+      const moved = await withDeadline(dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: px, y: py }).then(() => true), 3000, false, 'wheel mouseMoved');
+      if (!moved) throw new Error('cdp timeout');
+      const wheeled = await withDeadline(dbg.sendCommand('Input.dispatchMouseEvent', {
         type: 'mouseWheel', x: px, y: py, deltaX: ddx, deltaY: ddy,
-      });
+      }).then(() => true), 3000, false, 'wheel mouseWheel');
+      if (!wheeled) throw new Error('cdp timeout');
       return { ok: true, via: 'cdp' };
     } catch {
       target.sendInputEvent({ type: 'mouseMove', x: px, y: py });

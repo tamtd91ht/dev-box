@@ -39,6 +39,23 @@ const MAX_TEXT = 12_000;
 const MAX_ITEMS = 120;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Promise có HẠN — quá `ms` thì NÉM lỗi rõ ràng. Mọi lệnh vào trang web nhúng
+ *  (executeJavaScript, chụp, tải xuất, lăn chuột) đều phải qua đây: trang bị ẩn /
+ *  đóng băng / đang tải dở có thể không bao giờ trả lời — trước đây cả lượt chạy
+ *  nền treo ~30 phút ở bước "Đọc màn hình". Lệnh gốc vẫn chạy tiếp ở nền. */
+function deadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    p.finally(() => clearTimeout(timer)),
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => {
+        console.warn(`[aiScreen] ${label} quá ${ms / 1000}s — bỏ qua`);
+        reject(new Error(`${label} quá ${ms / 1000}s không phản hồi`));
+      }, ms);
+    }),
+  ]);
+}
+
 /** Phần tử bấm được của lần đọc màn hình gần nhất — `click n` trỏ vào đây. */
 let lastItems: { el: HTMLElement; label: string; tab: boolean }[] = [];
 
@@ -184,7 +201,7 @@ async function waitWebviews(pane: HTMLElement): Promise<void> {
     let ready = wvs.length > 0;
     for (const w of wvs) {
       try {
-        if (w.getWebContentsId() <= 0 || (await w.executeJavaScript('document.readyState')) !== 'complete') ready = false;
+        if (w.getWebContentsId() <= 0 || (await deadline(w.executeJavaScript('document.readyState'), 3000, 'readyState')) !== 'complete') ready = false;
       } catch { ready = false; }
     }
     if (ready) return;
@@ -292,13 +309,13 @@ async function readWebview(wv: WebviewEl): Promise<string> {
   const bridge = window.workspace?.execInFrames;
   if (bridge && id > 0) {
     try {
-      const res = await bridge(id, READ_PAGE_JS);
+      const res = await deadline(bridge(id, READ_PAGE_JS), 12_000, 'đọc chữ các khung trang');
       if (res?.ok && res.frames) frames = res.frames.map((f) => (f.value ?? {}) as { title?: string; text?: string });
       else errs.push(`execInFrames: ${res?.error ?? 'không có kết quả'}`);
     } catch (e) { errs.push(`execInFrames: ${(e as Error).message}`); }
   }
   if (!frames.some((f) => f?.text)) {
-    try { frames = [(await wv.executeJavaScript(READ_PAGE_JS)) as { title?: string; text?: string }]; }
+    try { frames = [(await deadline(wv.executeJavaScript(READ_PAGE_JS), 8000, 'đọc chữ trang')) as { title?: string; text?: string }]; }
     catch (e) {
       errs.push(`executeJavaScript: ${(e as Error).message}`);
       console.warn('[aiScreen] không đọc được webview', url, errs);
@@ -341,7 +358,7 @@ async function readGoogleExport(id: number, url: string): Promise<string> {
   if (!ex) return '';
   const what = /\/spreadsheets\//.test(url) ? 'sheet' : /\/document\//.test(url) ? 'doc' : 'slides';
   try {
-    const r = await ex(id);
+    const r = await deadline(ex(id), 25_000, 'tải dữ liệu xuất Google');
     if (!r?.ok || !r.text) {
       return `--- Dữ liệu xuất của Google ${what}: KHÔNG lấy được (${r?.error ?? 'không rõ'}) — đọc bằng cách cuộn + xem ảnh chụp. ---`;
     }
@@ -554,7 +571,7 @@ function appScrollAreas(pane: HTMLElement): ScrollArea[] {
  *  trang" (k = -1) để lăn chuột vào giữa — trang thuần canvas. */
 async function webScrollAreas(wv: WebviewEl, page: string): Promise<ScrollArea[]> {
   let found: (ScrollInfo & { k: number })[] = [];
-  try { found = ((await wv.executeJavaScript(DETECT_SCROLL_JS)) as (ScrollInfo & { k: number })[]) ?? []; }
+  try { found = ((await deadline(wv.executeJavaScript(DETECT_SCROLL_JS), 8000, 'tìm vùng cuộn')) as (ScrollInfo & { k: number })[]) ?? []; }
   catch { /* chưa tải xong */ }
   const r = wv.getBoundingClientRect();
   if (!found.length) {
@@ -596,7 +613,7 @@ async function doScroll(n: number, dir: ScrollDir, pages: number): Promise<strin
   let moved = false;
   if (a.k >= 0 && !thin) {
     try {
-      const r = (await a.wv.executeJavaScript(scrollJs(a.k, dx, dy))) as { before: number[]; after: number[] } | null;
+      const r = (await deadline(a.wv.executeJavaScript(scrollJs(a.k, dx, dy)), 5000, 'cuộn')) as { before: number[]; after: number[] } | null;
       moved = !!r && (r.before[0] !== r.after[0] || r.before[1] !== r.after[1]);
     } catch { /* trang vừa điều hướng */ }
   }
@@ -612,7 +629,7 @@ async function doScroll(n: number, dir: ScrollDir, pages: number): Promise<strin
     // Mỗi cú lăn tối đa ~một màn hình; "tới cuối" thì lăn nhiều cú.
     const ticks = Math.min(Math.ceil(Math.abs(pages)), 12);
     for (let i = 0; i < ticks; i++) {
-      const res = await wheel(id, cx, cy, vert ? 0 : sign * step, vert ? sign * step : 0);
+      const res = await deadline(wheel(id, cx, cy, vert ? 0 : sign * step, vert ? sign * step : 0), 8000, 'lăn chuột');
       if (!res?.ok) return `Lăn chuột lỗi: ${res?.error ?? 'không rõ'}`;
       await sleep(120);
     }
@@ -660,7 +677,7 @@ export async function captureScreen(): Promise<ScreenShot[]> {
   const shots: ScreenShot[] = [];
   if (cap && (ids.length || rect)) {
     try {
-      const res = await cap(rect, ids);
+      const res = await deadline(cap(rect, ids), 20_000, 'chụp màn hình');
       shots.push(...(res?.shots ?? []).map((s, i) => ({
         name: s.kind === 'web' ? `ảnh-chụp-trang-${i + 1}.jpg` : 'ảnh-chụp-màn-hình.jpg',
         mediaType: 'image/jpeg' as const,

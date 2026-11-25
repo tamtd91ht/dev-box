@@ -67,6 +67,31 @@ const AGENT_KEY = 'ai.agent';
 /** Số hành động tối đa cho một câu hỏi — chặn vòng lặp vô tận. */
 /** Đọc hết một bảng dài cần cuộn nhiều lần — 8 bước cũ không đủ. */
 const MAX_STEPS = 20;
+
+/** Hạn của MỘT bước thao tác (không tính lúc chờ người dùng bấm Cho phép) và của
+ *  lần chụp ảnh sau bước. lib/aiScreen.ts đã đặt hạn cho từng lệnh vào trang web;
+ *  đây là chốt cuối để vòng lặp KHÔNG BAO GIỜ đứng im — đã từng treo ~30 phút ở
+ *  "Đọc màn hình" khi chạy nền. */
+const STEP_CAP_MS = 90_000;
+const SHOT_CAP_MS = 30_000;
+
+/** Chờ một bước, nhưng: quá STEP_CAP_MS (trừ thời gian chờ người dùng) → bỏ qua với
+ *  lời nhắn cho model; người dùng bấm Dừng → thôi chờ ngay (trong ~1 s). */
+function stepCap(p: Promise<string>, waitingUser: () => boolean, stopped: () => boolean): Promise<string> {
+  return new Promise<string>((resolve) => {
+    let spent = 0;
+    const iv = setInterval(() => {
+      if (!waitingUser()) spent += 1000;
+      if (stopped()) { clearInterval(iv); resolve('Người dùng đã bấm Dừng.'); }
+      else if (spent >= STEP_CAP_MS) {
+        clearInterval(iv);
+        console.warn('[AiChat] bước thao tác quá hạn — bỏ qua');
+        resolve(`Bước này quá ${STEP_CAP_MS / 1000} giây không xong (trang / màn hình không phản hồi) — đã bỏ qua. Trả lời bằng dữ liệu đã có, hoặc thử cách khác; đừng lặp lại y hệt bước này.`);
+      }
+    }, 1000);
+    p.then((r) => { clearInterval(iv); resolve(r); }, (e) => { clearInterval(iv); resolve(`Hành động lỗi: ${(e as Error).message}`); });
+  });
+}
 const POLL_MS = 300;
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const num = (n: number) => n.toLocaleString('vi-VN');
@@ -372,21 +397,23 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
         // Một bước thao tác: hiện nhãn, thực hiện trên giao diện, ghi kết quả.
         const label = describeAction(action, tabs);
         patch((m) => ({ content: '', steps: [...(m.steps ?? []), { label, note: stripAction(raw) || undefined, state: 'doing' }] }));
-        const result = await runAction(action, {
+        let waitingUser = false;
+        const result = await stepCap(runAction(action, {
           tabs,
           screenName: () => screenRef.current,
           confirmClick: (what) => new Promise<boolean>((resolve) => {
             if (stopRef.current) { resolve(false); return; }
             // Chạy nền mà bảng đang đóng thì thẻ "Cho phép" không ai thấy → mở bảng.
             aiDock.setOpen(true);
-            setConfirm({ label: what, resolve: (ok) => { setConfirm(null); resolve(ok); } });
+            waitingUser = true;
+            setConfirm({ label: what, resolve: (ok) => { waitingUser = false; setConfirm(null); resolve(ok); } });
           }),
-        });
+        }), () => waitingUser, () => stopRef.current);
         // Ghi chú của model trước hành động (dữ liệu đã gom được qua các lần
         // cuộn) đi kèm nhật ký — ảnh chụp cũ không gửi lại, chỉ còn ghi chú này.
         steps.push({ action: JSON.stringify(action), result, note: stripAction(raw).slice(0, 4000) || undefined });
         // Bị từ chối bấm thì màn hình không đổi — vẫn chụp lại cho đơn giản.
-        shots = await captureScreen();
+        shots = await Promise.race([captureScreen(), sleep(SHOT_CAP_MS).then(() => [] as ScreenShot[])]);
         patch((m) => ({
           steps: m.steps?.map((s, i, all) => (
             i === all.length - 1 ? { ...s, state: result.startsWith(DENIED) ? 'denied' as const : 'done' as const } : s

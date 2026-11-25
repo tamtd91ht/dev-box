@@ -154,6 +154,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Trợ lý AI treo ở "Đọc màn hình" khi chạy nền.** Hỏi ở tab Browser rồi chuyển menu khác, trợ lý có thể
+  đứng im hàng chục phút: lệnh vào trang web bị ẩn (chạy script trong từng khung, chụp ảnh, tải dữ liệu xuất)
+  chờ trang trả lời mãi. Nay mọi lệnh đó có hạn (vài giây tới 25 giây, ghi log khi quá hạn), mỗi bước tối đa
+  90 giây (không tính lúc chờ bạn bấm Cho phép), quá hạn thì bỏ qua bước đó và trả lời bằng dữ liệu đã có;
+  nút Dừng cắt ngang được ngay cả khi một bước đang treo.
+
 - **Phân tích hit rate chọn “60 giây” không còn báo hết giờ.** Hạn chờ ở trình duyệt là 60s cho
   mọi thao tác Redis, trong khi phân tích 60s cần thêm thời gian đo trước + quét sau — trình duyệt
   báo lỗi dù server vẫn chạy xong và trả lại cờ. Giờ hạn chờ = thời gian bắt + 90s.
