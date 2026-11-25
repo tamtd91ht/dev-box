@@ -166,7 +166,7 @@ function parseAgent(body: Record<string, unknown>): AgentInput | null {
     .map((t) => ({ key: str((t as { key?: unknown })?.key, 60), label: str((t as { label?: unknown })?.label, 80).replace(/\s+/g, ' ') }))
     .filter((t) => /^[\w:.-]+$/.test(t.key) && t.label);
   const steps = (Array.isArray(body.steps) ? body.steps : []).slice(-12)
-    .map((s) => ({ action: str((s as { action?: unknown })?.action, 300), result: str((s as { result?: unknown })?.result, 16_000) }))
+    .map((s) => ({ action: str((s as { action?: unknown })?.action, 300), result: str((s as { result?: unknown })?.result, 60_000) }))
     .filter((s) => s.action);
   return { tabs, steps };
 }
