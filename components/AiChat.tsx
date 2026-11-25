@@ -34,7 +34,7 @@ import { fmtRel } from '@/lib/google';
 import { fmtDuration, mdToSpeech, speaker } from '@/lib/speech';
 import { useStt, useSttPrefs } from '@/lib/useStt';
 import { useSpeechProviders } from '@/lib/useSpeechProviders';
-import { DENIED, captureScreen, describeAction, parseAction, runAction, stripAction, type AiTab, type ScreenShot } from '@/lib/aiScreen';
+import { DENIED, captureScreen, describeAction, parseAction, pinTarget, releaseTarget, runAction, stripAction, targetName, type AiTab, type ScreenShot } from '@/lib/aiScreen';
 import {
   AI_DEFAULT_MODEL, AI_LIMITS, AI_MAX_W, AI_MIN_W, AI_MODELS, KB_BUDGET, KB_LIMITS, aiDock,
   type AiAttachment, type AiPoll, type AiTurn, type KbDoc, type KbMeta,
@@ -314,6 +314,10 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
     )));
 
     stopRef.current = false;
+    // CHẠY NỀN: câu hỏi bám vào màn hình lúc gửi (lib/aiScreen.ts — pinTarget).
+    // Người dùng chuyển sang menu khác thì trợ lý vẫn đọc / cuộn đúng màn hình
+    // đó, không giật màn hình của họ về và không đọc nhầm màn mới.
+    if (agent) pinTarget(screenRef.current);
     /** Nhật ký thao tác của câu hỏi này — gửi lại ở mỗi lượt để model biết đã làm gì. */
     const steps: { action: string; result: string; note?: string }[] = [];
     /** Ảnh chụp màn hình sau bước gần nhất — gửi kèm lượt kế (chỉ ảnh MỚI NHẤT). */
@@ -324,7 +328,7 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
       // rồi hỏi tiếp; không có → đó là câu trả lời cuối.
       for (let round = 0; ; round++) {
         const { id } = await call<{ id: string }>('ask', {
-          question, history, screen: screenRef.current, model,
+          question, history, screen: targetName(screenRef.current), model,
           // File chỉ gửi ở lượt đầu; các lượt sau gửi ảnh chụp màn hình sau bước
           // vừa làm (để model NHÌN phần vẽ canvas: Google Sheets, biểu đồ…).
           attachments: round === 0
@@ -368,6 +372,8 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
           screenName: () => screenRef.current,
           confirmClick: (what) => new Promise<boolean>((resolve) => {
             if (stopRef.current) { resolve(false); return; }
+            // Chạy nền mà bảng đang đóng thì thẻ "Cho phép" không ai thấy → mở bảng.
+            aiDock.setOpen(true);
             setConfirm({ label: what, resolve: (ok) => { setConfirm(null); resolve(ok); } });
           }),
         });
@@ -387,6 +393,7 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
       patch({ streaming: false, error: (e as Error).message });
     } finally {
       jobRef.current = null;
+      releaseTarget();
       setConfirm(null);
       setBusy(false);
     }

@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Trợ lý AI chạy nền.** Câu hỏi (khi bật 🖱 "Thao tác màn hình") bám vào màn hình lúc hỏi: bảo trợ lý
+  "tổng hợp sheet này" ở tab Browser rồi chuyển sang Công việc hay bất kỳ menu nào khác, trợ lý vẫn đọc,
+  cuộn và chụp đúng màn hình cũ ở nền — không kéo bạn quay lại, không đọc nhầm màn hình mới. Áp dụng cho mọi
+  menu: trang web nhúng chụp thẳng trang ở nền; màn hình thường thì đọc chữ theo cấu trúc trang và dựng ảnh
+  từ giao diện. Trong lúc chạy nền trợ lý không mở tab khác; cần bấm nút thì bảng trợ lý tự mở để xin phép.
 - **STT / TTS qua API: đọc kết quả linh hoạt hơn.** Ở mục Response, đường dẫn JSON khai được nhiều phương án
   ngăn bằng `|` (vd `data.url | data.link | url`) — lấy cái đầu tiên có giá trị, nên chịu được API đặt tên
   trường khác nhau, lồng bao nhiêu cấp cũng được. TTS có thêm kiểu **"URL hoặc base64 trong JSON (tự nhận)"**
