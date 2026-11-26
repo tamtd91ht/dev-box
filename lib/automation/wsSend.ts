@@ -78,7 +78,7 @@ function withTimeout<T>(p: Promise<T>, label: string): Promise<T> {
   });
 }
 
-function enqueue<T>(accountKey: string, job: () => Promise<T>): Promise<T> {
+export function enqueue<T>(accountKey: string, job: () => Promise<T>): Promise<T> {
   const prev = queues.get(accountKey) ?? Promise.resolve();
   // Run after whatever is in flight, whether it succeeded or not — a failed
   // send must not block the account forever.

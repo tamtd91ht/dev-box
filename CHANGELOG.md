@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Trợ lý AI đọc nhóm Zalo mà không cần mở nhóm.** Đang ở menu khác, hoặc đang đọc hội thoại khác ngay trong
+  Zalo, vẫn hỏi được "phân tích nhóm A", "nhóm X hôm nay bàn gì", "mở các link trong nhóm Y": trợ lý có hành động
+  mới `open_chat` — tìm hội thoại theo tên trong Zalo của menu Workspace (không phân biệt dấu / hoa thường, khớp
+  "chứa"; quét cả tab Chưa đọc / Tất cả; nhóm cũ không còn trong danh sách thì tìm bằng ô tìm kiếm của Zalo), mở nó
+  **ở nền** rồi đọc / cuộn lên xem tin cũ / mở link như mọi màn hình khác. Nhiều tài khoản Zalo thì thử lần lượt
+  (hoặc theo tên tài khoản người hỏi nói); tên khớp nhiều nhóm thì trợ lý hỏi lại. Xong câu hỏi, Zalo tự **mở lại
+  hội thoại bạn đang để** (trừ khi bạn đã tự chuyển sang hội thoại khác). Link trong thẻ link của Zalo (chỉ hiện tên
+  miền) giờ lấy được **URL thật** nên `open_link` mở đúng trang. Mở hội thoại thì Zalo đánh dấu đã xem, như mở tay.
+
 - **Trợ lý AI — Kỹ năng.** Bảng trợ lý có thêm màn **Kỹ năng**: mỗi kỹ năng là một quy trình bạn soạn cho một loại
   việc (tên, "Dùng khi", từ khoá, màn hình áp dụng, hướng dẫn Markdown) — vd "Phân tích nhóm Zalo" (có sẵn **mẫu**).
   Khác kho tri thức (luôn gửi kèm), kỹ năng chỉ được nạp khi cần: câu hỏi (hoặc câu hỏi liền trước) có từ khoá —
@@ -225,6 +234,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Trợ lý mở link đọc nhầm tab khác.** Khi Browser vừa được dựng ở nền, `open_link` có thể bám vào một tab cũ
+  đang khôi phục (vd claude.ai) thay cho trang vừa mở — giờ chọn đúng tab theo URL.
 - **Trợ lý AI treo ở "Đọc màn hình" khi chạy nền.** Hỏi ở tab Browser rồi chuyển menu khác, trợ lý có thể
   đứng im hàng chục phút: lệnh vào trang web bị ẩn (chạy script trong từng khung, chụp ảnh, tải dữ liệu xuất)
   chờ trang trả lời mãi. Nay mọi lệnh đó có hạn (vài giây tới 25 giây, ghi log khi quá hạn), mỗi bước tối đa

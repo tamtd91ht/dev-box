@@ -17,6 +17,10 @@
 //                   link ẩn trong ô Google Sheets / Docs) sang một tab Browser MỚI ở
 //                   NỀN rồi đọc luôn trang đó. Link chưa từng thấy trên màn hình thì
 //                   phải được người dùng cho phép. Chỉ http(s), tối đa vài tab sống.
+//   · open_chat   — mở một hội thoại (nhóm / cá nhân) theo TÊN trong Zalo của tab
+//                   Workspace, ở NỀN (người dùng ở menu khác hay đang xem hội
+//                   thoại khác đều được), rồi đọc như read_screen. Xong câu hỏi tự
+//                   mở lại hội thoại người dùng đang để trước đó.
 // Không gõ phím, không điền form, không chạy lệnh, không đọc/ghi file, không
 // chạm vào chính bảng trợ lý. Trang web nhúng (<webview> Browser, Zalo…) đang
 // hiện thì CHỈ ĐỌC chữ (executeJavaScript / cầu execInFrames, gồm cả iframe);
@@ -29,12 +33,17 @@
 // chặn thật là bước xin phép ở trên.
 
 import { apiFetch } from './apiFetch';
+import { enqueue } from './automation/wsSend';
+import { listGuests } from './workspace/guests';
+import { buildOpenChatScript, type OpenChatResult } from './workspace/openChat';
+import { getPlugin } from './workspace/plugins';
 
 export type AiAction =
   | { type: 'open_tab'; tab: string }
   | { type: 'read_screen' }
   | { type: 'click'; n: number }
   | { type: 'open_link'; link?: number; url?: string }
+  | { type: 'open_chat'; name: string; account?: string }
   | { type: 'scroll'; area: number; direction: ScrollDir; pages: number };
 
 export type ScrollDir = 'down' | 'up' | 'right' | 'left';
@@ -79,6 +88,9 @@ export function parseAction(raw: string): AiAction | null {
       const n = typeof o.link === 'string' ? Number(o.link.replace(/^L/i, '')) : Number(o.link);
       if (Number.isInteger(n) && n > 0) return { type: 'open_link', link: n };
       if (typeof o.url === 'string' && o.url.trim()) return { type: 'open_link', url: o.url.trim() };
+    }
+    if (o.type === 'open_chat' && typeof o.name === 'string' && o.name.trim()) {
+      return { type: 'open_chat', name: o.name.trim(), ...(typeof o.account === 'string' && o.account.trim() ? { account: o.account.trim() } : {}) };
     }
     if (o.type === 'scroll' && SCROLL_DIRS.includes(o.direction as ScrollDir)) {
       const pages = Number(o.pages);
@@ -141,6 +153,9 @@ interface Target {
   /** <webview> đang hiện trong pane lúc ghim — vd đúng tab Browser đang mở sheet A. */
   webviews: WebviewEl[];
   name: string;
+  /** Khung con chứa webview đích mà bị đẩy ra ngoài màn hình riêng (tài khoản Workspace
+   *  không chọn: .ws-view left:-150vw) — gắn data-ai-target để CSS kéo về 1 px cho nó vẫn vẽ. */
+  holders?: HTMLElement[];
 }
 
 let target: Target | null = null;
@@ -159,9 +174,9 @@ function activeWebviews(pane: HTMLElement): WebviewEl[] {
 }
 
 function setTarget(t: Target | null): void {
-  for (const p of target?.panes ?? []) p.removeAttribute('data-ai-target');
+  for (const p of [...(target?.panes ?? []), ...(target?.holders ?? [])]) p.removeAttribute('data-ai-target');
   target = t;
-  for (const p of t?.panes ?? []) p.setAttribute('data-ai-target', '');
+  for (const p of [...(t?.panes ?? []), ...(t?.holders ?? [])]) p.setAttribute('data-ai-target', '');
 }
 
 /** Ghim màn hình đang hiện làm đích cho câu hỏi sắp chạy. */
@@ -172,8 +187,12 @@ export function pinTarget(name: string): void {
   setTarget({ panes, webviews: panes.flatMap((p) => [...p.querySelectorAll<WebviewEl>('webview')].filter(onScreen)), name });
 }
 
-/** Câu hỏi xong / dừng: bỏ ghim (pane về ẩn như thường) — lần sau đọc theo màn hình đang hiện. */
-export function releaseTarget(): void { setTarget(null); }
+/** Câu hỏi xong / dừng: bỏ ghim (pane về ẩn như thường) — lần sau đọc theo màn hình đang hiện.
+ *  Hội thoại Zalo trợ lý đã chuyển sang thì mở lại hội thoại cũ (chạy nền, không chờ). */
+export function releaseTarget(): void {
+  setTarget(null);
+  void restoreChats();
+}
 
 /** View trợ lý đã tự mở ở nền trong câu hỏi vừa xong mà người dùng KHÔNG đang xem
  *  — đề nghị tắt cho nhẹ máy. Gọi trước releaseTarget. */
@@ -464,6 +483,43 @@ const WEB_LINKS_JS = `(() => {
   return out;
 })()`;
 
+/** Chạy trong guest chat.zalo.me: link THẬT của các tin đang hiện. Thẻ link của Zalo chỉ
+ *  vẽ tên miền + tiêu đề (không <a>, không href trong DOM) — URL nằm trong props React
+ *  của tin (ĐO ĐƯỢC 11/2026: tổ tiên ~7 cấp của khung [data-qid] có props
+ *  {conversation, user, groupInfo, data…}, `data` là chính tin nhắn). Chỉ đi vào
+ *  `data` để không nhặt link của hội thoại / người dùng; bỏ link CDN ảnh của Zalo. */
+const ZALO_MSG_LINKS_JS = `(() => {
+  const out = [], seen = new Set(), t0 = Date.now();
+  const SKIP = /(^|\\.)(zdn\\.vn|zadn\\.vn|zalo\\.me|zaloapp\\.com)$/i;
+  const ok = (u) => { try { return !SKIP.test(new URL(u).hostname); } catch (_) { return false; } };
+  const clean = (s) => String(s || '').replace(/\\s+/g, ' ').trim();
+  for (const fr of document.querySelectorAll('[data-qid]')) {
+    if (out.length >= 300 || Date.now() - t0 > 2500) break;
+    const key = Object.keys(fr).find((k) => k.startsWith('__reactInternalInstance$') || k.startsWith('__reactFiber$'));
+    if (!key) continue;
+    const found = [], vis = new WeakSet();
+    const walk = (v, d) => {
+      if (!v || d > 5 || found.length > 8) return;
+      if (typeof v === 'string') { if (/^https?:\\/\\/\\S+$/.test(v) && ok(v)) found.push(v); return; }
+      if (typeof v !== 'object' || v instanceof Node || vis.has(v)) return;
+      vis.add(v);
+      for (const k of Object.keys(v).slice(0, 40)) {
+        if (k === 'children' || k === '_owner' || k.startsWith('__')) continue;
+        try { walk(v[k], d + 1); } catch (_) {}
+      }
+    };
+    let f = fr[key];
+    for (let i = 0; f && i < 12; i++, f = f.return) {
+      const p = f.memoizedProps;
+      if (p && typeof p === 'object' && p.data && typeof p.data === 'object' && !(p.data instanceof Node)) { walk(p.data, 0); break; }
+    }
+    if (!found.length) continue;
+    const title = clean((fr.querySelector('.link-message__link-title') || {}).textContent) || clean(fr.innerText).slice(0, 70);
+    for (const u of found) { if (!seen.has(u)) { seen.add(u); out.push([title.slice(0, 80), u]); } }
+  }
+  return out;
+})()`;
+
 /** Thẻ <a> trong một trang web nhúng (main frame + iframe). Trang Google Docs/Sheets bỏ qua — chỉ là menu
  *  của Google; link thật lấy ở googleLinks. */
 async function webLinks(wv: WebviewEl, url: string): Promise<LinkItem[]> {
@@ -480,6 +536,12 @@ async function webLinks(wv: WebviewEl, url: string): Promise<LinkItem[]> {
     }
     if (!rows.length) rows = ((await deadline(wv.executeJavaScript(WEB_LINKS_JS), 8000, 'đọc link trang')) as [string, string][]) ?? [];
   } catch { /* trang chưa tải / bị chặn — bỏ qua phần link */ }
+  if (/^https:\/\/chat\.zalo\.me\//.test(url)) {
+    try {
+      const z = ((await deadline(wv.executeJavaScript(ZALO_MSG_LINKS_JS), 6000, 'đọc link tin Zalo')) as [string, string][]) ?? [];
+      rows = [...z.map(([t, h]): [string, string] => [`tin Zalo “${t || hostOf(h)}”`, h]), ...rows];
+    } catch { /* bỏ qua */ }
+  }
   return rows.map(([t, h]) => ({ url: h, label: t || hostOf(h), partition }));
 }
 
@@ -566,9 +628,14 @@ async function openLink(url: string, partition: string | undefined, screenName: 
   }
   if (!tabId) return 'Browser chưa sẵn sàng nhận link — thử lại sau một chút.';
   openCount += 1;
+  // Chọn đúng <webview> của tab vừa mở: `src` của nó là chính URL này (LinkViewer giữ src lần
+  // đầu). Không lấy "webview mới bất kỳ": Browser vừa được dựng ở nền còn đang dựng lại các tab
+  // của phiên trước — trước đây trợ lý đọc nhầm một tab cũ (vd claude.ai) thay cho link vừa mở.
   let wv: WebviewEl | null = null;
   for (let i = 0; i < 60 && !wv; i++) {
-    wv = [...pane.querySelectorAll<WebviewEl>('webview')].find((w) => !before.has(w)) ?? null;
+    const fresh = [...pane.querySelectorAll<WebviewEl>('webview')].filter((w) => !before.has(w));
+    wv = fresh.find((w) => w.getAttribute('src') === url)
+      ?? (i >= 25 && fresh.length === 1 ? fresh[0] : null);
     if (!wv) await sleep(200);
   }
   openedTabs.set(tabId, { label: hostOf(url), wv });
@@ -584,6 +651,118 @@ async function openLink(url: string, partition: string | undefined, screenName: 
   await waitWebview(wv);
   await sleep(800); // trang SPA (Confluence, Jira, Google…) còn vẽ sau readyState
   return `Đã mở link ${url} trong một tab Browser MỚI ở NỀN (người dùng vẫn ở màn hình của họ). Từ giờ đọc / cuộn làm trên trang này.\n${await snapshot(screenName)}`;
+}
+
+// ── Hội thoại Zalo (Workspace) ───────────────────────────────────────────────
+//
+// "Phân tích nhóm A" trong khi người dùng ở menu khác / đang đọc hội thoại B:
+// webview Zalo luôn sống (keepAlive) nên chạy script trong nó được dù không ai
+// nhìn. open_chat tìm dòng "A" trong danh sách (lib/workspace/openChat.ts — so
+// không dấu, rồi "chứa", thử cả tab Ưu tiên / Khác), bấm mở, ghim ĐÚNG webview đó
+// làm đích → read_screen / scroll / open_link sau đó làm trên khung chat của A.
+// Mỗi tài khoản chỉ ghi lại hội thoại GỐC (trước lần chuyển đầu tiên) để hết câu
+// hỏi mở lại — người dùng quay lại Zalo vẫn thấy đúng chỗ mình đang để.
+// Chạy chung hàng đợi với automation gửi tin (enqueue) để hai bên không giành
+// nhau bấm cùng một danh sách.
+
+/** Hội thoại gốc cần mở lại, theo accountKey. */
+const switchedChats = new Map<string, { prev: string; prevTab: string; opened: string }>();
+const CHAT_PLUGIN = 'zalo';
+const PARK_FALLBACK = ['My Documents', 'Cloud của tôi', 'Cloud của bạn'];
+
+const normName = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd').toLowerCase().replace(/\s+/g, ' ').trim();
+
+/** <webview> của một tài khoản Workspace (partition `persist:ws-<plugin>-<id>`). */
+function guestWebview(pluginId: string, instanceId: string): WebviewEl | null {
+  const tail = `ws-${pluginId}-${instanceId}`;
+  return [...document.querySelectorAll<WebviewEl>('webview')].find((w) => {
+    const p = w.getAttribute('partition') ?? '';
+    return p === tail || p === `persist:${tail}`;
+  }) ?? null;
+}
+
+/** Tài khoản Zalo đang sống trong Workspace; chưa có thì dựng Workspace ở nền rồi chờ. */
+async function chatGuests() {
+  const pick = () => listGuests().filter((g) => g.pluginId === CHAT_PLUGIN);
+  if (!pick().length) {
+    const { was } = await mountView('workspace');
+    if (!was) openedViews.set('workspace', 'Workspace');
+    for (let i = 0; i < 50 && !pick().some((g) => g.ready); i++) await sleep(300);
+  }
+  return pick();
+}
+
+async function openChat(name: string, account: string | undefined, screenName: string): Promise<string> {
+  const plugin = getPlugin(CHAT_PLUGIN);
+  if (!plugin?.directory) return 'App chưa khai báo cách đọc danh sách hội thoại Zalo.';
+  const all = await chatGuests();
+  if (!all.length) return 'Chưa có tài khoản Zalo nào trong menu Workspace (hoặc đang chạy ngoài app desktop). Nói người dùng thêm / đăng nhập Zalo ở Workspace.';
+  let pool = all;
+  if (account) {
+    const want = normName(account);
+    pool = all.filter((g) => normName(g.label) === want);
+    if (!pool.length) pool = all.filter((g) => normName(g.label).includes(want));
+    if (!pool.length) return `Không có tài khoản Zalo "${account}". Các tài khoản: ${all.map((g) => `"${g.label}"`).join(', ')}.`;
+  }
+  const misses: string[] = [];
+  for (const g of pool) {
+    if (!g.ready) { misses.push(`"${g.label}": đang tải lại`); continue; }
+    const wv = guestWebview(g.pluginId, g.instanceId);
+    let r: OpenChatResult | null = null;
+    try {
+      r = await enqueue(g.accountKey, () => deadline(
+        g.exec(buildOpenChatScript(plugin.directory!, { name }), false) as Promise<OpenChatResult>,
+        85_000, 'mở hội thoại Zalo',
+      ));
+    } catch (e) {
+      misses.push(`"${g.label}": ${(e as Error).message}`);
+      continue;
+    }
+    if (!r?.ok) {
+      misses.push(`"${g.label}": ${r?.error ?? 'không có kết quả'}${r?.candidates?.length ? ` — ${r.error?.startsWith('có ') ? 'các hội thoại khớp' : 'tên gần giống'}: ${r.candidates.map((c) => `"${c}"`).join(', ')}` : ''}`);
+      continue;
+    }
+    // Chỉ nhớ hội thoại GỐC: mở A rồi B trong cùng câu hỏi thì cuối cùng vẫn về chỗ cũ của người dùng.
+    const had = switchedChats.get(g.accountKey);
+    switchedChats.set(g.accountKey, { prev: had ? had.prev : r.prev, prevTab: had ? had.prevTab : r.prevTab, opened: r.opened });
+    const pane = wv?.closest<HTMLElement>('.body > main.workspace') ?? null;
+    if (!wv || !pane) return `Đã mở hội thoại "${r.opened}" trong Zalo "${g.label}" nhưng không tìm thấy khung trang để đọc — thử read_screen sau khi mở tab workspace.`;
+    const holder = wv.closest<HTMLElement>('.ws-view');
+    setTarget({ panes: [pane], webviews: [wv], holders: holder ? [holder] : [], name: `Zalo ${g.label} — ${r.opened}` });
+    await sleep(600);
+    const mismatch = r.title && normName(r.title) !== normName(r.opened) ? ` (tiêu đề khung chat đọc được: "${r.title}" — kiểm tra đúng hội thoại chưa)` : '';
+    const where = targetVisible() ? '' : ' ở NỀN — người dùng vẫn ở màn hình của họ, không thấy gì đổi';
+    return [
+      `Đã mở hội thoại "${r.opened}" trong Zalo "${g.label}"${where}${mismatch}.${r.opened !== name ? ` (khớp gần đúng với "${name}")` : ''}`,
+      'Khung chat chỉ có các tin GẦN NHẤT. Cần tin cũ hơn thì cuộn vùng khung tin nhắn (vùng lớn bên phải, không phải danh sách hội thoại) LÊN (up); link trong tin nằm ở mục "Link mở được". Chữ của danh sách hội thoại bên trái là xem trước của hội thoại KHÁC — bỏ qua.',
+      await snapshot(screenName),
+    ].join('\n');
+  }
+  return `Không mở được hội thoại "${name}". ${misses.join('; ')}. Hỏi lại người dùng tên chính xác (hoặc chọn trong các tên trên), đừng đoán.`;
+}
+
+/** Mở lại hội thoại người dùng đang để trước khi trợ lý chuyển (gọi lúc xong câu hỏi). */
+async function restoreChats(): Promise<void> {
+  const plugin = getPlugin(CHAT_PLUGIN);
+  const jobs = [...switchedChats];
+  switchedChats.clear();
+  if (!plugin?.directory) return;
+  for (const [key, s] of jobs) {
+    const g = listGuests().find((x) => x.accountKey === key);
+    if (!g?.ready) continue;
+    const parks = plugin.send?.parkNames ?? PARK_FALLBACK;
+    // Đang ở đúng chỗ cũ rồi (mở lại chính hội thoại đang mở / đỗ sẵn ở chat với chính mình).
+    if (!s.prevTab && (s.prev ? normName(s.prev) === normName(s.opened) : parks.includes(s.opened))) continue;
+    const script = buildOpenChatScript(plugin.directory, {
+      name: s.prev, exact: true, tab: s.prevTab, onlyIfOpen: s.opened, parkNames: parks,
+    });
+    try {
+      const r = await enqueue(key, () => deadline(g.exec(script, false) as Promise<OpenChatResult>, 85_000, 'mở lại hội thoại cũ'));
+      if (!r?.ok && r?.error !== 'skip') console.warn('[aiScreen] không mở lại được hội thoại cũ', s.prev, r?.error);
+    } catch (e) {
+      console.warn('[aiScreen] mở lại hội thoại cũ lỗi', e);
+    }
+  }
 }
 
 /** Mọi pane đang hiện — Ultra View có thể hiện nhiều pane cùng lúc. */
@@ -1052,6 +1231,7 @@ export interface ActionHost {
 export function describeAction(a: AiAction, tabs: AiTab[]): string {
   if (a.type === 'open_tab') return `Mở tab ${tabs.find((t) => t.key === a.tab)?.label ?? a.tab}`;
   if (a.type === 'read_screen') return 'Đọc màn hình';
+  if (a.type === 'open_chat') return `Mở hội thoại Zalo “${a.name}”${a.account ? ` (${a.account})` : ''}`;
   if (a.type === 'open_link') {
     const it = a.link ? links[a.link - 1] : undefined;
     const url = it?.url ?? a.url ?? '';
@@ -1107,6 +1287,7 @@ export async function runAction(a: AiAction, host: ActionHost): Promise<string> 
       }
       return await openLink(url, partition, host.screenName());
     }
+    if (a.type === 'open_chat') return await openChat(a.name, a.account, host.screenName());
     if (a.type === 'read_screen') {
       await settle(2500);
       return await snapshot(host.screenName());

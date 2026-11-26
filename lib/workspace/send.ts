@@ -115,7 +115,7 @@ export interface SendResult {
 const json = (v: unknown) => JSON.stringify(v ?? null);
 
 /** Shared helpers, injected into both phases. */
-function prelude(
+export function prelude(
   listSel: string,
   rowSel: string,
   rowName: string,
