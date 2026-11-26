@@ -12276,6 +12276,8 @@ html.tf-page nextjs-portal { display: none !important; }
 }
 .aic-cleanup b { color: var(--text); font-weight: 600; }
 .aic-cleanup-actions { display: flex; gap: 6px; }
+.aic-export .aic-cleanup-done { line-height: 1.6; }
+.aic-export-err { color: var(--err); }
 .aic-cleanup-done { color: var(--muted); }
 .aic-error {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 12px;

@@ -17,12 +17,17 @@
 // Link ẩn trong ô Google Sheets (trợ lý đọc màn hình — lib/aiScreen.ts; main.cjs tải .xlsx của tab):
 //   POST { action:'links.xlsx', data, sheet? } → { ok, result: { links, sheets, truncated } }   (chỉ đọc file gửi lên)
 //
+// Xuất file trợ lý viết (khối <xuat_file>) — CHỈ sau khi người dùng bấm đồng ý (components/AiChat.tsx):
+//   POST { action:'export.build', name, content } → { ok, result: { data (base64), mime } }   (.docx / .xlsx; dựng
+//   trong bộ nhớ, không ghi đĩa — lib/aiExport.ts)
+//
 // Trợ lý không có công cụ và route này không chạy gì khác
 // ngoài `claude -p` không-công-cụ — đừng thêm action cho nó thao tác lên máy.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { ask, poll, stop } from '@/lib/aiChatServer';
 import { kbGet, kbList, kbRemove, kbSave, kbToggle } from '@/lib/aiKnowledge';
+import { buildExport } from '@/lib/aiExport';
 import { xlsxLinks } from '@/lib/aiLinks';
 
 export const runtime = 'nodejs';
@@ -34,6 +39,8 @@ export async function POST(req: NextRequest) {
     switch (action) {
       case 'ask':
         return NextResponse.json({ ok: true, ...(await ask(body ?? {})) });
+      case 'export.build':
+        return NextResponse.json({ ok: true, result: await buildExport(body?.name, body?.content) });
       case 'links.xlsx':
         return NextResponse.json({ ok: true, result: await xlsxLinks(body?.data, body?.sheet) });
       case 'poll':

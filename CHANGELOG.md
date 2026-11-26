@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Trợ lý AI xuất file — phải bấm đồng ý.** Hỏi "xuất báo cáo ra docx", "làm file Excel số liệu này", "vẽ biểu đồ
+  thành ảnh"… thì trợ lý viết nội dung file trong câu trả lời (khối `<xuat_file>`, vẫn không có công cụ), bảng chat
+  hiện thẻ **Xuất file** liệt kê các file; chỉ khi bấm **Xuất** mới dựng file và mở hộp thoại Lưu của app. Hỗ trợ
+  `.txt .md .csv` (thêm BOM cho Excel) `.json .html`, `.docx` (từ Markdown — tiêu đề, danh sách, bảng, code,
+  link; `.docs` hiểu là docx) và `.doc` (HTML kiểu Word), `.xlsx` (từ CSV, nhiều sheet, tiêu đề đậm + lọc, giữ số 0
+  đầu), ảnh `.png .jpg .webp .svg` (trợ lý vẽ SVG, hoặc lấy ảnh chụp màn hình của câu hỏi), video `.webm` / `.mp4`
+  (khung SVG hoặc trình chiếu các ảnh chụp màn hình, ghi bằng MediaRecorder). File dựng **trong bộ nhớ**, không
+  ghi file tạm; xuất xong hoặc bấm **Bỏ** thì nội dung + ảnh chụp bị xoá khỏi bộ nhớ, URL tải được thu hồi; nội dung
+  không lưu cùng lịch sử chat (tải lại trang = hết hạn).
 - **Trợ lý AI tự mở link rồi đọc.** Mỗi lần đọc màn hình có thêm mục **Link mở được**, gom link ở MỌI nơi: thẻ
   link trong giao diện app và trong trang web nhúng (Browser, Workspace, Zalo, Mail…, cả iframe), URL trần trong
   chữ, và **link ẨN trong ô Google Sheets** (ô chỉ hiện chữ như tên repo — lấy bằng bản .xlsx tải qua phiên đăng

@@ -38,6 +38,7 @@ import {
   DENIED, captureScreen, closeViews, describeAction, openedViewsToClose, parseAction, pinTarget, releaseTarget,
   runAction, stripAction, targetName, type AiTab, type ScreenShot,
 } from '@/lib/aiScreen';
+import { buildFile, kindOf, parseExports, saveBlob, stripExports, type ExportSpec, type Shot } from '@/lib/aiExportClient';
 import {
   AI_DEFAULT_MODEL, AI_LIMITS, AI_MAX_W, AI_MIN_W, AI_MODELS, KB_BUDGET, KB_LIMITS, aiDock,
   type AiAttachment, type AiPoll, type AiTurn, type KbDoc, type KbMeta,
@@ -57,6 +58,13 @@ interface Msg {
   files?: { name: string; kind: AiAttachment['kind']; preview?: string }[];
   /** View trợ lý đã tự mở ở nền cho câu này — đề nghị tắt cho nhẹ máy (lib/aiScreen.ts). */
   cleanup?: { views: { key: string; label: string }[]; state: 'ask' | 'closed' | 'kept' };
+  /** File trợ lý đề nghị XUẤT (khối <xuat_file>) — chỉ tên + loại; NỘI DUNG nằm ở exportsRef (không lưu
+   *  sessionStorage), xuất xong / bỏ thì xoá. `results`: kết quả từng file sau khi xuất. */
+  exports?: {
+    files: { name: string; kind: string; size: number }[];
+    state: 'ask' | 'working' | 'done' | 'dismissed';
+    results?: { name: string; ok: boolean; note: string }[];
+  };
 }
 
 type Pending = AiAttachment & { id: string; bytes: number; preview?: string };
@@ -204,6 +212,9 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
   const [kbDraft, setKbDraft] = useState<{ id?: string; title: string; content: string } | null>(null);
 
   const jobRef = useRef<string | null>(null);
+  /** Nội dung các file chờ xuất (theo id câu trả lời) + ảnh chụp màn hình của câu hỏi đó — CHỈ trong bộ nhớ,
+   *  xoá ngay khi xuất xong hoặc bấm Bỏ (lib/aiExportClient.ts). */
+  const exportsRef = useRef(new Map<string, { specs: ExportSpec[]; shots: Shot[] }>());
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -326,8 +337,14 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
     const atts = text === undefined ? pending : [];
     const prior = base ?? msgs;
     const history: AiTurn[] = prior
-      .filter((m) => m.content && !m.error)
-      .map((m) => ({ role: m.role, content: m.content }));
+      .filter((m) => (m.content || m.exports) && !m.error)
+      .map((m) => ({
+        role: m.role,
+        content: m.exports
+          ? `${m.content}\n\n[Đã đề nghị xuất file: ${m.exports.files.map((f) => f.name).join(', ')} — ${
+            m.exports.state === 'done' ? 'người dùng đã xuất' : m.exports.state === 'dismissed' ? 'người dùng đã bỏ' : 'chờ người dùng đồng ý'}]`
+          : m.content,
+      }));
     const aId = uid();
     stick.current = true;
     setMsgs([
@@ -353,6 +370,8 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
     const steps: { action: string; result: string; note?: string }[] = [];
     /** Ảnh chụp màn hình sau bước gần nhất — gửi kèm lượt kế (chỉ ảnh MỚI NHẤT). */
     let shots: ScreenShot[] = [];
+    /** Mọi ảnh chụp của câu hỏi — cho file xuất nguon="anh-chup" (ảnh / video trình chiếu). */
+    const allShots: Shot[] = [];
     let totalMs = 0;
     try {
       // Mỗi vòng = một lượt hỏi. Câu trả lời có khối <hanh_dong> → làm bước đó
@@ -375,7 +394,7 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
         for (;;) {
           const r = await call<AiPoll>('poll', { id, from });
           from = r.next;
-          if (r.text) { raw += r.text; patch({ content: stripAction(raw) }); }
+          if (r.text) { raw += r.text; patch({ content: stripExports(stripAction(raw)) }); }
           if (r.done) { last = r; break; }
           await sleep(POLL_MS);
         }
@@ -383,6 +402,14 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
         const stopped = last.error === 'Đã dừng.' || stopRef.current;
         const action = agent && !last.error && !stopped ? parseAction(raw) : null;
         if (!action || round >= MAX_STEPS) {
+          // File trợ lý muốn xuất: tách khỏi câu trả lời, giữ nội dung trong bộ nhớ, CHỜ người dùng đồng ý.
+          const ex = !last.error && !stopped ? parseExports(stripAction(raw)) : { text: stripAction(raw), files: [] };
+          if (ex.files.length) {
+            exportsRef.current.set(aId, { specs: ex.files, shots: allShots });
+            patch({ exports: { files: ex.files.map((f) => ({ name: f.name, kind: kindOf(f.name) ?? '?', size: f.content.length })), state: 'ask' } });
+            aiDock.setOpen(true);
+          }
+          raw = ex.files.length ? ex.text : stripExports(raw); // khối dở (thiếu thẻ đóng) cũng không hiện ra
           patch({
             streaming: false,
             stopped,
@@ -416,6 +443,8 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
         steps.push({ action: JSON.stringify(action), result, note: stripAction(raw).slice(0, 4000) || undefined });
         // Bị từ chối bấm thì màn hình không đổi — vẫn chụp lại cho đơn giản.
         shots = await Promise.race([captureScreen(), sleep(SHOT_CAP_MS).then(() => [] as ScreenShot[])]);
+        allShots.push(...shots.map((x) => ({ mediaType: x.mediaType, data: x.data })));
+        if (allShots.length > 30) allShots.splice(0, allShots.length - 30);
         patch((m) => ({
           steps: m.steps?.map((s, i, all) => (
             i === all.length - 1 ? { ...s, state: result.startsWith(DENIED) ? 'denied' as const : 'done' as const } : s
@@ -435,6 +464,35 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
       setBusy(false);
     }
   }, [draft, busy, pending, msgs, model, agent, tabs]);
+
+  /** Người dùng ĐỒNG Ý xuất: dựng từng file trong bộ nhớ → hộp thoại Lưu → xoá nội dung khỏi bộ nhớ. */
+  const exportNow = async (msgId: string) => {
+    const held = exportsRef.current.get(msgId);
+    const setEx = (p: Partial<NonNullable<Msg['exports']>>) => setMsgs((cur) => cur.map((x) => (
+      x.id === msgId && x.exports ? { ...x, exports: { ...x.exports, ...p } } : x
+    )));
+    if (!held) { setEx({ state: 'dismissed' }); return; }
+    setEx({ state: 'working', results: [] });
+    const results: { name: string; ok: boolean; note: string }[] = [];
+    for (const spec of held.specs) {
+      try {
+        const f = await buildFile(spec, held.shots);
+        saveBlob(f.blob, f.name);
+        results.push({ name: f.name, ok: true, note: f.note });
+        await sleep(400); // nhiều file: để từng hộp thoại Lưu bật lên lần lượt
+      } catch (e) {
+        results.push({ name: spec.name, ok: false, note: (e as Error).message });
+      }
+      setEx({ results: [...results] });
+    }
+    // Xuất xong: xoá nội dung + ảnh chụp khỏi bộ nhớ tạm.
+    exportsRef.current.delete(msgId);
+    setEx({ state: 'done', results });
+  };
+  const dismissExport = (msgId: string) => {
+    exportsRef.current.delete(msgId);
+    setMsgs((cur) => cur.map((x) => (x.id === msgId && x.exports ? { ...x, exports: { ...x.exports, state: 'dismissed' } } : x)));
+  };
 
   const stopAsk = () => {
     stopRef.current = true;
@@ -675,6 +733,37 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
                     ) : (
                       <span className="aic-cleanup-done">
                         {m.cleanup.state === 'closed' ? '✓ Đã tắt' : 'Đã giữ lại'}: {m.cleanup.views.map((v) => v.label).join(', ')}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {m.exports && !m.streaming && (
+                  <div className="aic-cleanup aic-export" role="group" aria-label="Xuất file trợ lý đề nghị">
+                    {m.exports.state === 'ask' && exportsRef.current.has(m.id) ? (
+                      <>
+                        <span>
+                          Trợ lý muốn xuất <b>{m.exports.files.length} file</b>:{' '}
+                          {m.exports.files.map((f) => `${f.name}${f.kind === '?' ? ' (chưa hỗ trợ)' : ''}`).join(', ')}.
+                          {' '}Bấm Xuất để chọn nơi lưu — xong sẽ xoá khỏi bộ nhớ tạm.
+                        </span>
+                        <span className="aic-cleanup-actions">
+                          <button className="sm" onClick={() => void exportNow(m.id)}>Xuất {m.exports.files.length > 1 ? `${m.exports.files.length} file` : 'file'}</button>
+                          <button className="ghost sm" onClick={() => dismissExport(m.id)}>Bỏ</button>
+                        </span>
+                      </>
+                    ) : m.exports.state === 'ask' || m.exports.state === 'dismissed' ? (
+                      <span className="aic-cleanup-done">
+                        {m.exports.state === 'dismissed' ? 'Đã bỏ' : 'Hết hạn (đã tải lại trang)'}: {m.exports.files.map((f) => f.name).join(', ')} — nội dung đã xoá khỏi bộ nhớ.
+                      </span>
+                    ) : (
+                      <span className="aic-cleanup-done">
+                        {m.exports.state === 'working' ? 'Đang xuất… ' : ''}
+                        {(m.exports.results ?? []).map((r) => (
+                          <span key={r.name} className={r.ok ? undefined : 'aic-export-err'}>
+                            {r.ok ? '✓' : '✕'} {r.name}{r.note ? ` (${r.note})` : ''}{' '}
+                          </span>
+                        ))}
+                        {m.exports.state === 'done' ? ' — đã xoá nội dung khỏi bộ nhớ tạm.' : ''}
                       </span>
                     )}
                   </div>
