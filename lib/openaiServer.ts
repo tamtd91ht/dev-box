@@ -11,166 +11,27 @@
 // desktop có hạn thời gian, trình duyệt giới hạn 6 socket): request chạy thành
 // JOB ở server, trang hỏi tiến độ (poll) như trợ lý AI (lib/aiChatServer.ts).
 
-import { promises as fs } from 'fs';
 import { randomUUID } from 'crypto';
-import { configPath } from './configDir';
+import { createProfileStore, scrubKey as scrub, str, type StoredProfile } from './llmProfiles';
 import { countChatTokens, type TokenEstimate } from './openaiTokens';
 import {
   OPENAI_DEFAULT_BASE, OPENAI_LIMITS, isChatModel,
-  type OpenAiFile, type OpenAiFormat, type OpenAiPoll, type OpenAiPreset, type OpenAiProfile, type OpenAiProfileInput,
-  type OpenAiProfiles, type OpenAiRequest, type OpenAiUsage,
+  type OpenAiFile, type OpenAiFormat, type OpenAiPoll, type OpenAiPreset, type OpenAiProfileInput,
+  type OpenAiRequest, type OpenAiUsage,
 } from './openai';
 
-const STORE = configPath('openai.json');
+/** Kho cấu hình + prompt mẫu (dùng chung với ClaudeAI — lib/llmProfiles.ts). */
+const store = createProfileStore({ file: 'openai.json', defaultBase: OPENAI_DEFAULT_BASE, label: 'OpenAI' });
+export const { profilesList, profileSave, profileRemove, profileSetDefault, presetsList, presetRemove } = store;
+const readStore = store.readStore;
+const pick = store.pick;
+
 /** Một request chạy tối đa chừng này (model suy luận lâu có thể mất vài phút). */
 const RUN_TIMEOUT_MS = 10 * 60_000;
 const LIST_TIMEOUT_MS = 20_000;
 /** Job đã xong được giữ chừng này để trang kịp đọc nốt. */
 const JOB_TTL_MS = 10 * 60_000;
 const MAX_JOBS = 20;
-
-interface StoredProfile {
-  id: string;
-  name: string;
-  apiKey: string;
-  baseUrl: string;
-  organization: string;
-  project: string;
-  defaultModel: string;
-}
-
-interface Store {
-  profiles: StoredProfile[];
-  defaultId: string;
-  presets: OpenAiPreset[];
-}
-
-// ── Kho ──────────────────────────────────────────────────────────────────────
-
-const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
-
-async function readStore(): Promise<Store> {
-  let data: Record<string, unknown> = {};
-  try { data = JSON.parse(await fs.readFile(STORE, 'utf8')) as Record<string, unknown>; } catch { /* chưa có */ }
-  const presets = Array.isArray(data.presets) ? (data.presets as OpenAiPreset[]) : [];
-  let profiles = Array.isArray(data.profiles) ? (data.profiles as StoredProfile[]) : [];
-  // Bản đầu chỉ có MỘT cấu hình (`config`) → thành cấu hình "Mặc định".
-  const old = data.config as Partial<StoredProfile> | undefined;
-  if (!profiles.length && old && (old.apiKey || old.defaultModel)) {
-    profiles = [{
-      id: randomUUID(), name: 'Mặc định', apiKey: old.apiKey ?? '', baseUrl: old.baseUrl || OPENAI_DEFAULT_BASE,
-      organization: old.organization ?? '', project: old.project ?? '', defaultModel: old.defaultModel ?? '',
-    }];
-  }
-  const defaultId = typeof data.defaultId === 'string' && profiles.some((p) => p.id === data.defaultId)
-    ? data.defaultId : profiles[0]?.id ?? '';
-  return { profiles, defaultId, presets };
-}
-
-async function writeStore(s: Store): Promise<void> {
-  await fs.writeFile(STORE, JSON.stringify(s, null, 2), 'utf8');
-}
-
-function keyHint(key: string): string {
-  if (!key) return '';
-  return key.length <= 10 ? '••••' : `${key.slice(0, 4)}…${key.slice(-4)}`;
-}
-
-function publicOf(p: StoredProfile): OpenAiProfile {
-  return {
-    id: p.id,
-    name: p.name,
-    hasKey: !!p.apiKey,
-    keyHint: keyHint(p.apiKey),
-    baseUrl: p.baseUrl || OPENAI_DEFAULT_BASE,
-    organization: p.organization,
-    project: p.project,
-    defaultModel: p.defaultModel,
-  };
-}
-
-const publicStore = (s: Store): OpenAiProfiles => ({ profiles: s.profiles.map(publicOf), defaultId: s.defaultId });
-
-function normBaseUrl(v: unknown): string {
-  const raw = str(v, 500) || OPENAI_DEFAULT_BASE;
-  let u: URL;
-  try { u = new URL(raw); } catch { throw new Error('Base URL không hợp lệ (vd https://api.openai.com/v1).'); }
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('Base URL phải là http(s).');
-  return raw.replace(/\/+$/, '');
-}
-
-/** Cấu hình đã lưu, đè bằng bản nháp (nút Thử trước khi lưu). */
-function merged(saved: StoredProfile, draft?: OpenAiProfileInput): StoredProfile {
-  if (!draft) return saved;
-  return {
-    id: saved.id,
-    name: draft.name !== undefined ? str(draft.name, 80) || saved.name : saved.name,
-    apiKey: draft.clearKey ? '' : str(draft.apiKey, 500) || saved.apiKey,
-    baseUrl: draft.baseUrl !== undefined ? normBaseUrl(draft.baseUrl) : saved.baseUrl,
-    organization: draft.organization !== undefined ? str(draft.organization, 200) : saved.organization,
-    project: draft.project !== undefined ? str(draft.project, 200) : saved.project,
-    defaultModel: draft.defaultModel !== undefined ? str(draft.defaultModel, 200) : saved.defaultModel,
-  };
-}
-
-const blank = (): StoredProfile => ({
-  id: '', name: '', apiKey: '', baseUrl: OPENAI_DEFAULT_BASE, organization: '', project: '', defaultModel: '',
-});
-
-/** Cấu hình theo id; trống = mặc định. */
-function pick(s: Store, id: unknown): StoredProfile {
-  const want = typeof id === 'string' && id ? id : s.defaultId;
-  const p = s.profiles.find((x) => x.id === want);
-  if (!p) {
-    throw new Error(s.profiles.length
-      ? 'Không còn cấu hình này (đã bị xoá?) — chọn lại cấu hình.'
-      : 'Chưa có cấu hình nào — vào tab Cấu hình thêm khoá API OpenAI.');
-  }
-  return p;
-}
-
-export async function profilesList(): Promise<OpenAiProfiles> {
-  return publicStore(await readStore());
-}
-
-export async function profileSave(input: unknown): Promise<OpenAiProfiles> {
-  const draft = (input ?? {}) as OpenAiProfileInput;
-  const s = await readStore();
-  const name = str(draft.name, 80);
-  if (draft.id) {
-    const i = s.profiles.findIndex((p) => p.id === draft.id);
-    if (i < 0) throw new Error('Không tìm thấy cấu hình để cập nhật (đã bị xoá?).');
-    s.profiles[i] = merged(s.profiles[i], draft);
-  } else {
-    if (!name) throw new Error('Đặt tên cho cấu hình (vd "Công ty", "Cá nhân", "OpenRouter").');
-    if (s.profiles.length >= OPENAI_LIMITS.maxProfiles) throw new Error(`Đã đủ ${OPENAI_LIMITS.maxProfiles} cấu hình — xoá bớt trước.`);
-    s.profiles.push(merged({ ...blank(), id: randomUUID(), name }, draft));
-  }
-  const dup = new Set<string>();
-  for (const p of s.profiles) {
-    const k = p.name.toLowerCase();
-    if (dup.has(k)) throw new Error(`Đã có cấu hình tên "${p.name}" — đặt tên khác.`);
-    dup.add(k);
-  }
-  if (!s.defaultId) s.defaultId = s.profiles[0]?.id ?? '';
-  await writeStore(s);
-  return publicStore(s);
-}
-
-export async function profileRemove(id: unknown): Promise<OpenAiProfiles> {
-  const s = await readStore();
-  s.profiles = s.profiles.filter((p) => p.id !== id);
-  if (!s.profiles.some((p) => p.id === s.defaultId)) s.defaultId = s.profiles[0]?.id ?? '';
-  await writeStore(s);
-  return publicStore(s);
-}
-
-export async function profileSetDefault(id: unknown): Promise<OpenAiProfiles> {
-  const s = await readStore();
-  s.defaultId = pick(s, id).id;
-  await writeStore(s);
-  return publicStore(s);
-}
 
 // ── Gọi API ──────────────────────────────────────────────────────────────────
 
@@ -180,13 +41,6 @@ function headers(c: StoredProfile): Record<string, string> {
   if (c.organization) h['OpenAI-Organization'] = c.organization;
   if (c.project) h['OpenAI-Project'] = c.project;
   return h;
-}
-
-/** Che khoá trong mọi chữ trả về trang (lỗi của API đôi khi nhắc lại khoá). */
-function scrub(text: string, key: string): string {
-  let out = text.replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***');
-  if (key) out = out.split(key).join('***');
-  return out;
 }
 
 async function apiError(r: Response, key: string): Promise<Error> {
@@ -205,10 +59,7 @@ async function apiError(r: Response, key: string): Promise<Error> {
 /** Danh sách model dùng được cho chat của một cấu hình. `draft`: thử cấu hình chưa lưu
  *  (có `id` = đè lên cấu hình đó; không có = cấu hình mới chưa lưu). */
 export async function listModels(profileId: unknown, draft?: unknown): Promise<string[]> {
-  const s = await readStore();
-  const d = draft as OpenAiProfileInput | undefined;
-  const base = d && !d.id && !profileId ? { ...blank(), name: str(d.name, 80) || 'Cấu hình mới' } : pick(s, d?.id || profileId);
-  const c = merged(base, d);
+  const c = await store.resolve(profileId, draft as OpenAiProfileInput | undefined);
   const r = await fetch(`${c.baseUrl}/models`, { headers: headers(c), signal: AbortSignal.timeout(LIST_TIMEOUT_MS) })
     .catch((e: Error) => { throw new Error(scrub(`Không gọi được ${c.baseUrl}/models: ${e.message}`, c.apiKey)); });
   if (!r.ok) throw await apiError(r, c.apiKey);
@@ -443,19 +294,14 @@ export function stop(id: unknown): void {
 
 // ── Prompt mẫu ───────────────────────────────────────────────────────────────
 
-export async function presetsList(): Promise<OpenAiPreset[]> {
-  return (await readStore()).presets;
-}
-
 export async function presetSave(input: unknown): Promise<OpenAiPreset[]> {
   const b = (input ?? {}) as Record<string, unknown>;
   const name = str(b.name, 120);
   if (!name) throw new Error('Đặt tên cho prompt mẫu.');
-  const s = await readStore();
   // Prompt mẫu có thể để trống prompt / model: dùng giá trị giả để kiểm các tham số còn lại.
   const req = normRequest({ ...b, prompt: typeof b.prompt === 'string' && b.prompt.trim() ? b.prompt : '.', model: str(b.model, 200) || '-' }, '-');
-  const preset: OpenAiPreset = {
-    id: typeof b.id === 'string' && b.id ? b.id : randomUUID(),
+  return store.presetUpsert({
+    id: typeof b.id === 'string' && b.id ? b.id : undefined,
     name,
     profileId: req.profileId,
     model: str(b.model, 200),
@@ -464,21 +310,5 @@ export async function presetSave(input: unknown): Promise<OpenAiPreset[]> {
     temperature: req.temperature,
     maxTokens: req.maxTokens,
     format: req.format,
-    updatedAt: new Date().toISOString(),
-  };
-  const i = s.presets.findIndex((p) => p.id === preset.id);
-  if (i >= 0) s.presets[i] = preset;
-  else {
-    if (s.presets.length >= OPENAI_LIMITS.maxPresets) throw new Error(`Đã đủ ${OPENAI_LIMITS.maxPresets} prompt mẫu — xoá bớt trước.`);
-    s.presets.push(preset);
-  }
-  await writeStore(s);
-  return s.presets;
-}
-
-export async function presetRemove(id: unknown): Promise<OpenAiPreset[]> {
-  const s = await readStore();
-  s.presets = s.presets.filter((p) => p.id !== id);
-  await writeStore(s);
-  return s.presets;
+  });
 }

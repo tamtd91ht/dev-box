@@ -82,7 +82,19 @@ export interface OpenAiRequest {
   format: OpenAiFormat;
   /** File đã import (chữ đọc ra) — server ghép vào sau prompt, mỗi file một khối có tên. */
   files?: OpenAiFile[];
+  /** ClaudeAI: mức suy nghĩ (output_config.effort) — trống = mặc định của model. */
+  effort?: ClaudeEffort | '';
+  /** ClaudeAI: bị từ chối thì tự chạy lại trên model khác (fallbacks: "default", model đời mới). */
+  fallback?: boolean;
 }
+
+/** ClaudeAI — mức suy nghĩ (Claude không nhận temperature trên API 2026-10-21; effort là nút điều chỉnh). */
+export type ClaudeEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export const CLAUDE_EFFORTS: ClaudeEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** ClaudeAI — base URL mặc định (SDK tự thêm /v1/…). */
+export const CLAUDE_DEFAULT_BASE = 'https://api.anthropic.com';
+/** ClaudeAI — max_tokens BẮT BUỘC với Claude; để trống thì dùng chừng này (gọi dạng stream nên không lo timeout). */
+export const CLAUDE_DEFAULT_MAX_TOKENS = 64_000;
 
 /** Chữ đọc ra từ một file import (doc, docx, txt, csv, pdf, xlsx). */
 export interface OpenAiFile {
@@ -114,6 +126,8 @@ export interface OpenAiUsage {
   cachedTokens?: number;
   /** Phần output là token suy luận (model o-series / gpt-5) — 0 nếu không có. */
   reasoningTokens?: number;
+  /** ClaudeAI: phần input GHI vào bộ nhớ đệm prompt (cache_creation_input_tokens). */
+  cacheWriteTokens?: number;
 }
 
 /** Ước tính token input trước khi gửi (lib/openaiTokens.ts). */
@@ -135,6 +149,8 @@ export interface OpenAiPoll {
   usage: OpenAiUsage | null;
   finishReason: string | null;
   durationMs: number;
+  /** Ghi chú cho người dùng về kết quả (vd Claude từ chối / đã chuyển sang model dự phòng). */
+  notice?: string | null;
 }
 
 /** Model có vẻ dùng được cho chat (bỏ embedding, âm thanh, ảnh, kiểm duyệt…). */

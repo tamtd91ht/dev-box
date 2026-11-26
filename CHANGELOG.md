@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Menu ✳ ClaudeAI — gửi prompt tới Claude qua Claude API.** Cùng giao diện với menu OpenAI (nhiều cấu hình,
+  ⚙ góc phải, nhiều tab request, đổi tên trên tab, chọn model bằng dropdown + nhập tay, import file, Nâng cao,
+  lịch sử 5 request, Copy cURL, thời gian xử lý), gọi bằng SDK chính thức `@anthropic-ai/sdk` (API 2026-10-21,
+  khoá gửi dạng Bearer). Khác OpenAI: không có temperature (API Claude hiện tại không nhận) — thay bằng **Effort**
+  (low … max); **Max tokens** bắt buộc, để trống = 64.000; **token input đếm thật** bằng endpoint `count_tokens`
+  của Anthropic; kết quả hiện input (gồm phần cache đọc / ghi) và output; báo rõ khi bị cắt (`max_tokens`) hoặc bị
+  từ chối (`refusal`, kèm loại). Model đời mới (Fable 5.x, Opus 5 / 5.5, Sonnet 5.5) bật sẵn **fallback** — bị từ
+  chối thì API tự chạy lại trên model khác và báo model đã trả lời (tắt được trong Nâng cao). Cấu hình lưu ở
+  `configs/claude.json`. Kho cấu hình + prompt mẫu tách thành `lib/llmProfiles.ts` dùng chung cho hai menu.
 - **Menu 🤖 OpenAI — gửi prompt tới ChatGPT qua API.** Tab **Cấu hình** lưu được **nhiều cấu hình** (vd Công ty,
   Cá nhân, OpenRouter), mỗi cái có tên, khoá API, model mặc định; mục **Nâng cao** (thu gọn, tuỳ chọn) có base URL
   (dùng dịch vụ tương thích OpenAI như proxy Azure, OpenRouter, LM Studio, Ollama), organization, project; một cấu

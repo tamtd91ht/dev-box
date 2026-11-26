@@ -287,6 +287,7 @@ const TABS: { key: Mode; icon: string; label: string; badge: string }[] = [
   { key: 'tools', icon: '🧰', label: 'Tools', badge: 'fmt' },
   { key: 'speech', icon: '🎙', label: 'Giọng nói', badge: 'stt·tts' },
   { key: 'openai', icon: '🤖', label: 'OpenAI', badge: 'gpt' },
+  { key: 'claude', icon: '✳', label: 'ClaudeAI', badge: 'claude' },
   { key: 'api', icon: '📮', label: 'API', badge: 'http' },
   { key: 'webhooks', icon: '⚡', label: 'Webhooks', badge: 'tool' },
   { key: 'workspace', icon: '🧭', label: 'Workspace', badge: 'browser' },
@@ -1121,6 +1122,12 @@ export default function Home() {
         {visited.openai && (
           <main className="workspace" data-pane="openai" style={pane('openai')} aria-hidden={!shown('openai')}>
             <div className="panel sheet-panel"><OpenAiWorkspace /></div>
+          </main>
+        )}
+        {/* ClaudeAI — cùng giao diện với OpenAI, gọi Claude API qua SDK (lib/claudeServer.ts). */}
+        {visited.claude && (
+          <main className="workspace" data-pane="claude" style={pane('claude')} aria-hidden={!shown('claude')}>
+            <div className="panel sheet-panel"><OpenAiWorkspace provider="claude" /></div>
           </main>
         )}
         {visited.api && (

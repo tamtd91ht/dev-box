@@ -1,6 +1,8 @@
 'use client';
 
-// Menu 🤖 OpenAI — gửi prompt tới ChatGPT qua API của OpenAI.
+// Menu 🤖 OpenAI và ✳ ClaudeAI — gửi prompt tới ChatGPT / Claude qua API (prop `provider`).
+// Hai menu dùng CHUNG giao diện này; khác nhau ở ProviderSpec bên dưới (đường API, tham số:
+// OpenAI có temperature + JSON, Claude có effort + fallback và max tokens bắt buộc).
 //
 //   · Gửi request: chọn CẤU HÌNH (khoá nào, dịch vụ nào) + model, "Định hướng"
 //     (system prompt — vai trò, giọng văn, định dạng kết quả mong muốn) + Prompt,
@@ -18,41 +20,131 @@
 // thấy "sk-p…3fQa". Mọi lời gọi đi qua /api/openai; request chạy thành job ở
 // server, trang hỏi tiến độ (poll) — giống trợ lý AI.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { apiFetch } from '@/lib/apiFetch';
 import { renderMarkdown } from '@/lib/md';
 import {
-  OPENAI_DEFAULT_BASE, OPENAI_FILE_EXTS, OPENAI_LIMITS,
+  CLAUDE_DEFAULT_BASE, CLAUDE_DEFAULT_MAX_TOKENS, CLAUDE_EFFORTS, OPENAI_DEFAULT_BASE, OPENAI_FILE_EXTS, OPENAI_LIMITS,
   type OpenAiFormat, type OpenAiPoll, type OpenAiTokenEstimate, type OpenAiPreset, type OpenAiProfile, type OpenAiProfiles, type OpenAiUsage,
 } from '@/lib/openai';
 
-const TAB_KEY = 'openai.tab';
-const DRAFT_KEY = 'openai.draft';
-const HISTORY_KEY = 'openai.history';
+// Khoá localStorage theo nhà cung cấp: "openai.tab", "claude.tab"…
+const TAB_KEY = 'tab';
+const DRAFT_KEY = 'draft';
+const HISTORY_KEY = 'history';
 /** Các tab request đang mở + tab đang xem (chỉ bản nháp — file và kết quả không lưu, như menu API). */
-const TABS_KEY = 'openai.tabs';
+const TABS_KEY = 'tabs';
 /** Model người dùng tự nhập (app chưa kịp biết) — nhớ để lần sau có sẵn trong dropdown. */
-const CUSTOM_KEY = 'openai.customModels';
-const ADV_KEY = 'openai.advancedOpen';
+const CUSTOM_KEY = 'customModels';
+const ADV_KEY = 'advancedOpen';
 const POLL_MS = 400;
 const MAX_CUSTOM = 20;
 const CUSTOM_OPTION = '__custom__';
 const NEW_PROFILE = '__new__';
 
-/** Gợi ý khi CHƯA lấy được danh sách model của cấu hình (chưa có khoá, base URL không hỗ trợ /models…).
- *  Có thể cũ so với OpenAI — model mới thì dùng "Nhập tay". Có danh sách thật thì không hiện mục này. */
-const SUGGESTED_MODELS = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'o3', 'o4-mini'];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const num = (n: number) => n.toLocaleString('vi-VN');
 
-async function call<T>(action: string, params: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<T> {
-  const r = await apiFetch('/api/openai', { method: 'POST', body: JSON.stringify({ action, ...params }), timeoutMs });
-  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; result?: T };
-  if (!r.ok || data.ok === false) throw new Error(data.error || `HTTP ${r.status}`);
-  return data.result as T;
+export type LlmProvider = 'openai' | 'claude';
+
+/** Khác biệt giữa hai menu — mọi chỗ còn lại của giao diện dùng chung. */
+interface ProviderSpec {
+  id: LlmProvider;
+  /** Tên hiện cho người dùng. */
+  label: string;
+  /** Route server (lib/openaiServer.ts, lib/claudeServer.ts). */
+  api: string;
+  configFile: string;
+  defaultBase: string;
+  baseHint: string;
+  keyPlaceholder: string;
+  keyWhere: string;
+  /** Biến môi trường thay cho khoá trong lệnh cURL. */
+  envVar: string;
+  /** Gợi ý khi chưa lấy được danh sách model của tài khoản (có thể cũ — model mới thì "Nhập tay"). */
+  suggested: string[];
+  modelPlaceholder: string;
+  /** Có ô Temperature / ô dạng kết quả JSON (OpenAI). Claude: API hiện tại không nhận temperature. */
+  temperature: boolean;
+  jsonFormat: boolean;
+  /** Có ô Effort / ô tự chuyển model khi bị từ chối (Claude). */
+  effort: boolean;
+  fallback: boolean;
+  /** Max tokens bắt buộc → để trống dùng giá trị này (Claude). */
+  defaultMaxTokens: number | null;
+  /** Có Organization / Project (OpenAI). */
+  orgProject: boolean;
+  /** Giải thích ước tính token input. */
+  tokenNote: (encoding: string, exact: boolean) => string;
 }
+
+const SPECS: Record<LlmProvider, ProviderSpec> = {
+  openai: {
+    id: 'openai',
+    label: 'OpenAI',
+    api: '/api/openai',
+    configFile: 'configs/openai.json',
+    defaultBase: OPENAI_DEFAULT_BASE,
+    baseHint: 'đổi khi dùng dịch vụ tương thích OpenAI: proxy Azure, OpenRouter, LM Studio, Ollama…',
+    keyPlaceholder: 'sk-…',
+    keyWhere: 'platform.openai.com → API keys',
+    envVar: 'OPENAI_API_KEY',
+    suggested: ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'o3', 'o4-mini'],
+    modelPlaceholder: 'gpt-5-mini',
+    temperature: true,
+    jsonFormat: true,
+    effort: false,
+    fallback: false,
+    defaultMaxTokens: null,
+    orgProject: true,
+    tokenNote: (enc, exact) => `đếm bằng tokenizer ${enc} của OpenAI — chưa gửi gì.${exact ? '' : ' Model này không phải của OpenAI / chưa biết bảng mã → chỉ gần đúng.'}`,
+  },
+  claude: {
+    id: 'claude',
+    label: 'Claude',
+    api: '/api/claude',
+    configFile: 'configs/claude.json',
+    defaultBase: CLAUDE_DEFAULT_BASE,
+    baseHint: 'đổi khi gọi qua proxy / cổng trung gian tương thích Claude API',
+    keyPlaceholder: 'sk-ant-…',
+    keyWhere: 'platform.claude.com → API keys',
+    envVar: 'ANTHROPIC_API_KEY',
+    suggested: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2'],
+    modelPlaceholder: 'claude-opus-5-5',
+    temperature: false,
+    jsonFormat: false,
+    effort: true,
+    fallback: true,
+    defaultMaxTokens: CLAUDE_DEFAULT_MAX_TOKENS,
+    orgProject: false,
+    tokenNote: () => 'đếm bằng endpoint count_tokens của Anthropic (đúng tokenizer của model, không tốn tiền) — chưa gửi prompt đi chạy.',
+  },
+};
+
+const SpecCtx = createContext<ProviderSpec>(SPECS.openai);
+const useSpec = () => useContext(SpecCtx);
+
+type Call = <T>(action: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>;
+
+function makeCall(api: string): Call {
+  return async <T,>(action: string, params: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<T> => {
+    const r = await apiFetch(api, { method: 'POST', body: JSON.stringify({ action, ...params }), timeoutMs });
+    const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; result?: T };
+    if (!r.ok || data.ok === false) throw new Error(data.error || `HTTP ${r.status}`);
+    return data.result as T;
+  };
+}
+
+/** Gọi server của nhà cung cấp đang dùng (/api/openai hoặc /api/claude). */
+function useCall(): Call {
+  const spec = useSpec();
+  return useMemo(() => makeCall(spec.api), [spec.api]);
+}
+
+/** Khoá localStorage theo nhà cung cấp. */
+const sk = (spec: ProviderSpec, k: string) => `${spec.id}.${k}`;
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -74,8 +166,14 @@ interface Draft {
   temperature: string;
   maxTokens: string;
   format: OpenAiFormat;
+  /** Claude: mức suy nghĩ ('' = mặc định của model). */
+  effort: string;
+  /** Claude: bị từ chối thì tự chạy lại trên model khác. */
+  fallback: boolean;
 }
-const EMPTY_DRAFT: Draft = { name: '', profileId: '', system: '', prompt: '', model: '', temperature: '', maxTokens: '', format: 'text' };
+const EMPTY_DRAFT: Draft = {
+  name: '', profileId: '', system: '', prompt: '', model: '', temperature: '', maxTokens: '', format: 'text', effort: '', fallback: true,
+};
 
 interface Run {
   id: string | null;
@@ -92,6 +190,8 @@ interface Run {
   submittedAt: number | null;
   firstAt: number | null;
   endedAt: number | null;
+  /** Ghi chú về kết quả (Claude từ chối / đã chuyển sang model dự phòng). */
+  notice?: string | null;
 }
 const IDLE: Run = {
   id: null, text: '', running: false, error: null, model: null, usage: null, finishReason: null, durationMs: 0, format: 'text',
@@ -122,6 +222,7 @@ interface HistoryItem {
   profileId?: string;
   temperature?: string;
   maxTokens?: string;
+  effort?: string;
   text: string;
   format: OpenAiFormat;
   usage: OpenAiUsage | null;
@@ -195,6 +296,8 @@ function ModelPicker({ value, onChange, choices, allowEmpty, emptyLabel = '— C
 }) {
   const [typing, setTyping] = useState(false);
   const [typed, setTyped] = useState('');
+  const spec = useSpec();
+  const SUGGESTED_MODELS = spec.suggested;
   const { live, custom } = choices;
   const customOnly = custom.filter((m) => !live.includes(m));
   const suggested = live.length ? [] : SUGGESTED_MODELS.filter((m) => !custom.includes(m));
@@ -218,7 +321,7 @@ function ModelPicker({ value, onChange, choices, allowEmpty, emptyLabel = '— C
           autoFocus
           spellCheck={false}
           value={typed}
-          placeholder="Tên model chính xác, vd gpt-5-mini"
+          placeholder={`Tên model chính xác, vd ${spec.modelPlaceholder}`}
           onChange={(e) => setTyped(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') { e.preventDefault(); confirm(); }
@@ -263,7 +366,18 @@ function ModelPicker({ value, onChange, choices, allowEmpty, emptyLabel = '— C
 
 // ── Khung chính ──────────────────────────────────────────────────────────────
 
-export default function OpenAiWorkspace() {
+export default function OpenAiWorkspace({ provider = 'openai' }: { provider?: LlmProvider }) {
+  const spec = SPECS[provider];
+  return (
+    <SpecCtx.Provider value={spec}>
+      <Workspace />
+    </SpecCtx.Provider>
+  );
+}
+
+function Workspace() {
+  const spec = useSpec();
+  const call = useCall();
   const [tab, setTabState] = useState<'request' | 'config'>('request');
   const [store, setStore] = useState<OpenAiProfiles | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -280,16 +394,16 @@ export default function OpenAiWorkspace() {
 
   useEffect(() => {
     // Khôi phục các tab; bản trước chỉ có MỘT bản nháp (DRAFT_KEY) → thành tab đầu tiên.
-    const saved = load<{ drafts?: Partial<Draft>[]; active?: number } | null>(TABS_KEY, null);
-    const drafts = saved?.drafts?.length ? saved.drafts : [load<Partial<Draft>>(DRAFT_KEY, {})];
+    const saved = load<{ drafts?: Partial<Draft>[]; active?: number } | null>(sk(spec, TABS_KEY), null);
+    const drafts = saved?.drafts?.length ? saved.drafts : [load<Partial<Draft>>(sk(spec, DRAFT_KEY), {})];
     const tabs = drafts.slice(0, OPENAI_LIMITS.maxTabs).map((d) => newReqTab({ ...EMPTY_DRAFT, ...d }));
     setReqTabs(tabs);
     setActiveKey(tabs[Math.min(Math.max(0, saved?.active ?? 0), tabs.length - 1)].key);
-    setHistory(load<HistoryItem[]>(HISTORY_KEY, []).slice(0, OPENAI_LIMITS.maxHistory));
+    setHistory(load<HistoryItem[]>(sk(spec, HISTORY_KEY), []).slice(0, OPENAI_LIMITS.maxHistory));
   }, []);
   useEffect(() => {
     if (!reqTabs.length) return;
-    save(TABS_KEY, { drafts: reqTabs.map((t) => t.draft), active: Math.max(0, reqTabs.findIndex((t) => t.key === activeKey)) });
+    save(sk(spec, TABS_KEY), { drafts: reqTabs.map((t) => t.draft), active: Math.max(0, reqTabs.findIndex((t) => t.key === activeKey)) });
   }, [reqTabs, activeKey]);
 
   // Tên request do thanh tab quản (đổi tên ngay trên tab) — bản nháp từ RequestPane không ghi đè tên.
@@ -317,11 +431,11 @@ export default function OpenAiWorkspace() {
   }, []);
   const onHistory = useCallback((item: HistoryItem) => setHistory((h) => {
     const next = [item, ...h].slice(0, OPENAI_LIMITS.maxHistory);
-    save(HISTORY_KEY, next);
+    save(sk(spec, HISTORY_KEY), next);
     return next;
   }), []);
-  const clearHistory = useCallback(() => { setHistory([]); save(HISTORY_KEY, []); }, []);
-  const openConfig = useCallback(() => { setTabState('config'); save(TAB_KEY, 'config'); }, []);
+  const clearHistory = useCallback(() => { setHistory([]); save(sk(spec, HISTORY_KEY), []); }, [spec]);
+  const openConfig = useCallback(() => { setTabState('config'); save(sk(spec, TAB_KEY), 'config'); }, [spec]);
 
   /** Mở tab mới ngay sau tab đang xem (bản nháp trống, nhân bản, hoặc mở lại từ lịch sử). */
   const openTab = useCallback((d: Draft = EMPTY_DRAFT, run?: Run) => {
@@ -356,7 +470,7 @@ export default function OpenAiWorkspace() {
     setActiveKey(nextActive);
   }, [activeKey, reqTabs]);
 
-  const setTab = (t: 'request' | 'config') => { setTabState(t); save(TAB_KEY, t); };
+  const setTab = (t: 'request' | 'config') => { setTabState(t); save(sk(spec, TAB_KEY), t); };
 
   const loadModels = useCallback(async (profileId: string, force = false) => {
     if (!profileId) return;
@@ -368,8 +482,8 @@ export default function OpenAiWorkspace() {
 
   useEffect(() => {
     reclaimFocus(); // mở menu ngay sau một tab có <webview>: nhả focus khỏi guest
-    setTabState(load(TAB_KEY, 'request'));
-    setCustom(load<string[]>(CUSTOM_KEY, []));
+    setTabState(load(sk(spec, TAB_KEY), 'request'));
+    setCustom(load<string[]>(sk(spec, CUSTOM_KEY), []));
     void (async () => {
       try {
         const s = await call<OpenAiProfiles>('profiles.list');
@@ -382,7 +496,7 @@ export default function OpenAiWorkspace() {
 
   const addCustom = useCallback((m: string) => setCustom((list) => {
     const next = [m, ...list.filter((x) => x !== m)].slice(0, MAX_CUSTOM);
-    save(CUSTOM_KEY, next);
+    save(sk(spec, CUSTOM_KEY), next);
     return next;
   }), []);
   const choicesFor = useCallback(
@@ -457,10 +571,10 @@ export default function OpenAiWorkspace() {
           className={`oai-gear${tab === 'config' ? ' on' : ''}`}
           onClick={() => setTab(tab === 'config' ? 'request' : 'config')}
           aria-pressed={tab === 'config'}
-          aria-label="Cấu hình OpenAI"
+          aria-label={`Cấu hình ${spec.label}`}
           title={tab === 'config'
             ? 'Đóng Cấu hình — quay về request'
-            : `Cấu hình OpenAI${store ? ` · ${store.profiles.length} cấu hình${ready ? '' : ' · chưa có khoá API'}` : ''}`}
+            : `Cấu hình ${spec.label}${store ? ` · ${store.profiles.length} cấu hình${ready ? '' : ' · chưa có khoá API'}` : ''}`}
         >
           ⚙{store && !ready && <span className="oai-dot" />}
         </button>
@@ -603,7 +717,9 @@ const RequestPane = memo(function RequestPane({
   setPresets: (p: OpenAiPreset[]) => void;
   onConfigure: () => void;
 }) {
-  const [draft, setDraftState] = useState<Draft>(initialDraft);
+  const spec = useSpec();
+  const call = useCall();
+  const [draft, setDraftState] = useState<Draft>(() => ({ ...EMPTY_DRAFT, ...initialDraft }));
   const [run, setRun] = useState<Run>(initialRun ?? IDLE);
   const [raw, setRaw] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -693,10 +809,12 @@ const RequestPane = memo(function RequestPane({
     model,
     system: draft.system,
     prompt,
-    temperature: draft.temperature === '' ? null : Number(draft.temperature),
+    temperature: spec.temperature && draft.temperature !== '' ? Number(draft.temperature) : null,
     maxTokens: draft.maxTokens === '' ? null : Number(draft.maxTokens),
-    format: draft.format,
+    format: spec.jsonFormat ? draft.format : 'text',
     files: files.map((f) => ({ name: f.name, text: f.text })),
+    ...(spec.effort ? { effort: draft.effort } : {}),
+    ...(spec.fallback ? { fallback: draft.fallback } : {}),
   });
 
   // Ước tính token INPUT trước khi gửi: server đếm bằng tokenizer của OpenAI trên đúng các message
@@ -735,7 +853,7 @@ const RequestPane = memo(function RequestPane({
         kind: 'ok',
         text: r.hasKey
           ? 'Đã chép cURL (kèm khoá thật, "stream": false).'
-          : 'Đã chép cURL — đặt biến OPENAI_API_KEY (hoặc thay $OPENAI_API_KEY bằng khoá) trước khi chạy; "stream": false.',
+          : `Đã chép cURL — đặt biến ${spec.envVar} (hoặc thay $${spec.envVar} bằng khoá) trước khi chạy; "stream": false.`,
       });
     } catch (e) { setMsg({ kind: 'err', text: (e as Error).message }); }
   };
@@ -744,7 +862,7 @@ const RequestPane = memo(function RequestPane({
     if (!canSend || !profile) return;
     setMsg(null);
     setRaw(false);
-    const format = draft.format;
+    const format: OpenAiFormat = spec.jsonFormat ? draft.format : 'text';
     const submittedAt = performance.now();
     let firstAt: number | null = null;
     setRun({ ...IDLE, running: true, format, submittedAt });
@@ -760,7 +878,7 @@ const RequestPane = memo(function RequestPane({
         if (firstAt === null && text) firstAt = performance.now();
         const endedAt = p.done ? performance.now() : null;
         setRun((r) => ({
-          ...r, text, model: p.model, usage: p.usage, finishReason: p.finishReason, durationMs: p.durationMs, error: p.error,
+          ...r, text, model: p.model, usage: p.usage, finishReason: p.finishReason, durationMs: p.durationMs, error: p.error, notice: p.notice ?? null,
           firstAt, endedAt,
         }));
         if (p.done) {
@@ -770,7 +888,7 @@ const RequestPane = memo(function RequestPane({
               system: draft.system, prompt: draft.prompt, text, format, usage: p.usage,
               elapsedMs: Math.round((endedAt ?? performance.now()) - submittedAt),
               ...(files.length ? { files: files.map((f) => f.name) } : {}),
-              profileId, temperature: draft.temperature, maxTokens: draft.maxTokens,
+              profileId, temperature: draft.temperature, maxTokens: draft.maxTokens, effort: draft.effort,
               ...(name.trim() ? { name: name.trim() } : {}),
             };
             onHistory(item);
@@ -803,6 +921,8 @@ const RequestPane = memo(function RequestPane({
       ...(p.prompt ? { prompt: p.prompt } : {}),
       model: p.model,
       temperature: p.temperature === null ? '' : String(p.temperature),
+      effort: p.effort ?? '',
+      fallback: p.fallback !== false,
       maxTokens: p.maxTokens === null ? '' : String(p.maxTokens),
       format: p.format,
     });
@@ -813,15 +933,17 @@ const RequestPane = memo(function RequestPane({
   const [naming, setNaming] = useState<{ asNew: boolean; name: string; keepPrompt: boolean } | null>(null);
   // "Nâng cao" (prompt mẫu, định hướng, tham số) — tuỳ chọn nên thu gọn; nhớ đóng / mở theo trình duyệt.
   const [advOpen, setAdvOpen] = useState(false);
-  useEffect(() => { setAdvOpen(load<boolean>(ADV_KEY, false)); }, []);
-  const setAdvOpenSaved = (v: boolean) => { setAdvOpen(v); save(ADV_KEY, v); };
+  useEffect(() => { setAdvOpen(load<boolean>(sk(spec, ADV_KEY), false)); }, [spec]);
+  const setAdvOpenSaved = (v: boolean) => { setAdvOpen(v); save(sk(spec, ADV_KEY), v); };
   /** Những gì đang bật bên trong "Nâng cao" — hiện ở dòng tiêu đề để thu gọn vẫn biết. */
   const advSummary = [
     presets.find((x) => x.id === presetId) ? `prompt mẫu "${presets.find((x) => x.id === presetId)!.name}"` : '',
     draft.system.trim() ? 'định hướng' : '',
-    draft.temperature !== '' ? `temperature ${draft.temperature}` : '',
+    spec.temperature && draft.temperature !== '' ? `temperature ${draft.temperature}` : '',
+    spec.effort && draft.effort ? `effort ${draft.effort}` : '',
+    spec.fallback && !draft.fallback ? 'không fallback' : '',
     draft.maxTokens !== '' ? `max ${draft.maxTokens} token` : '',
-    draft.format === 'json' ? 'JSON' : '',
+    spec.jsonFormat && draft.format === 'json' ? 'JSON' : '',
   ].filter(Boolean).join(', ');
 
   const openNaming = (asNew: boolean) => {
@@ -845,9 +967,11 @@ const RequestPane = memo(function RequestPane({
           model: draft.model,
           system: draft.system,
           prompt: keepPrompt ? draft.prompt : '',
-          temperature: draft.temperature === '' ? null : Number(draft.temperature),
+          temperature: spec.temperature && draft.temperature !== '' ? Number(draft.temperature) : null,
           maxTokens: draft.maxTokens === '' ? null : Number(draft.maxTokens),
-          format: draft.format,
+          format: spec.jsonFormat ? draft.format : 'text',
+          ...(spec.effort ? { effort: draft.effort } : {}),
+          ...(spec.fallback ? { fallback: draft.fallback } : {}),
         },
       });
       setPresets(list);
@@ -881,8 +1005,8 @@ const RequestPane = memo(function RequestPane({
   if (store && !profiles.some((p) => p.hasKey)) {
     return (
       <div className="oai-empty">
-        <h3>Chưa có cấu hình OpenAI nào</h3>
-        <p>Thêm một cấu hình có khoá API ở tab Cấu hình (tạo khoá ở platform.openai.com → API keys). Khoá chỉ lưu trên máy này, không hiện lại trong trang.</p>
+        <h3>Chưa có cấu hình {spec.label} nào</h3>
+        <p>Bấm ⚙ thêm một cấu hình có khoá API (tạo khoá ở {spec.keyWhere}). Khoá chỉ lưu trên máy này, không hiện lại trong trang.</p>
         <button className="sp-cta" onClick={onConfigure}>Mở Cấu hình</button>
       </div>
     );
@@ -892,7 +1016,7 @@ const RequestPane = memo(function RequestPane({
     <div className="epoch-cols oai-cols">
       <section className={`epoch-card oai-card oai-reqcard${dropping ? ' oai-dropping' : ''}`} {...dropProps}>
         <div className="tools-pane-head">
-          ✉ Request <span className="tools-pane-hint">nội dung được gửi tới {profile?.baseUrl ?? OPENAI_DEFAULT_BASE}</span>
+          ✉ Request <span className="tools-pane-hint">nội dung được gửi tới {profile?.baseUrl ?? spec.defaultBase}</span>
         </div>
         {dropping && <div className="oai-drop" aria-hidden>Thả file vào đây — doc, docx, txt, csv, pdf, xlsx</div>}
         <div className="epoch-card-body oai-form">
@@ -970,7 +1094,7 @@ const RequestPane = memo(function RequestPane({
             onToggle={(e) => setAdvOpenSaved((e.currentTarget as HTMLDetailsElement).open)}
           >
             <summary>
-              ⚙ Nâng cao{advSummary ? <em> — đang dùng: {advSummary}</em> : <em> — prompt mẫu, định hướng (system prompt), temperature, max tokens, dạng kết quả</em>}
+              ⚙ Nâng cao{advSummary ? <em> — đang dùng: {advSummary}</em> : <em> — prompt mẫu, định hướng (system prompt), {spec.temperature ? 'temperature, ' : ''}{spec.effort ? 'effort, ' : ''}max tokens{spec.jsonFormat ? ', dạng kết quả' : ''}</em>}
             </summary>
             <div className="oai-form">
               <div className="oai-row">
@@ -1024,14 +1148,26 @@ const RequestPane = memo(function RequestPane({
                 />
               </label>
               <div className="oai-row">
+                {spec.temperature && (
                 <label className="oai-field oai-num" title="0 = ổn định, 2 = sáng tạo. Để trống = mặc định của model (một số model chỉ nhận mặc định).">
                   <span>Temperature</span>
                   <input type="number" min={0} max={2} step={0.1} value={draft.temperature} placeholder="mặc định" onChange={(e) => setDraft({ temperature: e.target.value })} />
                 </label>
-                <label className="oai-field oai-num" title="Giới hạn độ dài kết quả (token). Để trống = không giới hạn ở phía mình.">
+                )}
+                {spec.effort && (
+                  <label className="oai-field oai-num" title="Mức suy nghĩ của Claude (output_config.effort): cao = kỹ hơn nhưng chậm và tốn token hơn. Để mặc định = mức mặc định của model. Claude không nhận temperature.">
+                    <span>Effort</span>
+                    <select value={draft.effort} onChange={(e) => setDraft({ effort: e.target.value })}>
+                      <option value="">mặc định</option>
+                      {CLAUDE_EFFORTS.map((x) => <option key={x} value={x}>{x}</option>)}
+                    </select>
+                  </label>
+                )}
+                <label className="oai-field oai-num" title={spec.defaultMaxTokens ? `Giới hạn độ dài kết quả (token) — bắt buộc với ${spec.label}; để trống = ${num(spec.defaultMaxTokens)}.` : 'Giới hạn độ dài kết quả (token). Để trống = không giới hạn ở phía mình.'}>
                   <span>Max tokens</span>
-                  <input type="number" min={1} max={OPENAI_LIMITS.maxTokens} step={1} value={draft.maxTokens} placeholder="không" onChange={(e) => setDraft({ maxTokens: e.target.value })} />
+                  <input type="number" min={1} max={OPENAI_LIMITS.maxTokens} step={1} value={draft.maxTokens} placeholder={spec.defaultMaxTokens ? num(spec.defaultMaxTokens) : 'không'} onChange={(e) => setDraft({ maxTokens: e.target.value })} />
                 </label>
+                {spec.jsonFormat && (
                 <label className="oai-field oai-num" title="JSON: bắt model trả về một đối tượng JSON hợp lệ — định hướng hoặc prompt phải nhắc tới chữ JSON.">
                   <span>Kết quả</span>
                   <select value={draft.format} onChange={(e) => setDraft({ format: e.target.value as OpenAiFormat })}>
@@ -1039,10 +1175,16 @@ const RequestPane = memo(function RequestPane({
                     <option value="json">JSON</option>
                   </select>
                 </label>
+                )}
+                {spec.fallback && (
+                  <label className="oai-check oai-fallback" title="Model đời mới (Fable 5.x, Opus 5 / 5.5, Sonnet 5.5) đôi khi từ chối một yêu cầu vì bộ lọc an toàn. Bật: API tự chạy lại yêu cầu đó trên model khác (fallbacks &quot;default&quot;) và báo model nào đã trả lời. Chỉ áp dụng khi gọi thẳng api.anthropic.com.">
+                    <input type="checkbox" checked={draft.fallback} onChange={(e) => setDraft({ fallback: e.target.checked })} /> bị từ chối thì tự chuyển model
+                  </label>
+                )}
               </div>
             </div>
           </details>
-          {draft.format === 'json' && !/json/i.test(draft.system + draft.prompt) && (
+          {spec.jsonFormat && draft.format === 'json' && !/json/i.test(draft.system + draft.prompt) && (
             <p className="oai-warn">Chế độ JSON: OpenAI yêu cầu định hướng hoặc prompt có nhắc tới chữ “JSON”, nếu không request sẽ bị từ chối.</p>
           )}
 
@@ -1066,7 +1208,7 @@ const RequestPane = memo(function RequestPane({
             >
               {curlCopied ? '✓ Đã chép cURL' : '⧉ Copy cURL'}
             </button>
-            <label className="oai-check" title="Bỏ chọn: khoá là biến $OPENAI_API_KEY (an toàn khi dán / chia sẻ). Chọn: chép kèm khoá thật của cấu hình.">
+            <label className="oai-check" title={`Bỏ chọn: khoá là biến $${spec.envVar} (an toàn khi dán / chia sẻ). Chọn: chép kèm khoá thật của cấu hình.`}>
               <input type="checkbox" checked={curlKey} onChange={(e) => setCurlKey(e.target.checked)} /> kèm khoá thật
             </label>
             <span className="oai-count">
@@ -1076,7 +1218,7 @@ const RequestPane = memo(function RequestPane({
               <span
                 className="oai-tokens"
                 title={est
-                  ? `Ước tính token INPUT (định hướng + prompt + file + phần phụ của định dạng chat), đếm bằng tokenizer ${est.encoding} của OpenAI — chưa gửi gì.${est.exact ? '' : ' Model này không phải của OpenAI / chưa biết bảng mã → chỉ gần đúng.'} Số thật hiện ở phần Kết quả sau khi gửi.`
+                  ? `Ước tính token INPUT (định hướng + prompt + file), ${spec.tokenNote(est.encoding, est.exact)} Số thật hiện ở phần Kết quả sau khi gửi.`
                   : 'Đang ước tính token input…'}
               >
                 {est ? `≈ ${num(est.tokens)} token input${est.exact ? '' : ' (gần đúng)'}` : '≈ … token input'}
@@ -1105,7 +1247,8 @@ const RequestPane = memo(function RequestPane({
         </div>
         <div className="epoch-card-body oai-result">
           {run.error && <div className="oai-error" role="alert">{run.error}</div>}
-          {run.finishReason === 'length' && !run.running && (
+          {run.notice && !run.running && <p className="oai-warn">{run.notice}</p>}
+          {(run.finishReason === 'length' || run.finishReason === 'max_tokens') && !run.running && (
             <p className="oai-warn">Kết quả bị cắt vì chạm giới hạn Max tokens — tăng Max tokens rồi gửi lại.</p>
           )}
           {!run.text && !run.running && !run.error && <p className="oai-muted">Kết quả sẽ hiện ở đây.</p>}
@@ -1131,7 +1274,7 @@ const RequestPane = memo(function RequestPane({
                       {
                         ...EMPTY_DRAFT,
                         name: h.name ?? '', profileId: h.profileId ?? '', model: h.model, system: h.system, prompt: h.prompt, format: h.format,
-                        temperature: h.temperature ?? '', maxTokens: h.maxTokens ?? '',
+                        temperature: h.temperature ?? '', maxTokens: h.maxTokens ?? '', effort: h.effort ?? '',
                       },
                       { ...IDLE, text: h.text, model: h.model, usage: h.usage, format: h.format },
                     )}
@@ -1180,7 +1323,7 @@ function Elapsed({ run }: { run: Run }) {
         + (first !== null ? `
 Chữ đầu tiên về sau ${fmtSeconds(first)}.` : '')
         + (run.durationMs ? `
-Server gọi OpenAI mất ${fmtSeconds(run.durationMs)}.` : '')}
+Server gọi API mất ${fmtSeconds(run.durationMs)}.` : '')}
     >
       ⏱ {fmtSeconds(total)}{run.running ? '…' : ''}
       {first !== null && !run.running && <em> · chữ đầu sau {fmtSeconds(first)}</em>}
@@ -1202,7 +1345,9 @@ function ConfigPane({ store, choicesFor, onSaved, onModels }: {
   const [selected, setSelected] = useState<string>('');
   const [name, setName] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const [baseUrl, setBaseUrl] = useState(OPENAI_DEFAULT_BASE);
+  const spec = useSpec();
+  const call = useCall();
+  const [baseUrl, setBaseUrl] = useState(spec.defaultBase);
   const [organization, setOrganization] = useState('');
   const [project, setProject] = useState('');
   const [defaultModel, setDefaultModel] = useState('');
@@ -1228,11 +1373,11 @@ function ConfigPane({ store, choicesFor, onSaved, onModels }: {
     setTestModels(null);
     setMsg(null);
     setName(p?.name ?? (profiles.length ? '' : 'Mặc định'));
-    setBaseUrl(p?.baseUrl ?? OPENAI_DEFAULT_BASE);
+    setBaseUrl(p?.baseUrl ?? spec.defaultBase);
     setOrganization(p?.organization ?? '');
     setProject(p?.project ?? '');
     setDefaultModel(p?.defaultModel ?? '');
-    setAdvancedOpen(!!p && (!!p.organization || !!p.project || p.baseUrl !== OPENAI_DEFAULT_BASE));
+    setAdvancedOpen(!!p && (!!p.organization || !!p.project || p.baseUrl !== spec.defaultBase));
     // Chỉ khi đổi cấu hình đang chọn (không nạp lại mỗi lần store đổi — sẽ xoá chữ đang gõ).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
@@ -1304,7 +1449,7 @@ function ConfigPane({ store, choicesFor, onSaved, onModels }: {
       <section className="epoch-card oai-card oai-config">
         <div className="tools-pane-head">
           {isNew ? '＋ Cấu hình mới' : `⚙ ${current?.name ?? ''}`}
-          <span className="tools-pane-hint">lưu ở configs/openai.json trên máy này — không lên git</span>
+          <span className="tools-pane-hint">lưu ở {spec.configFile} trên máy này — không lên git</span>
         </div>
         <div className="epoch-card-body oai-form">
           <label className="oai-field">
@@ -1318,7 +1463,7 @@ function ConfigPane({ store, choicesFor, onSaved, onModels }: {
               autoComplete="off"
               spellCheck={false}
               value={apiKey}
-              placeholder={current?.hasKey ? '•••••••• (giữ khoá hiện tại)' : 'sk-…'}
+              placeholder={current?.hasKey ? '•••••••• (giữ khoá hiện tại)' : spec.keyPlaceholder}
               onChange={(e) => setApiKey(e.target.value)}
             />
           </label>
@@ -1335,12 +1480,12 @@ function ConfigPane({ store, choicesFor, onSaved, onModels }: {
             onToggle={(e) => setAdvancedOpen((e.currentTarget as HTMLDetailsElement).open)}
           >
             <summary>
-              Nâng cao <em>— Base URL, Organization, Project (tuỳ chọn; để trống nếu dùng OpenAI với một tổ chức)</em>
+              Nâng cao <em>{spec.orgProject ? '— Base URL, Organization, Project (tuỳ chọn; để trống nếu dùng OpenAI với một tổ chức)' : '— Base URL (tuỳ chọn)'}</em>
             </summary>
             <div className="oai-form">
               <label className="oai-field">
-                <span>Base URL <em>(đổi khi dùng dịch vụ tương thích OpenAI: proxy Azure, OpenRouter, LM Studio, Ollama…)</em></span>
-                <input value={baseUrl} spellCheck={false} placeholder={OPENAI_DEFAULT_BASE} onChange={(e) => setBaseUrl(e.target.value)} />
+                <span>Base URL <em>({spec.baseHint})</em></span>
+                <input value={baseUrl} spellCheck={false} placeholder={spec.defaultBase} onChange={(e) => setBaseUrl(e.target.value)} />
               </label>
               <div className="oai-row">
                 <label className="oai-field oai-grow">
