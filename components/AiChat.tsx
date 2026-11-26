@@ -632,7 +632,7 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
       />
 
       <header className="aic-head">
-        <span className="aic-title"><span aria-hidden>✨</span> Trợ lý AI</span>
+        <span className="aic-title" title="Trợ lý AI"><span aria-hidden>✨</span><span className="aic-title-text"> Trợ lý AI</span></span>
         <div className="aic-tabs" role="tablist" aria-label="Màn của trợ lý">
           <button role="tab" aria-selected={view === 'chat'} className={`aic-tab${view === 'chat' ? ' on' : ''}`}
             onClick={() => setView('chat')}>

@@ -12215,8 +12215,16 @@ html.tf-page nextjs-portal { display: none !important; }
   display: flex; align-items: center; gap: 8px; flex: none;
   padding: 12px 12px 12px 16px; border-bottom: 1px solid var(--glass-brd);
 }
-.aic-title { font-size: 16px; line-height: 24px; font-weight: 600; white-space: nowrap; }
-.aic-tabs { display: flex; gap: 4px; margin-left: 4px; }
+.aic-title { font-size: 16px; line-height: 24px; font-weight: 600; white-space: nowrap; flex: none; }
+/* Ba tab (Trò chuyện / Kho tri thức / Kỹ năng) mà bảng hẹp: hàng tab co lại và cuộn ngang —
+   KHÔNG được đẩy nút ✕ (đóng bảng) ra ngoài khung. */
+.aic-tabs { display: flex; gap: 4px; margin-left: 4px; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.aic-tabs::-webkit-scrollbar { display: none; }
+.aic-tabs .aic-tab { flex: none; }
+.aic-head > .aic-icon { flex: none; }
+.aic { container: aic / inline-size; }
+/* Bảng hẹp: tiêu đề chỉ còn biểu tượng ✨ để nhường chỗ cho tab. */
+@container aic (max-width: 470px) { .aic-title-text { display: none; } }
 .aic-tab {
   display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
   border-radius: 10px; border: 0; box-shadow: none; cursor: pointer;
