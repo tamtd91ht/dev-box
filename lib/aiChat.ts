@@ -25,6 +25,8 @@ export interface AiPoll {
   durationMs: number;
   /** Tiêu đề các tài liệu trong kho tri thức đã gửi kèm câu hỏi này. */
   sources: string[];
+  /** Tên các kỹ năng đã kích hoạt cho câu hỏi này (lib/aiSkills.ts). */
+  skills: string[];
 }
 
 // ── Kho tri thức (lib/aiKnowledge.ts) ────────────────────────────────────────
@@ -44,6 +46,41 @@ export type KbMeta = Omit<KbDoc, 'content'> & { chars: number };
  *  mức này thì gửi hết; vượt thì chỉ gửi các đoạn liên quan nhất. */
 export const KB_BUDGET = 60_000;
 export const KB_LIMITS = { maxDocs: 200, maxTitle: 120, maxDocChars: 500_000 };
+
+// ── Kỹ năng (lib/aiSkills.ts) ────────────────────────────────────────────────
+// Kỹ năng = một QUY TRÌNH người dùng tự soạn cho một loại việc (vd "phân tích nhóm Zalo").
+// Khác kho tri thức (luôn gửi kèm): kỹ năng chỉ được nạp khi câu hỏi / màn hình khớp, hoặc
+// khi trợ lý tự xin nạp sau khi đọc danh mục (tên + "dùng khi").
+
+export interface AiSkill {
+  id: string;
+  name: string;
+  /** "Dùng khi…" — trợ lý đọc dòng này trong danh mục để tự quyết có cần nạp không. */
+  description: string;
+  /** Câu hỏi chứa một trong các từ / cụm từ này (không phân biệt dấu) → tự kích hoạt. */
+  keywords: string[];
+  /** Đang mở màn hình có tên chứa một trong các tên này (vd "Zalo") → tự kích hoạt. */
+  screens: string[];
+  /** Hướng dẫn chi tiết (Markdown) — chỉ gửi cho trợ lý khi kỹ năng được kích hoạt. */
+  instructions: string;
+  enabled: boolean;
+  updatedAt: string;
+}
+export type AiSkillMeta = Omit<AiSkill, 'instructions'> & { chars: number };
+
+export const SKILL_LIMITS = {
+  maxSkills: 100,
+  maxName: 80,
+  maxDesc: 500,
+  maxKeywords: 30,
+  maxScreens: 10,
+  maxInstructions: 40_000,
+  /** Số kỹ năng tối đa kích hoạt cho MỘT câu hỏi, và tổng ký tự hướng dẫn gửi kèm. */
+  maxActive: 3,
+  activeBudget: 60_000,
+  /** Trợ lý được xin nạp thêm tối đa chừng này lần cho một câu hỏi. */
+  maxRequests: 2,
+};
 
 export const AI_LIMITS = {
   maxQuestion: 8000,

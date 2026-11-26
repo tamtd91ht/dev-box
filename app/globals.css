@@ -12849,3 +12849,12 @@ textarea.spm-code { min-height: 140px; resize: vertical; border-radius: 12px; pa
   .oai-prompt-field > textarea { max-height: 60vh; }
   .oai-actions { bottom: 0; }
 }
+
+/* Trợ lý AI — màn Kỹ năng (components/AiSkillsView.tsx) */
+.aic-skill-form { flex: 1; min-height: 0; overflow-y: auto; }
+.aic-skill-form textarea.aic-kb-text { min-height: 220px; flex: none; }
+textarea.aic-sk-desc { min-height: 56px; font-family: inherit; font-size: 13px; line-height: 20px; }
+.aic-sk-row { display: flex; gap: 8px; align-items: center; }
+.aic-sk-row .input { flex: 1; min-width: 0; }
+.aic-sk-here { margin-left: 8px; padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 16px; font-weight: 500; color: var(--ok, #16a34a); border: 1px solid currentColor; vertical-align: 1px; }
+.aic-sk-desc-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

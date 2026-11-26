@@ -9,9 +9,11 @@
 //     <webview> Zalo/Browser vẽ ở tầng native, HTML không đè lên được.
 //   · POLL chứ không SSE: đi qua lib/apiFetch để khỏi dính giới hạn 6 socket.
 //
-// Hai màn trong bảng: "Trò chuyện" và "Kho tri thức" — tri thức riêng người
+// Ba màn trong bảng: "Trò chuyện", "Kho tri thức" — tri thức riêng người
 // dùng đưa vào (gõ tay, nhập file, hoặc lưu lại một câu trả lời); tài liệu đang
-// bật được gửi kèm mỗi câu hỏi (lib/aiKnowledge.ts).
+// bật được gửi kèm mỗi câu hỏi (lib/aiKnowledge.ts) — và "Kỹ năng": quy trình
+// người dùng soạn cho từng loại việc, chỉ nạp khi câu hỏi / màn hình khớp hoặc
+// trợ lý xin nạp bằng khối <dung_ky_nang> (lib/aiSkills.ts, components/AiSkillsView.tsx).
 //
 // Trợ lý không có công cụ: nó chỉ gợi ý bằng chữ, không chạy được gì trên máy.
 // Bật "Thao tác màn hình" thì nó được làm thêm ĐÚNG ba việc trong lib/aiScreen.ts
@@ -39,9 +41,11 @@ import {
   runAction, stripAction, targetName, type AiTab, type ScreenShot,
 } from '@/lib/aiScreen';
 import { buildFile, kindOf, parseExports, saveBlob, stripExports, type ExportSpec, type Shot } from '@/lib/aiExportClient';
+import { normText, parseSkillRequest, stripSkillRequest } from '@/lib/aiSkillFormat';
+import AiSkillsView, { skillsForScreen } from './AiSkillsView';
 import {
-  AI_DEFAULT_MODEL, AI_LIMITS, AI_MAX_W, AI_MIN_W, AI_MODELS, KB_BUDGET, KB_LIMITS, aiDock,
-  type AiAttachment, type AiPoll, type AiTurn, type KbDoc, type KbMeta,
+  AI_DEFAULT_MODEL, AI_LIMITS, AI_MAX_W, AI_MIN_W, AI_MODELS, KB_BUDGET, KB_LIMITS, SKILL_LIMITS, aiDock,
+  type AiAttachment, type AiPoll, type AiSkillMeta, type AiTurn, type KbDoc, type KbMeta,
 } from '@/lib/aiChat';
 
 interface Msg {
@@ -51,7 +55,7 @@ interface Msg {
   streaming?: boolean;
   error?: string;
   stopped?: boolean;
-  meta?: { model: string | null; durationMs: number; sources: string[] };
+  meta?: { model: string | null; durationMs: number; sources: string[]; skills?: string[] };
   /** Các bước trợ lý đã thao tác trên màn hình để trả lời câu này. */
   steps?: { label: string; note?: string; state: 'doing' | 'done' | 'denied' }[];
   /** File gửi kèm câu hỏi: tên + loại (+ ảnh thu nhỏ, chỉ giữ trong phiên đang mở). */
@@ -177,7 +181,7 @@ const SUGGESTIONS = [
 
 export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[] }) {
   const dock = useSyncExternalStore(aiDock.subscribe, aiDock.getSnapshot, aiDock.getServerSnapshot);
-  const [view, setView] = useState<'chat' | 'kb'>('chat');
+  const [view, setView] = useState<'chat' | 'kb' | 'skills'>('chat');
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState<Pending[]>([]);
@@ -210,6 +214,9 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
   const [kbErr, setKbErr] = useState<string | null>(null);
   /** Mở sẵn trình soạn tài liệu (vd "Lưu vào kho" từ một câu trả lời). */
   const [kbDraft, setKbDraft] = useState<{ id?: string; title: string; content: string } | null>(null);
+  /** Kỹ năng — nạp một lần khi mở bảng như kho tri thức. */
+  const [skills, setSkills] = useState<AiSkillMeta[] | null>(null);
+  const [skillsErr, setSkillsErr] = useState<string | null>(null);
 
   const jobRef = useRef<string | null>(null);
   /** Nội dung các file chờ xuất (theo id câu trả lời) + ảnh chụp màn hình của câu hỏi đó — CHỈ trong bộ nhớ,
@@ -242,6 +249,11 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
     call<KbMeta[]>('kb.list').then(setKb).catch((e) => setKbErr((e as Error).message));
   }, []);
   useEffect(() => { if (dock.open && kb === null) loadKb(); }, [dock.open, kb, loadKb]);
+  const loadSkills = useCallback(() => {
+    setSkillsErr(null);
+    call<AiSkillMeta[]>('skill.list').then(setSkills).catch((e) => setSkillsErr((e as Error).message));
+  }, []);
+  useEffect(() => { if (dock.open && skills === null) loadSkills(); }, [dock.open, skills, loadSkills]);
 
   useEffect(() => {
     if (dock.open && view === 'chat') inputRef.current?.focus();
@@ -372,6 +384,8 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
     let shots: ScreenShot[] = [];
     /** Mọi ảnh chụp của câu hỏi — cho file xuất nguon="anh-chup" (ảnh / video trình chiếu). */
     const allShots: Shot[] = [];
+    /** Kỹ năng trợ lý đã xin nạp cho câu hỏi này (khối <dung_ky_nang>) — gửi lại ở mọi lượt sau. */
+    const skillReqs: string[] = [];
     let totalMs = 0;
     try {
       // Mỗi vòng = một lượt hỏi. Câu trả lời có khối <hanh_dong> → làm bước đó
@@ -381,10 +395,12 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
           question, history, screen: targetName(screenRef.current), model,
           // File chỉ gửi ở lượt đầu; các lượt sau gửi ảnh chụp màn hình sau bước
           // vừa làm (để model NHÌN phần vẽ canvas: Google Sheets, biểu đồ…).
-          attachments: round === 0
+          // (Trợ lý xin nạp kỹ năng ở lượt đầu → hỏi lại chưa có bước nào → vẫn gửi lại file.)
+          attachments: steps.length === 0
             ? atts.map(({ id: _i, bytes: _b, preview: _p, ...a }) => a)
             : shots.map((s) => ({ kind: 'image' as const, name: s.name, mediaType: s.mediaType, data: s.data })),
           // Bước cũ chỉ cần phần đầu (server cũng lược) — mở loạt link thì nhật ký dài, đừng gửi lại cả chục MB.
+          skills: skillReqs,
           ...(agent ? { agent: true, tabs, steps: steps.map((st, i) => (i < steps.length - 2 ? { ...st, result: st.result.slice(0, 2000) } : st)) } : {}),
         }, 60000);
         jobRef.current = id;
@@ -394,12 +410,20 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
         for (;;) {
           const r = await call<AiPoll>('poll', { id, from });
           from = r.next;
-          if (r.text) { raw += r.text; patch({ content: stripExports(stripAction(raw)) }); }
+          if (r.text) { raw += r.text; patch({ content: stripSkillRequest(stripExports(stripAction(raw))) }); }
           if (r.done) { last = r; break; }
           await sleep(POLL_MS);
         }
         totalMs += last.durationMs;
         const stopped = last.error === 'Đã dừng.' || stopRef.current;
+        // Trợ lý xin nạp một kỹ năng trong danh mục → hỏi lại ngay kèm kỹ năng đó (không tính là thao tác).
+        const wantSkill = !last.error && !stopped ? parseSkillRequest(raw) : null;
+        if (wantSkill && skillReqs.length < SKILL_LIMITS.maxRequests && !skillReqs.some((x) => normText(x) === normText(wantSkill))) {
+          skillReqs.push(wantSkill);
+          patch((m) => ({ content: '', steps: [...(m.steps ?? []), { label: `🧩 Nạp kỹ năng “${wantSkill}”`, state: 'done' as const }] }));
+          continue;
+        }
+        raw = stripSkillRequest(raw);
         const action = agent && !last.error && !stopped ? parseAction(raw) : null;
         if (!action || round >= MAX_STEPS) {
           // File trợ lý muốn xuất: tách khỏi câu trả lời, giữ nội dung trong bộ nhớ, CHỜ người dùng đồng ý.
@@ -419,7 +443,7 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
               ? ''
               : stripAction(raw) || (action ? `Đã dừng sau ${MAX_STEPS} bước thao tác mà chưa xong — hỏi lại cụ thể hơn giúp.` : ''),
             error: last.error && !stopped ? last.error : undefined,
-            meta: last.error ? undefined : { model: last.model, durationMs: totalMs, sources: last.sources },
+            meta: last.error ? undefined : { model: last.model, durationMs: totalMs, sources: last.sources, skills: last.skills },
           });
           break;
         }
@@ -567,6 +591,8 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
   };
 
   const kbOn = useMemo(() => (kb ?? []).filter((d) => d.enabled), [kb]);
+  const skillsOn = useMemo(() => (skills ?? []).filter((x) => x.enabled), [skills]);
+  const skillsHere = useMemo(() => skillsForScreen(skills, screen), [skills, screen]);
 
   if (!dock.open) return null;
 
@@ -616,6 +642,10 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
             onClick={() => setView('kb')}>
             Kho tri thức{kb ? <span className="aic-count">{kb.length}</span> : null}
           </button>
+          <button role="tab" aria-selected={view === 'skills'} className={`aic-tab${view === 'skills' ? ' on' : ''}`}
+            onClick={() => setView('skills')}>
+            Kỹ năng{skills ? <span className="aic-count">{skills.length}</span> : null}
+          </button>
         </div>
         <span className="aic-spacer" />
         {view === 'chat' && msgs.length > 0 && (
@@ -628,7 +658,9 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
         </button>
       </header>
 
-      {view === 'kb' ? (
+      {view === 'skills' ? (
+        <AiSkillsView skills={skills} error={skillsErr} screen={screen} onSkills={setSkills} onReload={loadSkills} />
+      ) : view === 'kb' ? (
         <KnowledgeView
           docs={kb}
           error={kbErr}
@@ -655,6 +687,12 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
               title={kbOn.length ? `Gửi kèm mỗi câu hỏi: ${kbOn.map((d) => d.title).join(', ')}` : 'Chưa có tài liệu nào đang bật — bấm để thêm'}>
               <span aria-hidden>📚</span> {kb === null ? 'Kho tri thức' : kbOn.length ? `${kbOn.length} tài liệu đang dùng` : 'Kho tri thức trống'}
             </button>
+            {skillsOn.length > 0 && (
+              <button className="aic-chip aic-chip-btn" onClick={() => setView('skills')}
+                title={`Kỹ năng đang bật: ${skillsOn.map((x) => x.name).join(', ')}${skillsHere.length ? `\nTự kích hoạt ở màn này: ${skillsHere.map((x) => x.name).join(', ')}` : ''}`}>
+                <span aria-hidden>🧩</span> {skillsHere.length ? `${skillsHere.length} kỹ năng hợp màn này` : `${skillsOn.length} kỹ năng`}
+              </button>
+            )}
           </div>
 
           <div className="aic-list" ref={listRef}
@@ -780,6 +818,7 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
                       <span title={m.meta.sources.length ? `Tài liệu đã gửi kèm: ${m.meta.sources.join(', ')}` : 'Không gửi kèm tài liệu nào từ kho tri thức'}>
                         {m.meta.model ?? 'Claude'} · {(m.meta.durationMs / 1000).toFixed(1)} giây
                         {m.meta.sources.length ? ` · 📚 ${m.meta.sources.length} tài liệu` : ''}
+                        {m.meta.skills?.length ? <span title={`Kỹ năng đã dùng: ${m.meta.skills.join(', ')}`}>{` · 🧩 ${m.meta.skills.join(', ')}`}</span> : ''}
                       </span>
                     )}
                     <span className="aic-spacer" />

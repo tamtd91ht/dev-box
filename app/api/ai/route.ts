@@ -14,6 +14,15 @@
 //   POST { action:'kb.toggle', id, enabled }     → { ok, result: KbMeta[] }
 //   POST { action:'kb.remove', id }              → { ok, result: KbMeta[] }
 //
+// Kỹ năng (lib/aiSkills.ts) — quy trình người dùng soạn; kích hoạt theo từ khoá / màn hình / trợ lý xin nạp:
+//   POST { action:'skill.list' }                                     → { ok, result: AiSkillMeta[] }
+//   POST { action:'skill.get', id }                                  → { ok, result: AiSkill }
+//   POST { action:'skill.save', id?, name, description, keywords, screens, instructions } → { ok, result: AiSkillMeta[] }
+//   POST { action:'skill.import', text, fileName }                   → { ok, result: AiSkillMeta[] }   (SKILL.md)
+//   POST { action:'skill.toggle', id, enabled }                      → { ok, result: AiSkillMeta[] }
+//   POST { action:'skill.remove', id }                               → { ok, result: AiSkillMeta[] }
+//   ('ask' nhận thêm `skills: [tên]` — kỹ năng trợ lý vừa xin nạp.)
+//
 // Link ẩn trong ô Google Sheets (trợ lý đọc màn hình — lib/aiScreen.ts; main.cjs tải .xlsx của tab):
 //   POST { action:'links.xlsx', data, sheet? } → { ok, result: { links, sheets, truncated } }   (chỉ đọc file gửi lên)
 //
@@ -28,6 +37,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { ask, poll, stop } from '@/lib/aiChatServer';
 import { kbGet, kbList, kbRemove, kbSave, kbToggle } from '@/lib/aiKnowledge';
 import { buildExport } from '@/lib/aiExport';
+import { skillGet, skillImport, skillList, skillRemove, skillSave, skillToggle } from '@/lib/aiSkills';
 import { xlsxLinks } from '@/lib/aiLinks';
 
 export const runtime = 'nodejs';
@@ -58,6 +68,18 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, result: await kbToggle(body?.id, body?.enabled) });
       case 'kb.remove':
         return NextResponse.json({ ok: true, result: await kbRemove(body?.id) });
+      case 'skill.list':
+        return NextResponse.json({ ok: true, result: await skillList() });
+      case 'skill.get':
+        return NextResponse.json({ ok: true, result: await skillGet(body?.id) });
+      case 'skill.save':
+        return NextResponse.json({ ok: true, result: await skillSave(body ?? {}) });
+      case 'skill.import':
+        return NextResponse.json({ ok: true, result: await skillImport(body?.text, body?.fileName) });
+      case 'skill.toggle':
+        return NextResponse.json({ ok: true, result: await skillToggle(body?.id, body?.enabled) });
+      case 'skill.remove':
+        return NextResponse.json({ ok: true, result: await skillRemove(body?.id) });
       default:
         return NextResponse.json({ ok: false, error: `action không hỗ trợ: "${action}"` }, { status: 400 });
     }

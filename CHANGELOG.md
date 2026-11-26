@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Trợ lý AI — Kỹ năng.** Bảng trợ lý có thêm màn **Kỹ năng**: mỗi kỹ năng là một quy trình bạn soạn cho một loại
+  việc (tên, "Dùng khi", từ khoá, màn hình áp dụng, hướng dẫn Markdown) — vd "Phân tích nhóm Zalo" (có sẵn **mẫu**).
+  Khác kho tri thức (luôn gửi kèm), kỹ năng chỉ được nạp khi cần: câu hỏi (hoặc câu hỏi liền trước) có từ khoá —
+  không phân biệt dấu, nguyên từ —, đang mở đúng màn hình, hoặc **trợ lý tự xin nạp** sau khi đọc danh mục tên +
+  "Dùng khi" của các kỹ năng còn lại (khối `<dung_ky_nang>`, app hỏi lại kèm kỹ năng, tối đa 2 lần / câu hỏi). Tối
+  đa 3 kỹ năng / câu hỏi; dưới câu trả lời ghi kỹ năng đã dùng, chip 🧩 cho biết kỹ năng nào hợp màn đang mở.
+  Bật/tắt từng kỹ năng, nhập / tải về dạng **SKILL.md** (frontmatter `name`, `description`, `keywords`, `screens`).
+  Kỹ năng chỉ là chữ trong prompt — không cấp thêm công cụ hay hành động nào cho trợ lý. Lưu ở `ai-skills.json`
+  trong thư mục cấu hình.
 - **Trợ lý AI xuất file — phải bấm đồng ý.** Hỏi "xuất báo cáo ra docx", "làm file Excel số liệu này", "vẽ biểu đồ
   thành ảnh"… thì trợ lý viết nội dung file trong câu trả lời (khối `<xuat_file>`, vẫn không có công cụ), bảng chat
   hiện thẻ **Xuất file** liệt kê các file; chỉ khi bấm **Xuất** mới dựng file và mở hộp thoại Lưu của app. Hỗ trợ
