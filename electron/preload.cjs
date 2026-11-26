@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('workspace', {
   wheel: (targetId, x, y, dx, dy) => ipcRenderer.invoke('workspace:wheel', targetId, x, y, dx, dy),
   /** Trợ lý AI: CSV / TXT xuất của Google Sheets / Docs / Slides guest đang mở — xem main.cjs. */
   exportGoogleDoc: (targetId) => ipcRenderer.invoke('workspace:exportGoogleDoc', targetId),
+  /** Trợ lý AI: link ẨN trong ô Google Sheets (.xlsx base64) / trong Google Docs (danh sách) — xem main.cjs. */
+  googleLinks: (targetId) => ipcRenderer.invoke('workspace:googleLinks', targetId),
   /**
    * 🔕: báo main danh sách partition Workspace đang ẨN THÔNG BÁO + cờ toàn cục.
    * Main chặn quyền `notifications` của guest tương ứng — xem main.cjs.

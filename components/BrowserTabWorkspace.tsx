@@ -445,7 +445,7 @@ export default function BrowserTabWorkspace({ visible = true }: {
     /** Chèn vào vị trí này thay vì cuối dải (mở lại tab đã đóng về chỗ cũ). */
     at?: number;
     pinned?: boolean;
-  } = {}) => {
+  } = {}): string | undefined => {
     const url = normalizeUrl(rawUrl);
     if (!url) return;
     if (typeof window === 'undefined' || !window.workspace?.isDesktop) { window.open(url, '_blank'); return; }
@@ -492,6 +492,7 @@ export default function BrowserTabWorkspace({ visible = true }: {
     // dùng khỏi ô địa chỉ họ đang gõ dở.
     if (!opts.background) { setActiveId(id); setNewTabOpen(false); }
     else setActiveId((a) => (a === null && !newTabOpenRef.current ? id : a));
+    return id;
   }, []);
 
   // Link bấm trong tin nhắn Zalo/Telegram đã chọn "Mở trong Browser của app".
@@ -558,6 +559,33 @@ export default function BrowserTabWorkspace({ visible = true }: {
       return next;
     });
   }, [rememberClosed]);
+
+  // Trợ lý AI mở link (lib/aiScreen.ts open_link): tab MỚI ở NỀN — tab đang xem giữ nguyên, người dùng
+  // không bị kéo đi. Hồ sơ theo trang chứa link (cùng partition → cùng phiên đăng nhập, vd Google Sheets
+  // nội bộ dẫn tới Google Docs cùng tài khoản); link từ nơi khác (Zalo, Mail, app) dùng hồ sơ đang chọn.
+  // Trả id tab qua `reply` để trợ lý tìm đúng <webview> và đóng tab khi xong. Chỉ nghe SAU khi nạp xong hồ
+  // sơ — trợ lý gửi lại tới khi có trả lời.
+  useEffect(() => {
+    if (!profLoaded) return;
+    const onOpen = (e: Event) => {
+      const d = (e as CustomEvent<{ url?: unknown; partition?: unknown; reply?: (id: string) => void }>).detail;
+      if (typeof d?.url !== 'string' || !/^https?:\/\//i.test(d.url)) return;
+      const src = typeof d.partition === 'string' ? tabsRef.current.find((t) => t.partition === d.partition) : undefined;
+      const id = openTab(d.url, { profile: src ? src.profile : profileRef.current, background: true, forceNew: true });
+      if (id) d.reply?.(id);
+    };
+    const onClose = (e: Event) => {
+      const ids = (e as CustomEvent<unknown>).detail;
+      if (!Array.isArray(ids)) return;
+      for (const id of ids) if (typeof id === 'string' && tabsRef.current.some((t) => t.id === id)) closeTab(id);
+    };
+    window.addEventListener('devbox:ai-open-link', onOpen);
+    window.addEventListener('devbox:ai-close-tabs', onClose);
+    return () => {
+      window.removeEventListener('devbox:ai-open-link', onOpen);
+      window.removeEventListener('devbox:ai-close-tabs', onClose);
+    };
+  }, [openTab, closeTab, profLoaded]);
 
   /** Đóng nhiều tab một lượt (các tab khác / bên phải / tất cả). */
   const closeMany = useCallback((pick: (t: Tab, i: number, all: Tab[]) => boolean, keepActive?: string) => {

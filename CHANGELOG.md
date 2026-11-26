@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Trợ lý AI tự mở link rồi đọc.** Mỗi lần đọc màn hình có thêm mục **Link mở được**, gom link ở MỌI nơi: thẻ
+  link trong giao diện app và trong trang web nhúng (Browser, Workspace, Zalo, Mail…, cả iframe), URL trần trong
+  chữ, và **link ẨN trong ô Google Sheets** (ô chỉ hiện chữ như tên repo — lấy bằng bản .xlsx tải qua phiên đăng
+  nhập của tab, đọc link từng ô kể cả `=HYPERLINK()`, ghi rõ ô `Sheet!I5`) / trong Google Docs (bản .html). Hành
+  động mới `open_link` mở link sang một **tab Browser mới ở nền** (màn hình người dùng không đổi, hồ sơ đăng nhập
+  theo trang chứa link) rồi đọc luôn trang đó. Số link (L1, L2…) giữ nguyên suốt câu hỏi nên trợ lý mở lần lượt
+  cả một cột tài liệu rồi tổng hợp; giữ tối đa 3 tab trợ lý sống cùng lúc, xong câu hỏi đề nghị tắt các tab đã mở.
+  Link không có trên màn hình phải được người dùng cho phép. Một câu hỏi được tới 45 bước thao tác.
 - **Menu ✳ ClaudeAI — gửi prompt tới Claude qua Claude API.** Cùng giao diện với menu OpenAI (nhiều cấu hình,
   ⚙ góc phải, nhiều tab request, đổi tên trên tab, chọn model bằng dropdown + nhập tay, import file, Nâng cao,
   lịch sử 5 request, Copy cURL, thời gian xử lý), gọi bằng SDK chính thức `@anthropic-ai/sdk` (API 2026-10-21,

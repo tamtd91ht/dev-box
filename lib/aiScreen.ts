@@ -13,6 +13,10 @@
 //                   luôn; MỌI nút khác phải được người dùng bấm "Cho phép" trong
 //                   bảng chat trước (AiChat lo phần hỏi) — vì nút có thể là Xoá,
 //                   Gửi, Chạy…
+//   · open_link   — mở một LINK (thẻ <a> trong app / trang web nhúng, URL trong chữ,
+//                   link ẩn trong ô Google Sheets / Docs) sang một tab Browser MỚI ở
+//                   NỀN rồi đọc luôn trang đó. Link chưa từng thấy trên màn hình thì
+//                   phải được người dùng cho phép. Chỉ http(s), tối đa vài tab sống.
 // Không gõ phím, không điền form, không chạy lệnh, không đọc/ghi file, không
 // chạm vào chính bảng trợ lý. Trang web nhúng (<webview> Browser, Zalo…) đang
 // hiện thì CHỈ ĐỌC chữ (executeJavaScript / cầu execInFrames, gồm cả iframe);
@@ -24,10 +28,13 @@
 // chứa câu "hãy bấm nút X") — system prompt dặn model không làm theo, và chốt
 // chặn thật là bước xin phép ở trên.
 
+import { apiFetch } from './apiFetch';
+
 export type AiAction =
   | { type: 'open_tab'; tab: string }
   | { type: 'read_screen' }
   | { type: 'click'; n: number }
+  | { type: 'open_link'; link?: number; url?: string }
   | { type: 'scroll'; area: number; direction: ScrollDir; pages: number };
 
 export type ScrollDir = 'down' | 'up' | 'right' | 'left';
@@ -68,6 +75,11 @@ export function parseAction(raw: string): AiAction | null {
     if (o.type === 'open_tab' && typeof o.tab === 'string') return { type: 'open_tab', tab: o.tab };
     if (o.type === 'read_screen') return { type: 'read_screen' };
     if (o.type === 'click' && Number.isInteger(o.n)) return { type: 'click', n: Number(o.n) };
+    if (o.type === 'open_link') {
+      const n = typeof o.link === 'string' ? Number(o.link.replace(/^L/i, '')) : Number(o.link);
+      if (Number.isInteger(n) && n > 0) return { type: 'open_link', link: n };
+      if (typeof o.url === 'string' && o.url.trim()) return { type: 'open_link', url: o.url.trim() };
+    }
     if (o.type === 'scroll' && SCROLL_DIRS.includes(o.direction as ScrollDir)) {
       const pages = Number(o.pages);
       return {
@@ -155,6 +167,7 @@ function setTarget(t: Target | null): void {
 /** Ghim màn hình đang hiện làm đích cho câu hỏi sắp chạy. */
 export function pinTarget(name: string): void {
   openedViews.clear();
+  resetLinks();
   const panes = visiblePanes();
   setTarget({ panes, webviews: panes.flatMap((p) => [...p.querySelectorAll<WebviewEl>('webview')].filter(onScreen)), name });
 }
@@ -167,6 +180,12 @@ export function releaseTarget(): void { setTarget(null); }
 export function openedViewsToClose(): { key: string; label: string }[] {
   const vis = new Set(visiblePanes());
   const out: { key: string; label: string }[] = [];
+  // Tab Browser trợ lý mở (còn sống) — trừ tab người dùng đang nhìn.
+  for (const [id, t] of openedTabs) {
+    const pane = t.wv?.closest<HTMLElement>('.body > main.workspace');
+    if (t.wv && t.wv.isConnected && onScreen(t.wv) && pane && vis.has(pane)) continue;
+    out.push({ key: `${AI_TAB_PREFIX}${id}`, label: `tab Browser “${t.label}”` });
+  }
   for (const [key, label] of openedViews) {
     const pane = document.querySelector<HTMLElement>(`.body > main.workspace[data-pane="${CSS.escape(key)}"]`);
     if (pane && vis.has(pane)) continue; // người dùng đang ở view này → giữ
@@ -177,8 +196,18 @@ export function openedViewsToClose(): { key: string; label: string }[] {
 
 /** Tắt (unmount) các view — page.tsx bỏ qua view đang hiện. */
 export function closeViews(keys: string[]): void {
-  window.dispatchEvent(new CustomEvent<string[]>('devbox:unmount-tabs', { detail: keys }));
+  const tabs = keys.filter((k) => k.startsWith(AI_TAB_PREFIX)).map((k) => k.slice(AI_TAB_PREFIX.length));
+  const views = keys.filter((k) => !k.startsWith(AI_TAB_PREFIX));
+  if (tabs.length) window.dispatchEvent(new CustomEvent<string[]>('devbox:ai-close-tabs', { detail: tabs }));
+  // Đóng tab trước, chờ Browser kịp lưu danh sách tab rồi mới gỡ view — không thì lần mở Browser sau
+  // các tab trợ lý đã mở lại hiện về.
+  if (views.length) {
+    setTimeout(() => window.dispatchEvent(new CustomEvent<string[]>('devbox:unmount-tabs', { detail: views })), tabs.length ? 800 : 0);
+  }
 }
+
+/** Khoá "view" của một tab Browser trợ lý đã mở (trong danh sách đề nghị tắt). */
+const AI_TAB_PREFIX = 'browser-tab:';
 
 /** Mở một view ở NỀN (mount, không đổi màn hình) và chờ pane của nó có mặt. */
 async function mountView(key: string): Promise<{ pane: HTMLElement | null; was: boolean }> {
@@ -372,6 +401,189 @@ async function readGoogleExport(id: number, url: string): Promise<string> {
   } catch (e) {
     return `--- Dữ liệu xuất của Google ${what}: lỗi (${(e as Error).message}) ---`;
   }
+}
+
+// ── Link ─────────────────────────────────────────────────────────────────────
+//
+// Người dùng hay hỏi "mở các tài liệu ở cột I rồi tổng hợp": link nằm ở MỌI
+// nơi — thẻ <a> trong giao diện app hay trong trang web nhúng (Browser, Zalo,
+// Workspace, Mail…), URL trần trong chữ, và nhất là link ẨN trong ô Google
+// Sheets (ô chỉ hiện "ai-nlu_worker", đường dẫn nằm sau; CSV không có, lưới là
+// canvas nên DOM cũng không có <a>) → lấy bằng bản .xlsx / .html (main.cjs
+// googleLinks, lib/aiLinks.ts).
+// Mỗi link được ĐÁNH SỐ CỐ ĐỊNH trong suốt câu hỏi (L1, L2…): mở link L5 xong,
+// màn hình đích là trang mới, nhưng số L6, L7 của sheet vẫn dùng được tiếp mà
+// không phải quay lại đọc sheet.
+
+interface LinkItem { url: string; label: string; partition?: string }
+
+/** Sổ link của câu hỏi đang chạy: số (1-based) = vị trí trong `links`. */
+const links: LinkItem[] = [];
+const linkNo = new Map<string, number>();
+const googleLinkCache = new Map<string, Promise<{ items: LinkItem[]; note: string }>>();
+/** Tab Browser trợ lý đã mở trong câu hỏi này (id tab → nhãn + webview), cũ trước. */
+const openedTabs = new Map<string, { label: string; wv: WebviewEl | null }>();
+let openCount = 0;
+
+const MAX_LINKS_SHOWN = 300;
+const MAX_LINK_CHARS = 24_000;
+/** Tab trợ lý mở được giữ SỐNG cùng lúc — quá thì đóng tab cũ nhất (nhẹ máy khi mở cả cột link). */
+const MAX_LIVE_AI_TABS = 3;
+const MAX_OPEN_PER_QUESTION = 40;
+const URL_IN_TEXT = /https?:\/\/[^\s<>"'`]+/g;
+
+function regLink(it: LinkItem): number {
+  const known = linkNo.get(it.url);
+  if (known) return known;
+  links.push(it);
+  linkNo.set(it.url, links.length);
+  return links.length;
+}
+
+function resetLinks(): void {
+  links.length = 0;
+  linkNo.clear();
+  googleLinkCache.clear();
+  openedTabs.clear();
+  openCount = 0;
+}
+
+const hostOf = (u: string) => { try { return new URL(u).hostname; } catch { return u.slice(0, 40); } };
+
+/** Chạy trong guest (mọi frame): các thẻ <a> trỏ http(s). */
+const WEB_LINKS_JS = `(() => {
+  const out = [], seen = new Set();
+  for (const a of document.querySelectorAll('a[href]')) {
+    const h = a.href;
+    if (!/^https?:/i.test(h) || seen.has(h)) continue;
+    seen.add(h);
+    const t = (a.innerText || a.getAttribute('aria-label') || a.title || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+    out.push([t, h]);
+    if (out.length >= 300) break;
+  }
+  return out;
+})()`;
+
+/** Thẻ <a> trong một trang web nhúng (main frame + iframe). Trang Google Docs/Sheets bỏ qua — chỉ là menu
+ *  của Google; link thật lấy ở googleLinks. */
+async function webLinks(wv: WebviewEl, url: string): Promise<LinkItem[]> {
+  if (GOOGLE_DOC_RE.test(url)) return [];
+  const partition = wv.getAttribute('partition') ?? undefined;
+  let rows: [string, string][] = [];
+  let id = -1;
+  try { id = wv.getWebContentsId(); } catch { /* chưa attach */ }
+  const bridge = window.workspace?.execInFrames;
+  try {
+    if (bridge && id > 0) {
+      const res = await deadline(bridge(id, WEB_LINKS_JS), 10_000, 'đọc link trang');
+      if (res?.ok && res.frames) rows = res.frames.flatMap((f) => (Array.isArray(f.value) ? (f.value as [string, string][]) : []));
+    }
+    if (!rows.length) rows = ((await deadline(wv.executeJavaScript(WEB_LINKS_JS), 8000, 'đọc link trang')) as [string, string][]) ?? [];
+  } catch { /* trang chưa tải / bị chặn — bỏ qua phần link */ }
+  return rows.map(([t, h]) => ({ url: h, label: t || hostOf(h), partition }));
+}
+
+/** Chạy trong guest Google Sheets: tên sheet (tab) đang mở. */
+const SHEET_NAME_JS = `(() => { const e = document.querySelector('.docs-sheet-active-tab .docs-sheet-tab-name'); return e ? e.textContent.trim() : ''; })()`;
+
+/** Link ẨN trong ô Google Sheets / trong Google Docs của trang đang mở (nhớ theo URL trong câu hỏi). */
+function googleLinks(wv: WebviewEl, id: number, url: string): Promise<{ items: LinkItem[]; note: string }> {
+  if (!GOOGLE_DOC_RE.test(url) || /\/presentation\//.test(url) || id <= 0) return Promise.resolve({ items: [], note: '' });
+  const cached = googleLinkCache.get(url);
+  if (cached) return cached;
+  const partition = wv.getAttribute('partition') ?? undefined;
+  const job = (async () => {
+    const bridge = window.workspace?.googleLinks;
+    if (!bridge) return { items: [], note: '' };
+    try {
+      const r = await deadline(bridge(id), 40_000, 'tải link ẩn của Google');
+      if (!r?.ok) return { items: [], note: `Link ẩn trong tài liệu Google: KHÔNG lấy được (${r?.error ?? 'không rõ'}).` };
+      if (r.kind === 'doc') {
+        const items = (r.links ?? []).map((l) => ({ url: l.url, label: `Docs “${l.text || hostOf(l.url)}”`, partition }));
+        return { items, note: `Google Docs có ${items.length} link (kể cả link ẩn sau chữ) — trong danh sách Link bên dưới.` };
+      }
+      let sheet = '';
+      try { sheet = String((await deadline(wv.executeJavaScript(SHEET_NAME_JS), 4000, 'tên sheet')) ?? ''); } catch { /* bỏ qua */ }
+      const res = await apiFetch('/api/ai', { method: 'POST', body: JSON.stringify({ action: 'links.xlsx', data: r.xlsx, sheet }), timeoutMs: 60_000 });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; result?: { links: { cell: string; text: string; url: string }[]; truncated: boolean } };
+      if (!res.ok || data.ok === false || !data.result) return { items: [], note: `Link ẩn trong ô Google Sheets: KHÔNG đọc được (${data.error ?? `HTTP ${res.status}`}).` };
+      const items = data.result.links.map((l) => ({ url: l.url, label: `ô ${l.cell}${l.text ? ` “${l.text}”` : ''}`, partition }));
+      return {
+        items,
+        note: `Google Sheets có ${items.length} ô chứa link (đường dẫn ẨN sau chữ hiển thị) — trong danh sách Link bên dưới, ghi rõ ô (Sheet!Cột+Dòng)${sheet ? `, sheet đang mở "${sheet}" đứng trước` : ''}.${data.result.truncated ? ' (Quá nhiều link — chỉ lấy phần đầu.)' : ''}`,
+      };
+    } catch (e) {
+      return { items: [], note: `Link ẩn trong tài liệu Google: lỗi (${(e as Error).message}).` };
+    }
+  })();
+  googleLinkCache.set(url, job);
+  return job;
+}
+
+/** Danh sách link (đánh số cố định) cho phần cuối kết quả đọc màn hình. */
+function linkLines(found: LinkItem[]): string {
+  const nums: number[] = [];
+  const seen = new Set<number>();
+  for (const it of found) {
+    const n = regLink(it);
+    if (!seen.has(n)) { seen.add(n); nums.push(n); }
+  }
+  const out: string[] = [];
+  let size = 0;
+  for (const n of nums.slice(0, MAX_LINKS_SHOWN)) {
+    const it = links[n - 1];
+    const line = `[L${n}] ${it.label} → ${it.url.slice(0, 300)}`;
+    if (size + line.length > MAX_LINK_CHARS) { out.push(`… còn ${nums.length - out.length} link nữa (đã cắt cho gọn).`); break; }
+    out.push(line);
+    size += line.length + 1;
+  }
+  if (nums.length > MAX_LINKS_SHOWN && out.length === MAX_LINKS_SHOWN) out.push(`… còn ${nums.length - MAX_LINKS_SHOWN} link nữa.`);
+  return out.join('\n');
+}
+
+/** Chờ MỘT trang web nhúng tải xong (tối đa ~15 s). */
+async function waitWebview(w: WebviewEl): Promise<void> {
+  for (let i = 0; i < 60; i++) {
+    try {
+      if (w.getWebContentsId() > 0 && (await deadline(w.executeJavaScript('document.readyState'), 3000, 'readyState')) === 'complete') return;
+    } catch { /* chưa attach */ }
+    await sleep(250);
+  }
+}
+
+/** Mở `url` thành tab Browser MỚI ở NỀN (màn hình người dùng không đổi), đặt nó làm đích và đọc. */
+async function openLink(url: string, partition: string | undefined, screenName: string): Promise<string> {
+  if (openCount >= MAX_OPEN_PER_QUESTION) return `Đã mở ${MAX_OPEN_PER_QUESTION} link trong câu hỏi này — dừng lại, trả lời với những gì đã đọc và nói rõ còn link chưa mở.`;
+  const { pane, was } = await mountView('browser');
+  if (!pane) return 'Không mở được Browser ở nền. Nói người dùng mở menu Browser một lần rồi hỏi lại.';
+  if (!was) openedViews.set('browser', 'Browser');
+  const before = new Set(pane.querySelectorAll('webview'));
+  // Browser vừa mount còn đang nạp hồ sơ → chưa nghe sự kiện: gửi lại tới khi có trả lời.
+  let tabId = '';
+  for (let i = 0; i < 40 && !tabId; i++) {
+    window.dispatchEvent(new CustomEvent('devbox:ai-open-link', { detail: { url, partition, reply: (id: string) => { tabId = id; } } }));
+    if (!tabId) await sleep(250);
+  }
+  if (!tabId) return 'Browser chưa sẵn sàng nhận link — thử lại sau một chút.';
+  openCount += 1;
+  let wv: WebviewEl | null = null;
+  for (let i = 0; i < 60 && !wv; i++) {
+    wv = [...pane.querySelectorAll<WebviewEl>('webview')].find((w) => !before.has(w)) ?? null;
+    if (!wv) await sleep(200);
+  }
+  openedTabs.set(tabId, { label: hostOf(url), wv });
+  // Giữ tối đa vài tab trợ lý mở cùng lúc: đóng tab cũ nhất (đã đọc xong) cho nhẹ máy.
+  const alive = [...openedTabs.keys()];
+  if (alive.length > MAX_LIVE_AI_TABS) {
+    const drop = alive.slice(0, alive.length - MAX_LIVE_AI_TABS);
+    window.dispatchEvent(new CustomEvent('devbox:ai-close-tabs', { detail: drop }));
+    for (const id of drop) openedTabs.delete(id);
+  }
+  if (!wv) return `Đã mở tab cho ${url} nhưng trang chưa hiện ra — đọc lại sau (read_screen).`;
+  setTarget({ panes: [pane], webviews: [wv], name: `Browser — ${hostOf(url)}` });
+  await waitWebview(wv);
+  await sleep(800); // trang SPA (Confluence, Jira, Google…) còn vẽ sau readyState
+  return `Đã mở link ${url} trong một tab Browser MỚI ở NỀN (người dùng vẫn ở màn hình của họ). Từ giờ đọc / cuộn làm trên trang này.\n${await snapshot(screenName)}`;
 }
 
 /** Mọi pane đang hiện — Ultra View có thể hiện nhiều pane cùng lúc. */
@@ -748,11 +960,19 @@ export async function snapshot(screenName: string): Promise<string> {
     ? target.webviews.filter((w) => w.isConnected)
     : panes.flatMap((p) => [...p.querySelectorAll<WebviewEl>('webview')].filter(onScreen));
   const webCount = webviews.length;
+  const found: LinkItem[] = [];
+  const linkNotes: string[] = [];
   for (const wv of webviews.slice(0, 3)) {
     extras.push(await readWebview(wv));
     let page = '';
-    try { page = wv.getTitle?.() || new URL(wv.getURL?.() ?? '').hostname; } catch { /* chưa attach */ }
+    let wurl = '';
+    try { wurl = wv.getURL?.() ?? ''; page = wv.getTitle?.() || new URL(wurl).hostname; } catch { /* chưa attach */ }
     scrolls.push(...(await webScrollAreas(wv, page || 'trang web')));
+    let wid = -1;
+    try { wid = wv.getWebContentsId(); } catch { /* chưa attach */ }
+    const g = await googleLinks(wv, wid, wurl);
+    if (g.note) linkNotes.push(g.note);
+    found.push(...g.items, ...(await webLinks(wv, wurl)));
   }
   for (const pane of panes) {
     let t = paneText(pane).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
@@ -763,6 +983,21 @@ export async function snapshot(screenName: string): Promise<string> {
     try { extras.push(...readTerminals(pane)); } catch { /* terminal đã huỷ */ }
   }
   const text = texts.join('\n\n--- (pane kế) ---\n\n');
+  // Link trong giao diện app (<a href>) + URL trần trong mọi chữ đã đọc.
+  for (const pane of panes) {
+    for (const a of pane.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+      if (/^https?:/i.test(a.href)) found.push({ url: a.href, label: labelOf(a) || hostOf(a.href) });
+    }
+  }
+  const urlsInText = new Set<string>();
+  for (const t of [...extras, text]) {
+    for (const m of t.matchAll(URL_IN_TEXT)) {
+      if (urlsInText.size >= 150) break;
+      urlsInText.add(m[0].replace(/[.,;:!?)\]}>'"”’]+$/, ''));
+    }
+  }
+  for (const u of urlsInText) found.push({ url: u, label: `URL trong chữ (${hostOf(u)})` });
+  const linkList = linkLines(found);
 
   const items: typeof lastItems = [];
   for (const pane of panes) {
@@ -791,6 +1026,9 @@ export async function snapshot(screenName: string): Promise<string> {
     // Nội dung chính (trang web / editor / terminal) đặt TRƯỚC chữ giao diện:
     // kết quả mỗi bước bị server cắt theo độ dài, phần quan trọng phải nằm đầu.
     ...extras,
+    ...linkNotes.map((n) => `(${n})`),
+    '--- Link mở được (dùng số L cho hành động open_link; số giữ nguyên suốt câu hỏi) ---',
+    linkList || '(không có)',
     '--- Vùng cuộn được (dùng số trong ngoặc cho hành động scroll; còn phần khuất thì cuộn để đọc tiếp) ---',
     lastScroll.length ? lastScroll.map((a, i) => scrollAreaLine(a, i + 1)).join('\n') : '(không có — mọi thứ đã hiện hết)',
     '--- Chữ giao diện đang hiện ---',
@@ -814,6 +1052,11 @@ export interface ActionHost {
 export function describeAction(a: AiAction, tabs: AiTab[]): string {
   if (a.type === 'open_tab') return `Mở tab ${tabs.find((t) => t.key === a.tab)?.label ?? a.tab}`;
   if (a.type === 'read_screen') return 'Đọc màn hình';
+  if (a.type === 'open_link') {
+    const it = a.link ? links[a.link - 1] : undefined;
+    const url = it?.url ?? a.url ?? '';
+    return `Mở link ${it ? `L${a.link} ` : ''}${url ? hostOf(url) : `#${a.link}`}${it ? ` — ${it.label.slice(0, 50)}` : ''}`;
+  }
   if (a.type === 'scroll') {
     const dir = { down: 'xuống', up: 'lên', right: 'sang phải', left: 'sang trái' }[a.direction];
     return `Cuộn ${dir}${a.pages >= 1000 ? ' tới cuối' : a.pages !== 1 ? ` ${a.pages} màn hình` : ''} — ${lastScroll[a.area - 1]?.info.label ?? `vùng #${a.area}`}`;
@@ -841,6 +1084,28 @@ export async function runAction(a: AiAction, host: ActionHost): Promise<string> 
       if (target) target.webviews = activeWebviews(pane);
       const where = targetVisible() ? '' : ' ở NỀN — người dùng vẫn ở màn hình của họ';
       return `Đã mở ${tab.label}${where}.\n${await snapshot(host.screenName())}`;
+    }
+    if (a.type === 'open_link') {
+      let url = '';
+      let partition: string | undefined;
+      if (a.link) {
+        const it = links[a.link - 1];
+        if (!it) return `Không có link L${a.link}. Đọc lại màn hình (read_screen) để lấy danh sách link.`;
+        url = it.url;
+        partition = it.partition;
+      } else {
+        url = a.url ?? '';
+        let u: URL;
+        try { u = new URL(url); } catch { return `"${url}" không phải URL hợp lệ.`; }
+        if (u.protocol !== 'https:' && u.protocol !== 'http:') return 'Chỉ mở được link http(s).';
+        const n = linkNo.get(url) ?? linkNo.get(u.href);
+        if (n) partition = links[n - 1].partition;
+        // Link KHÔNG có trên màn hình (model tự nghĩ ra / lấy từ nơi lạ) → người dùng phải cho phép.
+        else if (!(await host.confirmClick(`Mở link ${url}`))) {
+          return `${DENIED} mở link ${url}. Chỉ mở link có trong danh sách Link của màn hình, hoặc hỏi người dùng.`;
+        }
+      }
+      return await openLink(url, partition, host.screenName());
     }
     if (a.type === 'read_screen') {
       await settle(2500);

@@ -65,14 +65,15 @@ const MSGS_KEY = 'ai.msgs';
 const MODEL_KEY = 'ai.model';
 const AGENT_KEY = 'ai.agent';
 /** Số hành động tối đa cho một câu hỏi — chặn vòng lặp vô tận. */
-/** Đọc hết một bảng dài cần cuộn nhiều lần — 8 bước cũ không đủ. */
-const MAX_STEPS = 20;
+/** Đọc hết một bảng dài cần cuộn nhiều lần — 8 bước cũ không đủ; mở lần lượt cả một cột link
+ *  (open_link, mỗi link một bước) cần nhiều hơn nữa. */
+const MAX_STEPS = 45;
 
 /** Hạn của MỘT bước thao tác (không tính lúc chờ người dùng bấm Cho phép) và của
  *  lần chụp ảnh sau bước. lib/aiScreen.ts đã đặt hạn cho từng lệnh vào trang web;
  *  đây là chốt cuối để vòng lặp KHÔNG BAO GIỜ đứng im — đã từng treo ~30 phút ở
  *  "Đọc màn hình" khi chạy nền. */
-const STEP_CAP_MS = 90_000;
+const STEP_CAP_MS = 150_000; // đọc sheet lần đầu còn tải .xlsx để lấy link ẩn trong ô
 const SHOT_CAP_MS = 30_000;
 
 /** Chờ một bước, nhưng: quá STEP_CAP_MS (trừ thời gian chờ người dùng) → bỏ qua với
@@ -364,7 +365,8 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
           attachments: round === 0
             ? atts.map(({ id: _i, bytes: _b, preview: _p, ...a }) => a)
             : shots.map((s) => ({ kind: 'image' as const, name: s.name, mediaType: s.mediaType, data: s.data })),
-          ...(agent ? { agent: true, tabs, steps } : {}),
+          // Bước cũ chỉ cần phần đầu (server cũng lược) — mở loạt link thì nhật ký dài, đừng gửi lại cả chục MB.
+          ...(agent ? { agent: true, tabs, steps: steps.map((st, i) => (i < steps.length - 2 ? { ...st, result: st.result.slice(0, 2000) } : st)) } : {}),
         }, 60000);
         jobRef.current = id;
         let from = 0;
@@ -724,7 +726,9 @@ export default function AiChat({ screen, tabs }: { screen: string; tabs: AiTab[]
             )}
             {confirm && (
               <div className="aic-confirm" role="alertdialog" aria-label="Trợ lý xin phép bấm một nút">
-                <p>Trợ lý muốn bấm <b>“{confirm.label}”</b> trên màn hình <b>{screen}</b>.</p>
+                {confirm.label.startsWith('Mở link ')
+                  ? <p>Trợ lý muốn mở <b>{confirm.label.slice(8)}</b> (link không có trên màn hình) trong một tab Browser ở nền.</p>
+                  : <p>Trợ lý muốn bấm <b>“{confirm.label}”</b> trên màn hình <b>{screen}</b>.</p>}
                 <div className="aic-confirm-btns">
                   <button className="ghost sm" onClick={() => confirm.resolve(false)}>Từ chối</button>
                   <button className="aic-allow" autoFocus onClick={() => confirm.resolve(true)}>Cho phép</button>

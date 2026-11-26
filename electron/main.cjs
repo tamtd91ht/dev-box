@@ -3513,6 +3513,55 @@ ipcMain.handle('workspace:exportGoogleDoc', async (evt, targetId) => {
   }
 });
 
+// ── Trợ lý AI: LINK ẨN trong Google Sheets / Docs (lib/aiScreen.ts) ─────────
+//
+// Ô Sheets có link thường chỉ HIỆN chữ (vd tên repo), đường dẫn thật nằm ẩn —
+// CSV xuất ra không có, lưới vẽ bằng canvas nên DOM cũng không có <a>. Lấy bằng
+// bản xuất có giữ link, dùng phiên đăng nhập của chính tab đó:
+//   · Sheets → .xlsx (cả workbook; Next đọc link từng ô bằng ExcelJS — lib/aiLinks.ts);
+//   · Docs   → .html, rút <a href> ngay tại đây (bỏ lớp chuyển hướng google.com/url?q=).
+// Chỉ ĐỌC. Chỉ nhận guest thuộc đúng trang đang gọi.
+const GOOGLE_LINKS_XLSX_MAX = 15 * 1024 * 1024;
+ipcMain.handle('workspace:googleLinks', async (evt, targetId) => {
+  try {
+    const target = webContents.fromId(Number(targetId));
+    if (!target || target.isDestroyed()) return { ok: false, error: 'gone' };
+    if (target.hostWebContents !== evt.sender) return { ok: false, error: 'not your guest' };
+    const ex = googleExportUrl(target.getURL());
+    if (!ex || ex.kind === 'slides') return { ok: false, error: 'not a Google Sheets/Docs page' };
+    const url = ex.kind === 'sheet'
+      ? ex.url.replace(/export\?format=csv(&gid=\d+)?$/, 'export?format=xlsx')
+      : ex.url.replace(/export\?format=txt$/, 'export?format=html');
+    const res = await target.session.fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(30000) });
+    if (!res.ok) return { ok: false, kind: ex.kind, error: `HTTP ${res.status}` };
+    const type = res.headers.get('content-type') || '';
+    if (ex.kind === 'sheet') {
+      if (/text\/html/i.test(type)) return { ok: false, kind: ex.kind, error: 'Google không cho tải xuống (chưa đăng nhập trong tab này hoặc chủ sở hữu tắt quyền tải xuống)' };
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > GOOGLE_LINKS_XLSX_MAX) return { ok: false, kind: ex.kind, error: `bảng tính quá lớn (${Math.round(buf.length / 1048576)} MB)` };
+      return { ok: true, kind: ex.kind, xlsx: buf.toString('base64') };
+    }
+    const html = (await res.text()).slice(0, 8 * 1024 * 1024);
+    const strip = (t) => t.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, ' ').trim();
+    const links = [];
+    const seen = new Set();
+    for (const m of html.matchAll(/<a\b[^>]*\bhref="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)) {
+      let href = m[1].replace(/&amp;/g, '&');
+      try {
+        const u = new URL(href);
+        if (u.hostname === 'www.google.com' && u.pathname === '/url' && u.searchParams.get('q')) href = u.searchParams.get('q');
+      } catch { continue; }
+      if (!/^https?:\/\//i.test(href) || seen.has(href)) continue;
+      seen.add(href);
+      links.push({ text: strip(m[2]).slice(0, 120), url: href });
+      if (links.length >= 500) break;
+    }
+    return { ok: true, kind: ex.kind, links };
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
 // ── Trợ lý AI: cuộn bằng con lăn trong guest (lib/aiScreen.ts) ──────────────
 //
 // Trang tự vẽ (canvas, Google Sheets…) hoặc chặn scrollBy chỉ nghe sự kiện
