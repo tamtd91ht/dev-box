@@ -153,6 +153,8 @@ interface Target {
   /** <webview> đang hiện trong pane lúc ghim — vd đúng tab Browser đang mở sheet A. */
   webviews: WebviewEl[];
   name: string;
+  /** Đích là hội thoại Zalo trợ lý tự mở / đọc (open_chat) — người dùng đang xem khung đó thì không cuộn. */
+  chat?: boolean;
   /** Khung con chứa webview đích mà bị đẩy ra ngoài màn hình riêng (tài khoản Workspace
    *  không chọn: .ws-view left:-150vw) — gắn data-ai-target để CSS kéo về 1 px cho nó vẫn vẽ. */
   holders?: HTMLElement[];
@@ -681,6 +683,44 @@ function guestWebview(pluginId: string, instanceId: string): WebviewEl | null {
   }) ?? null;
 }
 
+/** Người dùng có đang NHÌN khung Zalo này không: pane Workspace đang hiện, tài khoản đang
+ *  được chọn (không bị đẩy ra ngoài màn hình), cửa sổ app không bị thu nhỏ. Khung chỉ chạm
+ *  1 px vào góc vì trợ lý đang ghim (data-ai-target) thì KHÔNG tính là đang nhìn. */
+function userViewing(wv: WebviewEl): boolean {
+  if (document.visibilityState === 'hidden') return false;
+  const pane = wv.closest<HTMLElement>('.body > main.workspace');
+  if (!pane || pane.getAttribute('aria-hidden') === 'true') return false;
+  const holder = wv.closest<HTMLElement>('.ws-view');
+  if (holder && holder.style.position === 'fixed') return false; // tài khoản không được chọn
+  const r = wv.getBoundingClientRect();
+  return r.width > 20 && r.height > 20 && r.right > 0 && r.bottom > 0
+    && r.left < window.innerWidth - 2 && r.top < window.innerHeight - 2;
+}
+
+/** Chạy trong guest Zalo, CHỈ ĐỌC: tên hội thoại đang mở ('' = chưa mở hội thoại nào). */
+const CURRENT_CHAT_JS = `(() => {
+  const e = document.querySelector('.threadChat__title .main-title-container') || document.querySelector('.threadChat__title');
+  return e ? String(e.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+})()`;
+
+async function currentChat(wv: WebviewEl): Promise<string> {
+  try { return String((await deadline(wv.executeJavaScript(CURRENT_CHAT_JS), 4000, 'đọc hội thoại đang mở')) ?? ''); } catch { return ''; }
+}
+
+/** Ghim khung Zalo làm đích và đọc luôn. */
+async function readChatTarget(label: string, wv: WebviewEl, opened: string, head: string, screenName: string): Promise<string> {
+  const pane = wv.closest<HTMLElement>('.body > main.workspace');
+  if (!pane) return `${head} — nhưng không tìm thấy khung trang để đọc.`;
+  const holder = wv.closest<HTMLElement>('.ws-view');
+  setTarget({ panes: [pane], webviews: [wv], holders: holder ? [holder] : [], name: `Zalo ${label} — ${opened}`, chat: true });
+  await sleep(600);
+  return [
+    head,
+    'Khung chat chỉ có các tin GẦN NHẤT. Cần tin cũ hơn thì cuộn vùng khung tin nhắn (vùng lớn bên phải, không phải danh sách hội thoại) LÊN (up); link trong tin nằm ở mục "Link mở được". Chữ của danh sách hội thoại bên trái là xem trước của hội thoại KHÁC — bỏ qua.',
+    await snapshot(screenName),
+  ].join('\n');
+}
+
 /** Tài khoản Zalo đang sống trong Workspace; chưa có thì dựng Workspace ở nền rồi chờ. */
 async function chatGuests() {
   const pick = () => listGuests().filter((g) => g.pluginId === CHAT_PLUGIN);
@@ -705,9 +745,22 @@ async function openChat(name: string, account: string | undefined, screenName: s
     if (!pool.length) return `Không có tài khoản Zalo "${account}". Các tài khoản: ${all.map((g) => `"${g.label}"`).join(', ')}.`;
   }
   const misses: string[] = [];
+  /** Tài khoản bỏ qua vì người dùng đang xem nó. */
+  const watched: string[] = [];
   for (const g of pool) {
     if (!g.ready) { misses.push(`"${g.label}": đang tải lại`); continue; }
     const wv = guestWebview(g.pluginId, g.instanceId);
+    // NGƯỜI DÙNG ĐANG XEM khung Zalo này → KHÔNG bấm chuyển hội thoại (chỉ một khung mỗi tài
+    // khoản: bấm là giật mất chỗ họ đang đọc). Hội thoại đang mở chính là cái cần đọc thì đọc
+    // luôn, không bấm gì.
+    if (wv && userViewing(wv)) {
+      const cur = await currentChat(wv);
+      if (cur && (normName(cur) === normName(name) || (normName(name).length >= 3 && normName(cur).includes(normName(name))))) {
+        return await readChatTarget(g.label, wv, cur, `Hội thoại "${cur}" đang mở sẵn trong Zalo "${g.label}" mà người dùng đang xem — đọc thẳng, không bấm gì.`, screenName);
+      }
+      watched.push(g.label);
+      continue;
+    }
     let r: OpenChatResult | null = null;
     try {
       r = await enqueue(g.accountKey, () => deadline(
@@ -725,18 +778,18 @@ async function openChat(name: string, account: string | undefined, screenName: s
     // Chỉ nhớ hội thoại GỐC: mở A rồi B trong cùng câu hỏi thì cuối cùng vẫn về chỗ cũ của người dùng.
     const had = switchedChats.get(g.accountKey);
     switchedChats.set(g.accountKey, { prev: had ? had.prev : r.prev, prevTab: had ? had.prevTab : r.prevTab, opened: r.opened });
-    const pane = wv?.closest<HTMLElement>('.body > main.workspace') ?? null;
-    if (!wv || !pane) return `Đã mở hội thoại "${r.opened}" trong Zalo "${g.label}" nhưng không tìm thấy khung trang để đọc — thử read_screen sau khi mở tab workspace.`;
-    const holder = wv.closest<HTMLElement>('.ws-view');
-    setTarget({ panes: [pane], webviews: [wv], holders: holder ? [holder] : [], name: `Zalo ${g.label} — ${r.opened}` });
-    await sleep(600);
+    if (!wv) return `Đã mở hội thoại "${r.opened}" trong Zalo "${g.label}" nhưng không tìm thấy khung trang để đọc — thử read_screen sau khi mở tab workspace.`;
     const mismatch = r.title && normName(r.title) !== normName(r.opened) ? ` (tiêu đề khung chat đọc được: "${r.title}" — kiểm tra đúng hội thoại chưa)` : '';
-    const where = targetVisible() ? '' : ' ở NỀN — người dùng vẫn ở màn hình của họ, không thấy gì đổi';
+    return await readChatTarget(g.label, wv, r.opened,
+      `Đã mở hội thoại "${r.opened}" trong Zalo "${g.label}" ở NỀN — người dùng không thấy gì đổi${mismatch}.${r.opened !== name ? ` (khớp gần đúng với "${name}")` : ''}`,
+      screenName);
+  }
+  if (watched.length) {
     return [
-      `Đã mở hội thoại "${r.opened}" trong Zalo "${g.label}"${where}${mismatch}.${r.opened !== name ? ` (khớp gần đúng với "${name}")` : ''}`,
-      'Khung chat chỉ có các tin GẦN NHẤT. Cần tin cũ hơn thì cuộn vùng khung tin nhắn (vùng lớn bên phải, không phải danh sách hội thoại) LÊN (up); link trong tin nằm ở mục "Link mở được". Chữ của danh sách hội thoại bên trái là xem trước của hội thoại KHÁC — bỏ qua.',
-      await snapshot(screenName),
-    ].join('\n');
+      `KHÔNG mở "${name}": người dùng đang xem Zalo ${watched.map((l) => `"${l}"`).join(', ')} — mỗi tài khoản chỉ có một khung Zalo, bấm sang hội thoại khác là làm mất chỗ họ đang đọc, nên app chặn.`,
+      misses.length ? `Các tài khoản khác: ${misses.join('; ')}.` : '',
+      'Trả lời người dùng: nói rõ không đọc được vì họ đang xem đúng tài khoản Zalo đó; mời họ chuyển sang menu khác / tài khoản Zalo khác (hoặc tự mở nhóm đó) rồi hỏi lại. Đừng thử lại open_chat trong câu hỏi này.',
+    ].filter(Boolean).join('\n');
   }
   return `Không mở được hội thoại "${name}". ${misses.join('; ')}. Hỏi lại người dùng tên chính xác (hoặc chọn trong các tên trên), đừng đoán.`;
 }
@@ -996,6 +1049,11 @@ async function doScroll(n: number, dir: ScrollDir, pages: number): Promise<strin
     return moved ? `Đã cuộn ${a.info.label} (${dir}).` : `Vùng ${a.info.label} không cuộn thêm được theo hướng ${dir} — đã ở mép.`;
   }
 
+  // Hội thoại Zalo trợ lý đọc (open_chat) mà người dùng đang xem đúng khung đó → không cuộn:
+  // cuộn là kéo khung chat họ đang đọc. Đọc thì vẫn được.
+  if (target?.chat && target.webviews.includes(a.wv) && userViewing(a.wv)) {
+    return 'KHÔNG cuộn: người dùng đang xem đúng khung Zalo này — cuộn sẽ kéo mất chỗ họ đang đọc. Trả lời bằng dữ liệu đã có và nói rõ chưa xem được tin cũ hơn (họ chuyển sang menu khác rồi hỏi lại thì đọc được thêm).';
+  }
   // Trang web nhúng: thử scrollBy trước; không nhúc nhích thì lăn chuột thật.
   // Vùng chỉ là THANH CUỘN mảnh tách rời nội dung (Google Sheets vẽ lưới bằng
   // canvas, thanh cuộn là div riêng): scrollBy trên thanh đó chưa chắc kéo lưới

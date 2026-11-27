@@ -234,6 +234,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Trợ lý đọc Zalo không còn giật mất hội thoại bạn đang xem.** Mỗi tài khoản Zalo chỉ có một khung, nên
+  trước đây khi bạn đang xem Zalo mà nhờ trợ lý đọc nhóm khác, khung chat của bạn bị nhảy sang nhóm đó (và
+  bị cuộn). Giờ nếu bạn đang nhìn đúng tài khoản Zalo đó thì trợ lý không chuyển hội thoại, không cuộn khung
+  chat, mà báo lại để bạn chuyển sang menu khác rồi hỏi lại. Hội thoại cần đọc đang mở sẵn thì vẫn đọc được
+  ngay, không bấm gì. Ở menu khác hoặc đang xem tài khoản Zalo khác thì vẫn đọc ở nền như cũ.
 - **Trợ lý mở link đọc nhầm tab khác.** Khi Browser vừa được dựng ở nền, `open_link` có thể bám vào một tab cũ
   đang khôi phục (vd claude.ai) thay cho trang vừa mở — giờ chọn đúng tab theo URL.
 - **Trợ lý AI treo ở "Đọc màn hình" khi chạy nền.** Hỏi ở tab Browser rồi chuyển menu khác, trợ lý có thể
